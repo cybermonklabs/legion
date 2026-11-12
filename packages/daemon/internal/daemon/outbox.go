@@ -83,9 +83,10 @@ type outbox struct {
 	dispatchProject string
 	stateDir        string
 	// gatedSteps are the design-gate steps the project gates (gates.design), which a catch-up
-	// this runner writes states and whose kept approval pair a start task names
-	// (workflow.QueueCatchUp). A test that builds the runner by hand leaves it nil, which
-	// newOutbox reads as the shipped list, the one step spec.
+	// this runner writes or delivers states (workflow.QueueCatchUp, workflow.TreeCatchUp) and whose
+	// kept approval pair a start task names. A test that builds the runner by hand and leaves it
+	// nil holds the list of a deployment that gates no step: the single step spec, which no person
+	// approves (record.RequiredSteps).
 	gatedSteps []record.DesignStep
 	log        *slog.Logger
 	// backstop is how long after a release its one open phase's worker is woken whatever else
@@ -1286,6 +1287,19 @@ func (r *outbox) wakeRan(row record.OutboxRow, notice record.Notice) {
 
 // deliverNotice is the notice executor's own work: routing the notice, publishing it, and settling
 // what a catch-up that will never publish named. Its endings are notice's to read.
+//
+// A catch-up is published as its tree stands at this delivery, not as it stood when the row was
+// queued: the delivery's one read of the tree composes it again (readNoticeTree,
+// workflow.TreeCatchUp), and its Gates, Issues, HandedOver and Carried, and the notice's Reason,
+// are replaced with what that read states, so a gate registered or an issue added while the row
+// waited reaches the architect with the catch-up (dispatch://INFRA-2819). The order is the
+// fence's: whether a newer catch-up supersedes this one (catchUpSuperseded) is read on the payload
+// as the row holds it, before anything is replaced, because the fence compares the row's
+// Generation and Launch with the root and the claim as they are now, and a payload composed from
+// the root now would compare the root with itself and never be superseded. So Generation and
+// Launch stay the row's. So do Decided and Kept: the row's own queueing claimed those decisions
+// for this row (workflow.EnqueueNaming), and the settling that follows the publish (settleTold,
+// supersededKept) is keyed to what the row named, not to what a read at delivery would name.
 func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payload record.Notice) error {
 	if r.notices == nil {
 		return errors.New("notice executor has no Envoy publisher")
@@ -1293,7 +1307,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	if r.supervisor == nil {
 		return errors.New("notice executor has no claim supervisor")
 	}
-	issue, tree, err := r.readNoticeTree(ctx, row)
+	issue, tree, recomposed, err := r.readNoticeTree(ctx, row, payload)
 	if errors.Is(err, errNoticeRowGone) {
 		r.log.Info("outbox notice finished without publishing: its row was deleted under its lease", "row", row.ID, "kind", payload.Kind, "issue", row.Issue)
 		return nil
@@ -1323,6 +1337,10 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 				"generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch)
 			return nil
 		}
+		delivered := *payload.CatchUp
+		delivered.Gates, delivered.Issues = recomposed.state.Gates, recomposed.state.Issues
+		delivered.HandedOver, delivered.Carried = recomposed.state.HandedOver, recomposed.state.Carried
+		payload.CatchUp, payload.Reason = &delivered, recomposed.reason
 	}
 	architect, err := owningArchitect(tree.project, tree.issues, issue, payload.Kind, r.holdsItsRole)
 	if err != nil {

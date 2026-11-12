@@ -62,8 +62,10 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // QueueCatchUp is the one composer of a root architect's catch-up, which both the ready
 // (claimReady) and a hand-over that finds the root with an architect to tell (HandOverKept) write
 // through, so the two never compose one differently. It states root's tree as the record holds it
-// (treeCatchUp) for launch, the launch it was written for, so a failed forward of an older one is
-// not queued again behind it (the outbox's rehold).
+// (TreeCatchUp) for launch, the launch it was written for, so a failed forward of an older one is
+// not queued again behind it (the outbox's rehold). The tree it states is the record at the
+// moment the row is queued; the outbox states it again when it delivers the row (the daemon's
+// deliverNotice), so the architect reads the record as it stands then.
 //
 // A catch-up an earlier launch never had delivered is dropped first (DropCatchUps, at the caller's
 // now, which is the clock a lane's lease is written from), so the agent is given one catch-up,
@@ -84,7 +86,7 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // that wake writes when it runs (the daemon's wakeRan). The pair is written only where the
 // pacing reserved something: a catch-up it held to no moment reports no wait, having had none.
 func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue, launch uint64, now, paced time.Time) error {
-	catchUp, awaiting, err := treeCatchUp(ctx, tx, store, steps, root)
+	catchUp, reason, err := TreeCatchUp(ctx, tx, store, steps, root)
 	if err != nil {
 		return err
 	}
@@ -103,10 +105,6 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 		return err
 	}
 	catchUp.Decided, catchUp.Kept = decided, kept
-	reason := fmt.Sprintf("the tree of %s at generation %d as the daemon records it now; start or resume it as your role says", root.Key, root.Generation)
-	if len(awaiting) > 0 {
-		reason += fmt.Sprintf("; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move)", strings.Join(awaiting, ", "))
-	}
 	at := now
 	notice := record.Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: reason, CatchUp: &catchUp}
 	if !paced.IsZero() {
@@ -207,27 +205,34 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	return nil
 }
 
-// treeCatchUp is root's tree as the record holds it: whether a hand-over created the root at this
-// generation, and whether its old root's gate came with it, each design-gate step the root must
-// hold open and how it stands, and every issue of the tree in key order. With it come the keys,
-// in key order, of the tree's issues waiting for the architect's acceptance: each in accepting
-// and still in the workflow. No worker runs in accepting, and the one phase-finished notice that
-// moved an issue there is ended undelivered when the architect's claim has failed (the outbox's
-// notice), so a retried architect learns of the wait from its catch-up alone; the reason names
-// these keys so that the catch-up, which a revived architect reads as the tree already running,
-// says what is the architect's own to do.
-func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue) (record.CatchUp, []string, error) {
+// TreeCatchUp is root's tree as the record holds it, the record half of a catch-up: root's
+// generation, whether a hand-over created the root at this generation, and whether its old
+// root's gate came with it, each design-gate step the root must hold open and how it stands, and
+// every issue of the tree in key order. With it comes the notice's reason, which names, in key
+// order, the tree's issues waiting for the architect's acceptance: each in accepting and still in
+// the workflow. No worker runs in accepting, and the one phase-finished notice that moved an issue
+// there is ended undelivered when the architect's claim has failed (the outbox's notice), so a
+// retried architect learns of the wait from its catch-up alone; the reason names these keys so
+// that the catch-up, which a revived architect reads as the tree already running, says what is
+// the architect's own to do.
+//
+// It is a pure read of the record in tx and writes nothing: the launch, and the kept decisions a
+// catch-up names and claims, are QueueCatchUp's. It is called twice for one catch-up: where the
+// row is queued (QueueCatchUp), and where the outbox delivers it (the daemon's readNoticeTree,
+// inside the delivery's own read of the tree), so what the architect reads is the record at the
+// moment of delivery rather than at the moment the row was written (dispatch://INFRA-2819).
+func TreeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue) (record.CatchUp, string, error) {
 	catchUp := record.CatchUp{Generation: root.Generation}
 	handed, err := store.HandedOverRoot(ctx, tx, root.Key)
 	if err != nil {
-		return record.CatchUp{}, nil, err
+		return record.CatchUp{}, "", err
 	}
 	if handed != nil && handed.Generation == root.Generation {
 		catchUp.HandedOver, catchUp.Carried = true, handed.GateCarried
 	}
 	gates, err := store.GatesOf(ctx, tx, root.Key)
 	if err != nil {
-		return record.CatchUp{}, nil, err
+		return record.CatchUp{}, "", err
 	}
 	required := classify.RequiredSteps(steps)
 	catchUp.Gates = make([]record.CatchUpGate, 0, len(required))
@@ -245,10 +250,10 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 	}
 	issues, err := store.TreeIssues(ctx, tx, root.Tree)
 	if err != nil {
-		return record.CatchUp{}, nil, err
+		return record.CatchUp{}, "", err
 	}
 	catchUp.Issues = make([]record.CatchUpIssue, 0, len(issues))
-	awaiting := []string{}
+	var awaiting []string
 	for _, issue := range issues {
 		listed := record.CatchUpIssue{Key: issue.Key, Title: issue.Title, Phase: issue.Phase, Status: issue.Status}
 		if issue.Parent != nil {
@@ -259,5 +264,9 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 			awaiting = append(awaiting, issue.Key)
 		}
 	}
-	return catchUp, awaiting, nil
+	reason := fmt.Sprintf("the tree of %s at generation %d as the daemon records it now; start or resume it as your role says", root.Key, root.Generation)
+	if len(awaiting) > 0 {
+		reason += fmt.Sprintf("; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move)", strings.Join(awaiting, ", "))
+	}
+	return catchUp, reason, nil
 }

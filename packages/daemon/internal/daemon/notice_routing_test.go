@@ -754,9 +754,11 @@ func TestACatchUpDroppedUnderItsLeaseIsNotPublished(t *testing.T) {
 		t.Fatalf("run the outbox: %v", err)
 	}
 	_, delivered := publisher.snapshot()
+	// The delivery states the tree again, its reason with it (deliverNotice), so each catch-up is
+	// told apart by the generation it was written for, which the row keeps.
 	var got []string
 	for _, published := range delivered {
-		got = append(got, published.payload.(record.Notice).Reason)
+		got = append(got, fmt.Sprintf("generation %d", published.payload.(record.Notice).CatchUp.Generation))
 	}
 	if fmt.Sprint(got) != "[generation 2]" || outboxRows(t, pool) != 0 {
 		t.Fatalf("delivered %v with %d rows left; want the second catch-up alone", got, outboxRows(t, pool))

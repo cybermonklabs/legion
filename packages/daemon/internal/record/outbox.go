@@ -444,11 +444,13 @@ func (b BlockedIssue) MarshalJSON() ([]byte, error) {
 
 // CatchUp is what a tree's root architect is told of its tree when its claim is ready at a launch
 // (a catch-up notice), which is the architect's first instruction: admission launches it with no
-// task, or only with the decisions kept for it. It is the tree as the daemon records it then: the
-// root's generation, the launch of the architect's claim it was written for, whether a hand-over
-// created the root at this generation with its child's phase and pull request (HandedOver) and
-// whether its old root's gate came with them (Carried), the design gate step by step (Gates),
-// and every issue of the tree. A handed-over root's workers already run their phases, so its
+// task, or only with the decisions kept for it. The root's generation and the launch of the
+// architect's claim it was written for are the ones the row was queued at, and the rest is the
+// tree as the daemon records it when the notice is delivered, composed again in the delivery's own
+// read (workflow.TreeCatchUp): whether a hand-over created the root at this generation with its
+// child's phase and pull request (HandedOver) and whether its old root's gate came with them
+// (Carried), the design gate step by step (Gates), and every issue of the tree. A handed-over
+// root's workers already run their phases, so its
 // architect decomposes nothing anew; one that carried no gate registers its own spec. Decided names
 // what a person decided on the tree while nobody in it could hear it and the start did not name (a
 // decision made while the architect's claim had ended, before this relaunch), in the words of

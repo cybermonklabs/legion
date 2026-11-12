@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -377,5 +378,47 @@ func TestAPacedReadysCatchUpIsDueAtTheMomentTheWakePacingGivesIt(t *testing.T) {
 					due.UTC(), reservedAt, reserved, tc.due, tc.marked, tc.reserve)
 			}
 		})
+	}
+}
+
+// TreeCatchUp is the record half of the catch-up QueueCatchUp queues, with the notice's reason,
+// and a pure read of the record: the outbox composes it again where it delivers the row, inside
+// its read-only read of the tree (the daemon's readNoticeTree), so the architect reads the tree
+// as the record holds it then. Read at once after the queueing, in a read-only transaction, it is
+// the queued tree and reason exactly; the launch and the kept decisions are the queueing's alone.
+func TestTreeCatchUpIsTheQueuedCatchUpsTreeReadWithoutAWrite(t *testing.T) {
+	ctx := context.Background()
+	pool := migratedPool(t)
+	root := seedAdmittedTree(t, pool, 1)
+	parent := root.Key
+	seedIssue(t, pool, record.Issue{Key: "LEGION-3", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION", Title: "Waiting", Parent: &parent,
+		Phase: phase.Accepting, Generation: 1, Status: "in_progress", Rank: "W"})
+	claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), root.Key, claim.RoleArchitect, 1)
+	var queued record.Notice
+	for _, payload := range noticeRows(t, pool) {
+		if notice, ok := payload.(record.Notice); ok && notice.Kind == "catch-up" {
+			queued = notice
+		}
+	}
+	if queued.CatchUp == nil {
+		t.Fatal("the ready queued no catch-up")
+	}
+
+	var state record.CatchUp
+	var reason string
+	if err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		state, reason, err = TreeCatchUp(ctx, tx, record.NewStore(), config.DesignGateRootIssues.Steps(), root)
+		return err
+	}); err != nil {
+		t.Fatalf("compose the tree in a read-only transaction: %v", err)
+	}
+	want := *queued.CatchUp
+	want.Launch, want.Decided, want.Kept = 0, "", nil
+	if !reflect.DeepEqual(state, want) || reason != queued.Reason {
+		t.Fatalf("TreeCatchUp = %+v, %q; want the queued catch-up's tree %+v, %q", state, reason, want, queued.Reason)
+	}
+	if !strings.Contains(reason, "waiting for your acceptance, which no worker gives: LEGION-3") {
+		t.Fatalf("the reason %q does not name LEGION-3, which waits in accepting", reason)
 	}
 }
