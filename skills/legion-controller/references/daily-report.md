@@ -38,7 +38,8 @@ Each time you read it:
   (`400 ASSIGNEE_NOT_ALLOWED` names an email nobody has signed in to Dispatch with): name it, with
   its first line, in your summary.
 - While `Assignee:` says `unassigned`, open each report with one sentence asking a person to take
-  the issue from its header, because its asks reach only the Inbox's `Unassigned` filter.
+  the issue from its header, because until someone does, its asks go to the project's default
+  assignee and not to the person the report is for.
 
 ## When
 
