@@ -156,6 +156,28 @@ func TestShippedLegionYAMLExampleRefusesAWorkerSilenceUnderTheFloor(t *testing.T
 	}
 }
 
+// The example's commented worker_background_hours, uncommented with a value at the silence bound
+// the file ships commented beside it, is refused by the check that holds the two to their
+// relation, which names both keys and both values. The shipped line is where an operator reads
+// what the key takes, so a relation it stated wrongly would be an operator's file refused on
+// their first check; here it is this test that fails instead. The line stays commented in the
+// file itself, as the silence key's does, for the same reason: an active key would change the
+// stdout TestShippedLegionYAMLExamplePassesCheckConfig holds exactly.
+func TestShippedLegionYAMLExampleRefusesAWorkerBackgroundAtTheSilenceBound(t *testing.T) {
+	config := stageShippedExample(t, func(example string) string {
+		example = uncommentExample(t, example, "# worker_background_hours: 4")
+		return strings.Replace(example, "worker_background_hours: 4", "worker_background_hours: 0.5", 1)
+	})
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+
+	want := "legion start: worker_background_hours (30m0s) is at or below worker_silence_minutes (30m0s): the bound on background work a worker reports must be above the bound on its silence, since a shorter one would name a job that has barely begun and would race the repair that sends the same worker its phase's task again\n"
+	if code != 1 || out.Len() != 0 || errb.String() != want {
+		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
+	}
+}
+
 // uncommentExample is the example with each named line uncommented, each line the start of one of
 // the example's own commented lines: the file comments a block out line by line, so turning it on
 // is one `# ` removed per line, and a line the example does not hold is the test's own mistake.

@@ -24,6 +24,15 @@ func workerSilentEventID(token claim.Token, lastStep time.Time) string {
 	return fmt.Sprintf("worker-silent:%s:%s", token, lastStep.UTC().Format(time.RFC3339Nano))
 }
 
+// workerBackgroundEventID is the identity of one standing report of background work: the claim
+// token and the moment of that report, which tellSilentPhaseWorkers' own comment says what rests
+// on. It is deliberately not the claim's last step, which a hung job leaves frozen as well: a
+// fact keyed on that step is minted and spent the first minute the silence bound passes, hours
+// before the background bound is reached, and the telling would never happen.
+func workerBackgroundEventID(token claim.Token, reported time.Time) string {
+	return fmt.Sprintf("worker-background:%s:%s", token, reported.UTC().Format(time.RFC3339Nano))
+}
+
 // tellSilentPhaseWorkers applies one intake.WorkerSilent for every claim of the sweep that is a
 // phase worker nothing will prompt: its process is up and between turns, it holds no task, and
 // its agent's last recorded step is older than the bound this deployment gives a phase worker
@@ -46,12 +55,20 @@ func workerSilentEventID(token claim.Token, lastStep time.Time) string {
 // writes while the suspension holds, which the architect's notice says (workflow's
 // workerSilentDid).
 //
-// The identity of each fact is the claim token and the moment of that claim's last step
+// The identity of each silence is the claim token and the moment of that claim's last step
 // (workerSilentEventID), and that is what makes one silence one telling. A duplicate applies
 // nothing, so however many of the minute's sweeps read the same quiet claim, the architect
 // hears of it one time; and a worker that takes a step and then goes silent again has a new
 // moment, so it is a new fact and the architect hears of it again. That is R5 of
 // dispatch://INFRA-3163.
+//
+// Every claim the terms below hold is read a second time, for the other half of this pass: a
+// worker whose own session reports background work of its own running with a report older than
+// the longer bound the deployment sets is named to its architect and sent nothing at all
+// (backgroundStalledFact, which holds what that half does and what it cannot do). The two facts
+// of one claim are applied together, under ids of their own, and neither reads the other: a
+// worker reporting background work is told of here and left alone by the silence handler, which
+// refuses every claim whose session says such work is running (workflow.SilentPhaseWorker).
 //
 // The run the fact names is the run whose task this claim's worker took (ServingRun), which is
 // the issue generation the handler holds the record's own against, and not the claim's
@@ -84,6 +101,9 @@ func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []super
 			Fact: intake.WorkerSilent{Issue: c.Issue, Role: c.Role, Generation: c.ServingRun(),
 				LastStep: last, Bound: bound},
 		})
+		if fact, told := backgroundStalledFact(c, s.cfg.WorkerBackground, now); told {
+			facts = append(facts, fact)
+		}
 	}
 	if len(facts) == 0 {
 		return
@@ -93,4 +113,45 @@ func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []super
 	// it carried. The next sweep reads the same silence and applies the identical fact again,
 	// which is the retry; a line here would say the same thing twice.
 	_ = s.applyFacts(ctx, silenceSource, facts)
+}
+
+// backgroundStalledFact is the sweep's other half, for the claim it has just read as a phase
+// worker whose silence stands: whether that claim's own session reports background work of its
+// own running with a report older than the bound this deployment sets for it
+// (config.Config.WorkerBackground, `worker_background_hours`), and the fact to apply when it
+// does. A bound of zero or less is the telling switched off, and a claim whose session has
+// reported nothing is judged from no moment at all, as a claim with no step is.
+//
+// The silence repair leaves every claim reporting background work alone (workflow's
+// SilentPhaseWorker), because nothing can tell a worker with a forty-minute job from one whose
+// job hung. This is the other half of that: such a worker is told of once and sent nothing, and
+// its architect, which can read what the work is, decides. That is R6 of
+// dispatch://INFRA-3163.
+//
+// What it does not do, and cannot: the daemon never reads the job. It reads how long the
+// session's own report has stood and nothing else, so a worker that runs job after job without
+// its reading changing is told once, for the first of them, and a worker whose reading flickers
+// — a kind added, a job ended while another runs — is told once for each report that stands
+// past the bound. Neither is a mistake of this pass; nothing it could read would separate a job
+// that hung from a long one, which is why what it writes is a telling and not a prompt.
+//
+// The identity is the claim token and the moment of the report (workerBackgroundEventID), and
+// that is what makes one standing report one telling: a session sends a report only when its
+// reading changes (packages/pi-legion/extensions/legion.ts, the five-second interval), so a job
+// that hangs leaves one report standing however many sweeps read it, and the duplicate applies
+// nothing. The run the fact names is the run whose task this claim's worker took (ServingRun),
+// as the silence fact's is.
+func backgroundStalledFact(c supervise.Claim, bound time.Duration, now time.Time) (intake.Identified, bool) {
+	reported := c.ActivityAt
+	if bound <= 0 || reported.IsZero() || !c.ActivityBackground {
+		return intake.Identified{}, false
+	}
+	if !reported.Add(bound).Before(now) {
+		return intake.Identified{}, false
+	}
+	return intake.Identified{
+		ID: workerBackgroundEventID(c.Token, reported),
+		Fact: intake.WorkerBackgroundStalled{Issue: c.Issue, Role: c.Role, Generation: c.ServingRun(),
+			ReportedAt: reported, Kinds: c.ActivityKinds, Bound: bound},
+	}, true
 }

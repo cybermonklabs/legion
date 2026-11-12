@@ -27,6 +27,9 @@ const (
 	silenceIssue      = "LEGION-209"
 	silenceAssignment = "A1"
 	silenceBound      = 30 * time.Minute
+	// backgroundBound is the longer bound the daemon reads a worker's own report of background
+	// work against (config.Config.WorkerBackground), which is the shipped default.
+	backgroundBound = 4 * time.Hour
 )
 
 // silenceRecord is the record one case stands on. aSilentTester is the record of a worker the
@@ -55,6 +58,12 @@ type silenceRecord struct {
 	// queuedStart writes a start of the issue's phase into the outbox before the fact, the row
 	// that is already on its way to the worker.
 	queuedStart bool
+	// reported is the moment the claim's own session last read what it was doing, zero for a
+	// session that has reported nothing, and background whether that reading found background
+	// work of the session's own still running (record.RoleClaim's ActivityAt and
+	// ActivityBackground).
+	reported   time.Time
+	background bool
 }
 
 // aSilentTester is the record of a tester nothing will prompt: an issue in testing at work, a
@@ -102,10 +111,20 @@ func seedSilence(t *testing.T, pool *pgxpool.Pool, rec silenceRecord) record.Iss
 	if stepped.IsZero() {
 		stepped = silenceStep()
 	}
+	// The activity columns are the claim's own session's report, which the store writes through
+	// a call of its own (PutClaimActivity) and the rules read back with the run: a null
+	// activity_at is a session that has reported nothing.
+	var reported *time.Time
+	if !rec.reported.IsZero() {
+		at := rec.reported
+		reported = &at
+	}
 	if _, err := pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-		state, update_round, step_at, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-		values ($1, $2, $3, $3, 'tester', $4, 'ses', '/sessions/ses.jsonl', $5, $6, $7, 0, 0, 0, 0)`,
-		string(token), "legion", silenceIssue, int64(rec.generation), string(rec.state), rec.updateRound, stepped); err != nil {
+		state, update_round, step_at, activity_at, activity_background,
+		launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+		values ($1, $2, $3, $3, 'tester', $4, 'ses', '/sessions/ses.jsonl', $5, $6, $7, $8, $9, 0, 0, 0, 0)`,
+		string(token), "legion", silenceIssue, int64(rec.generation), string(rec.state), rec.updateRound, stepped,
+		reported, rec.background); err != nil {
 		t.Fatalf("seed the tester's claim of %s: %v", silenceIssue, err)
 	}
 	if rec.holdsTask {
@@ -147,6 +166,42 @@ func silenceEventID(t *testing.T, fact intake.WorkerSilent) string {
 // aSilenceOf is the fact the sweep writes for role, with the bound it judged the claim by.
 func aSilenceOf(role claim.Role, generation uint64) intake.WorkerSilent {
 	return intake.WorkerSilent{Issue: silenceIssue, Role: role, Generation: generation, LastStep: silenceStep(), Bound: silenceBound}
+}
+
+// silenceReport is the moment the stalled claim's session last reported background work of its
+// own: five hours before the clock, which is past the background bound of every case, where
+// silenceStep is two hours before it. The two differ because a hung job freezes both and only
+// the report says what the worker is waiting on.
+func silenceReport() time.Time { return silenceClock().Add(-5 * time.Hour) }
+
+// aStalledTester is the record of a tester waiting on background work that has stood too long:
+// the silent tester above, with its own session reporting background work running since
+// silenceReport. Every structural term is the silent one's, since the daemon tells of exactly
+// the worker the silence repair must leave alone.
+func aStalledTester() silenceRecord {
+	rec := aSilentTester()
+	rec.reported, rec.background = silenceReport(), true
+	return rec
+}
+
+// applyBackground applies one standing report of background work, as the sweep writes it: the
+// claim token and the moment of that report are the fact's identity.
+func applyBackground(t *testing.T, pool *pgxpool.Pool, engine *Engine, fact intake.WorkerBackgroundStalled) error {
+	t.Helper()
+	_, err := intake.ApplyFact(t.Context(), pool, "supervise", backgroundEventID(t, fact), fact, engine)
+	return err
+}
+
+func backgroundEventID(t *testing.T, fact intake.WorkerBackgroundStalled) string {
+	t.Helper()
+	return fmt.Sprintf("worker-background:%s:%s", silenceToken(t, fact.Role), fact.ReportedAt.UTC().Format(time.RFC3339Nano))
+}
+
+// aStandingReportOf is the fact the sweep writes for role: the moment of the report it read, the
+// kinds the session named in it, and the bound it judged that moment against.
+func aStandingReportOf(role claim.Role, generation uint64) intake.WorkerBackgroundStalled {
+	return intake.WorkerBackgroundStalled{Issue: silenceIssue, Role: role, Generation: generation,
+		ReportedAt: silenceReport(), Kinds: []string{"async-job"}, Bound: backgroundBound}
 }
 
 // silenceSuperviseRow is one supervise row of the issue as the outbox holds it.
@@ -426,4 +481,227 @@ func TestAStartRowTheStoreRefusesWritesNoNoticeAndLeavesTheFactUnapplied(t *test
 	if applied[silenceEventID(t, fact)] {
 		t.Errorf("the fact is recorded as applied, so the next sweep's identical fact would be skipped and this silence would never be repaired")
 	}
+}
+
+// A worker whose own session reports background work that has stood past the bound is named to
+// its architect, once, and sent nothing at all: no start row, no task, nothing. The notice
+// carries the record the daemon read — the issue, the role, the phase, the kinds the session
+// named and how long its report has stood — and says plainly that nothing was sent and nothing
+// will be. That is R6 of dispatch://INFRA-3163: nothing can tell a background job that hung
+// from a long one, so the daemon tells and the architect decides.
+func TestAStalledBackgroundWorkerIsToldToItsArchitectAndSentNothing(t *testing.T) {
+	pool := migratedPool(t)
+	seedSilence(t, pool, aStalledTester())
+	engine := testEngine(config.DesignGateRootIssues, nil)
+
+	if err := applyBackground(t, pool, engine, aStandingReportOf(claim.RoleTester, 1)); err != nil {
+		t.Fatalf("apply the standing report: %v", err)
+	}
+
+	if got := silenceSuperviseRows(t, pool); len(got) != 0 {
+		t.Fatalf("the supervise rows of %s = %+v, want none: this worker is told of and never prompted", silenceIssue, got)
+	}
+	notices := noticesOfKind(t, pool, silenceIssue, workerBackgroundNotice)
+	if len(notices) != 1 {
+		t.Fatalf("the %s notices of %s = %d, want the one its architect is owed", workerBackgroundNotice, silenceIssue, len(notices))
+	}
+	if notices[0].Role != claim.RoleTester || notices[0].Phase != phase.Testing {
+		t.Errorf("the notice names role %q and phase %q, want the tester of testing", notices[0].Role, notices[0].Phase)
+	}
+	for _, part := range []string{silenceIssue, string(claim.RoleTester), string(phase.Testing), "async-job",
+		silenceReport().Format(time.RFC3339), "5h0m0s",
+		"sent that worker nothing and will send it nothing for this"} {
+		if !strings.Contains(notices[0].Reason, part) {
+			t.Errorf("the notice's reason %q names no %q, which the architect needs to act on it", notices[0].Reason, part)
+		}
+	}
+	if rows := noticeRows(t, pool); len(rows) != 1 {
+		t.Fatalf("the notice rows = %d, want the architect's one", len(rows))
+	}
+}
+
+// The report moved between the sweep's read and this apply: the job the fact names ended and the
+// session reported another reading, which stands for no time at all yet. The record's own report
+// is what the architect would be told about, so this fact writes nothing and the standing of the
+// new reading is for the fact the sweep mints under its own moment to carry.
+func TestAStandingReportTheSessionHasReplacedChangesNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rec  silenceRecord
+	}{
+		{name: "the session reported again after the moment the fact names", rec: func() silenceRecord {
+			rec := aStalledTester()
+			rec.reported = silenceClock().Add(-time.Minute)
+			return rec
+		}()},
+		{name: "the session reported again at a moment still past the bound", rec: func() silenceRecord {
+			rec := aStalledTester()
+			rec.reported = silenceClock().Add(-4*time.Hour - time.Minute)
+			return rec
+		}()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedSilence(t, pool, tc.rec)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+
+			if err := applyBackground(t, pool, engine, aStandingReportOf(claim.RoleTester, 1)); err != nil {
+				t.Fatalf("apply the standing report: %v", err)
+			}
+
+			if rows := noticeRows(t, pool); len(rows) != 0 {
+				t.Errorf("the notice rows = %+v, want none: the report this fact names is not the one the record holds", rows)
+			}
+			if got := silenceSuperviseRows(t, pool); len(got) != 0 {
+				t.Errorf("the supervise rows of %s = %+v, want none", silenceIssue, got)
+			}
+		})
+	}
+}
+
+// Every reading that says there is nothing to tell leaves the record exactly as it stood: no
+// notice and no supervise row. Each row changes one term of the told case above — the report's
+// own terms first, then the structural half this handler shares with the silence handler
+// (unpromptedPhaseWorker) — and the term is what the row proves.
+func TestABackgroundReportTheRecordAnswersForChangesNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rec  silenceRecord
+		fact func(silenceRecord) intake.WorkerBackgroundStalled
+	}{
+		{name: "the record holds no such issue", rec: func() silenceRecord {
+			rec := aStalledTester()
+			rec.unrecorded = true
+			return rec
+		}()},
+		{name: "the issue's generation has moved past the fact's", rec: func() silenceRecord {
+			rec := aStalledTester()
+			rec.generation = 2
+			return rec
+		}(), fact: func(silenceRecord) intake.WorkerBackgroundStalled { return aStandingReportOf(claim.RoleTester, 1) }},
+		// The work ended: the session's latest reading says nothing of its own is running, and
+		// the worker is the silence handler's to judge from here, not this one's.
+		{name: "the session reports no background work running", rec: func() silenceRecord {
+			rec := aStalledTester()
+			rec.background = false
+			return rec
+		}()},
+		{name: "the session has reported nothing at all", rec: func() silenceRecord {
+			rec := aStalledTester()
+			rec.reported, rec.background = time.Time{}, false
+			return rec
+		}()},
+		{name: "the report is inside the bound", rec: func() silenceRecord {
+			rec := aStalledTester()
+			rec.reported = silenceClock().Add(-3 * time.Hour)
+			return rec
+		}(), fact: func(rec silenceRecord) intake.WorkerBackgroundStalled {
+			fact := aStandingReportOf(claim.RoleTester, rec.generation)
+			fact.ReportedAt = rec.reported
+			return fact
+		}},
+		{name: "the claim is working", rec: func() silenceRecord {
+			rec := aStalledTester()
+			rec.state = supervise.StateWorking
+			return rec
+		}()},
+		{name: "the claim holds a task it still works", rec: func() silenceRecord {
+			rec := aStalledTester()
+			rec.holdsTask = true
+			return rec
+		}()},
+		{name: "a start for the phase is already queued", rec: func() silenceRecord {
+			rec := aStalledTester()
+			rec.queuedStart = true
+			return rec
+		}()},
+		{name: "the claim is in an update round", rec: func() silenceRecord {
+			rec := aStalledTester()
+			rec.updateRound = "round-1"
+			return rec
+		}()},
+		{name: "the issue awaits its merge", rec: func() silenceRecord {
+			rec := aStalledTester()
+			rec.phase = phase.AwaitingMerge
+			return rec
+		}()},
+		{name: "the role does not work the issue's phase", rec: func() silenceRecord {
+			rec := aStalledTester()
+			rec.phase = phase.Implementing
+			return rec
+		}()},
+		{name: "the claim is suspended", rec: func() silenceRecord {
+			rec := aStalledTester()
+			rec.state = supervise.StateSuspended
+			return rec
+		}()},
+		{name: "the tree lingers", rec: func() silenceRecord {
+			rec := aStalledTester()
+			rec.lingers = true
+			return rec
+		}()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedSilence(t, pool, tc.rec)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			before := silenceSuperviseRows(t, pool)
+			fact := aStandingReportOf(claim.RoleTester, tc.rec.generation)
+			if tc.fact != nil {
+				fact = tc.fact(tc.rec)
+			}
+
+			if err := applyBackground(t, pool, engine, fact); err != nil {
+				t.Fatalf("apply the standing report: %v", err)
+			}
+
+			if got := silenceSuperviseRows(t, pool); !reflect.DeepEqual(got, before) {
+				t.Errorf("the supervise rows of %s = %+v, want the %+v the fixture left: this handler sends nothing in any reading",
+					silenceIssue, got, before)
+			}
+			if rows := noticeRows(t, pool); len(rows) != 0 {
+				t.Errorf("the notice rows = %+v, want none: a reading that shows nothing standing tells nobody", rows)
+			}
+		})
+	}
+}
+
+// A notice the store refuses leaves the fact unapplied, as a refused start row does for a
+// silence: the notice and the mark that the fact was applied are one transaction
+// (intake.ApplyFact), so the next sweep reads the same standing report and applies the identical
+// fact, which is the retry. The report does not move while the job hangs, so a fact marked
+// applied over a failed write would be the last word on that job for ever.
+func TestANoticeTheStoreRefusesLeavesTheBackgroundFactUnapplied(t *testing.T) {
+	pool := migratedPool(t)
+	seedSilence(t, pool, aStalledTester())
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	engine.store = refusingNoticeStore{Store: record.NewStore()}
+	fact := aStandingReportOf(claim.RoleTester, 1)
+
+	err := applyBackground(t, pool, engine, fact)
+
+	if !errors.Is(err, refusedNotice) {
+		t.Fatalf("the apply of a report whose notice the store refuses = %v, want the store's own error", err)
+	}
+	applied, err := intake.Applied(context.Background(), pool, "supervise", []string{backgroundEventID(t, fact)})
+	if err != nil {
+		t.Fatalf("read which facts are applied: %v", err)
+	}
+	if applied[backgroundEventID(t, fact)] {
+		t.Errorf("the fact is recorded as applied, so the next sweep's identical fact would be skipped and this architect would never be told")
+	}
+}
+
+// refusedNotice is the error the staged store answers the one write this handler makes with.
+var refusedNotice = errors.New("the store refused the notice")
+
+type refusingNoticeStore struct {
+	record.Store
+}
+
+func (s refusingNoticeStore) Enqueue(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error {
+	if row.Kind == record.OutboxKindNotice {
+		return refusedNotice
+	}
+	return s.Store.Enqueue(ctx, tx, row)
 }

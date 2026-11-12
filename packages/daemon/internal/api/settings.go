@@ -88,6 +88,12 @@ type Settings struct {
 	// four above are in hours, because the bound is tens of minutes and the file takes it that
 	// way (config's readMinutes).
 	WorkerSilenceMinutes float64 `json:"worker_silence_minutes"`
+	// WorkerBackgroundHours is `worker_background_hours`, a decimal number of hours: how long
+	// the background work a phase worker's own session reports may stand before the daemon names
+	// that worker to its architect, which it does once and with nothing sent. It is in hours,
+	// where the bound above is in minutes, because this bound is hours and the file takes it
+	// that way (config's readHours).
+	WorkerBackgroundHours float64 `json:"worker_background_hours"`
 	// PodUpdateMaxOpenRounds and PodUpdateRoundsPerMinute are `pod_update_max_open_rounds` and
 	// `pod_update_rounds_per_minute`: how many issues may hold an open update round at once, and
 	// how many rounds one sweep may open in a minute. Each is null, and neither is omitted, when
@@ -383,6 +389,7 @@ func SettingsOf(cfg config.Config) Settings {
 		PodUpdateRetaskHours:                    cfg.PodUpdateRetask.Hours(),
 		PodUpdateNoticeHours:                    cfg.PodUpdateNotice.Hours(),
 		WorkerSilenceMinutes:                    cfg.WorkerSilence.Minutes(),
+		WorkerBackgroundHours:                   cfg.WorkerBackground.Hours(),
 		PodUpdateMaxOpenRounds:                  cfg.PodUpdateMaxOpenRounds,
 		PodUpdateRoundsPerMinute:                cfg.PodUpdateRoundsPerMinute,
 		ReviewRoundCap:                          cfg.ReviewRoundCap,

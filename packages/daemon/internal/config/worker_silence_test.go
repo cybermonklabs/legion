@@ -23,19 +23,29 @@ func TestWorkerSilenceDefaultsToHalfAnHour(t *testing.T) {
 
 // A value the floor leaves standing is read as written, the floor itself among them: the floor is
 // the shortest bound a deployment may run, not the shortest it may name.
+//
+// A silence above the four-hour default of `worker_background_hours` carries that key with it,
+// since the loader holds the second above the first (checkWorkerBackground). That is what bounds
+// the longest silence a file can carry: `worker_background_hours` is read in whole hours and
+// bounded at 596 of them, so a silence at readMinutes' own bound of 35791 minutes — 596h31m —
+// is above every value the companion key can take and no file can name it. The refusal of a
+// value past that bound is TestWorkerSilenceRefusesAValueThatIsNoPositiveBoundedNumber's.
 func TestWorkerSilenceTakesEveryValueFromTheFloorUp(t *testing.T) {
 	for _, tc := range []struct {
 		value string
-		want  time.Duration
+		// beside is the rest of the file the case needs, empty for a case that names this key
+		// alone.
+		beside string
+		want   time.Duration
 	}{
-		{"16", minWorkerSilence},
-		{"20", 20 * time.Minute},
-		{"90", 90 * time.Minute},
-		{"20.5", 20*time.Minute + 30*time.Second},
-		{"35791", 35791 * time.Minute},
+		{value: "16", want: minWorkerSilence},
+		{value: "20", want: 20 * time.Minute},
+		{value: "90", want: 90 * time.Minute},
+		{value: "20.5", want: 20*time.Minute + 30*time.Second},
+		{value: "35759", beside: "worker_background_hours: 596\n", want: 35759 * time.Minute},
 	} {
 		t.Run(tc.value, func(t *testing.T) {
-			cfg, err := LoadForValidation(writeConfigFile(t, minimalFile+"worker_silence_minutes: "+tc.value+"\n"), noEnv)
+			cfg, err := LoadForValidation(writeConfigFile(t, minimalFile+"worker_silence_minutes: "+tc.value+"\n"+tc.beside), noEnv)
 			if err != nil {
 				t.Fatalf("LoadForValidation: %v", err)
 			}

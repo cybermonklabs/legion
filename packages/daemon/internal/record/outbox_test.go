@@ -684,6 +684,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 			Reason: "the daemon ended the implementer's turn and started a replacement in its place: its agent last stepped at 2026-11-08T08:00:00Z, past the bound this deployment gives the role, and its session was brought back on the replacement the daemon started"},
 		{Kind: "worker-silent", Role: claim.RoleTester, Phase: phase.Testing,
 			Reason: "LEGION-208's tester is a phase worker nothing will prompt: its process is up and between turns, it holds no task of testing, and its agent last stepped at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment gives a phase worker (worker_silence_minutes), so the daemon wrote the start row that sends the phase's task again, under the assignment A1 its phase row already names. A suspension an operator holds over the claim refuses that start when the outbox runs it."},
+		{Kind: "worker-background-stalled", Role: claim.RoleTester, Phase: phase.Testing,
+			Reason: "LEGION-208's tester is waiting on background work of its own that has stood too long: its session reports async-job running and last said so at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment sets (worker_background_hours). Nothing was sent to it and nothing will be: the daemon cannot tell a background job that hung from a long one, so this is yours to read."},
 		{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: string(HoldEscalated)},
 		{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "pull request #42 is blocked: ci is red at head", Resends: 1},
 		{Kind: "pr-merged", Role: claim.RoleArchitect, Reason: "pull request #42 merged at c0de"},

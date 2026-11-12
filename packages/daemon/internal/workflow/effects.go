@@ -249,7 +249,33 @@ func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun,
 	bound time.Duration, now time.Time,
 ) bool {
-	if bound <= 0 || run.Claim == nil {
+	if bound <= 0 || !unpromptedPhaseWorker(issue, root, gate, role, run) {
+		return false
+	}
+	c := run.Claim
+	if !c.ActivityAt.IsZero() && c.ActivityBackground {
+		return false
+	}
+	if c.ActivityNextReminderAt.After(now) {
+		return false
+	}
+	lastStep := c.Step.LastStep()
+	return !lastStep.IsZero() && lastStep.Add(bound).Before(now)
+}
+
+// unpromptedPhaseWorker is the structural half of that rule: a live claim of the role the work
+// of issue's own phase belongs to, on an issue at work in a tree that does not linger, which is
+// up and between turns, holds no task it still works, is in no update round, and has nothing
+// queued that will reach it. It is everything SilentPhaseWorker asks that is not about a moment
+// — no step, no report, no reminder — so the two rules that stand on it cannot come to disagree
+// about which claim is a phase worker nothing will reach.
+//
+// Its second caller is the rule over a worker whose own session reports background work that
+// has stood past this deployment's bound (silence.go's backgroundStalled, the one rule that
+// wants a claim this one holds and the activity terms above refuse). That worker is told of and
+// never prompted, so the two differ in what they do and not in which claim they are about.
+func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun) bool {
+	if run.Claim == nil {
 		return false
 	}
 	if working := PhaseWorkerRole(issue); working == "" || working != role {
@@ -268,18 +294,8 @@ func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role clai
 	if c.Pending != nil && c.Pending.StillWorked(issue.Generation, issue.Phase, c.State) {
 		return false
 	}
-	if !c.ActivityAt.IsZero() && c.ActivityBackground {
-		return false
-	}
-	if c.ActivityNextReminderAt.After(now) {
-		return false
-	}
 	stop := actingStop(run, root)
-	if stop != 0 || c.Tree != root.Key || queuedStartActs(run, stop, issue.Phase) {
-		return false
-	}
-	lastStep := c.Step.LastStep()
-	return !lastStep.IsZero() && lastStep.Add(bound).Before(now)
+	return stop == 0 && c.Tree == root.Key && !queuedStartActs(run, stop, issue.Phase)
 }
 
 func (e *Engine) enqueue(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload) error {

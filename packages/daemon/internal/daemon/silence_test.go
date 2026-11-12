@@ -710,3 +710,179 @@ func (s refusingStartStore) Enqueue(ctx context.Context, tx pgx.Tx, row record.O
 	}
 	return s.Store.Enqueue(ctx, tx, row)
 }
+
+// podUpdateBackground is the longer bound the sweep reads a worker's own report of background
+// work against, as legion.yaml's worker_background_hours sets it
+// (config.Config.WorkerBackground). It is the shipped default, and well past podUpdateSilence,
+// which the loader refuses a value at or under (config's checkWorkerBackground).
+const podUpdateBackground = 4 * time.Hour
+
+// aBackgroundStalledWorker is the silent phase worker above with this deployment's background
+// bound registered on the supervision the sweep reads it from: the fixture of a worker whose
+// own session says it is waiting on work of its own.
+func aBackgroundStalledWorker(t *testing.T, beside ...podUpdateRole) *podUpdateRig {
+	t.Helper()
+	rig := aSilentPhaseWorker(t, beside...)
+	rig.s.cfg.WorkerBackground = podUpdateBackground
+	return rig
+}
+
+// reportsBackgroundWork is role's own session reporting, at the clock's moment, that background
+// work of its own is running, straight through the store's narrow call, which is where the
+// route's own write lands (api's claims activity route, store's PutClaimActivity). A session
+// sends such a report only when its reading changes, so one report stands until the work it
+// names ends.
+func (r *podUpdateRig) reportsBackgroundWork(role claim.Role, kinds ...string) time.Time {
+	r.t.Helper()
+	at := r.clock.Now().UTC()
+	known, err := r.st.PutClaimActivity(r.ctx, r.tokens[role], claim.SessionActivity{
+		At:             at,
+		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: kinds},
+	})
+	if err != nil || !known {
+		r.t.Fatalf("report the background work of the %s: known %v, %v", role, known, err)
+	}
+	return at
+}
+
+// A worker waiting on background work of its own that has stood past the longer bound is named
+// to its architect once and sent nothing at all. It is the worker the silence repair must leave
+// alone — its session says work of its own is running, which no bound can tell from a job that
+// hung — so the daemon tells and decides nothing, and that it told is no reason to prompt: the
+// sweep reads the same claim for both halves in the same minute, and the start row the silence
+// half would write is exactly what an architect must never get for a worker that is busy.
+//
+// A second sweep adds neither notice nor row: the fact's identity is the claim token and the
+// moment of the report (workerBackgroundEventID), a session reports only when its reading
+// changes, and a duplicate applies nothing. That is R6 of dispatch://INFRA-3163.
+func TestWorkerBackgroundStalledIsToldToItsArchitectOnceAndSentNothing(t *testing.T) {
+	rig := aBackgroundStalledWorker(t)
+	worker := claim.RoleImplementer
+	rig.goesQuiet(worker)
+	conn := rig.workers[worker]
+	before := len(conn.Prompts())
+	reported := rig.reportsBackgroundWork(worker, "async-job", "subagent")
+	rig.clock.advance(podUpdateBackground + time.Minute)
+
+	rig.sweepForSilence()
+
+	if got := rig.starts(); len(got) != 0 {
+		t.Fatalf("the supervise rows of %s = %+v, want none: a worker whose session says work of its own is running is told of and never prompted",
+			podUpdateIssue, got)
+	}
+	notices := rig.silenceNotices()
+	if len(notices) != 1 {
+		t.Fatalf("the notices of %s = %+v, want the one its architect is owed", podUpdateIssue, notices)
+	}
+	notice := notices[0]
+	if notice.Kind != "worker-background-stalled" || notice.Role != worker || notice.Phase != phase.Implementing {
+		t.Fatalf("the notice is %+v, want a worker-background-stalled notice of the implementer of implementing", notice)
+	}
+	for _, part := range []string{podUpdateIssue, string(worker), string(phase.Implementing), "async-job, subagent",
+		reported.Format(time.RFC3339), (podUpdateBackground + time.Minute).String(),
+		"sent that worker nothing and will send it nothing for this"} {
+		if !strings.Contains(notice.Reason, part) {
+			t.Errorf("the notice's reason %q names no %q, which its architect needs to act on it", notice.Reason, part)
+		}
+	}
+
+	rig.sweepForSilence()
+
+	if got, rows := rig.silenceNotices(), rig.starts(); len(got) != 1 || len(rows) != 0 {
+		t.Fatalf("a second sweep over the same report left %+v and %+v, want the one notice and no row: one standing report is one telling",
+			got, rows)
+	}
+
+	publisher := rig.drain()
+
+	architect := mustClaimToken(t, podUpdateIssue, claim.RoleArchitect)
+	topics := publisher.topics()
+	if len(topics) != 1 || topics[0] != notify.RoleTopicPrefix+string(architect) {
+		t.Fatalf("the notice was published to %v, want the one topic of %s", topics, architect)
+	}
+	if sent := conn.Prompts()[before:]; len(sent) != 0 {
+		t.Fatalf("the worker was sent %+v, want nothing at all", sent)
+	}
+	lines := loggedLines(t, rig.logs.String(), "is waiting on background work that has stood past the bound")
+	if len(lines) != 1 {
+		t.Fatalf("the daemon logged the standing report %d times, want once: %+v", len(lines), lines)
+	}
+	if lines[0]["record"] != notice.Reason {
+		t.Errorf("the log's record is %q, want the notice's own %q: the two halves are one record", lines[0]["record"], notice.Reason)
+	}
+}
+
+// A report inside the bound earns nothing from either half of the sweep: the background half
+// judges the report too young to name, and the silence half leaves every worker whose session
+// reports work of its own alone, however old its last step is (workflow.SilentPhaseWorker). The
+// worker here has been silent for longer than the silence bound and is waiting on a job that
+// has run for minutes, which is the ordinary shape of a healthy worker.
+func TestWorkerBackgroundInsideTheBoundTellsNobodyAndPromptsNobody(t *testing.T) {
+	rig := aBackgroundStalledWorker(t)
+	worker := claim.RoleImplementer
+	rig.goesQuiet(worker)
+	reported := rig.reportsBackgroundWork(worker, "async-job")
+	rig.clock.advance(podUpdateBackground - time.Minute)
+
+	rig.sweepForSilence()
+
+	if got := rig.starts(); len(got) != 0 {
+		t.Fatalf("the supervise rows of %s = %+v, want none: the worker's own process ends the wait it reported",
+			podUpdateIssue, got)
+	}
+	if notices := rig.silenceNotices(); len(notices) != 0 {
+		t.Fatalf("the notices of %s = %+v, want none: the work it reported has not stood past the bound",
+			podUpdateIssue, notices)
+	}
+	// The sweep minted nothing either, which is this pass's own bound term rather than the
+	// handler's: a fact the handler answers nothing for is still recorded as applied
+	// (intake.ApplyFact marks every fact it runs), so an id this read does not find is an id
+	// the sweep never wrote.
+	id := workerBackgroundEventID(rig.tokens[worker], reported)
+	applied, err := intake.Applied(rig.ctx, rig.pool, silenceSource, []string{id})
+	if err != nil {
+		t.Fatalf("read whether the report is applied: %v", err)
+	}
+	if applied[id] {
+		t.Fatalf("the sweep applied %s for a report inside the bound; the bound is what this pass reads", id)
+	}
+}
+
+// The work the report named ended and other work began, so the session sent a new reading: that
+// is a report of its own, and once it has stood past the bound the architect is told again. It
+// is what the fact's identity rests on (workerBackgroundEventID): keyed on the claim's last
+// step, which a worker waiting on background work does not move either, this second telling
+// would be read as the first one's duplicate and the architect would hear nothing of the job
+// that is hanging now.
+func TestWorkerBackgroundStalledIsToldAgainWhenTheSessionsReportMoves(t *testing.T) {
+	rig := aBackgroundStalledWorker(t)
+	worker := claim.RoleImplementer
+	rig.goesQuiet(worker)
+	first := rig.reportsBackgroundWork(worker, "async-job")
+	rig.clock.advance(podUpdateBackground + time.Minute)
+
+	rig.sweepForSilence()
+
+	if notices := rig.silenceNotices(); len(notices) != 1 || !strings.Contains(notices[0].Reason, first.Format(time.RFC3339)) {
+		t.Fatalf("the first sweep wrote %+v, want the one notice of the report made at %s", notices, first.Format(time.RFC3339))
+	}
+	// The drain tells the architect that first notice and finishes its row, so what the outbox
+	// holds after it is the second report's notice alone.
+	rig.drain()
+	second := rig.reportsBackgroundWork(worker, "subagent")
+	rig.clock.advance(podUpdateBackground + time.Minute)
+
+	rig.sweepForSilence()
+
+	told := rig.silenceNotices()
+	if len(told) != 1 || !strings.Contains(told[0].Reason, second.Format(time.RFC3339)) {
+		t.Fatalf("the second report left %+v in the outbox, want the one notice of the report made at %s: a reading that moved is a telling of its own",
+			told, second.Format(time.RFC3339))
+	}
+	if !strings.Contains(told[0].Reason, "subagent") {
+		t.Errorf("the notice's reason %q does not name the kind the session reported second", told[0].Reason)
+	}
+	if got := rig.starts(); len(got) != 0 {
+		t.Fatalf("the supervise rows of %s = %+v, want none: neither telling sends that worker anything", podUpdateIssue, got)
+	}
+}

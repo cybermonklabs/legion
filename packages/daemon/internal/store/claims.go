@@ -26,6 +26,12 @@ var _ supervise.Store = (*Store)(nil)
 // (INFRA-80). The column stays unread rather than dropped — migrations here are forward-only, and
 // the previous release's daemon still reads its own claims table, so dropping it would make
 // rolling the image back need a database restore.
+//
+// The four activity columns are read here beside the eight step columns and under the same rule
+// (putClaim's own comment): PutClaimActivity and PutClaimStep own them, and a machine's write
+// leaves them alone. Reading them is what lets the daemon's minute sweep see what a quiet
+// worker's own session says it is waiting on (supervise.Claim's ActivityAt and the three beside
+// it, internal/daemon's tellSilentPhaseWorkers).
 const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
 	c.session_file, c.locator, c.state, c.failure, c.failure_cause, c.failed_at, c.pending_cause,
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
@@ -38,6 +44,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.update_left_round, c.provider_error_run, c.death_charged,
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
 	c.step_args_hash, c.step_started_at, c.step_ended_at,
+	c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
 	d.delivery_id, d.task, d.phase, d.generation, d.assignment, d.check_look, d.check_opened_at,
 	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
@@ -615,6 +622,8 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		note                        *string
 		stepAt, turnStarted         *time.Time
 		stepStarted, stepEnded      *time.Time
+		reportedAt, reminderAt      *time.Time
+		kinds                       string
 	)
 	err := row.Scan(&token, &c.Project, &c.Tree, &c.Issue, &role, &generation, &treeEpoch, &c.Session,
 		&c.SessionFile, &locator, &state, &c.Failure, &cause, &failedAt, &pendingCause,
@@ -628,6 +637,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
 		&stepAt, &turnStarted, &c.Step.Tool, &c.Step.CallID, &c.Step.ArgsBytes,
 		&c.Step.ArgsHash, &stepStarted, &stepEnded,
+		&reportedAt, &c.ActivityBackground, &kinds, &reminderAt,
 		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryAssignment, &deliveryCheckLook, &deliveryCheckOpened,
 		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &outOfMemory,
 		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note)
@@ -650,6 +660,14 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt, c.UpdateToldAt = updateOpened, updateTasked, updateSignalled, updateTold
 	c.Step.At, c.Step.TurnStartedAt = orZero(stepAt), orZero(turnStarted)
 	c.Step.StartedAt, c.Step.EndedAt = orZero(stepStarted), orZero(stepEnded)
+	// Both activity moments are nullable (migration 20261101214123_claim_session_activity): a
+	// session that has reported nothing has no activity_at, and one that armed no reminder no
+	// activity_next_reminder_at. The kinds are stored comma-joined in the order the session sent
+	// them, and a claim that named none keeps the nil slice rather than one empty kind.
+	c.ActivityAt, c.ActivityNextReminderAt = orZero(reportedAt), orZero(reminderAt)
+	if kinds != "" {
+		c.ActivityKinds = strings.Split(kinds, ",")
+	}
 	if locator != nil {
 		var loc runtime.Locator
 		if err := json.Unmarshal(locator, &loc); err != nil {

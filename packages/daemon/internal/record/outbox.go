@@ -1479,7 +1479,7 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // it, and a kind added here turns up as a row that test is missing rather than as a kind nobody
 // checked.
 var validNoticeKinds = []NoticeKind{
-	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "held",
+	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 	"merge-refused", "merge-stalled", "merge-removed", "merge-waiting",
 	"design-approved", "design-changes-requested", "carried-gate-opened", "ready-refused",
@@ -1505,6 +1505,13 @@ var validNoticeKinds = []NoticeKind{
 // issue's architect's to read, as the two above are, and it says what the daemon wrote about
 // it: the start row that sends the phase's task again, under the assignment the phase row
 // names where it holds one (workflow's workerSilentDid).
+//
+// `worker-background-stalled` is the worker the silence repair above must leave alone: its own
+// session reports background work of its own running, which no bound can tell from a job that
+// hung, and that report has stood past `worker_background_hours` (workflow's
+// workerBackgroundStalled). It is that worker's issue's architect's to read, and it is a telling
+// and not a repair: it names the kinds the session reported and how long the report has stood,
+// and says that nothing was sent and nothing will be sent for it.
 func validNoticeKind(kind NoticeKind) bool {
 	return slices.Contains(validNoticeKinds, kind)
 }

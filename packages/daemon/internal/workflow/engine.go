@@ -241,6 +241,8 @@ func (e *Engine) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.podBackstopDue(ctx, tx, fact)
 	case intake.WorkerSilent:
 		return e.workerSilent(ctx, tx, fact)
+	case intake.WorkerBackgroundStalled:
+		return e.workerBackgroundStalled(ctx, tx, fact)
 	case intake.ControllerTick:
 		return e.statusRepairTick(ctx, tx)
 	default:

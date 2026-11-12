@@ -1122,6 +1122,45 @@ type WorkerSilent struct {
 
 func (WorkerSilent) isFact() {}
 
+// WorkerBackgroundStalled is one phase worker the daemon's one-minute sweep read waiting on
+// background work that has stood too long: a claim the silence pass's own terms hold — its
+// process up and between turns, in no update round, its agent's last step older than the
+// silence bound — whose own session reports background work of its own running (ReportedAt,
+// Kinds, from supervise.Claim's activity report) with that report older than the bound this
+// deployment sets for it (config.Config.WorkerBackground, `worker_background_hours`). It is
+// never decoded from an event — the sweep reads the live claims over the supervisor and applies
+// one fact per claim it reads that way.
+//
+// It exists because a worker waiting on a background job that hung reads exactly like a healthy
+// one: the silence repair leaves every worker whose session reports background work alone
+// (workflow.SilentPhaseWorker), since no bound can tell a forty-minute job from a job that
+// stopped. So this fact's handler sends nothing at all (workflow's workerBackgroundStalled): it
+// names the worker to the issue's architect once, with what the session says it is waiting on
+// and how long that has stood, and the architect decides. That is R6 of dispatch://INFRA-3163.
+//
+// The fact's identity, which the sweep mints, is the claim token and ReportedAt — the moment of
+// the session's report, and never the claim's last step. A session sends a report only when its
+// reading changes (packages/pi-legion/extensions/legion.ts, SESSION_ACTIVITY_PERIOD_MS), so a
+// job that hangs leaves one report standing however long it stands, and the fact is minted and
+// applied once however many sweeps read it; a job that ends and another that starts move the
+// report, which is a telling of its own. Keyed on the last step it would be no identity at all:
+// a hung job leaves that step frozen too, so the id would be minted and spent in the first
+// minute the silence bound passed, hours before this bound is reached, and the architect would
+// hear nothing.
+//
+// Bound rides the fact, as WorkerSilent's does, so the handler decides against the number the
+// sweep used and not against one an operator changed between the reading and the apply.
+type WorkerBackgroundStalled struct {
+	Issue      string
+	Role       claim.Role
+	Generation uint64
+	ReportedAt time.Time
+	Kinds      []string
+	Bound      time.Duration
+}
+
+func (WorkerBackgroundStalled) isFact() {}
+
 // Identified is one fact and the id ApplyFact records it under (the eventID of its source). It
 // exists so that a caller that applies many facts at once can ask which of them are applied
 // already before it applies any (Applied), which is one query for the batch where ApplyFact

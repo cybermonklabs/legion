@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -44,58 +45,12 @@ const workerSilentNotice record.NoticeKind = "worker-silent"
 // that is what a reader of the architect's notice gets: a notice saying the start row was
 // written is a notice whose start row is there, because the two commit together.
 func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.WorkerSilent) (intake.Result, error) {
-	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil {
+	read, err := e.phaseWorkerRecord(ctx, tx, fact.Issue, fact.Generation, fact.Role)
+	if err != nil || read == nil {
 		return intake.Result{}, err
 	}
-	// A new run of the issue is not the run the sweep read: nothing of that silence survives
-	// into it, since the generation's own claims, tasks and handoffs were cleared with it.
-	if issue.Generation != fact.Generation {
-		return intake.Result{}, nil
-	}
-	// The role term of the rule (SilentPhaseWorker, PhaseWorkerRole) needs only the issue, which
-	// is in hand, so it is asked before the three reads below rather than among them. The sweep
-	// can filter on it for nobody: a supervise.Claim carries no issue phase, so it mints a fact
-	// for every quiet claim of a non-architect role, and most of those name a role that does not
-	// work their issue's phase. Each of them would otherwise spend a root, a gate and a run read
-	// inside this fact's own transaction, under the one advisory lock every fact of the daemon
-	// takes (intake.ApplyFact), only to be refused here.
-	if role := PhaseWorkerRole(*issue); role == "" || role != fact.Role {
-		return intake.Result{}, nil
-	}
-	// The record of the root of the issue's tree, which is the issue's own row when the fact
-	// names a tree root, read once rather than queried a second time for it (the rule treeRoot
-	// states for a caller that has read neither).
-	root := issue
-	if issue.Tree != issue.Key {
-		if root, err = e.store.Issue(ctx, tx, issue.Tree); err != nil || root == nil {
-			return intake.Result{}, err
-		}
-	}
-	// The tree's design gate as the record builds one (record.Store.GatesOf), for the one issue
-	// this fact names: the engine's own configured steps, and the rows of its root.
-	rows, err := e.store.GatesOf(ctx, tx, issue.Tree)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	gate := record.TreeGate{Steps: e.cfg.Steps, Rows: rows}
-	project, err := claim.ProjectToken(e.cfg.Project)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	// An issue whose key yields no claim token has no run to read, and this fact passes over it
-	// rather than failing, as admission's repair of a slotted worker does (admit's
-	// resumeSlottedWorkers).
-	token, err := claim.NewToken(project, issue.Key, fact.Role)
-	if err != nil {
-		return intake.Result{}, nil
-	}
-	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, fact.Role, issue.Generation)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	now := e.now()
-	if !SilentPhaseWorker(*issue, *root, gate, fact.Role, run, fact.Bound, now) {
+	issue, now := read.issue, e.now()
+	if !SilentPhaseWorker(issue, read.root, read.gate, fact.Role, read.run, fact.Bound, now) {
 		return intake.Result{}, nil
 	}
 	// The fact's own moment is held against the record's: a worker that took a turn between the
@@ -104,7 +59,7 @@ func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.Worker
 	// The rule above judges the record's step and would name that worker silent again only once
 	// a new bound had passed, which is a silence of its own for a later fact to carry; this
 	// fact's notice would say it last stepped at a moment it has moved past.
-	if run.Claim.Step.LastStep().After(fact.LastStep) {
+	if read.run.Claim.Step.LastStep().After(fact.LastStep) {
 		return intake.Result{}, nil
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, fact.Role)
@@ -123,7 +78,77 @@ func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.Worker
 	if !row.CompletedAt.IsZero() {
 		return intake.Result{}, nil
 	}
-	return intake.Result{}, e.repairSilence(ctx, tx, *issue, row, fact, now)
+	return intake.Result{}, e.repairSilence(ctx, tx, issue, row, fact, now)
+}
+
+// phaseWorkerRecord is the record both facts the daemon's silence sweep writes are decided from,
+// read inside the fact's own transaction: the issue, the root of its tree, that tree's design
+// gate and the role's run. It answers nil for a fact there is nothing to do about — an issue the
+// record holds none of, a run of the issue the sweep did not read, a role that does not work the
+// issue's phase, or a key that yields no claim token — so each handler's own reading begins with
+// a record that is worth deciding on. Every store error is returned, never written over.
+//
+// The role term (PhaseWorkerRole, which SilentPhaseWorker and backgroundStalled both ask again
+// of the record) needs only the issue, which is in hand, so it is asked before the three reads
+// below rather than among them. The sweep can filter on it for nobody: a supervise.Claim carries
+// no issue phase, so it mints a fact for every quiet claim of a non-architect role, and most of
+// those name a role that does not work their issue's phase. Each of them would otherwise spend a
+// root, a gate and a run read inside the fact's own transaction, under the one advisory lock
+// every fact of the daemon takes (intake.ApplyFact), only to be refused afterwards.
+func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, generation uint64, role claim.Role) (*phaseWorkerReading, error) {
+	issue, err := e.store.Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		return nil, err
+	}
+	// A new run of the issue is not the run the sweep read: nothing of what it read survives
+	// into it, since the generation's own claims, tasks and handoffs were cleared with it.
+	if issue.Generation != generation {
+		return nil, nil
+	}
+	if working := PhaseWorkerRole(*issue); working == "" || working != role {
+		return nil, nil
+	}
+	// The record of the root of the issue's tree, which is the issue's own row when the fact
+	// names a tree root, read once rather than queried a second time for it (the rule treeRoot
+	// states for a caller that has read neither).
+	root := issue
+	if issue.Tree != issue.Key {
+		if root, err = e.store.Issue(ctx, tx, issue.Tree); err != nil || root == nil {
+			return nil, err
+		}
+	}
+	// The tree's design gate as the record builds one (record.Store.GatesOf), for the one issue
+	// this fact names: the engine's own configured steps, and the rows of its root.
+	rows, err := e.store.GatesOf(ctx, tx, issue.Tree)
+	if err != nil {
+		return nil, err
+	}
+	project, err := claim.ProjectToken(e.cfg.Project)
+	if err != nil {
+		return nil, err
+	}
+	// An issue whose key yields no claim token has no run to read, and a fact passes over it
+	// rather than failing, as admission's repair of a slotted worker does (admit's
+	// resumeSlottedWorkers).
+	token, err := claim.NewToken(project, issue.Key, role)
+	if err != nil {
+		return nil, nil
+	}
+	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, role, issue.Generation)
+	if err != nil {
+		return nil, err
+	}
+	return &phaseWorkerReading{issue: *issue, root: *root, gate: record.TreeGate{Steps: e.cfg.Steps, Rows: rows}, run: run}, nil
+}
+
+// phaseWorkerReading is what that read answers: the four values the rules over a quiet phase
+// worker are asked with (SilentPhaseWorker, backgroundStalled), from one reading of the record
+// inside one transaction.
+type phaseWorkerReading struct {
+	issue record.Issue
+	root  record.Issue
+	gate  record.TreeGate
+	run   record.RoleRun
 }
 
 // repairSilence sends the phase's task again and tells the issue's architect what the daemon
@@ -180,4 +205,110 @@ func workerSilentDid(assignment string) string {
 func workerSilentRecord(issue record.Issue, role claim.Role, lastStep time.Time, silent time.Duration, assignment string) string {
 	return fmt.Sprintf("%s's %s is a phase worker nothing will prompt: its process is up and between turns, it holds no task of %s, and its agent last stepped at %s, %s ago, past the bound this deployment gives a phase worker (worker_silence_minutes), so %s.",
 		issue.Key, role, issue.Phase, lastStep.UTC().Format(time.RFC3339), silent.Round(time.Minute), workerSilentDid(assignment))
+}
+
+// workerBackgroundNotice is the kind of the notice the handler below writes (record's
+// validNoticeKinds), beside `worker-silent`. That one is the worker nothing will prompt, which
+// the daemon repairs; this one is the worker waiting on background work of its own that has
+// stood too long, which the daemon tells and never prompts.
+const workerBackgroundNotice record.NoticeKind = "worker-background-stalled"
+
+// workerBackgroundStalled applies one reading of a worker waiting on background work that has
+// stood past this deployment's bound (intake.WorkerBackgroundStalled), which the daemon's
+// one-minute sweep made over the live claims. As with a silence, the sweep decides nothing and
+// the record can have moved since, so the record is read again here, inside the fact's own
+// transaction, and this is where the decision is made.
+//
+// It writes one notice and no start row, and that is the whole of what it does. The worker it
+// names is one the silence repair must leave alone — its own session says background work of
+// its own is running, and SilentPhaseWorker refuses every such claim — because nothing in the
+// daemon can tell a worker with a forty-minute job from one whose job hung. So the architect is
+// told what the session says and how long it has said it, and decides; the daemon sends
+// nothing, and the notice says so (workerBackgroundDid).
+//
+// The structural half of the reading is the rule the silence handler asks as well
+// (unpromptedPhaseWorker, through backgroundStalled): one record, one set of terms, so the two
+// can never come to disagree about which claim is a phase worker nothing will reach. What this
+// handler asks beyond it is the claim's own report — that it still says background work is
+// running and still stands past the bound — and that the report is the one the fact names.
+//
+// Any store error of any read or write is returned and never written over with a notice, as the
+// silence handler returns one: the notice and the mark that this fact was applied commit
+// together (intake.ApplyFact), so a failed write leaves the fact unapplied and the next sweep
+// reads the same report and applies the identical fact, which is the retry.
+func (e *Engine) workerBackgroundStalled(ctx context.Context, tx pgx.Tx, fact intake.WorkerBackgroundStalled) (intake.Result, error) {
+	read, err := e.phaseWorkerRecord(ctx, tx, fact.Issue, fact.Generation, fact.Role)
+	if err != nil || read == nil {
+		return intake.Result{}, err
+	}
+	issue, now := read.issue, e.now()
+	if !backgroundStalled(issue, read.root, read.gate, fact.Role, read.run, fact.Bound, now) {
+		return intake.Result{}, nil
+	}
+	// The fact's own moment is held against the record's, as a silence's is: a session sends a
+	// report only when its reading changes, so a report at another moment is another reading —
+	// the job ended and another began, or the worker took a turn and reported afresh — and the
+	// standing of that reading is for the fact the sweep mints under its own moment to carry.
+	// This fact's notice would say the work has stood since a moment the record no longer holds.
+	if !read.run.Claim.ActivityAt.Equal(fact.ReportedAt) {
+		return intake.Result{}, nil
+	}
+	found := workerBackgroundRecord(issue, fact.Role, fact.Kinds, fact.ReportedAt, now.Sub(fact.ReportedAt))
+	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: workerBackgroundNotice, Role: fact.Role, Phase: issue.Phase, Reason: found}); err != nil {
+		return intake.Result{}, err
+	}
+	// The same record goes to the daemon's log at Warn, as the silence notice's does, and
+	// through warnOnCommit: a fact that rolls back writes no line claiming an architect was
+	// told.
+	e.warnOnCommit(ctx, "workflow: a phase worker is waiting on background work that has stood past the bound; its architect is told",
+		"issue", issue.Key, "role", fact.Role, "phase", issue.Phase, "record", found)
+	return intake.Result{}, nil
+}
+
+// backgroundStalled is whether the record still shows what the sweep read: a phase worker
+// nothing in the daemon will reach (unpromptedPhaseWorker, the half it shares with
+// SilentPhaseWorker) whose own session reports background work of its own running, with that
+// report older than bound. A bound of zero or less switches the telling off, as it switches the
+// silence repair off, and a claim whose session has reported nothing at all is judged from no
+// moment and is left alone.
+//
+// It is the terms of this rule and not of SilentPhaseWorker because the two are opposite on one
+// term and meet on every other: that rule refuses a claim whose session reports background work
+// running, this one wants exactly that claim. The moments they judge differ for the same reason
+// — the step a hung job leaves frozen against the report that job's own session last sent.
+func backgroundStalled(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun,
+	bound time.Duration, now time.Time,
+) bool {
+	if bound <= 0 || !unpromptedPhaseWorker(issue, root, gate, role, run) {
+		return false
+	}
+	c := run.Claim
+	reported := c.ActivityAt
+	return !reported.IsZero() && c.ActivityBackground && reported.Add(bound).Before(now)
+}
+
+// workerBackgroundDid is what the notice says the daemon did about the report, and the whole of
+// what it claims on that subject: nothing was sent, nothing will be sent, and why no bound could
+// decide it instead.
+const workerBackgroundDid = "The daemon sent that worker nothing and will send it nothing for this: nothing can tell a background job that hung from a long one, so read what its session says it is waiting on and decide whether that work needs a decision of its own"
+
+// workerBackgroundRecord is what the architect's notice carries and what the log line beside it
+// carries: the record the daemon read, in one sentence, and what it did. The issue, the role,
+// the phase, the kinds the session named and how long its report has stood are the record; the
+// clause it closes with is workerBackgroundDid. The kinds are the fact's, which the sweep read
+// off the claim beside the report itself, and the moment is the fact's too, which the handler
+// has held to the record's (workerBackgroundStalled).
+func workerBackgroundRecord(issue record.Issue, role claim.Role, kinds []string, reported time.Time, stood time.Duration) string {
+	return fmt.Sprintf("%s's %s, the worker of %s, is waiting on background work of its own: its session reported %s at %s, %s ago, and has reported nothing since, which is past the bound this deployment sets for it (worker_background_hours). %s.",
+		issue.Key, role, issue.Phase, workerBackgroundWork(kinds), reported.UTC().Format(time.RFC3339), stood.Round(time.Minute), workerBackgroundDid)
+}
+
+// workerBackgroundWork is how the notice names the work: the kinds the session reported, in the
+// order it sent them (async-job, subagent, claude-background-task), and a clause of its own for
+// a report that named none, since a notice cannot name what the session did not.
+func workerBackgroundWork(kinds []string) string {
+	if len(kinds) == 0 {
+		return "background work running, naming no kind of it"
+	}
+	return "background work running of kind " + strings.Join(kinds, ", ")
 }
