@@ -873,7 +873,7 @@ const recordFieldsContract = 75
 const whyAndLineFieldsContract = 85
 
 // mergeWaitContract is the daemon contract that added `mergeWait`, what a reviewing issue's
-// round waits on from GitHub (version.go's 90). A plugin before it is served the state without
+// round waits on from GitHub (version.go's 91). A plugin before it is served the state without
 // the object: one built before sjawhar/legion#2788 reads it with a strict schema and would
 // refuse the whole body for a key it does not name, and one built after strips the key instead,
 // so the strip is what keeps the object from a caller that did not ask for it rather than what
@@ -881,7 +881,7 @@ const whyAndLineFieldsContract = 85
 // number dispatch://INFRA-3027 declares and no band of another change: a caller from a pod at
 // whyAndLineFieldsContract or above and below this one is served every other key and no merge
 // wait.
-const mergeWaitContract = 90
+const mergeWaitContract = 91
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

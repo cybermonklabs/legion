@@ -367,7 +367,7 @@ const legionPullRequestView = z.object({
   reviewDecision: nonEmptyString.optional(),
 });
 
-/** `api.MergeWaitView` — what an issue's review round waits on from GitHub (contract 90). It is
+/** `api.MergeWaitView` — what an issue's review round waits on from GitHub (contract 91). It is
  * present only while the round waits on GitHub's merge state for the pull request's head
  * (`classify.RoundWaitsOnMergeState`): a reviewer's approval stands on the head the pull request
  * is at, and the merge state the record holds for that head is not one the issue may advance on.
@@ -724,10 +724,10 @@ const legionIssue = z.object({
   why: legionWhyView.optional(),
   waitingOn: legionWaitingOn.optional(),
   check: legionCheckView.optional(),
-  /** `mergeWait` is what this issue's review round waits on from GitHub (contract 90): present
+  /** `mergeWait` is what this issue's review round waits on from GitHub (contract 91): present
    * only while the round waits on GitHub's merge state for the pull request's head, so every
    * issue whose round waits on nothing from GitHub has none, and a daemon before `mergeWait`'s
-   * contract 90 writes none at all (`api.stateFor`, `withoutMergeWait`), which is why a reader
+   * contract 91 writes none at all (`api.stateFor`, `withoutMergeWait`), which is why a reader
    * takes it as optional. */
   mergeWait: legionMergeWaitView.optional(),
   /** The memory group of the issue's tree: `memory` for a tree whose roles run with the project's
