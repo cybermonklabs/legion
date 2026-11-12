@@ -964,3 +964,5 @@ func TestRetryWaitsOutTheProcessTheClaimLastRan(t *testing.T) {
 		wantRetryWaitsOut(t, h, last)
 	})
 }
+
+// INFRA-1413 selection probe, never merged.
