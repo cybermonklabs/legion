@@ -604,6 +604,41 @@ test("a read mark holds no fetch", async () => {
   }
 });
 
+// R7. A line names one row, and a reader waits for the lines its own key covers. A Dispatch key
+// is `<PROJECT>-<n>`, so one key is the start of another the moment a project passes nine issues
+// (INFRA-29 and INFRA-299 are both issues of INFRA), and the issue read's line is the key itself
+// with nothing after it. A write of the longer key must hold the shorter key's own read for
+// nothing: the wait has no ceiling, so a write of INFRA-299 that is late holds INFRA-29's page
+// for as long as it is tried.
+test("a write of an issue whose key starts with this one's holds no fetch of this issue", async () => {
+  const app = page();
+  const served = spyOn(api, "getIssue").mockResolvedValue({ key: "CORE-1" } as never);
+  try {
+    const answer = Promise.withResolvers<unknown>();
+    const write = writeOn(app, "issue:CORE-10", answer.promise, {
+      body: { status: "done" },
+      method: "PATCH",
+      path: "/api/v1/issues/CORE-10",
+    });
+    await settle();
+
+    const read = app.client.fetchQuery(issueQuery("CORE-1"));
+    await settle();
+    // Read before the answer, and asserted after the write and the read are both out of the
+    // way: a fetch this held would otherwise be left in flight by the failure itself.
+    const servedWhileOut = served.mock.calls.length;
+
+    answer.resolve({});
+    await write;
+    await settle();
+    await read;
+    expect(servedWhileOut, "the read of CORE-1 while a write of CORE-10 was out").toBe(1);
+  } finally {
+    served.mockRestore();
+    app.sends.restore();
+  }
+});
+
 // R7. A write of another project's issue holds this project's list not at all, and the Inbox's
 // fetch all the same: the Inbox lists every project.
 test("a write of another project's issue holds the Inbox but not this project's list", async () => {
