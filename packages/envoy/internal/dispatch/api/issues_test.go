@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -338,6 +339,160 @@ func TestListIssuesFiltersByUpdatedSince(t *testing.T) {
 	}
 }
 
+// A listing row carries closed_at, the closing time the issue's own read carries, or null while
+// the issue is open. closed_since and closed_before keep the issues closed in [closed_since,
+// closed_before): since is inclusive and before exclusive, an open issue was closed at no time so
+// either bound leaves it out, and both narrow beside the other filters, paged or not.
+func TestListIssuesFiltersByClosedWindow(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	for _, project := range []string{"TEST", "OTHER"} {
+		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+			"key": project, "name": project + " project",
+		}, "alice"); response.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", project, response.Code, response.Body.String())
+		}
+	}
+	createIssue := func(project, title string) string {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": project, "title": title, "force": true,
+		}, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create %q: status=%d body=%s", title, response.Code, response.Body.String())
+		}
+		return decodeBody[model.Issue](t, response).Key
+	}
+	beforeWindow := createIssue("TEST", "Closed before the window")
+	atStart := createIssue("TEST", "Closed at the window's start")
+	atEnd := createIssue("TEST", "Closed at the window's end")
+	open := createIssue("TEST", "Open")
+	elsewhere := createIssue("OTHER", "Closed inside the window in another project")
+	closedAt := map[string]time.Time{
+		beforeWindow: time.Date(2026, time.November, 2, 23, 59, 59, 0, time.UTC),
+		atStart:      time.Date(2026, time.November, 3, 0, 0, 0, 0, time.UTC),
+		atEnd:        time.Date(2026, time.November, 4, 0, 0, 0, 0, time.UTC),
+		elsewhere:    time.Date(2026, time.November, 3, 12, 0, 0, 0, time.UTC),
+	}
+	for key, at := range closedAt {
+		if _, err := database.Pool.Exec(context.Background(),
+			"update issues set status = 'done', closed_at = $2 where key = $1", key, at); err != nil {
+			t.Fatalf("close %s at %s: %v", key, at, err)
+		}
+	}
+
+	listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?project=TEST", nil, "alice")
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list TEST: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	rows := decodeBody[[]map[string]any](t, listed)
+	if len(rows) != 4 {
+		t.Fatalf("TEST lists %d issues, want 4: %v", len(rows), rows)
+	}
+	for _, row := range rows {
+		key, _ := row["key"].(string)
+		value, present := row["closed_at"]
+		if !present {
+			t.Errorf("%s lists no closed_at", key)
+			continue
+		}
+		read := decodeBody[map[string]any](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice"))
+		if value != read["closed_at"] {
+			t.Errorf("%s lists closed_at %#v, want its read's %#v", key, value, read["closed_at"])
+		}
+		want, closed := closedAt[key]
+		if !closed {
+			if value != nil {
+				t.Errorf("open %s lists closed_at %#v, want null", key, value)
+			}
+			continue
+		}
+		text, _ := value.(string)
+		if got, err := time.Parse(time.RFC3339, text); err != nil || !got.Equal(want) {
+			t.Errorf("%s lists closed_at %#v, want %s", key, value, want.Format(time.RFC3339))
+		}
+	}
+
+	since := "closed_since=" + url.QueryEscape("2026-11-03T00:00:00Z")
+	before := "closed_before=" + url.QueryEscape("2026-11-04T00:00:00Z")
+	for _, filter := range []struct {
+		query string
+		want  []string
+	}{
+		{"project=TEST&status=done&" + since + "&" + before, []string{atStart}},
+		{since + "&" + before, []string{atStart, elsewhere}},
+		{"project=TEST&" + since, []string{atStart, atEnd}},
+		{"project=TEST&" + before, []string{beforeWindow, atStart}},
+		{"project=TEST&open=true", []string{open}},
+		{"project=TEST&open=true&" + since, []string{}},
+	} {
+		want := slices.Sorted(slices.Values(filter.want))
+		if got := slices.Sorted(slices.Values(listedKeys(t, handler, filter.query))); !slices.Equal(got, want) {
+			t.Errorf("?%s lists %v, want %v", filter.query, got, want)
+		}
+		if page, ok := readPage(t, handler, filter.query+"&limit=1"); ok &&
+			(page.Total != len(want) || len(page.Issues) != min(1, len(want)) ||
+				(len(page.Issues) == 1 && !slices.Contains(want, page.Issues[0].Key))) {
+			t.Errorf("?%s&limit=1 pages %v total %d, want one of %v total %d", filter.query, summaryKeys(page.Issues), page.Total, want, len(want))
+		}
+	}
+
+	for query, code := range map[string]string{
+		"closed_since=yesterday":   "INVALID_CLOSED_SINCE",
+		"closed_since=":            "INVALID_CLOSED_SINCE",
+		"closed_before=2026-11-04": "INVALID_CLOSED_BEFORE",
+		"closed_before=":           "INVALID_CLOSED_BEFORE",
+		"closed_since=2026-11-04T00:00:00Z&closed_before=2026-11-03T00:00:00Z": "INVALID_CLOSED_WINDOW",
+		"closed_since=2026-11-03T00:00:00Z&closed_before=2026-11-03T00:00:00Z": "INVALID_CLOSED_WINDOW",
+	} {
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?project=TEST&"+query, nil, "alice")
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"`+code+`"`) {
+			t.Errorf("?%s: status=%d body=%s, want 400 %s", query, response.Code, response.Body.String(), code)
+		}
+	}
+}
+
+// A bound finer than the microsecond Postgres stores keeps its meaning: an issue closed and
+// updated at …00.123456 is before …00.123456001, so `closed_since` and `updated_since` at that
+// bound leave it out and `closed_before` at it keeps it. pgx encodes a timestamptz by truncating
+// it to the microsecond, which would move each comparison onto the stored time itself.
+func TestListIssuesKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	key := createListedIssues(t, handler, "TEST", 1)[0]
+	at := time.Date(2026, time.November, 3, 0, 0, 0, 123456000, time.UTC)
+	if _, err := database.Pool.Exec(context.Background(),
+		"update issues set status = 'done', closed_at = $2, updated_at = $2 where key = $1", key, at); err != nil {
+		t.Fatalf("close %s at %s: %v", key, at, err)
+	}
+	const (
+		stored = "2026-11-03T00:00:00.123456Z"
+		after  = "2026-11-03T00:00:00.123456001Z"
+		later  = "2026-11-03T00:00:00.123456999Z"
+		before = "2026-11-03T00:00:00.123455999Z"
+	)
+	for _, filter := range []struct {
+		query string
+		want  []string
+	}{
+		{"closed_since=" + stored, []string{key}},
+		{"closed_since=" + after, []string{}},
+		{"closed_before=" + stored, []string{}},
+		{"closed_before=" + after, []string{key}},
+		{"closed_since=" + before + "&closed_before=" + after, []string{key}},
+		{"closed_since=" + after + "&closed_before=" + later, []string{}},
+		{"updated_since=" + stored, []string{key}},
+		{"updated_since=" + after, []string{}},
+	} {
+		query := "project=TEST&" + strings.ReplaceAll(filter.query, ":", "%3A")
+		if got := listedKeys(t, handler, query); !slices.Equal(got, filter.want) {
+			t.Errorf("?%s lists %v, want %v", query, got, filter.want)
+		}
+		if page, ok := readPage(t, handler, query+"&limit=1"); ok &&
+			(!slices.Equal(summaryKeys(page.Issues), filter.want) || page.Total != len(filter.want)) {
+			t.Errorf("?%s&limit=1 pages %v total %d, want %v", query, summaryKeys(page.Issues), page.Total, filter.want)
+		}
+	}
+}
+
 func TestListIssuesIncludesEventUpdatedIssuesSinceWatermark(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -575,7 +730,7 @@ func TestListIssuesQueryUsesAsksOpenIndex(t *testing.T) {
 	}
 
 	var planJSON []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+listIssuesQuery, "", "", "", nil, []string{}, false, []int16{}, false).Scan(&planJSON); err != nil {
+	if err := tx.QueryRow(ctx, "explain (format json) "+listIssuesQuery, "", "", "", nil, []string{}, false, []int16{}, false, nil, nil).Scan(&planJSON); err != nil {
 		t.Fatalf("explain list query: %v", err)
 	}
 

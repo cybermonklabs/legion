@@ -11,6 +11,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -36,16 +37,16 @@ import type {
 import { AuthGate } from "../../app";
 import type { BroadcastRequest } from "./broadcast-plan";
 import { messageDeliveryFields } from "./delivery-fixture";
-// The live view is a lazy route of the app. Importing it here loads its module with the test
-// file, so a `findByRole` after the click waits for the render alone, not for that first load,
-// which takes longer than the second such a wait allows.
+// The live view is a lazy route of the app. Its module's first compile is not what a wait is
+// for, so the module is loaded here, with the test file, and no wait measures that load.
 import "../agent-view/AgentConversationPage";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import type { AgentPart } from "../refs/AgentName";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
 import { resetWriteStorage } from "../writes/write-storage";
-import { orderAgents, partitionAgents } from "./AgentsPage";
-import { filterOptions, matchesFilters, searchWords } from "./agent-search";
+import { orderAgents } from "./AgentsPage";
+import type { AgentGroup } from "./agent-groups";
+import { type AgentFilters, filterOptions, matchesFilters, searchWords } from "./agent-search";
 import {
   type BroadcastRoster,
   broadcastPlan,
@@ -116,12 +117,16 @@ function currentList(listed: readonly Agent[]): BroadcastRoster {
   return { agents: listed, current: true, refilling: false };
 }
 
-// The signed-in reader is `alice`, and a card's first number is their own work: these rows are
-// on an issue assigned to them.
+// The signed-in reader is `alice`, and a card's first number is their own work: these rows wait
+// on them, which is what the server answers in `waiting_on_person` for an ask nobody has handed
+// on whose issue is theirs.
 const inbox: InboxRow[] = [1, 2].map((number) => ({
   anchor: null,
   answer: null,
   artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
   author: { id: "planner-session", kind: "session" },
   block_id: null,
   created_at: new Date(now - 60_000).toISOString(),
@@ -129,6 +134,7 @@ const inbox: InboxRow[] = [1, 2].map((number) => ({
   id: `ask-${number}`,
   issue: { assignee: "alice", key: "CORE-1", title: "Core work" },
   issue_key: "CORE-1",
+  waiting_on_person: "alice",
   kind: "question",
   last_reply: null,
   multiple: false,
@@ -168,6 +174,9 @@ function message(body: string, overrides: Partial<Message> = {}): Message {
     ...overrides,
   };
 }
+
+/** When Dispatch says it took a pin, in the answer the fake route gives. */
+const ANSWERED_PIN_AT = "2026-09-14T12:00:00Z";
 
 /** Exposes the router's current query string, for the one test that needs to see a typed search
  *  land on the page's own address rather than only in its rendered rows. */
@@ -258,11 +267,21 @@ function renderAgents({
     state: "sent",
   });
   const getMyAgentState = spyOn(api, "getMyAgentState").mockResolvedValue(agentState);
-  const putAgentState = answerAgentStates().mockImplementation(async (_session, input) => ({
-    cleared_before: input.cleared_before ?? undefined,
-    read_through: input.read_through ?? undefined,
-    unread_replies: 0,
-  }));
+  // Dispatch answers a state write with the session's whole state: the marks the write set over
+  // the state it held, with `pinned_at` added by a pin and dropped by an unpin, and nothing left
+  // unread. A mark the body leaves out rides as a null the write does not read.
+  const putAgentState = answerAgentStates().mockImplementation(async (session, input) => {
+    const { cleared_before: cleared, pinned, read_through: read } = input;
+    const { pinned_at: held, ...rest } = agentState[session] ?? {};
+    const pinnedAt = pinned == null ? held : pinned ? ANSWERED_PIN_AT : undefined;
+    return {
+      ...rest,
+      ...(cleared == null ? {} : { cleared_before: cleared }),
+      ...(read == null ? {} : { read_through: read }),
+      ...(pinnedAt === undefined ? {} : { pinned_at: pinnedAt }),
+      unread_replies: 0,
+    };
+  });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter initialEntries={[initialEntry]}>
@@ -315,9 +334,16 @@ function card(region: HTMLElement, name: string): HTMLElement {
   return result;
 }
 
-/** A row in a closed fold is on the page, mounted and hidden (`AgentsPage`'s one keyed list): no
- *  reader can reach its heading, and the row holding it is hidden. */
+/** A row a closed fold or the filters hide is off the page: the list is windowed, so a row it
+ *  does not draw is not mounted at all, hidden or otherwise. The one exception is a row the
+ *  reader has opened (`expectKeptHidden`). */
 function expectFolded(region: HTMLElement, name: string): void {
+  expect(within(region).queryByRole("heading", { hidden: true, name })).not.toBeInTheDocument();
+}
+
+/** A row the reader has opened that a closed fold or the filters hide: mounted and hidden
+ *  wherever the window has it, so the draft, the upload and the unread set it holds survive. */
+function expectKeptHidden(region: HTMLElement, name: string): void {
   expect(within(region).queryByRole("heading", { name })).not.toBeInTheDocument();
   const heading = within(region).getByRole("heading", { hidden: true, name });
   expect(heading.closest("article")?.hidden).toBe(true);
@@ -336,6 +362,27 @@ async function type(user: UserEvent, field: HTMLElement, value: string): Promise
   await user.click(field);
   await user.keyboard("{Control>}a{/Control}");
   await user.paste(value);
+}
+
+/** The four group headings the page draws, in the order it draws them. */
+function groupNames(region: HTMLElement): string[] {
+  return [...region.querySelectorAll<HTMLElement>('[data-testid^="agents-group-name-"]')].map(
+    (name) => name.textContent ?? ""
+  );
+}
+
+/** A group's collapse control, which is also its heading. */
+function groupToggle(region: HTMLElement, group: AgentGroup): HTMLElement {
+  const toggle = region.querySelector<HTMLElement>(`[data-testid="agents-group-toggle-${group}"]`);
+  if (toggle === null) throw new Error(`no ${group} group on the page`);
+  return toggle;
+}
+
+/** What a group's heading says it holds: `(2)`, or `(2, 1 selected)`. */
+function groupCount(region: HTMLElement, group: AgentGroup): string {
+  const count = region.querySelector<HTMLElement>(`[data-testid="agents-group-count-${group}"]`);
+  if (count === null) throw new Error(`no ${group} group on the page`);
+  return count.textContent ?? "";
 }
 
 test("Agents lists live session activity and capability-aware actions", async () => {
@@ -507,6 +554,7 @@ test("Agents counts a card's two numbers in their own right: the reader's own, a
         id: "builder-bobs",
         issue: { assignee: "bob", key: "CORE-2", title: "Bob's work" },
         issue_key: "CORE-2",
+        waiting_on_person: "bob",
       }),
       builderAsk({
         id: "builder-snoozed",
@@ -667,29 +715,8 @@ test("orderAgents orders Dispatch activity within one second by time, not by the
   ]);
 });
 
-test("partitionAgents splits live sessions with a Dispatch signal, silent live sessions, and unseen sessions", () => {
-  const asked = session({ open_asks: 1, session_id: "asked" });
-  const spoke = session({ last_activity: minutesAgo(3), session_id: "spoke" });
-  const awaited = session({ session_id: "awaited" });
-  const silent = session({ session_id: "silent" });
-  const pinnedSilent = session({ session_id: "pinned-silent" });
-  const unseenSilent = session({ last_seen: now - 11 * 60_000, session_id: "unseen-silent" });
-  const unseenSpoke = session({
-    last_activity: minutesAgo(1),
-    last_seen: now - 10 * 60_000,
-    session_id: "unseen-spoke",
-  });
-  const parts = partitionAgents(
-    [silent, unseenSilent, spoke, pinnedSilent, unseenSpoke, awaited, asked],
-    ["pinned-silent"],
-    new Map([["awaited", 1]]),
-    now
-  );
-  const ids = (agents: readonly Agent[]) => agents.map((agent) => agent.session_id);
-  expect(ids(parts.active)).toEqual(["pinned-silent", "awaited", "asked", "spoke"]);
-  expect(ids(parts.quiet)).toEqual(["silent"]);
-  expect(ids(parts.inactive)).toEqual(["unseen-spoke", "unseen-silent"]);
-});
+// The four groups are `agent-groups.ts`'s own rule, with its own tests; what the page does with
+// them - the headings, the counts, the collapse and who lands where - is tested below.
 
 test("matchesFilters keeps a session whose title, directory, machine, session id or issue key together hold every searched word, in any case", () => {
   const alpha = session({
@@ -705,7 +732,13 @@ test("matchesFilters keeps a session whose title, directory, machine, session id
     title: "Beta",
   });
   const matches = (agent: Agent, search: string, issueKeys: readonly string[] = []) =>
-    matchesFilters(agent, { machine: "", role: "" }, searchWords(search), issueKeys);
+    matchesFilters(
+      agent,
+      "active",
+      { groups: [], machines: [], roles: [] },
+      searchWords(search),
+      issueKeys
+    );
 
   // One word, found in the title alone.
   expect(matches(alpha, "scrum")).toBe(true);
@@ -726,48 +759,67 @@ test("matchesFilters keeps a session whose title, directory, machine, session id
   expect(matches(beta, "alpha-session")).toBe(false);
 });
 
-test("matchesFilters narrows by machine and role exactly, free text besides", () => {
+test("matchesFilters keeps a session any picked group, machine or role holds, free text besides", () => {
   const planner = session({
     host: "build-host",
-    roles: ["planner"],
+    roles: ["planner", "reviewer"],
     session_id: "planner-session",
     title: "Planner",
   });
-  expect(
-    matchesFilters(planner, { machine: "build-host", role: "planner" }, searchWords("planner"), [])
-  ).toBe(true);
-  expect(
-    matchesFilters(planner, { machine: "other-host", role: "planner" }, searchWords("planner"), [])
-  ).toBe(false);
-  expect(
-    matchesFilters(planner, { machine: "build-host", role: "reviewer" }, searchWords(""), [])
-  ).toBe(false);
+  const narrow = (
+    filters: Partial<Pick<AgentFilters, "groups" | "machines" | "roles">>,
+    group: AgentGroup = "active",
+    search = ""
+  ) =>
+    matchesFilters(
+      planner,
+      group,
+      { groups: [], machines: [], roles: [], ...filters },
+      searchWords(search),
+      []
+    );
+
+  // An empty list is no filter at all; a list keeps a session any one of its values holds.
+  expect(narrow({})).toBe(true);
+  expect(narrow({ machines: ["build-host"] }, "active", "planner")).toBe(true);
+  expect(narrow({ machines: ["other-host"] })).toBe(false);
+  expect(narrow({ machines: ["other-host", "build-host"] })).toBe(true);
+  // A role list matches a session holding any of them, not all of them.
+  expect(narrow({ roles: ["planner"] })).toBe(true);
+  expect(narrow({ roles: ["tester"] })).toBe(false);
+  expect(narrow({ roles: ["tester", "reviewer"] })).toBe(true);
+  // The group is the row's own state, which the page works out before it asks.
+  expect(narrow({ groups: ["active"] }, "active")).toBe(true);
+  expect(narrow({ groups: ["active"] }, "quiet")).toBe(false);
+  expect(narrow({ groups: ["needs-you", "quiet"] }, "quiet")).toBe(true);
+  // Every field holds at once: the machine matches and the free text does not.
+  expect(narrow({ machines: ["build-host"] }, "active", "reviewer-host")).toBe(false);
 });
 
-test("filterOptions offers the machines the live sessions occupy, and the one the filter names besides", () => {
+test("filterOptions offers the machines the live sessions occupy, and the ones the filter names besides", () => {
   const live = [
     session({ host: "build-host", roles: ["planner"], session_id: "one", title: "One" }),
     session({ host: "archive-host", roles: [], session_id: "two", title: "Two" }),
   ];
 
-  expect(filterOptions(live, "")).toEqual({
+  expect(filterOptions(live, [])).toEqual({
     machines: ["archive-host", "build-host"],
     roles: ["planner"],
   });
 
   // A `?machine=` naming a host no live session reports - an old link, or a machine whose
   // sessions have ended - is an option of its own, in machine order with the rest, so the
-  // control shows the filter that is hiding every row and `All machines` can clear it.
-  expect(filterOptions(live, "ended-host").machines).toEqual([
+  // control shows the filter that is hiding every row and its row can be unticked.
+  expect(filterOptions(live, ["ended-host"]).machines).toEqual([
     "archive-host",
     "build-host",
     "ended-host",
   ]);
   // A machine the live sessions do report is offered once, not twice.
-  expect(filterOptions(live, "build-host").machines).toEqual(["archive-host", "build-host"]);
+  expect(filterOptions(live, ["build-host"]).machines).toEqual(["archive-host", "build-host"]);
 });
 
-test("Agents orders who needs you before Dispatch recency before liveness, folds silent sessions, and keeps a re-poll stable", async () => {
+test("Agents lists each session in its group, orders the rows inside one, and keeps a re-poll stable", async () => {
   const user = userEvent.setup();
   const olderActivityButNewerHeartbeat: Agent = {
     ...agents[1],
@@ -807,18 +859,33 @@ test("Agents orders who needs you before Dispatch recency before liveness, folds
         .getAllByRole("heading", { hidden: false, level: 2 })
         .map((heading) => heading.textContent);
     await within(region).findByText("Needs you 2", { exact: true });
-    expect(titles()).toEqual(["Planner", "Alpha", "Zulu"]);
+    // Planner has an ask waiting on the reader, so it heads the page whatever its age; Alpha
+    // spoke a minute ago; Zulu's activity is five minutes old and None's is nothing at all, so
+    // both are Idle, newest activity first.
+    expect(titles()).toEqual(["Planner", "Alpha", "Zulu", "None"]);
+    expect(groupNames(region)).toEqual(["Needs you", "Active", "Idle", "Quiet"]);
+    expect(groupCount(region, "needs-you")).toBe("(1)");
+    expect(groupCount(region, "active")).toBe("(1)");
+    expect(groupCount(region, "idle")).toBe("(2)");
+    expect(groupCount(region, "quiet")).toBe("(0)");
     await page.queryClient.refetchQueries({ queryKey: ["agents"] });
-    expect(titles()).toEqual(["Planner", "Alpha", "Zulu"]);
+    expect(titles()).toEqual(["Planner", "Alpha", "Zulu", "None"]);
 
-    const disclosure = within(region).getByRole("button", { name: "No Dispatch activity (1)" });
-    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    // Collapsing a group hides its rows and no others, and opening it puts them back.
+    const idle = groupToggle(region, "idle");
+    expect(idle).toHaveAttribute("aria-expanded", "true");
+    await user.click(idle);
+    expect(idle).toHaveAttribute("aria-expanded", "false");
     expectFolded(region, "None");
-    await user.click(disclosure);
-    expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    expectFolded(region, "Zulu");
+    expect(titles()).toEqual(["Planner", "Alpha"]);
+
+    await user.click(idle);
+    expect(idle).toHaveAttribute("aria-expanded", "true");
     const noneCard = card(region, "None");
     expect(within(noneCard).getByText("No Dispatch activity", { exact: true })).toBeTruthy();
     expect(titles()).toEqual(["Planner", "Alpha", "Zulu", "None"]);
+    // A row a group gave back is the row it was: its composer is still there to open.
     await expand(user, noneCard, "None");
     expect(within(noneCard).getByRole("textbox", { name: "Comment" })).toBeTruthy();
   } finally {
@@ -827,22 +894,33 @@ test("Agents orders who needs you before Dispatch recency before liveness, folds
   }
 });
 
-test("Agents renders no fold when every live session has Dispatch activity", async () => {
+// R7: the page draws its four groups whether or not each holds a session, so a reader can see
+// at a glance that nothing waits on them and the count beside each heading always means
+// something.
+test("Agents draws four counted groups, the empty ones among them", async () => {
   const page = renderAgents();
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
-    expect(
-      within(region).queryByRole("button", { name: /^No Dispatch activity \(/ })
-    ).not.toBeInTheDocument();
-    expect(within(region).queryByRole("button", { name: /^Inactive \(/ })).not.toBeInTheDocument();
+    expect(groupNames(region)).toEqual(["Needs you", "Active", "Idle", "Quiet"]);
+    // The Planner's two asks wait on the reader; the Reviewer was heard from five minutes ago
+    // with its last Dispatch activity ten minutes old.
+    expect(groupCount(region, "needs-you")).toBe("(1)");
+    expect(groupCount(region, "active")).toBe("(0)");
+    expect(groupCount(region, "idle")).toBe("(1)");
+    expect(groupCount(region, "quiet")).toBe("(0)");
+    for (const group of ["needs-you", "active", "idle", "quiet"] as const) {
+      expect(groupToggle(region, group)).toHaveAttribute("aria-expanded", "true");
+    }
   } finally {
     page.view.unmount();
     page.restore();
   }
 });
 
-test("Agents lists a pinned silent session among the active rows, and folds it again when unpinned", async () => {
+// D3: the pin no longer lifts a row out of its group - the rail is the pin's own home now - so
+// a pinned session is in the group its row puts it in, first among that group's rows.
+test("Agents keeps a pinned session in its own group, first among its rows", async () => {
   const user = userEvent.setup();
   const silent: Agent = {
     ...agents[1],
@@ -850,40 +928,48 @@ test("Agents lists a pinned silent session among the active rows, and folds it a
     session_id: "silent-session",
     title: "Silent",
   };
-  window.localStorage.setItem("dispatch.agents.pinned:alice", JSON.stringify(["silent-session"]));
-  const page = renderAgents({ listedAgents: [...agents, silent] });
+  // The pin is the person's, held by Dispatch (INFRA-812): this page reads it from their agent
+  // state, where it was `dispatch.agents.pinned:<login>` in this browser before.
+  const page = renderAgents({
+    agentState: { "silent-session": { pinned_at: "2026-09-14T00:00:00Z", unread_replies: 0 } },
+    listedAgents: [...agents, silent],
+  });
+  const titles = (region: HTMLElement) =>
+    within(region)
+      .getAllByRole("heading", { hidden: false, level: 2 })
+      .map((heading) => heading.textContent);
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
     await screen.findByRole("button", { name: "Unpin Silent" });
-    expect(
-      within(region)
-        .getAllByRole("heading", { hidden: false, level: 2 })
-        .map((heading) => heading.textContent)
-    ).toEqual(["Silent", "Planner", "Reviewer"]);
-    expect(
-      within(region).queryByRole("button", { name: /^No Dispatch activity \(/ })
-    ).not.toBeInTheDocument();
+    // Dispatch has never heard from Silent, so it is Idle, not Active: the pin only puts it
+    // ahead of the Reviewer, which is Idle too.
+    expect(titles(region)).toEqual(["Planner", "Silent", "Reviewer"]);
+    expect(groupCount(region, "idle")).toBe("(2)");
 
     await user.click(within(region).getByRole("button", { name: "Unpin Silent" }));
-    expect(within(region).getByRole("button", { name: "No Dispatch activity (1)" })).toBeTruthy();
-    expectFolded(region, "Silent");
+    // Unpinned it stays in Idle, behind the Reviewer, whose activity is the newer of the two.
+    await waitFor(() => expect(titles(region)).toEqual(["Planner", "Reviewer", "Silent"]));
+    expect(groupCount(region, "idle")).toBe("(2)");
+    expect(page.putAgentState.mock.calls.map(([session, input]) => [session, input])).toEqual([
+      ["silent-session", { pinned: false }],
+    ]);
   } finally {
     page.view.unmount();
     page.restore();
-    window.localStorage.removeItem("dispatch.agents.pinned:alice");
   }
 });
 
+/** Heard from eleven minutes ago, its last Dispatch activity half an hour old: Quiet. */
 const stale: Agent = {
   ...agents[1],
-  last_activity: new Date(now - 30_000).toISOString(),
+  last_activity: new Date(now - 30 * 60_000).toISOString(),
   last_seen: now - 11 * 60_000,
   session_id: "stale-session",
   title: "Stale",
 };
 
-test("Agents folds sessions unseen for ten minutes under a collapsed Inactive disclosure", async () => {
+test("Agents puts a session unseen for ten minutes in Quiet, which collapses and opens", async () => {
   const user = userEvent.setup();
   const page = renderAgents({ listedAgents: [stale, ...agents] });
 
@@ -893,23 +979,27 @@ test("Agents folds sessions unseen for ten minutes under a collapsed Inactive di
       within(region)
         .getAllByRole("heading", { hidden: false, level: 2 })
         .map((heading) => heading.textContent);
-    // Newest Dispatch activity would put Stale first; the Inactive rule folds it instead.
-    expect(titles()).toEqual(["Planner", "Reviewer"]);
-    const disclosure = within(region).getByRole("button", { name: "Inactive (1)" });
-    expect(disclosure).toHaveAttribute("aria-expanded", "false");
-    expectFolded(region, "Stale");
+    expect(titles()).toEqual(["Planner", "Reviewer", "Stale"]);
+    expect(groupCount(region, "quiet")).toBe("(1)");
+    const quiet = groupToggle(region, "quiet");
+    expect(quiet).toHaveAttribute("aria-expanded", "true");
 
-    await user.click(disclosure);
-    expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    await user.click(quiet);
+    expect(quiet).toHaveAttribute("aria-expanded", "false");
+    expectFolded(region, "Stale");
+    expect(titles()).toEqual(["Planner", "Reviewer"]);
+
+    await user.click(quiet);
+    expect(quiet).toHaveAttribute("aria-expanded", "true");
     const staleCard = card(region, "Stale");
-    // Still listed, so still running: the fold is what says it has been quiet, and the mark's
+    // Still listed, so still running: the group is what says it has been quiet, and the mark's
     // `title` says for how long.
     expect(within(staleCard).getByRole("img", { name: "Running" })).toHaveAttribute(
       "title",
       "Running · seen 11 minutes ago"
     );
     expect(titles()).toEqual(["Planner", "Reviewer", "Stale"]);
-    // The fold's rows keep the composer.
+    // A collapsed group's rows keep their composer.
     await expand(user, staleCard, "Stale");
     expect(within(staleCard).getByRole("textbox", { name: "Comment" })).toBeTruthy();
   } finally {
@@ -918,50 +1008,115 @@ test("Agents folds sessions unseen for ten minutes under a collapsed Inactive di
   }
 });
 
-test("Agents folds a session that is both silent and unseen under Inactive, never under No Dispatch activity", async () => {
-  const silentStale: Agent = { ...stale, last_activity: null };
-  const page = renderAgents({ listedAgents: [...agents, silentStale] });
-
-  try {
-    const region = await screen.findByRole("region", { name: "Agents" });
-    expect(within(region).getByRole("button", { name: "Inactive (1)" })).toBeTruthy();
-    expect(
-      within(region).queryByRole("button", { name: /^No Dispatch activity \(/ })
-    ).not.toBeInTheDocument();
-  } finally {
-    page.view.unmount();
-    page.restore();
-  }
-});
-
-test("Agents keeps a pinned session in the active list however long it has been quiet", async () => {
+// D3, in the case the page used to lift out: the pin is a place in the rail, not a place in
+// another group, so a pinned session nobody has heard from for ten minutes is still Quiet.
+test("Agents keeps a pinned session unseen for ten minutes in Quiet", async () => {
   const user = userEvent.setup();
-  window.localStorage.setItem("dispatch.agents.pinned:alice", JSON.stringify(["stale-session"]));
-  const page = renderAgents({ listedAgents: [...agents, stale] });
+  const page = renderAgents({
+    agentState: { "stale-session": { pinned_at: "2026-09-14T00:00:00Z", unread_replies: 0 } },
+    listedAgents: [...agents, stale],
+  });
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
     await screen.findByRole("button", { name: "Unpin Stale" });
+    expect(groupCount(region, "quiet")).toBe("(1)");
+    expect(groupCount(region, "active")).toBe("(0)");
+    // Collapsing Quiet takes the pinned row with it, which is where it is listed.
+    await user.click(groupToggle(region, "quiet"));
+    expectFolded(region, "Stale");
     expect(
       within(region)
         .getAllByRole("heading", { hidden: false, level: 2 })
         .map((heading) => heading.textContent)
-    ).toEqual(["Stale", "Planner", "Reviewer"]);
-    expect(within(region).queryByRole("button", { name: /^Inactive \(/ })).not.toBeInTheDocument();
-
-    await user.click(within(region).getByRole("button", { name: "Unpin Stale" }));
-    expect(within(region).getByRole("button", { name: "Inactive (1)" })).toBeTruthy();
-    expectFolded(region, "Stale");
+    ).toEqual(["Planner", "Reviewer"]);
   } finally {
     page.view.unmount();
     page.restore();
-    window.localStorage.removeItem("dispatch.agents.pinned:alice");
   }
 });
 
-test("Agents pins cards in a per-login preference across a reload", async () => {
+// D2: the four tests overlap and the first match wins. A session with a question for the reader
+// is where they will look for it, however long it has been silent - and in that group alone.
+test("Agents lists a session with an open ask under Needs you alone, however long it has been silent", async () => {
   const user = userEvent.setup();
-  window.localStorage.removeItem("dispatch.agents.pinned:alice");
+  const silentForHours: Agent = {
+    ...stale,
+    last_activity: null,
+    last_seen: now - 2 * 60 * 60_000,
+  };
+  const page = renderAgents({
+    inboxRows: [
+      ...inbox,
+      { ...inbox[0], author: { id: "stale-session", kind: "session" }, id: "ask-stale" },
+    ],
+    listedAgents: [...agents, silentForHours],
+  });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await within(region).findByText("Needs you 1", { exact: true });
+    expect(groupCount(region, "needs-you")).toBe("(2)");
+    expect(groupCount(region, "quiet")).toBe("(0)");
+    // Collapsing Needs you takes the row with it: it is in that group and in no other.
+    await user.click(groupToggle(region, "needs-you"));
+    expectFolded(region, "Stale");
+    expectFolded(region, "Planner");
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A session with replies the reader has not read is waiting on them as surely as an ask is.
+test("Agents lists a session with unread replies under Needs you", async () => {
+  const page = renderAgents({
+    agentState: { "reviewer-session": { unread_replies: 2 } },
+    listedAgents: agents,
+  });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await within(region).findByRole("button", { name: "New replies 2 from Reviewer" });
+    await waitFor(() => expect(groupCount(region, "needs-you")).toBe("(2)"));
+    expect(groupCount(region, "idle")).toBe("(0)");
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// R7: the page lists the sessions the listener lists, so a session that has ended is in none of
+// the four groups - it keeps its row under `Replied, no longer connected`, where its unread
+// replies can still be reached.
+test("Agents lists an ended session under Replied, no longer connected and in no group", async () => {
+  const page = renderAgents({
+    agentState: { "gone-session": { unread_replies: 1 } },
+    listedAgents: agents,
+  });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const ended = await screen.findByRole("region", { name: "Replied, no longer connected" });
+    expect(within(ended).getByText("New reply 1")).toBeTruthy();
+    expect(groupNames(region)).toEqual(["Needs you", "Active", "Idle", "Quiet"]);
+    expect(groupCount(region, "needs-you")).toBe("(1)");
+    expect(groupCount(region, "active")).toBe("(0)");
+    expect(groupCount(region, "idle")).toBe("(1)");
+    expect(groupCount(region, "quiet")).toBe("(0)");
+    // The ended session's row is outside the list the groups draw.
+    expect(region.querySelector('[data-agent-row="gone-session"]')).toBeNull();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// The pin belongs to the person, not to the browser (INFRA-812, R1): pressing it writes the
+// session's state to Dispatch, so their other browsers and the rail show it, and nothing of it
+// is kept in this browser's own storage.
+test("Agents pins a card by writing the person's agent state, not a browser preference", async () => {
+  const user = userEvent.setup();
   const first = renderAgents();
   let firstActive = true;
 
@@ -969,18 +1124,27 @@ test("Agents pins cards in a per-login preference across a reload", async () => 
     const pin = await screen.findByRole("button", { name: "Pin Planner" });
     expect(pin).toHaveAttribute("aria-pressed", "false");
     await user.click(pin);
-    expect(pin).toHaveAttribute("aria-pressed", "true");
-    expect(window.localStorage.getItem("dispatch.agents.pinned:alice")).toBe(
-      JSON.stringify(["planner-session"])
+
+    const unpin = await screen.findByRole("button", { name: "Unpin Planner" });
+    expect(unpin).toHaveAttribute("aria-pressed", "true");
+    expect(within(unpin.closest("article") ?? unpin).getByRole("heading").textContent).toBe(
+      "Planner"
     );
+    expect(first.putAgentState.mock.calls.map(([session, input]) => [session, input])).toEqual([
+      ["planner-session", { pinned: true }],
+    ]);
+    expect(window.localStorage.getItem("dispatch.agents.pinned:alice")).toBeNull();
+
+    // The person's second browser reads the same pin from Dispatch, with nothing of this one's.
     first.view.unmount();
     first.restore();
     firstActive = false;
-
-    const second = renderAgents();
+    const second = renderAgents({
+      agentState: { "planner-session": { pinned_at: "2026-09-14T00:00:00Z", unread_replies: 0 } },
+    });
     try {
-      const persistedPin = await screen.findByRole("button", { name: "Unpin Planner" });
-      expect(persistedPin).toHaveAttribute("aria-pressed", "true");
+      const elsewhere = await screen.findByRole("button", { name: "Unpin Planner" });
+      expect(elsewhere).toHaveAttribute("aria-pressed", "true");
     } finally {
       second.view.unmount();
       second.restore();
@@ -990,7 +1154,6 @@ test("Agents pins cards in a per-login preference across a reload", async () => 
       first.view.unmount();
       first.restore();
     }
-    window.localStorage.removeItem("dispatch.agents.pinned:alice");
   }
 });
 
@@ -1042,6 +1205,9 @@ const coreIssue: IssueSummary = {
   status: "todo",
   title: "Core work",
   updated_at: "2026-09-14T00:00:00Z",
+  closed_at: null,
+  created_by: null,
+  created_at: "2026-09-14T00:00:00Z",
 };
 
 test("Agents keeps selected-issue sends on the issue message route", async () => {
@@ -3055,8 +3221,7 @@ test("a broadcast Dispatch has not confirmed is tried again under its key until 
     );
     expect(new Set(page.createBroadcast.mock.calls.map(([, bounds]) => bounds.key)).size).toBe(1);
   } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
     page.view.unmount();
     page.restore();
   }
@@ -3078,7 +3243,7 @@ test("Stop trying ends a late broadcast, and Retry sends it again under the same
     await broadcastToPlanner(region, "Status?");
     const sends = screen.getByRole("region", { name: "Sends" });
     expect(within(sends).queryByRole("button", { name: "Stop trying" })).not.toBeInTheDocument();
-    for (const wait of [1_000, 2_000, 4_000, 8_000, 15_000]) await tick(wait);
+    for (const wait of [1_000, 2_000, 4_000, 8_000, 15_000]) await jump(wait);
     expect(page.createBroadcast).toHaveBeenCalledTimes(5);
     expect(within(sends).getByText(broadcastLate)).toBeTruthy();
 
@@ -3088,7 +3253,7 @@ test("Stop trying ends a late broadcast, and Retry sends it again under the same
       within(sends).getByText(`Stopped sending to 1 agent: ${new SendStoppedError().message}`)
     ).toBeTruthy();
     expect(within(sends).getByRole("button", { name: "Restore draft" })).toBeTruthy();
-    await tick(30 * 60_000);
+    await jump(30 * 60_000);
     expect(page.createBroadcast).toHaveBeenCalledTimes(5);
 
     page.createBroadcast.mockImplementation(async (input) => ({
@@ -3106,8 +3271,7 @@ test("Stop trying ends a late broadcast, and Retry sends it again under the same
     expect(within(sends).getByRole("link", { name: "Sent to 1 agent" })).toBeTruthy();
     expect(new Set(page.createBroadcast.mock.calls.map(([, bounds]) => bounds.key)).size).toBe(1);
   } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
     page.view.unmount();
     page.restore();
   }
@@ -3394,10 +3558,9 @@ test("the header checkbox follows the filters and its count never hides a select
   }
 });
 
-test("the header checkbox selects a folded row and the fold says how many of its rows are selected", async () => {
+test("the header checkbox selects a row a collapsed group hides, and the group says how many", async () => {
   const user = userEvent.setup();
-  // Seen a minute ago with no Dispatch signal: it sits under the collapsed `No Dispatch
-  // activity` fold.
+  // Seen half a minute ago and never heard from by Dispatch: Idle.
   const silent: Agent = {
     ...agents[0],
     last_activity: null,
@@ -3409,15 +3572,14 @@ test("the header checkbox selects a folded row and the fold says how many of its
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
-    expect(within(region).getByRole("button", { name: "No Dispatch activity (1)" })).toBeTruthy();
+    await user.click(groupToggle(region, "idle"));
     expect(
       within(region).queryByRole("heading", { level: 2, name: "Silent" })
     ).not.toBeInTheDocument();
+    expect(groupCount(region, "idle")).toBe("(1)");
     await user.click(within(region).getByRole("checkbox", { name: "Select all matching agents" }));
     expect(within(region).getByText("2 of 2 matching selected")).toBeTruthy();
-    expect(
-      within(region).getByRole("button", { name: "No Dispatch activity (1, 1 selected)" })
-    ).toBeTruthy();
+    expect(groupCount(region, "idle")).toBe("(1, 1 selected)");
     const chips = within(within(region).getByRole("region", { name: "Broadcast" })).getByRole(
       "list",
       { name: "Selected agents" }
@@ -3473,23 +3635,29 @@ test("a refused send's row shows its message formatted on one line, with its who
   }
 });
 
-// A closed fold keeps its rows mounted, hidden, so a row the reader had open is still expanded
-// in there. Nobody can see it, so a reply that arrives then must stay unread - in the navigation
-// and on the row - until the fold opens and puts the conversation back on screen.
-test("an open row a closed fold hides marks nothing read, and opening the fold reads what it shows", async () => {
-  const user = userEvent.setup();
+// A collapsed group keeps its rows mounted, hidden, so a row the reader had open is still
+// expanded in there. Nobody can see it, so a reply that arrives then must stay unread - in the
+// navigation and on the row - until the group opens and puts the conversation back on screen.
+test("an open row a collapsed group hides marks nothing read, and opening the group reads it", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   const asked = exchange("m1", "Still there?", "2026-09-14T01:00:00Z");
-  const page = renderAgents({ listedAgents: [stale, ...agents], messages: [asked] });
+  // The session's own question waits on the reader, so it is under Needs you before the reply
+  // arrives and after it: the group holding it does not change under the hidden row.
+  const page = renderAgents({
+    inboxRows: [{ ...inbox[0], author: { id: "stale-session", kind: "session" }, id: "ask-stale" }],
+    listedAgents: [stale, ...agents],
+    messages: [asked],
+  });
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
-    const fold = within(region).getByRole("button", { name: "Inactive (1)" });
-    await user.click(fold);
     const staleCard = card(region, "Stale");
     await expand(user, staleCard, "Stale");
     await within(staleCard).findByText("Still there?");
+    const fold = groupToggle(region, "needs-you");
     await user.click(fold);
-    expectFolded(region, "Stale");
+    expectKeptHidden(region, "Stale");
 
     const answered = exchange("m1", "Still there?", "2026-09-14T01:00:00Z", {
       body: "Yes, still here.",
@@ -3510,9 +3678,7 @@ test("an open row a closed fold hides marks nothing read, and opening the fold r
     await within(staleCard).findByText("Yes, still here.");
     // A mark the hidden row sent would go out from an effect a few microtasks on; give it a
     // task, so the assertion below is not merely early.
-    const settled = Promise.withResolvers<void>();
-    setTimeout(settled.resolve, 20);
-    await settled.promise;
+    await tick(20);
     expect(page.putAgentState).not.toHaveBeenCalled();
     expect(screen.getByRole("link", { name: "New reply 1" })).toBeTruthy();
 
@@ -3525,6 +3691,7 @@ test("an open row a closed fold hides marks nothing read, and opening the fold r
       )
     );
   } finally {
+    realClock();
     page.view.unmount();
     page.restore();
   }
@@ -3724,7 +3891,12 @@ test("a row back after its session left mid-send holds the send it left until it
     await page.queryClient.refetchQueries({ queryKey: ["agents"] });
     const back = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
     expect(back).not.toBe(planner);
-    await expand(user, back, "Planner");
+    // A new row for the same session, open where the reader left it: the page holds which rows
+    // are open, not the row, because the window decides which rows are mounted.
+    expect(within(back).getByRole("button", { name: "Planner" })).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
     const choose = () =>
       within(back).getByRole("button", { name: "Choose issue" }) as HTMLButtonElement;
     const field = () =>
@@ -3764,7 +3936,7 @@ test("a row a filter hides keeps its draft and comes back as the reader left it"
     const search = within(region).getByRole("searchbox", { name: "Search agents" });
 
     await type(user, search, "REVIEWER");
-    expectFolded(region, "Planner");
+    expectKeptHidden(region, "Planner");
     await user.clear(search);
 
     expect(card(region, "Planner")).toBe(planner);
@@ -3813,6 +3985,157 @@ test("the search box reads its query from the page's address and writes back to 
   }
 });
 
+// The machines page of dispatch://INFRA-883 links here as `/agents?machine=<host>`. The address
+// is where the machine filter lives, so that link reads as one machine picked - a host with no
+// live session, which that link can name, included - the rows it does not name are hidden, and
+// unticking it brings them back and empties the parameter.
+test("a link naming a machine opens the page filtered to it, and the filter can be cleared", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ initialEntry: "/agents?machine=deploy-host" });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const machine = within(region).getByRole("button", { name: /^Filter by machine/u });
+    expect(machine.textContent).toContain("1");
+    expect(screen.getByTestId("location-search").textContent).toBe("?machine=deploy-host");
+    expect(
+      within(region).queryByRole("heading", { level: 2, name: "Planner" })
+    ).not.toBeInTheDocument();
+
+    await user.click(machine);
+    const picked = await screen.findByRole("option", { name: /deploy-host/u });
+    await user.click(picked);
+
+    await screen.findByRole("heading", { level: 2, name: "Planner" });
+    await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe(""));
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+/** A session on its own machine, so the machine filter has more than two rows to narrow. */
+const deployer: Agent = {
+  ...agents[1],
+  host: "deploy-host",
+  last_activity: new Date(now - 60_000).toISOString(),
+  last_seen: now - 10_000,
+  roles: ["deployer"],
+  session_id: "deploy-session",
+  title: "Deployer",
+};
+
+/** The three filters of the row, by the concept each picks from. */
+const FILTER_LABELS = { group: "Group", machine: "Machine", role: "Role" } as const;
+
+/** A filter's trigger, which says what is picked. */
+function filterTrigger(region: HTMLElement, filter: keyof typeof FILTER_LABELS): HTMLElement {
+  return within(within(region).getByTestId(`agents-filter-${filter}`)).getByRole("button", {
+    name: `Filter by ${filter}`,
+  });
+}
+
+/** The options of one filter's open panel, which is portalled out of the page, so it is found
+ *  by its own listbox rather than among every option in the document. */
+function optionTexts(filter: keyof typeof FILTER_LABELS): (string | null)[] {
+  const panel = screen.getByRole("listbox", { name: `${FILTER_LABELS[filter]} options` });
+  return within(panel)
+    .getAllByRole("option")
+    .map((option) => option.textContent);
+}
+
+/** One option of a filter's open panel, by its text. */
+function filterOption(filter: keyof typeof FILTER_LABELS, name: string): HTMLElement {
+  const panel = screen.getByRole("listbox", { name: `${FILTER_LABELS[filter]} options` });
+  return within(panel).getByRole("option", { name });
+}
+
+// R7: never a dropdown. Each of the three filters opens a panel with a text box that narrows
+// its own options, takes more than one, says how many are picked, and clears them.
+test("the machine filter is a searchable multi-select that keeps the rows of every machine picked", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ listedAgents: [...agents, deployer] });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const titles = () =>
+      within(region)
+        .getAllByRole("heading", { hidden: false, level: 2 })
+        .map((heading) => heading.textContent);
+    // No dropdown in the filter row: the three filters are buttons over panels.
+    expect(within(within(region).getByTestId("agents-filters")).queryAllByRole("combobox")).toEqual(
+      []
+    );
+
+    const machine = filterTrigger(region, "machine");
+    expect(machine.textContent).toBe("Machine");
+    await user.click(machine);
+    // Only the machines the live sessions occupy, in order.
+    expect(optionTexts("machine")).toEqual(["build-host", "deploy-host", "review-host"]);
+
+    // The text box narrows this panel's own options as the reader types.
+    const search = screen.getByRole("combobox", { name: "Search machines" });
+    await type(user, search, "DEPLOY");
+    expect(optionTexts("machine")).toEqual(["deploy-host"]);
+    await user.clear(search);
+
+    // Two picked, and the list keeps the rows of either.
+    await user.click(filterOption("machine", "build-host"));
+    await user.click(filterOption("machine", "deploy-host"));
+    expect(machine.textContent).toBe("Machine · 2");
+    expect(titles()).toEqual(["Planner", "Deployer"]);
+
+    // And one control empties them.
+    await user.click(screen.getByRole("button", { name: "Clear machine" }));
+    expect(machine.textContent).toBe("Machine");
+    expect(titles()).toEqual(["Planner", "Deployer", "Reviewer"]);
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+test("the group and role filters are searchable multi-selects of their own", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ listedAgents: [...agents, deployer] });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const titles = () =>
+      within(region)
+        .getAllByRole("heading", { hidden: false, level: 2 })
+        .map((heading) => heading.textContent);
+
+    const group = filterTrigger(region, "group");
+    await user.click(group);
+    expect(optionTexts("group")).toEqual(["Needs you", "Active", "Idle", "Quiet"]);
+    await type(user, screen.getByRole("combobox", { name: "Search groups" }), "act");
+    expect(optionTexts("group")).toEqual(["Active"]);
+    await user.click(filterOption("group", "Active"));
+    expect(group.textContent).toBe("Group · 1");
+    // The Deployer spoke a minute ago; the Planner's asks wait on the reader and the Reviewer
+    // was last heard from ten minutes ago.
+    expect(titles()).toEqual(["Deployer"]);
+    expect(groupCount(region, "needs-you")).toBe("(0)");
+    expect(groupCount(region, "active")).toBe("(1)");
+    await user.click(screen.getByRole("button", { name: "Clear group" }));
+    await user.click(screen.getByRole("combobox", { name: "Search groups" }));
+    await user.keyboard("{Escape}");
+
+    const role = filterTrigger(region, "role");
+    await user.click(role);
+    expect(optionTexts("role")).toEqual(["deployer", "planner"]);
+    await type(user, screen.getByRole("combobox", { name: "Search roles" }), "plan");
+    expect(optionTexts("role")).toEqual(["planner"]);
+    await user.click(filterOption("role", "planner"));
+    expect(role.textContent).toBe("Role · 1");
+    expect(titles()).toEqual(["Planner"]);
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 test("/ focuses the Agents search box instead of opening the Dispatch-wide search dialog", async () => {
   const user = userEvent.setup();
   const page = renderAgents();
@@ -3849,14 +4172,6 @@ test("/ falls through to the Dispatch-wide search dialog when no agents are conn
     page.restore();
   }
 });
-
-/** Moves the fake clock `ms` on and lets every promise the move released run. */
-async function tick(ms: number): Promise<void> {
-  await act(async () => {
-    jest.advanceTimersByTime(ms);
-    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
-  });
-}
 
 const keyedStopped = new SendStoppedError().message;
 
@@ -3909,7 +4224,7 @@ test("a live-view send that keeps failing outlives the view, under one key, unti
   try {
     await sendFromLiveView(user, "Status please");
     expect(page.createAgentMessage).toHaveBeenCalledTimes(1);
-    await tick(1_000);
+    await jump(1_000);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(2);
 
     // Another session's live view holds nothing of Planner's: only its own empty box refuses Send.
@@ -3920,7 +4235,7 @@ test("a live-view send that keeps failing outlives the view, under one key, unti
     expect(
       within(screen.getByTestId("agent-composer")).getByRole("button", { name: "Send" })
     ).toHaveAttribute("title", "Type a message first.");
-    await tick(2_000);
+    await jump(2_000);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(3);
 
     // Back on Planner: the same send, still out.
@@ -3929,16 +4244,16 @@ test("a live-view send that keeps failing outlives the view, under one key, unti
     const held = screen.getByTestId("agent-send-held");
     expect(within(held).getByText("Your message: “Status please”")).toBeTruthy();
     expect(within(held).getByRole("status").textContent).toBe("Sending…");
-    await tick(4_000);
-    await tick(8_000);
+    await jump(4_000);
+    await jump(8_000);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(5);
-    await tick(15_000);
+    await jump(15_000);
     expect(within(held).getByRole("status").textContent).toBe(KEYED_SEND_LATE_TEXT);
 
     await user.click(within(held).getByRole("button", { name: "Stop trying" }));
     await tick(0);
     expect(screen.getByTestId("agent-send-error").textContent).toBe(keyedStopped);
-    await tick(30 * 60_000);
+    await jump(30 * 60_000);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(5);
     expect(
       new Set(
@@ -3952,8 +4267,7 @@ test("a live-view send that keeps failing outlives the view, under one key, unti
     await user.click(within(held).getByRole("button", { name: "Discard" }));
     expect(screen.queryByTestId("agent-send-held")).not.toBeInTheDocument();
   } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
     page.view.unmount();
     page.restore();
   }
@@ -3971,7 +4285,7 @@ test("the session's Agents row shows a live-view send as its own turn and can st
 
   try {
     await sendFromLiveView(user, "Status please");
-    await tick(1_000);
+    await jump(1_000);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(2);
 
     await backToAgents(user);
@@ -3985,13 +4299,13 @@ test("the session's Agents row shows a live-view send as its own turn and can st
     expect(field.value).toBe("");
     expect(field.closest("fieldset")?.disabled).toBe(false);
 
-    for (const wait of [2_000, 4_000, 8_000, 15_000]) await tick(wait);
+    for (const wait of [2_000, 4_000, 8_000, 15_000]) await jump(wait);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(5);
     expect(within(held).getByRole("status").textContent).toBe(KEYED_SEND_LATE_TEXT);
     await user.click(within(held).getByRole("button", { name: "Stop trying" }));
     await tick(0);
     expect(within(planner).getByTestId("agent-send-error").textContent).toBe(keyedStopped);
-    await tick(30 * 60_000);
+    await jump(30 * 60_000);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(5);
 
     // Retry from the row is the same message, so it goes under the same key, and lands.
@@ -4006,8 +4320,7 @@ test("the session's Agents row shows a live-view send as its own turn and can st
     expect(new Set(messageKeys(page.createAgentMessage)).size).toBe(1);
     expect(within(planner).queryByTestId("agent-send-held")).not.toBeInTheDocument();
   } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
     page.view.unmount();
     page.restore();
   }
@@ -4030,7 +4343,7 @@ test("the Agents row's Retry of a live-view send re-sends it as it was", async (
 
   try {
     await sendFromLiveView(user, "Status please");
-    for (const wait of [1_000, 2_000, 4_000, 8_000, 15_000]) await tick(wait);
+    for (const wait of [1_000, 2_000, 4_000, 8_000, 15_000]) await jump(wait);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(5);
     await user.click(screen.getByRole("button", { name: "Stop trying" }));
     await tick(0);
@@ -4054,8 +4367,7 @@ test("the Agents row's Retry of a live-view send re-sends it as it was", async (
     expect(page.createAgentMessage.mock.calls[5]?.[2].key).toBe(pressedKey);
     expect(within(planner).queryByTestId("agent-send-held")).not.toBeInTheDocument();
   } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
     page.view.unmount();
     page.restore();
   }
@@ -4253,7 +4565,7 @@ test("a send pressed offline goes late with Stop trying, and lands when the netw
     const held = screen.getByTestId("agent-send-held");
     expect(within(held).getByRole("status").textContent).toBe("Sending…");
 
-    for (const wait of [1_000, 2_000, 4_000, 8_000, 15_000]) await tick(wait);
+    for (const wait of [1_000, 2_000, 4_000, 8_000, 15_000]) await jump(wait);
     expect(within(held).getByRole("status").textContent).toBe(KEYED_SEND_LATE_TEXT);
     expect(within(held).getByRole("button", { name: "Stop trying" })).toBeTruthy();
     expect(page.createAgentMessage.mock.calls.length).toBeGreaterThan(1);
@@ -4264,9 +4576,148 @@ test("a send pressed offline goes late with Stop trying, and lands when the netw
     expect(screen.queryByTestId("agent-send-held")).not.toBeInTheDocument();
     expect(new Set(messageKeys(page.createAgentMessage)).size).toBe(1);
   } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
     onlineManager.setOnline(online);
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+/** A long list of listed sessions, every one Idle and named in order, so the page's order is the
+ *  fixture's own and what the window drew can be read off it. */
+function manySessions(count: number): Agent[] {
+  return Array.from({ length: count }, (_, index) => ({
+    ...agents[1],
+    last_activity: null,
+    last_seen: now,
+    session_id: `session-${String(index).padStart(2, "0")}`,
+    title: `Session ${String(index).padStart(2, "0")}`,
+  }));
+}
+
+/**
+ * happy-dom has no layout engine: every box is zero and nothing scrolls. The windowed list reads
+ * one box, its own top edge against the viewport, so this answers that one and leaves every
+ * other at zero, where each row stands at the window's estimate (44 px) under a 768 px viewport.
+ */
+function scrollingList(): { restore: () => void; scrollTo: (offset: number) => void } {
+  let listTop = 0;
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function box(
+    this: Element
+  ) {
+    const top = this.matches("[data-agents-list]") ? listTop : 0;
+    return {
+      bottom: top,
+      height: 0,
+      left: 0,
+      right: 0,
+      toJSON: () => ({}),
+      top,
+      width: 0,
+      x: 0,
+      y: top,
+    } as DOMRect;
+  });
+  return {
+    restore: () => boxes.mockRestore(),
+    scrollTo: (offset: number) => {
+      listTop = -offset;
+      // A scroll of the window, which user-event has no form for.
+      act(() => {
+        fireEvent.scroll(window);
+      });
+    },
+  };
+}
+
+/** The rows the window has drawn, in the order the page draws them. */
+function drawnRows(region: HTMLElement): HTMLElement[] {
+  return [...region.querySelectorAll<HTMLElement>("[data-agent-row]:not([hidden])")];
+}
+
+// R7: the list draws the rows the screen holds and twelve either side, so a page of 600 sessions
+// is the same work as one of 20. A row the window has not drawn is in no part of the page, which
+// is what makes the saving; the scrollbar still measures the whole list.
+test("the Agents page draws part of a long list, with its scrollbar measuring the whole", async () => {
+  const listed = manySessions(60);
+  const layout = scrollingList();
+  const page = renderAgents({ listedAgents: listed });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await within(region).findByText("Session 00", { exact: true });
+    expect(drawnRows(region).length).toBeGreaterThan(10);
+    expect(drawnRows(region).length).toBeLessThan(listed.length);
+    expect(region.querySelector('[data-agent-row="session-59"]')).toBeNull();
+    // Sixty rows and four group headings at the estimate: the box the rows sit in is as tall as
+    // the list, so the scrollbar reaches the last session rather than the last drawn row.
+    expect(region.querySelector<HTMLElement>("[data-agents-list]")?.style.height).toBe(
+      `${64 * 44}px`
+    );
+  } finally {
+    layout.restore();
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// D1: an open row holds the reply target, the unread set and the composer's draft, so the window
+// draws it wherever it has scrolled to. A plain window would unmount it with the scroll and the
+// draft would be gone when the reader scrolled back.
+test("a row the reader opened keeps its draft when the window scrolls past it", async () => {
+  const user = userEvent.setup();
+  const layout = scrollingList();
+  const page = renderAgents({ listedAgents: manySessions(60) });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await within(region).findByText("Session 00", { exact: true });
+    const opened = card(region, "Session 00");
+    await expand(user, opened, "Session 00");
+    const field = within(opened).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement;
+    await type(user, field, "Half a thought");
+
+    layout.scrollTo(2_000);
+    // A row nobody opened is gone once it scrolls out; the opened one is still there.
+    expect(region.querySelector('[data-agent-row="session-05"]')).toBeNull();
+    expect(region.querySelector('[data-agent-row="session-00"]')).not.toBeNull();
+
+    layout.scrollTo(0);
+    expect(card(region, "Session 00")).toBe(opened);
+    expect(field.value).toBe("Half a thought");
+  } finally {
+    layout.restore();
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// The keys walk the page's list of sessions, not the rows in the DOM: at the bottom of the drawn
+// range a walk over `[data-agent-row]` would stop dead, with no row left to step to.
+test("j from the bottom of the drawn range reaches the next session and focuses its row", async () => {
+  const user = userEvent.setup();
+  const listed = manySessions(60);
+  const layout = scrollingList();
+  const page = renderAgents({ listedAgents: listed });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await within(region).findByText("Session 00", { exact: true });
+    const bottom = drawnRows(region).at(-1);
+    const at = listed.findIndex((agent) => agent.session_id === bottom?.dataset.agentRow);
+    const next = listed[at + 1]?.session_id;
+    expect(next).toBeDefined();
+    expect(region.querySelector(`[data-agent-row="${next}"]`)).toBeNull();
+
+    act(() => bottom?.focus());
+    expect(document.activeElement).toBe(bottom ?? null);
+    await user.keyboard("j");
+
+    const landed = region.querySelector(`[data-agent-row="${next}"]`);
+    expect(landed).not.toBeNull();
+    expect(document.activeElement).toBe(landed);
+  } finally {
+    layout.restore();
     page.view.unmount();
     page.restore();
   }

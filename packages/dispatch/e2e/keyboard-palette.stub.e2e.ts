@@ -19,7 +19,7 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { selectedRow } from "./inbox-pane";
-import { openIssue } from "./keyboard-palette";
+import { openIssue, searchPath } from "./keyboard-palette";
 import { stubbed } from "./stub/stub-test";
 
 /** One issue per row, so each keeps the title it was written with, and the second project the
@@ -106,17 +106,14 @@ const nestedArchitectureTest = stubbed(async () => {
 
 test("a failed palette search keeps its Retry action @pr", async ({ page, scene }) => {
   let searches = 0;
-  await page.route(
-    (url) => url.pathname === "/api/v1/search",
-    async (route) => {
-      searches += 1;
-      await route.fulfill({
-        body: JSON.stringify({ code: "INTERNAL", error: "search index unavailable" }),
-        contentType: "application/json",
-        status: 500,
-      });
-    }
-  );
+  await page.route(searchPath, async (route) => {
+    searches += 1;
+    await route.fulfill({
+      body: JSON.stringify({ code: "INTERNAL", error: "search index unavailable" }),
+      contentType: "application/json",
+      status: 500,
+    });
+  });
   // A failed read is retried twice, `QUERY_RETRY_DELAY_MS` apart, before the alert: page
   // timers, which the page's own clock fires.
   await page.clock.install();
@@ -326,7 +323,9 @@ listTest(
   "a List row's own row runs on the row that opened the palette, and its movement keys are no rows @pr",
   async ({ page, scene }) => {
     await page.goto(`/projects/${scene.project}/issues`);
-    const row = page.locator(`[data-issue-row]`, { hasText: "List palette" });
+    const row = page
+      .getByRole("table", { name: "Project issues table" })
+      .locator("[data-issue-row]", { hasText: "List palette" });
     await expect(row).toBeVisible();
     await page.locator("body").focus();
     await page.keyboard.press("j");
@@ -417,6 +416,10 @@ test("below xl the margin is the route's own sheet, so Shift+M and its row chang
 
   await page.locator("body").focus();
   await page.keyboard.press("Shift+M");
+  // Below xl the margin is the route's own sheet, so Shift+M stores nothing, and a write that
+  // never happens marks nothing to wait on: this window is the check. The keymap writes
+  // `localStorage` in the task of the keypress it acts on, so 300 ms of real time is many frames
+  // past where the read below would see one.
   await page.waitForTimeout(300);
   expect(await stored()).toBe(before);
 });

@@ -284,13 +284,26 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 	// the issue would already be in awaiting_merge, where no worker holds a phase and this
 	// merger's completion is over: nobody could send the shorter packet. Refused here, the issue
 	// stays in merging and the merger completes again with it. The text measured is the post the
-	// outbox makes, not the packet alone (record.LongestPost).
+	// outbox makes, not the packet alone (record.LongestPost). That one read answers the decision
+	// block too: the post's marker is an HTML comment, which the document parser refuses, and the
+	// server reads a refused body for the card its reader would draw all the same
+	// (pmdoc.FindDecisionCard).
 	var answer readyAnswer
 	if req.Ready {
 		if answer, ok = s.readyNote(w, r, grant, issue, req.Commit); !ok {
 			return
 		}
 		if over := dispatchbody.Check(record.LongestPost(record.ReadyPacket(req.Summary, answer.mergeNote))); over != nil {
+			// What the packet is refused for decides what the merger does about it. A decision
+			// block is refused however short the packet is, since a question in a message is one
+			// nobody can answer, so the refusal names the block as the cause and where the
+			// question belongs rather than asking for a shorter packet.
+			if dispatchbody.IsDecisionBlock(over) {
+				writeFailure(w, http.StatusBadRequest, "READY_PACKET_DECISION_BLOCK", fmt.Sprintf(
+					"the READY packet%s holds a decision block, and the daemon posts the packet on the issue as a message, where nobody can answer one: %s; call handoff_complete again with a packet that states the decision rather than asking for it; this completion changed nothing",
+					byHandShare(answer.mergeNote), over))
+				return
+			}
 			writeFailure(w, http.StatusBadRequest, "READY_PACKET_TOO_LONG", fmt.Sprintf(
 				"the READY packet%s is one Dispatch refuses: %s: link the pull request body's ## Verification section instead of quoting it, then call handoff_complete again; this completion changed nothing",
 				byHandShare(answer.mergeNote), over))

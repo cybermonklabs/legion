@@ -13,6 +13,7 @@ import (
 	"sort"
 
 	"github.com/sjawhar/envoy/internal/broker/wire"
+	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -31,7 +32,8 @@ type routeAnswer struct {
 // column would have to be written on every row of the table, GET rows included. No row carries
 // its shape: routes() stamps the write class and the OAuth scopes onto the row it builds, and
 // nothing stamps this (routes_table.go), so the emitter and the two mount guards read the map
-// here. routes_shapes_test.go pins how many rows it holds.
+// here. routes_shapes_test.go holds it to the table: the map and the rows the server mounts are
+// the same set.
 type routeShape struct {
 	// Status is the status the route answers when it succeeds.
 	Status int
@@ -163,6 +165,10 @@ type issueListQuery struct {
 	Label []string `query:"label"`
 	// UpdatedSince lists issues updated at or after this RFC3339 time.
 	UpdatedSince string `query:"updated_since"`
+	// ClosedSince lists issues closed at or after this RFC3339 time.
+	ClosedSince string `query:"closed_since"`
+	// ClosedBefore lists issues closed before this RFC3339 time.
+	ClosedBefore string `query:"closed_before"`
 	// Priority lists issues at these priorities, 0-3, or `none` for unset.
 	Priority []string `query:"priority"`
 	// RouteStatus lists open issues whose route is live, no_holder or unknown.
@@ -297,8 +303,27 @@ type myRepliesQuery struct {
 }
 
 // searchRouteQuery is GET /api/v1/search's query. The name carries `route` because search.go
-// already has a searchQuery of its own, the parsed query a search runs on.
+// already has a searchQuery of its own, the parsed query a search runs on. It names the four
+// members every build of the server has served. The handler still reads the other five on this
+// route, for a page served by a release before this one, and those five are declared on
+// GET /api/v1/search/results (searchResultsRouteQuery), the path a caller asks them of.
 type searchRouteQuery struct {
+	// Q is the text searched for, at least 2 characters and at most contracts.SearchQueryMax.
+	Q string `query:"q"`
+	// Project searches within one project; empty searches every project. It narrows every leg
+	// of the search rather than striking rows out of the page it answers.
+	Project string `query:"project"`
+	// Limit is the page size, 1 to 50, default 20.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
+// searchResultsRouteQuery is GET /api/v1/search/results's query, all nine members: the four
+// searchRouteQuery names and the five a build released before them does not serve, which is why
+// that path exists. The nine are written out rather than embedded because the emitter reads a
+// query struct's own fields and refuses one carrying no query tag (openapi.go, queryParameters).
+type searchResultsRouteQuery struct {
 	// Q is the text searched for, at least 2 characters and at most contracts.SearchQueryMax.
 	Q string `query:"q"`
 	// Project searches within one project; empty searches every project. It narrows every leg
@@ -497,6 +522,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: delivery.SessionGroup{}, Request: updateDeliverySessionGroupInput{},
 	},
 	"DELETE /api/v1/delivery/session-groups/{id}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
+	"GET /api/v1/ci-reconcile/passes":             {Status: http.StatusOK, Response: []cireconcile.PassRecord{}},
 	"GET /api/v1/me/agent-tokens":                 {Status: http.StatusOK, Response: []model.AgentToken{}},
 	"POST /api/v1/me/agent-tokens": {
 		Status: http.StatusCreated, Response: createAgentTokenResponse{}, Request: createAgentTokenInput{},
@@ -571,9 +597,12 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/issues/{key}/handoffs":                {Status: http.StatusOK, Response: []model.HandoffSummary{}},
 	"GET /api/v1/issues/{key}/handoffs/{phase}/latest": {Status: http.StatusOK, Response: model.Handoff{}},
-	"GET /api/v1/handoffs/{id}":                        {Status: http.StatusOK, Response: model.Handoff{}},
-	"GET /api/v1/messages/{id}":                        {Status: http.StatusOK, Response: messageRead{}},
-	"GET /api/v1/messages/{id}/blocks":                 {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"PUT /api/v1/issues/{key}/design-gates": {
+		Status: http.StatusOK, Response: issueDesignGates{}, Request: issueDesignGatesInput{},
+	},
+	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
+	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},
@@ -599,7 +628,10 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/me/inbox/dismiss": {
 		Status: http.StatusOK, Response: inboxDismissResponse{}, Request: inboxDismissRequest{},
 	},
-	"GET /api/v1/search":          {Status: http.StatusOK, Response: model.SearchResponse{}, Params: searchRouteQuery{}},
+	"GET /api/v1/search": {Status: http.StatusOK, Response: model.SearchResponse{}, Params: searchRouteQuery{}},
+	"GET /api/v1/search/results": {
+		Status: http.StatusOK, Response: model.SearchResponse{}, Params: searchResultsRouteQuery{},
+	},
 	"GET /api/v1/search/coverage": {Status: http.StatusOK, Response: model.SearchCoverage{}},
 	"GET /api/v1/related-checks": {
 		Status: http.StatusOK, Response: model.RelatedChecksReport{}, Params: relatedChecksQuery{},
@@ -651,8 +683,10 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/asks/{id}/followers/{session_id}":    {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
 	"DELETE /api/v1/asks/{id}/followers/{session_id}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
 	"PATCH /api/v1/asks/{id}":                         {Status: http.StatusOK, Response: model.Ask{}, Request: editAskInput{}},
+	"PUT /api/v1/asks/{id}/asked-of":                  {Status: http.StatusOK, Response: model.Ask{}, Request: askAskedOfInput{}},
 	"POST /api/v1/asks/{id}/answer":                   {Status: http.StatusOK, Response: model.Ask{}, Request: answerAskInput{}},
 	"POST /api/v1/asks/{id}/resolve":                  {Status: http.StatusOK, Response: model.Ask{}, Request: resolveAskInput{}},
+	"POST /api/v1/asks/{id}/decline":                  {Status: http.StatusOK, Response: model.Ask{}, Request: declineAskInput{}},
 	"GET /api/v1/issues/{key}/comments": {
 		Status: http.StatusOK, Response: []model.Comment{}, Params: issueCommentsQuery{},
 	},

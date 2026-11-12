@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A session that a person talks to through Dispatch gets the run-end reminder to open an ask: a Dispatch card whose actor is a person (kind `user`, with no `act`) arms the reminder period before its run starts, as a typed prompt does. Before, only a typed prompt armed it, so a session a person answered only through Dispatch could end run after run saying it waited on the person with no open ask and no reminder. A card from an agent, from Dispatch itself, or from an agent that wrote with a person''s credential still arms nothing.'
+time: 2026-11-11T19:22:36.256369101-08:00
+custom:
+    Issue: pr3719

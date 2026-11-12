@@ -165,11 +165,11 @@ func TestAPassReadsEachMappedRepositoryOnce(t *testing.T) {
 			t.Fatalf("the pass read a repository no row maps: %s %s", request.method, request.url)
 		}
 	}
-	if sent := h.github.countPath("/repos/" + gitHubRepository + "/pulls"); sent != 1 {
-		t.Fatalf("the open pull requests of %s were read %d times, want once for two rows naming it", gitHubRepository, sent)
+	if asked := h.queriesFor(gitHubRepository); asked != 1 {
+		t.Fatalf("%s was queried %d times, want once for two rows naming it", gitHubRepository, asked)
 	}
-	if sent := h.github.countPath(fmt.Sprintf("/repos/%s/commits/%s/check-runs", gitHubRepository, headSHA)); sent != 1 {
-		t.Fatalf("the head's check runs were read %d times, want once", sent)
+	if sent := h.github.countPath(fmt.Sprintf("/repos/%s/commits/%s/check-runs", gitHubRepository, headSHA)); sent != 0 {
+		t.Fatalf("the head's check runs were read over REST %d times, want none: the query answered the head whole", sent)
 	}
 	if line := h.passLine(); number(t, line, "heads") != 1 {
 		t.Fatalf("the pass line reports %d heads, want 1: %v", number(t, line, "heads"), line)
@@ -265,8 +265,8 @@ func TestAPassOverRecordedChecksChangesNothing(t *testing.T) {
 
 	h.pass()
 
-	if sent := h.github.countPath(fmt.Sprintf("/repos/%s/commits/%s/check-runs", gitHubRepository, headSHA)); sent != 1 {
-		t.Fatalf("the head's check runs were read %d times, want once: the pass must read GitHub", sent)
+	if asked := h.queriesFor(gitHubRepository); asked != 1 {
+		t.Fatalf("the repository was queried %d times, want once: the pass must read GitHub", asked)
 	}
 	// The summary loop settles on its own clock, so the record is given the same room a second
 	// settlement would have needed before its revision is read again.
@@ -346,10 +346,15 @@ func TestOnlyTheReviewAppsVerdictIsRecorded(t *testing.T) {
 // A head whose record has gone -- the bucket's TTL, or a delete -- is read in full again rather
 // than conditionally: a 304 would hide from the pass exactly the observations the record needs
 // back, and the head would never settle again.
+//
+// Only a head read over REST holds ETags at all, since a query carries none, so the head here
+// is one the query cannot answer: GitHub refuses its Checks fields and the pass reads it over
+// REST, which is where the ETags and this rule live.
 func TestAHeadWhoseRecordIsGoneIsReadInFullAgain(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
+	h.github.refuseChecks(gitHubRepository, headSHA)
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
 	)
@@ -392,7 +397,8 @@ func TestAHeadWhoseRecordIsGoneIsReadInFullAgain(t *testing.T) {
 	}
 }
 
-// The pass's one line carries the counts an alarm reads, under field names that do not move.
+// The pass's one line carries the counts an alarm reads, under field names that do not move:
+// the counts it has always carried, and the GraphQL and REST counts beside them.
 func TestThePassLineCountsWhatThePassDid(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)
@@ -409,19 +415,29 @@ func TestThePassLineCountsWhatThePassDid(t *testing.T) {
 	line := h.passLine()
 	// The head's completed run and its completed suite are two observations of the one record
 	// that head has, and records counts one for each head whose record the pass changed, so the
-	// pass reports 1.
+	// pass reports 1. One query answered the one page of the one repository, which cost one
+	// point, and the only REST read the pass made is the repository's own identity: no listing
+	// of its open pull requests, and no read of its head.
 	for field, want := range map[string]int{
-		"list_pages":         1,
+		"list_pages":         0,
 		"heads":              1,
-		"head_requests":      2,
+		"head_requests":      0,
 		"heads_not_modified": 0,
 		"records":            1,
 		"mappings_skipped":   0,
 		"heads_too_large":    0,
+		"graphql_queries":    1,
+		"graphql_points":     1,
+		"rest_requests":      1,
+		"rest_not_modified":  0,
+		"heads_over_rest":    0,
 	} {
 		if got := number(t, line, field); got != want {
 			t.Errorf("the first pass's %s = %d, want %d: %v", field, got, want, line)
 		}
+	}
+	if got, want := number(t, line, "requests"), 2; got != want {
+		t.Errorf("the first pass's requests = %d, want %d: the query and the repository's identity: %v", got, want, line)
 	}
 	if line["rate_limited"] != false {
 		t.Errorf("the first pass reports rate_limited = %v, want false", line["rate_limited"])
@@ -430,44 +446,30 @@ func TestThePassLineCountsWhatThePassDid(t *testing.T) {
 		t.Errorf("the pass line has no duration: %v", line)
 	}
 
-	// Nothing has changed, so every page of the second pass answers 304 and the head is counted
-	// among those GitHub had nothing new for.
-	sentBefore := h.github.count()
+	// Nothing has changed, so the second pass's one REST read -- the repository's identity --
+	// is answered 304, and its query reads the head again and records nothing.
 	h.pass()
 
 	line = h.passLine()
-	if got := number(t, line, "heads_not_modified"); got != 1 {
-		t.Errorf("the second pass's heads_not_modified = %d, want 1: %v", got, line)
+	if got := number(t, line, "rest_not_modified"); got != 1 {
+		t.Errorf("the second pass's rest_not_modified = %d, want 1: the repository's identity has not changed: %v", got, line)
 	}
 	if got := number(t, line, "records"); got != 0 {
-		t.Errorf("the second pass's records = %d, want 0: a 304 carries nothing to record: %v", got, line)
-	}
-	for _, request := range h.github.received()[sentBefore:] {
-		if !strings.Contains(request.url, "check-runs") {
-			continue
-		}
-		if want := h.github.etagOf(request.url); request.ifNoneMatch != want {
-			t.Errorf("the second pass read a head's check runs with If-None-Match %q, want the ETag the first pass was answered with, %q", request.ifNoneMatch, want)
-		}
+		t.Errorf("the second pass's records = %d, want 0: GitHub holds what the first pass recorded: %v", got, line)
 	}
 }
 
 // The pass line tells its own counts apart, which only a pass whose numbers differ can show:
-// two pages of open pull requests, three heads, one of them answered 304 throughout, and one
-// record changed. It is the pass k12 describes.
+// two repositories queried, three heads, one of them read over REST and answered 304
+// throughout, and one record changed. It is the pass k12 describes.
 //
-// The two pages are two mapped repositories' listings, one page each, rather than one listing
-// of two pages: a pass counts every open pull request page it reads, whichever repository it
-// belongs to, and a listing spilling onto a second page is pinned by TestAListingIsReadPageByPage
-// already. Filling a first page here would take a hundred open pull requests, and each one with
-// a head of its own is a head the pass reads and counts, which is not the pass k12 names.
-//
-// Each of the three heads is there for one of the counts. Pull request 7's head was read in
-// full by the pass before this one and nothing at it has changed since, so both its listings
-// answer 304 and it is the one head GitHub had nothing new for. Pull request 9's check runs
-// have a newly queued run on them, so that listing is read in full again, and everything it
-// holds to record is in the record already, so it changes nothing. Pull request 8, of the other
-// repository, was opened since, and its completed run is the one record this pass changes.
+// Each of the three heads is there for one of the counts. Pull request 7's Checks fields are
+// refused to the query, so the pass reads that head over REST; the pass before this one read
+// it in full and nothing at it has changed since, so both its listings answer 304 and it is
+// the one head GitHub had nothing new for and the one head read over REST. Pull request 9 the
+// query answers whole, and everything it holds to record is in the record already, so it
+// changes nothing. Pull request 8, of the other repository, was opened since, and its
+// completed run is the one record this pass changes.
 func TestThePassLineTellsItsPagesHeadsAndRecordsApart(t *testing.T) {
 	// The second mapped repository, and the two heads beside the harness's own: the one whose
 	// every observation the record holds already, and the one with a run to record.
@@ -488,6 +490,7 @@ func TestThePassLineTellsItsPagesHeadsAndRecordsApart(t *testing.T) {
 		fakePull{number: 7, sha: headSHA},
 		fakePull{number: 9, sha: unchangedHeadSHA},
 	)
+	h.github.refuseChecks(gitHubRepository, headSHA)
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
 	)
@@ -499,8 +502,8 @@ func TestThePassLineTellsItsPagesHeadsAndRecordsApart(t *testing.T) {
 	)
 
 	// The pass before the one this test is about is what earns the 304s: it reads both heads of
-	// the first repository in full and records the three observations they hold, changing each
-	// head's record, and the second repository has no open pull request yet.
+	// the first repository and records the three observations they hold, changing each head's
+	// record, and the second repository has no open pull request yet.
 	h.pass()
 
 	if got := number(t, h.passLine(), "records"); got != 2 {
@@ -508,13 +511,8 @@ func TestThePassLineTellsItsPagesHeadsAndRecordsApart(t *testing.T) {
 			got, h.passLine())
 	}
 
-	// Since that pass, a second job has been queued at pull request 9's head, which changes that
-	// listing without holding anything to record, and pull request 8 has been opened in the
-	// other repository, at a head carrying the one completed run this pass has to record.
-	h.github.setCheckRuns(gitHubRepository, unchangedHeadSHA,
-		atHead(gitHubRepository, unchangedHeadSHA, checkRun(2, "build", "completed", "success", otherApp, "2026-11-05T03:01:10Z")),
-		atHead(gitHubRepository, unchangedHeadSHA, checkRun(4, "deploy", "queued", "", otherApp, "")),
-	)
+	// Since that pass, pull request 8 has been opened in the other repository, at a head
+	// carrying the one completed run this pass has to record.
 	h.github.setPullRequests(otherRepository, fakePull{number: 8, sha: changedHeadSHA})
 	h.github.setCheckRuns(otherRepository, changedHeadSHA,
 		atHead(otherRepository, changedHeadSHA, checkRun(3, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:06:00Z")),
@@ -525,18 +523,27 @@ func TestThePassLineTellsItsPagesHeadsAndRecordsApart(t *testing.T) {
 
 	line := h.passLine()
 	for field, want := range map[string]int{
-		"list_pages":         2,
+		// No page of open pull requests is listed over REST: every page of both repositories
+		// was answered by a query.
+		"list_pages":         0,
 		"heads":              3,
 		"heads_not_modified": 1,
 		"records":            1,
 		"mappings_skipped":   0,
 		"heads_too_large":    0,
+		"graphql_queries":    2,
+		"graphql_points":     2,
+		"heads_over_rest":    1,
+		// The two repositories' identity reads and the refused head's two listings, all four
+		// of them answered 304.
+		"rest_requests":     4,
+		"rest_not_modified": 4,
 	} {
 		if got := number(t, line, field); got != want {
 			t.Errorf("the pass's %s = %d, want %d: %v", field, got, want, line)
 		}
 	}
-	// head_requests is the requests the three heads' two listings sent, which the stand-in's own
+	// head_requests is the requests the one head read over REST sent, which the stand-in's own
 	// log is the only honest count of.
 	sent := 0
 	for _, request := range h.github.received()[sentBefore:] {
@@ -592,13 +599,17 @@ func TestALimitInForceEndsThePassBeforeItReadsGitHub(t *testing.T) {
 }
 
 // GitHub's own rate-limited answer ends the pass where it stands: nothing further is read or
-// recorded, and the head keeps no ETag, so the next pass reads it in full. A rate limit is not
-// a repository the App cannot read, which the pass would have skipped quietly and gone on from.
+// recorded, and the head the limit cut short is left exactly as the pass found it, for the next
+// pass to read from the start (the cursor names it). A rate limit is not a repository the App
+// cannot read, which the pass would have skipped quietly and gone on from.
 func TestARateLimitedAnswerStopsThePass(t *testing.T) {
-	t.Run("at a head's read", func(t *testing.T) {
+	t.Run("at a head's REST read", func(t *testing.T) {
 		h := newHarness(t, reviewerAppID)
 		h.mapRepository(rowRepository)
 		h.listHead()
+		// The query cannot answer this head, so the pass reads it over REST, which is where
+		// GitHub's REST limit answers it.
+		h.github.refuseChecks(gitHubRepository, headSHA)
 		h.github.setCheckRuns(gitHubRepository, headSHA,
 			checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
 		)
@@ -617,7 +628,10 @@ func TestARateLimitedAnswerStopsThePass(t *testing.T) {
 			t.Fatalf("the pass line reports rate_limited = %v, want true: %v", line["rate_limited"], line)
 		}
 		if state, kept := h.reconciler.heads[gitHubRepository+"#"+pullNumber+"@"+headSHA]; kept {
-			t.Fatalf("the head kept its ETags after a failed read: %+v", state)
+			// The limit cut this head's first read short, so the pass kept nothing of a head it
+			// never read whole; a head that had ETags from an earlier pass keeps them
+			// (TestAHeadCutShortKeepsItsETags).
+			t.Fatalf("the pass kept %+v of a head it never read whole", state)
 		}
 	})
 

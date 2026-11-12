@@ -31,6 +31,8 @@ GET /api/v1/asks/open any
 GET /api/v1/asks/{id} any
 PATCH /api/v1/asks/{id} any
 POST /api/v1/asks/{id}/answer any
+PUT /api/v1/asks/{id}/asked-of any
+POST /api/v1/asks/{id}/decline any
 GET /api/v1/asks/{id}/followers any
 DELETE /api/v1/asks/{id}/followers/{session_id} any
 PUT /api/v1/asks/{id}/followers/{session_id} any
@@ -39,6 +41,7 @@ GET /api/v1/block-links any
 GET /api/v1/broadcasts any
 POST /api/v1/broadcasts any
 GET /api/v1/broadcasts/{id} any
+GET /api/v1/ci-reconcile/passes any
 GET /api/v1/comments/{id} any
 PATCH /api/v1/comments/{id} any
 POST /api/v1/comments/{id}/accept any
@@ -93,6 +96,7 @@ GET /api/v1/issues/{key}/comments any
 POST /api/v1/issues/{key}/comments any
 GET /api/v1/issues/{key}/coverage any
 GET /api/v1/issues/{key}/decisions any
+PUT /api/v1/issues/{key}/design-gates any
 GET /api/v1/issues/{key}/events any
 GET /api/v1/issues/{key}/handoffs any
 POST /api/v1/issues/{key}/handoffs/{phase} bearer
@@ -160,6 +164,7 @@ GET /api/v1/related-checks any
 GET /api/v1/schema/blocks public
 GET /api/v1/search any
 GET /api/v1/search/coverage any
+GET /api/v1/search/results any
 GET /api/v1/settings/architecture-sources any
 GET /api/v1/settings/delivery any
 PUT /api/v1/settings/delivery any

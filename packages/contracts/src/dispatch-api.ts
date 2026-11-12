@@ -312,12 +312,15 @@ export type InboxDismissSeen = InboxDismissSeenReply | InboxDismissSeenAgent;
 
 /** What a `SessionAnswer` is to the session Dispatch delivered it to, one snake_case wire value per
  *  relation, each spelling the phrase a reader prints: a person answered the session's ask,
- *  replied in its ask's thread, replied in a comment thread it wrote in, commented on a document it
- *  wrote, commented on an issue routed to it, mentioned it, sent it a message (direct, on an issue,
- *  or a broadcast's copy), or replied to its message. Mirrored in Go as the
- *  `model.SessionAnswerRelation*` constants. */
+ *  declined to answer it, replied in its ask's thread, replied in a comment thread it wrote in,
+ *  commented on a document it wrote, commented on an issue routed to it, mentioned it, sent it a
+ *  message (direct, on an issue, or a broadcast's copy), or replied to its message. A decline is
+ *  the item of the new kind `declined`, whose `text` is the person's own note and whose
+ *  `dispatch_words` is what Dispatch wrote beside it, so a reader draws the two apart. Mirrored in
+ *  Go as the `model.SessionAnswerRelation*` constants, in this order. */
 export const SESSION_ANSWER_RELATIONS = [
   "answered_your_ask",
+  "declined_your_ask",
   "replied_on_your_ask",
   "replied_in_a_comment_thread",
   "commented_on_a_document",
@@ -411,7 +414,9 @@ export type IssueEventPayload = Issue & ReferenceChangesPayload & IssueEventChan
  *  anything new. A restore the release before Dispatch kept the mark writes - every one already in
  *  the event log, and one written during a rollout or an image rollback - carries no mark, so a
  *  missing `restored` does not prove an event is a new answer. `thread_logins` (the ask's own
- *  thread) is carried by `ask.opened`, `ask.answered` and `ask.resolved`. */
+ *  thread) is carried by `ask.opened`, `ask.answered` and `ask.resolved`; on `ask.asked_of` it
+ *  is the two people the hand-on moved the ask between instead, since no reader of the thread
+ *  changes list there. */
 export type AskEventPayload = Ask &
   ReferenceChangesPayload &
   ThreadLoginsPayload & { readonly restored?: boolean };
@@ -832,6 +837,33 @@ export const SEARCH_OPERATORS = [
 ] as const;
 export type SearchOperator = (typeof SEARCH_OPERATORS)[number];
 
+/** The members `GET /api/v1/search` carried before `GET /api/v1/search/results` was added.
+ *  `session` is among them because `openapi.go` declares it on every operation of every build
+ *  and `actingPerson` reads it on every route, so a request carrying it is one an older build
+ *  serves correctly and must not be sent to a path that build refuses. */
+export const SEARCH_MEMBERS_EVERY_BUILD_READS = [
+  "q",
+  "project",
+  "limit",
+  "offset",
+  "session",
+] as const;
+
+/** Whether every member a search request carries is one of `SEARCH_MEMBERS_EVERY_BUILD_READS`,
+ *  which is the one rule that picks a search's path: a request carrying anything beyond them
+ *  goes to `GET /api/v1/search/results`. A Dispatch released before that route answers the
+ *  new path `404 no route`, which is a refusal, where it answers `GET /api/v1/search` `200` with
+ *  the member dropped, which is unnarrowed rows under the filters a person chose. A key whose
+ *  value is `undefined` is not carried, which is how both clients build a request out of
+ *  optional filters, and the keys are read from the request itself, so a member added later
+ *  routes itself. */
+export function everyBuildReadsSearch(request: object): boolean {
+  const read: readonly string[] = SEARCH_MEMBERS_EVERY_BUILD_READS;
+  return Object.entries(request).every(
+    ([member, value]) => value === undefined || read.includes(member)
+  );
+}
+
 // GraphEdgeKind is an edge's kind: one of the structural kinds, or the name of a typed block's
 // `block[]` attribute (BlockAttributeSchema), whose pointers are edges of that kind. The block
 // schema decides those names (Go's pmdoc.LinkKinds), so any other string is admitted beside the
@@ -1246,6 +1278,14 @@ export type DispatchEvent =
       readonly type: "ask.handed_back";
       readonly payload: AskEventPayload;
     })
+  /** One person handed an open ask to another: `asked_of` is whom it waits on from now on, empty
+   *  where that is the assignee of its own issue, and `asked_of_by` who handed it on. The ask
+   *  keeps its question, its thread and its followers; only whose list it sits in moves, so
+   *  `thread_logins` names those two people and nobody else. */
+  | (DispatchEventBase & {
+      readonly type: "ask.asked_of";
+      readonly payload: AskEventPayload;
+    })
   | (DispatchEventBase & {
       readonly type: "ask.answered";
       readonly payload: AskAnsweredEventPayload;
@@ -1552,6 +1592,14 @@ export const ArtifactReviewEventPayloadSchema = z.object({
   content_sha256_source: z.enum(["insert", "backfill"]).optional(),
 });
 
+// The fields every `ask.*` payload carries. A resolution's `kind` is a plain string rather than
+// the list of kinds the server writes today (`retracted`, `resolved`, `withdrawn`, and
+// `declined`, which is a person's own act: they chose not to answer the question, so it closes
+// with no answer). This object strips what it does not declare, so a closed list would make the
+// next kind cost every older reader the whole card, and the kind is the part a reader prints
+// first. `dispatch_words` is declared for the same reason the other way round: a reader keeps
+// only the parts its schema names, so the words Dispatch writes beside a decline reach only a
+// reader built with this change, and they stay apart from `reason`, the person's own note.
 const askEventPayloadFields = {
   id: z.string().optional(),
   opened_event_id: z.number().int().positive(),
@@ -1602,8 +1650,9 @@ const askEventPayloadFields = {
     .optional(),
   resolution: z
     .object({
-      kind: z.enum(["retracted", "resolved", "withdrawn"]).optional(),
+      kind: z.string().optional(),
       reason: z.string().optional(),
+      dispatch_words: z.string().optional(),
       actor: z
         .object({ kind: z.string().optional(), id: z.string().optional() })
         .passthrough()
@@ -1611,6 +1660,14 @@ const askEventPayloadFields = {
       at: z.string().optional(),
     })
     .nullish(),
+  // The three stored fields of a hand-on, carried by every ask payload as the row carries them:
+  // whom the ask waits on, who handed it there and when. `waiting_on_person` is deliberately
+  // absent: it is read-time only (the ask row never stores it), as `waiting_on` is, and this
+  // object strips any field it does not declare, so a payload that somehow carried it would
+  // reach no reader with it.
+  asked_of: z.string().nullish(),
+  asked_of_by: z.string().nullish(),
+  asked_of_at: z.string().nullish(),
   thread_logins: z.array(z.string()).optional(),
 };
 

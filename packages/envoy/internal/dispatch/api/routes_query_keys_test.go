@@ -47,7 +47,9 @@ var queryKeyExceptions = map[string]string{
 // `query[field]`, so the pin carries that site twice. Every key either is called with is named by
 // a parameters struct, checked by hand as this pin's own instruction says: parseQueryInt with
 // `limit`, `offset` and `max_chars`, and parseQueryBool with `keywords_only`, which both
-// searchRouteQuery and the related route's query struct declare.
+// searchResultsRouteQuery and the related route's query struct declare. searchRouteQuery, the
+// other search route's, declares it no longer: the five members a build released before them
+// drops are declared on GET /api/v1/search/results alone (routes_shapes.go).
 var queryKeysReadThroughAHelper = []string{
 	`delivery.go: Get(name)`,
 	`delivery.go: Has(name)`,

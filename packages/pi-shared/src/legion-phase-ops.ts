@@ -90,6 +90,19 @@ const nextLook = rfc3339String(
   "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is"
 );
 
+/** The refusal of the fields `refused` that `op` does not take: each named, then once the fields
+ * `op` takes (`takes`), so the agent's next call can be right. The one wording every `legion`
+ * tool refuses an unknown field in, a phase op's and pi-legion's own operations' alike. */
+export const unknownFieldsRefusal = (
+  op: string,
+  refused: readonly string[],
+  takes: readonly string[]
+): string =>
+  [
+    ...refused.map((field) => `${op} does not accept field "${field}"`),
+    `it takes ${takes.length === 0 ? "none" : takes.join(", ")}`,
+  ].join("; ");
+
 /** One operation's arguments: `op` and `shape`, and nothing else. */
 const operation = <Op extends PhaseOp, Shape extends z.ZodRawShape>(op: Op, shape: Shape) =>
   z.strictObject(
@@ -97,7 +110,7 @@ const operation = <Op extends PhaseOp, Shape extends z.ZodRawShape>(op: Op, shap
     {
       error: (issue) =>
         issue.code === "unrecognized_keys"
-          ? issue.keys.map((key) => `${op} does not accept field "${key}"`).join("; ")
+          ? unknownFieldsRefusal(op, issue.keys, Object.keys(shape))
           : undefined,
     }
   );
@@ -109,12 +122,25 @@ const operation = <Op extends PhaseOp, Shape extends z.ZodRawShape>(op: Op, shap
 export const PhaseOpArguments = z.discriminatedUnion(
   "op",
   [
-    operation("read_record", { issue: requiredString("read_record", "issue") }),
+    // The issue whose record it answers, the caller's own when the call names none: a worker
+    // reads the issue it works far more often than another, and its own key is one the daemon
+    // already told it (its claim), so making it say that key again only refused first calls.
+    operation("read_record", {
+      issue: z
+        .string({ error: "read_record's issue is an issue key, as LEGION-208 is" })
+        .optional(),
+    }),
     operation("read_release_records", {
       since: windowStart,
     }),
     operation("handoff_complete", {
       summary: requiredString("handoff_complete", "summary"),
+      // A completion is always of the caller's own issue, which the claim names, so the call
+      // need not name it. One that names it anyway is taken; one that names another issue is
+      // refused in executePhaseOp, before any daemon request.
+      issue: z
+        .string({ error: "handoff_complete's issue is an issue key, as LEGION-208 is" })
+        .optional(),
       verdict: z
         .enum(["pass", "pending", "fail"], {
           error: "handoff_complete's verdict is pass, pending or fail",
@@ -127,7 +153,9 @@ export const PhaseOpArguments = z.discriminatedUnion(
       // The issue the move names: the tree architect's move names the issue it returns from
       // accepting (its grant serves its whole tree); a phase worker's leaves it out, or names its
       // own. Which is the executor's to hold, by the claim's role.
-      issue: z.string().optional(),
+      issue: z
+        .string({ error: "request_backward_move's issue is an issue key, as LEGION-208 is" })
+        .optional(),
       to: z.enum(LEGION_PHASE_BACKWARD_TARGETS, {
         error: (issue) =>
           typeof issue.input === "string" && issue.input.trim() !== ""
@@ -185,12 +213,14 @@ export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType>
  * `request_backward_move`, which a host whose tool states them passes as `before` and `after`
  * (`legionToolDescription`). */
 export const PHASE_OP_SENTENCES = {
-  readRecord: "read_record returns the record of `issue` from the daemon's state. ",
+  readRecord:
+    "read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. ",
   readReleaseRecords:
     "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
-    "every release, resume and hold the daemon recorded, and over them the counts of releases, of resumes by wake kind and of holds by reason, " +
-    "the pod-hours released, the share of releases woken again within ten minutes, and the median, 90th percentile and maximum seconds from a " +
-    "wake to the woken role's first turn. ",
+    "every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no " +
+    "role, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and " +
+    "the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A release that suspended no role is woken by " +
+    "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. ",
   requestBackwardMove:
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`): a phase worker moves its own issue; " +
     "the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which counts a review round. ",
@@ -291,15 +321,16 @@ const ROOT_COMPLETION_REFUSAL =
   "handoff_complete is not available to a root architect session, which runs no phase";
 
 /**
- * Runs one phase op and answers its JSON result: `{ record }` for `read_record`, the window's
- * records and their counts for `read_release_records`, the daemon's answer for
- * `handoff_complete`, `{}` for `request_backward_move`, and `{}` for `ready_for_update`, or
- * `{ note }` when its branch-head lookup failed. A refusal throws before any write, minting
- * nothing and posting nothing: each problem `PhaseOpArguments` finds, joined by `; `, a field
- * the operation does not take named first, then a root architect's completion,
+ * Runs one phase op and answers its JSON result: `{ record }` for `read_record`, of the issue it
+ * names or of the claim's own when it names none, the window's records and their counts for
+ * `read_release_records`, the daemon's answer for `handoff_complete`, `{}` for
+ * `request_backward_move`, and `{}` for `ready_for_update`, or `{ note }` when its branch-head
+ * lookup failed. A refusal throws before any write, minting nothing and posting nothing: each
+ * problem `PhaseOpArguments` finds, joined by `; `, a field the operation does not take named
+ * first, then a root architect's completion,
  * then each problem with the operation's own fields in the order it takes them; then what the
  * record decides (a check report's verdict, its claim's role against the check's own, its
- * `wake_at`, `pending` or `wake_at` on a phase completion, the issue a move
+ * `wake_at`, `pending` or `wake_at` on a phase completion, the issue a completion or a move
  * names), then a refused handoff report (`findHandoffReport`). A daemon refusal throws its code
  * and sentence.
  *
@@ -339,11 +370,23 @@ export async function executePhaseOp(
   }
   const args = parsed.data;
   switch (args.op) {
-    case "read_record":
-      return { record: recordFrom(await daemon.state(), args.issue) };
+    case "read_record": {
+      const named = args.issue?.trim() ?? "";
+      const issue = named !== "" ? named : claim.issue;
+      return { record: recordFrom(await daemon.state(), issue) };
+    }
     case "read_release_records":
       return releaseRecords(runtime, args.since);
-    case "handoff_complete":
+    case "handoff_complete": {
+      // The claim names the one issue a completion reports, so an `issue` in the call is only
+      // checked against it and never sent: one naming another issue is refused here, before the
+      // record is read or a grant minted.
+      const named = args.issue?.trim() ?? "";
+      if (named !== "" && named !== claim.issue) {
+        throw new Error(
+          `handoff_complete reports this session's own issue ${claim.issue}; leave issue out, or name ${claim.issue}, not ${named}`
+        );
+      }
       // Retried whole while the daemon restarts: the record, the handoff report and a fresh grant
       // are read again on each attempt. A repeat never applies twice, but it cannot tell a landed
       // attempt from a refused one (the daemon records both under the completion's key), so its
@@ -353,6 +396,7 @@ export async function executePhaseOp(
         () => completeHandoff(runtime, args),
         runtime.restart
       );
+    }
     case "request_backward_move": {
       // An architect's grant serves its whole tree, so its move names the issue it returns from
       // accepting. A phase worker's grant names its own issue, the only one it may move, so its
@@ -360,14 +404,16 @@ export async function executePhaseOp(
       // (ISSUE_NOT_GRANTS).
       let issue: string | undefined;
       if (claim.role === "architect") {
-        if (args.issue === undefined || args.issue.trim() === "") {
+        const named = args.issue?.trim() ?? "";
+        if (named === "") {
           throw new Error("request_backward_move requires issue");
         }
-        issue = args.issue;
-      } else if (args.issue !== undefined && args.issue !== claim.issue) {
-        throw new Error(
-          `a phase worker moves only its own issue ${claim.issue}, not ${args.issue}`
-        );
+        issue = named;
+      } else {
+        const named = args.issue?.trim() ?? "";
+        if (named !== "" && named !== claim.issue) {
+          throw new Error(`a phase worker moves only its own issue ${claim.issue}, not ${named}`);
+        }
       }
       await daemon.phaseBackward({
         grantId: await mintClaimGrant(daemon, claim),
@@ -442,13 +488,25 @@ const percentile = (sorted: readonly number[], share: number): number | null =>
  * token and secret authenticate the read, as every other claim route is authenticated, and they
  * never leave this process.
  *
- * `podHoursReleased` is how long the released pods were gone: from each release to the first
- * resume of it, and to `asOf` for a release the daemon has not resumed yet, since that pod is
- * gone now. A pod's roles wake one resume each, so the first of them ends the release.
+ * A release that suspended no role is known by the empty `roles` list the record already carries:
+ * every release of the rule that reclaims an issue pod no claim can use is one, and so is the
+ * rare idle release whose stops suspended nobody. No role of it is ever woken, so nothing records
+ * when its issue's pod came back, and the three measurements of a release's life leave it out.
+ * `counts.releases` counts every release and `counts.releasesSuspendingNoRole` counts these.
+ *
+ * `podHoursReleased` is how long the released pods were gone: from each release that suspended a
+ * role to the first resume of it, and to `asOf` for one the daemon has not resumed yet, since
+ * that pod is gone now. A pod's roles wake one resume each, so the first of them ends the
+ * release. A release that suspended no role is charged nothing, because charging it that way
+ * would bill the fleet from its moment to the moment of every later read, for ever, though an
+ * operator's retry may have rebuilt the pod a minute later.
  * `wokenWithinTenMinutes` counts the releases a wake followed that soon, the churn of releasing
- * a pod that was wanted again at once. `wakeToFirstTurnSeconds` measures each resume the daemon
- * has seen a first turn for, `withoutFirstTurn` counting the rest, and reports the nearest-rank
- * median and 90th percentile and the maximum.
+ * a pod that was wanted again at once, over the releases that suspended a role alone: a release
+ * no wake can reach belongs in neither half of that share, which it would otherwise lower for
+ * ever. `wakeToFirstTurnSeconds` measures each resume the daemon has seen a first turn for,
+ * `withoutFirstTurn` counting the rest, and reports the nearest-rank median and 90th percentile
+ * and the maximum; it reads the resume rows, of which a release that suspended no role has none,
+ * so it leaves those releases out by its own shape.
  */
 async function releaseRecords(
   runtime: PhaseOpRuntime,
@@ -470,12 +528,20 @@ async function releaseRecords(
   }
   let releasedMs = 0;
   let wokenSoon = 0;
+  let suspendedNoRole = 0;
   for (const release of records.releases) {
+    // The empty role list is the whole mark of a release no wake can reach, so it is counted
+    // here and measured nowhere.
+    if (release.roles.length === 0) {
+      suspendedNoRole += 1;
+      continue;
+    }
     const from = Date.parse(release.at);
     const woken = wokenAt.get(release.id);
     releasedMs += Math.max((woken ?? asOf.getTime()) - from, 0);
     if (woken !== undefined && woken - from <= WOKEN_SOON_MS) wokenSoon += 1;
   }
+  const wakeable = records.releases.length - suspendedNoRole;
   const waits = records.resumes
     .flatMap((resume) =>
       resume.firstTurnAt === undefined
@@ -492,6 +558,7 @@ async function releaseRecords(
     holds: records.holds,
     counts: {
       releases: records.releases.length,
+      releasesSuspendingNoRole: suspendedNoRole,
       resumes: records.resumes.length,
       resumesByKind: countedBy(records.resumes, (resume) => resume.kind),
       holds: records.holds.length,
@@ -500,10 +567,7 @@ async function releaseRecords(
     podHoursReleased: Math.round((releasedMs / 3_600_000) * 100) / 100,
     wokenWithinTenMinutes: {
       releases: wokenSoon,
-      share:
-        records.releases.length === 0
-          ? 0
-          : Math.round((wokenSoon / records.releases.length) * 1000) / 1000,
+      share: wakeable === 0 ? 0 : Math.round((wokenSoon / wakeable) * 1000) / 1000,
     },
     wakeToFirstTurnSeconds: {
       measured: waits.length,

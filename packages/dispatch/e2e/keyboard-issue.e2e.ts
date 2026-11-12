@@ -1,9 +1,7 @@
-import { expect, type Request, test } from "@playwright/test";
-
 import { createAsk, createIssue, createProject, getIssue } from "./api";
 import { barAction, selectEditorText } from "./editor";
 import { leaveFocus, onBody, openIssue } from "./keyboard-issue";
-import { resetDatabase } from "./seed";
+import { expect, type Request, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -24,10 +22,6 @@ const session = {
 function isPinWrite(request: Request): boolean {
   return request.method() === "PUT" && "pinned" in (request.postDataJSON() ?? {});
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("the issue scope reaches the header controls and the tab chords, and ? lists them under Issue", async ({
   browser,
@@ -397,10 +391,13 @@ test.describe("issue page", () => {
       await expect(multiple).toBeFocused();
       await page.keyboard.press("1");
       await page.keyboard.press("Shift+P");
-      await page.waitForTimeout(500);
-      expect({ patched, pinned }).toEqual({ patched: 0, pinned: 0 });
+      // The server's own answers are the wait: the issue carries no priority and the page still
+      // offers Pin, each read over a round trip of its own. A write either key had made would
+      // have left the page before those answers came back - it goes out in the task of the
+      // keypress that made it - so the counters are read after them rather than after a window.
       await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
       await expect(page.getByRole("button", { name: "Pin issue" })).toBeVisible();
+      expect({ patched, pinned }).toEqual({ patched: 0, pinned: 0 });
 
       // From the page itself both keys still write, which is what makes the first half a guard.
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());

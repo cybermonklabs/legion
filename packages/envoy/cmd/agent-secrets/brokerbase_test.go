@@ -3,10 +3,9 @@
 // The broker's address as an operator writes it. AGENT_SECRETS_URL is typed by hand into a unit
 // file, a pod's environment or a shell, so a URL ending in more than one slash is a typo rather
 // than a shape to refuse — and the two halves of this one token client must read it the same way.
-// The TypeScript half drops every slash a URL ends in
-// (`packages/broker-client/src/token-client.ts`, `withoutTrailingSlashes`, and the same helper in
-// `packages/envoy-client/src/dispatch-config.ts`); this half reads AGENT_SECRETS_URL through
-// `brokerBaseURL`, which every form of the command uses.
+// The TypeScript half drops every slash a URL ends in (`withoutTrailingSlashes` in
+// `packages/contracts/src/trailing-slash.ts`, which its broker and Dispatch clients share); this
+// half reads AGENT_SECRETS_URL through `brokerBaseURL`, which every form of the command uses.
 
 package main
 

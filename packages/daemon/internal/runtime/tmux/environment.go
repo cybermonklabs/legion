@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 )
@@ -46,11 +47,39 @@ var paneEnvAllowList = []string{
 // with their jj, gh, and mise configuration).
 func xdgHome(stateDir string) string { return filepath.Join(stateDir, "home") }
 
+// resolveLeakCheck is the shared public leak check of the machine this daemon runs on, found the
+// way the check itself says to find it and in the daemon's own environment (Options.Environ, the
+// `os.Environ()` form this process was started with): PUBLIC_LEAK_CHECK, then
+// public-leak-check.sh on PATH, then the pointer file under the configuration home. It is the
+// guard's own resolution (leakguard's Resolve) rather than a second copy of those three places,
+// and it is given the daemon's environment through the one seam the guard has for a caller that
+// holds its own (leakguard.Options.Env).
+//
+// The daemon resolves it because a pane cannot: PUBLIC_LEAK_CHECK is no allow-listed name
+// (paneEnvAllowList), a pane's XDG_CONFIG_HOME is the daemon's own rather than the operator's
+// (xdgHome, deliberately), and the check's installer puts its files on no PATH a pane has — so
+// all three places are closed in a pane, and every `legion gh` and every rescue push from one
+// would be refused with the setup error naming the missing check. A launch resolves again rather
+// than reading an answer taken at boot: the check is installed, moved and republished on an
+// operator's machine while the daemon runs, and the pane is told where it is now.
+//
+// A machine that carries none answers an error, which is no launch failure: the pane is told no
+// PUBLIC_LEAK_CHECK and every public write from it is refused with the setup error naming the
+// check, which is the honest answer on a machine that writes to public repositories with no
+// check. Legion installs none there — the pinned install is the pod's (leakguard.Install) — so
+// the cure is the check's own installer, on the machine the daemon runs on.
+func resolveLeakCheck(environ []string) (string, error) {
+	return leakguard.New(leakguard.Options{Env: environ}).Resolve()
+}
+
 // readProviderKeyNames is the key names in the provider-env directory, which the runtime reads once
 // at construction — boot, before any pane. Every entry must be a file named for an environment
 // variable that no pane already carries: the shim refuses to start over a name its environment
 // holds, and skips without a word a name whose NAME_FILE pointer it holds
-// (internal/shim/config.go:59-98), so either would open panes whose OMP lacks the key.
+// (internal/shim/config.go:59-98), so either would open panes whose OMP lacks the key. A composed
+// name (composed) is carried by every pane as surely as a runtime-owned one — panePairs sets it
+// whatever the operator wrote — so a provider key of that name is refused here as well, at boot,
+// rather than at each pane's shim.
 func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -61,6 +90,9 @@ func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error)
 		carried[name] = true
 	}
 	owned := func(name string) bool {
+		if composed[name] {
+			return true
+		}
 		return runtimeOwned[name] && (dispatchConfigured || (name != "DISPATCH_URL" && name != "DISPATCH_TOKEN_FILE"))
 	}
 	var names []string
@@ -87,9 +119,11 @@ func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error)
 // refuses (one that places the session a resume reads, one a Claude Code pane is told after the
 // operator's, a launch secret's pointer, a value that is a URL carrying a password), and a provider
 // key or its pointer, which the shim would then refuse to start over or skip
-// (internal/shim/config.go). The loader refuses what it can see without the runtime
-// (config.readPaneEnv); this refuses that again and the rest, at boot, before any pane opens. A
-// refusal names the variable and why, never its value.
+// (internal/shim/config.go). It reads runtimeOwned and controllerOwned and not the composed names
+// (composed), which the operator may set because the runtime writes this launch's share into the
+// value the operator wrote rather than over it. The loader refuses what it can see without the
+// runtime (config.readPaneEnv); this refuses that again and the rest, at boot, before any pane
+// opens. A refusal names the variable and why, never its value.
 func checkPaneEnv(env map[string]string, providerKeys []string) error {
 	identity := runtime.GitIdentity{}.Env()
 	for _, name := range slices.Sorted(maps.Keys(env)) {
