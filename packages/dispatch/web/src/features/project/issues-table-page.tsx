@@ -1,12 +1,18 @@
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import type { Table } from "@tanstack/react-table";
 import { type ReactNode, useState } from "react";
 import type { IssueSummary } from "../../api/types";
+import { Chip } from "../../components/Chip";
 import { ColumnsMenu } from "../../components/ColumnsMenu";
+import { ControlRow } from "../../components/ControlRow";
+import { DisplayMenu } from "../../components/DisplayMenu";
+import { PanelTrigger } from "../../components/PanelTrigger";
+import { SearchBox } from "../../components/SearchBox";
+import { SelectionBar } from "../../components/SelectionBar";
 import { useAddressUpdate } from "../../lib/page-address";
 import {
   borderDefault,
   card,
+  focusVisibleRing,
   issueStatusScale,
   surfaceBg,
   surfaceMutedBg,
@@ -24,6 +30,14 @@ import {
   runningIssueStatuses,
   writeUrl,
 } from "./issues-table-model";
+
+/** **Clear filters**: the one control of the row that is not a box of its own, since it undoes
+ *  the chips beside it rather than narrowing anything. It keeps the row's touch target. */
+const CLEAR_FILTERS_CLASS = `min-h-11 rounded-lg px-2 text-xs font-medium whitespace-nowrap outline-none focus-visible:ring-2 md:min-h-8 ${focusVisibleRing} ${textSecondaryOnCanvas}`;
+
+/** The panel the row's one filter trigger opens: a column of chips, portalled over the page so
+ *  opening it moves no row of the table beneath (INFRA-3135, R1). */
+const FLAGS_PANEL_CLASS = `z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col items-start gap-2 overflow-y-auto rounded-lg border p-2 text-sm font-normal shadow-lg ${card}`;
 
 /** The project List's own small button: the steps a selection is acted on by. */
 export function Action({
@@ -115,6 +129,16 @@ export function IssueTableStatus({
   );
 }
 
+/** Which of the row's own panels stands open, so the List keeps one at a time rather than a
+ *  row of them: the filter panel behind the trigger, or the display menu at the right end. */
+type ToolbarPanel = "flags" | "view";
+
+/**
+ * The one row the List's controls sit in: the search box, the trigger over the three flags that
+ * narrow no column of the table, the chips of the flags that are on with **Clear filters**, the
+ * columns menu, and the display menu carrying the grouping (INFRA-3135, R1 and R3). Every
+ * narrowing that is a column's own stays on that column's header, where `ColumnFilter` draws it.
+ */
 export function IssueTableToolbar({
   table,
   unclaimedUnchecked,
@@ -125,50 +149,41 @@ export function IssueTableToolbar({
 }): ReactNode {
   const flags = useIssueFilters();
   const update = useAddressUpdate();
+  const [openPanel, setOpenPanel] = useState<ToolbarPanel | undefined>(undefined);
   const { globalFilter: search, columnFilters: filters, grouping } = table.getState();
   const setSearch = table.setGlobalFilter;
   const setGrouping = table.setGrouping;
   const setExpanded = table.setExpanded;
-  return (
-    <>
-      <div className="flex flex-wrap items-center gap-2">
-        <input
-          aria-label="Search issues"
-          className={`w-full min-w-0 flex-none rounded-lg border px-3 py-1.5 text-sm sm:w-auto sm:min-w-64 sm:flex-1 ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
-          onChange={(event) => {
-            setSearch(event.target.value);
-          }}
-          placeholder="Search issues: key, title, epic, assignee, author, labels"
-          type="search"
-          value={search}
-          maxLength={SEARCH_QUERY_MAX}
-        />
-        <label className={`flex items-center gap-2 text-sm ${textSecondaryOnCanvas}`}>
-          Group by
-          <select
-            className={`rounded-lg border px-2 py-1.5 ${borderDefault} ${surfaceBg}`}
-            onChange={(event) => {
-              setGrouping(event.target.value ? [event.target.value] : []);
-              setExpanded(true);
-            }}
-            value={grouping[0] ?? ""}
+  // The three narrowings that are no column of this table, and so the ones the row's own
+  // trigger holds. Unclaimed is the Claimed by column's "Nobody or lapsed" as `?unclaimed=1`
+  // spells it (`issues-table-model.ts`), which is the parameter the Board's strip writes too.
+  const flagged = [
+    { label: "Needs you", off: () => flags.setNeedsYou(false), on: flags.needsYou },
+    { label: "Unread", off: () => flags.setUnread(false), on: flags.unread },
+    { label: "Unclaimed", off: () => flags.setUnclaimed(false), on: flags.unclaimed },
+  ].filter(({ on }) => on);
+  // Exactly the scope it has always had: the table's own filters and search, and the two flags
+  // the write below takes out of the address.
+  const narrowed = filters.length > 0 || search !== "" || flags.needsYou || flags.unread;
+  const chips =
+    flagged.length === 0 && !narrowed ? undefined : (
+      <>
+        {flagged.map(({ label, off }) => (
+          <Chip
+            aria-label={`Remove ${label} filter`}
+            key={label}
+            onClick={off}
+            removable
+            selected
+            size="compact"
+            title={label}
           >
-            <option value="">Nothing</option>
-            {table
-              .getAllLeafColumns()
-              .filter((column) => column.getCanGroup())
-              .map((column) => (
-                <option key={column.id} value={column.id}>
-                  {String(column.columnDef.header)}
-                </option>
-              ))}
-          </select>
-        </label>
-        <ColumnsMenu columns={table.getAllLeafColumns()} size="compact" />
-        <IssueFlagChips />
-        {filters.length > 0 || search !== "" || flags.needsYou || flags.unread ? (
+            {label}
+          </Chip>
+        ))}
+        {narrowed ? (
           <button
-            className={`rounded-lg border px-2 py-1.5 text-sm ${borderDefault} ${surfaceMutedHoverBg}`}
+            className={CLEAR_FILTERS_CLASS}
             onClick={() =>
               update((current) => {
                 const next = writeUrl(current, {
@@ -188,7 +203,76 @@ export function IssueTableToolbar({
             Clear filters
           </button>
         ) : null}
-      </div>
+      </>
+    );
+  return (
+    <>
+      <ControlRow
+        chips={chips}
+        display={
+          <DisplayMenu
+            label="View"
+            onOpenChange={(open) => setOpenPanel(open ? "view" : undefined)}
+            open={openPanel === "view"}
+            sections={[
+              {
+                id: "group",
+                label: "Group by",
+                onChange: (next) => {
+                  setGrouping(next ? [next] : []);
+                  setExpanded(true);
+                },
+                options: [
+                  { label: "Nothing", value: "" },
+                  ...table
+                    .getAllLeafColumns()
+                    .filter((column) => column.getCanGroup())
+                    .map((column) => ({
+                      label: String(column.columnDef.header),
+                      value: column.id,
+                    })),
+                ],
+                value: grouping[0] ?? "",
+              },
+            ]}
+            size="compact"
+          />
+        }
+        search={
+          <SearchBox
+            className="w-full"
+            label="Search issues"
+            onChange={(value) => setSearch(value)}
+            placeholder="Search issues: key, title, epic, assignee, author, labels"
+            size="compact"
+            value={search}
+          />
+        }
+        trigger={
+          <PanelTrigger
+            count={flagged.length}
+            label="Filters"
+            onOpenChange={(open) => setOpenPanel(open ? "flags" : undefined)}
+            open={openPanel === "flags"}
+            panelClassName={FLAGS_PANEL_CLASS}
+            size="compact"
+          >
+            {() => (
+              <>
+                <IssueFlagChips />
+                <Chip
+                  onClick={() => flags.setUnclaimed(!flags.unclaimed)}
+                  selected={flags.unclaimed}
+                >
+                  Unclaimed
+                </Chip>
+              </>
+            )}
+          </PanelTrigger>
+        }
+      >
+        <ColumnsMenu columns={table.getAllLeafColumns()} size="compact" />
+      </ControlRow>
       <UnclaimedUnchecked reason={unclaimedUnchecked} />
     </>
   );
@@ -217,70 +301,62 @@ export function IssueTableSelection({
   /** The epic the reader has picked to move the selection into; no write has been sent yet. */
   const [epic, setEpic] = useState("");
   return (
-    <>
-      {/* Over the page, not in it: selecting a row moves nothing else. */}
-      {selectedKeys.length === 0 ? null : (
-        <div
-          className={`fixed inset-x-2 top-14 z-30 mx-auto flex w-fit max-w-[calc(100vw-1rem)] flex-nowrap items-center gap-2 overflow-x-auto whitespace-nowrap rounded-2xl border px-4 py-2 text-sm shadow-xl sm:top-auto sm:bottom-4 [&>*]:shrink-0 ${card} ${textPrimaryOnCanvas}`}
-          role="toolbar"
-        >
-          <span className="mr-1 font-semibold">{selectedKeys.length} selected</span>
-          {selectedKeys.length < leafCount ? (
-            <Action disabled={busy} onClick={() => table.toggleAllRowsSelected(true)}>
-              Select all {leafCount} matching
-            </Action>
-          ) : null}
-          {/* A selection the reader cannot see all of — "Select all N matching" — is asked
-              about first: Start next writes once per issue. */}
-          <Action
-            disabled={busy}
-            onClick={() =>
-              startNext(selectedKeys, selectedKeys.length > table.getRowModel().rows.length)
-            }
-          >
-            Start next
-          </Action>
-          {/* Two steps: the select stages an epic and Move commits it. A closed `<select>`
-              commits on an arrow key in Chrome on Linux and Windows, and this one reparents
-              every selected issue. */}
-          <select
-            aria-label="Move to epic"
-            className={`rounded-lg border px-2 py-1 ${borderDefault} ${surfaceBg}`}
-            disabled={busy}
-            onChange={(event) => setEpic(event.target.value)}
-            value={epic}
-          >
-            <option value="">Move to epic…</option>
-            {epics.map((option) => (
-              <option key={option.key} value={option.key}>
-                {option.title}
-              </option>
-            ))}
-          </select>
-          <Action
-            disabled={busy || epic === ""}
-            onClick={() => {
-              const into = epic;
-              setEpic("");
-              void moveTo(selectedKeys, into);
-            }}
-          >
-            Move
-          </Action>
-          <Action disabled={busy} onClick={() => void moveTo(selectedKeys, null)}>
-            Take out of epic
-          </Action>
-          <Action
-            disabled={busy || unansweredEpic !== undefined}
-            onClick={() => void newEpic(selectedKeys)}
-          >
-            New epic from these
-          </Action>
-          <Action disabled={busy} onClick={() => setSelection({})}>
-            Clear selection
-          </Action>
-        </div>
-      )}
-    </>
+    // Over the list, not in it: selecting a row moves no row (INFRA-3135, R4).
+    <SelectionBar count={selectedKeys.length} label="Selected issues">
+      {selectedKeys.length < leafCount ? (
+        <Action disabled={busy} onClick={() => table.toggleAllRowsSelected(true)}>
+          Select all {leafCount} matching
+        </Action>
+      ) : null}
+      {/* A selection the reader cannot see all of — "Select all N matching" — is asked
+          about first: Start next writes once per issue. */}
+      <Action
+        disabled={busy}
+        onClick={() =>
+          startNext(selectedKeys, selectedKeys.length > table.getRowModel().rows.length)
+        }
+      >
+        Start next
+      </Action>
+      {/* Two steps: the select stages an epic and Move commits it. A closed `<select>`
+          commits on an arrow key in Chrome on Linux and Windows, and this one reparents
+          every selected issue. */}
+      <select
+        aria-label="Move to epic"
+        className={`rounded-lg border px-2 py-1 ${borderDefault} ${surfaceBg}`}
+        disabled={busy}
+        onChange={(event) => setEpic(event.target.value)}
+        value={epic}
+      >
+        <option value="">Move to epic…</option>
+        {epics.map((option) => (
+          <option key={option.key} value={option.key}>
+            {option.title}
+          </option>
+        ))}
+      </select>
+      <Action
+        disabled={busy || epic === ""}
+        onClick={() => {
+          const into = epic;
+          setEpic("");
+          void moveTo(selectedKeys, into);
+        }}
+      >
+        Move
+      </Action>
+      <Action disabled={busy} onClick={() => void moveTo(selectedKeys, null)}>
+        Take out of epic
+      </Action>
+      <Action
+        disabled={busy || unansweredEpic !== undefined}
+        onClick={() => void newEpic(selectedKeys)}
+      >
+        New epic from these
+      </Action>
+      <Action disabled={busy} onClick={() => setSelection({})}>
+        Clear selection
+      </Action>
+    </SelectionBar>
   );
 }

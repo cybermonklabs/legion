@@ -27,7 +27,6 @@ import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useUserPreference } from "../shell/userPreference";
 import { DocumentList } from "./DocumentList";
 import { IssueBoard } from "./IssueBoard";
-import { IssueFilters } from "./IssueFilters";
 import { IssuesTable } from "./IssuesTable";
 
 type ProjectTab = "architecture" | "issues" | "documents";
@@ -268,10 +267,12 @@ export function ProjectPage(): ReactNode {
           issueView === "list" ? (
             <IssuesTable key={route.project} project={route.project} />
           ) : (
-            <>
-              <IssueFilters key={route.project} project={route.project} />
-              <IssueBoard lanes={lanes} project={route.project} showEdges={showEdges} />
-            </>
+            <IssueBoard
+              key={route.project}
+              lanes={lanes}
+              project={route.project}
+              showEdges={showEdges}
+            />
           )
         ) : null}
       </div>
