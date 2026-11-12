@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
@@ -347,6 +348,14 @@ func newBundleFixture(t *testing.T) *bundleFixture {
 	// a home of this test's own, which holds none of the host's jj and git configuration — its
 	// user, its trailers, its filters — and the identity below is the fixture's own
 	// (docs/testing.md).
+	//
+	// The seed pushes run under whatever git is first on PATH, and in an issue pod that is
+	// Legion's wrapper (/opt/legion/bin/git), which points a push at a hook running the leak
+	// guard. The guard refuses a push it can resolve no shared public leak check for (leakguard's
+	// Resolve), and Isolated drops PUBLIC_LEAK_CHECK with the rest of what reaches past the test,
+	// so the fixture carries a stand-in of its own that clears every write — as every other
+	// fixture that pushes does (rescuetest's disk) — and the pushes below behave here as they do
+	// on a runner whose git is the real one.
 	home := filepath.Join(root, "home")
 	f := &bundleFixture{
 		t: t, root: root, remote: filepath.Join(root, "remote"), clone: filepath.Join(root, "clone"), ws: filepath.Join(root, "ws"),
@@ -354,7 +363,8 @@ func newBundleFixture(t *testing.T) *bundleFixture {
 		env: append(fixtureenv.Isolated(home),
 			"JJ_USER=tester", "JJ_EMAIL=tester@example.test",
 			"GIT_AUTHOR_NAME=tester", "GIT_AUTHOR_EMAIL=tester@example.test",
-			"GIT_COMMITTER_NAME=tester", "GIT_COMMITTER_EMAIL=tester@example.test"),
+			"GIT_COMMITTER_NAME=tester", "GIT_COMMITTER_EMAIL=tester@example.test",
+			"PUBLIC_LEAK_CHECK="+leakguardtest.Write(t, root, leakguardtest.Passes)),
 	}
 	seed := filepath.Join(root, "seed")
 	for _, dir := range []string{f.remote, seed, home} {
