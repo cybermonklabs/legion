@@ -1,10 +1,10 @@
 import { rankItem, rankings } from "@tanstack/match-sorter-utils";
 import type { ColumnFiltersState, GroupingState, SortingState } from "@tanstack/react-table";
 import type { Actor, IssueSummary, UpdateIssueInput } from "../../api/types";
+import type { LayoutColumns } from "../../components/table-layout";
 import { capSearchQuery } from "../../lib/query-param";
 import { compareTimestamps } from "../../lib/timestamps";
 import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "./board-model";
-import type { LayoutColumns } from "./issues-table-layout";
 
 export interface Item {
   readonly issue: IssueSummary;
@@ -18,6 +18,18 @@ export interface Item {
   readonly claimFree: boolean;
   readonly search: string;
 }
+
+/** The attributes the List's own rows carry, which the table core is told to read: its keys
+ *  walk `data-issue-row`, its anchor holds a row's place by it and its groups by
+ *  `data-issue-group`, and opening a row follows the link marked `data-issue-link`. */
+export const ISSUE_ROW_ATTRIBUTE = "data-issue-row";
+export const ISSUE_GROUP_ATTRIBUTE = "data-issue-group";
+export const ISSUE_LINK_ATTRIBUTE = "data-issue-link";
+
+/** The one key the List keeps a project's table under in the browser: the reader's layout, and
+ *  the record of an action a reload interrupted. */
+export const tableStorageKey = (project: string) => `dispatch.project-table.${project}`;
+
 export const AGES = ["Today", "This week", "This month", "Older"] as const;
 export const ALL_ROWS = Number.MAX_SAFE_INTEGER;
 export const PAGE_SIZES = [25, 50, 100, 250, ALL_ROWS];
@@ -259,6 +271,7 @@ const phoneMin = (id: ColumnId): number => COMPACT_COLUMN_MIN[id] ?? COLUMN_MIN[
  */
 export const ISSUE_TABLE_COLUMNS: LayoutColumns = {
   ids: COLUMNS.map((column) => column.id),
+  rowAttribute: ISSUE_ROW_ATTRIBUTE,
   hiddenByDefault: { updated: false } satisfies Partial<Record<ColumnId, boolean>>,
   sizes: Object.fromEntries(COLUMNS.map((column) => [column.id, column.size])),
   minimums: COLUMN_MIN,
@@ -567,17 +580,6 @@ export function writeUrl(params: URLSearchParams, state: View): URLSearchParams 
   if (state.search) next.set("q", state.search);
   if (state.page) next.set("page", String(state.page + 1));
   if (state.pageSize !== defaultView.pageSize) next.set("size", String(state.pageSize));
-  return next;
-}
-
-/** The column order a drag leaves behind: `dragged` taken out of `current` and put back
- *  immediately before `before`. A drop on itself, or on an id the order does not hold, leaves
- *  the order as it was. */
-export function reorder(current: readonly string[], dragged: string, before: string): string[] {
-  if (dragged === before || !current.includes(dragged) || !current.includes(before))
-    return [...current];
-  const next = current.filter((id) => id !== dragged);
-  next.splice(next.indexOf(before), 0, dragged);
   return next;
 }
 

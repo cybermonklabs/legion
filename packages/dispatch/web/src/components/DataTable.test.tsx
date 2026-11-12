@@ -1,18 +1,19 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import {
-  type ColumnDef,
-  type ColumnFiltersState,
-  flexRender,
-  type GroupingState,
-  type PaginationState,
-  type SortingState,
+import type {
+  ColumnDef,
+  ColumnFiltersState,
+  GroupingState,
+  PaginationState,
+  SortingState,
 } from "@tanstack/react-table";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
-import { type LayoutColumns, useTableLayout } from "../features/project/issues-table-layout";
-import { tableStorageKey } from "../features/project/issues-table-storage";
-import { DataTable, useDataTable } from "./DataTable";
+import { KeymapProvider } from "../features/shell/KeymapProvider";
+import { useKeymapScope } from "../features/shell/keymap";
+import { DataTable, type DataTableNames, flexRender, useDataTable } from "./DataTable";
+import type { PagerOptions } from "./Pager";
+import { type LayoutColumns, useTableLayout } from "./table-layout";
 
 /** A row that is not an issue: the core knows nothing of what its rows are. */
 interface Deploy {
@@ -42,9 +43,39 @@ const COLUMNS: ColumnDef<Deploy>[] = [
   },
   { accessorFn: (row) => row.region, enableColumnFilter: false, header: "Region", id: "region" },
 ];
-/** The table's own column ids, which its stored layout keeps and no other. */
+/** The table's own column ids, which its stored layout keeps and no other, and the attribute
+ *  its rows carry: a deploy's row, never an issue's. */
 const LAYOUT_COLUMNS: LayoutColumns = {
   ids: COLUMNS.flatMap((column) => (column.id === undefined ? [] : [column.id])),
+  rowAttribute: "data-deploy-row",
+};
+
+/** The caller's own words for its deploys, which the core reads: a scope of its own, the keys
+ *  of the page that draws it, and the attributes its rows and links carry. */
+const DEPLOY_NAMES: DataTableNames = {
+  filterCountNoun: { one: "deploy", many: "deploys" },
+  groupAttribute: "data-deploy-group",
+  keymap: {
+    next: { id: "deploys-next", keys: "j", label: "Next deploy" },
+    open: { id: "deploys-open", keys: "o", label: "Open deploy" },
+    openOnEnter: { id: "deploys-open-enter", keys: "Enter", label: "Open the focused deploy" },
+    previous: { id: "deploys-previous", keys: "k", label: "Previous deploy" },
+    scope: "agents",
+    select: { id: "deploys-select", keys: "x", label: "Select or deselect the focused deploy" },
+  },
+  linkAttribute: "data-deploy-link",
+  rowAttribute: "data-deploy-row",
+};
+
+/** The line under the deploys table, counting what the caller counts. */
+const DEPLOY_PAGER: PagerOptions = {
+  nouns: {
+    group: { one: "group", many: "groups" },
+    item: { one: "deploy", many: "deploys" },
+    row: { one: "row", many: "rows" },
+  },
+  pageSizes: [10, 25, 50],
+  testId: "deploys-pager",
 };
 
 /** A table whose columns share the issue table's names, `title` and `status`, and none of its
@@ -55,7 +86,10 @@ const NAMESAKE_COLUMNS: ColumnDef<Deploy>[] = [
   { accessorFn: (row) => row.state, enableColumnFilter: false, header: "State", id: "status" },
   { accessorFn: (row) => row.region, enableColumnFilter: false, header: "Region", id: "region" },
 ];
-const NAMESAKE_LAYOUT: LayoutColumns = { ids: ["deploy", "title", "status", "region"] };
+const NAMESAKE_LAYOUT: LayoutColumns = {
+  ids: ["deploy", "title", "status", "region"],
+  rowAttribute: "data-deploy-row",
+};
 
 const DEPLOYS: Deploy[] = [
   { id: "d1", minutes: 9, region: "eu", service: "billing", state: "live" },
@@ -73,6 +107,7 @@ function Deploys({
   layoutColumns = LAYOUT_COLUMNS,
   layoutKey = "deploys",
   pageSize = 25,
+  pager = DEPLOY_PAGER,
   rows = DEPLOYS,
 }: {
   columns?: ColumnDef<Deploy>[];
@@ -81,6 +116,8 @@ function Deploys({
   layoutColumns?: LayoutColumns;
   layoutKey?: string;
   pageSize?: number;
+  /** The line under the table; `null` draws a table with no pager at all. */
+  pager?: PagerOptions | null;
   rows?: Deploy[];
 }): ReactNode {
   const [sorting, setSorting] = useState<SortingState>([]);
@@ -103,6 +140,7 @@ function Deploys({
           },
         }),
     layout,
+    names: DEPLOY_NAMES,
     onColumnFiltersChange: setColumnFilters,
     onGlobalFilterChange: setGlobalFilter,
     onGroupingChange: setGrouping,
@@ -121,13 +159,14 @@ function Deploys({
         model={model}
         onOpenFilterChange={setOpenFilter}
         openFilter={openFilter}
+        pager={pager ?? undefined}
         renderGroup={({ entry, index, measure }) => (
           <tr data-group={String(entry.row.groupingValue)} data-index={index} ref={measure}>
             <td>{String(entry.row.groupingValue)}</td>
           </tr>
         )}
         renderRow={({ row, index, measure }) => (
-          <tr data-index={index} data-issue-row={row.id} ref={measure} tabIndex={-1}>
+          <tr data-deploy-row={row.id} data-index={index} ref={measure} tabIndex={-1}>
             {row.getVisibleCells().map((cell) => (
               <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
             ))}
@@ -137,6 +176,12 @@ function Deploys({
       />
     </section>
   );
+}
+
+/** The page the table sits on, which pushes the scope its keys are registered in. */
+function Scope(): ReactNode {
+  useKeymapScope("agents");
+  return null;
 }
 
 const restores: (() => void)[] = [];
@@ -173,7 +218,9 @@ function draw(tree: ReactNode, boxWidth?: number) {
 }
 
 const listed = (table: HTMLElement) =>
-  [...table.querySelectorAll("[data-issue-row]")].map((row) => row.getAttribute("data-issue-row"));
+  [...table.querySelectorAll("[data-deploy-row]")].map((row) =>
+    row.getAttribute("data-deploy-row")
+  );
 
 test("draws the rows it is given, of a type that is not an issue, under its label", async () => {
   draw(<Deploys />);
@@ -181,7 +228,7 @@ test("draws the rows it is given, of a type that is not an issue, under its labe
   const table = await screen.findByRole("table", { name: "Deploys deploys" });
   expect(listed(table)).toEqual(["d1", "d2", "d3"]);
   expect(within(table).getByText("billing")).toBeInTheDocument();
-  expect(screen.getByText("3 of 3 issues")).toBeInTheDocument();
+  expect(screen.getByText("3 of 3 deploys")).toBeInTheDocument();
 });
 
 test("sorts by a column's value when its header is pressed", async () => {
@@ -207,7 +254,7 @@ test("filters by the text typed into a column's filter", async () => {
   await user.type(screen.getByRole("textbox", { name: "Filter Service" }), "led");
 
   expect(listed(table)).toEqual(["d3"]);
-  expect(screen.getByText("1 of 3 issues")).toBeInTheDocument();
+  expect(screen.getByText("1 of 3 deploys")).toBeInTheDocument();
 });
 
 test("pages its rows and moves to the next page", async () => {
@@ -248,13 +295,13 @@ test("says the caller's own words when no row is listed", async () => {
   expect(screen.getByText("No deploys match.")).toBeInTheDocument();
 });
 
-test("keeps its own columns' widths, order and visibility under its own key", async () => {
+test("keeps its own columns' widths, order and visibility under the whole key it is given", async () => {
   const stored = {
     order: ["region", "deploy"],
     sizing: { minutes: 210 },
     visibility: { state: false },
   };
-  localStorage.setItem(tableStorageKey("deploys"), JSON.stringify(stored));
+  localStorage.setItem("deploys", JSON.stringify(stored));
   draw(
     <>
       <Deploys layoutKey="deploys" />
@@ -273,8 +320,8 @@ test("keeps its own columns' widths, order and visibility under its own key", as
     width: "210px",
   });
   expect(headings(releases)).toEqual(["Deploy", "Service", "State", "Minutes", "Region"]);
-  expect(JSON.parse(localStorage.getItem(tableStorageKey("deploys")) ?? "{}")).toEqual(stored);
-  expect(JSON.parse(localStorage.getItem(tableStorageKey("releases")) ?? "{}")).toEqual({
+  expect(JSON.parse(localStorage.getItem("deploys") ?? "{}")).toEqual(stored);
+  expect(JSON.parse(localStorage.getItem("releases") ?? "{}")).toEqual({
     order: [],
     sizing: {},
     visibility: {},
@@ -287,7 +334,7 @@ test("keeps its own columns' widths, order and visibility under its own key", as
 for (const boxWidth of [1400, 390]) {
   test(`a table with title and status columns keeps its own layout rules in a ${boxWidth} px box`, async () => {
     const stored = { order: [], sizing: { deploy: 40, status: 50 }, visibility: { title: false } };
-    localStorage.setItem(tableStorageKey("namesakes"), JSON.stringify(stored));
+    localStorage.setItem("namesakes", JSON.stringify(stored));
     draw(
       <Deploys columns={NAMESAKE_COLUMNS} layoutColumns={NAMESAKE_LAYOUT} layoutKey="namesakes" />,
       boxWidth
@@ -302,7 +349,7 @@ for (const boxWidth of [1400, 390]) {
     ]);
     expect(headers.map((header) => header.style.width)).toEqual(["40px", "50px", "150px"]);
     expect(headers.map((header) => header.style.left)).toEqual(["", "", ""]);
-    expect(JSON.parse(localStorage.getItem(tableStorageKey("namesakes")) ?? "{}")).toEqual(stored);
+    expect(JSON.parse(localStorage.getItem("namesakes") ?? "{}")).toEqual(stored);
   });
 }
 
@@ -329,4 +376,37 @@ test("a view change scrolls the box to its top and a data change keeps it where 
 
   await user.click(within(table).getByRole("button", { name: "Minutes" }));
   expect(box.scrollTop).toBe(0);
+});
+
+test("a table given no pager draws none", async () => {
+  draw(<Deploys pager={null} />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  expect(listed(table)).toEqual(["d1", "d2", "d3"]);
+  expect(screen.queryByTestId("deploys-pager")).toBeNull();
+  expect(screen.queryByRole("combobox", { name: "Rows per page" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Next ›" })).toBeNull();
+});
+
+// The core knows nothing of what its rows are called: a page gives it the attribute its rows
+// carry and the scope and labels its keys are registered under, and those are what it uses.
+test("walks the rows by the attribute and the keymap scope the caller gives", async () => {
+  const user = userEvent.setup();
+  draw(
+    <KeymapProvider>
+      <Scope />
+      <Deploys />
+    </KeymapProvider>
+  );
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  expect(table.querySelector("[data-issue-row]")).toBeNull();
+  const rows = [...table.querySelectorAll<HTMLElement>("[data-deploy-row]")];
+
+  await user.keyboard("j");
+  expect(rows[0]).toHaveFocus();
+  await user.keyboard("j");
+  expect(rows[1]).toHaveFocus();
+  await user.keyboard("k");
+  expect(rows[0]).toHaveFocus();
 });

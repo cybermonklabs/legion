@@ -139,8 +139,8 @@ export interface TableShellProps {
  * what its text *is* - a key, a figure, a count nobody needs to read first - and the shell says
  * what that looks like.
  *
- * Not to be confused with `features/project/issues-table-rows.tsx`'s `TableHeaderCell`, which is
- * the sorting, filtering, resizable header cell `DataTable` draws.
+ * Not to be confused with `DataTable.tsx`'s `TableHeaderCell`, which is the sorting, filtering,
+ * resizable header cell `DataTable` draws.
  */
 export function TableShell({
   children,

@@ -3,6 +3,7 @@ import {
   type ColumnFiltersState,
   type ExpandedState,
   type FilterFn,
+  flexRender,
   functionalUpdate,
   type GroupingState,
   getCoreRowModel,
@@ -11,6 +12,7 @@ import {
   getGroupedRowModel,
   getPaginationRowModel,
   getSortedRowModel,
+  type Header,
   type OnChangeFn,
   type PaginationState,
   type RowModel,
@@ -22,12 +24,25 @@ import {
 } from "@tanstack/react-table";
 import { useVirtualizer, type Virtualizer } from "@tanstack/react-virtual";
 import { Fragment, type ReactNode, useLayoutEffect, useRef, useState } from "react";
-import { IssueTablePager } from "../features/project/issues-table-controls";
-import { useRowKeymap } from "../features/project/issues-table-keys";
-import type { TableLayoutModel } from "../features/project/issues-table-layout";
-import { TableHeaderCell } from "../features/project/issues-table-rows";
 import { ViewportAnchor } from "../features/shell/ViewportAnchor";
-import { borderDefault, surfaceBg, textMutedOnCanvas } from "../theme/classes";
+import {
+  borderDefault,
+  surfaceBg,
+  tableResizeActive,
+  tableResizeHover,
+  textMutedOnCanvas,
+  textSecondaryOnCanvas,
+} from "../theme/classes";
+import { ColumnFilter, type FilterCountNoun } from "./ColumnFilter";
+import { CONTROL } from "./control-names";
+import { Pager, type PagerOptions } from "./Pager";
+import { type RowKeymap, useRowKeymap } from "./table-keys";
+import { reorder, type TableLayoutModel } from "./table-layout";
+
+/** TanStack's own renderer for a header or a cell, re-exported: the core is the one place the
+ *  table library is imported as a value, and a page that draws its own rows needs this to turn
+ *  a column's definition into what the row shows. */
+export { flexRender };
 
 const EMPTY_COUNTS: ReadonlyMap<string, number> = new Map();
 const NO_SELECTION: RowSelectionState = {};
@@ -51,6 +66,25 @@ export interface DataTableState {
   readonly pagination: PaginationState;
 }
 
+/**
+ * The caller's own words for what its table holds, which the core reads but never invents: the
+ * attributes its rows, groups and links carry, how its keys are named in the palette, and what
+ * a count of its rows is called. One object, and it is given to `useDataTable` rather than to
+ * `DataTable`, because the keys are registered where the rows are modelled while the attributes
+ * are written where they are drawn, and the two must say the same words.
+ */
+export interface DataTableNames {
+  /** The attribute each drawn row carries, holding the row's id: `data-issue-row`. */
+  readonly rowAttribute: string;
+  /** The attribute a drawn row carries naming the group it sits in. */
+  readonly groupAttribute: string;
+  /** The attribute on the link inside a row that opening the row follows. */
+  readonly linkAttribute: string;
+  readonly keymap: RowKeymap;
+  /** What a header filter calls a count of rows: `3 issues`. */
+  readonly filterCountNoun: FilterCountNoun;
+}
+
 export interface DataTableOptions<Row> {
   readonly rows: Row[];
   readonly columns: ColumnDef<Row>[];
@@ -58,6 +92,7 @@ export interface DataTableOptions<Row> {
   /** The caller's `useTableLayout`, made before the columns because a column's width can
    *  follow the box it measures. */
   readonly layout: TableLayoutModel;
+  readonly names: DataTableNames;
   readonly state: DataTableState;
   readonly onSortingChange: OnChangeFn<SortingState>;
   readonly onGroupingChange: OnChangeFn<GroupingState>;
@@ -97,6 +132,7 @@ export interface DataTableModel<Row> {
   readonly virtualizer: Virtualizer<HTMLDivElement, Element>;
   /** Whether `ViewportAnchor` may hold the row in hand across this commit. */
   readonly anchorEnabled: () => boolean;
+  readonly names: DataTableNames;
 }
 
 /**
@@ -134,14 +170,15 @@ function sortedByGroup<Row>({ compare, heading }: GroupOrder<Row>) {
 /**
  * The one TanStack table of the web app, for rows of any type: its sorting, filtering,
  * grouping, paging and selection, the lines a page draws, the virtual rows that draw them and
- * the keys that walk them. The caller keeps the view and the layout and draws each row; the
- * core keeps which groups are open.
+ * the keys that walk them. The caller keeps the view and the layout, draws each row and gives
+ * the words everything here is named by (`names`); the core keeps which groups are open.
  */
 export function useDataTable<Row>({
   columns,
   getRowId,
   groupOrder,
   layout,
+  names,
   onColumnFiltersChange,
   onGlobalFilterChange,
   onGroupingChange,
@@ -240,6 +277,9 @@ export function useDataTable<Row>({
 
   useRowKeymap({
     displayRows,
+    keymap: names.keymap,
+    linkAttribute: names.linkAttribute,
+    rowAttribute: names.rowAttribute,
     rowsById: table.getCoreRowModel().rowsById,
     scrollRef: layout.scrollRef,
     scrollToIndex: (index) => virtualizer.scrollToIndex(index, { align: "auto" }),
@@ -254,6 +294,7 @@ export function useDataTable<Row>({
     anchorEnabled: () => previousView.current === viewKey,
     displayRows,
     layout,
+    names,
     table,
     virtualizer,
   };
@@ -283,18 +324,127 @@ export interface DataTableProps<Row> {
    *  than a count. Kept apart from the column definitions: a new definition is a new component
    *  to React, so a change there would draw every cell anew. */
   readonly filterUnloaded?: ReadonlyMap<string, readonly string[]>;
-  /** Draws one row: a `<tr>` carrying `data-issue-row`, which the keys and the box's height
-   *  read, `data-index` and `ref={measure}`. */
+  /** Draws one row: a `<tr>` carrying the caller's own row attribute, which the keys and the
+   *  box's height read, `data-index` and `ref={measure}`. */
   readonly renderRow: (props: LineProps & { readonly row: TableRow<Row> }) => ReactNode;
   /** Draws one group's heading, with `data-index` and `ref={measure}`. */
   readonly renderGroup: (props: LineProps & { readonly entry: DisplayRow<Row> }) => ReactNode;
+  /** The pager drawn under the box, in the caller's own words. A table given none draws none:
+   *  a listing that fits one page, or one paged elsewhere, has no line to show. */
+  readonly pager?: PagerOptions;
   /** The width of a last, unheaded column that each row draws itself. */
   readonly trailingWidth?: number;
 }
 
+/** One header cell: its sort control, which doubles as the handle that drags the column
+ *  elsewhere, its filter, and the edge that resizes it. */
+function TableHeaderCell<TData>({
+  compact,
+  counts,
+  countNoun,
+  dragColumn,
+  header,
+  openFilter,
+  order,
+  setDragColumn,
+  setOpenFilter,
+  setOrder,
+  unloaded,
+}: {
+  /** A phone, where the title's header stacks its controls. */
+  compact: boolean;
+  counts: ReadonlyMap<string, number>;
+  /** What the filter calls a count of rows. */
+  countNoun: FilterCountNoun;
+  dragColumn: string | undefined;
+  header: Header<TData, unknown>;
+  openFilter: string | undefined;
+  /** The columns in the order they are shown, which a drop rewrites. */
+  order: readonly string[];
+  setDragColumn: (id: string | undefined) => void;
+  setOpenFilter: (id: string | undefined) => void;
+  setOrder: (next: string[]) => void;
+  /** This column's filter values whose rows are not loaded yet. */
+  unloaded: readonly string[];
+}): ReactNode {
+  const column = header.column;
+  const pinned = column.getIsPinned() === "left";
+  return (
+    <th
+      aria-sort={
+        column.getIsSorted() === "asc"
+          ? "ascending"
+          : column.getIsSorted() === "desc"
+            ? "descending"
+            : undefined
+      }
+      className={`sticky top-0 border-b px-1 py-2 pr-2 text-left align-middle text-xs font-semibold md:px-2 ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${pinned ? "z-30" : "z-20"} ${pinned && column.getIsLastColumn("left") ? "border-r" : ""}`}
+      onDragOver={(event) => {
+        if (dragColumn !== undefined && !pinned) event.preventDefault();
+      }}
+      onDrop={() => {
+        if (dragColumn === undefined || pinned || dragColumn === column.id) return;
+        setOrder(reorder(order, dragColumn, column.id));
+        setDragColumn(undefined);
+      }}
+      style={{
+        width: header.getSize(),
+        left: pinned ? column.getStart("left") : undefined,
+      }}
+    >
+      <span
+        className={`flex justify-between ${compact && column.id === "title" ? "flex-col items-center" : "items-center gap-0 md:gap-1"}`}
+      >
+        {column.getCanSort() ? (
+          <button
+            className="flex min-w-0 items-center gap-1 truncate whitespace-nowrap"
+            draggable={!pinned}
+            onClick={column.getToggleSortingHandler()}
+            onDragEnd={() => setDragColumn(undefined)}
+            onDragStart={() => setDragColumn(column.id)}
+            title={
+              pinned
+                ? "Sort (shift-click to add a second sort)"
+                : "Sort (shift-click to add a second sort); drag to move the column"
+            }
+            type="button"
+          >
+            {flexRender(column.columnDef.header, header.getContext())}
+            <span className={textMutedOnCanvas}>
+              {{ asc: "▲", desc: "▼" }[column.getIsSorted() as string] ?? ""}
+            </span>
+          </button>
+        ) : (
+          flexRender(column.columnDef.header, header.getContext())
+        )}
+        {column.getCanFilter() ? (
+          <ColumnFilter
+            column={column}
+            countNoun={countNoun}
+            counts={counts}
+            onOpenChange={(open) => setOpenFilter(open ? column.id : undefined)}
+            open={openFilter === column.id}
+            unloaded={unloaded}
+          />
+        ) : null}
+      </span>
+      {column.getCanResize() ? (
+        <span
+          aria-hidden
+          className={`absolute top-0 right-0 h-full w-1.5 cursor-col-resize touch-none select-none ${column.getIsResizing() ? tableResizeActive : tableResizeHover}`}
+          onDoubleClick={() => column.resetSize()}
+          onMouseDown={header.getResizeHandler()}
+          onTouchStart={header.getResizeHandler()}
+        />
+      ) : null}
+    </th>
+  );
+}
+
 /**
  * The table `useDataTable` describes: its scroll box, with the headers that sort, filter,
- * resize and reorder the columns, the virtual rows the caller draws, and the pager under it.
+ * resize and reorder the columns, the virtual rows the caller draws, and, where the caller
+ * asks for one, the pager under it.
  */
 export function DataTable<Row>({
   empty,
@@ -304,12 +454,13 @@ export function DataTable<Row>({
   model,
   onOpenFilterChange,
   openFilter,
+  pager,
   renderGroup,
   renderRow,
   scrollTestId,
   trailingWidth = 0,
 }: DataTableProps<Row>): ReactNode {
-  const { displayRows, layout, table, virtualizer } = model;
+  const { displayRows, layout, names, table, virtualizer } = model;
   const [dragColumn, setDragColumn] = useState<string>();
   // The order a drop rewrites, read once rather than per header cell.
   const columnOrder = table.getAllLeafColumns().map((column) => column.id);
@@ -323,6 +474,7 @@ export function DataTable<Row>({
       <div
         className={`min-w-0 overflow-auto rounded-xl border ${borderDefault}`}
         ref={layout.attachBox}
+        data-control={CONTROL.dataTable}
         data-testid={scrollTestId}
         style={{
           overflowAnchor: "none",
@@ -331,9 +483,9 @@ export function DataTable<Row>({
         }}
       >
         <ViewportAnchor
-          item="data-issue-row"
+          item={names.rowAttribute}
           className="w-max min-w-full"
-          group="data-issue-group"
+          group={names.groupAttribute}
           scroller={layout.scrollRef}
           enabled={model.anchorEnabled}
         >
@@ -349,6 +501,7 @@ export function DataTable<Row>({
                     <TableHeaderCell
                       compact={layout.boxWidth < 640}
                       counts={header.column.id === openFilter ? filterCounts : EMPTY_COUNTS}
+                      countNoun={names.filterCountNoun}
                       dragColumn={dragColumn}
                       header={header}
                       key={header.id}
@@ -394,7 +547,7 @@ export function DataTable<Row>({
         ) : null}
       </div>
 
-      <IssueTablePager table={table} pagerRef={layout.pagerRef} />
+      {pager === undefined ? null : <Pager {...pager} pagerRef={layout.pagerRef} table={table} />}
     </>
   );
 }

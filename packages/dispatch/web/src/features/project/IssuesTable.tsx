@@ -2,8 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 import type { FilterFn, RowSelectionState } from "@tanstack/react-table";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { userStateQuery } from "../../api/queries";
-import { DataTable, useDataTable } from "../../components/DataTable";
+import { DataTable, type DataTableNames, useDataTable } from "../../components/DataTable";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
+import type { PagerOptions } from "../../components/Pager";
+import { useTableLayout } from "../../components/table-layout";
 import {
   borderDefault,
   dangerText,
@@ -19,20 +21,25 @@ import { EpicNameDialog } from "./EpicNameDialog";
 import { useIssueFilters } from "./issue-filters";
 import { useIssueTableActions } from "./issues-table-actions";
 import { useIssueTableColumns } from "./issues-table-columns";
-import { IssueTableSelection, IssueTableStatus, IssueTableToolbar } from "./issues-table-controls";
 import { useProjectIssueItems } from "./issues-table-data";
-import { useTableLayout } from "./issues-table-layout";
 import {
+  ALL_ROWS,
   compareGroups,
   facetCounts,
   groupValue,
+  ISSUE_GROUP_ATTRIBUTE,
+  ISSUE_LINK_ATTRIBUTE,
+  ISSUE_ROW_ATTRIBUTE,
   ISSUE_TABLE_COLUMNS,
   type Item,
   isEpic,
   matchesFilters,
   matchesSearch,
+  PAGE_SIZES,
+  tableStorageKey,
   UNCLAIMED_FACET,
 } from "./issues-table-model";
+import { IssueTableSelection, IssueTableStatus, IssueTableToolbar } from "./issues-table-page";
 import { GroupRow, IssueRow } from "./issues-table-rows";
 import { useTableView } from "./issues-table-view";
 import { issueIsUnread } from "./UnreadDot";
@@ -45,12 +52,43 @@ const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.ori
 
 const ACTION_WIDTH = 104;
 
+/** The List's own words, which the table core reads and never invents: the attributes its rows
+ *  and groups carry, the link opening a row follows, what its filters count, and the keys that
+ *  walk it, under the ids and labels the palette and the shortcut help have always shown. */
+const ISSUE_TABLE_NAMES: DataTableNames = {
+  filterCountNoun: { one: "issue", many: "issues" },
+  groupAttribute: ISSUE_GROUP_ATTRIBUTE,
+  keymap: {
+    next: { id: "list-next", keys: "j", label: "Next issue" },
+    open: { id: "list-open", keys: "o", label: "Open issue" },
+    openOnEnter: { id: "list-open-enter", keys: "Enter", label: "Open the focused issue" },
+    previous: { id: "list-previous", keys: "k", label: "Previous issue" },
+    scope: "project",
+    select: { id: "list-select", keys: "x", label: "Select or deselect the focused issue" },
+  },
+  linkAttribute: ISSUE_LINK_ATTRIBUTE,
+  rowAttribute: ISSUE_ROW_ATTRIBUTE,
+};
+
+/** The line under the List: how many issues of how many, in how many groups, over how many
+ *  rows. */
+const ISSUE_TABLE_PAGER: PagerOptions = {
+  allRows: ALL_ROWS,
+  nouns: {
+    group: { one: "group", many: "groups" },
+    item: { one: "issue", many: "issues" },
+    row: { one: "row", many: "rows" },
+  },
+  pageSizes: PAGE_SIZES,
+  testId: "issues-table-pager",
+};
+
 export function IssuesTable({ project }: { project: string }): ReactNode {
   const { params, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
     useTableView();
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
-  const layout = useTableLayout(project, ISSUE_TABLE_COLUMNS);
+  const layout = useTableLayout(tableStorageKey(project), ISSUE_TABLE_COLUMNS);
   const { attachAbove, boxWidth } = layout;
   const flags = useIssueFilters();
   const userState = useQuery(userStateQuery());
@@ -104,6 +142,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     columns,
     getRowId: (item) => item.issue.key,
     layout,
+    names: ISSUE_TABLE_NAMES,
     state: { sorting, grouping, columnFilters: filters, globalFilter: search, pagination },
     onSortingChange: setSorting,
     onGroupingChange: setGrouping,
@@ -328,6 +367,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         model={model}
         onOpenFilterChange={setOpenFilter}
         openFilter={openFilter}
+        pager={ISSUE_TABLE_PAGER}
         renderGroup={({ entry, index, measure }) => (
           <GroupRow
             columns={visibleColumns}
