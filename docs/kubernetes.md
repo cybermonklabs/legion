@@ -2071,7 +2071,7 @@ A caller in a pod whose claims record a contract below 49 is served the state wi
 Store migration 20261104073148_issue_memory_group adds the three columns they are read from to `issues` — `memory_group`, `memory_draw_mode` and `memory_drawn_at` — written once, when the tree's lifecycle row is first created, and backfilled for no row.
 Store migration 20261104153554_issue_memory_carried adds `memory_carried` beside them, the hand-over's own answer about a root handed over out of another tree, which no caller of the state reads.
 It backfills the hand-overs the release before it recorded: a row whose `handed_over_from` names a tree that holds a `tree_lifecycles` row of the project's normalized token, and that carries no draw of its own, is marked carried.
-Those old trees ran with no memory, the setting having not existed then, so the mark is written and no group with it, which is the answer the hand-over wrote from then on: `record.Store.CarryMemory` until daemon API contract 90, and `record.Store.CarryAssignments` since, which settles the child at no variant (contract 90, below).
+Those old trees ran with no memory, the setting having not existed then, so the mark is written and no group with it, which is the answer the hand-over wrote from then on: `record.Store.CarryMemory` until daemon API contract 93, and `record.Store.CarryAssignments` since, which settles the child at no variant (contract 93, below).
 A child handed over out of a tree nothing ever opened keeps the column's default, false, and is drawn at its own first open like any other new tree.
 
 To roll this release back to contract 48, put `legion.yaml` back without `projects.<KEY>.memory`, which the earlier release refuses as a key it does not know, and re-pin it.
@@ -2105,13 +2105,13 @@ What the rollback costs is the line:
 a pane of the earlier release is told no key and stamps none, so every commit it makes carries the session line alone, and a base branch that requires the issue line in the commit that lands refuses such a branch until a role describes a commit of it with that line by hand.
 The commits already stamped keep their line: it is in their messages, which nothing rewrites.
 
-**Each issue's experiment assignments in the state (daemon API contract 90).**
-A release at contract 90 carries, on every issue of `GET /legion/v1/state`, `assignments`:
+**Each issue's experiment assignments in the state (daemon API contract 93).**
+A release at contract 93 carries, on every issue of `GET /legion/v1/state`, `assignments`:
 one `{experiment, variant, mode, drawnAt}` per experiment answer that applies to that issue, in the order the project's file declares the experiments, which is the order `settings.projects.<KEY>.experiments` names them in.
 An issue carries its tree's answer for an experiment whose unit is the tree, and its own answer for one whose unit is the issue.
 `variant` and `mode` ride whatever they hold, the empty string included, and `drawnAt` is absent where the row holds no instant:
 that row — no arm, no mode, no instant — is a hand-over settling a child at no arm for an experiment the tree it left held no row for, which is how a reader tells a unit settled at no arm from a unit never drawn, which is no row at all.
-The key is absent from an issue no experiment holds an answer for, so the wire carries no empty list, and absent from every issue of the body a caller in a pod whose claims record a contract below 90 is served.
+The key is absent from an issue no experiment holds an answer for, so the wire carries no empty list, and absent from every issue of the body a caller in a pod whose claims record a contract below 93 is served.
 The three memory fields of contract 49 answer exactly as they did and no reader of them changes:
 they are now read off the answer of the experiment named `memory`, whichever spelling declared it, and only where that row records a draw.
 `settings.projects.<KEY>.experiments` loses its `omitempty`, so a project that declares no experiment carries `[]` rather than no key.
@@ -3098,7 +3098,7 @@ When `dispatch_token_file` holds one of the deployment's shared agent tokens (`D
 Whatever the bearer, the acting session is the one the request body names (`bearerSessionActor`, `packages/envoy/internal/dispatch/api/server.go`), which for the daemon's own writes is `legion-daemon:<PROJECT>` (`DaemonSession`, `packages/daemon/internal/dispatch/client.go`), so a shared agent token names nobody.
 Dispatch takes any other bearer as a service token or a personal token (`optionalActor`, `server.go`), and every role's session then carries that token's service or owner as well.
 `dispatch whoami` in a role tells the two apart:
-for a shared agent token it answers `Session <id> runs under the shared token: no owner, …` (`packages/envoy-client/src/dispatch-execute.ts`).
+for a shared agent token it answers `Session <id> runs under the shared token: no owner, …` (`packages/envoy-client/src/dispatch-commands/session.ts`).
 
 The one Kubernetes service-account token this runtime projects for a role is the broker's, `agent-secrets-token` under `runtime.kubernetes.agent_secrets` (`agentSecretsVolumes`, `manifest.go`), and it reaches the secrets broker and nothing else.
 Dispatch can verify a projected token minted for its own audience (`DISPATCH_OIDC_AUDIENCE` in `packages/envoy/cmd/dispatch/settings.go`, checked by `serviceTokenActor` in `packages/envoy/internal/dispatch/api/server.go`), and the runtime projects none.
@@ -5467,7 +5467,7 @@ each issue's pod (every role of it alike) and the image probe's.
   Nothing else says that the generation ran outside the arm its record names, so an analysis reads those lines and counts such a unit out of its exposure.
 
 - **Where an arm shows.**
-  Every issue of `GET /legion/v1/state` carries `assignments`, one `{experiment, variant, mode, drawnAt}` per answer that applies to it, in the order the project declares the experiments (daemon API contract 90, [Rolling back the upgrade](#rolling-back-the-upgrade)).
+  Every issue of `GET /legion/v1/state` carries `assignments`, one `{experiment, variant, mode, drawnAt}` per answer that applies to it, in the order the project declares the experiments (daemon API contract 93, [Rolling back the upgrade](#rolling-back-the-upgrade)).
   `settings.projects.<KEY>.experiments` carries the declaration itself.
   `legion state` prints one line per declared experiment, counting the issues that hold each arm; every project declares the `memory` experiment — one that writes no `memory` block declares it at mode `off` — so there is always a line, and `memory: none` is what a deployment reads until a tree is drawn.
   `legion config-reference --json` prints every key of the block with its default, whether it is required and what it does, and reads no `legion.yaml`, no daemon and no cluster.

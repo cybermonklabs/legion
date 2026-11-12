@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-  `assignments` on each issue of `GET /legion/v1/state`, at daemon API contract 90: the experiments
+  `assignments` on each issue of `GET /legion/v1/state`, at daemon API contract 93: the experiments
   the issue was drawn for, each with its variant, the mode it was drawn under and the instant. A
-  caller below 90 is served the body without them, and the three memory fields still answer the
+  caller below 93 is served the body without them, and the three memory fields still answer the
   `memory` experiment's own answer.
