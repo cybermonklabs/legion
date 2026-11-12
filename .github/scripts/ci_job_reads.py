@@ -1568,14 +1568,21 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("ci_ok_test", "Test ci-ok's verdict", f"{SCRIPTS}/ci-ok.test.sh", [
         (f"{SCRIPTS}/ci-ok.sh", "the script under test"),
-        (f"{SCRIPTS}/ci-ok.jq", "ci-ok.sh:97-142 runs its program with `jq -L \"$script_dir\"` and `include \"ci-ok\"`"),
+        (f"{SCRIPTS}/ci-ok.jq", "ci-ok.sh:134-187 runs its program with `jq -L \"$script_dir\"` and `include \"ci-ok\"`"),
+        (f"{SCRIPTS}/runner-shutdown.sh",
+         "ci-ok.sh:88 sources it, and the harness drives it with a stand-in gh: it is what reads "
+         "a failure the platform caused off this run's check runs"),
+        (f"{SCRIPTS}/gh-read.sh", "runner-shutdown.sh:82 sources it for its bounded gh reads"),
     ]),
     harness("ci_ok_report_test", "Test ci-ok's report and the check-run post (a stand-in gh)",
             f"{SCRIPTS}/ci-ok-report.test.sh", [
         (f"{SCRIPTS}/ci-ok-report.sh", "the script under test"),
-        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:194 posts with it, and ci-ok-report.test.sh:221,237 runs it on its own"),
-        (f"{SCRIPTS}/gh-read.sh", "ci-ok-report.sh:84 sources it for its bounded gh reads"),
-        (f"{SCRIPTS}/ci-ok.sh", "ci-ok-report.sh:170 reaches its verdict with it"),
+        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:234 posts with it, and ci-ok-report.test.sh:292,308 runs it on its own"),
+        (f"{SCRIPTS}/gh-read.sh", "ci-ok-report.sh:94 sources it for its bounded gh reads"),
+        (f"{SCRIPTS}/runner-shutdown.sh",
+         "ci-ok-report.sh:96 sources it, and no early ci-ok is posted for a failure it reads as "
+         "a runner shutdown"),
+        (f"{SCRIPTS}/ci-ok.sh", "ci-ok-report.sh:210 reaches its verdict with it"),
         (f"{SCRIPTS}/ci-ok.jq", "ci-ok.sh's program includes it"),
     ]),
     harness("ci_ok_reconcile_test", "Test the reconciliation of this head's other ci-ok check runs (a stand-in gh)",

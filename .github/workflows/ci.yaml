@@ -1367,18 +1367,24 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/ci-ok.test.sh'
               - '.github/scripts/ci-ok.sh'
-              # ci-ok.sh:97-142 runs its jq program with `include "ci-ok"`.
+              # ci-ok.sh:134-187 runs its jq program with `include "ci-ok"`.
               - '.github/scripts/ci-ok.jq'
+              # What the verdict asks GitHub: ci-ok.sh:88 sources the reading of a failure the
+              # platform caused, and runner-shutdown.sh:82 the bounded gh reads it makes.
+              - '.github/scripts/runner-shutdown.sh'
+              - '.github/scripts/gh-read.sh'
             ci_ok_report_test: &ci_ok_report_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/ci-ok-report.test.sh'
               - '.github/scripts/ci-ok-report.sh'
-              # What the report runs: the check-run post (:194, and :221,237 of the harness on
-              # its own), the bounded gh reads it sources (:84) and the verdict it reaches (:170).
+              # What the report runs: the check-run post (:234, and :292,308 of the harness on
+              # its own), the bounded gh reads it sources (:94), the reading that withholds the
+              # post for a runner shutdown (:96) and the verdict it reaches (:210).
               - '.github/scripts/post-check-run.sh'
               - '.github/scripts/gh-read.sh'
+              - '.github/scripts/runner-shutdown.sh'
               - '.github/scripts/ci-ok.sh'
               - '.github/scripts/ci-ok.jq'
             ci_ok_reconcile_test: &ci_ok_reconcile_test
@@ -5106,7 +5112,8 @@ jobs:
       checks: write
     steps:
       # The job reads nothing of the tree but ci-ok.sh, ci-ok.jq, ci-ok-reconcile.sh and the
-      # gh-read.sh they source, so the .github cone is the whole checkout it needs.
+      # gh-read.sh and runner-shutdown.sh they source, so the .github cone is the whole checkout
+      # it needs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: .github
@@ -5151,7 +5158,12 @@ jobs:
 
       # NEEDS is `toJSON(needs)`: `changes`' result and outputs with every other job's result,
       # which is the shape ci-ok.sh takes. A failure here fails the job, and the job's check run
-      # is the verdict.
+      # is the verdict. GH_TOKEN and HEAD_SHA are what that script asks GitHub with: a job of
+      # this run that ended `failure` is read against the check runs on this head, where the
+      # runner's shutdown annotation tells a job the platform killed from one the change broke
+      # (runner-shutdown.sh). That read is this job's `checks: write` above, which carries the
+      # `checks: read` it needs; the reconcile step below reads the same route with the same
+      # token. GITHUB_REPOSITORY and GITHUB_RUN_ID, the rest of what it reads, are Actions' own.
       - name: Judge every job of this run
         env:
           NEEDS: ${{ toJSON(needs) }}
@@ -5159,6 +5171,8 @@ jobs:
           SELECTED_BY: ${{ env.CI_OK_SELECTED_BY }}
           PULL_REQUEST_ONLY: ${{ env.CI_OK_PULL_REQUEST_ONLY }}
           ALWAYS_RUN: ${{ env.CI_OK_ALWAYS_RUN }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: .github/scripts/ci-ok.sh
 
       # A ci-ok the ci-ok-report step posted stays on the head as it was: no re-run updates a

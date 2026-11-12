@@ -2,8 +2,10 @@
 # Tests for `ci-ok-report.sh` and the `post-check-run.sh` it posts with: the failing ci-ok of a
 # merge-group run goes up from the job whose own result decides it, the moment that job ends,
 # naming that job in the title and every other job at the result the jobs route shows; every
-# other run posts nothing, because ci.yaml's ci-ok job carries the verdict there; and a jobs list
-# GitHub refuses still posts the verdict, where a refused post fails the step.
+# other run posts nothing, because ci.yaml's ci-ok job carries the verdict there; a failure only
+# a runner shutdown caused posts nothing either, since the platform killed the job and decided
+# nothing of the group; and a jobs list GitHub refuses still posts the verdict, where a refused
+# post fails the step.
 #
 # Each case writes the run's jobs as the jobs route lists them and the `changes` and `job.status`
 # the reporting job saw, and runs the real scripts with a stand-in `gh` first on PATH: it answers
@@ -31,6 +33,21 @@ case "\$*" in
   *"/actions/runs/41/jobs?per_page=100"*)
     if [ ! -e "$work/jobs" ]; then echo "HTTP 502" >&2; exit 1; fi
     cat "$work/jobs" ;;
+  *"/commits/abc123/check-runs"*)
+    if [ ! -e "$work/check-runs" ]; then echo "HTTP 502" >&2; exit 1; fi
+    cat "$work/check-runs" ;;
+  *"/check-runs/"*"/annotations"*)
+    id=
+    for arg in "\$@"; do
+      case \$arg in
+        *"/check-runs/"*"/annotations"*)
+          id=\${arg#*/check-runs/}
+          id=\${id%%/*} ;;
+      esac
+    done
+    if [ -e "$work/annotations.\$id" ]; then
+      jq -r 'select(.annotation_level == "failure") | .message' "$work/annotations.\$id"
+    fi ;;
   *"--method POST repos/o/r/check-runs"*)
     # post-check-run.sh sends the body as a file, so that a retried post can send it again.
     n=\$(find "$work" -maxdepth 1 -name 'posted.*.json' | wc -l)
@@ -60,16 +77,31 @@ YAML
 selects='{"result": "success", "outputs": {"typecheck": "true", "envoy_client": "true", "worker_image": "false", "docs": "false"}}'
 
 # jobs <name>=<status>[/<conclusion>]...: the run's jobs as the jobs route lists them, one JSON
-# object per line, as `gh api --jq '.jobs[] | …'` prints them. The run's first case writes none,
-# which is the route refusing the read.
+# object per line, as `gh api --jq '.jobs[] | …'` prints them, and the check run each of them
+# has on the head, as the commit's check-runs route lists them. The run's first case writes
+# none, which is both routes refusing the read. A job written here carries no annotation, so its
+# failure is read as a failure until a case writes the runner's with `annotations`.
 jobs() {
-  local pair
-  rm -f "$work"/posted.*.json "$work/post-fails" "$work/jobs"
+  local pair n=0
+  rm -f "$work"/posted.*.json "$work/post-fails" "$work/jobs" "$work/check-runs" "$work"/annotations.*
   for pair in "$@"; do
     jq -nc --arg name "${pair%%=*}" --arg status "${pair#*=}" \
       '{name: $name, status: ($status | split("/")[0]), conclusion: ($status | split("/")[1])}' \
       >> "$work/jobs"
+    jq -nc --arg name "${pair%%=*}" --arg url "https://api.github.com/repos/o/r/check-runs/$n" \
+      --arg details "https://github.com/o/r/actions/runs/41/job/$n" \
+      '{name: $name, url: $url, details_url: $details}' >> "$work/check-runs"
+    n=$((n + 1))
   done
+}
+
+# annotations <job> <message>...: the failure annotations GitHub filed on that job's check run,
+# which is where the runner's shutdown shows (runner-shutdown.sh).
+annotations() {
+  local job=$1 id
+  shift
+  id=$(jq -r --arg job "$job" 'select(.name == $job) | .url | split("/")[-1]' "$work/check-runs")
+  printf '%s\n' "$@" | jq -R '{annotation_level: "failure", message: .}' > "$work/annotations.$id"
 }
 
 # run_report <changes> <event> <job status> [<workflow>]: sets out and status.
@@ -112,6 +144,40 @@ check "says the verdict is not the ci-ok job's" \
   "$(contains "$(field .output.summary)" 'rather than from the ci-ok job at the end of the run')"
 check "titles it with the job whose result decided the run" \
   "$(contains "$(field .output.title)" '^typecheck decided this merge-group run: ')"
+check "says nothing of a runner shutdown, since this job's check run carries no annotation" \
+  "$(is "$(contains "$out" 'runner was shut down')" false)"
+
+echo "case: a merge_group run whose reporting job's runner was shut down under it"
+# GitHub reports such a job `failure`, so without the annotations on its check run this would be
+# the case above: the early post that takes the pull request out of the queue. The platform
+# killed the job, which decides nothing about the group, so nothing is posted and the run's own
+# ci-ok job reaches the verdict at the end of it (runner-shutdown.sh, and ci-ok.sh reads such a
+# job as cancelled there).
+jobs typecheck=in_progress lint=in_progress envoy-client=queued
+annotations typecheck \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 143.'
+run_report "$selects" merge_group failure
+check "exits 0" "$(is "$status" 0)"
+check "posts nothing" "$(is "$(posted)" 0)"
+check "says the runner was shut down and what was read" \
+  "$(contains "$out" "^typecheck ended failure on this merge-group run only because its runner was shut down: its check run carries the runner's .has received a shutdown signal. annotation and exit code 143")"
+check "leaves this run's verdict to the ci-ok job" \
+  "$(contains "$out" 'the ci-ok job posts this run.s verdict at the end of the run, where that job reads as cancelled')"
+
+echo "case: a merge_group run whose changes failed only on a runner shutdown"
+# `changes` is the job that reaches this step in practice: the steps after a kill are skipped,
+# so the killed job's own report step rarely runs, while the job reporting after it was handed
+# that result in `toJSON(needs.changes)`.
+jobs typecheck=in_progress lint=in_progress changes=completed/failure
+annotations changes \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 143.'
+run_report '{"result": "failure", "outputs": {}}' merge_group success
+check "exits 0" "$(is "$status" 0)"
+check "posts nothing" "$(is "$(posted)" 0)"
+check "names changes as the job the platform killed" \
+  "$(contains "$out" '^changes ended failure on this merge-group run only because its runner was shut down')"
 
 echo "case: a merge_group run whose reporting job its timeout-minutes cancelled"
 # `cancelled` is what a job cut off by its `timeout-minutes` reports (measured on probe run
@@ -169,14 +235,17 @@ jobs typecheck=in_progress
 run_report "$selects" workflow_dispatch failure
 check "posts nothing" "$(is "$(posted)" 0)"
 
-echo "case: a decided merge_group run whose jobs route GitHub refuses posts its verdict all the same"
-# The jobs route is read three times before the script gives up. On a decided merge-group run
-# nothing this job waits for can help: the queue takes the pull request out on this verdict and
+echo "case: a decided merge_group run whose reads GitHub refuses posts its verdict all the same"
+# The jobs route is read three times before the script gives up, and so are the check runs it
+# would tell a runner shutdown by. On a decided merge-group run nothing this job waits for can
+# help: the queue takes the pull request out on this verdict and
 # dequeued.yaml force-cancels the run, and a force-cancel leaves every `if: always()` step
 # skipped. A run that waited for a read it could not make would carry no ci-ok at all and hold the
 # queue until GitHub's 180-minute check timeout dropped its pull request. So every other job is
 # recorded `unread`, which ci-ok.sh fails on, and the verdict goes up: nothing worse can come of
-# posting a failing verdict on a group that is about to be thrown away.
+# posting a failing verdict on a group that is about to be thrown away. A failure this script
+# could not read is a failure for the same reason — a read that did not happen is no evidence
+# that the platform killed anything.
 jobs
 run_report "$selects" merge_group failure
 check "exits 0" "$(is "$status" 0)"
@@ -187,6 +256,8 @@ check "and the reporting job at its own status" \
   "$(contains "$(field .output.summary)" '^typecheck: failure (selected')"
 check "warns why it posted on an unread run" \
   "$(contains "$out" "::warning::GitHub refused this run's job list three times")"
+check "warns that it could not tell a runner shutdown from a failure either" \
+  "$(contains "$out" '::warning::GitHub refused the check runs on abc123 three times')"
 
 echo "case: GitHub refuses the post"
 jobs typecheck=in_progress lint=in_progress envoy-client=queued

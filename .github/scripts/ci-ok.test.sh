@@ -17,6 +17,11 @@
 # the run the filter's own verdicts beside the outputs (with_verdicts below) and hold the report
 # to telling that skip from a filter miss.
 #
+# A job that ends `failure` is asked about: ci-ok.sh reads the check runs on this run's head to
+# tell a job the platform killed from one the change broke (runner-shutdown.sh), so each case
+# runs with a stand-in `gh` first on PATH, which answers that read and each check run's
+# annotations from files the case writes.
+#
 # Run from anywhere: .github/scripts/ci-ok.test.sh
 # CI runs it in ci.yaml's test job.
 set -euo pipefail
@@ -26,6 +31,68 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+# The stand-in GitHub: the check runs on the head this run's jobs are on, and the annotations of
+# one of them, each answered as `gh api --jq` would print it. A missing check-runs file is the
+# route refusing the read.
+mkdir "$work/bin"
+cat > "$work/bin/gh" <<GH
+#!/usr/bin/env bash
+set -euo pipefail
+case "\$*" in
+  *"/commits/abc123/check-runs"*)
+    if [ ! -e "$work/check-runs" ]; then echo "HTTP 502" >&2; exit 1; fi
+    cat "$work/check-runs" ;;
+  *"/check-runs/"*"/annotations"*)
+    id=
+    for arg in "\$@"; do
+      case \$arg in
+        *"/check-runs/"*"/annotations"*)
+          id=\${arg#*/check-runs/}
+          id=\${id%%/*} ;;
+      esac
+    done
+    if [ -e "$work/annotations.\$id" ]; then
+      jq -r 'select(.annotation_level == "failure") | .message' "$work/annotations.\$id"
+    fi ;;
+  *) echo "unexpected gh \$*" >&2; exit 2 ;;
+esac
+GH
+chmod +x "$work/bin/gh"
+
+# check_runs <job>[=<run id>]...: the check runs on the head, as the commit's check-runs route
+# lists them, each job's own numbered in the order given and carrying the details_url of run 41
+# unless the case gives it another run's. It clears the annotations with them, so a job of a run
+# written this way carries none and its failure is read as a failure.
+check_runs() {
+  local spec name run n=0
+  rm -f "$work/check-runs" "$work"/annotations.*
+  for spec in "$@"; do
+    name=${spec%%=*}
+    run=${spec#*=}
+    [ "$run" != "$spec" ] || run=41
+    jq -nc --arg name "$name" --arg url "https://api.github.com/repos/o/r/check-runs/$n" \
+      --arg details "https://github.com/o/r/actions/runs/$run/job/$n" \
+      '{name: $name, url: $url, details_url: $details}' >> "$work/check-runs"
+    n=$((n + 1))
+  done
+}
+
+# annotations <job> <message>...: the failure annotations GitHub filed on that job's check run,
+# which is where the runner's shutdown shows.
+annotations() {
+  local job=$1 id
+  shift
+  id=$(jq -r --arg job "$job" 'select(.name == $job) | .url | split("/")[-1]' "$work/check-runs")
+  printf '%s\n' "$@" | jq -R '{annotation_level: "failure", message: .}' > "$work/annotations.$id"
+}
+
+# Every case but the last four runs over a head whose check runs carry no annotation at all, so
+# nothing of it is read as a runner shutdown and a failure is a failure.
+check_runs changes lint typecheck envoy-client worker-image docs smoke-gate contracts
 
 selected_by='{"typecheck": "typecheck", "envoy-client": "envoy_client", "worker-image": "worker_image", "docs": "docs"}'
 pull_request_only='["worker-image"]'
@@ -68,10 +135,13 @@ unmatched_selects=$(with_verdicts "$selects" \
   '{"typecheck": "true", "envoy_client": "false", "worker_image": "true", "docs": "false"}')
 
 # run_ci_ok <needs> [<event>] [<always run>]: sets out and status. The event defaults to
-# pull_request and the always-run list to ci.yaml's own two jobs.
+# pull_request and the always-run list to ci.yaml's own two jobs. The GitHub half of the
+# environment is the ci-ok job's own, pointed at the stand-in above: the head its check runs are
+# on, the run they must belong to, and gh-read.sh's retry delay turned off.
 run_ci_ok() {
   set +e
-  out=$(NEEDS=$1 EVENT=${2:-pull_request} SELECTED_BY=$selected_by \
+  out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
+    GH_RETRY_SECONDS=0 HEAD_SHA=abc123 NEEDS=$1 EVENT=${2:-pull_request} SELECTED_BY=$selected_by \
     PULL_REQUEST_ONLY=$pull_request_only ALWAYS_RUN=${3:-$always_run} "$script_dir/ci-ok.sh" 2>&1)
   status=$?
   set -e
@@ -240,5 +310,77 @@ run_ci_ok "$(needs success "$selects" success typecheck=success envoy-client=ski
 check "fails" "$(is "$status" 1)"
 check "names it and the three classes it could join" \
   "$(contains "$out" '^::error::smoke-gate ended success, and ci-ok does not know what selects it; map it in CI_OK_SELECTED_BY')"
+
+echo "case: a selected job whose runner was shut down under it"
+# GitHub reports such a job `failure`, and the runner's two ##[error] lines are the annotations
+# on its check run (runner-shutdown.sh holds the reading). ci-ok reads it as cancelled: the
+# verdict still fails, since a selected job that did not succeed fails whichever it is, and the
+# error names the shutdown rather than the change or the job's timeout-minutes.
+check_runs changes lint typecheck envoy-client worker-image docs
+annotations typecheck \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 143.'
+run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=skipped worker-image=success docs=skipped)"
+check "fails" "$(is "$status" 1)"
+check "reads it as cancelled" \
+  "$(contains "$out" '^typecheck: cancelled (selected: needs.changes.outputs.typecheck is true)$')"
+check "names the job and that changes selected it" \
+  "$(contains "$out" '^::error::typecheck ended cancelled, but changes selected it (needs.changes.outputs.typecheck is true)')"
+check "says a runner shutdown cut it off, and what was read" \
+  "$(contains "$out" 'a runner shutdown cut this one off: its check run carries the runner.s .has received a shutdown signal. annotation and exit code 143')"
+check "blames the platform rather than the change" \
+  "$(is "$(contains "$out" 'this one failed: its log says what broke')" false)"
+check "does not send the author to the job's timeout-minutes" \
+  "$(is "$(contains "$out" 'its own timeout-minutes, a cancelled run or a force-cancel')" false)"
+
+echo "case: a selected job that failed of itself"
+# The one thing this reading must not do is take a real failure for a platform kill: the job's
+# own error is what its check run carries, so the result and the error are today's.
+check_runs changes lint typecheck envoy-client worker-image docs
+annotations typecheck 'Process completed with exit code 1.'
+run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=skipped worker-image=success docs=skipped)"
+check "fails" "$(is "$status" 1)"
+check "keeps it a failure" \
+  "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
+check "says the job failed" \
+  "$(contains "$out" 'a selected job must succeed, and this one failed: its log says what broke$')"
+check "says nothing of a runner shutdown" "$(is "$(contains "$out" 'runner shutdown')" false)"
+
+echo "case: the shutdown annotation with another exit code"
+# Both facts are the reading: the message alone is not a platform kill, since a job can log that
+# line and still fail of itself.
+check_runs changes lint typecheck envoy-client worker-image docs
+annotations typecheck \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 1.'
+run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=skipped worker-image=success docs=skipped)"
+check "fails" "$(is "$status" 1)"
+check "keeps it a failure" \
+  "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
+
+echo "case: another run's check run of the same name carries the shutdown"
+# A commit carries every workflow's check runs and every attempt's, so the run id in the
+# details_url is what makes the mapping this run's: a shutdown on another run's typecheck is
+# nothing to do with this one.
+check_runs changes lint envoy-client worker-image docs typecheck=99
+annotations typecheck \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 143.'
+run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=skipped worker-image=success docs=skipped)"
+check "fails" "$(is "$status" 1)"
+check "keeps it a failure" \
+  "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
+
+echo "case: GitHub refuses the check runs of this head"
+# The read is tried three times and the verdict is reached without it: a read that did not
+# happen is no evidence that the platform killed anything, so the failure stands as a failure
+# and the warning says why the two could not be told apart.
+rm -f "$work/check-runs"
+run_ci_ok "$(needs success "$selects" success typecheck=failure envoy-client=skipped worker-image=success docs=skipped)"
+check "fails" "$(is "$status" 1)"
+check "keeps it a failure" \
+  "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
+check "warns that it could not tell a shutdown from a failure" \
+  "$(contains "$out" '::warning::GitHub refused the check runs on abc123 three times')"
 
 summary "ci-ok.sh fails unless every job changes selected succeeded"

@@ -14,9 +14,19 @@
 # the run although `changes` chose it — the two disagree, and whoever meets the failure has one
 # of them to fix — and a verdict that accepted it would pass with nothing tested. A cancellation
 # is the job cut off instead: its own `timeout-minutes` (a job its limit cut off reports
-# `cancelled`, measured on probe run 41869007039), a cancelled run, or a force-cancel, none of
-# them the filter's doing, so that error sends the author to the job's log and its limit rather
-# than to its `if:`.
+# `cancelled`, measured on probe run 41869007039), a cancelled run, a force-cancel, or a runner
+# shutdown, none of them the filter's doing, so that error sends the author to the job's log and
+# its limit rather than to its `if:`.
+#
+# A runner shutdown is the one of those that GitHub reports as a `failure`: the platform takes
+# the machine away under a running job and the job's check run carries the runner's "has
+# received a shutdown signal" annotation beside exit code 143 (runner-shutdown.sh holds the
+# reading, and which fields of which endpoint it is). Such a job is read here as cancelled, and
+# its error names the shutdown rather than the job's own log or its `timeout-minutes`: nothing
+# the change did failed, and nothing in the job's own limits would have saved it. The verdict
+# does not move — a selected job that did not succeed fails ci-ok whichever of the two it is —
+# so the pull request still goes red, and what changes is who it sends the author to. A failure
+# runner-shutdown.sh cannot read that way, a read GitHub refused among them, stays a failure.
 #
 # A re-run of only the failed jobs leaves no such skip: `gh run rerun <id> --failed` was
 # measured twice on pull request #2734, and each re-run kept 30 of the run's 31 jobs, ran only
@@ -51,13 +61,22 @@
 #                      CI_OK_ALWAYS_RUN, and check-ci-filters.sh holds every job of that file to
 #                      exactly one of the three classes this list, SELECTED_BY and CI_OK_EXEMPT
 #                      make.
+#   GH_TOKEN           the job's github.token, with `checks: write` (or `checks: read`): a job
+#                      that ends `failure` is asked about on the commit's check runs, where the
+#                      runner's shutdown annotation tells a platform kill from a fault of the
+#                      change (runner-shutdown.sh).
+#   HEAD_SHA           the commit this run's check runs are on: a pull request's head or
+#                      github.sha, which is the expression ci.yaml's ci-ok job and the
+#                      ci-ok-report action both already pass.
+#   GITHUB_REPOSITORY, GITHUB_RUN_ID, as Actions sets them: the run those check runs are of.
 # A job of NEEDS that neither ALWAYS_RUN nor SELECTED_BY names fails (ci-ok does not know what to
 # make of its result), and so does a job either of them names that is absent from NEEDS. It
 # prints every job's result and whether it was selected, and an `::error::` for each failure
 # naming the job, its result and why.
 #
 # Run from anywhere:
-#   NEEDS=... EVENT=... SELECTED_BY=... PULL_REQUEST_ONLY=... ALWAYS_RUN=... .github/scripts/ci-ok.sh
+#   NEEDS=... EVENT=... SELECTED_BY=... PULL_REQUEST_ONLY=... ALWAYS_RUN=... GH_TOKEN=... \
+#     HEAD_SHA=... .github/scripts/ci-ok.sh
 # ci.yaml's ci-ok job runs it over every job's result, and ci-ok-report.sh over the results it
 # reads for the failing ci-ok it posts at once on a decided merge-group run; its tests are in
 # ci-ok.test.sh, which ci.yaml's test job runs.
@@ -65,7 +84,10 @@ set -euo pipefail
 shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-for input in NEEDS EVENT SELECTED_BY PULL_REQUEST_ONLY ALWAYS_RUN; do
+# shellcheck source=.github/scripts/runner-shutdown.sh
+source "$script_dir/runner-shutdown.sh"
+for input in NEEDS EVENT SELECTED_BY PULL_REQUEST_ONLY ALWAYS_RUN GH_TOKEN HEAD_SHA \
+  GITHUB_REPOSITORY GITHUB_RUN_ID; do
   if [ -z "${!input:-}" ]; then
     echo "::error::ci-ok.sh needs $input in its environment"
     exit 1
@@ -90,25 +112,48 @@ if ! jq -e 'type == "array" and all(.[]; type == "string") and any(. == "changes
   exit 1
 fi
 
+# Which of this run's failures were a runner shutdown rather than a fault of the change: the
+# platform takes the machine away under a running job, GitHub reports that job `failure`, and
+# its check run carries the runner's shutdown annotation beside exit code 143.
+# runner_shutdown_kills reads the pair off this run's check runs (runner-shutdown.sh says which
+# fields of which endpoint, and why a job it cannot read that way is no kill), and the program
+# below reads each job it names as cancelled. A read GitHub refused leaves the list empty, with
+# that script's warning in the log, so every failure stands as a failure.
+mapfile -t failed < <(jq -r 'to_entries[] | select(.value.result == "failure") | .key' <<<"$NEEDS")
+shutdown='[]'
+if [ "${#failed[@]}" -gt 0 ] && kills=$(runner_shutdown_kills "${failed[@]}"); then
+  shutdown=$(jq -R -s 'split("\n") | map(select(. != ""))' <<<"$kills")
+fi
+
 # One row per line, tab-separated: `info` and the line to print, or `error` and the ::error:: text.
 # Every job is printed in NEEDS order, after each ALWAYS_RUN job NEEDS lacks and before each
-# SELECTED_BY job it lacks. `cut_off` is why a selected job that did not succeed failed: the
-# three results it can carry have three causes, and only the skip is the filter's.
+# SELECTED_BY job it lacks. A job $shutdown names ended `failure` only because its runner was
+# shut down, so `result` reads it as cancelled. `cut_off` is why a selected job that did not
+# succeed failed: the causes those results carry are not one fault, and only the skip is the
+# filter's.
 read -r -d '' program <<'JQ' || true
 include "ci-ok";
 (.changes.outputs // {}) as $out
 | def selection($job): selection($job; $map; $out; $pr; $event);
-  def cut_off($result):
+  def killed($job): $shutdown | any(. == $job);
+  def result($job; $result):
+    if $result == "failure" and killed($job) then "cancelled" else $result end;
+  def cut_off($job; $result):
     if $result == "skipped" then
       "a skip here means the job's if: did not admit the run although changes chose it, a disagreement between the two the author must fix"
     elif $result == "cancelled" then
-      "a cancellation here is the job cut off rather than filtered out — its own timeout-minutes, a cancelled run or a force-cancel — so the job's log and its timeout-minutes say which, not its filter"
+      if killed($job) then
+        "a runner shutdown cut this one off: its check run carries the runner's \"has received a shutdown signal\" annotation and exit code 143, so GitHub took the machine away under the job rather than this change breaking anything, and re-running the job is the whole of the remedy"
+      else
+        "a cancellation here is the job cut off rather than filtered out — its own timeout-minutes, a cancelled run or a force-cancel — so the job's log and its timeout-minutes say which, not its filter"
+      end
     elif $result == "failure" then
       "this one failed: its log says what broke"
     else
       "a \($result) is no conclusion at all, so this verdict was reached before the job ended"
     end;
-  def rows($job; $result):
+  def rows($job; $raw):
+    result($job; $raw) as $result |
     if $job == "changes" then
       ["info", "changes: \($result)"],
       (select($result != "success")
@@ -123,7 +168,7 @@ include "ci-ok";
         if $result == "absent" then
           ["error", "\($job) is absent from NEEDS, but SELECTED_BY maps it to needs.changes.outputs.\($map[$job]); the ci-ok job's toJSON(needs) and ci-ok-report.sh both give every SELECTED_BY job a result, so this is a defect of whichever of them built NEEDS"]
         elif $s.selected and $result != "success" then
-          ["error", "\($job) ended \($result), but changes selected it (\($s.why)); a selected job must succeed, and \(cut_off($result))"]
+          ["error", "\($job) ended \($result), but changes selected it (\($s.why)); a selected job must succeed, and \(cut_off($job; $result))"]
         elif ($s.selected | not) and $result != "success" and $result != "skipped" then
           ["error", "\($job) ended \($result); a job changes did not select must succeed or be skipped"]
         else empty end
@@ -138,7 +183,7 @@ include "ci-ok";
 | @tsv
 JQ
 rows=$(jq -L "$script_dir" -r --arg event "$EVENT" --argjson map "$SELECTED_BY" --argjson pr "$PULL_REQUEST_ONLY" \
-  --argjson always "$ALWAYS_RUN" \
+  --argjson always "$ALWAYS_RUN" --argjson shutdown "$shutdown" \
   "$program" <<<"$NEEDS")
 
 errors=()
