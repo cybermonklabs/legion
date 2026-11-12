@@ -353,7 +353,7 @@ async function corpusWithDraw(draw: unknown): Promise<string> {
   await mkdir(join(directory, "slices"), { recursive: true });
   await writeFile(
     join(directory, "snapshot.json"),
-    `${JSON.stringify({ person: "someone", throughEventId: 1 })}\n`,
+    `${JSON.stringify({ person: "someone", throughEventId: 396_268 })}\n`,
     "utf8"
   );
   await writeFile(
@@ -384,7 +384,8 @@ describe("the root case the run drives", () => {
     const root = await rootCaseOf(directory);
     expect(root.caseId).toBe("case-1");
     expect(root.issueKey).toBe("INFRA-7");
-    expect(root.source).toContain("the corpus pinned at event 1");
+    // An event id is an identifier: it is printed as `--through` takes it, and never grouped.
+    expect(root.source).toContain("the corpus pinned at event 396268");
     expect(root.source).toContain("case case-1 of issue INFRA-7");
     expect(root.source).toContain("whose facts are from slices/draw.json");
     // A record outlives the directory it was made in, so it names no path of this machine.

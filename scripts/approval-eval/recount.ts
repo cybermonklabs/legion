@@ -3,7 +3,6 @@ import type { AskOption, CaseKind, CaseRow, CaseVerdict } from "./build-corpus";
 import {
   CannotRunError,
   type Corpus,
-  counted,
   listOf,
   numberOf,
   optionsOf,
@@ -363,6 +362,16 @@ function differencesOf(
   return differences;
 }
 
+/**
+ * A count of cases and the noun it counts, with the count written as every number of this
+ * report is written: bare, and never grouped by `count`. The pin, the asks, the pages and the
+ * side-by-side table above are all printed unseparated, and one run must not report the size
+ * of one corpus two ways.
+ */
+function cases(value: number): string {
+  return `${value} ${value === 1 ? "case" : "cases"}`;
+}
+
 function sideBySide(build: Counts, second: Counts): string {
   const row = (label: string, left: number, right: number): string =>
     `  ${label.padEnd(28)}${String(left).padStart(8)}${String(right).padStart(16)}`;
@@ -411,12 +420,10 @@ async function recount(flags: Flags): Promise<number> {
   console.log("");
   const differences = differencesOf(corpus, reading, refused);
   if (differences.length === 0) {
-    console.log(
-      `agree: ${counted(corpus.rows.length, "case")}, each of the same kind, verdict and words`
-    );
+    console.log(`agree: ${cases(corpus.rows.length)}, each of the same kind, verdict and words`);
     return 0;
   }
-  console.log(`differ: ${counted(differences.length, "case")}`);
+  console.log(`differ: ${cases(differences.length)}`);
   for (const difference of differences.slice(0, DIFFERENCES_PRINTED)) {
     console.log(`  ${difference.caseId}`);
     console.log(`    build           ${difference.build}`);

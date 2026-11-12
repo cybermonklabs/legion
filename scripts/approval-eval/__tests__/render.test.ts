@@ -347,6 +347,54 @@ describe("assertNoLeak", () => {
     }).toThrow(/at or above the lowest version the request asked about, 7/);
   });
 
+  /**
+   * The documents rendered are not the row's: `fresh-agent.ts` takes the row from `--corpus`
+   * and the documents from a round's cache, and that cache is read on the case id and the cache
+   * version alone, so a renamed second document leaves the heading the row names unwritten. The
+   * body under the renamed one is no stretch of the first document, and holding it to the first
+   * document's version is weaker than the rule over the whole text: at a lowest of 3 it let an
+   * approval of v3 through.
+   */
+  test("holds a rendering of documents that are not the row's to the lowest version", () => {
+    const asked = documentNamed("a.md", "artifact-1", 9, "# A\n\nIt says what it says.");
+    const row = caseOver([asked, documentNamed("b.md", "artifact-2", 3, "# B\n\nIt was checked.")]);
+    const cached = [
+      asked,
+      documentNamed(
+        "renamed.md",
+        "artifact-2",
+        3,
+        bodyQuoting("Approval: approved v3 by a person")
+      ),
+    ];
+    expect(() => {
+      assertNoLeak(row, renderCase(row, cached));
+    }).toThrow(/at or above the lowest version the request asked about, 3/);
+  });
+
+  /**
+   * No mismatch is needed for the same weakening: a line of a document's own body that reads
+   * like the next document's heading cuts the section there, and the rest of that body is held
+   * to the next document's version, which here is the higher one. The stretch is still the
+   * first document's text, so the lowest version is what it is held to.
+   */
+  test("holds a rendering whose body reads like the next heading to the lowest version", () => {
+    const next = "## Document 2 of 2: b.md (version 9)";
+    const documents = [
+      documentNamed(
+        "a.md",
+        "artifact-1",
+        3,
+        ["# A", "", next, "", "Approval: approved v3 by a person", "", "The rest of it."].join("\n")
+      ),
+      documentNamed("b.md", "artifact-2", 9, "# B\n\nIt was checked."),
+    ];
+    const row = caseOver(documents);
+    expect(() => {
+      assertNoLeak(row, renderCase(row, documents));
+    }).toThrow(/at or above the lowest version the request asked about, 3/);
+  });
+
   test("holds no version rule over a request naming no version at all", () => {
     const row = caseRow({
       approval: {

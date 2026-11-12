@@ -6,7 +6,6 @@ import type { CaseRow } from "./build-corpus";
 import {
   CannotRunError,
   CorpusError,
-  count,
   listOf,
   outDirectory,
   pool,
@@ -599,7 +598,7 @@ export async function rootCaseOf(corpus: string | null): Promise<RootCase> {
     if (!documents.some((document) => document.artifactId === primary)) continue;
     return {
       source:
-        `the corpus pinned at event ${count(read.snapshot.throughEventId)}: case ${row.caseId} ` +
+        `the corpus pinned at event ${read.snapshot.throughEventId}: case ${row.caseId} ` +
         `of issue ${row.issueKey}, whose facts are from ${drawnAt}. The evidence is the case's ` +
         "question and options, since the corpus holds no document text and this kind is held " +
         "on the issue's facts",
@@ -611,7 +610,7 @@ export async function rootCaseOf(corpus: string | null): Promise<RootCase> {
     };
   }
   return writtenRoot(
-    `the corpus pinned at event ${count(read.snapshot.throughEventId)} holds no approval of ` +
+    `the corpus pinned at event ${read.snapshot.throughEventId} holds no approval of ` +
       "the primary document of such a root"
   );
 }

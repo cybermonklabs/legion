@@ -169,34 +169,39 @@ function stringAt(record: Record<string, unknown>, name: string, where: string):
   return value;
 }
 
-/** One entry of a draw's roots: the issue's key, and the facts the never-decide rule reads. */
+/**
+ * One entry of a draw's roots: the issue's key, and the facts the never-decide rule reads.
+ *
+ * `issueFactsOf` builds those facts, here as for the issue list route, so which fields a root
+ * carries is kept in one place and a draw's roots cannot come to carry another list than the
+ * route's. What a draw adds is its own policy on how they are read: a field that is there and
+ * is not of the type the record holds it for stops the reading, where that reader takes what it
+ * can read and leaves the rest null.
+ */
 function rootAt(value: unknown, at: number, path: string): { key: string } & IssueFacts {
   const issue = recordOf(value);
   if (issue === null) throw new CorpusError(`${path} root ${at + 1} is no issue`);
   const where = `${path} root ${at + 1}`;
-  const key = stringAt(issue, "key", where);
-  const status = stringAt(issue, "status", where);
-  if (key === null || status === null) {
+  const read = issueFactsOf(issue);
+  if (read === null) {
+    // Which of the two it is: a key or a status of the wrong type, or neither named at all.
+    stringAt(issue, "key", where);
+    stringAt(issue, "status", where);
     throw new CorpusError(`${where} names no key or no status`);
   }
+  const key = read.key;
   const held = issue.labels;
   if (held !== undefined && held !== null && !Array.isArray(held)) {
     throw new CorpusError(`${path} root ${key} holds labels that are no list`);
   }
-  const labels: string[] = [];
   for (const label of listOf(held)) {
     if (typeof label !== "string") {
       throw new CorpusError(`${path} root ${key} names a label that is no string`);
     }
-    labels.push(label);
   }
-  return {
-    key,
-    parent: stringAt(issue, "parent", `${path} root ${key}`),
-    labels,
-    status,
-    primaryArtifactId: stringAt(issue, "primaryArtifactId", `${path} root ${key}`),
-  };
+  stringAt(issue, "parent", `${path} root ${key}`);
+  stringAt(issue, "primaryArtifactId", `${path} root ${key}`);
+  return { key, ...read.facts };
 }
 
 /** The roots a draw recorded, read entry by entry, which is what a reader is handed. */

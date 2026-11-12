@@ -21,9 +21,10 @@ import {
  * What it holds the module to is the one policy it chose for both: a directory with no draw
  * carries none, and a file that is there and is not what a draw writes stops the reading
  * rather than being read as a corpus that was never drawn. Which of the two a `draw.json` is,
- * is settled fact by fact where it is read: a draw made before a field was recorded carries no
- * such field and is still a draw, while a field that is there and is no such field is the file
- * being no draw.
+ * is settled fact by fact where it is read, and on the type of each fact, as `readDraw`'s own
+ * doc states it: a field that is there and is not of the type the record holds it for is the
+ * file being no draw, while a field of that type saying nothing - a draw made before the field
+ * was recorded, a cut that is no time, a group key written empty - is a draw recording none.
  */
 
 /** The directories this file made, each removed by its own exact path. */

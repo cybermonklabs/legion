@@ -32,8 +32,9 @@ import { DEFAULT_CONFIDENCE, type Interval, regularizedIncompleteBeta } from "./
  * The pooled reading over several runs of one fresh-agent comparison.
  *
  * Several runs of one comparison over one case list are several observations per case, and not
- * several experiments: every run puts the same cases to the same two arms, which is the one
- * thing `caseListOf` holds the runs given to, whatever their count. So what a run adds is
+ * several experiments: every run puts the same cases to the same two arms, and the runs given
+ * are held to that, whatever their count - `readRun` refuses a run that answers one arm and not
+ * the other, and `caseListOf` refuses runs whose case lists differ. So what a run adds is
  * another judgement of each case and not another question, and the estimator is read per case
  * and never per run:
  *

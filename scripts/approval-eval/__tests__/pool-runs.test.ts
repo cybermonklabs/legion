@@ -517,6 +517,7 @@ describe("the record a reader meets the number in", () => {
     expect(builtPrinted).toContain(
       `difference        ${signed(build.pooling.difference)} over 2 cases`
     );
+    expect(builtPrinted).toContain("One run holds these bytes");
   });
 
   test("a build over every run given carries no narrowing sentence", () => {
@@ -547,7 +548,9 @@ describe("the record a reader meets the number in", () => {
     ]);
     // It stays in the reading over every run, which is over four runs and not three.
     expect(record.whole.runs).toHaveLength(4);
-    expect(reportLines(record).join("\n")).toContain("run 4 (/no-copy)");
+    const printed = reportLines(record).join("\n");
+    expect(printed).toContain("run 4 (/no-copy)");
+    expect(printed).toContain("provenance is unrecorded");
   });
 
   test("says which build this checkout's own skill bytes are, where they are one", () => {
@@ -976,10 +979,11 @@ describe("the spread a build's own section carries", () => {
     expect(sectionOf(`### Build ${bytesA.slice(0, 16)}`)).not.toContain("1.000 of agreement");
   });
 
-  test("a build of one run carries no spread, and prints none", () => {
+  test("a build of one run prints no spread, and says why it has none", () => {
     const section = sectionOf(`### Build ${bytesB.slice(0, 16)}`);
     expect(record.builds[1]?.pooling.runs).toHaveLength(1);
     expect(record.builds[1]?.pooling.spread.deviation).toBeNull();
+    expect(section).toContain("One run holds these bytes");
     expect(section.split("\n").filter((line) => spreadField.test(line))).toEqual([]);
     expect(section).not.toContain("ranged over");
   });

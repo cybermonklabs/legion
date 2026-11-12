@@ -85,6 +85,13 @@ const ANSWERED_AT = /answered_at="([^"]*)"/g;
 /** The approval of a version, as Dispatch's own trailer names it. */
 const APPROVED_VERSION = /Approval: approved v(\d+)/g;
 
+/**
+ * What every heading of a document opens with. `headingOf` writes it and `guardedSectionsOf`
+ * reads it, so a line that is one of these headings and a line that is not are told apart in
+ * one place.
+ */
+const DOCUMENT_HEADING = "## Document ";
+
 /** The time of an ISO 8601 stamp, or null when it is no time. */
 function timeOf(at: string | null | undefined): number | null {
   if (at === null || at === undefined) return null;
@@ -141,7 +148,7 @@ function headingOf(
 ): string {
   const version =
     document.requestedVersion === null ? "" : ` (version ${document.requestedVersion})`;
-  return `## Document ${index + 1} of ${of}: ${document.name ?? "unnamed"}${version}`;
+  return `${DOCUMENT_HEADING}${index + 1} of ${of}: ${document.name ?? "unnamed"}${version}`;
 }
 
 /**
@@ -231,12 +238,18 @@ interface GuardedSection {
  * The cut is made over the rendering rather than over each document's markdown before it is
  * rendered, because the guard must hold what reaches the judge: `assertNoLeak` is handed the
  * bytes that go into the prompt, and a rule read off anything else leaves the difference between
- * the two unguarded. The cut is made at the heading `renderCase` writes for each document, which
- * both are built by `headingOf` so neither can drift from the other, and the sections are taken
- * in order, so a line of a document's body that reads like a heading can only match where the
- * next heading is due. Where the documents rendered are not the row's - a cache holding other
- * documents than the row names - a heading goes unmatched and its text stays in the stretch
- * before it, which is held to the lowest version: the old whole-text rule, and never a weaker one.
+ * the two unguarded.
+ *
+ * The cut is made at the heading `renderCase` writes for each document, which both are built by
+ * `headingOf` so neither can drift from the other, and it is made only where the headings
+ * standing in the rendering are the row's own, in the row's order and one each. Where they are
+ * not, the whole rendering is one stretch held to the lowest version: the old whole-text rule,
+ * and never a weaker one. Two readings reach that: a rendering of other documents than the row
+ * names - `fresh-agent.ts` takes the row from the corpus and the documents from a round's cache,
+ * which checks the case id and the cache version and not the names - and a line of a document's
+ * own body that reads like one of these headings. Holding a stretch to one document's version
+ * alone is the weaker rule, and it is applied only where the text says which document each
+ * stretch is, never where that has to be guessed at.
  *
  * A document the request names no `requestedVersion` for is held to that lowest version too.
  * Its own section names no version to be held to, and holding it to nothing would be weaker than
@@ -248,23 +261,30 @@ interface GuardedSection {
 function guardedSectionsOf(row: CaseRow, text: string): GuardedSection[] {
   const documents = row.approval?.documents ?? [];
   const lowest = lowestRequestedVersion(documents);
+  const lines = text.split("\n");
+  // Built once for the whole rendering: one heading per document, and never one per line of it.
+  const headings = documents.map((document, at) => headingOf(document, at, documents.length));
+  const standing = lines.filter((line) => line.startsWith(DOCUMENT_HEADING));
+  const theRow =
+    standing.length === headings.length && standing.every((line, at) => line === headings[at]);
+  if (!theRow) return [{ guarded: lowest, document: null, text }];
   const sections: GuardedSection[] = [];
   let guarded = lowest;
   let named: string | null = null;
-  let lines: string[] = [];
+  let held: string[] = [];
   let next = 0;
-  for (const line of text.split("\n")) {
+  for (const line of lines) {
     const document = documents[next];
-    if (document !== undefined && line === headingOf(document, next, documents.length)) {
-      sections.push({ guarded, document: named, text: lines.join("\n") });
+    if (document !== undefined && line === headings[next]) {
+      sections.push({ guarded, document: named, text: held.join("\n") });
       guarded = document.requestedVersion ?? lowest;
       named = document.requestedVersion === null ? null : (document.name ?? "unnamed");
-      lines = [];
+      held = [];
       next += 1;
     }
-    lines.push(line);
+    held.push(line);
   }
-  sections.push({ guarded, document: named, text: lines.join("\n") });
+  sections.push({ guarded, document: named, text: held.join("\n") });
   return sections;
 }
 

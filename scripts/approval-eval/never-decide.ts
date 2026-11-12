@@ -34,17 +34,19 @@ import { askClaude, type ClaudeAsk, type ModelAnswer } from "./models";
  * The answers are cached, because one draw puts this question to 985 cases and a round must be
  * reproducible without paying for it twice. The key is the SHA-256 of the prose, the model id,
  * the document's id, the document's version, the issue's parent, its status and its sorted
- * labels, and the document's text, which is `cacheKey` below: a case is a document at a
- * version under the facts it was asked about, and a later version, or another set of facts, is
- * a different reading. A change of one byte of the prose changes every key by construction,
- * which is what makes the cache safe: no entry can outlive the definition it was answered
- * under.
+ * labels, and the whole rendered evidence of the case, which is `cacheKey` below: a case is a
+ * document at a version under the facts it was asked about, and a later version, or another
+ * set of facts, is a different reading. A change of one byte of the prose changes every key by
+ * construction, which is what makes the cache safe: no entry can outlive the definition it was
+ * answered under.
  */
 
 /**
  * Every kind the agent never decides, in the order the call offers them as labels. Nothing
- * tries them one after another: `waiting-legion-root` is settled from the issue's own facts
- * before any call, and the other six are what the one call may name, exactly one of them.
+ * tries them one after another: the one call is offered all seven and `none`, and names exactly
+ * one of them. `waiting-legion-root` is settled from the issue's own facts before any call is
+ * made, so a call is asked only about a case those facts did not settle, and an answer naming
+ * that kind is read as that kind all the same.
  */
 export const NEVER_DECIDE_KINDS = [
   "waiting-legion-root",
@@ -377,7 +379,7 @@ export async function neverDecide(
   const definition = options.definition ?? (await neverDecideDefinition());
   const model = options.model ?? DEFAULT_NEVER_DECIDE_MODEL;
   const directory = options.cacheDirectory ?? null;
-  // The key is a hash over the whole document, so it is worth nothing where nothing is kept.
+  // The key is a hash over the whole evidence, so it is worth nothing where nothing is kept.
   const key = directory === null ? "" : cacheKey(definition, model, input);
   if (directory !== null) {
     const kept = await readCache(directory, key);
