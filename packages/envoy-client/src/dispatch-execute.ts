@@ -427,17 +427,28 @@ function renderAdvice(
         : movedApproval.project !== undefined && movedApproval.project !== ""
           ? ({ kind: "project", key: movedApproval.project } as const)
           : undefined;
-    if (moved.length > 0 && movedOwner !== undefined) {
-      // The call reopens the request's first document, and the `--summary` floor is the version
-      // the first document that moved was handed over at. `--include-verification` is what asked
-      // for a second document, so it is read from the documents beside the first.
-      const first = documents[0];
+    // The call reopens the request's first document, and the `--summary` floor is the version
+    // the first document that moved was handed over at. `--include-verification` is what asked
+    // for a second document, so it is read from the documents beside the first.
+    const first = documents[0];
+    const firstMoved = moved[0];
+    // Both reads are guarded because the strictest tsconfig of this repository,
+    // packages/claude-envoy's, compiles these sources under `noUncheckedIndexedAccess`, which
+    // types an indexed read as possibly `undefined`. The `undefined` arm cannot be reached:
+    // `moved` is `documents` filtered, so a `moved` that is not empty leaves both arrays holding
+    // a first element. A first element missing all the same is one more reason to print no line.
+    if (
+      moved.length > 0 &&
+      movedOwner !== undefined &&
+      first !== undefined &&
+      firstMoved !== undefined
+    ) {
       const command = handBackApprovalCommand({
         owner: movedOwner,
         artifactID: first.artifact_id,
         primary: first.primary,
         verification: documents.slice(1).some((document) => document.role === "verification"),
-        summaryVersion: moved[0].requested_version,
+        summaryVersion: firstMoved.requested_version,
       });
       lines.push(
         `This write moved the open approval request (ask ${movedApproval.ask_id}): it waits on ` +
@@ -2114,6 +2125,14 @@ async function movedApprovalLine(
         ];
   const moved = movedApprovalDocuments(documents);
   if (moved.length === 0) return undefined;
+  // The first document that moved carries the `--summary` floor. The read is guarded because the
+  // strictest tsconfig of this repository, packages/claude-envoy's, compiles these sources under
+  // `noUncheckedIndexedAccess`, which types an indexed read as possibly `undefined`. The
+  // `undefined` arm cannot be reached: `moved` is `documents` filtered and is not empty here, so
+  // it holds a first element. A first element missing all the same is one more reason to answer
+  // `undefined`.
+  const firstMoved = moved[0];
+  if (firstMoved === undefined) return undefined;
   const command = handBackApprovalCommand({
     owner:
       ask.issue_key === null
@@ -2127,7 +2146,7 @@ async function movedApprovalLine(
     // (packages/envoy/internal/dispatch/api/reviews.go) appends a second document only under
     // `include_verification`, which it refuses on any document that is not the issue's spec.
     verification: documents.length > 1 && ask.approval_artifact?.primary === true,
-    summaryVersion: moved[0].requested_version,
+    summaryVersion: firstMoved.requested_version,
   });
   return (
     "The reply did not hand the ask to the human: it is an open approval request, and " +
