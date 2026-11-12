@@ -702,10 +702,10 @@ func memorySummary(issues map[string]api.Issue) string {
 // (record.Waiting carries every answered root there, whatever its design gate
 // says), until the pass that resumes it. Two answered roots are in no line this summary reads:
 // one of another Dispatch project, whose line this daemon does not build, and every one of them
-// when the daemon answering is older than contract 69 and has no `waitingLine` to send. The
+// when the daemon answering is older than contract 81 and has no `waitingLine` to send. The
 // caller is the operator's `legion state`, which a daemon of this release serves in full
 // (api's stateFor), so nothing strips the field from this reader. So the count is 0 against a
-// daemon older than contract 69, which is the true answer for a reader that cannot see the line.
+// daemon older than contract 81, which is the true answer for a reader that cannot see the line.
 func awaitingSummary(issues map[string]api.Issue) string {
 	var keys []string
 	standing := 0

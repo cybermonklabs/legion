@@ -595,14 +595,75 @@ legion state --config legion.yaml --json | jq '.wakesWaiting'
 ```
 
 `legion state` prints the same as a `wakes waiting:` line, and prints no such line when nothing
-waits. Each entry names the `claim`, its `issue` and `role`, the `kind` of wake (`launch`, a role
-process about to start; `plugin-task`, the update task a stale-plugin round queues to a session
-that already runs; `catch-up`, the notice a start writes to an architect that is already running)
-and `dueAt`, the moment the pacing gave it, which is when it runs. An empty array says the wave has
-gone out; the last `dueAt` in it says when the last of the wave goes. A claim on that list needs
-nothing from you: its wake is reserved and it runs at the moment named. Your own requests are what
+waits.
+Each entry names the `claim`, its `issue` and `role`, the `kind` of wake (`launch`, a role
+process about to start; `plugin-refresh`, the relaunch of a session whose plugin speaks an
+earlier daemon contract, which the daemon replaces at that one wake and asks nothing of first;
+`catch-up`, the notice a start writes to an architect that is already running)
+and `dueAt`, the moment the pacing gave it, which is when it runs.
+An empty array says the wave has
+gone out; the last `dueAt` in it says when the last of the wave goes.
+A claim on that list needs
+nothing from you: its wake is reserved and it runs at the moment named.
+Your own requests are what
 drop it — a resume, a retry or a task you send that claim is run at once, taking the reserved wake
 back, so nothing you ask for waits for a turn.
+
+After a boot onto a new plugin contract, the wakes alone understate the wave: the stale-plugin
+lane holds at most one minute of the pacing at a time, so what it has reserved is a minute's
+worth and what it has left is `.claimsToRefresh` of the same body.
+
+```sh
+legion state --config legion.yaml --json | jq '.claimsToRefresh'
+```
+
+That is how many sessions are still on an earlier plugin and waiting for the lane to relaunch
+them, one paced wake each.
+It falls to 0 as the wave drains.
+A number that stands still over several minutes while no `plugin-refresh` wake waits is most often
+a stale claim whose relaunch waits for a turn to end: the lane cuts no turn, so such a claim keeps
+its place in the count and takes its one wake at the turn's end.
+Read the claim the count still names (`legion state --json | jq '.issues'`): a claim in `working`
+is that wait, and nothing is owed of you.
+Only a count that stands still while every claim it names is idle is the reading worth acting on:
+the daemon can relaunch no session onto a plugin at all, and its log says so once per claim at boot
+(`this daemon knows no plugin versions to relaunch it onto`), which under Kubernetes means
+`runtime.kubernetes.plugins` names no plugin pair.
+
+That reading has a second cause, and the daemon keeps no record of it.
+The lane's relaunch of a claim is refused for as long as the launch path refuses it — a tree
+lifecycle cleanup already reserved for the claim's tree, an epoch the claim has moved past, or a
+store that did not answer — and the sweep raises the relaunch again at each tick that has a credit
+of the refresh gate free for it, until the refusal clears.
+The claim keeps its place in the count through all of it, and it is handed no task either: a claim
+whose `legion` calls this daemon refuses is given its task only once the process its relaunch
+starts registers on this daemon's contract and reports ready, so the issue's phase waits for the
+whole of the refusal.
+
+Nothing the daemon keeps says that of one claim: the state carries no per-claim record of a
+refresh that is not finishing, and the `update-stalled` notice the project's controller gets is of
+a pod update round, never of a refresh.
+What is left is the count and three log lines.
+`claimsToRefresh` is the count for the class: it stands at what the lane has left to do, is 0 when
+it has nothing left, and names no claim.
+The lines name a claim, and each says less than the whole:
+
+- **`supervise: the process speaks another plugin contract; relaunching it onto the current
+  plugin`** at Warn, with `claim=`, is written once for each relaunch the lane starts, so a claim
+  whose relaunch is refused has no such line at all.
+
+- **`api: refused a call from a process on another plugin contract`** at Warn, with `claim=` and
+  `route=`, is what the stale process's own `legion` calls are answered with, so a process that is
+  idle writes none, and the line says the claim is stale rather than that it is stuck.
+
+- **`supervise: an event failed`** at Error, with `claim=`, `event=supervise.StalePlugin` and the
+  refusal under `error=`, is what each refused attempt leaves behind.
+  It is the nearest thing to a per-claim signal: it is written once per attempt rather than once
+  per claim, and only while something is refusing the relaunch.
+
+So read the two together: a `claimsToRefresh` that does not fall while every claim it names is
+idle, and, in the log, either the boot's one line per claim for the degraded daemon above or
+`supervise: an event failed` naming the claim whose relaunch keeps being refused.
 
 A restart re-adopts every process still running, but a claim with no process runs again only when
 something starts it. A worker is started by the workflow when its phase begins, and a tree's

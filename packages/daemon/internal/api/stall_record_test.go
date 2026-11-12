@@ -103,16 +103,16 @@ func TestTheStateServedToAPodBeforeTheStallRecordContractLeavesTheNextCallersSta
 // stallRecordContract is the number DaemonAPIVersion took at the bump this record forced, which
 // was a task of its own, and this daemon's own contract is never below it: a pod at the release
 // that added the record, and a pod at this daemon's own contract, are both served it, and only a
-// pod still running a plugin below 69 is not. A constant above DaemonAPIVersion would be a key no
+// pod still running a plugin below 81 is not. A constant above DaemonAPIVersion would be a key no
 // pod is ever served; one above the contract that added the record would keep it from pods whose
 // plugin parses it.
 func TestTheStallRecordContractIsTheNumberTheBumpTakes(t *testing.T) {
 	// main landed the record at 57, its own waiting line at 58, the end of fix-attempt counting
 	// at 59, the counts of the moves back at 62 and the launch spend attributes at 64, and this
 	// branch's shapes ride the free number above every number main declares and every number an
-	// open branch has claimed, so the entry that adds `step` reaches a deployment as 69, the one
+	// open branch has claimed, so the entry that adds `step` reaches a deployment as 81, the one
 	// number this release's shape changes share.
-	const addedStallRecord = 69
+	const addedStallRecord = 81
 	if stallRecordContract != addedStallRecord {
 		t.Fatalf("stallRecordContract = %d, want %d, the contract whose entry in version.go adds the claim views' `step`",
 			stallRecordContract, addedStallRecord)

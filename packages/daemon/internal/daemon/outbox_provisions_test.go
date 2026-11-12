@@ -276,7 +276,7 @@ func TestALaunchProvisionsAWorkspaceWhoseCheckoutFailed(t *testing.T) {
 	var r *outbox
 	r = &outbox{
 		stateDir: stateDir, tokens: outboxTokens{}, log: quietLogger(),
-		supervisor: &supervisor{deps: supervise.Deps{Runtime: fake.NewRuntime()}},
+		supervisor: &supervisor{deps: supervise.Deps{Runtime: fake.NewRuntime(), RefreshGate: supervise.NewRefreshGate(0)}},
 		provision: func(_ context.Context, request workspace.Request) (workspace.Workspace, error) {
 			provisions++
 			// The registration makes the workspace's directory; the checkout writes its files.

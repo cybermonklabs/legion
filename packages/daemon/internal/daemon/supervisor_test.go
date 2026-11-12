@@ -377,6 +377,7 @@ func TestARegistrationInFlightWhenTheStopCutsItsLaunchShortIsRestoredAsAnUnfinis
 			Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 			Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 			PluginContract: api.DaemonAPIVersion,
+			RefreshGate:    supervise.NewRefreshGate(0),
 		}
 		if launches != nil {
 			sup.deps.Runtime = launches
@@ -460,6 +461,7 @@ func TestALiveClaimStoredWithNoProcessIsRestoredAsAnUnfinishedLaunchAndRelaunche
 				Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 				PluginContract: api.DaemonAPIVersion,
 				Secrets:        enroller,
+				RefreshGate:    supervise.NewRefreshGate(0),
 			}
 			t.Cleanup(sup.stop)
 			enrollment := supervise.Enrollment{ID: "enr-" + string(state), Incarnation: "pod-" + string(state)}
@@ -498,7 +500,7 @@ func TestALiveClaimStoredWithNoProcessIsRestoredAsAnUnfinishedLaunchAndRelaunche
 				t.Errorf("logged %q, want the repair named with the state it was stored in", got)
 			}
 
-			s := &supervision{log: quietLogger(), supervisor: sup}
+			s := &supervision{log: quietLogger(), supervisor: sup, refreshGate: supervise.NewRefreshGate(0)}
 			if refused := s.launchUnfinished(unfinished); len(refused) != 0 {
 				t.Fatalf("the relaunch refused %v", refused)
 			}

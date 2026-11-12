@@ -149,7 +149,7 @@ const legionCapabilityReportView = z.object({
 });
 
 /** `api.StepView` — what the daemon last saw a claim's agent do, built from the tool frames of
- * its worker stream (contract 69): `at`, when the daemon received that step; `turnStartedAt`,
+ * its worker stream (contract 81): `at`, when the daemon received that step; `turnStartedAt`,
  * when the turn it belongs to began; `tool` and `callId`, the call the agent is in, which the
  * start and end frames pair by; `argsBytes` and `argsHash`, the length of that call's arguments
  * and an eight-byte fingerprint of them; and `startedAt` and `endedAt`, when the daemon received
@@ -207,7 +207,7 @@ const legionClaimView = z.object({
   lastReady: timestamp.optional(),
   /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
    * begun a turn nor made a call the daemon saw. A caller in a pod whose plugin declares a
-   * contract below 69 is served the state with no such key at all (the daemon's
+   * contract below 81 is served the state with no such key at all (the daemon's
    * `withoutStallRecord`), so every reader takes it as optional. */
   step: legionStepView.optional(),
 });
@@ -248,7 +248,7 @@ const legionPhaseView = z.object({
  * No CI verdict and no fix-attempt count ride here: a CI result moves no issue, so the daemon
  * keeps neither (dispatch://INFRA-714/spec R1), and `mergeState` is what says whether a check the
  * repository requires holds the head. `fixAttempts` counted the heads pushed onto a red verdict
- * until contract 69 removed the count. */
+ * until contract 81 removed the count. */
 const legionPullRequestView = z.object({
   /** The repository (`owner/name`) the pull request is in, its issue's (contract 31). */
   repo: nonEmptyString,
@@ -449,10 +449,12 @@ const legionHeldOutboxRow = z.object({
  * (`worker_wakes_per_minute`, `worker_wake_burst`, contract 53): the claim it will wake, that
  * claim's issue and role, what kind of wake it is, and `dueAt`, the moment the pacing gave it,
  * which is when it runs. The kinds are the daemon's three paced lanes: `launch`, a role process it
- * is about to start, and `plugin-task`, the update task a stale-plugin round queues to a session
- * already running, both held in the claim's machine and lost with a restart, which raises the wave
+ * is about to start, and `plugin-refresh`, the relaunch of a process whose plugin speaks an
+ * earlier contract than the daemon's, which the stale-plugin lane's own gate admits (contract
+ * 73), both held in the claim's machine and lost with a restart, which raises the wave
  * again through its own paths; and `catch-up`, the notice a start writes to an architect already
- * running in place of a launch, which waits on its own outbox row. */
+ * running in place of a launch, which waits on its own outbox row. `kind` is an unconstrained
+ * string, so a lane a later daemon names is read rather than refused. */
 const legionWakeWaiting = z.object({
   claim: nonEmptyString,
   issue: issueKey,
@@ -498,8 +500,8 @@ const legionIssue = z.object({
    * beside it, the `spec` step's row, which a reader that asks one question of one gate takes. */
   gatedSteps: z.array(legionGatedStepView).optional(),
   slot: legionSlotView.optional(),
-  /** Where the issue stands in `admission.waiting` (contract 69): present only for an issue that
-   * list names, so every issue the line does not carry has none, and a daemon before contract 69
+  /** Where the issue stands in `admission.waiting` (contract 81): present only for an issue that
+   * list names, so every issue the line does not carry has none, and a daemon before contract 81
    * writes none at all, which is why a reader takes it as optional. */
   waitingLine: legionWaitingLineView.optional(),
   waitingOn: legionWaitingOn.optional(),
@@ -610,7 +612,7 @@ const legionCapabilityState = z.object({
 /** `api.Settings` — the daemon's resolved legion.yaml with every credential, credential source and
  * credential file path left out (contract 35). Its keys are legion.yaml's own; the two the spec
  * names are typed, the rest ride as the daemon writes them, so a new legion.yaml key is no
- * contract change. `max_fix_attempts` was typed here until contract 69 removed the key, and
+ * contract change. `max_fix_attempts` was typed here until contract 81 removed the key, and
  * `review_round_cap` is the one cap left that blocks a pull request. */
 const legionSettings = z.looseObject({
   review_round_cap: z.number().int().positive(),
@@ -690,14 +692,22 @@ const legionConsumerLag = z.object({
  * the keys it does not name, where the shapes around it drop theirs; `consumers` is the lag
  * of the daemon's durable consumers, never null, empty for a daemon with no workflow (contract 43);
  * `wakesWaiting` is every wake the daemon's pacing is holding until its turn, in claim order, never
- * null, empty at every moment outside a restart or a plugin wave (contract 53). It is optional
+ * null, empty at every moment outside a restart or a refresh wave (contract 53). It is optional
  * here only because a daemon at this contract leaves it off one body: a reader before 53 refuses
  * the key outright, empty as surely as naming a wake, so the route strips it for a caller in a pod
- * whose claims record a contract below 53, and for a caller in a pod whose claims it cannot read
- * at all, which may be a pod at this contract (`api.stateFor`, `withoutWakesWaiting`). A reader
- * that finds it absent has been served that stripped body and learns nothing about which wakes
- * wait; it is never a daemon older than this plugin, whom the boot gate and `legion probe-image`
- * refuse. */
+ * whose claims record a contract below 53, and for that caller alone (`api.stateFor`,
+ * `withoutWakesWaiting`). A reader that finds it absent has been served that stripped body and
+ * learns nothing about which wakes wait; it is never a daemon older than this plugin, whom the
+ * boot gate and `legion probe-image` refuse. `claimsToRefresh` is how many claims the stale-plugin
+ * lane still has to relaunch onto the daemon's plugin, a number and never null, 0 when the lane has
+ * nothing left (contract 73). It is what `wakesWaiting` cannot say: that lane holds at most one
+ * minute of the pacing at a time, so its waiting wakes are what it has admitted and this is what it
+ * has left. It is optional for the same reason `wakesWaiting` is and no other: the route strips it
+ * for a caller in a pod below 73, and for that caller alone, since a reader before 73 refuses the
+ * key when it is 0 as surely as when it names a number (`api.stateFor`, `withoutClaimsToRefresh`).
+ * A caller in a pod whose claims record no contract at all is served the count, as is a caller the
+ * daemon can place in no pod. The two strips compose on one body: a caller below 53 is below 73 too
+ * and is served neither key. */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo,
   admission: legionAdmission,
@@ -706,6 +716,7 @@ export const LegionStateResponse = z.object({
   heldOutboxRows: z.array(legionHeldOutboxRow),
   strandedClaims: z.array(legionStrandedClaim),
   wakesWaiting: z.array(legionWakeWaiting).optional(),
+  claimsToRefresh: z.number().int().nonnegative().optional(),
   controllerLocator: legionControllerLocator.optional(),
   agentSecretsLogin: legionAgentSecretsLoginView.optional(),
   capabilities: z.array(legionCapabilityState),

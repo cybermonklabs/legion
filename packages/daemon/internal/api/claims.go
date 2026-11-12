@@ -663,27 +663,29 @@ func (s *server) readRegisterBody(w http.ResponseWriter, r *http.Request, into *
 // starts that relaunch, so a stale claim there is left running and answered as any other:
 // refusing it would stall agents that work today.
 //
-// A claim whose launch installs no plugin is not stale here, whatever its contract and with no
-// round open (Options.NoPluginInstall — a Claude Code role's plugin in a pod is its image's own
-// claude-envoy, which no install reaches). Nothing relaunches such a claim for its contract: the
-// stale-plugin lane posts it nothing and its stale registration is accepted and charged nothing
-// (internal/daemon's refreshStalePlugins, supervise's staleRegistration), so this refusal's own
-// sentence would be false of it and no sweep would ever make it true. Only a new image moves
-// that worker's plugin, and the update round over its pod is what brings one — a round that
-// opens on pod-shape drift alone, so a release that changes no image opens none, and a refusal
-// here would hold the worker's grants, its handoff_complete and its ready for the rest of the
-// deployment's life.
+// Three of its four terms are the rule internal/supervise holds for both readers of it
+// (supervise.StaleRefusesCalls): the recorded contract is not this daemon's, the claim is in no
+// update round, and a relaunch onto this daemon's plugin can reach the claim at all — which is
+// false on a daemon that can relaunch nothing and false for a claim whose launch installs no
+// plugin (Options.PluginRelaunchable, Options.NoPluginInstall — a Claude Code role's plugin in
+// a pod is its image's own claude-envoy, which no install reaches). Nothing relaunches either
+// of those claims for its contract: the stale-plugin lane posts them nothing and their stale
+// registrations are accepted and charged nothing (internal/daemon's refreshStalePlugins,
+// supervise's staleRegistration), so this refusal's own sentence would be false of them and no
+// sweep would ever make it true. Only a new image moves such a worker's plugin, and the update
+// round over its pod is what brings one — a round that opens on pod-shape drift alone, so a
+// release that changes no image opens none, and a refusal here would hold the worker's grants,
+// its handoff_complete and its ready for the rest of the deployment's life. The round term is
+// there for the same reason read the other way: the round's whole point is that the worker
+// pushes its work before its process is replaced, and it cannot push without the daemon it
+// already speaks to, so while the round is open the daemon serves the claim on its previous
+// contract — grants, handoff_complete and every other grant-bearing route, as well as the claim
+// routes — and the end of the round is what relaunches the process onto the current plugin.
 //
-// A claim whose update round is open (Claim.UpdateRound) is not stale here either, whatever its
-// contract: the round's whole point is that the worker pushes its work before its process is
-// replaced, and it cannot push without the daemon it already speaks to. So while the round is
-// open the daemon serves the claim on its previous contract — grants, handoff_complete and every
-// other grant-bearing route, as well as the claim routes — and the end of the round is what
-// relaunches the process onto the current plugin.
-//
-// Nor is a claim whose worker is in a turn. The stale-plugin lane holds the relaunch of a
-// working claim until that turn ends (holdStaleRelaunch), precisely so the turn can push what it
-// has rather than lose it to a process ended where it stood. Grants are what mint the GitHub App
+// Its fourth term is this route family's own, which the shared rule leaves to it: a claim whose
+// worker is in a turn is not stale here. The stale-plugin lane holds the relaunch of a working
+// claim until that turn ends (holdStaleRelaunch), precisely so the turn can push what it has
+// rather than lose it to a process ended where it stood. Grants are what mint the GitHub App
 // token, so refusing them for the length of that turn would take away the one thing the hold
 // exists to protect: the turn would run on, unable to push and unable to hand off, and the work
 // would go with the relaunch the hold was waiting to start. Working, stale, relaunchable and in
@@ -691,12 +693,13 @@ func (s *server) readRegisterBody(w http.ResponseWriter, r *http.Request, into *
 // claim the boot pass has not decided yet; serving the last two for that moment is what degraded
 // mode does for every stale claim. The window this refusal describes opens when the relaunch
 // starts, not when the daemon decides on it.
+//
+// supervise's own reader of the shared rule adds no such term, because the one place it is
+// asked has answered it already: a pending delivery is handed to no claim that is not ready or
+// idle (supervise's staleRefusesClaim, sendPending).
 func (s *server) staleClaim(c supervise.Claim) (int, bool) {
-	if s.noPluginInstall != nil && s.noPluginInstall(c) {
-		return c.PluginContract, false
-	}
-	return c.PluginContract, s.pluginRelaunchable && c.PluginContract != DaemonAPIVersion &&
-		c.UpdateRound == "" && c.State != supervise.StateWorking
+	return c.PluginContract, supervise.StaleRefusesCalls(c, DaemonAPIVersion, s.pluginRelaunchable, s.noPluginInstall) &&
+		c.State != supervise.StateWorking
 }
 
 // logStaleRefusal is the one log line every stale-caller refusal writes: never the body,
