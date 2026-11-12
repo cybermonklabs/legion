@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
 // gitWorktreeLockReason is the reason each workspace's git worktree is locked with: `git worktree
@@ -99,6 +101,80 @@ func gitDirWorktreeEntries(gitDir, dir string) ([]string, error) {
 		}
 	}
 	return own, nil
+}
+
+// CloneGitDir is the git directory of the shared clone the jj workspace at dir is a workspace of,
+// derived from dir's own place in the layout and from nothing inside dir. Location puts a
+// workspace at <state>/workspaces/<owner>/<name>/<issue> and its clone at
+// CloneRoot(<state>)/<owner>/<name>, so the state directory is the layoutDepth directories above
+// dir — the inverse rescue.StateDirOf already takes — and the clone follows from the owner and
+// the name dir carries. What is deliberately not read is the pair jj resolves a git directory
+// through, the workspace's .jj/repo and the repository's store/git_target: every process working
+// the workspace can write them, and an absolute path in either is taken as it stands.
+//
+// The derivation holds where the runtime laid the workspace out with Location, which is the
+// Kubernetes issue pod: its `workspace-init provision` created the workspace there and
+// `internal/runtime/sandbox` mounts it at that path. A caller whose workspace came from anywhere
+// else is refused by the checks below rather than answered a derived path. It also leaves the
+// pod's two sweeps taking the clone from one source — RemoveStaleGitLocks, the init container's,
+// takes filepath.Join(workspace.Clone, ".git") from Location — so the two cannot disagree about
+// the directory they sweep.
+//
+// Three things are refused, each naming the path it derived, and none falls back to the
+// workspace's own files: a dir the layout does not account for, a derived clone with no git
+// directory, and a derived git directory serving no git worktree of dir. The last is a check on
+// the derivation and not what holds anything out — the path is the layout's, not a file's — and
+// it costs the one real layout it refuses: a colocated clone whose own working copy is dir,
+// which git keeps as the main worktree and registers under no entry, and a jj that colocates no
+// workspace at all (0.44, gitWorktreeEntries). Such a workspace is one a caller is answered a
+// reason for rather than one it sweeps.
+func CloneGitDir(dir string) (string, error) {
+	clone, err := cloneOf(dir)
+	if err != nil {
+		return "", err
+	}
+	gitDir := filepath.Join(clone, ".git")
+	own, err := gitDirWorktreeEntries(gitDir, dir)
+	if err != nil {
+		return "", err
+	}
+	if len(own) == 0 {
+		if _, err := os.Stat(gitDir); err != nil {
+			return "", fmt.Errorf("the clone of %s has no git directory at %s: %w", dir, gitDir, err)
+		}
+		return "", fmt.Errorf("the git directory %s of the clone of %s serves no git worktree of it", gitDir, dir)
+	}
+	return gitDir, nil
+}
+
+// cloneOf is the shared clone the workspace at dir belongs to, read out of dir's path alone. The
+// owner and the name are the two directories above dir's own, the state directory is layoutDepth
+// above it, and Location is then asked where it would put that workspace: a dir Location does not
+// put exactly there — a relative path, one too shallow for the layout, one whose owner and name
+// are no repository, one whose issue Location would case differently — is in no layout this can
+// invert, and is refused rather than guessed at.
+func cloneOf(dir string) (string, error) {
+	dir = filepath.Clean(dir)
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("the workspace %s is no absolute path, so the clone it belongs to cannot be derived", dir)
+	}
+	stateDir := dir
+	for range layoutDepth {
+		stateDir = filepath.Dir(stateDir)
+	}
+	owner, name := filepath.Base(filepath.Dir(filepath.Dir(dir))), filepath.Base(filepath.Dir(dir))
+	repository, err := ghrepo.Parse("workspace repository", owner+"/"+name)
+	if err != nil {
+		return "", fmt.Errorf("the workspace %s is in no state directory's workspace layout: %w", dir, err)
+	}
+	want, err := Location(stateDir, repository, filepath.Base(dir))
+	if err != nil {
+		return "", fmt.Errorf("the workspace %s is in no state directory's workspace layout: %w", dir, err)
+	}
+	if want.Dir != dir {
+		return "", fmt.Errorf("the workspace %s is in no state directory's workspace layout: the workspace of %s under %s lies at %s", dir, repository, stateDir, want.Dir)
+	}
+	return want.Clone, nil
 }
 
 // resolvedPath is path, made absolute, with the symlinks of its longest existing prefix resolved.

@@ -104,26 +104,32 @@ type gitLockSweep struct {
 
 	mu        sync.Mutex
 	workspace string
-	// gitDir is the clone's git directory, resolved once (workspace.GitDir) by whoever gave the
-	// sweep its workspace, and read by every pass after. It is resolved once because that
-	// resolution reads .jj/repo and the repository's store/git_target, which every role of the
-	// pod can write, and an absolute path in either is taken as it stands: a pass that read them
-	// again would walk and remove under whatever directory the last writer named — under another
-	// role's entry of /roles, which role-init hides from the role, as readily as under the
-	// clone's own.
+	// gitDir is the clone's git directory, derived once (workspace.CloneGitDir) by whoever gave
+	// the sweep its workspace, and read by every pass after. It is derived from the workspace's
+	// own path through the runtime's layout, and the two files jj resolves a git directory
+	// through — the workspace's .jj/repo and the repository's store/git_target — are not read
+	// at all: every role of the pod can write them, and an absolute path in either is taken as
+	// it stands, so a sweep that read them would walk and remove under whatever directory the
+	// last writer named, under another role's entry of /roles, which role-init hides from the
+	// role, as readily as under the clone's own.
 	//
-	// What makes one resolution enough is that it is made before any role process of the
-	// container exists — in newGitLockSweep, before the launcher serves anything, or in learn,
-	// inside the first role start and before that start's own child runs — on a disk the pod's
-	// own `workspace-init provision` wrote. So what it reads is the provisioning's, not a role's.
-	// That is the same property the first pass rests on when it removes every lock no process
-	// holds whatever its age: one property, proved once here and once there.
+	// The first pass's rule and this derivation rest on two different properties, and a roles
+	// container that restarts on the pod's own disk keeps only one of them. The pod's restart
+	// policy is Always and its disk lives as long as the pod, so a container that ends — an
+	// out-of-memory kill among the ways — comes back on a disk its own last roles wrote
+	// (restore.go's bundle restore already handles such a restart).
+	//
+	// "No process of the container holds a lock yet" survives that: the restarted container
+	// starts with no role process of its own, which is what lets the first pass remove every
+	// lock no process holds whatever its age, and the launcher's own first pass runs before it
+	// serves anything (newGitLockSweep, serve).
+	//
+	// "What the pod's provisioning wrote is what is read" does not survive it: a role of the
+	// container before the restart could have written store/git_target, and the new launcher
+	// reading it would take a role's file for the provisioning's and send its first pass, which
+	// removes at any age, wherever that file points. That is why the git directory is derived
+	// from the layout, which no role can write, rather than read from the workspace.
 	gitDir string
-	// unresolved is the reason the one resolution failed, which is what every pass of a sweep
-	// that has a workspace and no git directory refuses with (sweep). The sweep stays refused
-	// for the pod's life rather than reading those two files again, since every later moment to
-	// read them is a moment a role process could have written them.
-	unresolved string
 	// refusal is the last reason a pass was refused for, so the same one is written once rather
 	// than once a minute for the pod's life. Only a pass that made every read it meant to and
 	// was not stopped forgets it (sweep), so a clone that breaks again is reported again.
@@ -134,17 +140,18 @@ type gitLockSweep struct {
 // the pod sets that container's working directory to the issue's workspace
 // (internal/runtime/sandbox's podkind, WorkingDir: l.workspace), so the launcher needs nothing
 // from the daemon to know which clone is its own. A working directory that cannot be read, or
-// that is no jj workspace — a missing or unreadable .jj/repo and a missing store/git_target
-// alike, which is every failure of workspace.GitDir — leaves the sweep without one: it writes
-// that here, once, and takes the workspace from the first role start it serves instead, which
-// carries LEGION_WORKSPACE. A working directory that did supply it is recorded as having done so
-// (fromWorkDir), so a role start finds there is nothing to learn without taking the sweep's lock.
+// whose clone's git directory cannot be derived from it — a directory outside the runtime's
+// workspace layout, a derived clone with no git directory and a derived git directory serving
+// no worktree of this workspace alike, which is every failure of workspace.CloneGitDir — leaves
+// the sweep without one: it writes that here, once, and takes the workspace from the first role
+// start it serves instead, which carries LEGION_WORKSPACE. A working directory that did supply
+// it is recorded as having done so (fromWorkDir), so a role start finds there is nothing to
+// learn without taking the sweep's lock.
 //
-// A working directory that is a jj workspace is resolved to its clone's git directory here and
-// nowhere else (gitDir): this runs before the launcher serves any role, which is the one moment
-// the files that resolution reads are the pod's provisioning's rather than a role's. The
-// resolved path goes out in a line of its own, so a person reading the pod's log sees which
-// directory every pass of the pod walks.
+// A working directory the layout accounts for gives its clone's git directory here and nowhere
+// else (gitDir). The derived path goes out in a line of its own, as does the reason a
+// derivation was refused, so a person reading the pod's log sees which directory every pass of
+// the pod walks, or which one it would not walk and why.
 //
 // The two numbers a test shortens, the interval and the recheck, are read here, in the caller's
 // own goroutine, and never inside the ticker's: they are package variables, and a goroutine still
@@ -161,9 +168,9 @@ func newGitLockSweep(log func(format string, args ...any)) *gitLockSweep {
 		s.log("launcher: the git lock sweep cannot read the launcher's working directory (%q); it takes its workspace from the first role start", err)
 		return s
 	}
-	gitDir, err := workspace.GitDir(dir)
+	gitDir, err := workspace.CloneGitDir(dir)
 	if err != nil {
-		s.log("launcher: the git lock sweep's working directory %q is no jj workspace (%q); it takes its workspace from the first role start", dir, err)
+		s.log("launcher: the git lock sweep's working directory %q is no jj workspace it can sweep (%q); it takes its workspace from the first role start", dir, err)
 		return s
 	}
 	s.workspace = dir
@@ -212,9 +219,10 @@ func (s *gitLockSweep) serve(ctx context.Context) <-chan struct{} {
 // learn takes the workspace of a role start (LEGION_WORKSPACE) when the sweep has none, and
 // sweeps it at once, under the first pass's rule: the start that follows runs the pod's bundle
 // restore, which runs real git and jj against that clone, and a stale lock fails it. It happens
-// once per pod — a sweep that already has a workspace keeps it, since the roles of a pod work one
-// workspace — and a second role's start that arrives while it runs waits here for it, which is
-// how the pod's one restore serves every role (bundleRestore.apply).
+// at the first start that carries a non-empty LEGION_WORKSPACE — a start that carries none is
+// passed over below, and a sweep that already has a workspace keeps it, since the roles of a
+// pod work one workspace — and a second role's start that arrives while it runs waits here for
+// it, which is how the pod's one restore serves every role (bundleRestore.apply).
 //
 // This pass carries no gitLockFirstPassBound: that bound is the pod's boot, which the launcher's
 // own first pass runs inside, where this one runs inside a start whose restore walks the same
@@ -232,13 +240,14 @@ func (s *gitLockSweep) serve(ctx context.Context) <-chan struct{} {
 // body it skips provably does nothing: workspace is not empty wherever fromWorkDir is set, which
 // is the one thing that body tests.
 //
-// The clone's git directory is resolved here, once, and never read from the workspace's files
-// again (gitDir). This is the last moment at which that resolution reads what the pod's own
-// provisioning wrote: it runs inside the start that serves the pod's first role generation,
-// before that start's own child exists (manager.start calls this before process.start), and mu
-// holds a second role's start behind it. A resolution that fails takes the workspace all the
-// same, so no later start reads those files with a role of the pod already running: the sweep
-// keeps the reason and refuses every pass of the pod's life with it.
+// The clone's git directory is derived here, once, from the workspace's own path
+// (workspace.CloneGitDir), and the workspace's files are not read for it at all, which is what
+// makes the moment this runs no part of the argument (gitDir). It runs inside the start that
+// serves the pod's first role generation, before that start's own child exists (manager.start
+// calls this before process.start), and mu holds a second role's start behind it. A derivation
+// that fails takes the workspace all the same, so no later start derives again with a role of
+// the pod already running: the sweep refuses with the reason here, once, and every pass after
+// has no git directory and nothing to sweep (sweep).
 func (s *gitLockSweep) learn(ctx context.Context, dir string) {
 	if s == nil || dir == "" || s.fromWorkDir {
 		return
@@ -249,10 +258,9 @@ func (s *gitLockSweep) learn(ctx context.Context, dir string) {
 		return
 	}
 	s.workspace = dir
-	gitDir, err := workspace.GitDir(dir)
+	gitDir, err := workspace.CloneGitDir(dir)
 	if err != nil {
-		s.unresolved = fmt.Sprintf("the workspace %s: %v", dir, err)
-		s.refuse(s.unresolved)
+		s.refuse(fmt.Sprintf("the workspace %s: %v", dir, err))
 		return
 	}
 	s.gitDir = gitDir
@@ -274,20 +282,16 @@ func (s *gitLockSweep) pass(ctx context.Context, first bool) bool {
 //
 // A pass that cannot list the clone's locks or read the container's processes writes one line and
 // ends there; it fails nothing, since this runs in PID 1 of the container and a launcher that
-// failed its container would cost the issue every role it serves. A sweep whose one resolution of
-// the git directory failed refuses every pass with that reason, which refuse writes once, and
-// reads the workspace's own files no more (gitDir).
+// failed its container would cost the issue every role it serves. A sweep with no git directory
+// has nothing to sweep and ends here without a line: either it never learned a workspace, or the
+// one derivation it made failed and wrote its reason where it was made (newGitLockSweep, learn).
 //
 // The stored refusal is forgotten here, and only by a pass that made every read it meant to: a
 // pass that listed the locks and then could not read /proc would otherwise clear the very reason
 // it is about to write again, and refuse's rule — the same reason once, rather than once a minute
 // for the pod's life — would hold for no pass at all.
 func (s *gitLockSweep) sweep(ctx context.Context, first bool) bool {
-	if s.workspace == "" {
-		return false
-	}
 	if s.gitDir == "" {
-		s.refuse(s.unresolved)
 		return false
 	}
 	reason, stopped := s.decide(ctx, first)

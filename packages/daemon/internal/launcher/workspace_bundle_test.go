@@ -320,7 +320,14 @@ func TestARestoreSkipsABookmarkNameJJWillNotTakeAndRestoresTheRest(t *testing.T)
 	}
 }
 
-const bundleIssue = "INFRA-945"
+// bundleIssue is the issue the fixture's workspaces belong to, and bundleOwner and bundleRepo
+// the repository: the three name the directories a pod that replaces the released one is laid
+// out in (secondPod, workspace.Location).
+const (
+	bundleIssue = "INFRA-945"
+	bundleOwner = "acme"
+	bundleRepo  = "widgets"
+)
 
 // bundleFixture is one remote, the pod that is released and the workspace it worked in, and the
 // pods that replace it: real git and real jj throughout, every command naming the directory it
@@ -407,12 +414,22 @@ func (f *bundleFixture) pod(clone, ws string) {
 }
 
 // secondPod is the pod that replaces the released one: its own clone of the remote as it stands
-// now, and its own workspace, holding only what was pushed.
+// now, and its own workspace, holding only what was pushed. name is the state directory the pair
+// is laid out under, each pod having one of its own; the clone and the workspace sit where
+// provisioning puts them below it (workspace.Location), which is where a launcher started in
+// that workspace derives the clone from (workspace.CloneGitDir).
 func (f *bundleFixture) secondPod(name string) string {
 	f.t.Helper()
-	clone, workspace := filepath.Join(f.root, name+"-clone"), filepath.Join(f.root, name)
-	f.pod(clone, workspace)
-	return workspace
+	state := filepath.Join(f.root, name)
+	clone := filepath.Join(workspace.CloneRoot(state), bundleOwner, bundleRepo)
+	ws := filepath.Join(state, "workspaces", bundleOwner, bundleRepo, strings.ToLower(bundleIssue))
+	for _, dir := range []string{filepath.Dir(clone), filepath.Dir(ws)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+	f.pod(clone, ws)
+	return ws
 }
 
 // workOne leaves in the released pod's workspace the four kinds of unpushed work a release has to

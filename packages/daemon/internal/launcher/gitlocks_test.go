@@ -29,16 +29,30 @@ import (
 // No row here calls t.Parallel, and none may: the rows that drive a launcher use t.Chdir, which
 // panics in a parallel test, and the package's sweep numbers are package variables a row shortens.
 
+// The repository and the issue every clone of these rows belongs to. They name directories
+// rather than anything the rows assert, but they have to be a repository and an issue
+// workspace.Location would accept: provisioning puts a workspace at
+// <state>/workspaces/<owner>/<name>/<issue> and its shared clone at
+// <state>/repos/github.com/<owner>/<name>, and the launcher's sweep derives the clone from that
+// layout and from nothing inside the workspace (workspace.CloneGitDir), so a clone laid out
+// anywhere else is one no row could drive a launcher over.
+const (
+	lockCloneOwner = "acme"
+	lockCloneRepo  = "widgets"
+	lockCloneIssue = "infra-1"
+)
+
 // lockClone is one issue pod's clone and the workspace in it, as the sweep reads them: the shared
-// clone's git directory, that workspace's worktree entry under it, and the two jj files
-// workspace.GitDir resolves the git directory through (.jj/repo and the repository's
-// store/git_target).
+// clone's git directory, that workspace's worktree entry under it, and the two jj files jj
+// resolves a git directory through (.jj/repo and the repository's store/git_target), which a real
+// clone holds and the sweep never reads.
 type lockClone struct {
 	t *testing.T
-	// dir is the jj workspace, clone the shared clone, gitDir the clone's git directory and
-	// worktree the workspace's own entry under gitDir/worktrees. repo is the jj repository
-	// .jj/repo names.
-	dir, clone, gitDir, worktree, repo string
+	// root is the state directory the clone and the workspace are laid out under
+	// (workspace.Location). dir is the jj workspace, clone the shared clone, gitDir the clone's
+	// git directory and worktree the workspace's own entry under gitDir/worktrees. repo is the
+	// jj repository .jj/repo names.
+	root, dir, clone, gitDir, worktree, repo string
 }
 
 func newLockClone(t *testing.T) *lockClone {
@@ -46,15 +60,21 @@ func newLockClone(t *testing.T) *lockClone {
 	return newLockCloneUnder(t, t.TempDir())
 }
 
-// newLockCloneUnder is that clone under a root the row names, for the one row whose holder runs
-// in a role's own mount namespace: role-init mounts a private tmpfs over /tmp there, which would
-// hide a clone kept under it from the very process the row has hold its lock open, so that row
-// builds its clone under namespaceScratch instead.
+// newLockCloneUnder is that clone under a state directory the row names, for the one row whose
+// holder runs in a role's own mount namespace: role-init mounts a private tmpfs over /tmp there,
+// which would hide a clone kept under it from the very process the row has hold its lock open,
+// so that row builds its clone under namespaceScratch instead.
 func newLockCloneUnder(t *testing.T, root string) *lockClone {
 	t.Helper()
-	c := &lockClone{t: t, dir: filepath.Join(root, "ws"), clone: filepath.Join(root, "clone")}
+	c := &lockClone{
+		t: t, root: root,
+		dir:   filepath.Join(root, "workspaces", lockCloneOwner, lockCloneRepo, lockCloneIssue),
+		clone: filepath.Join(workspace.CloneRoot(root), lockCloneOwner, lockCloneRepo),
+	}
 	c.gitDir = filepath.Join(c.clone, ".git")
-	c.worktree = filepath.Join(c.gitDir, "worktrees", "ws")
+	// git names a worktree entry after the directory's base name, which in a pod is the issue's
+	// key, since that is what Location names the workspace directory.
+	c.worktree = filepath.Join(c.gitDir, "worktrees", lockCloneIssue)
 	c.repo = filepath.Join(c.clone, ".jj", "repo")
 	for _, dir := range []string{filepath.Join(c.gitDir, "refs", "heads"), c.worktree, filepath.Join(c.repo, "store"), filepath.Join(c.dir, ".jj")} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -108,14 +128,14 @@ func (c *lockClone) plant(path, content string, age time.Duration) string {
 
 // sweep is a sweep over this clone with the launcher's own removal and clock — the walk is the
 // launcher's own wherever the sweep runs, since it calls it outright — and a /proc root of the
-// row's own. The clone's git directory is resolved here, as the launcher resolves it once before
-// any role process exists (gitLockSweep.gitDir), so a row that rewrites the workspace's
-// store/git_target afterwards rewrites it for nothing. The numbers are the package's, which a
-// row changes on the sweep it was given rather than on the package, since nothing but its own
-// sweep reads them here.
+// row's own. The clone's git directory is derived here through the call the launcher derives it
+// with, once, before any role process exists (workspace.CloneGitDir, gitLockSweep.gitDir), so
+// every row of this package drives a sweep over a directory that derivation accepted. The
+// numbers are the package's, which a row changes on the sweep it was given rather than on the
+// package, since nothing but its own sweep reads them here.
 func (c *lockClone) sweep(log *lockedBuffer, proc string) *gitLockSweep {
 	c.t.Helper()
-	gitDir, err := workspace.GitDir(c.dir)
+	gitDir, err := workspace.CloneGitDir(c.dir)
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -600,15 +620,48 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 		requireRoleNamespaces(t)
 		c := newLockClone(t)
 		lock := c.lock("index.lock", "stale", time.Second)
-		// The pass is held where it reads the workspace's repository: .jj/repo is a fifo, whose
-		// read blocks until this row opens it for writing. The launcher learns the workspace
-		// from the start below, so nothing reads the fifo before that start arrives.
-		repoFile := filepath.Join(c.dir, ".jj", "repo")
-		if err := os.Remove(repoFile); err != nil {
+		// The pass is held where it reads the clone's git worktree entries: the entry's gitdir
+		// is a fifo, whose read blocks until this row opens it for writing. The launcher learns
+		// the workspace from the start below, so nothing reads the fifo before that start
+		// arrives.
+		//
+		// The pass reads that entry twice, once where the launcher derives and checks the
+		// clone's git directory (workspace.CloneGitDir) and once in the walk that lists the
+		// clone's locks (workspace.GitLocks), and only the first is held: the writer renames
+		// the real gitdir over the fifo's name before it closes, so the read it is holding ends
+		// with the entry's own content and the read after it opens the file. Serving the fifo a
+		// second time instead would race the first read's end — a reader sees no end of file
+		// while any writer holds the fifo open, and the two writes would arrive as one read.
+		gitdir := filepath.Join(c.worktree, "gitdir")
+		content := filepath.Join(c.dir, ".git") + "\n"
+		ready := gitdir + ".ready"
+		c.write(ready, content)
+		if err := os.Remove(gitdir); err != nil {
 			t.Fatal(err)
 		}
-		if err := syscall.Mkfifo(repoFile, 0o600); err != nil {
+		if err := syscall.Mkfifo(gitdir, 0o600); err != nil {
 			t.Fatal(err)
+		}
+		served := make(chan error, 1)
+		serve := func() {
+			file, err := os.OpenFile(gitdir, os.O_WRONLY, 0)
+			if err != nil {
+				served <- err
+				return
+			}
+			if _, err := file.WriteString(content); err != nil {
+				file.Close()
+				served <- err
+				return
+			}
+			// The name carries the entry's own file again before the holding read can end, so
+			// the walk that follows reads it and nothing of this row is left in the clone.
+			if err := os.Rename(ready, gitdir); err != nil {
+				file.Close()
+				served <- err
+				return
+			}
+			served <- file.Close()
 		}
 		t.Chdir(t.TempDir())
 		f := newFleet(t, 5*time.Second, "tester")
@@ -616,18 +669,17 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 		conn.send(roleStart(1, c.dir, nil))
 		answersNothingFor(t, conn, 300*time.Millisecond)
 		if swept(lock) {
-			t.Fatal("the pass removed the lock while it was still held at the workspace's repository")
+			t.Fatal("the pass removed the lock while it was still held at the clone's git worktree entries")
 		}
 
-		released := make(chan error, 1)
-		go func() { released <- os.WriteFile(repoFile, []byte(c.repo+"\n"), 0o600) }()
+		go serve()
 		select {
-		case err := <-released:
+		case err := <-served:
 			if err != nil {
 				t.Fatal(err)
 			}
 		case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
-			t.Fatalf("the launcher never read the workspace's repository; its log:\n%s", f.stderr.String())
+			t.Fatalf("the launcher never read the clone's git worktree entries; its log:\n%s", f.stderr.String())
 		}
 		if got, ok := conn.reply().(shimwire.LauncherStartResult); !ok || !got.OK {
 			t.Fatalf("the start answered %#v once the pass returned; the launcher's log:\n%s", got, f.stderr.String())
@@ -635,12 +687,6 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 		if !swept(lock) {
 			t.Fatalf("the start was answered with %s still there; the launcher's log:\n%s", lock, f.stderr.String())
 		}
-		// The fifo served the sweep's one read of the workspace's repository, which is the only
-		// one the pod makes (gitLockSweep.gitDir); the row leaves the clone as it found it.
-		if err := os.Remove(repoFile); err != nil {
-			t.Fatal(err)
-		}
-		c.write(repoFile, c.repo+"\n")
 	})
 }
 
@@ -664,10 +710,11 @@ func TestTheLauncherTakesTheWorkspaceFromItsWorkingDirectory(t *testing.T) {
 	}
 }
 
-// A launcher whose working directory is no jj workspace — a missing or unreadable .jj/repo and a
-// missing store/git_target alike — says so once and sweeps nothing, since it has no clone to
-// sweep. The first role start it serves names the workspace (LEGION_WORKSPACE), and that is the
-// clone it sweeps, under the first pass's rule, before the start's own restore runs.
+// A launcher whose working directory is no workspace the sweep can derive a clone for — here a
+// directory the runtime's layout does not account for, which is every directory outside
+// <state>/workspaces/<owner>/<name>/<issue> — says so once and sweeps nothing, since it has no
+// clone to sweep. The first role start it serves names the workspace (LEGION_WORKSPACE), and
+// that is the clone it sweeps, under the first pass's rule, before the start's own restore runs.
 func TestALauncherWhoseDirectoryIsNoWorkspaceSweepsAtTheFirstRoleStart(t *testing.T) {
 	requireRoleNamespaces(t)
 	c := newLockClone(t)
@@ -695,6 +742,51 @@ func TestALauncherWhoseDirectoryIsNoWorkspaceSweepsAtTheFirstRoleStart(t *testin
 	if !strings.Contains(f.stderr.String(), "removed the git lock "+strconv.Quote(lock)+",") {
 		t.Fatalf("the launcher removed %s and wrote no line for it:\n%s", lock, f.stderr.String())
 	}
+
+	// A derivation that failed is the sweep's answer for the pod's life. learn takes the
+	// workspace before it derives, so a start that arrives later finds a workspace already
+	// learned and derives nothing: were the two the other way round, that later start would
+	// derive with a role of the pod already running, and the first pass it then ran — which
+	// removes at any age — would be the one thing the derivation is read once to avoid.
+	t.Run("a learn whose derivation failed learns nothing from a later start", func(t *testing.T) {
+		broken := newLockClone(t)
+		stale := broken.lock("index.lock", "stale", time.Hour)
+		// The one thing a derived git directory is checked for is a worktree entry naming this
+		// workspace, so removing that entry's gitdir leaves a clone where the layout says it is
+		// with nothing in it this workspace owns.
+		gitdir := filepath.Join(broken.worktree, "gitdir")
+		if err := os.Remove(gitdir); err != nil {
+			t.Fatal(err)
+		}
+		log := &lockedBuffer{}
+		s := &gitLockSweep{
+			proc: procRoot(t, os.Getpid()), guard: gitLockGuard, interval: gitLockInterval,
+			recheck: time.Millisecond, remove: os.Remove, now: time.Now,
+			log: (&roleLog{stdout: log, stderr: log}).linef,
+		}
+		s.learn(context.Background(), broken.dir)
+		refusal := fmt.Sprintf("the git directory %s of the clone of %s serves no git worktree of it", broken.gitDir, broken.dir)
+		if !strings.Contains(log.String(), refusal) {
+			t.Fatalf("the learn that could derive no git directory said:\n%s", log.String())
+		}
+		if swept(stale) {
+			t.Fatalf("a sweep that derived no git directory removed %s:\n%s", stale, log.String())
+		}
+
+		// The entry is back, as a role of the pod that repaired the clone would leave it, and a
+		// second start names the same workspace: the sweep derives nothing and sweeps nothing.
+		broken.write(gitdir, filepath.Join(broken.dir, ".git")+"\n")
+		s.learn(context.Background(), broken.dir)
+		if s.gitDir != "" {
+			t.Fatalf("a second start gave the sweep the git directory %q, which it derived with a role of the pod running", s.gitDir)
+		}
+		if swept(stale) {
+			t.Fatalf("a second start made the sweep remove %s:\n%s", stale, log.String())
+		}
+		if strings.Contains(log.String(), "the git lock sweep works the workspace") {
+			t.Fatalf("a second start made the sweep take a workspace it had already taken:\n%s", log.String())
+		}
+	})
 }
 
 // The sweep ends with the container's context, and Run waits for it as it waits for the pod's
@@ -1119,13 +1211,13 @@ func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.
 	c := newLockClone(t)
 	ours := c.worktreeLock("index.lock", "ours", time.Hour)
 	// A second workspace's entry under the same clone: git names an entry after the directory's
-	// base name, and its gitdir names that workspace's own .git, which is how the walk tells one
-	// workspace's locks from another's.
-	other := filepath.Join(c.gitDir, "worktrees", "ws2")
-	c.plant(filepath.Join(other, "gitdir"), filepath.Join(filepath.Dir(c.dir), "ws2", ".git")+"\n", 0)
+	// base name, which is the issue's key, and its gitdir names that workspace's own .git, which
+	// is how the walk tells one workspace's locks from another's.
+	other := filepath.Join(c.gitDir, "worktrees", "infra-2")
+	c.plant(filepath.Join(other, "gitdir"), filepath.Join(filepath.Dir(c.dir), "infra-2", ".git")+"\n", 0)
 	theirs := c.plant(filepath.Join(other, "index.lock"), "another pod's", time.Hour)
-	// The pod's feed beside the clone, laid out as workspace.FeedRepository names it.
-	feed := c.plant(filepath.Join(filepath.Dir(c.clone), "feed", "cybermonklabs", "legion.git", "refs", "heads", "main.lock"), "the feed's", time.Hour)
+	// The pod's feed on the same volume, laid out as workspace.FeedRepository names it.
+	feed := c.plant(filepath.Join(c.root, "feed", lockCloneOwner, lockCloneRepo+".git", "refs", "heads", "main.lock"), "the feed's", time.Hour)
 	log := &lockedBuffer{}
 	s := c.sweep(log, procRoot(t, os.Getpid()))
 	s.pass(context.Background(), false)
@@ -1139,13 +1231,13 @@ func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.
 		}
 	}
 
-	// The two files the git directory is resolved through, .jj/repo and the repository's
+	// The two files jj resolves a git directory through, .jj/repo and the repository's
 	// store/git_target, are files every role of the pod can write, and an absolute path in
-	// either is taken as it stands. The sweep resolves them once, before any role process of the
-	// container exists, and holds the answer (gitLockSweep.gitDir): a role that writes one line
-	// into store/git_target while the pod runs moves no pass of the sweep, so the launcher — in
-	// a mount namespace that sees what role-init hides from each role — removes nothing under
-	// the directory that line names.
+	// either is taken as it stands. The sweep reads neither: it derives the clone from the
+	// workspace's own path (workspace.CloneGitDir, gitLockSweep.gitDir), so a role that writes
+	// one line into store/git_target while the pod runs moves no pass of the sweep, and the
+	// launcher — in a mount namespace that sees what role-init hides from each role — removes
+	// nothing under the directory that line names.
 	t.Run("a git_target rewritten while the pod runs moves no pass", func(t *testing.T) {
 		elsewhere := filepath.Join(t.TempDir(), "another-role")
 		planted := c.plant(filepath.Join(elsewhere, "refs", "heads", "main.lock"), "a sibling role's", time.Hour)
@@ -1158,17 +1250,90 @@ func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.
 		if strings.Contains(log.String(), elsewhere) {
 			t.Fatalf("the sweep named the rewritten git directory %s in its log:\n%s", elsewhere, log.String())
 		}
-		// The pass walked the git directory the sweep resolved, and its lines still name it.
+		// The pass walked the git directory the sweep derived, and its lines still name it.
 		requireRemoved(t, log, mine)
+	})
+
+	// The same rewritten file read by a launcher that starts after it was written, which is a
+	// roles container restarting on the pod's own disk and not a fresh pod: the pod's restart
+	// policy is Always and its disk lives as long as the pod, so a container an out-of-memory
+	// kill ended comes back on a disk its own last roles wrote. The sweep such a launcher builds
+	// reads store/git_target exactly as a role left it, and its first pass removes at any age,
+	// so a role that pointed that file at a directory it can write would have the new launcher
+	// empty that directory — a sibling role's entry of /roles among them, which role-init hides
+	// from the role but not from PID 1. The derivation makes the moment of the read no part of
+	// the argument: the clone comes from the workspace's path, so both the lock the role left an
+	// hour ago and the one it wrote as the launcher started stay where they are.
+	t.Run("a git_target a role rewrote before a roles container restart moves no new sweep", func(t *testing.T) {
+		// decoyed is that disk: a clone of this row's own, and the directory the rewritten
+		// git_target names, holding one old lock and one written at this moment.
+		type decoyed struct {
+			*lockClone
+			sibling, old, fresh string
+		}
+		restarted := func(t *testing.T) decoyed {
+			t.Helper()
+			d := decoyed{lockClone: newLockClone(t)}
+			d.sibling = filepath.Join(t.TempDir(), "roles", "sibling")
+			d.old = d.plant(filepath.Join(d.sibling, "refs", "heads", "old.lock"), "a sibling role's", time.Hour)
+			d.fresh = d.plant(filepath.Join(d.sibling, "refs", "heads", "fresh.lock"), "a sibling role's", 0)
+			d.write(filepath.Join(d.repo, "store", "git_target"), d.sibling+"\n")
+			return d
+		}
+		untouched := func(t *testing.T, d decoyed, log *lockedBuffer) {
+			t.Helper()
+			for _, path := range []string{d.old, d.fresh} {
+				if swept(path) {
+					t.Fatalf("the restarted container's first pass removed %s, which only the rewritten git_target named; its log:\n%s", path, log.String())
+				}
+			}
+			if strings.Contains(log.String(), d.sibling) {
+				t.Fatalf("the sweep named the rewritten git directory %s in its log:\n%s", d.sibling, log.String())
+			}
+		}
+
+		// Both ways a launcher reaches a workspace, since each derives the git directory for
+		// itself. The /proc of each is the row's own, as every other row's is; what the row
+		// drives is the real constructor, which is where the derivation is made.
+		t.Run("through the launcher's own working directory", func(t *testing.T) {
+			d := restarted(t)
+			mine := d.lock("index.lock", "ours", time.Hour)
+			t.Chdir(d.dir)
+			log := &lockedBuffer{}
+			s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef)
+			s.proc = procRoot(t, os.Getpid())
+			s.pass(context.Background(), true)
+			requireRemoved(t, log, mine)
+			untouched(t, d, log)
+		})
+
+		t.Run("through the workspace the first role start names", func(t *testing.T) {
+			d := restarted(t)
+			mine := d.lock("index.lock", "ours", time.Hour)
+			t.Chdir(t.TempDir())
+			log := &lockedBuffer{}
+			s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef)
+			s.proc = procRoot(t, os.Getpid())
+			s.learn(context.Background(), d.dir)
+			requireRemoved(t, log, mine)
+			untouched(t, d, log)
+		})
 	})
 }
 
 // A clone whose git directory is a symbolic link is refused before anything is answered, and the
 // pass removes nothing: git never creates one, and a link a process of the issue planted would
 // put every removal of the pass somewhere outside the clone. The refusal is the pass's one line.
+//
+// The link is planted after the sweep has its directory, which is the order a pod has: the
+// launcher derives the clone's git directory before it serves a role, and a process of the issue
+// that plants a link does it while the pod runs, so what refuses the link is the walk of each
+// pass and not the one derivation.
 func TestTheSweepRefusesASymlinkedGitDirectory(t *testing.T) {
 	c := newLockClone(t)
 	stale := c.lock("index.lock", "stale", time.Hour)
+	log := &lockedBuffer{}
+	s := c.sweep(log, procRoot(t, os.Getpid()))
 	elsewhere := c.gitDir + "-real"
 	if err := os.Rename(c.gitDir, elsewhere); err != nil {
 		t.Fatal(err)
@@ -1176,8 +1341,6 @@ func TestTheSweepRefusesASymlinkedGitDirectory(t *testing.T) {
 	if err := os.Symlink(elsewhere, c.gitDir); err != nil {
 		t.Fatal(err)
 	}
-	log := &lockedBuffer{}
-	s := c.sweep(log, procRoot(t, os.Getpid()))
 	s.pass(context.Background(), false)
 	refusal := fmt.Sprintf("launcher: the git lock sweep: %q", fmt.Sprintf("the clone of %s: refusing the git worktrees of %s: %s is a symlink, which git never creates",
 		c.dir, c.gitDir, c.gitDir))
@@ -1202,6 +1365,9 @@ func TestTheSweepRefusesASymlinkedGitDirectory(t *testing.T) {
 func TestTheSweepRefusesASymlinkedWorktreesDirectory(t *testing.T) {
 	c := newLockClone(t)
 	stale := c.lock("index.lock", "stale", time.Hour)
+	working := c.worktreeLock("HEAD.lock", "stale", time.Hour)
+	log := &lockedBuffer{}
+	s := c.sweep(log, procRoot(t, os.Getpid()))
 	worktrees := filepath.Join(c.gitDir, "worktrees")
 	elsewhere := worktrees + "-real"
 	if err := os.Rename(worktrees, elsewhere); err != nil {
@@ -1210,9 +1376,6 @@ func TestTheSweepRefusesASymlinkedWorktreesDirectory(t *testing.T) {
 	if err := os.Symlink(elsewhere, worktrees); err != nil {
 		t.Fatal(err)
 	}
-	working := c.worktreeLock("HEAD.lock", "stale", time.Hour)
-	log := &lockedBuffer{}
-	s := c.sweep(log, procRoot(t, os.Getpid()))
 	s.pass(context.Background(), false)
 	refusal := fmt.Sprintf("launcher: the git lock sweep: %q", fmt.Sprintf("the clone of %s: refusing the git worktrees of %s: %s is a symlink, which git never creates",
 		c.dir, c.gitDir, worktrees))

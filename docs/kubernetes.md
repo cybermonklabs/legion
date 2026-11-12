@@ -2926,6 +2926,8 @@ architect, planner, implementer, tester, reviewer, merger):
    lines, no role's:` (`roleLog` in `internal/runtime/sandbox/observe.go`), all read from the log's last 2,000 lines and at most 1 MiB.
    As the container's PID 1 the launcher reaps every orphan its PID namespace adopts (what a `kubectl exec` leaves behind), never a role's own generation, whose exit its role reads.
    As well as the roles, the launcher sweeps the issue clone's stale git lock files (`<file>.lock`) for the life of the pod (`internal/launcher/gitlocks.go`).
+   The clone it sweeps is derived from the workspace's own path through the layout provisioning laid it out in (`workspace.CloneGitDir`), and never read from the workspace's `.jj/repo` or the repository's `store/git_target`, which every role of the pod can write: the container's restart policy is `Always` and its disk outlives it, so a launcher that read those files after a restart would read what the last container's roles left there and send its first pass, which removes at any age, wherever they point.
+   A workspace that layout does not account for, a derived clone with no git directory, and a derived git directory holding no git worktree entry for the workspace are each a line in the container's log naming the derived path, and no sweep at all.
    The first pass runs when the launcher starts, before it serves any role start and so before the pod's one bundle restore, and no age bound applies to it.
    A pass then runs every minute, whether or not a role process is running.
    A clock pass removes a lock only when no process of the container holds it open and it was last written more than 15 minutes ago.

@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // The two rows of this file are the sweep end to end, driven with the real git and jj a role runs:
@@ -36,7 +37,9 @@ import (
 // jjWorkspaceName is the name the workspace is added under, which is also the base name of its
 // directory: `jj workspace add --name` names the jj workspace, and git names the worktree entry
 // after the directory, so the two agree here as they do in a pod, where both are the issue's key.
-const jjWorkspaceName = "ws"
+// It is the issue of every clone of this package, since the launcher's sweep derives the clone
+// from the workspace's place in the layout (workspace.CloneGitDir, lockCloneIssue).
+const jjWorkspaceName = lockCloneIssue
 
 // gitIndexLockRefusal is what jj prints when the index lock of the workspace's worktree entry is
 // already there: git's own words for a lock it could not take, which jj answers exit 1 on after
@@ -86,7 +89,15 @@ func newJJClone(t *testing.T) *jjClone {
 	// thing in a pod as on a runner whose git is the real one.
 	run = run.With("PUBLIC_LEAK_CHECK=" + leakguardtest.Write(t, root, leakguardtest.Passes))
 	feed, seed := filepath.Join(root, "feed"), filepath.Join(root, "seed")
-	clone, ws := filepath.Join(root, "clone"), filepath.Join(root, jjWorkspaceName)
+	// The clone and the workspace sit where provisioning puts them under a state directory
+	// (workspace.Location), which is where the launcher's sweep derives the clone from.
+	clone := filepath.Join(workspace.CloneRoot(root), lockCloneOwner, lockCloneRepo)
+	ws := filepath.Join(root, "workspaces", lockCloneOwner, lockCloneRepo, jjWorkspaceName)
+	for _, dir := range []string{filepath.Dir(clone), filepath.Dir(ws)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// The feed is the bare repository a pod's workspace-fetch leaves on the issue's volume, with
 	// one commit on the default branch, which is what the clone below is made from.
 	run.Run(root, fixturegit.InitBare(feed, "main")...)
@@ -119,7 +130,7 @@ func newJJClone(t *testing.T) *jjClone {
 	}
 	return &jjClone{
 		lockClone: &lockClone{
-			t: t, dir: ws, clone: clone,
+			t: t, root: root, dir: ws, clone: clone,
 			gitDir:   filepath.Join(clone, ".git"),
 			worktree: filepath.Join(admin, entries[0].Name()),
 			repo:     filepath.Join(clone, ".jj", "repo"),
