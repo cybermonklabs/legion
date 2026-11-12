@@ -240,3 +240,33 @@ func TestAnAcceptedRegistrationClearsTheClaimsRefusalsAndItsWaivers(t *testing.T
 
 	h.wantLaunchBudget(token, 1, "only the generation no refusal ended is charged")
 }
+
+// The waiver's bound holds for a refused ready too. A daemon that accepts each registration of a
+// claim and then refuses that generation's ready with its busy answer is a daemon that keeps
+// refusing: each generation's plugin spends its budget on the ready and ends, and each of those
+// endings is waived. R6 bounds the waiver "because a daemon that refuses for ever would otherwise
+// relaunch a role for ever with nothing failing" (dispatch://INFRA-2883/spec): after
+// launch_failure_limit generations of one claim waived in a row the charge stands again, so the
+// claim fails. An accepted registration whose ready the daemon then refused got no more from this
+// daemon than a refused registration did, so it does not start the run of waived generations
+// again.
+func TestTheWaiverIsBoundedWhenEveryGenerationRegistersAndItsReadyIsRefused(t *testing.T) {
+	h := servingHarness(t)
+	limit := h.supervisor.deps.Limits.LaunchFailures
+	token, boot := h.launch("LEGION-2883", claim.RoleImplementer)
+
+	// limit waived generations, then limit charged ones, which is where the claim fails.
+	generations := 0
+	for generations < 2*limit && h.stored(token).State != supervise.StateFailed {
+		h.registered(boot, "ses_implementer")
+		h.refusals.RefusedReady(token, h.stored(token).Generation)
+		boot = h.relaunch(token)
+		generations++
+	}
+
+	if state := h.stored(token).State; state != supervise.StateFailed {
+		t.Fatalf("after %d generations that each registered and had their ready refused, the claim is %s "+
+			"with %d launch failures, want it failed: the waiver is bounded at %d generations in a row",
+			generations, state, h.stored(token).Budgets.LaunchFailures, limit)
+	}
+}
