@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  A frame a session refuses comes back on a climbing delay rather than every second. The listener
+  answers a session's `nak` with a redelivery delay that doubles with the message's delivery
+  count, 1, 2, 4, 8 and 16 seconds and then 30 seconds a lap, so a frame nobody can take, from a
+  host that is gone or a frame the session refuses every time, is relayed at most 8,644 times over
+  the stream's 72-hour retention where it was relayed about 259,000 times, while a session that is
+  only busy gets the same first retries it got before. Nothing is given up for it: the session's
+  consumer still delivers a message until the session acknowledges it, and the stream keeps the
+  message for its whole retention.
+custom:
+    Issue: pr2603

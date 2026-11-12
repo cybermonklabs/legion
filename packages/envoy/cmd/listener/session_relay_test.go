@@ -1153,14 +1153,15 @@ func (a *nakLadderAcker) last() time.Duration {
 }
 
 // A frame the session refuses is naked with a delay that climbs with the message's own delivery
-// count -- 1, 2, 4, 8, 16 s and then 30 s a lap (relayPauseMax) -- so a frame nobody can take is
-// relayed about 8,600 times over the stream's 72-hour retention instead of the 259,200 a flat
-// second costs. A count the relay has none of (0), and one past the ladder, take the cap: never
-// a delay under the rung before it, and never one the shift overflowed.
+// count -- 1, 2, 4, 8, 16 s and then 30 s a lap (relayNakDelayMax) -- so a frame nobody can take
+// is relayed at most 8,644 times over the stream's 72-hour retention instead of the 259,201 a
+// flat second costs (TestARefusedFrameIsRelayedAtMost8644TimesOverTheStreamsRetention). A count
+// the relay has none of (0), and one past the ladder, take the ceiling: never a delay under the
+// rung before it, and never one the shift overflowed.
 func TestTheNakDelayClimbsWithTheMessagesDeliveryCount(t *testing.T) {
-	if relayNakDelay<<relayNakShiftMax < relayPauseMax {
-		t.Fatalf("relayNakDelay << relayNakShiftMax is %s, under the cap %s: the ladder stops below its own cap and the guard no longer bounds the shift",
-			relayNakDelay<<relayNakShiftMax, relayPauseMax)
+	if relayNakDelay<<relayNakShiftMax < relayNakDelayMax {
+		t.Fatalf("relayNakDelay << relayNakShiftMax is %s, under the ceiling %s: the ladder stops below its own ceiling and the guard no longer bounds the shift",
+			relayNakDelay<<relayNakShiftMax, relayNakDelayMax)
 	}
 	relays := &sessionRelays{replyPrefix: "relay.reply.", frames: map[string]*relayFrame{}, logger: logging.New("test")}
 	run := &relayRun{sessionID: "ses_nak_ladder", outstanding: map[string]*relayFrame{}}
@@ -1191,10 +1192,46 @@ func TestTheNakDelayClimbsWithTheMessagesDeliveryCount(t *testing.T) {
 			t.Errorf("the nak of delivery %d asked the server for %s, want %s", delivered, got, want)
 		}
 	}
-	for _, delivered := range []uint64{0, uint64(relayNakShiftMax) + 2, 240, math.MaxUint64} {
-		if got := nakAt(delivered); got != relayPauseMax {
-			t.Errorf("the nak of delivery %d asked the server for %s, want the cap %s", delivered, got, relayPauseMax)
+	for _, delivered := range []uint64{0, uint64(relayNakShiftMax) + 2, 1000, math.MaxUint64} {
+		if got := nakAt(delivered); got != relayNakDelayMax {
+			t.Errorf("the nak of delivery %d asked the server for %s, want the ceiling %s", delivered, got, relayNakDelayMax)
 		}
+	}
+}
+
+// The nak ladder is the whole bound on how often a frame nobody can take is relayed: the session
+// consumer carries MaxDeliver -1 (bus.SessionConsumers, applySettings), so the server delivers
+// such a frame again for as long as the stream holds it, which is the stream's 72-hour retention
+// (its MaxAge, contracts.DeliveryDuplicateWindow by way of bus streamCfg). Summed over that
+// retention, the ladder's delays -- 1, 2, 4, 8, 16 s, then relayNakDelayMax, 30 s, a lap -- leave
+// room for at most 8,644 deliveries of one frame, the first included, about two a minute, where a
+// flat relayNakDelay leaves room for 259,201; the round trip each delivery costs only lowers the
+// count. The figure is pinned here, so a change to the ladder or its ceiling says what it does to
+// it.
+func TestARefusedFrameIsRelayedAtMost8644TimesOverTheStreamsRetention(t *testing.T) {
+	const retention = 72 * time.Hour
+	if contracts.DeliveryDuplicateWindow != retention {
+		t.Fatalf("the stream's retention is %s, want the %s this row sums the ladder over", contracts.DeliveryDuplicateWindow, retention)
+	}
+	// relays counts the deliveries of one frame the session refuses every time that fall inside
+	// the retention: the first at 0, and each later one the nak delay its predecessor's delivery
+	// count earns after it.
+	relays := func(delay func(delivered uint64) time.Duration) uint64 {
+		var at time.Duration
+		delivered := uint64(1)
+		for at+delay(delivered) <= retention {
+			at += delay(delivered)
+			delivered++
+		}
+		return delivered
+	}
+	// The control the count stands on: at a flat relayNakDelay it is one delivery a second and the
+	// first, 72 * 3,600 + 1.
+	if flat := relays(func(uint64) time.Duration { return relayNakDelay }); flat != 259_201 {
+		t.Fatalf("a flat %s delay counts %d deliveries over %s, want 259,201", relayNakDelay, flat, retention)
+	}
+	if got := relays(relayNakDelayFor); got != 8_644 {
+		t.Errorf("the nak ladder relays a refused frame %d times over the stream's %s retention, want 8,644: 6 deliveries in the first 31 s, then one every %s", got, retention, relayNakDelayMax)
 	}
 }
 
@@ -1231,83 +1268,5 @@ func TestARefusedFrameComesBackOnTheLadderRatherThanEverySecond(t *testing.T) {
 	if second < 1600*time.Millisecond {
 		t.Errorf("the second redelivery came %s after the first, want about twice relayNakDelay (%s): the delay is flat, so the frame comes back every second for the stream's whole retention",
 			second, 2*relayNakDelay)
-	}
-}
-
-// The frame the session's consumer hands its last delivery is recorded where this deployment
-// reads its logs, once per frame: the server's own
-// $JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES says the same thing and nothing of ours subscribes
-// to it. The record names the session, the stream, the consumer and the stream sequence, and
-// says what becomes of the message: the stream keeps it and the relay's next restart at the ack
-// floor hands it over again (bus.ackFloor,
-// internal/bus TestAMessageThatReachesMaxDeliverIsHandedBackAtTheNextRestart).
-//
-// The row publishes the frames itself, through the relay's own publishFrame and over its own
-// connection, because driving a frame to the cap through a consumer would spend the two hours
-// the nak ladder takes to reach it. Three frames of one session, each its own stream sequence:
-// one below the cap, one at it, and one past it, a count only a consumer created before the cap
-// existed reaches (MaxDeliver -1, which the next call for that session moves onto the cap). The
-// one at the cap is recorded and the other two are not, so a session whose frames are taken
-// normally fills no log and a frame passed over is named once rather than at every delivery
-// after the cap.
-func TestOnlyTheFrameAtTheDeliveryCapIsRecordedAsPassedOver(t *testing.T) {
-	rig := newRelayRig(t)
-	sessionID := "ses_delivery_cap_" + id.New()
-	// A nil answer leaves the stand-in silent: the row reads what the relay wrote for the frames
-	// it sent, and no reply of the session's is part of that.
-	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
-	run := &relayRun{sessionID: sessionID}
-	agent := contracts.AgentSubject(sessionID)
-	const atCap = uint64(bus.SessionConsumerMaxDeliver)
-	sent := []struct {
-		delivered uint64
-		seq       uint64
-	}{{atCap - 1, 11}, {atCap, 12}, {atCap + 1, 13}}
-	for _, frame := range sent {
-		item := listenerTestEnvelope(agent, "cap-"+strconv.FormatUint(frame.delivered, 10))
-		msg := bus.SessionMessage{
-			Subject:      agent,
-			Data:         marshalListenerEnvelope(t, item),
-			StreamSeq:    frame.seq,
-			Delivered:    frame.delivered,
-			StoredAt:     time.Now(),
-			SessionAcker: &nakLadderAcker{},
-		}
-		if err := rig.relays.publishFrame(context.Background(), run, msg, "stream-id", false); err != nil {
-			t.Fatalf("publish the frame of delivery %d: %v", frame.delivered, err)
-		}
-	}
-	// Every one of them reached the session: the record is of a frame the relay handed over,
-	// not of one it held back.
-	for i, frame := range standIn.collect(t, len(sent), 5*time.Second) {
-		if frame.seq != sent[i].seq {
-			t.Fatalf("frame %d carries stream sequence %d, want %d", i+1, frame.seq, sent[i].seq)
-		}
-	}
-
-	const passedOver = "session relay sent a frame the last delivery its consumer makes of it; the stream keeps the message and the relay's next restart at the ack floor hands it to the session again"
-	var records []map[string]any
-	for _, record := range warnLinesNaming(rig.harness.logs.String(), sessionID) {
-		if record["msg"] == passedOver {
-			records = append(records, record)
-		}
-	}
-	if len(records) != 1 {
-		t.Fatalf("%d records of session %s report a frame at the delivery cap, want exactly 1 - the frame of delivery %d alone:\n%s", len(records), sessionID, atCap, rig.harness.logs.String())
-	}
-	record := records[0]
-	t.Logf("the frame at the cap is recorded as %v", record)
-	// A number of a log record decodes from JSON as a float64.
-	if seq, ok := record["stream_seq"].(float64); !ok || uint64(seq) != 12 {
-		t.Errorf("the record names stream_seq %#v, want the number 12, the frame of delivery %d: %v", record["stream_seq"], atCap, record)
-	}
-	if delivered, ok := record["delivered"].(float64); !ok || uint64(delivered) != atCap {
-		t.Errorf("the record names delivered %#v, want the number %d: %v", record["delivered"], atCap, record)
-	}
-	if record["stream"] != bus.Stream {
-		t.Errorf("the record names stream %#v, want %q: %v", record["stream"], bus.Stream, record)
-	}
-	if want := "s-" + sessionID; record["consumer"] != want {
-		t.Errorf("the record names consumer %#v, want %q: %v", record["consumer"], want, record)
 	}
 }

@@ -212,8 +212,8 @@ func TestEnsureCreatesTheConsumerWithTheSessionSettings(t *testing.T) {
 	if config.MaxAckPending != 1024 {
 		t.Errorf("max ack pending = %d, want 1024", config.MaxAckPending)
 	}
-	if config.MaxDeliver != SessionConsumerMaxDeliver {
-		t.Errorf("max deliver = %d, want the cap %d", config.MaxDeliver, SessionConsumerMaxDeliver)
+	if config.MaxDeliver != -1 {
+		t.Errorf("max deliver = %d, want -1 (unlimited)", config.MaxDeliver)
 	}
 	if config.InactiveThreshold != time.Hour {
 		t.Errorf("inactive threshold = %s, want 1h", config.InactiveThreshold)
@@ -476,6 +476,116 @@ func TestRestartAtFloorWithAMessageAwaitingAnAckCreatesTheConsumerAgain(t *testi
 		}
 	}
 	requireNoMessage(t, again, 300*time.Millisecond)
+}
+
+// A message the session was delivered and never answered -- no ack, no nak, no progress -- still
+// awaits an ack once its ack wait has passed, on a consumer with MaxDeliver -1 as every session
+// consumer carries (applySettings), so the floor stays below it and a restart hands it to the
+// session again. That is what makes ackFloor's last clause safe: the floor is read as the last
+// delivery only while nothing awaits an ack, and here an unacked message never stops awaiting one.
+// nats-server v2.15.1's own code says the same (server/consumer.go checkPending, 6185-6214: an
+// ack wait that passed puts the message on the redelivery queue and leaves it in o.pending, which
+// only a message at its MaxDeliver leaves, hasMaxDeliveries), and this row is the reading.
+//
+// Measured on nats-server v2.15.1 (go.mod) with a 1 s ack wait, the message at sequence 2 on a
+// consumer created at 2, delivered once to a pull that then stopped, three ack waits later:
+//
+//	NumAckPending 1, NumRedelivered 0, NumPending 0, AckFloor.Stream 1, Delivered.Stream 2
+//
+// ackFloor reads 1 from that, the sequence before the message. The next pull, with no restart, is
+// delivered it again as its second delivery, so the ack wait did pass and the server queued it
+// again. The ordinary case after that is a later message, at 3, that the session takes and acks:
+// with that ack in and the unanswered message's ack wait passed three times again, it reads
+//
+//	NumAckPending 1, NumRedelivered 1, NumPending 0, AckFloor.Stream 1, Delivered.Stream 3
+//
+// so the floor stays at 1 below a last delivery of 3, and the restart creates the consumer at 2
+// and delivers the unanswered message first and the acked one after it.
+func TestAMessageWhoseAckWaitPassedStillAwaitsAnAck(t *testing.T) {
+	owner, consumers := sessionConsumersOnStream(t)
+	consumers.ackWait = time.Second
+	ctx := context.Background()
+	const session = "ses_ack_wait_passed"
+	agent := contracts.AgentSubject(session)
+	filters := []string{agent}
+	// A message the consumer does not filter is stored first, so the consumer starts at 2 and the
+	// floor below the unanswered message is a sequence of its own, not the 0 of an empty stream.
+	publishStored(t, owner, "notifications.github.o.r.push", "before the consumer")
+	if _, err := consumers.Ensure(ctx, session, filters, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	unanswered := publishStored(t, owner, agent, "never answered")
+	pull := pullSession(t, consumers, session)
+	if msg := next(t, pull); msg.StreamSeq != unanswered || msg.Delivered != 1 {
+		t.Fatalf("got seq %d delivery %d, want %d delivery 1", msg.StreamSeq, msg.Delivered, unanswered)
+	}
+	pull.Stop()
+	// Nothing the server reports moves when the ack wait of a message no pull is reading passes
+	// (the message goes onto the redelivery queue, which the info does not show), so there is no
+	// state to poll for: the row waits out three ack waits and reads the consumer then.
+	afterAckWaits := func(when string) *jetstream.ConsumerInfo {
+		t.Helper()
+		time.Sleep(3 * consumers.ackWait)
+		info, err := consumers.Info(ctx, session)
+		if err != nil {
+			t.Fatalf("info: %v", err)
+		}
+		t.Logf("%s, three ack waits of %s later, MaxDeliver %d: NumAckPending %d, NumRedelivered %d, NumPending %d, AckFloor.Stream %d, Delivered.Stream %d; ackFloor reads %d",
+			when, info.Config.AckWait, info.Config.MaxDeliver, info.NumAckPending, info.NumRedelivered, info.NumPending, info.AckFloor.Stream, info.Delivered.Stream, ackFloor(info))
+		return info
+	}
+	info := afterAckWaits(fmt.Sprintf("sequence %d delivered once and never answered", unanswered))
+	if info.NumAckPending != 1 || info.Delivered.Stream != unanswered {
+		t.Fatalf("the consumer holds %d awaiting an ack with its last delivery at %d, want sequence %d still awaiting one: a message whose ack wait passed is no longer pending, so ackFloor reads it as acked", info.NumAckPending, info.Delivered.Stream, unanswered)
+	}
+	if floor := ackFloor(info); floor != unanswered-1 {
+		t.Fatalf("ackFloor reads %d, want %d, the sequence before the message nobody answered", floor, unanswered-1)
+	}
+
+	// The ack wait did pass: the next pull is delivered the message again with no restart, as its
+	// second delivery. Then the ordinary case, a later message the session takes and acks.
+	again := pullSession(t, consumers, session)
+	if msg := next(t, again); msg.StreamSeq != unanswered || msg.Delivered != 2 {
+		t.Fatalf("the next pull got seq %d delivery %d, want %d delivery 2: the ack wait's own redelivery", msg.StreamSeq, msg.Delivered, unanswered)
+	}
+	later := publishStored(t, owner, agent, "taken and acked")
+	for {
+		msg := next(t, again)
+		if msg.StreamSeq == unanswered {
+			// Its ack wait passed once more while this pull ran; it stays unanswered.
+			continue
+		}
+		if msg.StreamSeq != later {
+			t.Fatalf("the next pull got seq %d, want %d", msg.StreamSeq, later)
+		}
+		if err := msg.Ack(); err != nil {
+			t.Fatalf("ack %d: %v", later, err)
+		}
+		break
+	}
+	again.Stop()
+	waitForAckPending(t, consumers, session, 1)
+	info = afterAckWaits(fmt.Sprintf("sequence %d unanswered and sequence %d acked", unanswered, later))
+	if info.NumAckPending != 1 || info.Delivered.Stream != later {
+		t.Fatalf("the consumer holds %d awaiting an ack with its last delivery at %d, want sequence %d still awaiting one below the acked %d", info.NumAckPending, info.Delivered.Stream, unanswered, later)
+	}
+	if floor := ackFloor(info); floor != unanswered-1 {
+		t.Fatalf("ackFloor reads %d after the later ack, want %d, the sequence before the message nobody answered", floor, unanswered-1)
+	}
+
+	start, err := consumers.RestartAtFloor(ctx, session, filters)
+	if err != nil {
+		t.Fatalf("restart at floor: %v", err)
+	}
+	if !start.Created || start.StartSeq != unanswered {
+		t.Fatalf("RestartAtFloor = %+v, want the consumer created again at %d, the message nobody answered", start, unanswered)
+	}
+	restarted := pullSession(t, consumers, session)
+	for _, want := range []uint64{unanswered, later} {
+		if msg := next(t, restarted); msg.StreamSeq != want || msg.Delivered != 1 {
+			t.Fatalf("after the restart got seq %d delivery %d, want %d delivery 1", msg.StreamSeq, msg.Delivered, want)
+		}
+	}
 }
 
 // waitUntil polls ready every 20 ms until it reports true, and fails the test after 5 s naming
@@ -767,210 +877,12 @@ func TestNakWithDelayRedelivers(t *testing.T) {
 	}
 }
 
-// A session consumer's redeliveries are capped: the server stops delivering one message after
-// SessionConsumerMaxDeliver, where an unlimited consumer (-1) relayed a frame nobody can take
-// for the stream's whole retention. The cap is finite and it is 240, the number the relay's nak
-// ladder spends in about two hours (cmd/listener relayNakDelayFor).
-func TestASessionConsumerCapsItsRedeliveries(t *testing.T) {
-	_, consumers := sessionConsumersOnStream(t)
-	ctx := context.Background()
-	const session = "ses_max_deliver"
-	if _, err := consumers.Ensure(ctx, session, []string{contracts.AgentSubject(session)}, 0); err != nil {
-		t.Fatalf("ensure: %v", err)
-	}
-	info, err := consumers.Info(ctx, session)
-	if err != nil {
-		t.Fatalf("info: %v", err)
-	}
-	if SessionConsumerMaxDeliver != 240 {
-		t.Errorf("SessionConsumerMaxDeliver = %d, want 240", SessionConsumerMaxDeliver)
-	}
-	if info.Config.MaxDeliver != SessionConsumerMaxDeliver {
-		t.Fatalf("max deliver = %d, want the cap %d: an unlimited consumer relays a frame the session refuses for the stream's whole retention",
-			info.Config.MaxDeliver, SessionConsumerMaxDeliver)
-	}
-}
-
-// A consumer standing with unlimited redeliveries -- one a listener of before this release
-// created -- is moved onto the cap by the next call that reaches it, rather than left as it is:
-// the settings an update compares include MaxDeliver (updated), so the registration's Ensure
-// sends the update and reports it, and the consumer keeps its position through it.
-func TestAConsumerCreatedWithUnlimitedRedeliveriesIsUpdatedOntoTheCap(t *testing.T) {
-	_, consumers := sessionConsumersOnStream(t)
-	ctx := context.Background()
-	const session = "ses_max_deliver_update"
-	filters := []string{contracts.AgentSubject(session)}
-	created, err := consumers.Ensure(ctx, session, filters, 0)
-	if err != nil {
-		t.Fatalf("ensure: %v", err)
-	}
-	info, err := consumers.Info(ctx, session)
-	if err != nil {
-		t.Fatalf("info: %v", err)
-	}
-	name, _ := SessionConsumerName(session)
-	unlimited := info.Config
-	unlimited.MaxDeliver = -1
-	if _, err := consumers.upsert(ctx, name, unlimited, "update"); err != nil {
-		t.Fatalf("set the consumer back to unlimited redeliveries: %v", err)
-	}
-	if info, err = consumers.Info(ctx, session); err != nil || info.Config.MaxDeliver != -1 {
-		t.Fatalf("the consumer this row starts from has max deliver %d (%v), want -1", info.Config.MaxDeliver, err)
-	}
-	if _, changed := consumers.updated(info.Config, filters); !changed {
-		t.Fatalf("updated() reports nothing to send for a consumer at -1, so no update would move it onto the cap %d", SessionConsumerMaxDeliver)
-	}
-
-	again, err := consumers.Ensure(ctx, session, filters, 0)
-	if err != nil || !again.Updated {
-		t.Fatalf("Ensure of the unlimited consumer = %+v, %v; want it updated", again, err)
-	}
-	if again.StartSeq != created.StartSeq {
-		t.Errorf("the updated consumer starts at %d, want its own position %d", again.StartSeq, created.StartSeq)
-	}
-	if info, err = consumers.Info(ctx, session); err != nil || info.Config.MaxDeliver != SessionConsumerMaxDeliver {
-		t.Fatalf("after the update max deliver = %d (%v), want the cap %d", info.Config.MaxDeliver, err, SessionConsumerMaxDeliver)
-	}
-}
-
-// What the cap costs is measured here, on the consumer and on the stream, because the comment of
-// SessionConsumerMaxDeliver rests on it. A message a session refuses to the cap is dropped by
-// its consumer: nats-server v2.15.1 stops delivering it, takes it out of what awaits an ack,
-// and publishes one $JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.<stream>.<consumer> naming the
-// stream, the consumer and the stream sequence. The stream keeps the message (its retention is
-// LimitsPolicy), so it stands there until its age takes it, and the server leaves its own ack
-// floor below it. That floor is the one this package reads (ackFloor), so the capped message is
-// above the floor and the session is handed it again: by the restart every start of its relay
-// makes (RestartAtFloor), and by the consumer created again at the floor the delete recorded on
-// the session's resume lane (SessionResumeSubject, Ensure). Each hands it over with its delivery
-// count back at 1, so the cap costs that frame a lap of the relay's nak ladder per start of the
-// relay and costs the session no message.
-//
-// Before INFRA-771 the floor was also the last sequence delivered while nothing awaited an ack,
-// which is the state the cap leaves the consumer in, so every restart began above the capped
-// message and no session was handed it again. This row read that derivation and now reads the
-// one that replaced it.
-//
-// The cap the row drives is 2, set on the consumer itself, since the deployment's 240 would take
-// two hours of the relay's nak ladder to reach and the server does the same at either.
-func TestAMessageThatReachesMaxDeliverIsHandedBackAtTheNextRestart(t *testing.T) {
-	owner, consumers := sessionConsumersOnStream(t)
-	ctx := context.Background()
-	const session, deliveries = "ses_max_deliveries", 2
-	agent := contracts.AgentSubject(session)
-	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
-		t.Fatalf("ensure: %v", err)
-	}
-	info, err := consumers.Info(ctx, session)
-	if err != nil {
-		t.Fatalf("info: %v", err)
-	}
-	name, _ := SessionConsumerName(session)
-	capped := info.Config
-	capped.MaxDeliver = deliveries
-	if _, err := consumers.upsert(ctx, name, capped, "update"); err != nil {
-		t.Fatalf("lower the consumer's max deliver to %d: %v", deliveries, err)
-	}
-	advisories, err := owner.Connection().SubscribeSync("$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.>")
-	if err != nil {
-		t.Fatalf("subscribe to the max deliveries advisory: %v", err)
-	}
-	defer func() { _ = advisories.Unsubscribe() }()
-
-	seq := publishStored(t, owner, agent, "nobody can take this")
-	pull := pullSession(t, consumers, session)
-	for delivery := uint64(1); delivery <= deliveries; delivery++ {
-		msg := next(t, pull)
-		if msg.StreamSeq != seq || msg.Delivered != delivery {
-			t.Fatalf("got seq %d delivery %d, want %d delivery %d", msg.StreamSeq, msg.Delivered, seq, delivery)
-		}
-		if err := msg.NakWithDelay(0); err != nil {
-			t.Fatalf("nak delivery %d: %v", delivery, err)
-		}
-	}
-	requireNoMessage(t, pull, 2*time.Second)
-
-	advisory, err := advisories.NextMsg(5 * time.Second)
-	if err != nil {
-		t.Fatalf("the server published no max deliveries advisory: %v", err)
-	}
-	var exceeded struct {
-		Stream     string `json:"stream"`
-		Consumer   string `json:"consumer"`
-		StreamSeq  uint64 `json:"stream_seq"`
-		Deliveries uint64 `json:"deliveries"`
-	}
-	if err := json.Unmarshal(advisory.Data, &exceeded); err != nil {
-		t.Fatalf("decode the advisory %q: %v", advisory.Data, err)
-	}
-	if exceeded.Stream != Stream || exceeded.Consumer != name || exceeded.StreamSeq != seq {
-		t.Errorf("the advisory names %+v, want stream %s, consumer %s, sequence %d", exceeded, Stream, name, seq)
-	}
-	t.Logf("the advisory on %s reports %d deliveries of sequence %d", advisory.Subject, exceeded.Deliveries, exceeded.StreamSeq)
-
-	waitUntil(t, fmt.Sprintf("the consumer of %s to drop sequence %d from what awaits an ack", session, seq), func() (bool, string) {
-		read, err := consumers.Info(ctx, session)
-		if err != nil {
-			t.Fatalf("info: %v", err)
-		}
-		info = read
-		return info.NumAckPending == 0, fmt.Sprintf("it holds %d awaiting an ack", info.NumAckPending)
-	})
-	t.Logf("at the cap the server reports the consumer's ack floor as %d, its last delivery as %d, %d awaiting an ack and %d still to deliver; the floor this package reads from that (ackFloor) is %d",
-		info.AckFloor.Stream, info.Delivered.Stream, info.NumAckPending, info.NumPending, ackFloor(info))
-	if floor := ackFloor(info); floor >= seq {
-		t.Fatalf("the floor read from the capped consumer is %d, at or above the capped message at %d: every restart would begin past the message and no session would be handed it again", floor, seq)
-	}
-	if stored, err := owner.JS().GetMsg(Stream, seq); err != nil || stored.Sequence != seq {
-		t.Fatalf("the stream no longer holds sequence %d (%+v, %v), want it kept: the stream's retention is LimitsPolicy and the cap deletes nothing", seq, stored, err)
-	}
-
-	// The restart every start of a session's relay makes begins at the capped message. The
-	// consumer awaits an ack for nothing, so a restart reading that alone would keep it where it
-	// stands (atAckFloor) and the message would lie there undelivered.
-	pull.Stop()
-	start, err := consumers.RestartAtFloor(ctx, session, []string{agent})
-	if err != nil {
-		t.Fatalf("restart at floor: %v", err)
-	}
-	if start.StartSeq != seq {
-		t.Fatalf("the restart starts at %d, want the capped message at %d", start.StartSeq, seq)
-	}
-	restarted := pullSession(t, consumers, session)
-	back := next(t, restarted)
-	if back.StreamSeq != seq || back.Delivered != 1 {
-		t.Fatalf("the restarted consumer delivered sequence %d on delivery %d, want the capped message %d on its first delivery", back.StreamSeq, back.Delivered, seq)
-	}
-	t.Logf("the restart read the floor as %d, created the consumer at %d and handed the capped message over again as delivery %d", start.AckFloor, start.StartSeq, back.Delivered)
-	restarted.Stop()
-
-	// And so does the consumer a session that comes back is given, created at the floor the
-	// delete recorded for it.
-	floor, err := consumers.Delete(ctx, session, nil)
-	if err != nil {
-		t.Fatalf("delete: %v", err)
-	}
-	if floor != seq-1 {
-		t.Fatalf("the delete recorded floor %d, want %d, the sequence before the capped message", floor, seq-1)
-	}
-	created, err := consumers.Ensure(ctx, session, []string{agent}, 0)
-	if err != nil {
-		t.Fatalf("ensure at the recorded floor: %v", err)
-	}
-	if !created.Created || created.StartSeq != seq {
-		t.Fatalf("the consumer created again at the recorded floor = %+v, want it created at %d", created, seq)
-	}
-	resumed := next(t, pullSession(t, consumers, session))
-	if resumed.StreamSeq != seq {
-		t.Fatalf("the consumer created at the recorded floor delivered sequence %d, want the capped message %d", resumed.StreamSeq, seq)
-	}
-}
-
-// The control beside the row above: the floor is the server's own, so a session that acked
-// everything is handed none of it again. Neither the restart at that floor nor the consumer
-// created again at the floor the delete recorded delivers a message the session took and acked,
-// which is what the floor promises every session whose relay restarts.
-func TestARestartAtTheFloorHandsBackNothingTheSessionAcked(t *testing.T) {
+// A session that acked every message it was delivered is handed none of them again by the
+// consumer created at the floor its delete recorded: with nothing awaiting an ack, the floor is
+// the consumer's last delivery (ackFloor), the delete records it on the session's resume lane
+// (SessionResumeSubject), and the create at the sequence after it delivers nothing the session
+// took and acked.
+func TestAConsumerCreatedAgainAtTheRecordedFloorHandsBackNothingTheSessionAcked(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_acked_everything"
@@ -1002,15 +914,6 @@ func TestARestartAtTheFloorHandsBackNothingTheSessionAcked(t *testing.T) {
 	}
 	t.Logf("with every message acked the server reports the ack floor as %d, the last delivery as %d and %d awaiting an ack; the floor this package reads from that is %d",
 		info.AckFloor.Stream, info.Delivered.Stream, info.NumAckPending, ackFloor(info))
-
-	start, err := consumers.RestartAtFloor(ctx, session, filters)
-	if err != nil {
-		t.Fatalf("restart at floor: %v", err)
-	}
-	if start.StartSeq != last+1 {
-		t.Fatalf("the restart starts at %d, want %d: the session acked every message through %d", start.StartSeq, last+1, last)
-	}
-	requireNoMessage(t, pullSession(t, consumers, session), 2*time.Second)
 
 	floor, err := consumers.Delete(ctx, session, nil)
 	if err != nil {
