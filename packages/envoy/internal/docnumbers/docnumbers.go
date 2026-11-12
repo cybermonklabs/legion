@@ -35,8 +35,13 @@ import (
 	"testing"
 )
 
-// Number is the one group every pattern gives: digits, or the count written as a word.
-const Number = `(\d+|[a-z]+(?:-[a-z]+)?)`
+// Number is the one group every pattern gives: digits, or the count written as a word. The word
+// may begin with a capital, because prose spells a count at the start of a sentence ("Four of
+// them wait on ..."); a class of lower-case letters alone matched the tail of such a word and
+// reported the sentence as stating "our", which is a reader producing the fault it exists to
+// catch. The comparison below is case-insensitive for the same reason, and for the word alone:
+// digits have no case, so nothing else of the reading changes.
+const Number = `(\d+|[A-Za-z][a-z]*(?:-[a-z]+)?)`
 
 // Stated is one sentence of one document and the constant it states.
 type Stated struct {
@@ -67,7 +72,7 @@ func Check(t *testing.T, root string, stated []Stated) {
 		}
 		digits, word := strconv.Itoa(want.Number), asAWord(t, want.Number)
 		for _, match := range matches {
-			if said := match[1]; said != digits && said != word {
+			if said := match[1]; said != digits && !strings.EqualFold(said, word) {
 				t.Errorf("%s says %q of %s, want %s or %q: %s",
 					want.File, said, want.Says, digits, word, strings.TrimSpace(match[0]))
 			}

@@ -7,22 +7,34 @@ import (
 	"github.com/sjawhar/envoy/internal/docnumbers"
 )
 
-// The three documents the connection-count check reads, and the two constants they state. Three
-// rounds of dispatch://INFRA-558 went to one class: a merge raises LeasePoolSize or
-// ConnectionsPerProcess, every test of both sides stays green because no test reads a sentence,
-// and the number a person reads is left behind. This row reads those sentences, so the next raise
-// fails here instead of in a person's reading.
+// Every count the three documents of the connection-count check state of this package's pools,
+// held to the constant that decides it: eleven constants in twenty-nine sentences, from the
+// shared pool to the listeners, with the per-process total and the two-process ceiling beside
+// them. Three rounds of dispatch://INFRA-558 went to one class: a constant is raised, every test
+// of both sides stays green because no test reads a sentence, and the number a person reads is
+// left behind. These entries read those sentences, so the next raise fails here instead of in a
+// person's reading.
 //
-// The reader is internal/docnumbers, which another package registers its own constants and
-// documents with in the same shape; what is here is the registration, and nothing else. Each entry
-// names one sentence: the file, a pattern over docnumbers.Number, the constant that number must
-// equal, and what the number is of. A word reads as readily as digits, since this package's count
-// is spelled in .dispatch/architecture/dispatch-store.md and written in digits everywhere else,
-// and a pattern that matches nothing fails too.
+// The reader is internal/docnumbers, which internal/dispatch/delivery and
+// internal/dispatch/processes register their own constants and documents with in the same shape;
+// what is here is the registration, and nothing else. Each entry names one sentence: the file, a
+// pattern over docnumbers.Number, the constant that number must equal, and what the number is of.
+// A word reads as readily as digits, since the site page spells four of its counts and
+// .dispatch/architecture/dispatch-store.md spells the lease pool's, and a pattern that matches
+// nothing fails too.
 //
-// Keep it to these three documents and these two constants. A document that states no count needs
-// no entry, and a sentence that states a number of something else (a migration version, a review
-// round) belongs to no entry here.
+// Two sentences of the site page are declined rather than registered, and this is where that is
+// said. :404-405 break the listeners down - "Four of them wait on Postgres notifications" and
+// "The fifth sends the cursors" - which are terms of listenerConnections rather than its total.
+// The first is registered below as the total less one, since the reader writes cardinals. The second is not: "fifth"
+// is an ordinal, which the reader cannot write, and a raise of listenerConnections is caught by
+// the first term and by the three sentences that state the total, so the ordinal left alone
+// costs that raise nothing.
+//
+// Keep it to the counts these three documents state of this package. A number another package
+// owns belongs to that package's own registration (the heartbeat and the live window are
+// internal/dispatch/processes'), and a number of something else - a migration version, a review
+// round - belongs to no entry anywhere here.
 func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 	const (
 		site      = "docs/site/src/content/docs/dispatch/running-dispatch.md"
@@ -94,5 +106,12 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 			Number: listenerConnections, Says: "the listeners a process holds outside the shared pool"},
 		{File: site, Pattern: `holds up to ` + number + ` more open for as long as it runs`,
 			Number: listenerConnections, Says: "the listeners a server holds for as long as it runs"},
+		// The breakdown of that total, one level down: the listeners that wait on a Postgres
+		// notification are every one of them but the cursor sender, so this term is the total
+		// less one and a raise leaves it false unless it is read here. The sentence beside it,
+		// "The fifth sends the cursors", is declined in the header above.
+		{File: site, Pattern: number + ` of them wait on Postgres notifications`,
+			Number: listenerConnections - 1,
+			Says:   "the listeners that wait on a Postgres notification, the total less the cursor sender"},
 	})
 }
