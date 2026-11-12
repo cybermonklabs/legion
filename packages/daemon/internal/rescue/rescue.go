@@ -1115,11 +1115,20 @@ func (r runner) snapshotTree(dir string) (string, error) {
 // whole, and `jj st` in the workspace afterwards still reported the large file untracked.
 //
 // Each path is added by a command of its own, so one path git cannot add does not take the
-// others down with it, and a path it could not add fails the workspace: that file is in no
-// commit this check can push, and a workspace reported clean would have the pod replaced and
-// the file lost with it. The failure names ten of them and counts the rest, which is what keeps
-// the message inside what Dispatch takes, and writes each with %q, so that a name which is not
+// others down with it, and a path git refuses fails the workspace: that file is in no commit
+// this check can push, and a workspace reported clean would have the pod replaced and the file
+// lost with it. The failure names ten of them and counts the rest, which is what keeps the
+// message inside what Dispatch takes, and writes each with %q, so that a name which is not
 // valid UTF-8 and a name holding the separator are both readable.
+//
+// git's exit status is the whole of what is read here, and one shape exits 0 having added
+// nothing: a path inside an embedded git repository, measured on this build on 2026-11-12 with
+// a worktree holding b/.git and b/sub/.jj, where `git add -f -- b/sub` exited 0 and the tree
+// that index wrote held no b/ entry at all. Such a path is carried by neither read and fails
+// neither: the `git add --all` this one replaces records an embedded repository as a gitlink
+// and carries none of its files either (edits), so there is nothing here that the read before
+// it would have kept, and failing the workspace would hold a pod replacement for content no
+// read of this check can carry.
 func (r runner) carried(dir, tree string, paths []string) (string, error) {
 	scratch, err := os.MkdirTemp("", "legion-rescue-carry-")
 	if err != nil {
@@ -1332,9 +1341,13 @@ func unquoted(text string) string {
 				}
 			}
 		case 'u':
+			// 21 bits, because the largest rune is 0x10FFFF and 21 bits holds it: a wider parse
+			// takes a value no rune can hold and hands it to a conversion that wraps it
+			// negative, which utf8.ValidRune then refuses. The answer is the same either way,
+			// and this way nothing out of range is converted at all.
 			if braced, ok := strings.CutPrefix(body[i+2:], "{"); ok {
 				if digits, after, closed := strings.Cut(braced, "}"); closed {
-					if point, err := strconv.ParseUint(digits, 16, 32); err == nil && utf8.ValidRune(rune(point)) {
+					if point, err := strconv.ParseUint(digits, 16, 21); err == nil && utf8.ValidRune(rune(point)) {
 						name, i = utf8.AppendRune(name, rune(point)), len(body)-len(after)
 						continue
 					}

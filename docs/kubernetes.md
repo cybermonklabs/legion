@@ -4355,7 +4355,9 @@ A file above the workspace's own `snapshot.max-new-file-size`, which jj refuses 
 The check does not raise that limit: a snapshot that raised it would make jj track the file in the role's own working-copy commit, where it would stay, and the role's next push would carry it.
 A path whose name is not valid UTF-8, which jj skips with a warning of its own, is carried the same way.
 A directory holding a nested `.jj` directory, which jj leaves out whole and with no warning, is carried the same way, the whole directory with it.
-A path the carry cannot add fails the workspace, and the failure names up to ten such paths and counts the rest.
+A path git refuses fails the workspace, and the failure names up to ten such paths and counts the rest.
+The carry reads git's exit status alone, and one shape exits 0 having added nothing: a path inside an embedded git repository, measured on 2026-11-12 with a worktree holding `b/.git` and `b/sub/.jj`, where `git add -f -- b/sub` exited 0 and the carried tree held no `b/` entry.
+Such a path is carried by neither read and fails neither, because the `git add --all` this read replaces records an embedded repository as a gitlink and carries none of its files either.
 A workspace whose jj sparse patterns do not cover its tree fails, with nothing snapshotted, because a file outside those patterns is one the git read kept; a set holding `.` covers the tree, and an empty set, which an unfinished checkout leaves, fails with words of its own.
 A snapshot that fails fails the workspace, and no second snapshot is made.
 A stale working copy is one such failure, and its message names `jj workspace update-stale` as what a person runs.
