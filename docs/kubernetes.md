@@ -2783,7 +2783,7 @@ Each row's check, and the fact a passing one reports:
 - `dispatch-envoy-tools`: the eleven Envoy tools (the ten `envoy_*` tools and `slack_post`) are registered and `dispatch read --issue <issue>` answers, which is why the row's summary reads "reaches Dispatch through the `dispatch` command and Envoy through the pi-envoy tools" — `11
   Envoy tools registered; dispatch read <issue> answered from <path>`.
 
-- `github`: `gh api graphql -f query='{ viewer { login } }'` answers the role's App login under the role's token file (REST `GET /user` is not a call an App installation token may make, so the row never reads it) — `gh viewer login: <login>`.
+- `github`: `gh api graphql -f query='{ viewer { login } }'` answers the role's App login under the role's token file (REST `GET /user` is not a call an App installation token may make, so the row never reads it), and runs from `/`, a directory that is no git repository, so a workspace whose remotes name two owners (a fork checkout) cannot turn the row into the `legion gh` wrapper's refusal — `gh viewer login: <login>`.
 
 The daemon renders a live row from its live sessions' reports.
 A live session is a claim that is ready, working or idle whose report came from its current process (the report's `incarnation` is the claim's locator's), so a claim relaunched, suspended or retired since its session reported keeps no row open until the new process reports.

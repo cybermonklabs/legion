@@ -387,16 +387,24 @@ const checkDispatchEnvoyTools: Check = async (host, input, signal) => {
   );
 };
 
+/** Where `checkGitHub` runs its command: a directory that is no git repository, so the `legion gh`
+ * wrapper names no owner and uses `GH_CONFIG_DIR`, the issue owner's directory
+ * (`packages/daemon/cmd/legion/gh.go`, `runGh`; `gh_selectors.go`, `readGitRemotes` answers none
+ * outside a repository). From the workspace, remotes naming two owners — every fork checkout has
+ * `origin` and `upstream` — would turn this credential row into the wrapper's argument refusal. */
+const GITHUB_PROBE_CWD = "/";
+
 /** The role's own GitHub identity through GraphQL `viewer`, never REST `GET /user`: a role's `gh`
  * runs on its App's installation token, which GitHub answers `GET /user` to with 403 "Resource not
  * accessible by integration", and `{viewer{login}}` is how such a token reads its own identity —
  * the read the repository's proofs make (`internal/api/real_github_test.go`,
- * `scripts/e2e/stage4b-sandbox-tree.sh`). */
-const checkGitHub: Check = async (host, input, signal) => {
+ * `scripts/e2e/stage4b-sandbox-tree.sh`). The command runs from `GITHUB_PROBE_CWD`, not the
+ * workspace, so the row measures the role's credential and not the workspace's git remotes. */
+const checkGitHub: Check = async (host, _input, signal) => {
   const result = await host.run(
     "gh",
     ["api", "graphql", "-f", "query={viewer{login}}", "--jq", ".data.viewer.login"],
-    { cwd: input.cwd, signal }
+    { cwd: GITHUB_PROBE_CWD, signal }
   );
   if (result.code !== 0) return failed(`gh viewer login failed: ${commandFailure(result)}`);
   return ok(`gh viewer login: ${result.stdout.trim()}`);
