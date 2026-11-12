@@ -191,15 +191,27 @@ chain refuses the same work. Either way, `envoy_publish` the key, the role and t
 issue's architect, which is who can narrow the work. Re-admit nothing and park nothing, because
 the task is not lost and the session still runs.
 
-One claim that stays stuck after that is yours to act on, and `compact` is the first thing you
-reach for: it has the daemon shorten that claim's Oh My Pi session to a text summary and send it
+One claim that stays stuck after that is yours to act on, and which door you use depends on what
+the claim is doing. `compact` is the first thing for a claim whose session the provider keeps
+refusing: it has the daemon shorten that claim's Oh My Pi session to a text summary and send it
 whatever task it owed again, and the claim keeps its session, its workspace and everything it
 knows of its issue. The answer says whether the session was compacted and, when it was not, why;
-the claim is back either way, and whatever task it owed has gone again. Use `fresh_session` only
-when the claim is still refused after a compaction, because a new session loses everything the old
+the claim is back either way, and whatever task it owed has gone again. Use `fresh_session` once
+the claim is still refused after a compaction, because a new session loses everything the old
 one held — what the worker learned of its issue, and what it had not yet pushed or written down —
 and cures nothing in a provider outage, where the next session's turns are refused as the last
 one's were.
+
+`compact` is the wrong door for a claim no process stands behind, which is a role that died: it
+refuses such a claim `CLAIM_NOT_RUNNING` and names `fresh_session`, because it has no agent to
+ask. Ask for `fresh_session` there. It is the one way back for a dead role, a dead architect of
+your project included: it suspends the claim where your request arrives, leaves the session that
+claim recorded behind, and starts the claim again with the task its dead turn held. Both doors
+read the claim's process at the moment you ask, not the daemon's memory of an older report,
+which a daemon restart forgets. A refusal of `CLAIM_IN_A_TURN` is a claim whose process that
+read found running, one whose session is being compacted, or one the runtime would not answer
+for. That last one is left exactly as your request found it, so ask again once the runtime
+answers. A claim under a relaunch the wake pacing parks is refused `CLAIM_UNSETTLED`.
 
 ## GitHub mentions
 

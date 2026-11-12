@@ -531,32 +531,48 @@ suspended, failed or retired claim naming what starts it again: `--fresh-session
 role, and the daemon's controller keeper for the project's own controller claim, which only
 `--claim` can name and which `--fresh-session` refuses in every state, a keeper whose resume an
 operator's own suspension holds.
-It also refuses a claim the daemon records as working, which may be in a turn, a claim a
-suspension is held over, a claim whose launch is in flight, a claim whose agent has registered
-and is not ready yet, which `--fresh-session` reaches, a claim left working under a relaunch the
-wake pacing parked, a claim left working over a process the daemon's last report of it found
-gone, and a claim whose role runs on Claude Code, which has no Oh My Pi session.
+It also refuses a claim a suspension is held over, a claim whose launch is in flight, a claim
+whose agent has registered and is not ready yet, which `--fresh-session` reaches, a claim left
+working under a relaunch the wake pacing parked, and a claim whose role runs on Claude Code,
+which has no Oh My Pi session.
+For a claim the daemon records as working it reads that claim's process at the runtime, at the
+moment of the request, rather than the daemon's memory of an older report, which a daemon restart
+forgets. A process that read finds running is refused `CLAIM_IN_A_TURN`, because a compaction
+would abort the turn that may be the one ending the run of refusals. A claim whose session is
+being compacted takes that code too, and so does a claim whose process the runtime would not
+answer for, which is left exactly as the request found it. A claim stored working that no process
+stands behind is refused `CLAIM_NOT_RUNNING`, naming `--fresh-session` as what starts it again,
+because this command has no agent to ask.
 A compaction Oh My Pi refused or skipped — a session too small, one already compacted — is
 printed with its reason, and whatever task the claim owed has gone again all the same.
 
 `legion claims retry --claim <token> --fresh-session` is the recovery for a claim the compaction
-left refused: it forgets the session that claim recorded and starts the claim
+left refused, and for a claim stored working that no process stands behind, which the compaction
+refuses by name: it forgets the session that claim recorded and starts the claim
 in a new session with its phase's task, so no `legion claims forget-session` comes before it. It
-reaches a claim whose agent is registered, ready or idle as well as one that is suspended,
-failed or retired, with no suspension held over it, so it is what starts a claim the
-compaction could not reach, and a new session loses everything the old one held. It
+reaches a claim whose agent is registered, ready or idle, one that is suspended,
+failed or retired, and one stored working that the same read of its process finds nothing behind,
+which is the dead role a project's controller has no other way back from, with no suspension held
+over it, so it is what starts a claim the compaction could not reach, and a new session loses
+everything the old one held. It suspends the claim where the request arrives, a live agent and
+the claim no process stands behind alike, and that last claim comes back with the task its dead
+turn held: the suspension takes that task back, and the start sends it again. It
 forgets that session before it starts the phase, because the start runs the moment the restart
 commits and would otherwise resume the very session you are dropping. A retry the daemon then
 refuses has forgotten the session all the same: the claim keeps its state and its task, the
 daemon's log names the session it dropped, and the same command works once the refusal's cause
-is gone. What a refusal does on its own, before any of this, is in the paragraphs above and in
+is gone. A start the daemon refuses after this command stopped the claim is answered 200 instead,
+with that refusal printed under the claim's line: the claim is suspended and records no session,
+so the next start of it spawns a fresh agent, which is what you asked for.
+What a refusal does on its own, before any of this, is in the paragraphs above and in
 [Starting fresh when a session is lost or wedged](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#starting-fresh-when-a-session-is-lost-or-wedged).
 When the workflow refused that phase's restart — a lingering tree, whose members stay where they
 stood, is the usual cause — the command prints a second line under the claim's own, saying the
 claim is back in a new session owing no task and why nothing restarted its phase, and the
 controller's `fresh_session` answers that same sentence as `phaseNotRestarted` rather than an
 empty answer: the claim is running with no work, so clear what the line names and run the
-command again to hand the claim its phase's task.
+command again to hand the claim its phase's task. `phaseNotRestarted` carries that sentence or
+the one about the start that was refused after the claim was stopped, and never both.
 
 When a failed architect's session was lost with its volume, clear the stopped claim's matching
 record before retrying:
