@@ -601,15 +601,21 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 		t.Fatalf("after its relaunches ran out the planner is %s, want failed", failed.State)
 	}
 	// The worker-died carries the failure with it: the cause the relaunch of the death recorded,
-	// the sentence the supervisor wrote beside it, and the counts that failure left against the
-	// deployment's limits (record.NoticeFailure, workflow's noticeFailure). The deaths are not
-	// counted here — a parked agent holding no task dies uncounted — which the record says in
-	// as many words.
+	// the sentence the supervisor wrote beside it, the counts that failure left against the
+	// deployment's limits, and the two the claim itself recorded — why its process was last found
+	// gone and why its last start produced no agent (record.NoticeFailure, workflow's
+	// noticeFailure, dispatch://INFRA-714 R6). The deaths are not counted here — a parked agent
+	// holding no task dies uncounted — which the record says in as many words.
 	died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Implementing,
 		Reason: "the planner does not work LEGION-208's phase implementing; nothing is held",
 		Failure: &record.NoticeFailure{Cause: string(supervise.CauseDied), Detail: failed.Failure,
 			LaunchFailures: record.FailureBudget{Count: 2, Limit: 2}, Deaths: record.FailureBudget{Limit: 2},
-			PromptFailures: record.FailureBudget{Limit: 2}, PromptRetires: record.FailureBudget{Limit: 2}}}
+			PromptFailures: record.FailureBudget{Limit: 2}, PromptRetires: record.FailureBudget{Limit: 2},
+			Death: failed.LastDeathCause, StartFailure: failed.LastStartFailure}}
+	if failed.LastDeathCause == "" || failed.LastStartFailure == "" {
+		t.Fatalf("the failed planner recorded death %q and start failure %q; want both, since the record below is what carries them to the architect",
+			failed.LastDeathCause, failed.LastStartFailure)
+	}
 	var notices []record.OutboxPayload
 	testwait.Eventually(t, "the architect to be told of the finished planner's failure", func() bool {
 		notices = nil
@@ -632,7 +638,14 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 		return len(notices) > 0
 	})
 	if len(notices) != 1 || !reflect.DeepEqual(notices[0], record.OutboxPayload(died)) {
-		t.Fatalf("notices = %+v, want the one worker-died %+v", notices, died)
+		// The failure record is behind a pointer, so it is printed beside each notice: a diff of
+		// two addresses says nothing to the reader of a failing run.
+		var got *record.NoticeFailure
+		if notice, ok := notices[0].(record.Notice); ok && len(notices) == 1 {
+			got = notice.Failure
+		}
+		t.Fatalf("notices = %+v with failure %+v, want the one worker-died %+v with failure %+v",
+			notices, got, died, died.Failure)
 	}
 	var current phase.Phase
 	var held bool

@@ -167,7 +167,19 @@ func (r *freshSessionRig) refuseEveryTurn(message string) {
 
 // told is one notice the workflow queued, whether for the issue's architect or for the
 // controller: its kind and the reason it carries.
-type told struct{ kind, reason string }
+// told is one queued notice as this rig reads it: its kind, the `reason` it carries and the
+// `detail` of the failure record beside it, which is where the sentence the failure wrote stands
+// (record.NoticeFailure; a notice with no record reads "").
+type told struct{ kind, reason, detail string }
+
+// failureDetail is the sentence a notice's failure record carries, and "" for a notice with no
+// record: a worker-died of a role that works no phase of the issue is one.
+func failureDetail(failure *record.NoticeFailure) string {
+	if failure == nil {
+		return ""
+	}
+	return failure.Detail
+}
 
 // notices are the notices the workflow has queued, in the order it queued them.
 func (r *freshSessionRig) notices() []told {
@@ -189,9 +201,9 @@ func (r *freshSessionRig) notices() []told {
 		}
 		switch notice := payload.(type) {
 		case record.Notice:
-			notices = append(notices, told{kind: string(notice.Kind), reason: notice.Reason})
+			notices = append(notices, told{kind: string(notice.Kind), reason: notice.Reason, detail: failureDetail(notice.Failure)})
 		case record.ControllerNotice:
-			notices = append(notices, told{kind: string(notice.Kind) + " (controller)", reason: notice.Reason})
+			notices = append(notices, told{kind: string(notice.Kind) + " (controller)", reason: notice.Reason, detail: failureDetail(notice.Failure)})
 		default:
 			r.t.Fatalf("outbox row %d is no notice: %#v", row.ID, payload)
 		}
@@ -234,8 +246,10 @@ func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *te
 	var kinds []string
 	for _, notice := range notices {
 		kinds = append(kinds, notice.kind)
-		if !strings.Contains(notice.reason, refusal) {
-			t.Errorf("the %s notice says %q, want the provider's refusal in it", notice.kind, notice.reason)
+		// The sentence the failure wrote rides in the failure record's `detail`, where every
+		// reader of the notice finds it beside the cause word; `reason` is the escalation's own.
+		if !strings.Contains(notice.detail, refusal) {
+			t.Errorf("the %s notice's failure detail says %q, want the provider's refusal in it", notice.kind, notice.detail)
 		}
 	}
 	if want := []string{"held", "held (controller)", "worker-died"}; !slices.Equal(kinds, want) {
