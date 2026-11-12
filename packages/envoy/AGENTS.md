@@ -2379,10 +2379,19 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - `packages/contracts` defines the TypeScript event schemas consumed by Dispatch clients.
   The Go Dispatch server maintains its emitted event names and wire payloads separately; `bun run gen:go` generates Envoy envelope validation only.
 
-- `GET /api/v1/issues` answers every issue its filters match (`project`, `status`, `parent`, `label`, `priority`, `open`, `updated_since`, `route_status`, and `pinned`, which needs the `person` scope since the pins are one person's) as an array, or one page of them when the caller names `limit` (1 to `contracts.MaxIssuePageLimit`, 250) or `offset` (0 or more;
+- `GET /api/v1/issues` answers every issue its filters match (`project`, `status`, `parent`, `label`, `priority`, `open`, `updated_since`, `closed_since`, `closed_before`, `route_status`, and `pinned`, which needs the `person` scope since the pins are one person's) as an array, or one page of them when the caller names `limit` (1 to `contracts.MaxIssuePageLimit`, 250) or `offset` (0 or more;
   alone it pages `contracts.DefaultIssuePageLimit`, 50):
   `{issues, total, limit, offset}` (`model.IssueSummaryPage`), the count beside the rows as `GET /api/v1/asks/open` carries it.
-  `parseIssuePage` (`api/issue_page.go`) reads both, and a repeated, blank, non-integer or out-of-range value is `400 INVALID_QUERY` naming the parameter;
+  Every row carries `closed_at`, the time the issue was closed as its own read carries it, or null while it is open.
+
+- The listing's three time bounds.
+  `closed_since` (inclusive) and `closed_before` (exclusive) are RFC3339 bounds on `closed_at`, so an open issue matches neither, and a reader of the issues closed in a window reads those alone rather than the whole listing;
+  `listIssues` (`api/issue_queries.go`) refuses a malformed one as `400 INVALID_CLOSED_SINCE` or `400 INVALID_CLOSED_BEFORE`, as it refuses a malformed `updated_since` (`400 INVALID_UPDATED_SINCE`), and a `closed_before` at or before `closed_since` as `400 INVALID_CLOSED_WINDOW`.
+  The three bounds reach the statement rounded up to the next microsecond (`microsecondCeiling`), since Postgres stores a time to the microsecond and pgx would otherwise truncate a finer bound and move `>=` and `<` onto a time stored before it;
+  the window refusal judges the bounds as the caller wrote them.
+
+- The listing's paging, which is `GET /api/v1/issues`' own.
+  `parseIssuePage` (`api/issue_page.go`) reads `limit` and `offset`, and a repeated, blank, non-integer or out-of-range value is `400 INVALID_QUERY` naming the parameter;
   so is `cursor`, which the listing does not page with, since answering it with the first page would hand back rows the caller cannot tell from the ones it asked for (LEGION-406:
   the route ignored all three and answered every row).
   The page is cut by the statement that reads it, which counts in the same read what the filters match, so a page and its `total` cannot come from two readings of a moving table, and the six values each listed issue carries are resolved for that page's rows alone (`issueSummaryQuery`, `api/issue_queries.go`, writes the listing's four statement texts: paged and unpaged, each of them pinned or not).

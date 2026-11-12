@@ -124,7 +124,10 @@ test("each op refuses its arguments whole before any daemon request, naming ever
   const refusals = [
     [{ op: "handoff_complete" }, "handoff_complete requires summary"],
     [{ op: "handoff_complete", summary: "  " }, "handoff_complete requires summary"],
-    [{ op: "handoff_complete", summary: "x", issue: 44 }, "expected string"],
+    [
+      { op: "handoff_complete", summary: "x", issue: 44 },
+      "handoff_complete's issue is an issue key, as LEGION-208 is",
+    ],
     [
       { op: "handoff_complete", summary: "x", verdict: "maybe" },
       "handoff_complete's verdict is pass, pending or fail",
@@ -151,7 +154,7 @@ test("each op refuses its arguments whole before any daemon request, naming ever
       { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
       'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"',
     ],
-    [{ op: "read_record", issue: 44 }, "expected string"],
+    [{ op: "read_record", issue: 44 }, "read_record's issue is an issue key, as LEGION-208 is"],
     [{ op: "read_release_records" }, "read_release_records requires since"],
     [{ op: "read_release_records", since: " " }, "read_release_records requires since"],
     [
@@ -165,6 +168,10 @@ test("each op refuses its arguments whole before any daemon request, naming ever
     [{ op: "request_backward_move", reason: "r" }, "request_backward_move requires to"],
     [{ op: "request_backward_move", to: " ", reason: "r" }, "request_backward_move requires to"],
     [{ op: "request_backward_move", to: 44, reason: "r" }, "request_backward_move requires to"],
+    [
+      { op: "request_backward_move", to: "implementing", reason: "r", issue: 44 },
+      "request_backward_move's issue is an issue key, as LEGION-208 is",
+    ],
     [
       { op: "request_backward_move" },
       "request_backward_move requires to; request_backward_move requires reason",
@@ -214,9 +221,11 @@ test("read_record with no issue answers the claim's own record; handoff_complete
   await expect(executePhaseOp(ops, { op: "read_record", issue: " " })).resolves.toEqual({
     record: state.issues["LEGION-208"],
   });
-  await expect(executePhaseOp(ops, { op: "read_record", issue: "LEGION-209" })).resolves.toEqual({
-    record: state.issues["LEGION-209"],
-  });
+  for (const issue of ["LEGION-209", " LEGION-209\n"]) {
+    await expect(executePhaseOp(ops, { op: "read_record", issue })).resolves.toEqual({
+      record: state.issues["LEGION-209"],
+    });
+  }
   await expect(
     executePhaseOp(ops, { op: "handoff_complete", summary: "Done.", issue: "LEGION-209" })
   ).rejects.toThrow(
@@ -224,8 +233,13 @@ test("read_record with no issue answers the claim's own record; handoff_complete
       "handoff_complete reports this session's own issue LEGION-208; leave issue out, or name LEGION-208, not LEGION-209"
     )
   );
-  // The refusal read no record and minted no grant: the three routes are the three reads'.
-  expect(routes).toEqual(["/legion/v1/state", "/legion/v1/state", "/legion/v1/state"]);
+  // The refusal read no record and minted no grant: the four routes are the four reads'.
+  expect(routes).toEqual([
+    "/legion/v1/state",
+    "/legion/v1/state",
+    "/legion/v1/state",
+    "/legion/v1/state",
+  ]);
   expect(posted).toEqual([]);
   // A completion naming its own issue posts exactly what one leaving it out posts.
   await expect(
@@ -307,9 +321,37 @@ test("a root architect's handoff_complete is refused as unavailable before its o
     await expect(executePhaseOp(root.ops, input)).rejects.toThrow(new Error(refusal));
   }
   await expect(executePhaseOp(root.ops, { op: "handoff_complete", phase: "plan" })).rejects.toThrow(
-    new Error(`handoff_complete does not accept field "phase"; ${refusal}`)
+    new Error(
+      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, ready, wake_at; ${refusal}`
+    )
   );
   expect(root.routes).toEqual([]);
+});
+
+// A refusal that named only the field refused left the agent to guess the call again: an
+// architect sent park_child a `reason` and a worker sent ready_for_update an `issue`, and each was
+// told no more than that the field is refused. A refusal names, once after every field it refuses,
+// the fields the operation takes.
+test("a field an op does not take is refused naming the fields the op takes", async () => {
+  const { ops, routes } = runtime();
+  const refusals = [
+    [
+      { op: "ready_for_update", round: "r1", issue: "LEGION-208" },
+      'ready_for_update does not accept field "issue"; it takes round',
+    ],
+    [
+      { op: "read_record", issue: "LEGION-208", reason: "why" },
+      'read_record does not accept field "reason"; it takes issue',
+    ],
+    [
+      { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
+      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"; it takes summary, issue, verdict, ready, wake_at',
+    ],
+  ] as const;
+  for (const [input, message] of refusals) {
+    await expect(executePhaseOp(ops, input)).rejects.toThrow(new Error(message));
+  }
+  expect(routes).toEqual([]);
 });
 
 /** LEGION-208 closed by its merge, its production check open on its second look, as the daemon's
@@ -630,12 +672,25 @@ test("request_backward_move names the issue an architect returns from accepting,
       op: "request_backward_move",
       to: "implementing",
       reason: "test failed",
+      issue: " LEGION-208 ",
+    })
+  ).resolves.toEqual({});
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    to: "implementing",
+    reason: "test failed",
+  });
+  await expect(
+    executePhaseOp(runtimeFor(implementer), {
+      op: "request_backward_move",
+      to: "implementing",
+      reason: "test failed",
       issue: "LEGION-209",
     })
   ).rejects.toThrow(
     new Error("a phase worker moves only its own issue LEGION-208, not LEGION-209")
   );
-  expect(posted).toHaveLength(before + 2);
+  expect(posted).toHaveLength(before + 4);
 });
 
 test("read_record answers the issue's record, or names an issue the daemon has none for; request_backward_move posts with a fresh grant", async () => {
@@ -1030,7 +1085,7 @@ test("ready_for_update answers for the round its task named, with the branch hea
       runtimeFor(async () => head),
       { op: "ready_for_update", round, head }
     )
-  ).rejects.toThrow(new Error('ready_for_update does not accept field "head"'));
+  ).rejects.toThrow(new Error('ready_for_update does not accept field "head"; it takes round'));
   expect(posted).toHaveLength(2);
 });
 

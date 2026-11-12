@@ -503,21 +503,21 @@ const UNASKED_WAIT_REMINDER =
   "dispatch ask for a to-do only a human can do, naming exactly what you need and from whom.";
 
 /**
- * One arming period of the run-end nudge. A genuine user turn arms a period. `check_due` is the
- * outstanding check, in the shape of the host's own todo reminder: arming owes one, a completed
- * check spends it, the agent's next real work — a successful tool call that ran anything but
- * `dispatch` commands — owes another, and opening the ask itself spends it, since the nudge has
- * nothing left to say about that stop. A turn that only replies and stops does no work, so the
- * nudge's own continuation can never owe one, which is what keeps it from nudging itself forever.
- * `checks` counts the ones spent, capped at `ASK_CHECKS_PER_PERIOD`.
+ * One arming period of the run-end nudge. A person's typed input or Dispatch card arms a period.
+ * `check_due` is the outstanding check, in the shape of the host's own todo reminder: arming owes
+ * one, a completed check spends it, the agent's next real work — a successful tool call that ran
+ * anything but `dispatch` commands — owes another, and opening the ask itself spends it, since the
+ * nudge has nothing left to say about that stop. A turn that only replies and stops does no work,
+ * so the nudge's own continuation can never owe one, which is what keeps it from nudging itself
+ * forever. `checks` counts the ones spent, capped at `ASK_CHECKS_PER_PERIOD`.
  *
  * `baseline_as_of` is the server clock the period's next Dispatch read asks from, and it moves
- * after every self-check to that snapshot's `as_of`. This keeps the check's view current while
- * the session works between settles.
+ * after every self-check to that snapshot's `as_of`. This keeps the check's view current while the
+ * session works between settles.
  *
- * In-memory only, for the life of this process's session. A cold start or a session change
- * begins at period 0, which the stop guard refuses, so nothing nudges before the next genuine
- * user turn arms a period — no transcript entry buys anything beyond that.
+ * In-memory only, for the life of this process's session. A cold start or a session change begins
+ * at period 0, which the stop guard refuses, so nothing nudges before the next person-authored
+ * input arms a period — no transcript entry buys anything beyond that.
  */
 interface AskAwarenessState {
   readonly session_id: string;
@@ -844,6 +844,12 @@ export default function envoyExtension(pi: PiApi): void {
   // and a session change. The period alone cannot carry that — a rebound session's restored
   // period may equal the one the pending check read.
   let awarenessGeneration = 0;
+  // The person input whose open-asks read is still out, when it is the newest awareness
+  // generation. A stop that lands in that read, on that session, belongs to a run the person's
+  // input supersedes, so it owes no check: it would otherwise take the bumped generation with the
+  // old period's `check_due` and pass every staleness test. A read a newer input or a session
+  // change superseded holds nothing back, since the generation has moved past it.
+  let armingPersonInput: { readonly session: string; readonly generation: number } | undefined;
   // One stop-time check at a time. `agent_end` handlers are not awaited by the host, so a second
   // stop can arrive while the first one's Dispatch round trip or self-check is open — it clears
   // every guard below, because `check_due` is not spent until both answers are back. The
@@ -1362,13 +1368,15 @@ export default function envoyExtension(pi: PiApi): void {
   // and one whose card waits already is that card's. A frame the dedupe let go of that the open
   // session's ledger does not hold (one shown before the host moved to this session, say) is
   // handed with no claim, and waits on its card's write all the same: nothing records it until
-  // the host writes it.
-  const showReplayCard = (
+  // the host writes it. `beforeHandOff` runs only after that claim has excluded a live or already
+  // queued copy, and before the card can start its own run.
+  const showReplayCard = async (
     session: string,
     content: string,
     envelope: unknown,
-    deliverAs: CardDelivery = "card"
-  ): "shown" | "queued" | "failed" => {
+    deliverAs: CardDelivery = "card",
+    beforeHandOff?: () => Promise<void>
+  ): Promise<"shown" | "queued" | "failed"> => {
     const parsed = ClaimIdentitySchema.safeParse(envelope);
     const identity = parsed.success ? parsed.data : undefined;
     const claim = delivered.claim(identity);
@@ -1379,6 +1387,7 @@ export default function envoyExtension(pi: PiApi): void {
     ) {
       return "queued";
     }
+    await beforeHandOff?.();
     const outcome = unwritten.sendCard(session, content, deliverAs, identity, claim);
     return outcome === "closed" ? "failed" : outcome;
   };
@@ -1675,6 +1684,14 @@ export default function envoyExtension(pi: PiApi): void {
           messageID: delivery.id,
         });
       });
+  };
+
+  // A Dispatch actor is a person only when it has no `act`: Dispatch marks a credential that
+  // acted for its person with the agent or personal token in that field. An agent-attributed
+  // event must not buy a new nudge period.
+  const isHumanDispatchCard = (rendered: RenderInboundResult): boolean => {
+    const actor = rendered.dispatchActor;
+    return actor?.kind === "user" && actor.act === undefined;
   };
 
   // The user turn a person's direct Send or Aside becomes: only one whose acceptance by this
@@ -2071,6 +2088,20 @@ export default function envoyExtension(pi: PiApi): void {
             true,
             shown
           );
+          // Only an event attributed directly to a person can make this card a fresh awareness
+          // period. Dispatch marks an agent acting for a person in `actor.act`, so it shares the
+          // bounded agent-card path instead. This runs after every picture is ready but before
+          // the card's agent-initiated run can begin, for the session the card goes to: a frame
+          // that is no delivery follows the conversation the host has open (`cardSession`), so a
+          // `/new` or a `/resume` during the arming read arms the session it moved to as well.
+          if (isHumanDispatchCard(rendered)) {
+            let destination = cardSession();
+            await armAskAwarenessForPersonInput(activeSessionContext, destination);
+            while (cardSession() !== destination) {
+              destination = cardSession();
+              await armAskAwarenessForPersonInput(activeSessionContext, destination);
+            }
+          }
           // Settled once the host writes the card, or at once when nothing waits on that. How
           // the card goes, and why, is the wake's (`handCard`, `../src/card-wake`). The accept,
           // the picture load, or both, may have run across a `/new` or a `/resume`: a delivery's
@@ -2577,7 +2608,15 @@ export default function envoyExtension(pi: PiApi): void {
       noteBtw(rendered.envelope?.event_id);
       return showReplayCard(addressed, `${shown}\n${REPLAYED_BTW_NOTE}`, frame.envelope, "inert");
     }
-    return showReplayCard(addressed, shown, frame.envelope);
+    return showReplayCard(
+      addressed,
+      shown,
+      frame.envelope,
+      "card",
+      isHumanDispatchCard(rendered)
+        ? () => armAskAwarenessForPersonInput(activeSessionContext, addressed)
+        : undefined
+    );
   };
 
   // The session this instance and the host are both on: an entry appended now lands in its
@@ -2617,7 +2656,7 @@ export default function envoyExtension(pi: PiApi): void {
             // outstanding, as it does for a notice the host refused: the next sweep of the
             // session the frame names shows it there.
             showFailureNotice: async (notice) => {
-              const outcome = showReplayCard(
+              const outcome = await showReplayCard(
                 sessionID,
                 envoyNoticeText(failureNoticeFields(notice)),
                 notice.envelope,
@@ -4497,39 +4536,12 @@ export default function envoyExtension(pi: PiApi): void {
     });
   }
 
-  // Turn start injects nothing into the conversation; its open-asks query only arms the run-end
-  // nudge below, the snapshot's `as_of` becoming the period's baseline. A session the stop can
-  // never nudge does not pay for it: the host awaits this handler, so a slow or unreachable
-  // Dispatch would add up to `OPEN_ASKS_TIMEOUT_MS` to the head of each of its turns and then
-  // warn it about a reminder it never gets — and a host with no side turn cannot run the
-  // self-check the nudge now turns on, so it is one of those sessions. `id === sessionID` is
-  // deliberately not one of the conditions — a fresh TUI mints its id lazily and heals by drift,
-  // so it would drop the first turn's arming.
+  // A typed user turn begins one nudge period. The shared arming path also handles a
+  // person-authored Dispatch card before its agent-initiated run starts; cards do not fire
+  // `before_agent_start` on the host.
   pi.on("before_agent_start", async (event, context) => {
-    const id = context.sessionManager.getSessionId();
-    if (
-      id === "" ||
-      event.prompt.trim() === "" ||
-      !context.hasUI ||
-      sideTurn(context) === undefined ||
-      legionManaged(id)
-    ) {
-      return undefined;
-    }
-    // Memoized per instance once settled: one answer for the life of the session.
-    if (await isSubagent(context)) return undefined;
-    // The user typed, so a check still in flight is about to answer for a run they have moved
-    // past. This runs before the arming query rather than in `armAskAwareness`: a slow Dispatch
-    // would otherwise hold the old check live for up to `OPEN_ASKS_TIMEOUT_MS`, and one that
-    // fails would never arm at all, and either way its steer would land on the turn just typed.
-    awarenessGeneration++;
-    abortSelfCheck("a new user turn superseded the self-check");
-    try {
-      const open = await queryOpenAsks(id);
-      if (open !== null) armAskAwareness(id, open.as_of);
-    } catch (error) {
-      warnAskAvailability(context, error);
-    }
+    if (event.prompt.trim() === "") return undefined;
+    await armAskAwarenessForPersonInput(context);
     return undefined;
   });
 
@@ -4545,13 +4557,11 @@ export default function envoyExtension(pi: PiApi): void {
       announced?.from === context.sessionManager.getSessionId() ? announced : undefined;
   });
 
-  // Arms one nudge period. A genuine user turn is the only thing that arms one: its caller,
-  // `before_agent_start`, runs for an ordinary prompt and for a steering batch carrying the
-  // user's own text, and returns before this for an empty one. A `triggerTurn` continuation of
-  // an agent-attributed custom message — which is what the nudge below is — never reaches that
-  // handler at all (measured on OMP 18.2.9: one before_agent_start for the user's prompt, none
-  // for the continuation), so the nudge cannot re-arm itself, and one stop can produce at most
-  // one of them.
+  // Arms one nudge period. Its callers have already established that the input was authored by a
+  // person: a nonempty typed prompt, or a Dispatch card with a `user` actor and no `act`. A
+  // `triggerTurn` continuation of an agent-attributed custom message — which is what the nudge
+  // below is — reaches neither caller, so the nudge cannot re-arm itself and one stop can produce
+  // at most one of them.
   function armAskAwareness(id: string, asOf: string): void {
     askAwareness = {
       session_id: id,
@@ -4560,6 +4570,52 @@ export default function envoyExtension(pi: PiApi): void {
       check_due: true,
       checks: 0,
     };
+  }
+
+  /**
+   * Gives a human-authored input the same safe arming transition, regardless of its host path.
+   * `expectedSession` is the session a card is for: a card whose session the host is not on now
+   * arms nothing, since the host hands that card to nobody. The period is armed only while the
+   * generation and the host's session are those this call started under, so a session change or a
+   * newer person input during the open-asks read leaves the state that change or input set.
+   */
+  async function armAskAwarenessForPersonInput(
+    context: SessionContext | undefined,
+    expectedSession?: string
+  ): Promise<void> {
+    const id = context?.sessionManager.getSessionId() ?? "";
+    if (
+      context === undefined ||
+      id === "" ||
+      (expectedSession !== undefined && id !== expectedSession) ||
+      !context.hasUI ||
+      sideTurn(context) === undefined ||
+      legionManaged(id)
+    ) {
+      return;
+    }
+    // Memoized per instance once settled: one answer for the life of the session.
+    if (await isSubagent(context)) return;
+    // A person is about to start or has just caused a run that supersedes any previous stop.
+    // This happens before the arming query, so a slow or failed query cannot leave a stale
+    // self-check free to steer into the person's new work.
+    const generation = ++awarenessGeneration;
+    abortSelfCheck("a new person turn superseded the self-check");
+    armingPersonInput = { session: id, generation };
+    try {
+      const open = await queryOpenAsks(id);
+      if (
+        open !== null &&
+        generation === awarenessGeneration &&
+        context.sessionManager.getSessionId() === id
+      ) {
+        armAskAwareness(id, open.as_of);
+      }
+    } catch (error) {
+      warnAskAvailability(context, error);
+    } finally {
+      if (armingPersonInput?.generation === generation) armingPersonInput = undefined;
+    }
   }
 
   // The run-end nudge. `agent_end` is the bare stop signal — no message, no shape to read — so
@@ -4656,6 +4712,9 @@ export default function envoyExtension(pi: PiApi): void {
   function checkOwed(id: string): boolean {
     return !(
       shuttingDown ||
+      (armingPersonInput !== undefined &&
+        armingPersonInput.session === id &&
+        armingPersonInput.generation === awarenessGeneration) ||
       legionManaged(id) ||
       // The host's live id, never the module's `sessionID`: a fresh TUI mints its id after
       // `session_start`, so the two disagree until the registration heartbeat heals the drift
