@@ -93,6 +93,8 @@ function inboxIssue(
 /** The narrow `Issue` a PATCH answers with, for an inbox row's issue. */
 function narrowIssueOf(row: InboxRow, assignee: string | null): Issue {
   return {
+    advances: [],
+    advances_revision: 0,
     assignee,
     claim: null,
     components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },

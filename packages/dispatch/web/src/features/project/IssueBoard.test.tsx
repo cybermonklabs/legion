@@ -32,6 +32,8 @@ function CurrentRoute(): ReactNode {
 
 function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
+    advances: [],
+    advances_revision: 0,
     route: null,
     repo: null,
     resolved_repo: null,
@@ -198,6 +200,8 @@ test("board shows a shared empty state when the project has no issues", async ()
 });
 
 const patched: Issue = {
+  advances: [],
+  advances_revision: 0,
   closed_at: null,
   created_at: "2026-09-13T00:00:00Z",
   created_by: { id: "alice", kind: "user" },

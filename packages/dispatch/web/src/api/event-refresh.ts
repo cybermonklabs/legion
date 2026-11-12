@@ -597,6 +597,15 @@ function issueWriteTargets(
     }
   }
 
+  // The Priorities page's rows and the rail's two counts (`["priorities"]`, both the full body
+  // and the summary under it). What the work under a priority is moves with the relation itself,
+  // with the status each row counts by, and with the parent, which is what an issue inherits its
+  // priorities down. The relation is no edge of the reference graph (`changesReferenceGraph`
+  // leaves `advances` out), so no backlink panel reads it.
+  if (moved("advances") || moved("status") || moved("parent")) {
+    targets.push({ queryKey: ["priorities"] });
+  }
+
   // A `child_of` edge into the parent and a `blocked_by` edge into each blocker are rows of their
   // backlink panels: the new parent and blockers are the payload's, the old ones are the panels
   // that still list an edge from this issue.

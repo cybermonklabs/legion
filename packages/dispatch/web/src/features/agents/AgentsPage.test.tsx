@@ -1183,6 +1183,8 @@ test("Agents sends without an issue through the agent message route", async () =
 });
 
 const coreIssue: IssueSummary = {
+  advances: [],
+  advances_revision: 0,
   assignee: null,
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },

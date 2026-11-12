@@ -25,6 +25,8 @@ import {
 function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
     key,
+    advances: [],
+    advances_revision: 0,
     title: key,
     status: "todo",
     priority: null,

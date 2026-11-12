@@ -54,9 +54,8 @@ export function IssuesTable({
 }: {
   project: string;
   /** Narrows the table to the issues that advance one priority. `advances` is the priority
-   *  node's id, the key the server will narrow by itself once `GET /api/v1/issues?advances=<id>`
-   *  lands; until it does, no listing this page reads carries the relation, so the caller hands
-   *  the keys over too and `useProjectIssueItems` narrows the project's listing by them. */
+   *  node's id, which the server narrows the listing by (`GET /api/v1/issues?advances=<id>`),
+   *  over every project: a priority belongs to none. */
   scope?: IssueScope;
   /** The prefix this table's own view takes in the address: `<stateKey>.sort` and the rest.
    *  Unset keeps the bare `sort`, `q`, `group`, `page` and `size` the project page publishes. */

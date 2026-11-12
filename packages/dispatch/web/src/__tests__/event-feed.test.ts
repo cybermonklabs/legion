@@ -16,6 +16,8 @@ import {
   inboxThreadsQuery,
   issueQuery,
   myRepliesCountQuery,
+  prioritiesQuery,
+  prioritySummaryQuery,
   projectArchitectureSourcesQuery,
   projectIssuesQuery,
   projectsQuery,
@@ -131,6 +133,10 @@ const READS = {
   },
   parentSummary: { key: issueSummaryQuery("CORE-0").queryKey },
   pinned: { key: ["issues", "pinned"] },
+  // The Priorities page's body and the rail's two counts: one key family, the summary under the
+  // body's prefix.
+  priorities: { key: prioritiesQuery().queryKey },
+  prioritySummary: { key: prioritySummaryQuery().queryKey },
   projectInbox: { key: ["inbox", "CORE"] },
   projectList: { key: projectIssuesQuery("CORE", []).queryKey },
   projects: { key: projectsQuery().queryKey },
@@ -349,6 +355,8 @@ const rules: Record<string, Rule> = {
         "architecture",
         "referencePicker",
         "agentsPicker",
+        "priorities",
+        "prioritySummary",
       ],
       spares: [
         "inbox",
@@ -433,6 +441,8 @@ const rules: Record<string, Rule> = {
       "components",
       "architecture",
       "referencesTab",
+      "priorities",
+      "prioritySummary",
     ],
     spares: ["unrelatedPanel", "issuePanel", "summary", "projects", "inbox", "pinned"],
   },
@@ -510,6 +520,11 @@ const rules: Record<string, Rule> = {
       refreshes: ["detail", "unrelatedDetail"],
       spares: ["parent", "grandparent", "summary"],
     },
+  "an advances change refreshes the priorities body and the summary, and no backlink panel": {
+    event: event("issue.updated", issue({ ancestors: [], changed: ["advances"] })),
+    refreshes: ["detail", "priorities", "prioritySummary"],
+    spares: ["issuePanel", "parentPanel", "referencesTab", "summary", "components"],
+  },
   "a new issue refreshes its ancestors' rollups and the pickers, not every detail or the project counts":
     {
       event: event(

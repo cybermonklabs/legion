@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
-import { issueQuery, projectIssuesQuery } from "../../api/queries";
+import { advancesIssuesQuery, issueQuery, projectIssuesQuery } from "../../api/queries";
 import { claimIsTakeable } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
 import type { AgentRegistry } from "../refs/agent-registry";
@@ -11,25 +11,22 @@ import { buildItems, type EpicAncestor, isEpic } from "./issues-table-model";
 const PARENT_READS_IN_FLIGHT = 8;
 
 /**
- * One priority the table's rows advance, and the issues that advance it. `advances` is the
- * priority node's id, which is how the server will answer the narrowing itself once
- * `GET /api/v1/issues?advances=<id>` lands; until then no listing this page can ask for carries
- * the relation, and no issue it reads states it, so the caller that already read the priority's
- * issues hands their keys over in `keys` and this hook narrows the project's listing by them.
+ * One priority the table's rows advance: `advances` is the priority node's id, which the server
+ * narrows the listing by (`GET /api/v1/issues?advances=<id>`). A priority belongs to no project,
+ * so a scoped table lists the work of every project rather than the one it stands on.
  */
 export interface IssueScope {
   readonly advances: string;
-  readonly keys: readonly string[];
 }
 
 /**
- * One project's issues as the table shows them: the open listing, the full one once the reader
- * lets closed issues through, and the parents neither listing carries, so every row knows which
- * epic it belongs to.
+ * One project's issues as the table shows them - or, under a scope, every project's issues that
+ * advance one priority: the open listing, the full one once the reader lets closed issues
+ * through, and the parents neither listing carries, so every row knows which epic it belongs to.
  *
  * Two reads, never three. The open-only listing stops once the full one has answered, so a live
- * event refetches one listing. The ancestry walk has a key of its own, outside the project
- * listing's, and reads each parent with no staleness of its own. Nothing observes
+ * event refetches one listing. The ancestry walk has a key of its own, outside the listing's,
+ * and reads each parent with no staleness of its own. Nothing observes
  * `["issue", key]`, so an event on a parent only marks it stale: this query runs again when the
  * set of missing parents changes — a parent that joins the listing, a row whose parent changes —
  * and on the whole-cache refresh after a reconnect. Until one of those happens, or the page is
@@ -45,24 +42,25 @@ export function useProjectIssueItems(
 ) {
   const queryClient = useQueryClient();
   const text = useAgentText();
-  const everyIssue = useQuery({ ...projectIssuesQuery(project, []), enabled: wantsDone });
+  // Scoped, the listing is the priority's own, which names no project: a priority belongs to
+  // none, so the work under it is every project's.
+  const everyIssue = useQuery({
+    ...(scope === undefined
+      ? projectIssuesQuery(project, [])
+      : advancesIssuesQuery(scope.advances)),
+    enabled: wantsDone,
+  });
   const doneLoaded = wantsDone && everyIssue.data !== undefined;
   const openIssues = useQuery({
-    ...projectIssuesQuery(project, [], true),
+    ...(scope === undefined
+      ? projectIssuesQuery(project, [], true)
+      : advancesIssuesQuery(scope.advances, true)),
     enabled: !doneLoaded,
   });
   const issues = doneLoaded ? everyIssue : openIssues;
   const listingError =
     wantsDone && everyIssue.isError ? everyIssue : issues.isError ? issues : undefined;
-  // Joined into a string, so a caller that writes its scope out on every render narrows the
-  // listing again only when the scope itself changes.
-  const scopeKeys = scope === undefined ? undefined : scope.keys.join(" ");
-  const all = useMemo(() => {
-    const listed = issues.data ?? [];
-    if (scopeKeys === undefined) return listed;
-    const keys = new Set(scopeKeys === "" ? [] : scopeKeys.split(" "));
-    return listed.filter((issue) => keys.has(issue.key));
-  }, [issues.data, scopeKeys]);
+  const all = useMemo(() => issues.data ?? [], [issues.data]);
   const missingParents = useMemo(() => {
     const keys = new Set(all.map((issue) => issue.key));
     return [

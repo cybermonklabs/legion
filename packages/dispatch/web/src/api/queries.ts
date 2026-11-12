@@ -331,6 +331,39 @@ function boardMovesSettled(context: QueryFunctionContext, project: string): Prom
   return settled.promise;
 }
 
+/** Every issue that advances one priority, as the server narrows the listing itself
+ *  (`GET /api/v1/issues?advances=<id>`). A priority belongs to no project, so the read names
+ *  none: the work under it is the whole deployment's. `open` leaves the closed issues out, as
+ *  the project listing's own flag does, and no board move gates it - a move is one project's,
+ *  and this listing is of no project. */
+export const advancesIssuesQuery = (advances: string, open = false) =>
+  queryOptions({
+    // Typed as widely as the project listing's key (`projectIssuesQueryKey`), so the table that
+    // reads one or the other sees one options type rather than two that differ by their key.
+    queryKey: ["issues", "advances", advances, ...(open ? ["open"] : [])] as unknown[],
+    queryFn: () => api.listIssues({ advances: [advances], ...(open ? { open: true } : {}) }),
+  });
+
+/** Every live priority with the work under each and the two faults beside them
+ *  (`GET /api/v1/priorities`), in rank order. `projects` narrows the counts to the work of those
+ *  projects and nothing else: the rows are the deployment's whichever projects are named. Its
+ *  key sits under the summary's prefix, so one refresh moves both reads (`api/event-refresh.ts`). */
+export const prioritiesQuery = (projects: readonly string[] = []) =>
+  queryOptions({
+    queryKey: ["priorities", "full", ...projects],
+    queryFn: () => api.listPriorities(projects.length ? { project: [...projects] } : {}),
+  });
+
+/** The two fault counts alone (`GET /api/v1/priorities?summary=true`): the work under no
+ *  priority and the work parked under one, which the navigation rail shows without reading a
+ *  row or an issue of either list. */
+export const prioritySummaryQuery = (projects: readonly string[] = []) =>
+  queryOptions({
+    queryKey: ["priorities", "summary", ...projects],
+    queryFn: () =>
+      api.listPriorities({ summary: true, ...(projects.length ? { project: [...projects] } : {}) }),
+  });
+
 /** What every live-owned delivery query shares (LEGION-690): its first load subscribes its view
  *  over the page's one live socket (`api/live-socket.ts`), which writes the snapshot and every
  *  later change into the cache, so nothing here reads again. `meta.live` keeps the event feed's

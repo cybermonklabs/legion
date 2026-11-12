@@ -21,6 +21,8 @@ const claim: IssueClaim = {
 };
 
 const base: Issue = {
+  advances: [],
+  advances_revision: 0,
   assignee: "alice",
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },

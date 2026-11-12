@@ -20,6 +20,8 @@ import { readLayout } from "./issues-table-storage";
 function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
     key,
+    advances: [],
+    advances_revision: 0,
     title: `Work ${key}`,
     status: "todo",
     priority: null,
@@ -87,10 +89,17 @@ function table(
       )
     ),
   ].map((key) => issue(key, { status: "triage" }));
+  // The listing route as the server answers it: `open` leaves the closed rows out, and
+  // `advances` keeps the issues that carry that relation, whichever project they are in.
   const listing = spyOn(api, "listIssues").mockImplementation(async (options = {}) =>
     !options.open && full
       ? full
-      : [...issues, ...parents].filter((issue) => !options.open || issue.status !== "done")
+      : [...issues, ...parents].filter(
+          (issue) =>
+            (!options.open || issue.status !== "done") &&
+            (options.advances === undefined ||
+              (issue.advances ?? []).some((relation) => options.advances?.includes(relation.id)))
+        )
   );
   const state = spyOn(api, "getMyState").mockResolvedValue({});
   const agents = spyOn(api, "listAgents").mockResolvedValue([]);
@@ -1843,13 +1852,23 @@ function listedKeys(): string[] {
     .map((row) => row.getAttribute("data-issue-row") ?? "");
 }
 
-test("a scoped table lists only the issues that advance the priority", async () => {
-  table([issue("CORE-1"), issue("CORE-2"), issue("CORE-3")], "", undefined, {
-    scope: { advances: "PRI-7", keys: ["CORE-2", "CORE-3"] },
-  });
+test("a scoped table lists the issues the server answers for the priority, over every project", async () => {
+  const { listing } = table(
+    [
+      issue("CORE-1"),
+      issue("CORE-2", { advances: [{ id: "PRI-7", inherited: false }] }),
+      issue("CORE-3", { advances: [{ id: "PRI-7", inherited: true }] }),
+    ],
+    "",
+    undefined,
+    { scope: { advances: "PRI-7" } }
+  );
   await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
   expect(listedKeys().sort()).toEqual(["CORE-2", "CORE-3"]);
   expect(screen.queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull();
+  // The narrowing is the server's, and it names no project: a priority belongs to none.
+  expect(listing).toHaveBeenCalledWith({ advances: ["PRI-7"], open: true });
+  expect(listing.mock.calls.every(([options]) => options?.project === undefined)).toBe(true);
 });
 
 test("a stateKey puts the table's own view under its prefix, and none keeps the bare keys", async () => {
