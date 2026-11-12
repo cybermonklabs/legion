@@ -46,28 +46,44 @@ export function waitingOnYou(asks: readonly InboxRow[], viewer: string | undefin
   return waitingOnHuman(asks).filter((ask) => isMine({ ask, kind: "ask" }, viewer));
 }
 
+/** How much waits for the viewer, and since when. */
+export interface NeedsYou {
+  /** How many things wait for the viewer: asks and credential requests together. */
+  readonly count: number;
+  /** When the oldest of them began waiting, or undefined where nothing does. */
+  readonly oldest: string | undefined;
+}
+
+/** What the banner says, and what the Inbox's own needs-you control is named and titled by, so
+ *  the control that replaced the banner on that page carries every word the banner carried
+ *  (INFRA-3135, R7). */
+export function blockedOnYouText({ count, oldest }: NeedsYou): string {
+  const items = `${count} ${count === 1 ? "item" : "items"}`;
+  return `Blocked on you: ${items}${oldest === undefined ? "" : `, oldest ${formatAskAge(oldest)}`}`;
+}
+
 /** Everything that waits for the viewer themselves - every ask `waitingOnYou` keeps, and every
  *  pending credential request they may decide, as its approver or as anyone signed in -
  *  counted, with when the oldest of them began waiting (undefined when nothing does). The
- *  badges and the banner read this one rule, so every count of work waiting on the reader means
- *  the same thing whatever the list on screen is filtered to, and another kind of waiting item
- *  is added here once. An ask is counted only once the login resolves - a number taken over the
- *  whole inbox while the shell loads would not be the reader's - which `waitingOnYou` already
- *  does; a credential request needs no login of the SPA's to scope it, because the list is
- *  already the caller's own: the browser may ask only `?approver=me` and Dispatch resolves it
- *  from the auth token, refusing any other value with `APPROVER_ME_ONLY`
- *  (`resolveApproverMe`, `packages/envoy/internal/dispatch/api/credential_requests.go`). So a
- *  request counts from the moment it is listed, as it did before the asks became the reader's
- *  own - a guard here would have suppressed requests that are the reader's by construction. A
- *  time `compareTimestamps`
+ *  badges, the banner and the Inbox's own needs-you control read this one rule, so every count
+ *  of work waiting on the reader means the same thing whatever the list on screen is filtered
+ *  to, and another kind of waiting item is added here once. An ask is counted only once the
+ *  login resolves - a number taken over the whole inbox while the shell loads would not be the
+ *  reader's - which `waitingOnYou` already does; a credential request needs no login of the
+ *  SPA's to scope it, because the list is already the caller's own: the browser may ask only
+ *  `?approver=me` and Dispatch resolves it from the auth token, refusing any other value with
+ *  `APPROVER_ME_ONLY` (`resolveApproverMe`,
+ *  `packages/envoy/internal/dispatch/api/credential_requests.go`). So a request counts from the
+ *  moment it is listed, as it did before the asks became the reader's own - a guard here would
+ *  have suppressed requests that are the reader's by construction. A time `compareTimestamps`
  *  refuses still counts but is never the oldest: the broker's `requested_at` reaches here
  *  verbatim, and the badges render in the app shell, outside every page's error boundary, so a
  *  throw here would take down every page. */
-function needsYou(
+export function needsYou(
   asks: readonly InboxRow[],
   credentialRequests: readonly CredentialPendingRow[],
   viewer: string | undefined
-): { count: number; oldest: string | undefined } {
+): NeedsYou {
   const since = [
     ...waitingOnYou(asks, viewer).map((ask) => ask.created_at),
     ...credentialRequests.map((request) => request.requested_at),
@@ -106,7 +122,8 @@ export function BlockedOnYou({
    *  until the caller's `/auth/whoami` read resolves. */
   viewer: string | undefined;
 }): ReactNode {
-  const { count, oldest } = needsYou(asks, credentialRequests, viewer);
+  const waiting = needsYou(asks, credentialRequests, viewer);
+  const { count } = waiting;
   if (count === 0) return null;
 
   if (variant === "pill") {
@@ -129,8 +146,7 @@ export function BlockedOnYou({
       className={`block w-full rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnSurfaceMuted}`}
       to="/"
     >
-      Blocked on you: {count} {count === 1 ? "item" : "items"}
-      {oldest === undefined ? null : `, oldest ${formatAskAge(oldest)}`}
+      {blockedOnYouText(waiting)}
     </Link>
   );
 }

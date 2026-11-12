@@ -2,15 +2,15 @@
  * What the reader marked in the Inbox, and the two bulk writes the bar presses on it: the one
  * Snooze over the asks among the marks, and the one Dismiss over the threads.
  *
- * The state lives here rather than in `BulkBar` because either write can take every marked row
+ * The state lives here rather than in the bar because either write can take every marked row
  * off the view at once: a bar that owned the write would be unmounted before its own refusal
- * arrived. The bar reports one press downward and renders what it is told.
+ * arrived. The bar (`SelectionBar`) reports one press downward and renders what it is told.
  */
 
 import { type RefObject, useCallback, useRef, useState } from "react";
 
 import { useMarkedKeys } from "../../hooks/useMarkedKeys";
-import type { InboxFilters } from "./InboxBar";
+import type { InboxFilters } from "./grouping";
 import { type InboxListRow, rowId } from "./list-row";
 import { type AskSnoozeFailure, useAskSnoozeMany } from "./useAskSnooze";
 import {
@@ -42,7 +42,7 @@ export interface InboxSelection {
   readonly allRows: boolean;
   /** The bar's own element, which the keymap reaches through this: Escape from the bulk picker
    *  focuses the bar itself when a press has left no row to return to. */
-  readonly barRef: RefObject<HTMLFieldSetElement | null>;
+  readonly barRef: RefObject<HTMLElement | null>;
   /** Whether the bar shows: a mark is on the page, a pick is in the air, or a refusal is
    *  standing. Escape with no row focused is the keyboard's Clear and is offered on exactly this,
    *  so the two cannot drift. */
@@ -129,7 +129,7 @@ export function useInboxSelection({
   const [allRows, setAllRows] = useState(false);
   const bulkWrite = useAskSnoozeMany();
   const [snoozing, setSnoozing] = useState(0);
-  const barRef = useRef<HTMLFieldSetElement>(null);
+  const barRef = useRef<HTMLElement>(null);
   const [snoozeRefusal, setSnoozeRefusal] = useState<string | undefined>(undefined);
   /** The rows the reader has pressed Dismiss on here, by `rowId`, while that press is out: the
    *  list's hand-hold skips them, so a row they dismissed leaves the list at once even with their
