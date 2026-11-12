@@ -388,6 +388,9 @@ jobs:
             # The envoy packages the daemon module compiles (`go list -deps -test` of
             # packages/daemon's ./..., with and without -tags e2e).
             daemon_envoy_deps: &daemon_envoy_deps
+              # The shared model loop, which internal/sharedloop's test compiles in, so the loop
+              # stays importable from outside the envoy module.
+              - 'packages/envoy/agentloop/*'
               - 'packages/envoy/brokerclient/*'
               - 'packages/envoy/brokertest/*'
               - 'packages/envoy/daemonpermissions/*'
@@ -470,6 +473,8 @@ jobs:
             # the outbox's role forward resolves a role's holder with roles.ResolveHolder (#2395).
             dispatch_server: &dispatch_server
               - 'packages/envoy/cmd/dispatch/*'
+              # The shared model loop the answer and the decision call reach their models through.
+              - 'packages/envoy/agentloop/*'
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
@@ -634,10 +639,13 @@ jobs:
             # The listener's packages, `go list -deps ./cmd/listener` in packages/envoy.
             listener_command: &listener_command
               - 'packages/envoy/cmd/listener/*'
+              - 'packages/envoy/agentloop/*'
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
               # going's own golden, which a test run of that package reads.
               - 'packages/envoy/going/testdata/**'
+              # The bake-off's committed cases, which going's fit test reads.
+              - 'packages/envoy/going/bakeoff/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
@@ -672,10 +680,13 @@ jobs:
             # the outbox's role forward resolves a role's holder with roles.ResolveHolder (#2395).
             dispatch_command_tests: &dispatch_command_tests
               - 'packages/envoy/cmd/dispatch/**'
+              - 'packages/envoy/agentloop/*'
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
               # going's own golden, which a test run of that package reads.
               - 'packages/envoy/going/testdata/**'
+              # The bake-off's committed cases, which going's fit test reads.
+              - 'packages/envoy/going/bakeoff/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               # The relayed shapes routes_shapes.go names.
               - 'packages/envoy/internal/broker/wire/*'
