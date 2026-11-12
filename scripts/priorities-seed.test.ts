@@ -79,6 +79,11 @@ const priorities: HeldPriority[] = [];
 const issues = new Map<string, HeldIssue>();
 const requests: Recorded[] = [];
 let document = { markdown: TABLE, version: 1 };
+/** Whether the fake refuses a write whose body names no session, as the real server refuses
+ *  one from a bearer that proves no session of its own (server.go, bearerSessionActor: 400
+ *  ACTOR_KIND "bearer callers require actor.kind session"). The shared token every pod carries
+ *  is such a bearer. */
+let requireActor = false;
 
 /** The id the server writes for a title, as `priorityIDFromTitle` does: the title as a slug. */
 function slug(title: string): string {
@@ -109,6 +114,13 @@ const server = Bun.serve({
     const text = await request.text();
     const body = text === "" ? undefined : JSON.parse(text);
     requests.push({ method: request.method, path: pathname, body });
+    const actor = (body as { actor?: { kind?: string; id?: string } } | undefined)?.actor;
+    if (requireActor && request.method !== "GET" && (actor?.kind !== "session" || !actor.id)) {
+      return Response.json(
+        { code: "ACTOR_KIND", error: "bearer callers require actor.kind session" },
+        { status: 400 }
+      );
+    }
     if (request.method === "GET" && pathname === DOCUMENT_PATH) {
       return Response.json({ ...document, token: "sha256:document" });
     }
@@ -180,6 +192,7 @@ beforeEach(() => {
   priorities.length = 0;
   requests.length = 0;
   document = { markdown: TABLE, version: 1 };
+  requireActor = false;
   issues.clear();
   for (const [key, status] of [
     ["TEST-1", "in_progress"],
@@ -358,4 +371,33 @@ test("two rows whose titles Dispatch writes under one id are refused before any 
   );
   expect(writes()).toEqual([]);
   expect(priorities).toEqual([]);
+});
+
+test("run as a command with the shared bearer, the seed names its session on every write", async () => {
+  // The seed is run once, from a session whose Dispatch credential is the shared bearer every
+  // pod carries. That bearer proves no session, so Dispatch refuses each write whose body does
+  // not name one, and the seed must name the session it runs in (DISPATCH_SESSION_ID).
+  requireActor = true;
+  const session = "019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e01";
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    DISPATCH_URL: config.url,
+    DISPATCH_TOKEN: "token",
+    DISPATCH_SESSION_ID: session,
+  };
+  delete env.DISPATCH_TOKEN_FILE;
+  delete env.ENVOY_CONFIG_FILE;
+  const child = Bun.spawn(["bun", `${import.meta.dir}/priorities-seed.ts`, DOCUMENT], {
+    env,
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+  const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  expect(stderr).not.toContain("ACTOR_KIND");
+  expect(code).toBe(0);
+  expect(priorities).toHaveLength(7);
+  expect(writes().length).toBeGreaterThan(7);
+  for (const write of writes()) {
+    expect(write.body).toMatchObject({ actor: { kind: "session", id: session } });
+  }
 });
