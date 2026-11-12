@@ -258,11 +258,11 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 	// one it writes for the work that task names, since a phase entered again is work of its own,
 	// not this completion's commit sent a second time.
 	if entry != 0 && position.entry != 0 && entry != position.entry {
-		refusal := staleEntry(grant.Issue, grant.Role, issue.Phase, position.entry, entry, c.Pending)
-		if entry > position.entry {
-			refusal = fmt.Sprintf(
-				"this completion is of entry %d of phase %s of %s, and the %s's phases row is on entry %d: the daemon raises that entry in the transaction that composes the entry's task, so no task it hands out carries an entry above it. Nothing was recorded; end this turn without completing and tell the architect",
-				entry, issue.Phase, grant.Issue, grant.Role, position.entry)
+		var refusal string
+		if entry < position.entry {
+			refusal = staleEntry(grant.Issue, grant.Role, issue.Phase, position.entry, entry, c.Pending)
+		} else {
+			refusal = unraisedEntry(grant.Issue, grant.Role, issue.Phase, position.entry, entry)
 		}
 		writeFailure(w, http.StatusConflict, "HANDOFF_STALE_ASSIGNMENT", refusal)
 		return
@@ -509,6 +509,19 @@ func staleEntry(issue string, role claim.Role, p phase.Phase, current, serving i
 	}
 	return fmt.Sprintf("%s: entry %d's task is owed to this claim, and the daemon sends it by itself. End this turn without completing; that task is work of its own — do what it asks at the head it names and complete it with a handoff of its own, never this completion's record, commit or verdict",
 		stale, current)
+}
+
+// unraisedEntry is the refusal of a completion of a phase entry above the one the role's phases
+// row names, the other side of staleEntry: the record should never produce it, since the
+// transition raises the row's entry in the transaction that composes that entry's task, so no
+// task the daemon hands out carries an entry the row does not already name. It is said rather
+// than taken, because a daemon that recorded it would be recording a completion of work no
+// transition ever wrote. It names neither a queued task nor an owed one, as staleEntry does:
+// there is no later entry for the worker to wait for, and what the worker does is tell the
+// architect.
+func unraisedEntry(issue string, role claim.Role, p phase.Phase, current, serving int64) string {
+	return fmt.Sprintf("this completion is of entry %d of phase %s of %s, and the %s's phases row is on entry %d: the daemon raises that entry in the transaction that composes the entry's task, so no task it hands out carries an entry above it. Nothing was recorded; end this turn without completing and tell the architect",
+		serving, p, issue, role, current)
 }
 
 // implementationPullRequest is the implementer's completion's read of GitHub: in implementing, a
@@ -845,15 +858,8 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	if err != nil {
 		return completionPosition{}, err
 	}
-	round, lastHandoff, entry := 0, "", int64(0)
-	for _, row := range rows {
-		if row.Role == claim.RoleImplementer {
-			round, lastHandoff = row.Rounds, row.LastHandoff
-		}
-		if row.Role == role {
-			entry = row.Entry
-		}
-	}
+	implementer := record.PhaseRowOf(rows, claim.RoleImplementer)
+	round, lastHandoff, entry := implementer.Rounds, implementer.LastHandoff, record.PhaseRowOf(rows, role).Entry
 	var pr *record.PullRequest
 	if issue.Phase == phase.Implementing {
 		if pr, err = s.records.PullRequest(ctx, tx, key); err != nil {

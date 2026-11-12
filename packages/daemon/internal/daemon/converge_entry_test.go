@@ -145,3 +145,103 @@ func TestTheEntrySweepTickConvergesARoleBehindItsEntry(t *testing.T) {
 			member.Key, swept(), starts, first)
 	}
 }
+
+// The sweep asks the record one read-only question before it applies anything: is any role of
+// this project behind the entry its phases row names (record.Store.AnyRoleBehindItsEntry). A
+// project with nothing behind takes neither the fact's lock nor a row of processed_events,
+// which nothing prunes — one row a minute per project, for the life of a daemon, where no role
+// is waiting for work. The same sweep applies its fact as soon as a role is behind.
+//
+// What is driven is the one call each tick of tickEntrySweep makes (applyEntrySweep), so the
+// count below is of sweeps, not of elapsed periods.
+func TestTheEntrySweepAppliesNoFactWhileNoRoleIsBehindItsEntry(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	log := quietLogger()
+	records := record.NewStore()
+	const sweepProject = "CAPTURE"
+	root := record.Issue{Key: "CAPTURE-810", Tree: "CAPTURE-810", Project: sweepProject, Title: "the root",
+		Phase: phase.Accepting, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review",
+		Rank: "CAPTURE-810", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
+	parent := root.Key
+	member := record.Issue{Key: "CAPTURE-811", Tree: root.Key, Parent: &parent, Project: sweepProject,
+		Title: "the member", Phase: phase.Testing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
+		Rank: "CAPTURE-811", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
+	project, err := claim.ProjectToken(sweepProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := claim.NewToken(project, member.Key, claim.RoleTester)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const entry = 2
+	task := "Continue the member. Issue: " + member.Key + ". Phase: testing."
+	phaseRow := func(at int64) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			return records.PutPhase(ctx, tx, record.PhaseRow{Issue: member.Key, Role: claim.RoleTester, Claim: token,
+				Entry: at, EntryTask: task, EntryRaisedAt: time.Now().UTC()})
+		}); err != nil {
+			t.Fatalf("record the tester's phases row at entry %d: %v", at, err)
+		}
+	}
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := records.PutIssue(ctx, tx, root); err != nil {
+			return err
+		}
+		if err := records.PutIssue(ctx, tx, member); err != nil {
+			return err
+		}
+		if err := records.PutSlot(ctx, tx, record.Slot{Issue: member.Key, Index: 0, AdmittedAt: time.Now().UTC()}); err != nil {
+			return err
+		}
+		// The tester's claim holds the entry its row names: nothing of this project is behind.
+		_, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
+			serving_generation, launch_failures, prompt_failures, prompt_retires, uncertain_streak, given_entry)
+			values ($1, $2, $3, $4, 'tester', 1, 'ses', '/sessions/ses.jsonl', 'idle', 1, 0, 0, 0, 0, $5)`,
+			string(token), project, root.Key, member.Key, int64(entry))
+		return err
+	}); err != nil {
+		t.Fatalf("seed the member level with its entry: %v", err)
+	}
+	phaseRow(entry)
+
+	engine := workflow.New(records, workflow.Config{Project: sweepProject, Repositories: testRepositories,
+		Steps: config.DesignGateRootIssues.Steps()}, log)
+	admission := admit.New(records, engine, 1, sweepProject, log)
+	w := &workflowRuntime{
+		pool: pool, records: tickRecords(), admission: admission, handlers: []intake.Handler{engine, admission},
+		dispatchProject: sweepProject, bootID: "test-boot", log: log, entrySweep: 10 * time.Millisecond,
+	}
+	swept := func() (n int) {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `select count(*) from processed_events
+			where event_id like 'entry-sweep:CAPTURE:test-boot:%'`).Scan(&n); err != nil {
+			t.Fatalf("read the sweeps applied: %v", err)
+		}
+		return n
+	}
+
+	for i := range 3 {
+		w.applyEntrySweep(ctx, time.Now().Add(time.Duration(i)*time.Second))
+	}
+
+	if n := swept(); n != 0 {
+		t.Fatalf("three sweeps over a project with nothing behind applied %d facts, want none: each one takes the fact's lock and leaves a row nothing prunes", n)
+	}
+	if starts := sweptStarts(t, pool, member.Key); len(starts) != 0 {
+		t.Fatalf("the start rows of %s = %+v, want none: no role is behind", member.Key, starts)
+	}
+
+	phaseRow(entry + 1)
+	w.applyEntrySweep(ctx, time.Now().Add(4*time.Second))
+
+	if n := swept(); n != 1 {
+		t.Fatalf("the sweep over a role behind its entry applied %d facts, want the one that closes the difference", n)
+	}
+	starts := sweptStarts(t, pool, member.Key)
+	if len(starts) != 1 || starts[0].entry != entry+1 || starts[0].task != task {
+		t.Fatalf("the start rows after the sweep = %+v, want the one of entry %d carrying the row's own task", starts, entry+1)
+	}
+}

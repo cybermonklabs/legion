@@ -234,6 +234,57 @@ func TestASecondRowOfTheGivenEntryQueuesNothingWhileTheFirstIsLeased(t *testing.
 	}
 }
 
+// A start that hands the role the work of the entry its phases row already names says so
+// (RequestDeliver.ResendEntry, the held phase's retry), and the claim takes its task though it
+// was given that entry: the retry carries a task of its own that names the retry's reason, and
+// a claim whose worker confirmed the entry's last task and whose turn then ended holds that
+// entry with no delivery pending, so the entry test alone would relaunch the worker with no
+// prompt. The same request without the mark is the control, and queues nothing.
+func TestAResendOfTheGivenEntryQueuesItsTaskWhereTheEntryAloneDeclinesIt(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", ID: "outbox:40", Row: 40,
+		Phase: phase.Implementing, Generation: 7, Entry: 1})
+	h.must(StreamTurnStart{Claim: testToken})
+	h.must(StreamTurnEnd{Claim: testToken})
+	if c := h.claim(); c.GivenEntry != 1 || c.ServedEntry != 1 || c.Pending != nil {
+		t.Fatalf("the claim was given entry %d, served entry %d and holds %+v, want 1, 1 and no task: the fixture's own premise",
+			c.GivenEntry, c.ServedEntry, c.Pending)
+	}
+
+	h.must(RequestDeliver{Claim: testToken, Task: "the architect's retry", ID: "outbox:41", Row: 41,
+		Phase: phase.Implementing, Generation: 7, Entry: 1})
+
+	if p := h.claim().Pending; p != nil {
+		t.Fatalf("a request of entry 1 carrying no resend queued %+v, want nothing: that entry's work was given once", p)
+	}
+	h.wantPrompts(1)
+
+	retry := RequestDeliver{Claim: testToken, Task: "the architect's retry", ID: "outbox:42", Row: 42,
+		Phase: phase.Implementing, Generation: 7, Entry: 1, ResendEntry: true}
+	h.must(retry)
+
+	p := h.pending()
+	if p.ID != "outbox:42" || p.Task != "the architect's retry" || p.Entry != 1 {
+		t.Fatalf("the resend queued %+v, want the retry's own task of entry 1: the claim takes it though it was given that entry", p)
+	}
+	h.wantPrompts(2)
+	if rows := h.claim().DeliveredRows; !slices.Equal(rows, []int64{40, 42}) {
+		t.Fatalf("the claim records rows %v, want 40 and 42: the resend is recorded by its row, which is what declines its retry", rows)
+	}
+
+	h.must(StreamTurnStart{Claim: testToken})
+	h.must(StreamTurnEnd{Claim: testToken})
+	prompts := len(h.prompts())
+
+	h.must(retry)
+
+	if p := h.claim().Pending; p != nil {
+		t.Fatalf("the resend's own row run again queued %+v, want nothing: the row-id guard still holds", p)
+	}
+	h.wantPrompts(prompts)
+}
+
 // EntryGiven is what records an entry whose task the outbox held back because the claim already
 // holds that entry's work. It raises the number and persists it, and a call naming an entry the
 // claim is already at or above writes nothing.

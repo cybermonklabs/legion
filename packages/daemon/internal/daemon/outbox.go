@@ -1460,7 +1460,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// row's entry travels with it too, the number the start's own transaction raised on the
 			// role's phases row (record.PhaseRow.Entry): it is what the completion this task's turn
 			// reports is held to (api/handoff.go), and what says a later row carrying the same
-			// entry queues no second task of it (supervise.Claim.GivenEntry). A check start's look
+			// entry queues no second task of it (supervise.Claim.GivenEntry). A start that hands
+			// the role the work of the entry its row already names travels with the mark that
+			// says so (record.SuperviseRequest.ResendEntry), and the claim takes its task though
+			// it was given that entry. A check start's look
 			// and check instance travel the same way, and are what say the completion this task's
 			// turn reports is a report on that look rather than a phase completion
 			// (supervise.Claim.ServingCheck, api/handoff.go). The row travels as well: the claim
@@ -1478,7 +1481,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 			if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: payload.Task, Phase: payload.Phase, Generation: payload.Generation,
-				Entry: payload.Entry, CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
+				Entry: payload.Entry, ResendEntry: payload.ResendEntry, CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
 				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept}); err != nil {
 				return fmt.Errorf("deliver to claim %s: %w", token, err)
 			}
@@ -2337,11 +2340,7 @@ func (r *outbox) phaseEntry(ctx context.Context, issue string, role claim.Role) 
 		if err != nil {
 			return err
 		}
-		for _, row := range rows {
-			if row.Role == role {
-				entry = row.Entry
-			}
-		}
+		entry = record.PhaseRowOf(rows, role).Entry
 		return nil
 	}); err != nil {
 		return 0, fmt.Errorf("read the phase entry of %s's %s: %w", issue, role, err)

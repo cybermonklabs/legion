@@ -987,7 +987,10 @@ package api
 // body. The rest of the change moves no shape a caller reads: the entry and its task are
 // columns of the `phases` and `claims` records, the start row carries the entry it hands, and
 // the completion route compares the entry the worker took with the entry its row names, each of
-// them the daemon's own lane and no route.
+// them the daemon's own lane and no route. The code that refusal carries is still
+// `HANDOFF_STALE_ASSIGNMENT` though its words now speak of the phase entry, and it is kept
+// deliberately: the skills a worker reads, both plugins and this daemon's own docs name the code
+// itself, so renaming it would refuse a worker in words nothing it reads describes.
 // (The base declares 68, and a reading of `const DaemonAPIVersion` at refs/pull/<n>/head on
 // 2026-11-12 for every one of the 134 open pull requests of this repository that touches this
 // file — 36 of them, drafts counted — gives 68 (17 of them), 69 (3), 70, 71, 72, 73, 74, 75 and

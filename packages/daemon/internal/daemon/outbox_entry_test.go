@@ -11,8 +11,11 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -195,7 +198,7 @@ func TestAppendOnlyStartRowsLoseNoWorkWhenOneIsDeletedBeforeTheLaneRunsIt(t *tes
 
 	issue := readIssue(t, rig.pool, rig.issue.Key)
 	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
-		return entryEngine(t).SendOwedEntry(ctx, tx, *issue, claim.RoleImplementer)
+		return entryEngine(t).SendOwedEntry(ctx, tx, *issue, claim.RoleImplementer, row)
 	}); err != nil {
 		t.Fatalf("send the implementer the work its entry names: %v", err)
 	}
@@ -342,5 +345,84 @@ func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *t
 	if len(rows) != 1 || rows[0].request.Entry != promoted.Entry || rows[0].request.Task != promoted.EntryTask {
 		t.Fatalf("the start rows after the promotion = %+v, want the one row of entry %d carrying the task %q its phases row names",
 			rows, promoted.Entry, promoted.EntryTask)
+	}
+}
+
+// A retry of the phase its worker stands in hands that worker the entry its phases row already
+// names, with a task of its own that names the retry's reason (workflow.Engine.restart, which
+// `legion claims retry` and the architect's retry_or_escalate reach). The claim it reaches here
+// is the one the entry alone cannot decide: its worker confirmed the entry's last task and the
+// turn that worked it ended, so the claim holds that entry as its given one
+// (supervise.Claim.GivenEntry) with no delivery pending and no outbox row of the retry recorded
+// against it. The start says it resends that entry (record.SuperviseRequest.ResendEntry), and
+// the task reaches the worker; without the mark the claim would be relaunched with no prompt.
+func TestAHeldPhasesRetryReachesAWorkerThatFinishedTheEntrysTask(t *testing.T) {
+	ctx := context.Background()
+	rig := newOneStartRig(t)
+	// The worker's own connection, as the integration cases register one: a prompt reaches no
+	// claim without it, and this case is about the task reaching the worker.
+	rig.sup.deps.Conns.(*fake.Conns).Register(rig.token, fake.NewConn())
+	rows := entryStartRows(t, rig.pool, rig.issue.Key)
+	if len(rows) != 1 || rows[0].request.Role != claim.RoleImplementer || rows[0].request.Entry != 1 {
+		t.Fatalf("the start rows after the planner's completion = %+v, want the implementer's one row of entry 1", rows)
+	}
+	if err := rig.runner.execute(ctx, rows[0].row); err != nil {
+		t.Fatalf("run the implementer's start row: %v", err)
+	}
+	machine, found := rig.sup.Machine(rig.token)
+	if !found {
+		t.Fatal("the start row created no claim for the implementer")
+	}
+	machine.Wait()
+	generation := machine.Claim().Generation
+	for _, ev := range []supervise.Event{
+		supervise.StreamHello{Claim: rig.token, Generation: generation},
+		supervise.RequestRegister{Claim: rig.token, Generation: generation, Session: "ses-impl", SessionFile: "/tmp/impl.jsonl"},
+		supervise.RequestReady{Claim: rig.token, Generation: generation, Session: "ses-impl"},
+	} {
+		if err := machine.Handle(ctx, ev); err != nil {
+			t.Fatalf("handle %T: %v", ev, err)
+		}
+	}
+	testwait.Eventually(t, "entry 1's task to be acknowledged", func() bool {
+		p := machine.Claim().Pending
+		return p != nil && !p.DeliveredAt.IsZero()
+	})
+	worked := machine.Claim().Pending.ID
+	for _, ev := range []supervise.Event{
+		supervise.StreamTurnStart{Claim: rig.token, DeliveryID: worked},
+		supervise.StreamPromptResult{Claim: rig.token, DeliveryID: worked, AgentInvoked: true},
+		supervise.StreamTurnEnd{Claim: rig.token},
+	} {
+		if err := machine.Handle(ctx, ev); err != nil {
+			t.Fatalf("handle %T: %v", ev, err)
+		}
+	}
+	if got := machine.Claim(); got.Pending != nil || got.GivenEntry != 1 || got.ServedEntry != 1 {
+		t.Fatalf("the claim after the turn = %+v, want it holding no task, given entry 1 and serving entry 1: the case's own premise", got)
+	}
+
+	applyFact(t, rig.pool, "api", "retry-the-implementer",
+		intake.RestartPhase{Issue: rig.issue.Key, Role: claim.RoleImplementer}, entryEngine(t))
+
+	// The row that started the worker finished when it ran, so the retry's is the one row left.
+	rows = entryStartRows(t, rig.pool, rig.issue.Key)
+	if len(rows) != 1 || rows[0].request.Entry != 1 || !rows[0].request.ResendEntry || rows[0].request.Task == "" {
+		t.Fatalf("the start rows after the retry = %+v, want one row of entry 1, marked a resend and carrying the retry's own task", rows)
+	}
+	retry := rows[0]
+	if row := rolePhaseRow(t, rig.pool, rig.issue.Key, claim.RoleImplementer); row.Entry != 1 {
+		t.Fatalf("the implementer's phases row = entry %d, want the entry 1 it stood on: a retry of a phase the issue never left raises none", row.Entry)
+	}
+
+	if err := rig.runner.execute(ctx, retry.row); err != nil {
+		t.Fatalf("run the retry's start row: %v", err)
+	}
+	machine.Wait()
+
+	got := machine.Claim()
+	if got.Pending == nil || got.Pending.Task != retry.request.Task || got.Pending.Entry != 1 {
+		t.Fatalf("the claim after the retry = %+v, want it queued the retry's own task %q of entry 1: the worker is relaunched with the work, not with nothing",
+			got, retry.request.Task)
 	}
 }

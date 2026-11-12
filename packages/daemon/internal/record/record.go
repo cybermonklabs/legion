@@ -1268,6 +1268,24 @@ type Store interface {
 	DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
+	// AnyRoleBehindItsEntry is whether any role of project's issues that hold an admission slot
+	// is behind the entry its phases row names: a row whose entry is above the given entry of
+	// the claim of the same issue and role (RoleClaim.GivenEntry), or whose role the store
+	// holds no claim of at all, which was given nothing. It joins the claims on the issue and
+	// the role, as the phase entry's own migration does, rather than spelling a claim token.
+	//
+	// It is the entry sweep's gate (internal/daemon's applyEntrySweep): the sweep applies a
+	// fact, which takes the one lock every fact takes and writes a row of processed_events that
+	// nothing prunes, so the daemon asks this first and applies nothing while no role is behind.
+	// It is read outside that lock, in a transaction of its own, and decides only whether the
+	// sweep runs: the pass the fact then makes applies the at-work and claim-state rules itself
+	// (admit's resumeSlottedWorkers), so this may answer true where that pass sends nothing. It
+	// must never answer false where the pass would send something, which is why a role with no
+	// claim row counts as behind, and why the slot is the one rule of the pass's it does read:
+	// the pass reads the slot holders and nothing else, so a phases row of an issue holding no
+	// slot is work it would never do, and a done issue, which keeps its phases rows and gives
+	// up its slot, would otherwise hold this answer true for ever.
+	AnyRoleBehindItsEntry(ctx context.Context, tx pgx.Tx, project string) (bool, error)
 	PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
 	PullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error)
 	PullRequestByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error)
@@ -1694,6 +1712,23 @@ type RoleClaim struct {
 func TreeLingers(ctx context.Context, store Store, tx pgx.Tx, tree string) (bool, error) {
 	root, err := store.Issue(ctx, tx, tree)
 	return root != nil && root.Lingers(), err
+}
+
+// PhaseRowOf is role's row among rows, and the zero row where the record holds no row of that
+// role: a role no transition has ever handed work on, which stands on no entry, names no handoff
+// and holds no claim. Every reader of one role's row among an issue's picks it here — the state
+// the projection writes (projection.Project), the entry the admission pass weighs a claim against
+// (admit's resumeSlottedWorkers), the outbox's fence on a start whose entry its role has left
+// (internal/daemon's outbox), the completion route's position (api's handoffPosition) and the
+// engine's own read (workflow's phaseRow) — so that rule is stated once and read the same way by
+// all of them.
+func PhaseRowOf(rows []PhaseRow, role claim.Role) PhaseRow {
+	for _, row := range rows {
+		if row.Role == role {
+			return row
+		}
+	}
+	return PhaseRow{}
 }
 
 // ApprovedHead is the head issue's review round approved: its reviewer row's recorded decision

@@ -95,7 +95,7 @@ func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, root *rec
 // run, the role's queued rows and claim for generation, with the child in phase current and root
 // its re-admitted tree root. It does
 // not when the role is already started for this run: the newest of its operations that will still
-// act is a start. A stop that still acts (StopActs) undoes any older start, which may run first,
+// act is a start. A stop that still acts (actingStop) undoes any older start, which may run first,
 // so past one only a newer queued start for current counts. With none, a queued start for current
 // counts, and so does a claim of root's tree that may have a process: a live one, or one whose
 // launch is uncertain holding current's task for generation undelivered or unconfirmed (the task
@@ -115,16 +115,7 @@ func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, root *rec
 // architect's start names no phase, so its current is "".
 func StartFor(run record.RoleRun, root record.Issue, generation uint64, current phase.Phase) bool {
 	held := run.Claim
-	var lastStart int64
-	if held != nil {
-		lastStart = held.LastStartRow
-	}
-	var stop int64
-	for _, queued := range run.Queued {
-		if StopActs(queued.ID, queued.Request, lastStart, &root) {
-			stop = max(stop, queued.ID)
-		}
-	}
+	stop := actingStop(run, root)
 	for _, queued := range run.Queued {
 		if queued.Request.Op == "start" && queued.Request.Phase == current && queued.ID > stop {
 			return false
@@ -149,9 +140,9 @@ func StartFor(run record.RoleRun, root record.Issue, generation uint64, current 
 // entry to one start row: the given number moves when the outbox queues the delivery, not when
 // the transition writes the row, and an admission pass runs on every fact of the project, so
 // without it every pass between the write and the delivery would write another start for the
-// same entry. A stop that still acts (StopActs) undoes the start it outlives, which may run
-// first, so past one only a queued start newer than the stop counts, exactly as StartFor reads
-// the same rows.
+// same entry. A stop that still acts (actingStop) undoes the start it outlives, which may run
+// first, so past one only a queued start newer than the stop counts, which is the body StartFor
+// reads the same rows with.
 //
 // Two tests the caller holds are deliberately not here, because each is about the issue rather
 // than about the role's entry: that the role is the one the issue's current phase names
@@ -166,12 +157,36 @@ func StartFor(run record.RoleRun, root record.Issue, generation uint64, current 
 // the caller's own skips.
 func OwedEntry(run record.RoleRun, root record.Issue, entry int64) bool {
 	held := run.Claim
-	var lastStart, given int64
+	var given int64
 	if held != nil {
-		lastStart, given = held.LastStartRow, held.GivenEntry
+		given = held.GivenEntry
 	}
 	if given >= entry {
 		return false
+	}
+	stop := actingStop(run, root)
+	for _, queued := range run.Queued {
+		if queued.Request.Op == "start" && queued.Request.Entry >= entry && queued.ID > stop {
+			return false
+		}
+	}
+	return true
+}
+
+// actingStop is the newest queued stop of run that will still act when the outbox runs it
+// (StopActs), by row id, and 0 when no queued stop will. root is the issue's tree root as
+// recorded, which StopActs reads for a tree close, and the last start the outbox ran against the
+// claim (record.RoleClaim.LastStartRow, 0 for a role the daemon holds no claim row of) is what
+// every other stop is weighed against.
+//
+// Such a stop undoes every start older than it, and it may run before them, so both rules above
+// count only a queued start newer than it: StartFor, asking what a re-admitted tree's promotion
+// must start, and OwedEntry, asking whether a role is owed its entry's work. One body is what
+// keeps the two from reading the same rows differently.
+func actingStop(run record.RoleRun, root record.Issue) int64 {
+	var lastStart int64
+	if run.Claim != nil {
+		lastStart = run.Claim.LastStartRow
 	}
 	var stop int64
 	for _, queued := range run.Queued {
@@ -179,12 +194,7 @@ func OwedEntry(run record.RoleRun, root record.Issue, entry int64) bool {
 			stop = max(stop, queued.ID)
 		}
 	}
-	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" && queued.Request.Entry >= entry && queued.ID > stop {
-			return false
-		}
-	}
-	return true
+	return stop
 }
 
 func (e *Engine) enqueue(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload) error {
@@ -343,18 +353,25 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, task, entry)
+	return e.started(ctx, tx, issue, role, task, entry, false)
 }
 
 // restart starts the phase worker of a phase entry the issue never left: the architect's or the
 // operator's retry of a held phase, which puts the issue back in the phase its worker's claim
-// failed in, with the same work to do. It hands the role the entry that row already names,
-// raising none, because the entry is the one the worker is still on: a claim whose task went
-// unconfirmed keeps it (the outbox delivers no second copy of a task its claim still works), and
-// a completion of it would otherwise be refused for an entry nothing ever delivered, for good.
+// failed in, with a task of its own that names the retry's reason. It hands the role the entry
+// that row already names, raising none, because the entry is the one the worker is still on: a
+// claim whose task went unconfirmed keeps it (the outbox delivers no second copy of a task its
+// claim still works), and a completion of it would otherwise be refused for an entry nothing
+// ever delivered, for good.
 // Carrying the row's own number rather than nothing keeps the fence live for a worker the retry
 // does start afresh: its start names that entry, so a later entry of the same phase still refuses
 // this one's completion.
+//
+// The start is marked a resend (record.SuperviseRequest.ResendEntry), because it hands the role
+// the work of the entry its row already names: a claim that confirmed that entry's last task and
+// whose turn then ended holds that entry as its given one and no pending delivery, so the entry
+// test alone would decline the retry's task and relaunch the worker with no prompt
+// (supervise.Machine.queue).
 func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
@@ -367,13 +384,17 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, task, row.Entry)
+	return e.started(ctx, tx, issue, role, task, row.Entry, true)
 }
 
-// SendOwedEntry sends role the work its phases row's entry names, at that entry, for a claim that
-// is behind it. The row's EntryTask is that work: the text the transition composed and wrote in
-// the same transaction as the number it raised, the merger's approved head already on it
-// (enter), so it is sent as it stands and the head is named once.
+// SendOwedEntry sends role the work the entry of its phases row names, at that entry, for a claim
+// that is behind it. row is that row, read by the caller: the admission pass weighs the claim
+// against the entry it names and hands it here, so the row the rule was weighed against is the
+// row whose work is sent and the rows are read once (admit's resumeSlottedWorkers, phaseRow).
+//
+// The row's EntryTask is that work: the text the transition composed and wrote in the same
+// transaction as the number it raised, the merger's approved head already on it (enter), so it is
+// sent as it stands and the head is named once.
 //
 // A row carrying no task is sent the phase's resume task instead (ResumeTask), which says to carry
 // the work on rather than beginning it. Two rows are in that state: one the upgrade to the entry
@@ -384,18 +405,15 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // It is exported for admission, which repairs a slot whose worker has no task with it
 // (resumeSlottedWorkers) and sweeps the claims left behind their role's entry: every other way
 // back into a phase is a transition with a task of its own.
-func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
-	row, err := e.phaseRow(ctx, tx, issue.Key, role)
-	if err != nil {
-		return err
-	}
+func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow) error {
 	task := row.EntryTask
 	if task == "" {
+		var err error
 		if task, err = ResumeTask(ctx, e.store, tx, issue, role); err != nil {
 			return err
 		}
 	}
-	return e.started(ctx, tx, issue, role, task, row.Entry)
+	return e.started(ctx, tx, issue, role, task, row.Entry, false)
 }
 
 // StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
@@ -425,9 +443,14 @@ func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue recor
 // StartOrOwe, so the worker comes back on the one row that carries its new task, and that row
 // waits for the issue's admission slot: a transition's start puts a worker to work, which is
 // exactly what the cap counts.
-func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, entry int64) error {
+//
+// resend says the start hands the role the work of the entry its phases row already names rather
+// than a new entry, so the claim's given entry does not decline the task
+// (record.SuperviseRequest.ResendEntry). Only restart sets it: start raises an entry of its own,
+// and SendOwedEntry sends an entry the claim is behind.
+func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, entry int64, resend bool) error {
 	return StartOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
-		Generation: issue.Generation, Phase: issue.Phase, Entry: entry}, e.now())
+		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: resend}, e.now())
 }
 
 // StartOrOwe writes the start of a phase worker as one outbox row in the caller's own

@@ -1189,17 +1189,17 @@ func (e *Engine) everyClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	return nil
 }
 
+// phaseRow is role's phases row of issue (record.PhaseRowOf), and the zero row stamped with the
+// issue and the role where the record holds none: every caller that writes the row back writes
+// the row of that role, and a caller that only reads it reads the zero value of each field.
 func (e *Engine) phaseRow(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (record.PhaseRow, error) {
 	rows, err := e.store.Phases(ctx, tx, issue)
 	if err != nil {
 		return record.PhaseRow{}, err
 	}
-	for _, row := range rows {
-		if row.Role == role {
-			return row, nil
-		}
-	}
-	return record.PhaseRow{Issue: issue, Role: role}, nil
+	row := record.PhaseRowOf(rows, role)
+	row.Issue, row.Role = issue, role
+	return row, nil
 }
 
 // issueForBranch is the issue whose branch (claim.IssueBranch) branch is, when it is recorded on

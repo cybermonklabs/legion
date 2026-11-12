@@ -562,10 +562,18 @@ func (r *phaseEntryConvergeLive) phaseChangesWhileTheStartWaits() {
 
 	// The task of entry 1 is on the tester's claim, and its launch has not run: the claim records
 	// the entry it was queued, and the state names the wake the pacing holds and when it is due.
+	// The claim itself is what the start row creates, so the wait reads the listing rather than
+	// asking for one token: a read made before that row's lane has run lists the implementer
+	// alone, which is this wait's own first answer and not a failure.
 	var queued *api.DeliveryView
 	testwait.Eventually(t, "the tester's claim queued the task of its first entry", func() bool {
-		queued = r.d.claim(tester).Pending
-		return queued != nil
+		for _, c := range r.d.claims() {
+			if c.Token == tester {
+				queued = c.Pending
+				return queued != nil
+			}
+		}
+		return false
 	})
 	waiting, held := r.waitingLaunch(tester)
 	if !held {

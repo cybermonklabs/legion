@@ -591,6 +591,16 @@ type SuperviseRequest struct {
 	// alone, whose value every phase entry of one run shares. Zero for a start that hands no new
 	// task — a resume, a production check's look — and for every other operation.
 	Entry int64 `json:"entry,omitempty"`
+	// ResendEntry marks a start that hands the role the work of the entry its phases row already
+	// names rather than a new entry, so the claim's given entry does not decline the task
+	// (supervise.Claim.GivenEntry, the queue's entry test). The held phase's retry is that start
+	// (workflow.Engine.restart, which `legion claims retry` and the architect's
+	// retry_or_escalate reach): it raises no entry, and a claim whose worker confirmed that
+	// entry's last task and whose turn then ended holds it as its given one with no delivery
+	// pending, so the entry test alone would drop the retry's own task and relaunch the worker
+	// with no prompt. The outbox row-id guard still holds (supervise.Claim.DeliveredRows), so a
+	// retry of the row itself gives that task no second time.
+	ResendEntry bool `json:"resendEntry,omitempty"`
 	// ResumeTask marks Task as the phase's resume task (workflow.ResumePhaseTask), the one a
 	// re-admitted tree's promotion gives a mid-phase child: a claim that already holds a task for
 	// the same generation and phase is given it once it is ready, so the start delivers none.
@@ -1280,6 +1290,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.ResumeTask && (value.Op != "start" || value.Task == "" || value.Phase == "") {
 			return fmt.Errorf("a supervise resume task requires a start with a task and a phase")
+		}
+		if value.ResendEntry && (value.Op != "start" || value.Task == "" || value.Phase == "") {
+			return fmt.Errorf("a supervise start that resends the entry its role's row names requires a start with a task and a phase")
 		}
 		if value.NeedsSlot && (value.Op != "start" || value.Task == "" || value.Phase == "") {
 			return fmt.Errorf("a supervise start held for an admission slot requires a start with a task and a phase")

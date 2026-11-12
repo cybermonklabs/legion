@@ -272,12 +272,13 @@ func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 			seedTreeLifecycle(t, pool, entryIssue)
 			seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleReviewer, Claim: "review-claim",
 				Decision: &record.ReviewDecision{State: "approved", Head: head}})
-			seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleMerger, Claim: "merge-claim",
-				Entry: seededEntry, EntryTask: tc.held, EntryRaisedAt: seededRaisedAt})
+			merger := record.PhaseRow{Issue: entryIssue, Role: claim.RoleMerger, Claim: "merge-claim",
+				Entry: seededEntry, EntryTask: tc.held, EntryRaisedAt: seededRaisedAt}
+			seedPhase(t, pool, merger)
 			engine := testEngine(config.DesignGateRootIssues, nil)
 
 			seedRecord(t, pool, func(tx pgx.Tx) error {
-				return engine.SendOwedEntry(t.Context(), tx, issue, claim.RoleMerger)
+				return engine.SendOwedEntry(t.Context(), tx, issue, claim.RoleMerger, merger)
 			})
 
 			starts := superviseRowsOf(t, pool, entryIssue, "start")

@@ -248,6 +248,17 @@ func pendingID(p *Delivery) string {
 // durable no later than the task itself; a request carrying an entry goes through that
 // transaction whether or not it names an outbox row.
 //
+// One request carrying an entry is not decided by it: one marked a resend
+// (RequestDeliver.ResendEntry), which is the held phase's retry
+// (record.SuperviseRequest.ResendEntry, workflow.Engine.restart). That start hands the role the
+// work of the entry its phases row already names, with a task of its own that names the retry's
+// reason, so the claim was given that entry and must still take the task. The entry cannot tell
+// that case from the one above it: a second row of the same entry written while the first was
+// leased must queue nothing, and this one must queue its task, and the two rows are alike in
+// everything the claim can read. Only the writer of the row knows which it wrote, so it says so
+// on the payload, and such a request is decided by its outbox row alone — the guard that still
+// stops a retry of the retry's own row from giving the task twice.
+//
 // A request that carries no entry is decided by the outbox row it came from: a row the claim has
 // already queued a task from (Claim.DeliveredRows) is accepted and queues nothing, for the same
 // reason, and a request from a row no task came from writes the row with its delivery, in that
@@ -299,11 +310,14 @@ func pendingID(p *Delivery) string {
 // claim's timers (letGo), so the claim reaching here then holds no delivery at all.
 func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	id, task := request.ID, request.Task
-	// A request that carries no entry is decided by the outbox row it came from, and one that
-	// carries an entry by that entry.
-	queued := request.Row > 0 && slices.Contains(m.claim.DeliveredRows, request.Row)
-	if request.Entry > 0 {
+	// A request that carries an entry of its own is decided by that entry, and one that carries
+	// none — or that resends the entry its role's row already names — by the outbox row it came
+	// from.
+	var queued bool
+	if request.Entry > 0 && !request.ResendEntry {
 		queued = request.Entry <= m.claim.GivenEntry
+	} else {
+		queued = request.Row > 0 && slices.Contains(m.claim.DeliveredRows, request.Row)
 	}
 	if pending := m.claim.Pending; pending != nil {
 		if (id != "" && pending.ID == id && pending.Task == task) || queued {

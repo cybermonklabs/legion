@@ -494,6 +494,31 @@ func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]Phase
 	return phases, nil
 }
 
+// AnyRoleBehindItsEntry answers the entry sweep's gate, as the Store interface states it: one
+// query over the phases rows of the project's issues that hold an admission slot, left-joined
+// to the claims of the same issue and role, true for a row whose entry is above the claim's
+// given entry and for a row whose role the store holds no claim of, which was given nothing
+// (coalesce to 0). It is read in a transaction of its own, outside the fact lock, and decides
+// only whether the sweep applies its fact.
+//
+// The slot is in the query because the pass the fact makes reads the slot holders and nothing
+// else (admit's resumeSlottedWorkers), so a phases row of an issue holding none is work the
+// pass would never do. Without it the gate would answer true for ever on the first issue that
+// finished with a role's entry above what its claim was given — a done issue keeps its phases
+// rows and gives up its slot — and the sweep would be back to a fact a minute.
+func (s *Postgres) AnyRoleBehindItsEntry(ctx context.Context, tx pgx.Tx, project string) (bool, error) {
+	var behind bool
+	if err := tx.QueryRow(ctx, `select exists (
+		select 1 from phases p
+		join issues i on i.key = p.issue
+		join slots s on s.issue = p.issue
+		left join claims c on c.issue = p.issue and c.role = p.role
+		where i.project = $1 and p.entry > coalesce(c.given_entry, 0))`, project).Scan(&behind); err != nil {
+		return false, fmt.Errorf("read whether a role of project %s is behind its phase entry: %w", project, err)
+	}
+	return behind, nil
+}
+
 func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error {
 	var decision []byte
 	if phase.Decision != nil {

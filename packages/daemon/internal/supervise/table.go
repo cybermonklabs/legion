@@ -495,6 +495,11 @@ type RequestDeliver struct {
 	// whose entry the claim has already been queued a task of (Claim.GivenEntry) queues nothing
 	// (queue).
 	Entry int64
+	// ResendEntry marks a request that hands the role the work of the entry its phases row
+	// already names (record.SuperviseRequest.ResendEntry, set by the held phase's retry): the
+	// entry test above would decline it, so queue decides such a request by its outbox row
+	// alone.
+	ResendEntry bool
 	// CheckLook is the look of a closed issue's production check this task is of, from the start
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). A phase task, an
 	// operator's own and a resume name none, and leave the look the claim is serving alone.

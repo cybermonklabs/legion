@@ -2,8 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -151,54 +149,5 @@ func TestPhaseEntryContractIsTheContractThatAddedTheNumbers(t *testing.T) {
 	if phaseEntriesContract > DaemonAPIVersion {
 		t.Fatalf("phaseEntriesContract = %d, above DaemonAPIVersion %d: no caller could be served the two numbers",
 			phaseEntriesContract, DaemonAPIVersion)
-	}
-}
-
-// The four files that hold the daemon API contract number hold one number. The boot gate refuses
-// a daemon and an installed plugin whose numbers differ, so a bump that moves one file and leaves
-// another is a deployment that will not start: the golden test above pins the fixture to this
-// constant and each plugin's own test pins its manifest to that fixture, and this reads all four
-// at once, so the one test that fails names every file to write.
-func TestTheContractNumberOfThisVersionEntryIsInAllFourFiles(t *testing.T) {
-	manifest := func(name string) int {
-		t.Helper()
-		path := filepath.Join("..", "..", "..", name, "package.json")
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		var read struct {
-			Legion struct {
-				DaemonAPIVersion int `json:"daemonApiVersion"`
-			} `json:"legion"`
-		}
-		if err := json.Unmarshal(body, &read); err != nil {
-			t.Fatalf("decode %s: %v", path, err)
-		}
-		return read.Legion.DaemonAPIVersion
-	}
-	fixturePath := goldenPath("version.json")
-	fixtureBody, err := os.ReadFile(fixturePath)
-	if err != nil {
-		t.Fatalf("read %s: %v", fixturePath, err)
-	}
-	var fixture struct {
-		DaemonAPIVersion int `json:"daemonApiVersion"`
-	}
-	if err := json.Unmarshal(fixtureBody, &fixture); err != nil {
-		t.Fatalf("decode %s: %v", fixturePath, err)
-	}
-	for _, held := range []struct {
-		file   string
-		number int
-	}{
-		{file: fixturePath, number: fixture.DaemonAPIVersion},
-		{file: "packages/pi-legion/package.json", number: manifest("pi-legion")},
-		{file: "packages/claude-envoy/package.json", number: manifest("claude-envoy")},
-	} {
-		if held.number != DaemonAPIVersion {
-			t.Errorf("%s declares daemon API contract %d, want DaemonAPIVersion %d: the four files hold one number",
-				held.file, held.number, DaemonAPIVersion)
-		}
 	}
 }

@@ -1469,9 +1469,29 @@ func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
 	}
 }
 
-// applyEntrySweep applies one sweep. It reads nothing before the fact: every handler decides
-// inside the fact's own transaction, and what this sweep judges is the daemon's own record.
+// applyEntrySweep applies one sweep, when one is owed. The fact itself reads nothing before it:
+// every handler decides inside the fact's own transaction, and what the sweep judges is the
+// daemon's own record. What runs before it is the gate — one read-only query, in a transaction
+// of its own and outside the fact lock, asking whether any role of this project is behind the
+// entry its phases row names (record.Store.AnyRoleBehindItsEntry). Without it a quiet project
+// takes the fact's lock and writes a row of processed_events, which nothing prunes, once a
+// minute for as long as the daemon runs; with it the sweep applies a fact only when there is a
+// difference to close. The gate over-approximates — the pass the fact makes applies the
+// at-work, slot and claim-state rules itself — and never under-approximates, so no role waits
+// for its work. A query that fails applies nothing and is logged: the next run asks again.
 func (w *workflowRuntime) applyEntrySweep(ctx context.Context, at time.Time) {
+	var behind bool
+	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		var err error
+		behind, err = w.records.AnyRoleBehindItsEntry(ctx, tx, w.dispatchProject)
+		return err
+	}); err != nil {
+		w.log.Warn("read whether a role is behind its phase entry failed", "error", err)
+		return
+	}
+	if !behind {
+		return
+	}
 	eventID := fmt.Sprintf("entry-sweep:%s:%s:%d", w.dispatchProject, w.bootID, at.UnixNano())
 	if _, err := intake.ApplyFact(ctx, w.pool, "entry-sweep", eventID, intake.EntrySweep{}, w.handlers...); err != nil {
 		w.log.Warn("apply the entry sweep failed", "error", err)
