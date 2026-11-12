@@ -121,9 +121,9 @@ func TestTheRefreshLanesRelaunchWaitsUnderTheLanesOwnWakeKind(t *testing.T) {
 // The other caller of relaunchStale keeps the launch kind. A registration whose contract still
 // differs from the daemon's is this claim's own launch, raised to answer the registration in
 // front of it rather than to work through a fleet, and it is outside the lane the gate bounds
-// (staleRegistration, RefreshGate): a reader counting what the refresh has left to do must not
-// count it. Everything else about it is the lane's relaunch — it waits its paced turn over the
-// process it replaces and marks the claim where it starts the replacement.
+// (RelaunchStaleRegistration, RefreshGate): a reader counting what the refresh has left to do
+// must not count it. Everything else about it is the lane's relaunch — it waits its paced turn
+// over the process it replaces and marks the claim where it starts the replacement.
 func TestAStaleRegistrationsRelaunchWaitsUnderTheLaunchKind(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
@@ -131,7 +131,7 @@ func TestAStaleRegistrationsRelaunchWaitsUnderTheLaunchKind(t *testing.T) {
 	h.m.deps.PluginRelaunchable = true
 	replaced := h.locator()
 
-	err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
+	err := h.registerStale(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
 		SessionFile: sessionFile, CapabilityHash: []byte("capability"), PluginContract: staleContract})
 
 	var refusal claim.Refusal
