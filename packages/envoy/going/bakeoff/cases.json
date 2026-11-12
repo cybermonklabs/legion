@@ -1,140 +1,902 @@
 [
-  {"words": "create an issue in DEMO: export to CSV times out on boards over 500 cards", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "dispatch_issue", "names_action": true, "chart_worthy": false},
-  {"words": "file a new issue for the flaky upload test in SANDBOX", "context": {"path": "/", "project": ""}, "action": "dispatch_issue", "names_action": true, "chart_worthy": false},
-  {"words": "open a new issue under DEMO-3 for the retry backoff work", "context": {"path": "/issues/DEMO-3", "project": "DEMO", "issue": "DEMO-3"}, "action": "dispatch_issue", "names_action": true, "chart_worthy": false},
-  {"words": "new bug: the board drag handle vanishes on narrow screens, track it in DEMO", "context": {"path": "/projects/DEMO/issues", "project": "DEMO"}, "action": "dispatch_issue", "names_action": false, "chart_worthy": false},
-  {"words": "we need to track the dark mode contrast problem as its own piece of work", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "dispatch_issue", "names_action": false, "chart_worthy": false},
+  {
+    "words": "create an issue in DEMO: export to CSV times out on boards over 500 cards",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "dispatch_issue",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "file a new issue for the flaky upload test in SANDBOX",
+    "context": { "path": "/", "project": "" },
+    "action": "dispatch_issue",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "open a new issue under DEMO-3 for the retry backoff work",
+    "context": { "path": "/issues/DEMO-3", "project": "DEMO", "issue": "DEMO-3" },
+    "action": "dispatch_issue",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "new bug: the board drag handle vanishes on narrow screens, track it in DEMO",
+    "context": { "path": "/projects/DEMO/issues", "project": "DEMO" },
+    "action": "dispatch_issue",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "we need to track the dark mode contrast problem as its own piece of work",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "dispatch_issue",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "set DEMO-12 to done", "context": {"path": "/projects/DEMO/issues", "project": "DEMO"}, "action": "dispatch_issue_update", "names_action": true, "chart_worthy": false},
-  {"words": "change the priority of DEMO-40 to P1", "context": {"path": "/projects/DEMO/issues", "project": "DEMO"}, "action": "dispatch_issue_update", "names_action": true, "chart_worthy": false},
-  {"words": "retitle this issue to Export retries on timeout", "context": {"path": "/issues/DEMO-18", "project": "DEMO", "issue": "DEMO-18"}, "action": "dispatch_issue_update", "names_action": true, "chart_worthy": false},
-  {"words": "assign DEMO-7 to Robin", "context": {"path": "/issues/DEMO-7", "project": "DEMO", "issue": "DEMO-7"}, "action": "dispatch_issue_update", "names_action": true, "chart_worthy": false},
-  {"words": "move DEMO-22, DEMO-23 and DEMO-24 to in progress", "context": {"path": "/projects/DEMO/issues", "project": "DEMO"}, "action": "dispatch_issue_update", "names_action": true, "chart_worthy": false},
-  {"words": "add the label flaky to this issue", "context": {"path": "/issues/DEMO-31", "project": "DEMO", "issue": "DEMO-31"}, "action": "dispatch_issue_update", "names_action": true, "chart_worthy": false},
-  {"words": "DEMO-14 can't start until DEMO-30 lands", "context": {"path": "/issues/DEMO-14", "project": "DEMO", "issue": "DEMO-14"}, "action": "dispatch_issue_update", "names_action": false, "chart_worthy": false},
-  {"words": "this one should sit under DEMO-3 as its parent", "context": {"path": "/issues/DEMO-19", "project": "DEMO", "issue": "DEMO-19"}, "action": "dispatch_issue_update", "names_action": false, "chart_worthy": false},
-  {"words": "the pull request for this is https://example.com/demo/repo/pull/88, link it", "context": {"path": "/issues/DEMO-26", "project": "DEMO", "issue": "DEMO-26"}, "action": "dispatch_issue_update", "names_action": false, "chart_worthy": false},
-  {"words": "Kai is taking over DEMO-9 from now on", "context": {"path": "/issues/DEMO-9", "project": "DEMO", "issue": "DEMO-9"}, "action": "dispatch_issue_update", "names_action": false, "chart_worthy": false},
+  {
+    "words": "set DEMO-12 to done",
+    "context": { "path": "/projects/DEMO/issues", "project": "DEMO" },
+    "action": "dispatch_issue_update",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "change the priority of DEMO-40 to P1",
+    "context": { "path": "/projects/DEMO/issues", "project": "DEMO" },
+    "action": "dispatch_issue_update",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "retitle this issue to Export retries on timeout",
+    "context": { "path": "/issues/DEMO-18", "project": "DEMO", "issue": "DEMO-18" },
+    "action": "dispatch_issue_update",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "assign DEMO-7 to Robin",
+    "context": { "path": "/issues/DEMO-7", "project": "DEMO", "issue": "DEMO-7" },
+    "action": "dispatch_issue_update",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "move DEMO-22, DEMO-23 and DEMO-24 to in progress",
+    "context": { "path": "/projects/DEMO/issues", "project": "DEMO" },
+    "action": "dispatch_issue_update",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "add the label flaky to this issue",
+    "context": { "path": "/issues/DEMO-31", "project": "DEMO", "issue": "DEMO-31" },
+    "action": "dispatch_issue_update",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "DEMO-14 can't start until DEMO-30 lands",
+    "context": { "path": "/issues/DEMO-14", "project": "DEMO", "issue": "DEMO-14" },
+    "action": "dispatch_issue_update",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "this one should sit under DEMO-3 as its parent",
+    "context": { "path": "/issues/DEMO-19", "project": "DEMO", "issue": "DEMO-19" },
+    "action": "dispatch_issue_update",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "the pull request for this is https://example.com/demo/repo/pull/88, link it",
+    "context": { "path": "/issues/DEMO-26", "project": "DEMO", "issue": "DEMO-26" },
+    "action": "dispatch_issue_update",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "Kai is taking over DEMO-9 from now on",
+    "context": { "path": "/issues/DEMO-9", "project": "DEMO", "issue": "DEMO-9" },
+    "action": "dispatch_issue_update",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "claim DEMO-12", "context": {"path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12"}, "action": "dispatch_claim", "names_action": true, "chart_worthy": false},
-  {"words": "release my claim on this issue", "context": {"path": "/issues/DEMO-27", "project": "DEMO", "issue": "DEMO-27"}, "action": "dispatch_claim", "names_action": true, "chart_worthy": false},
-  {"words": "I'm starting on DEMO-21 now, make sure no other session picks it up", "context": {"path": "/projects/DEMO/issues", "project": "DEMO"}, "action": "dispatch_claim", "names_action": false, "chart_worthy": false},
+  {
+    "words": "claim DEMO-12",
+    "context": { "path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12" },
+    "action": "dispatch_claim",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "release my claim on this issue",
+    "context": { "path": "/issues/DEMO-27", "project": "DEMO", "issue": "DEMO-27" },
+    "action": "dispatch_claim",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "I'm starting on DEMO-21 now, make sure no other session picks it up",
+    "context": { "path": "/projects/DEMO/issues", "project": "DEMO" },
+    "action": "dispatch_claim",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "ask the assignee of DEMO-12 whether we can ship on Friday", "context": {"path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12"}, "action": "dispatch_ask", "names_action": true, "chart_worthy": false},
-  {"words": "open an ask on this issue: should the cache live in one region or two?", "context": {"path": "/issues/DEMO-33", "project": "DEMO", "issue": "DEMO-33"}, "action": "dispatch_ask", "names_action": true, "chart_worthy": false},
-  {"words": "Robin has to decide whether the export keeps the CSV format; put that question to Robin", "context": {"path": "/issues/DEMO-18", "project": "DEMO", "issue": "DEMO-18"}, "action": "dispatch_ask", "names_action": false, "chart_worthy": false},
+  {
+    "words": "ask the assignee of DEMO-12 whether we can ship on Friday",
+    "context": { "path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12" },
+    "action": "dispatch_ask",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "open an ask on this issue: should the cache live in one region or two?",
+    "context": { "path": "/issues/DEMO-33", "project": "DEMO", "issue": "DEMO-33" },
+    "action": "dispatch_ask",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "Robin has to decide whether the export keeps the CSV format; put that question to Robin",
+    "context": { "path": "/issues/DEMO-18", "project": "DEMO", "issue": "DEMO-18" },
+    "action": "dispatch_ask",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "edit my open ask on DEMO-12 so it says Monday instead of Friday", "context": {"path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12"}, "action": "dispatch_edit_ask", "names_action": true, "chart_worthy": false},
-  {"words": "reword the ask on this issue to name both regions", "context": {"path": "/issues/DEMO-33", "project": "DEMO", "issue": "DEMO-33"}, "action": "dispatch_edit_ask", "names_action": true, "chart_worthy": false},
-  {"words": "my open question here should say 1,200 users, not 1,000", "context": {"path": "/issues/DEMO-35", "project": "DEMO", "issue": "DEMO-35"}, "action": "dispatch_edit_ask", "names_action": false, "chart_worthy": false},
+  {
+    "words": "edit my open ask on DEMO-12 so it says Monday instead of Friday",
+    "context": { "path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12" },
+    "action": "dispatch_edit_ask",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "reword the ask on this issue to name both regions",
+    "context": { "path": "/issues/DEMO-33", "project": "DEMO", "issue": "DEMO-33" },
+    "action": "dispatch_edit_ask",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "my open question here should say 1,200 users, not 1,000",
+    "context": { "path": "/issues/DEMO-35", "project": "DEMO", "issue": "DEMO-35" },
+    "action": "dispatch_edit_ask",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "retract the ask about the cache region on DEMO-33, it is moot now", "context": {"path": "/issues/DEMO-33", "project": "DEMO", "issue": "DEMO-33"}, "action": "dispatch_resolve_ask", "names_action": true, "chart_worthy": false},
-  {"words": "resolve my open ask on DEMO-9, I found the answer myself", "context": {"path": "/issues/DEMO-9", "project": "DEMO", "issue": "DEMO-9"}, "action": "dispatch_resolve_ask", "names_action": true, "chart_worthy": false},
-  {"words": "never mind my question on this issue, the new design made it pointless", "context": {"path": "/issues/DEMO-35", "project": "DEMO", "issue": "DEMO-35"}, "action": "dispatch_resolve_ask", "names_action": false, "chart_worthy": false},
+  {
+    "words": "retract the ask about the cache region on DEMO-33, it is moot now",
+    "context": { "path": "/issues/DEMO-33", "project": "DEMO", "issue": "DEMO-33" },
+    "action": "dispatch_resolve_ask",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "resolve my open ask on DEMO-9, I found the answer myself",
+    "context": { "path": "/issues/DEMO-9", "project": "DEMO", "issue": "DEMO-9" },
+    "action": "dispatch_resolve_ask",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "never mind my question on this issue, the new design made it pointless",
+    "context": { "path": "/issues/DEMO-35", "project": "DEMO", "issue": "DEMO-35" },
+    "action": "dispatch_resolve_ask",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "resolve this comment thread", "context": {"path": "/issues/DEMO-12/artifacts/spec-md", "project": "DEMO", "issue": "DEMO-12", "block": "b-4f1a"}, "action": "dispatch_resolve_comment", "names_action": true, "chart_worthy": false},
-  {"words": "mark the review comment on the summary of DEMO-40's spec as resolved", "context": {"path": "/issues/DEMO-40", "project": "DEMO", "issue": "DEMO-40"}, "action": "dispatch_resolve_comment", "names_action": true, "chart_worthy": false},
-  {"words": "the feedback on the first paragraph here has been addressed, close that thread", "context": {"path": "/issues/DEMO-12/artifacts/spec-md", "project": "DEMO", "issue": "DEMO-12"}, "action": "dispatch_resolve_comment", "names_action": false, "chart_worthy": false},
+  {
+    "words": "resolve this comment thread",
+    "context": {
+      "path": "/issues/DEMO-12/artifacts/spec-md",
+      "project": "DEMO",
+      "issue": "DEMO-12",
+      "block": "b-4f1a"
+    },
+    "action": "dispatch_resolve_comment",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "mark the review comment on the summary of DEMO-40's spec as resolved",
+    "context": { "path": "/issues/DEMO-40", "project": "DEMO", "issue": "DEMO-40" },
+    "action": "dispatch_resolve_comment",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "the feedback on the first paragraph here has been addressed, close that thread",
+    "context": {
+      "path": "/issues/DEMO-12/artifacts/spec-md",
+      "project": "DEMO",
+      "issue": "DEMO-12"
+    },
+    "action": "dispatch_resolve_comment",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "follow the ask on DEMO-12 about the ship date", "context": {"path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12"}, "action": "dispatch_follow", "names_action": true, "chart_worthy": false},
-  {"words": "unfollow this question", "context": {"path": "/issues/DEMO-33", "project": "DEMO", "issue": "DEMO-33"}, "action": "dispatch_follow", "names_action": true, "chart_worthy": false},
-  {"words": "stop sending me the replies to the question on DEMO-5", "context": {"path": "/", "project": ""}, "action": "dispatch_follow", "names_action": false, "chart_worthy": false},
+  {
+    "words": "follow the ask on DEMO-12 about the ship date",
+    "context": { "path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12" },
+    "action": "dispatch_follow",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "unfollow this question",
+    "context": { "path": "/issues/DEMO-33", "project": "DEMO", "issue": "DEMO-33" },
+    "action": "dispatch_follow",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "stop sending me the replies to the question on DEMO-5",
+    "context": { "path": "/", "project": "" },
+    "action": "dispatch_follow",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "comment on DEMO-12: the repro needs a fresh cache first", "context": {"path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12"}, "action": "dispatch_comment", "names_action": true, "chart_worthy": false},
-  {"words": "add a review comment on this paragraph saying the numbers are from last quarter", "context": {"path": "/issues/DEMO-40/artifacts/spec-md", "project": "DEMO", "issue": "DEMO-40", "block": "b-9c2e"}, "action": "dispatch_comment", "names_action": true, "chart_worthy": false},
-  {"words": "reply to the ask on DEMO-33 asking which regions it means", "context": {"path": "/issues/DEMO-33", "project": "DEMO", "issue": "DEMO-33"}, "action": "dispatch_comment", "names_action": false, "chart_worthy": false},
-  {"words": "this section ignores the mobile layout entirely, leave that as feedback on it", "context": {"path": "/issues/DEMO-40/artifacts/spec-md", "project": "DEMO", "issue": "DEMO-40", "block": "b-11d0"}, "action": "dispatch_comment", "names_action": false, "chart_worthy": false},
+  {
+    "words": "comment on DEMO-12: the repro needs a fresh cache first",
+    "context": { "path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12" },
+    "action": "dispatch_comment",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "add a review comment on this paragraph saying the numbers are from last quarter",
+    "context": {
+      "path": "/issues/DEMO-40/artifacts/spec-md",
+      "project": "DEMO",
+      "issue": "DEMO-40",
+      "block": "b-9c2e"
+    },
+    "action": "dispatch_comment",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "reply to the ask on DEMO-33 asking which regions it means",
+    "context": { "path": "/issues/DEMO-33", "project": "DEMO", "issue": "DEMO-33" },
+    "action": "dispatch_comment",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "this section ignores the mobile layout entirely, leave that as feedback on it",
+    "context": {
+      "path": "/issues/DEMO-40/artifacts/spec-md",
+      "project": "DEMO",
+      "issue": "DEMO-40",
+      "block": "b-11d0"
+    },
+    "action": "dispatch_comment",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "suggest replacing thirty days with 30 days in this paragraph", "context": {"path": "/issues/DEMO-40/artifacts/spec-md", "project": "DEMO", "issue": "DEMO-40", "block": "b-9c2e"}, "action": "dispatch_suggest", "names_action": true, "chart_worthy": false},
-  {"words": "propose an edit to the spec of DEMO-12: change p95 under 1 s to p95 under 500 ms", "context": {"path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12"}, "action": "dispatch_suggest", "names_action": true, "chart_worthy": false},
-  {"words": "the sentence 'the cache lives in two regions' should read 'the cache lives in one region', offer that wording to the author", "context": {"path": "/issues/DEMO-33/artifacts/spec-md", "project": "DEMO", "issue": "DEMO-33"}, "action": "dispatch_suggest", "names_action": false, "chart_worthy": false},
+  {
+    "words": "suggest replacing thirty days with 30 days in this paragraph",
+    "context": {
+      "path": "/issues/DEMO-40/artifacts/spec-md",
+      "project": "DEMO",
+      "issue": "DEMO-40",
+      "block": "b-9c2e"
+    },
+    "action": "dispatch_suggest",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "propose an edit to the spec of DEMO-12: change p95 under 1 s to p95 under 500 ms",
+    "context": { "path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12" },
+    "action": "dispatch_suggest",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "the sentence 'the cache lives in two regions' should read 'the cache lives in one region', offer that wording to the author",
+    "context": {
+      "path": "/issues/DEMO-33/artifacts/spec-md",
+      "project": "DEMO",
+      "issue": "DEMO-33"
+    },
+    "action": "dispatch_suggest",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "post a message on DEMO-12 that the fix landed in this morning's release", "context": {"path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12"}, "action": "dispatch_message", "names_action": true, "chart_worthy": false},
-  {"words": "send a note to the people on this issue: the migration is done", "context": {"path": "/issues/DEMO-30", "project": "DEMO", "issue": "DEMO-30"}, "action": "dispatch_message", "names_action": true, "chart_worthy": false},
-  {"words": "let everyone following DEMO-44 know the deploy finished", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "dispatch_message", "names_action": false, "chart_worthy": false},
+  {
+    "words": "post a message on DEMO-12 that the fix landed in this morning's release",
+    "context": { "path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12" },
+    "action": "dispatch_message",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "send a note to the people on this issue: the migration is done",
+    "context": { "path": "/issues/DEMO-30", "project": "DEMO", "issue": "DEMO-30" },
+    "action": "dispatch_message",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "let everyone following DEMO-44 know the deploy finished",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "dispatch_message",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "send the agent working on DEMO-12 a request to rerun the integration tests", "context": {"path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12"}, "action": "dispatch_send_to_agent", "names_action": true, "chart_worthy": false},
-  {"words": "hand this to the session holding the claim: rebase it on main", "context": {"path": "/issues/DEMO-21", "project": "DEMO", "issue": "DEMO-21"}, "action": "dispatch_send_to_agent", "names_action": true, "chart_worthy": false},
-  {"words": "have the agent on DEMO-44 look into why the build fails on arm", "context": {"path": "/agents", "project": ""}, "action": "dispatch_send_to_agent", "names_action": false, "chart_worthy": false},
+  {
+    "words": "send the agent working on DEMO-12 a request to rerun the integration tests",
+    "context": { "path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12" },
+    "action": "dispatch_send_to_agent",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "hand this to the session holding the claim: rebase it on main",
+    "context": { "path": "/issues/DEMO-21", "project": "DEMO", "issue": "DEMO-21" },
+    "action": "dispatch_send_to_agent",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "have the agent on DEMO-44 look into why the build fails on arm",
+    "context": { "path": "/agents", "project": "" },
+    "action": "dispatch_send_to_agent",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "edit this document: delete the paragraph about the old cache", "context": {"path": "/issues/DEMO-33/artifacts/spec-md", "project": "DEMO", "issue": "DEMO-33"}, "action": "dispatch_doc_edit", "names_action": true, "chart_worthy": false},
-  {"words": "insert a Rollout section after the summary of this spec", "context": {"path": "/issues/DEMO-40/artifacts/spec-md", "project": "DEMO", "issue": "DEMO-40"}, "action": "dispatch_doc_edit", "names_action": true, "chart_worthy": false},
-  {"words": "take the second table out of DEMO-12's plan", "context": {"path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12"}, "action": "dispatch_doc_edit", "names_action": false, "chart_worthy": false},
+  {
+    "words": "edit this document: delete the paragraph about the old cache",
+    "context": {
+      "path": "/issues/DEMO-33/artifacts/spec-md",
+      "project": "DEMO",
+      "issue": "DEMO-33"
+    },
+    "action": "dispatch_doc_edit",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "insert a Rollout section after the summary of this spec",
+    "context": {
+      "path": "/issues/DEMO-40/artifacts/spec-md",
+      "project": "DEMO",
+      "issue": "DEMO-40"
+    },
+    "action": "dispatch_doc_edit",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "take the second table out of DEMO-12's plan",
+    "context": { "path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12" },
+    "action": "dispatch_doc_edit",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "request approval of this spec", "context": {"path": "/issues/DEMO-40/artifacts/spec-md", "project": "DEMO", "issue": "DEMO-40"}, "action": "dispatch_request_approval", "names_action": true, "chart_worthy": false},
-  {"words": "request Robin's approval of the design document on DEMO-12", "context": {"path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12"}, "action": "dispatch_request_approval", "names_action": true, "chart_worthy": false},
-  {"words": "the spec of DEMO-33 is ready, send it to Kai for sign-off", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "dispatch_request_approval", "names_action": false, "chart_worthy": false},
+  {
+    "words": "request approval of this spec",
+    "context": {
+      "path": "/issues/DEMO-40/artifacts/spec-md",
+      "project": "DEMO",
+      "issue": "DEMO-40"
+    },
+    "action": "dispatch_request_approval",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "request Robin's approval of the design document on DEMO-12",
+    "context": { "path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12" },
+    "action": "dispatch_request_approval",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "the spec of DEMO-33 is ready, send it to Kai for sign-off",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "dispatch_request_approval",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "approve the plan of DEMO-12 at version 3", "context": {"path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12"}, "action": "dispatch_plan_approve", "names_action": true, "chart_worthy": false},
-  {"words": "record the plan review's approval of this plan", "context": {"path": "/issues/DEMO-40/artifacts/plan-md", "project": "DEMO", "issue": "DEMO-40"}, "action": "dispatch_plan_approve", "names_action": true, "chart_worthy": false},
-  {"words": "the plan review passed version 2 of DEMO-33's plan, mark it so", "context": {"path": "/issues/DEMO-33", "project": "DEMO", "issue": "DEMO-33"}, "action": "dispatch_plan_approve", "names_action": false, "chart_worthy": false},
+  {
+    "words": "approve the plan of DEMO-12 at version 3",
+    "context": { "path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12" },
+    "action": "dispatch_plan_approve",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "record the plan review's approval of this plan",
+    "context": {
+      "path": "/issues/DEMO-40/artifacts/plan-md",
+      "project": "DEMO",
+      "issue": "DEMO-40"
+    },
+    "action": "dispatch_plan_approve",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "the plan review passed version 2 of DEMO-33's plan, mark it so",
+    "context": { "path": "/issues/DEMO-33", "project": "DEMO", "issue": "DEMO-33" },
+    "action": "dispatch_plan_approve",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "record a pass for check c3 of DEMO-12", "context": {"path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12"}, "action": "dispatch_result", "names_action": true, "chart_worthy": false},
-  {"words": "record that check c7 of this issue failed at commit 4e5f6a7", "context": {"path": "/issues/DEMO-40", "project": "DEMO", "issue": "DEMO-40"}, "action": "dispatch_result", "names_action": true, "chart_worthy": false},
-  {"words": "c2 of DEMO-33's verification passed at the pull request's head", "context": {"path": "/issues/DEMO-33", "project": "DEMO", "issue": "DEMO-33"}, "action": "dispatch_result", "names_action": false, "chart_worthy": false},
+  {
+    "words": "record a pass for check c3 of DEMO-12",
+    "context": { "path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12" },
+    "action": "dispatch_result",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "record that check c7 of this issue failed at commit 4e5f6a7",
+    "context": { "path": "/issues/DEMO-40", "project": "DEMO", "issue": "DEMO-40" },
+    "action": "dispatch_result",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "c2 of DEMO-33's verification passed at the pull request's head",
+    "context": { "path": "/issues/DEMO-33", "project": "DEMO", "issue": "DEMO-33" },
+    "action": "dispatch_result",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "attach these notes to DEMO-12 as an artifact called notes.md: the repro needs a cold cache", "context": {"path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12"}, "action": "dispatch_artifact", "names_action": true, "chart_worthy": false},
-  {"words": "upload a document rollout.md to this issue with the three rollout steps", "context": {"path": "/issues/DEMO-40", "project": "DEMO", "issue": "DEMO-40"}, "action": "dispatch_artifact", "names_action": true, "chart_worthy": false},
-  {"words": "keep this checklist on DEMO-33 as its own file, checklist.md", "context": {"path": "/issues/DEMO-33", "project": "DEMO", "issue": "DEMO-33"}, "action": "dispatch_artifact", "names_action": false, "chart_worthy": false},
+  {
+    "words": "attach these notes to DEMO-12 as an artifact called notes.md: the repro needs a cold cache",
+    "context": { "path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12" },
+    "action": "dispatch_artifact",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "upload a document rollout.md to this issue with the three rollout steps",
+    "context": { "path": "/issues/DEMO-40", "project": "DEMO", "issue": "DEMO-40" },
+    "action": "dispatch_artifact",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "keep this checklist on DEMO-33 as its own file, checklist.md",
+    "context": { "path": "/issues/DEMO-33", "project": "DEMO", "issue": "DEMO-33" },
+    "action": "dispatch_artifact",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "create a project MOCK named Mock Payments", "context": {"path": "/", "project": ""}, "action": "dispatch_project", "names_action": true, "chart_worthy": false},
-  {"words": "make a new Dispatch project for the onboarding work, key ONBOARD", "context": {"path": "/", "project": ""}, "action": "dispatch_project", "names_action": true, "chart_worthy": false},
-  {"words": "the lab experiments need a home of their own: key LAB, called Lab Experiments", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "dispatch_project", "names_action": false, "chart_worthy": false},
+  {
+    "words": "create a project MOCK named Mock Payments",
+    "context": { "path": "/", "project": "" },
+    "action": "dispatch_project",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "make a new Dispatch project for the onboarding work, key ONBOARD",
+    "context": { "path": "/", "project": "" },
+    "action": "dispatch_project",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "the lab experiments need a home of their own: key LAB, called Lab Experiments",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "dispatch_project",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "sync the architecture of DEMO now", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "dispatch_architecture_sync", "names_action": true, "chart_worthy": false},
-  {"words": "import this project's architecture model from its repositories", "context": {"path": "/projects/SANDBOX", "project": "SANDBOX"}, "action": "dispatch_architecture_sync", "names_action": true, "chart_worthy": false},
-  {"words": "DEMO's component map is stale, pull the latest components from the repo right away", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "dispatch_architecture_sync", "names_action": false, "chart_worthy": false},
+  {
+    "words": "sync the architecture of DEMO now",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "dispatch_architecture_sync",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "import this project's architecture model from its repositories",
+    "context": { "path": "/projects/SANDBOX", "project": "SANDBOX" },
+    "action": "dispatch_architecture_sync",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "DEMO's component map is stale, pull the latest components from the repo right away",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "dispatch_architecture_sync",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "write the implement handoff for DEMO-12: tests pass, docs still to do", "context": {"path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12"}, "action": "dispatch_handoff_write", "names_action": true, "chart_worthy": false},
-  {"words": "record a handoff for the review phase of this issue", "context": {"path": "/issues/DEMO-40", "project": "DEMO", "issue": "DEMO-40"}, "action": "dispatch_handoff_write", "names_action": true, "chart_worthy": false},
-  {"words": "store what the test phase of DEMO-33 leaves for the next phase: two checks pending", "context": {"path": "/issues/DEMO-33", "project": "DEMO", "issue": "DEMO-33"}, "action": "dispatch_handoff_write", "names_action": false, "chart_worthy": false},
+  {
+    "words": "write the implement handoff for DEMO-12: tests pass, docs still to do",
+    "context": { "path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12" },
+    "action": "dispatch_handoff_write",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "record a handoff for the review phase of this issue",
+    "context": { "path": "/issues/DEMO-40", "project": "DEMO", "issue": "DEMO-40" },
+    "action": "dispatch_handoff_write",
+    "names_action": true,
+    "chart_worthy": false
+  },
+  {
+    "words": "store what the test phase of DEMO-33 leaves for the next phase: two checks pending",
+    "context": { "path": "/issues/DEMO-33", "project": "DEMO", "issue": "DEMO-33" },
+    "action": "dispatch_handoff_write",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "what is DEMO-12 about?", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "who is working on this issue?", "context": {"path": "/issues/DEMO-21", "project": "DEMO", "issue": "DEMO-21"}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "what is blocking DEMO-30?", "context": {"path": "/issues/DEMO-30", "project": "DEMO", "issue": "DEMO-30"}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "summarise this document", "context": {"path": "/issues/DEMO-40/artifacts/spec-md", "project": "DEMO", "issue": "DEMO-40"}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "is the plan for DEMO-12 approved?", "context": {"path": "/", "project": ""}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "how many open issues does DEMO have?", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "find the issue about the export timeout", "context": {"path": "/", "project": ""}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "what changed on DEMO-12 since yesterday?", "context": {"path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12"}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "which session holds the claim on DEMO-21?", "context": {"path": "/agents", "project": ""}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "list the open asks waiting on me", "context": {"path": "/", "project": ""}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "what did the review say about this spec?", "context": {"path": "/issues/DEMO-33/artifacts/spec-md", "project": "DEMO", "issue": "DEMO-33"}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "when was DEMO-7 closed?", "context": {"path": "/projects/DEMO/issues", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "where did we decide which region the cache lives in?", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "show me the issues labelled flaky in DEMO", "context": {"path": "/projects/DEMO/issues", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "what are the agents on DEMO-44 doing right now?", "context": {"path": "/issues/DEMO-44", "project": "DEMO", "issue": "DEMO-44"}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "explain what task t3 of this plan does", "context": {"path": "/issues/DEMO-40/artifacts/plan-md", "project": "DEMO", "issue": "DEMO-40"}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "has anyone answered my question on DEMO-9?", "context": {"path": "/", "project": ""}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "what questions are still open on this spec?", "context": {"path": "/issues/DEMO-33/artifacts/spec-md", "project": "DEMO", "issue": "DEMO-33"}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "which issues block the next release of DEMO?", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "who approved the spec of DEMO-12?", "context": {"path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12"}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "summarise this project", "context": {"path": "/projects/SANDBOX", "project": "SANDBOX"}, "action": "none", "names_action": false, "chart_worthy": false},
-  {"words": "what is the status of DEMO-44?", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": false},
+  {
+    "words": "what is DEMO-12 about?",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "who is working on this issue?",
+    "context": { "path": "/issues/DEMO-21", "project": "DEMO", "issue": "DEMO-21" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "what is blocking DEMO-30?",
+    "context": { "path": "/issues/DEMO-30", "project": "DEMO", "issue": "DEMO-30" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "summarise this document",
+    "context": {
+      "path": "/issues/DEMO-40/artifacts/spec-md",
+      "project": "DEMO",
+      "issue": "DEMO-40"
+    },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "is the plan for DEMO-12 approved?",
+    "context": { "path": "/", "project": "" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "how many open issues does DEMO have?",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "find the issue about the export timeout",
+    "context": { "path": "/", "project": "" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "what changed on DEMO-12 since yesterday?",
+    "context": { "path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "which session holds the claim on DEMO-21?",
+    "context": { "path": "/agents", "project": "" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "list the open asks waiting on me",
+    "context": { "path": "/", "project": "" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "what did the review say about this spec?",
+    "context": {
+      "path": "/issues/DEMO-33/artifacts/spec-md",
+      "project": "DEMO",
+      "issue": "DEMO-33"
+    },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "when was DEMO-7 closed?",
+    "context": { "path": "/projects/DEMO/issues", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "where did we decide which region the cache lives in?",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "show me the issues labelled flaky in DEMO",
+    "context": { "path": "/projects/DEMO/issues", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "what are the agents on DEMO-44 doing right now?",
+    "context": { "path": "/issues/DEMO-44", "project": "DEMO", "issue": "DEMO-44" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "explain what task t3 of this plan does",
+    "context": {
+      "path": "/issues/DEMO-40/artifacts/plan-md",
+      "project": "DEMO",
+      "issue": "DEMO-40"
+    },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "has anyone answered my question on DEMO-9?",
+    "context": { "path": "/", "project": "" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "what questions are still open on this spec?",
+    "context": {
+      "path": "/issues/DEMO-33/artifacts/spec-md",
+      "project": "DEMO",
+      "issue": "DEMO-33"
+    },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "which issues block the next release of DEMO?",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "who approved the spec of DEMO-12?",
+    "context": { "path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "summarise this project",
+    "context": { "path": "/projects/SANDBOX", "project": "SANDBOX" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
+  {
+    "words": "what is the status of DEMO-44?",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
-  {"words": "how many issues did DEMO close each week this month?", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "chart the open issues per status in this project", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "issues created per day in DEMO over the last two weeks", "context": {"path": "/projects/DEMO/issues", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "compare how many open issues each person in DEMO is assigned", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "open asks per project", "context": {"path": "/", "project": ""}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "how did the number of open bugs in DEMO change week by week since September?", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "compare how many issues each project shipped last month", "context": {"path": "/", "project": ""}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "break down DEMO's open issues by priority", "context": {"path": "/projects/DEMO/issues", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "how many comments did this issue get each day this week?", "context": {"path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12"}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "how many agents are running on each machine right now?", "context": {"path": "/agents", "project": ""}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "graph the size of DEMO's backlog over the last six weeks", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "issues moved to done per person in DEMO this quarter", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "how many asks were answered each day this week?", "context": {"path": "/", "project": ""}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "plot the average days to close a DEMO issue, month by month", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "how are the issue statuses spread across DEMO and SANDBOX?", "context": {"path": "/", "project": ""}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "trend of new issues filed per week in this project", "context": {"path": "/projects/SANDBOX", "project": "SANDBOX"}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "how many pull requests were linked to DEMO issues each week?", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "count the issues per label in DEMO", "context": {"path": "/projects/DEMO/issues", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "how many issue updates did DEMO see on each day this month?", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "DEMO's throughput per week for the last eight weeks", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "opened versus closed issues per month in this project this year", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "how many checks passed and how many failed on each child of DEMO-3?", "context": {"path": "/issues/DEMO-3", "project": "DEMO", "issue": "DEMO-3"}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "messages sent by each agent session today", "context": {"path": "/agents", "project": ""}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "how many issues sit on each component of DEMO's architecture?", "context": {"path": "/projects/DEMO", "project": "DEMO"}, "action": "none", "names_action": false, "chart_worthy": true},
-  {"words": "show how the number of open asks in this project moved over the last month", "context": {"path": "/projects/SANDBOX", "project": "SANDBOX"}, "action": "none", "names_action": false, "chart_worthy": true}
+  {
+    "words": "how many issues did DEMO close each week this month?",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "chart the open issues per status in this project",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "issues created per day in DEMO over the last two weeks",
+    "context": { "path": "/projects/DEMO/issues", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "compare how many open issues each person in DEMO is assigned",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "open asks per project",
+    "context": { "path": "/", "project": "" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "how did the number of open bugs in DEMO change week by week since September?",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "compare how many issues each project shipped last month",
+    "context": { "path": "/", "project": "" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "break down DEMO's open issues by priority",
+    "context": { "path": "/projects/DEMO/issues", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "how many comments did this issue get each day this week?",
+    "context": { "path": "/issues/DEMO-12", "project": "DEMO", "issue": "DEMO-12" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "how many agents are running on each machine right now?",
+    "context": { "path": "/agents", "project": "" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "graph the size of DEMO's backlog over the last six weeks",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "issues moved to done per person in DEMO this quarter",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "how many asks were answered each day this week?",
+    "context": { "path": "/", "project": "" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "plot the average days to close a DEMO issue, month by month",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "how are the issue statuses spread across DEMO and SANDBOX?",
+    "context": { "path": "/", "project": "" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "trend of new issues filed per week in this project",
+    "context": { "path": "/projects/SANDBOX", "project": "SANDBOX" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "how many pull requests were linked to DEMO issues each week?",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "count the issues per label in DEMO",
+    "context": { "path": "/projects/DEMO/issues", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "how many issue updates did DEMO see on each day this month?",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "DEMO's throughput per week for the last eight weeks",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "opened versus closed issues per month in this project this year",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "how many checks passed and how many failed on each child of DEMO-3?",
+    "context": { "path": "/issues/DEMO-3", "project": "DEMO", "issue": "DEMO-3" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "messages sent by each agent session today",
+    "context": { "path": "/agents", "project": "" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "how many issues sit on each component of DEMO's architecture?",
+    "context": { "path": "/projects/DEMO", "project": "DEMO" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  },
+  {
+    "words": "show how the number of open asks in this project moved over the last month",
+    "context": { "path": "/projects/SANDBOX", "project": "SANDBOX" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": true
+  }
 ]
