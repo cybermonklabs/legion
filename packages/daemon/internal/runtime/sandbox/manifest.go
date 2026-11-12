@@ -1286,8 +1286,8 @@ func skillsEnvironment() []corev1.EnvVar {
 // ProvisionBound satisfies runtime.Runtime: workspace.FetchBudget plus workspace.CloneTimeout plus
 // workspace.CheckoutTimeout. Each term is the real bound of one step whose duration follows the
 // repository's size, and the three run one after the other: workspace-fetch's whole budget (its
-// wait for the repository cache, then one FetchTimeout for the cache's stream and its
-// verification, then one of its own for the delta from GitHub), workspace-init's shared clone of
+// wait for the repository cache, then one FetchTimeout for the verification of what the cache
+// streamed, then one of its own for the delta from GitHub), workspace-init's shared clone of
 // the feed, whose size-following steps share one CloneTimeout, and the issue's own checkout, the
 // one command that writes the whole working copy (`jj sparse reset`, workspace.Provision), under
 // CheckoutTimeout. It is how much longer than the boot timeout a launch may wait for its pod's
@@ -1295,6 +1295,10 @@ func skillsEnvironment() []corev1.EnvVar {
 // (awaitRoleLauncher). The fetch started no later than that, the shared clone after the fetch
 // ended and the checkout after the clone, so the three end inside the bound, each failing on its
 // own, naming why, when it runs out, while the commands between them take the moments they do.
+// The stream from the repository cache is the one part of the fetch outside those bounds: it
+// ends when it falls below the low-speed bound rather than on any clock
+// (workspace.CacheStreamLowSpeedBytes), so a stream that keeps receiving runs on into the slack
+// this bound holds over what its fetch actually waited and checked.
 //
 // The sum counts no term for the commands that keep CommandTimeout, and never has: workspace-
 // init's dozen other commands, local work that waits on no other pod, and the skills clone of

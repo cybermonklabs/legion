@@ -234,7 +234,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set, and when runtime is kubernetes: every pod's workspace is a repository Dispatch maps to the daemon's project",
-			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; a project's repositories are Dispatch's own mapping, and its block carries what only that project does — its merge-queue role, its by-hand merge paths, its Slack channels, its production check, its memory group, its experiments and the repositories whose commits carry their issue key.",
+			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; a project's repositories are Dispatch's own mapping, and its block carries what only that project does — its Slack channels, its production check, its memory group, its experiments and the repositories whose commits carry their issue key.",
 			Read: func(value *yaml.Node, key string, file *fileConfig) error {
 				// The projects' own warnings join whatever a warned key above them raised, in file
 				// order: one list carries both, so neither producer may write over the other.
@@ -504,20 +504,10 @@ var nestedKeys = []memberGroup{
 			Description: "The experiments this project draws its trees and issues into, by name, each naming the arms it compares and what an arm gives the units drawn into it."},
 		{Name: "memory", Default: "no tree of the project is drawn into a memory group", RequiredBy: "no",
 			Description: "What each tree this project opens runs with: which new trees are drawn into the memory group, and the overlays and instructions a drawn tree's roles then carry."},
-		{Name: "merge", Default: "the merger arms every pull request it opens", RequiredBy: "no",
-			Description: "The merge rules that hold for this project: which changed paths a person merges by hand rather than the merger."},
-		{Name: "merge_queue_role", Default: "no role receives the copies", RequiredBy: "no",
-			Description: "The Envoy role that receives a copy of every `READY` of this project, and the notice withdrawing it when the head's own CI turns red, the head starts conflicting with its base, or GitHub reports its merge-queue entry unmergeable; a bare role name, with no `notifications.role.` in front."},
-		{Name: "mergeQueueRole", Default: "the project's role comes from `merge_queue_role`", RequiredBy: "no",
-			Description: "The camelCase spelling of `merge_queue_role` a file written for an earlier release still carries; it means the same role, and `merge_queue_role` is the one read where a project sets both."},
 		{Name: "production_check", Default: "`tester`", RequiredBy: "no",
 			Description: "Who works the production check a merge closing one of this project's issues opens: `tester`, who takes its first look in the live session while the issue's other claims retire, or `off`, which opens none."},
 		{Name: "slack_channels", Default: "no channel's mentions reach the project", RequiredBy: "no",
 			Description: "The Slack channels whose mentions of the Legion app reach this project's controller, which answers in the thread; it needs `controller: daemon` and the secrets broker, and a channel belongs to one project."},
-	}},
-	{Path: "projects.<KEY>.merge", Members: []member{
-		{Name: "by_hand", Default: "the merger arms every pull request it opens", RequiredBy: "no",
-			Description: "The paths a person merges by hand, as regular expressions matched anywhere in a changed path, so anchor one (`^migrations/versions/`) to mean a directory; a pull request touching one is `READY` with a `MANUAL_MERGE_REQUIRED:` note and the merger arms nothing."},
 	}},
 	{Path: "projects.<KEY>.memory", Members: []member{
 		{Name: "mode", Default: "`off`", RequiredBy: "no",

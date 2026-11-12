@@ -237,10 +237,8 @@ type PluginsSettings struct {
 // ProjectSettings is one `projects.<KEY>` entry; its repositories are Dispatch's mapping, which
 // the state's `repositories` shows, never this file's.
 type ProjectSettings struct {
-	MergeQueueRole string         `json:"merge_queue_role,omitempty"`
-	Merge          MergeSettings  `json:"merge"`
-	SlackChannels  []string       `json:"slack_channels"`
-	Memory         MemorySettings `json:"memory"`
+	SlackChannels []string       `json:"slack_channels"`
+	Memory        MemorySettings `json:"memory"`
 	// Experiments is `projects.<KEY>.experiments` as the file writes it, in the file's order, and
 	// `[]` for a project that declares none, as `slack_channels` is for one that names none: the
 	// key always rides the wire, so a reader tells a project that declares no experiment from a
@@ -356,11 +354,6 @@ type RepositoryRenameSettings struct {
 	To   string `json:"to"`
 }
 
-// MergeSettings is a project's `merge` policy: the by-hand expressions as written, never compiled.
-type MergeSettings struct {
-	ByHand []string `json:"by_hand"`
-}
-
 // GatesSettings is `gates`. Design is the design-gate steps the deployment gates, in the order
 // `gates.design` named them, and `[]` for a deployment that gates none.
 type GatesSettings struct {
@@ -466,9 +459,7 @@ func SettingsOf(cfg config.Config) Settings {
 	}
 	for key, project := range cfg.Projects {
 		entry := ProjectSettings{
-			MergeQueueRole: project.MergeQueueRole,
-			Merge:          MergeSettings{ByHand: make([]string, len(project.Merge.ByHand))},
-			SlackChannels:  stringsOf(project.SlackChannels),
+			SlackChannels: stringsOf(project.SlackChannels),
 			Memory: MemorySettings{
 				Mode:         project.Memory.Mode,
 				ConfigFiles:  stringsOf(project.Memory.ConfigFiles),
@@ -477,9 +468,6 @@ func SettingsOf(cfg config.Config) Settings {
 			Experiments:     experimentsOf(project.Experiments),
 			ProductionCheck: project.ProductionCheckWord(),
 			Deploys:         []DeploySettings{},
-		}
-		for i, pattern := range project.Merge.ByHand {
-			entry.Merge.ByHand[i] = pattern.Expression
 		}
 		settings.Projects[key] = entry
 	}

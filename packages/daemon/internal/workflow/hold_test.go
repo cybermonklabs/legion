@@ -78,12 +78,12 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 				Reason: "the planner does not work LEGION-209's phase implementing; nothing is held"}},
 		},
 		{
-			name:  "the merger while the issue awaits its merge",
+			name:  "the tester while the issue is merging",
 			root:  record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"},
-			child: record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root, Project: "LEGION", Title: "child", Phase: phase.AwaitingMerge, Generation: 1, Status: "retro", Rank: "V"},
-			role:  claim.RoleMerger, wantPhase: phase.AwaitingMerge,
-			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleMerger, Phase: phase.AwaitingMerge,
-				Reason: "the merger does not work LEGION-209's phase awaiting_merge; nothing is held"}},
+			child: record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root, Project: "LEGION", Title: "child", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "V"},
+			role:  claim.RoleTester, wantPhase: phase.Merging,
+			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleTester, Phase: phase.Merging,
+				Reason: "the tester does not work LEGION-209's phase merging; nothing is held"}},
 		},
 		{
 			name: "the tester while the implementer's phase is held",
@@ -143,8 +143,10 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 // carries: the one word for what failed the claim, the sentence written beside that word, and
 // each of the four counts the failure left against the limit it ran out at, deaths against the
 // launch failure limit, which is the limit the supervisor measures them by (record.NoticeFailure).
-// The hold carries no `reason`: that field keeps its one value, `escalated`, which both agents'
-// texts read as the architect having already escalated this hold.
+// The record also carries the two causes the claim recorded, its last death and its last failed
+// start, which an agent deciding between a retry and an escalation has no other way to read
+// (R6); `reason` keeps its one value, `escalated`, which both agents' texts read as the
+// architect having already escalated this hold.
 //
 // The other three shapes of worker-died are here beside it, because the evidence each carries is
 // a decision of its own: the worker-died of a role that does not work the issue's phase names the
@@ -556,7 +558,7 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 			if released.Status != "in_progress" || released.DispatchStatus != "todo" || released.LastDispatchSeq != 5 {
 				t.Fatalf("the root after the todo = %#v, want in_progress kept, Dispatch shown at todo and the event's sequence 5 recorded", released)
 			}
-			want := record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}
+			want := record.OrdinaryStatusWrite("in_progress", "todo", "")
 			if got := statusWrites(t, pool, root); len(got) != 1 || got[0] != want {
 				t.Fatalf("status writes = %+v, want the one %+v: the status of the phase the issue ends in", got, want)
 			}
@@ -606,54 +608,22 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 	// The release's own path can move the issue, and then the status it writes is of the phase
 	// the issue ends in rather than of the phase the hold came from: that is what R7 asks for,
 	// and the board would otherwise stand at the todo the release answered until the hourly
-	// status repair. Each of these two rows is such a release.
-	t.Run("a hold from testing whose head is red", func(t *testing.T) {
-		pool := migratedPool(t)
-		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-		seedIssue(t, pool, record.Issue{Key: root, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: root, Project: "LEGION",
-			Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Testing}, Generation: 3, Status: "testing", DispatchStatus: "testing",
-			Rank: "U", HandedOver: true, LastDispatchSeq: 4})
-		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root, Repo: "sjawhar/legion",
-			Number: 42, Branch: "legion/" + root, HeadSHA: "c0ffee", Required: []string{"lint"}})
-		seedPhase(t, pool, record.PhaseRow{Issue: root, Role: claim.RoleImplementer, Claim: "implement-claim"})
-		seedPhase(t, pool, record.PhaseRow{Issue: root, Role: claim.RoleTester, Claim: "test-claim"})
-		// Held, the issue has no checks_red row, so the red moves nothing until the release.
-		apply("red", intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: "c0ffee", CheckRuns: []record.AttemptRun{{Name: "lint", ID: 1}},
-			Generation: 1, Snapshot: "red-c0ffee", Failing: []string{"lint"}})
-		if held := storedIssue(t, pool, root); held.Phase != phase.Held {
-			t.Fatalf("the root after the red = %#v, want it still held: a held issue has no checks_red row", held)
-		}
-
-		apply("todo", intake.DispatchIssue{Key: root, ResolvedRepo: "sjawhar/legion", Seq: 5, Type: "issue.updated", Status: "todo",
-			Title: "root", Rank: "U", HandedOver: true})
-
-		released := storedIssue(t, pool, root)
-		if released.Phase != phase.Implementing || released.Hold != nil || released.DispatchStatus != "todo" {
-			t.Fatalf("the root after the todo = %#v, want the red to have sent it back to implementing, its hold cleared and the todo recorded", released)
-		}
-		// Two rows, of which the release's is the one that writes: the move's own names the
-		// status the record held, which Dispatch does not show, so the executor finishes it
-		// without a write.
-		want := []record.StatusWrite{{Status: "in_progress", ObservedStatus: "testing"}, {Status: "in_progress", ObservedStatus: "todo"}}
-		if got := statusWrites(t, pool, root); !reflect.DeepEqual(got, want) {
-			t.Fatalf("status writes = %+v, want %+v: the move's own row, then the status of the phase the issue ends in", got, want)
-		}
-		starts := superviseRowsOf(t, pool, root, "start")
-		if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Phase != phase.Implementing {
-			t.Fatalf("start rows = %+v, want the one implementer start the red's move made: the restored phase's worker is not started", starts)
-		}
-	})
-
+	// status repair. A red head is no such release on this contract — a red moves no issue at
+	// all, whoever reads it (R1) — so the review round below is the one row left.
 	t.Run("a hold from reviewing whose round is decided", func(t *testing.T) {
 		pool := migratedPool(t)
 		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 		// The reviewer completed, its claim then failed, and its approval landed while the issue
 		// was held: the release finds both halves of the round in and ends it in accepting.
 		seedReview(t, pool, "green")
+		// GitHub reports the head one it would merge, which is what the settle asks of it: the
+		// release below decides the round rather than the merge state.
+		apply("merge-state", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headOne,
+			Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateClean})
 		apply("reviewer-completed", intake.HandoffComplete{Generation: 1, Issue: root, Role: claim.RoleReviewer, Claim: "review-claim",
 			Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
 		apply("reviewer-failed", intake.ClaimFailed{Issue: root, Role: claim.RoleReviewer})
-		apply("approved", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: "approved", CommitID: "head", Author: testReviewApp, Body: "the review"})
+		apply("approved", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: "approved", CommitID: headOne, Author: testReviewApp, Body: reviewBody("the review", headOne)})
 		if held := storedIssue(t, pool, root); held.Phase != phase.Held || held.Hold == nil || held.Hold.From != phase.Reviewing {
 			t.Fatalf("the root after the review = %#v, want it still held from reviewing: a held round decides nothing", held)
 		}
@@ -668,7 +638,7 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 		// The move itself wrote nothing: reviewing and accepting show the same status, and
 		// Engine.status drops a write of the status the record already holds. This row is the
 		// only one, and without it the board would stand at todo.
-		want := []record.StatusWrite{{Status: "needs_review", ObservedStatus: "todo"}}
+		want := []record.StatusWrite{record.OrdinaryStatusWrite("needs_review", "todo", "")}
 		if got := statusWrites(t, pool, root); !reflect.DeepEqual(got, want) {
 			t.Fatalf("status writes = %+v, want the one %+v: the status of the phase the issue ends in", got, want)
 		}

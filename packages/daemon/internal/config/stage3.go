@@ -68,13 +68,11 @@ func (g Gates) Steps() []record.DesignStep {
 	return g.Design
 }
 
-// Project is a Dispatch project prefix's configuration: its optional merge-queue role, merge rules,
-// the Slack channels whose @-mentions reach its controller, and whether a merge that closes one of
-// its issues opens a production check at all. Its repositories are Dispatch's mapping (Settings →
-// Repositories → Projects), which the daemon reads at boot and when it changes, never this file.
+// Project is a Dispatch project prefix's configuration: the Slack channels whose @-mentions reach
+// its controller, and whether a merge that closes one of its issues opens a production check at
+// all. Its repositories are Dispatch's mapping (Settings → Repositories → Projects), which the
+// daemon reads at boot and when it changes, never this file.
 type Project struct {
-	MergeQueueRole string
-	Merge          MergeRules
 	// SlackChannels are `slack_channels`, the Slack channel ids whose app mentions the project's
 	// controller subscribes to, in the file's order; nil when the file names none.
 	SlackChannels []string
@@ -114,33 +112,6 @@ func (p Project) ProductionCheckWord() string {
 		return ProductionCheckOff
 	}
 	return string(p.ProductionCheck)
-}
-
-// MergeRules is the project's `merge` policy. A path matching ByHand is never auto-armed.
-type MergeRules struct {
-	ByHand []PathPattern
-}
-
-// PathPattern is one validated regular expression from a project's merge policy.
-type PathPattern struct {
-	Expression string
-	Regexp     *regexp.Regexp
-}
-
-// MatchByHand reports whether any changed path matches a by-hand rule.
-func (rules MergeRules) MatchByHand(paths []string) bool {
-	return matchesPathPattern(rules.ByHand, paths)
-}
-
-func matchesPathPattern(patterns []PathPattern, paths []string) bool {
-	for _, pattern := range patterns {
-		for _, path := range paths {
-			if pattern.Regexp.MatchString(path) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // GitHubApp is one App's configuration. Load resolves a configured private-key source into
@@ -251,21 +222,6 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 		}
 	}
 	var project Project
-	role := fields["merge_queue_role"]
-	if role == nil {
-		role = fields["mergeQueueRole"]
-	}
-	if project.MergeQueueRole, err = stringOf(role, key+".merge_queue_role"); err != nil {
-		return Project{}, nil, err
-	}
-	if project.MergeQueueRole != "" && !roleNamePattern.MatchString(project.MergeQueueRole) {
-		return Project{}, nil, fmt.Errorf("%s.merge_queue_role is a bare role name (no notifications.role. prefix)", key)
-	}
-	if merge := fields["merge"]; merge != nil {
-		if project.Merge, err = readMergeRules(merge, key+".merge"); err != nil {
-			return Project{}, nil, err
-		}
-	}
 	if channels := fields["slack_channels"]; channels != nil {
 		if project.SlackChannels, err = readSlackChannels(channels, key+".slack_channels"); err != nil {
 			return Project{}, nil, err
@@ -355,42 +311,6 @@ func readCommitIssueTrailerRepos(value *yaml.Node, key string) ([]ghrepo.Reposit
 		repos = append(repos, repo)
 	}
 	return repos, nil
-}
-
-func readMergeRules(value *yaml.Node, key string) (MergeRules, error) {
-	if value.Kind != yaml.MappingNode {
-		return MergeRules{}, fmt.Errorf("%s must be a mapping", key)
-	}
-	fields, err := describedMembers(value, key, "projects.<KEY>.merge")
-	if err != nil {
-		return MergeRules{}, err
-	}
-	var rules MergeRules
-	if byHand := fields["by_hand"]; byHand != nil {
-		if rules.ByHand, err = readPathPatterns(byHand, key+".by_hand"); err != nil {
-			return MergeRules{}, err
-		}
-	}
-	return rules, nil
-}
-
-func readPathPatterns(value *yaml.Node, key string) ([]PathPattern, error) {
-	expressions, err := readStrings(value, key)
-	if err != nil || len(expressions) == 0 {
-		return nil, err
-	}
-	patterns := make([]PathPattern, 0, len(expressions))
-	for _, expression := range expressions {
-		if slices.Contains(expressions[:len(patterns)], expression) {
-			return nil, fmt.Errorf("%s names %q twice", key, expression)
-		}
-		compiled, err := regexp.Compile(expression)
-		if err != nil {
-			return nil, fmt.Errorf("%s entry %q is not a valid regular expression: %w", key, expression, err)
-		}
-		patterns = append(patterns, PathPattern{Expression: expression, Regexp: compiled})
-	}
-	return patterns, nil
 }
 
 func readGates(value *yaml.Node, key string) (*Gates, error) {

@@ -971,10 +971,10 @@ func TestStartCheckConfigNamesTheBrokenKey(t *testing.T) {
 // all the same, since nothing reads it and a refusal here would stop a deployment over a word in
 // a file. --check-config exits 0, prints the warning after Config OK and before the project's
 // production-check line and the capability gaps, and the warning says what the refusal would
-// have said: the key, that nothing counts fix attempts, that a red CI verdict always sends the
-// work back to the implementer, that the architect decides when to stop, and review_round_cap,
-// the one cap left that blocks a pull
-// request. The refused keys of TestStartCheckConfigNamesTheBrokenKey (worker_cap,
+// have said: the key, that nothing counts fix attempts, that no CI verdict sends work back on its
+// own — what a settlement names is told to the roles that work the issue
+// (dispatch://INFRA-714/spec R1) — that the architect decides when to stop, and review_round_cap,
+// the one cap left that blocks a pull request. The refused keys of TestStartCheckConfigNamesTheBrokenKey (worker_cap,
 // resync_interval_seconds) are the control that the two kinds stay apart.
 func TestStartCheckConfigWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	legionState(t)
@@ -983,7 +983,7 @@ func TestStartCheckConfigWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
 
-	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, a red CI verdict always sends the work back to the implementer however many came before, and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)\n"
+	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)\n"
 	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProductionCheck + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
@@ -2226,7 +2226,7 @@ func TestPlainStateNamesTheWakesThePacingHolds(t *testing.T) {
 func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
-	missing := "Dispatch's GitHub App is not installed on acme/widgets: GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes"
+	missing := "Dispatch's GitHub App is not installed on acme/widgets: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
 	for _, tc := range []struct {
 		name, gaps, want string
 	}{

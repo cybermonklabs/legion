@@ -141,8 +141,6 @@ var settingsEmitted = map[string]string{
 	"PluginsConfig.PiLegion":                         "runtime.kubernetes.plugins.pi_legion",
 	"PluginsConfig.PiEnvoy":                          "runtime.kubernetes.plugins.pi_envoy",
 	"ProviderKey.Env":                                "provider_keys[]",
-	"Project.MergeQueueRole":                         "projects.<KEY>.merge_queue_role",
-	"Project.Merge":                                  "projects.<KEY>.merge",
 	"Project.SlackChannels":                          "projects.<KEY>.slack_channels",
 	"Project.Memory":                                 "projects.<KEY>.memory",
 	"Project.ProductionCheck":                        "projects.<KEY>.production_check",
@@ -159,8 +157,6 @@ var settingsEmitted = map[string]string{
 	"Variant.Weight":                                 "projects.<KEY>.experiments.<name>.variants[].weight",
 	"Variant.ConfigFiles":                            "projects.<KEY>.experiments.<name>.variants[].config_files",
 	"Variant.InstructionsPath":                       "projects.<KEY>.experiments.<name>.variants[].instructions",
-	"MergeRules.ByHand":                              "projects.<KEY>.merge.by_hand",
-	"PathPattern.Expression":                         "projects.<KEY>.merge.by_hand[]",
 	"Gates.Design":                                   "gates.design",
 	"GitHubApps.Implement":                           "github_apps.implement",
 	"GitHubApps.Review":                              "github_apps.review",
@@ -201,7 +197,6 @@ var settingsExcluded = map[string]string{
 	"PodConfig.VolumeMounts":          "runtime.kubernetes.pod: Kubernetes API types",
 	"PodConfig.ServiceAccount":        "runtime.kubernetes.pod: the operator's ServiceAccount, which every pod runs as and reads from its own spec",
 	"Kubernetes.PluginsFromBinary":    "derived: where the settled plugins pair came from, not a setting",
-	"PathPattern.Regexp":              "compiled from Expression, not a setting",
 	"Config.Warnings":                 "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `--check-config` prints",
 	"Project.CommitIssueTrailerRepos": "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
 	"Config.StallLimits":              "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
@@ -353,7 +348,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	// (contract 90); what a project that declares one carries is
 	// TestSettingsOfNamesAProjectsExperiments'.
 	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
-		"merge_queue_role", "merge", "slack_channels", "memory", "experiments", "production_check", "deploys",
+		"slack_channels", "memory", "experiments", "production_check", "deploys",
 	})
 
 	// (c) Nothing planted reaches the wire, and no key of a credential's shape does either.
@@ -398,12 +393,6 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	}
 	if settings.Runtime.Kubernetes.SessionStore != "postgres" {
 		t.Errorf("session_store = %q, want postgres", settings.Runtime.Kubernetes.SessionStore)
-	}
-	if want := []string{"^deploy/", `\.sql$`}; !slices.Equal(settings.Projects["WIDGETS"].Merge.ByHand, want) {
-		t.Errorf("projects.WIDGETS.merge.by_hand = %q, want %q", settings.Projects["WIDGETS"].Merge.ByHand, want)
-	}
-	if settings.Projects["WIDGETS"].MergeQueueRole != "merge-queue" {
-		t.Errorf("projects = %+v, want WIDGETS's merge queue role", settings.Projects)
 	}
 	// The project that names no `production_check` shows the default role, and the one that turns
 	// the check off shows that word, never the empty string the role takes for off.
@@ -627,7 +616,7 @@ func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
 	}
 	projects := keysOf(t, keysOf(t, encoded)["projects"])
 	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
-		"merge_queue_role", "merge", "slack_channels", "memory", "experiments", "production_check", "deploys",
+		"slack_channels", "memory", "experiments", "production_check", "deploys",
 	})
 	if got := string(keysOf(t, projects["LEGION"])["experiments"]); got != "[]" {
 		t.Errorf("a project that declares no experiment carries experiments = %s, want []: the key always rides the wire, so a reader tells such a project from a daemon too old to know it (contract 90)", got)

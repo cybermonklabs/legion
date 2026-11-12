@@ -17,10 +17,10 @@ package supervise
 // turn the daemon sent nothing for — switches all the same. The stale-plugin lane is here as
 // well: a stale claim, the controller's among them, and a stale registration are each
 // relaunched at once, whatever contract the claim records, since that lane asks its worker
-// nothing. The last group is the claim the daemon
-// started again in another pod while its pod round ran: the round's own record of what that
-// claim left — the round, and whether it had answered it — is written at that launch, its part
-// in that round is frozen there, the ask a restart left it still holding is dropped with every
+// nothing. The last group is the claim the daemon started again in another pod while its pod
+// round ran: the launch writes which round the claim left, and the answer it had given by then,
+// if any, is the one it gave in the round's own pod — nothing of the new process writes one. Its
+// part in that round is frozen there, the ask a restart left it still holding is dropped with every
 // mark armed for it, a suspension afterwards changes none of it, only the round's end clears
 // it, and the control beside it is a claim still in the round's own pod, which takes its full
 // part.
@@ -805,8 +805,12 @@ func TestPodUpdateARestartLeavesTheHeldTaskToNoTurnButItsOwn(t *testing.T) {
 	if !p.ConfirmedAt.IsZero() {
 		t.Fatalf("the notice's turn was taken as the held task's: %+v; no daemon ever sent that task", p)
 	}
-	if run := h.claim().ServingRun(); run != 0 {
-		t.Fatalf("during the notice's turn the claim serves run %d, want none: its worker was given no task", run)
+	// The turn took the worker's answer back on its way in, so the round holds the task no longer
+	// (openRoundHoldsTask) and the task is the only work this claim can be on: the run it carries
+	// is what a completion from this turn answers for, which is INFRA-264's case. The task itself
+	// is still unsent and unconfirmed, as the assertions above and below hold.
+	if run := h.claim().ServingRun(); run != 7 {
+		t.Fatalf("during the notice's turn the claim serves run %d, want the held task's 7: the turn took its answer back, so the round holds that task no longer", run)
 	}
 
 	h.must(StreamTurnEnd{Claim: h.token})
@@ -2102,5 +2106,62 @@ func TestPodUpdateARoundThatReplacesAnotherLeavesNoQuestionArmedForItsOwnAsk(t *
 	sent := h.wantPrompts(2)[1]
 	if !asksRound(sent.DeliveryID, second) {
 		t.Errorf("the second prompt carried %q, want an ask of the round that replaced the other, %q", sent.DeliveryID, second)
+	}
+}
+
+// An open round holds a task back from its worker only once that worker has answered it
+// (sendPending's answeredOpenRound), so only then is a task no work of the claim's. A claim whose
+// answer a turn of its own took back (takeBackSignal) is a claim the daemon will hand its task to
+// at this very turn's end, and INFRA-264 is what refusing its completion looks like — a tester
+// whose first turn an Envoy message started ran its whole phase and was answered that it belonged
+// to no run.
+//
+// The third shape, an open round nobody has answered with a phase task already pending, cannot
+// arise: the end of the ask's own turn is an answer whatever the worker called (answerByTurnEnd),
+// and until that ask retires no other task is delivered at all — a deliver is refused while one
+// is pending. So the unanswered round is the worker still inside the ask's turn, which holds
+// nothing back because the ask is the only task it has.
+func TestPodUpdateAnOpenRoundHoldsATaskOnlyFromAWorkerThatAnsweredIt(t *testing.T) {
+	const task = "review the pull request"
+	for _, tc := range []struct {
+		name string
+		// answer is what the worker does with the round before the task is delivered: an answer,
+		// or an answer a turn of its own takes back.
+		answer   string
+		wantRun  uint64
+		wantHeld bool
+	}{
+		{name: "a round whose answer a turn took back", answer: "withdrawn", wantRun: 7},
+		{name: "a round the worker answered", answer: "given", wantRun: 0, wantHeld: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := updateHarness(t, PodUpdateContract)
+			h.reach(StateReady)
+			h.openUpdate(testRound, testReasons)
+			h.wantPrompts(1)
+			// The worker reads the round's ask in a turn of its own and answers in it; the end of
+			// that turn retires the ask, so the phase's task is delivered behind it.
+			h.must(StreamTurnStart{Claim: h.token})
+			h.signalUpdate("c0ffee")
+			h.must(StreamTurnEnd{Claim: h.token})
+			h.must(RequestDeliver{Claim: h.token, Task: task, Generation: 7})
+			if tc.answer == "withdrawn" {
+				// A turn of the worker's own — an Envoy message's — takes the answer back on its
+				// way in, since the work that answer spoke for may have moved since.
+				h.must(StreamTurnStart{Claim: h.token})
+			}
+
+			claim := h.claim()
+			if claim.openRoundHoldsTask() != tc.wantHeld {
+				t.Fatalf("openRoundHoldsTask = %v, want %v: the hold is the worker's answer, not the round's being open",
+					claim.openRoundHoldsTask(), tc.wantHeld)
+			}
+			if run := claim.ServingRun(); run != tc.wantRun {
+				t.Fatalf("the claim serves run %d, want %d: a completion of this turn is judged by it", run, tc.wantRun)
+			}
+			if p := claim.Pending; p == nil || p.Task != task {
+				t.Fatalf("pending = %+v, want the task %q, which no case here consumes", p, task)
+			}
+		})
 	}
 }

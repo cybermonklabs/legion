@@ -442,7 +442,7 @@ func (a *Admission) queuePersonHandover(ctx context.Context, tx pgx.Tx, key, obs
 	if err != nil || pending {
 		return err
 	}
-	if err := a.enqueue(ctx, tx, key, record.StatusWrite{Status: "todo", ObservedStatus: observedStatus, PersonHandover: true}, a.now()); err != nil {
+	if err := a.enqueue(ctx, tx, key, record.PersonHandoverStatusWrite("todo", observedStatus), a.now()); err != nil {
 		return err
 	}
 	intake.OnCommit(ctx, func() { a.log.Info("admission: queued a person's handover", "issue", key, "source", source) })
@@ -770,8 +770,7 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 	// daemon itself wrote and Dispatch had not shown yet. It is taken only while the issue's tree
 	// is not live: a running tree's member keeps what the record says, because the tree is the
 	// thing that says the work is under way, and the row the member holds says nothing about it —
-	// it keeps that row through every phase short of done and awaiting_merge, worked or not
-	// (record.KeepsSlot).
+	// it keeps that row through every phase short of done, worked or not (record.KeepsSlot).
 	if summary.Status == "todo" && stored.Status == "in_progress" {
 		if _, running := live[stored.Tree]; running {
 			return nil
@@ -933,8 +932,8 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 // readmitted with carry (one that started a phase) is the same work moving from a finished root to
 // a root of its own, so its phase, phase rows, gate and pull request (with its observed head) carry
 // into the new generation, and its promotion starts both its architect and the role of that
-// carried phase. A merged pull request is never observed as merged again, and a review, acceptance
-// or READY would otherwise rerun work already decided or landed.
+// carried phase. A merged pull request is never observed as merged again, and a review or an
+// acceptance would otherwise rerun work already decided or landed.
 //
 // An issue leaving another tree, a hand-over or an orphan, carried or not, records that tree
 // (record.Issue.HandedOverFrom) and stays a tree of its own from then on: re-admitting or reopening
@@ -985,7 +984,6 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	stored.Ancestry = nil
 	if !orphan {
 		stored.Phase, stored.Hold, stored.Awaiting = phase.Admitted, nil, nil
-		stored.ReadyPending = nil
 		// Another tree's work arriving without its run: the run it had was that tree's.
 		if !claim.IsTreeRoot(stored.Key, oldTree) {
 			stored.TakenBack = false
@@ -1054,7 +1052,7 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		// approved on each of them as the old root was. A root reopened in its linger has its gate
 		// cleared with the generation, so a second close hands its children over with none: such a
 		// child keeps its phase and pull request, and its architect registers its spec as a fresh
-		// root's does, the gate its READY needs.
+		// root's does, the gate every member of its tree starts behind.
 		//
 		// An old root that recorded no gate is the common case, and there the carry writes nothing:
 		// the orphan's own pairs stand as the hand-over left them, so neither the read of them nor
@@ -1078,7 +1076,7 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 			// documents (record.PublishChangedGates); a carry is the one path that gives an issue a
 			// gate without its architect registering anything, so Dispatch hears of it here or
 			// nowhere.
-			if _, err := record.PublishChangedGates(ctx, a.store, tx, stored.Key, held, a.now()); err != nil {
+			if err := record.PublishChangedGates(ctx, a.store, tx, stored.Key, held, a.now()); err != nil {
 				return fmt.Errorf("publish the gates carried to re-admitted orphan %s: %w", stored.Key, err)
 			}
 		}
@@ -1095,7 +1093,7 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		return err
 	}
 	// A root set back to todo is a new generation of the whole tree, so the old generation's pull
-	// request, gate, handoffs and pending READY go for every issue of it, not only the root's.
+	// request, gate and handoffs go for every issue of it, not only the root's.
 	return a.store.ClearTreeGeneration(ctx, tx, stored.Tree, a.now())
 }
 
@@ -1229,7 +1227,7 @@ func (a *Admission) promote(ctx context.Context, tx pgx.Tx) (int, []string, erro
 // Every path that promotes comes through here — a live fact, the controller tick, a hold's
 // release, the boot's Reconcile — so each of them is also a look at every issue a blocker holds,
 // at every slot whose worker has lost its task, and at every tree a step that left gates.design
-// released (workflow.AdvanceOpenTrees).
+// released (record.Waiting's LineFirstPhase).
 func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bool) (int, []string, error) {
 	issues, slots, facts, err := a.adoptQueuedRoots(ctx, tx, respectHolds)
 	if err != nil {
@@ -1332,8 +1330,9 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			}
 			// A candidate that already holds a row, or that stands in a phase keeping none,
 			// takes no slot and so is never held by the cap: a root another tree handed to
-			// Legion carrying awaiting_merge opens its tree at once, and an answered root
-			// resumes its architect on the row it kept through the wait.
+			// Legion carrying the phase it ran there opens its tree at once on the row it
+			// brought, and an answered root resumes its architect on the row it kept through
+			// the wait.
 			takes := slotFor(candidate)
 			if takes && len(own) >= a.cap {
 				// A full cap gives no further slot, and the scan goes on. This is not the hold
@@ -1443,7 +1442,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 					return admitted, released, fmt.Errorf("record admitted issue %s: %w", issue.Key, err)
 				}
 				if writeInProgress {
-					if err := a.enqueue(ctx, tx, issue.Key, record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}, now); err != nil {
+					if err := a.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite("in_progress", "todo", ""), now); err != nil {
 						return admitted, released, err
 					}
 				}
@@ -1463,18 +1462,17 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// own, and this is the write that opens it. Left standing it would make the
 				// record say for ever that this generation never ran (record.QueuedRoot, ran),
 				// so a person's todo on the running root would queue it again and promote it a
-				// second time, moving its awaiting_merge to merging, where its merge closes
-				// nothing. The row the root holds would not stop that: the line passes over a
-				// queued root holding one only where the mark is gone (record.Waiting), and a
-				// root waiting for its merge holds none at all. Nothing else reads the mark
-				// after the tree is open: a root with an opened lifecycle is no tree's to adopt
-				// whatever the mark says (workflow's RanAsRoot), and its own record says it is
-				// a root (record.ChildOpen).
+				// second time, starting its merger over a merge that has already been made. The
+				// row the root holds would not stop that: the line passes over a queued root
+				// holding one only where the mark is gone (record.Waiting). Nothing else reads
+				// the mark after the tree is open: a root with an opened lifecycle is no tree's
+				// to adopt whatever the mark says (workflow's RanAsRoot), and its own record
+				// says it is a root (record.ChildOpen).
 				issue.HandedOverFrom = ""
 				if err := a.store.PutIssue(ctx, tx, issue); err != nil {
 					return admitted, released, fmt.Errorf("record admitted issue %s: %w", issue.Key, err)
 				}
-				if err := a.enqueue(ctx, tx, issue.Key, record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}, now); err != nil {
+				if err := a.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite("in_progress", "todo", ""), now); err != nil {
 					return admitted, released, err
 				}
 				// A fresh admission hands the architect its tree: what it hands back to a person
@@ -1528,21 +1526,12 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	if err := a.resumeSlottedWorkers(ctx, tx, issues, slots, facts); err != nil {
 		return admitted, released, err
 	}
-	// A step leaving gates.design releases work no gate fact will ever reach: a merger's READY
-	// the dropped step refused. This pass is where it moves (workflow.AdvanceOpenTrees), from
-	// the records and the gates the pass has already read. It is handed the same predicate as
-	// ReconcileAwaiting above, for the same reason: a held root's record may still miss what
-	// Dispatch recorded, and a tree decided on it could be moved on at a document version a
-	// waiting event supersedes, which nothing takes back. The pass after the hold's release
-	// decides that tree.
-	//
-	// The other half of what a shorter list releases needs nothing here: a root left at admitted
-	// by a step that has gone is an issue whose first phase the waiting line offers a slot to on
-	// this very pass (record.Waiting, LineFirstPhase), because the line reads the gate's whole
-	// step list on every pass rather than waiting for a fact about it.
-	if err := a.engine.AdvanceOpenTrees(ctx, tx, issues, facts, heldKeys); err != nil {
-		return admitted, released, err
-	}
+	// A step leaving gates.design needs nothing here. A root left at admitted by a step that has
+	// gone is an issue whose first phase the waiting line offers a slot to on this very pass
+	// (record.Waiting, LineFirstPhase), because the line reads the gate's whole step list on
+	// every pass rather than waiting for a fact about it. The other half that once needed a pass
+	// of its own — a merger's READY the dropped step refused — went with READY: the merger merges
+	// the head it read and no gate refuses a completion (dispatch://INFRA-714 R2).
 	return admitted, released, nil
 }
 
@@ -1568,12 +1557,12 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 // predicate, so no pass hands out a row the next pass would take back.
 //
 // It reads the phase the candidate's record carries rather than the phase its promotion leaves
-// it in, and the two agree wherever this is asked: KeepsSlot refuses done and awaiting_merge
-// alone, and no promotion moves an issue into or out of either. A first phase starts at
-// phase.Planning from a record standing at admitted, an answered root goes from
-// awaiting_person back to admitted, a returning issue keeps the worker phase it stands in, and
-// a root whose tree is opened keeps the phase its record carries, awaiting_merge included,
-// which makes such a root the one candidate the phase test refuses.
+// it in, and the two agree wherever this is asked: KeepsSlot refuses a phase of done and a
+// Dispatch status out of the workflow alone, and no promotion moves an issue into or out of
+// either. A first phase starts at phase.Planning from a record standing at admitted, an
+// answered root goes from awaiting_person back to admitted, a returning issue keeps the worker
+// phase it stands in, and a root whose tree is opened keeps the phase it ran in the tree it
+// left, which keeps a row like any other phase short of done.
 //
 // A candidate that holds a row takes no second one: the line carries holders (the kinds
 // record.LineEntry.Holds names). A candidate that takes no slot is promoted whatever the cap:
@@ -1699,15 +1688,14 @@ func (a *Admission) waitsForChildren(waits map[string]record.ChildWait, issue re
 // holding no slot.
 //
 // Holding no slot is the normal state of a root waiting to start: the cap counts the issues the
-// daemon has started, so a root waiting in the line, one whose tree has left the workflow and
-// one whose own wait is only for its merge hold none, while a root in accepting, waiting on a
-// person, on a blocker or for its children keeps the row it was started with. Every one of
-// those is a tree whose lifecycle stands open under the workflow, or whose root waits in the
-// line or on a person, which is exactly record.LiveRoots: so liveness is the term that replaces
-// the old slot test, and it covers the slots, the line and the awaiting_person wait together.
-// The children-first wait is asked of the issue as well, so that a later rule which holds an
-// issue somewhere liveness does not reach cannot silently have its work taken out of the
-// workflow.
+// daemon has started, so a root waiting in the line and one whose tree has left the workflow
+// hold none, while a root in accepting, in merging, waiting on a person, on a blocker or for
+// its children keeps the row it was started with. Every one of those is a tree whose lifecycle
+// stands open under the workflow, or whose root waits in the line or on a person, which is
+// exactly record.LiveRoots: so liveness is the term that replaces the old slot test, and it
+// covers the slots, the line and the awaiting_person wait together. The children-first wait is
+// asked of the issue as well, so that a later rule which holds an issue somewhere liveness does
+// not reach cannot silently have its work taken out of the workflow.
 //
 // What a root's own Dispatch links say is not asked, though it reads as a wait of the same
 // kind. A root the line holds behind an unfinished link is in todo, which this rule has already
@@ -1923,16 +1911,18 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // startMidPhaseMembers brings back the roles that have run of every member of the tree promotion
 // has just opened, and gives the one role whose phase the member stands in the task that carries
 // that phase on. A hand-over turns a child into that root while preserving its phase, so its phase
-// role needs the same resume start ordinary mid-phase children receive (workflow.ResumeTask,
-// which tells a carried merger its carried approved head). A root promoted held, which only a
+// role needs the same resume start ordinary mid-phase children receive
+// (workflow.ResumePhaseTask, which says to carry the phase's work on and names no head, since a
+// merger reads the head it merges on GitHub). A root promoted held, which only a
 // hand-over leaves (every other re-admission starts its root at admitted), starts no worker, and
 // the hold's notice went to the architect of the tree it was handed over from, so its own
 // architect is told of the hold (workflow.HeldNotice), whether or not it carried a gate.
 // Promotion already queued the root's branch; each other member queues its own before starting.
-// Every member resumes in workflow.ResumePhase, recorded before its start: a child of a
-// re-admitted tree, and a root a hand-over created, left awaiting its merge resume in merging,
-// since the old tree's linger disarmed the pull request (beginLinger) and only a new READY,
-// whose merge the daemon submits, arms it again.
+// No member's phase is rewritten on the way back: the phase its record carries is the phase it
+// stands in, since the merge is what ends merging and no phase of this workflow is a wait for
+// one. A child of a re-admitted tree, and a root a hand-over created, come back in merging where
+// they stood in it, and the merge their new tree's merger makes is what ends that phase: the old
+// tree's linger stopped the merge its own merger had not made (beginLinger).
 //
 // It brings back a member's other roles beside the phase's own, because the admission cap counts
 // the issues the daemon has started now: the one start that waits for a slot is the phase
@@ -1982,20 +1972,14 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		owner claim.Role
 		roles []roleToken
 	}
-	// The first pass resumes each member's phase and names every role run the second pass judges;
-	// the one read of them stands between the two, so no row is written on a reading of the claims
-	// half of it made.
+	// The first pass reads each member where its record leaves it and names every role run the
+	// second pass judges; the one read of them stands between the two, so no row is written on a
+	// reading of the claims half of it made.
 	var members []midPhaseMember
 	var keys []record.RoleRunKey
 	for _, member := range issues {
 		if member.Tree != root.Tree || record.OutOfWorkflow(member.Status) {
 			continue
-		}
-		if resume := workflow.ResumePhase(member); resume != member.Phase {
-			member.Phase = resume
-			if err := a.store.PutIssue(ctx, tx, member); err != nil {
-				return fmt.Errorf("resume %s in %s: %w", member.Key, resume, err)
-			}
 		}
 		// A member standing at admitted has run nothing in this generation: it holds no session
 		// to bring back, and its own first phase starts when the waiting line gives it a slot
@@ -2010,6 +1994,20 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		owner := workflow.RoleFor(member.Phase)
 		if owner == claim.RoleArchitect {
 			owner = ""
+		}
+		// Nor is a phase its own terminating fact has already met (workflow.PhaseFinished): a
+		// merged root stands in merging for as long as the rest of its tree runs, and giving its
+		// merger that phase's task again at every promotion would hand it work the merge has
+		// already done. It is read here, where the owner is decided, rather than beside the start
+		// below, so the member's other roles come back as they do for any phase with no owner.
+		if owner != "" {
+			finished, err := workflow.PhaseFinished(ctx, a.store, tx, member)
+			if err != nil {
+				return err
+			}
+			if finished {
+				owner = ""
+			}
 		}
 		standing := midPhaseMember{issue: member, owner: owner}
 		for _, role := range claim.Roles {
@@ -2070,12 +2068,9 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			if !workflow.StartFor(run, root, member.Generation, member.Phase) {
 				continue
 			}
-			task, err := workflow.ResumeTask(ctx, a.store, tx, member, held.role)
-			if err != nil {
-				return err
-			}
 			if err := workflow.StartOrOwe(ctx, tx, a.store, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree,
-				Role: held.role, Generation: member.Generation, Phase: member.Phase, Task: task, ResumeTask: true}, now); err != nil {
+				Role: held.role, Generation: member.Generation, Phase: member.Phase, Task: workflow.ResumePhaseTask(member),
+				ResumeTask: true}, now); err != nil {
 				return err
 			}
 		}
@@ -2132,14 +2127,15 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 			continue
 		}
 		// A holder with no work where it stands is passed over, because this repair starts
-		// phase workers and that holder has none to start. One live case is left: an issue in
-		// merging whose merge request a closed design gate holds (record.ReadyPending), whose
-		// role is the merger, where a second task would ask for a READY a person has still to
-		// approve. Every other phase the rule keeps a row for has no worker role of its own —
-		// workflow.RoleFor answers the architect for accepting, which the skip above passes
-		// over, and the empty role for held, awaiting_person, admitted, awaiting_merge and
-		// done. So the gate decides nothing here either: AtWork reads it in the phase.Admitted
-		// arm alone, and no issue at admitted reaches this line.
+		// phase workers and that holder has none to start. No live case is left on this
+		// release: merging is a worker's phase, since its merger makes the merge itself, so
+		// every phase the rule keeps a row for and that a worker does not work has no worker
+		// role of its own either — workflow.RoleFor answers the architect for accepting, which
+		// the skip above passes over, and the empty role for held, awaiting_person, admitted
+		// and done. The test stands as the backstop that keeps record.AtWork the one statement
+		// of what work is, rather than a second list of phases here. So the gate decides
+		// nothing either: AtWork reads it in the phase.Admitted arm alone, and no issue at
+		// admitted reaches this line.
 		if !record.AtWork(issue, facts.Gates[issue.Tree]) {
 			continue
 		}
