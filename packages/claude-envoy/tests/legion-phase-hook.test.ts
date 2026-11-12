@@ -10,6 +10,7 @@ import {
 import { type ActivityInput, createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { REMINDER } from "@legion/pi-shared/phase-stall"
+import { legion } from "../package.json" with { type: "json" }
 import {
   createPhaseHookEndpoint,
   PHASE_HOOK_REFUSAL,
@@ -116,7 +117,10 @@ async function harness(
     atRead = await record()
     return Response.json(state)
   }) as typeof fetch
-  const daemon = createLegionDaemonClient("http://daemon.test", fetchStub)
+  const daemon = createLegionDaemonClient("http://daemon.test", {
+    contract: legion.daemonApiVersion,
+    fetch: fetchStub,
+  })
   const lines: string[] = []
   const inbox: string[] = []
   const published: PublishInput[] = []

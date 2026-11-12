@@ -55,6 +55,7 @@ import {
 import { clearStartupTurn } from "@legion/pi-shared/startup-turn";
 import { subagentSessionCheck } from "@legion/pi-shared/subagent-session";
 import { logger } from "@oh-my-pi/pi-utils";
+import pkg from "../package.json";
 import {
   type CapabilityBudgets,
   type CapabilityHost,
@@ -361,8 +362,12 @@ export default function legionExtension(pi: PiApi): void {
 
   let daemonClient: LegionDaemonClient | undefined;
   const roleDaemon = (): LegionDaemonClient => {
+    // This build's own `legion.daemonApiVersion`, read from the manifest of the module this
+    // process loaded, as the claim's registration reads it. The daemon serves each answer in
+    // the shape the contract the caller states describes.
     daemonClient ??= createLegionDaemonClient(
-      requiredEnvironment(process.env, "LEGION_DAEMON_URL")
+      requiredEnvironment(process.env, "LEGION_DAEMON_URL"),
+      { contract: pkg.legion.daemonApiVersion }
     );
     return daemonClient;
   };

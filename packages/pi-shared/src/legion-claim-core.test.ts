@@ -6,6 +6,9 @@ import { createLegionDaemonClient } from "./daemon-client";
 import { bootLegionClaim, type LegionClaimHost } from "./legion-claim-core";
 import type { ClaimCapability } from "./legion-phase-ops";
 
+/** The contract the build under test speaks, which its client states on every request. */
+const CONTRACT = 60;
+
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
 function daemonFixture(name: string): Record<string, unknown> {
   return JSON.parse(
@@ -45,7 +48,7 @@ function claimHost(options: {
     return options.ready?.() ?? new Response(null, { status: 204 });
   }) as typeof fetch;
   const host: LegionClaimHost = {
-    daemon: createLegionDaemonClient("http://daemon.test", stub),
+    daemon: createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch: stub }),
     registration,
     setCapability: (capability) => {
       steps.push("setCapability");

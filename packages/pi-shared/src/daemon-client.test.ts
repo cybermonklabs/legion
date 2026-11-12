@@ -47,6 +47,10 @@ function daemon(respond: (url: URL) => Response): {
   return { fetch: stub, requests };
 }
 
+/** The contract the build under test speaks. Every request states it, and the refusal cases
+ * below set the contract the daemon states against it. */
+const CONTRACT = 60;
+
 const registration = {
   bootToken: "boot-token-from-the-pane",
   sessionId: "ses_architect_208",
@@ -58,7 +62,7 @@ const registration = {
 test("registers with the claim wire's request and returns the claim the daemon issued", async () => {
   const issued = daemonFixture("register.json");
   const { fetch, requests } = daemon(() => Response.json(issued));
-  const client = createLegionDaemonClient("http://daemon.test/", fetch);
+  const client = createLegionDaemonClient("http://daemon.test/", { contract: CONTRACT, fetch });
 
   await expect(client.register(registration)).resolves.toEqual(issued as never);
   expect(requests).toEqual([
@@ -68,10 +72,10 @@ test("registers with the claim wire's request and returns the claim the daemon i
 
 test("refuses a registration answer that drops a field the daemon API contract requires, without quoting its secret", async () => {
   const registered = daemonFixture("register.json");
-  const client = createLegionDaemonClient(
-    "http://daemon.test",
-    daemon(() => Response.json(without(registered, "promptAgents"))).fetch
-  );
+  const client = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: daemon(() => Response.json(without(registered, "promptAgents"))).fetch,
+  });
 
   const refused = client.register(registration);
   await expect(refused).rejects.toBeInstanceOf(LegionDaemonContractError);
@@ -83,10 +87,10 @@ test("refuses a registration answer that drops a field the daemon API contract r
 });
 
 test("a refusal carries its status and the daemon's sentence", async () => {
-  const client = createLegionDaemonClient(
-    "http://daemon.test",
-    daemon(() => Response.json(daemonFixture("error.json"), { status: 409 })).fetch
-  );
+  const client = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: daemon(() => Response.json(daemonFixture("error.json"), { status: 409 })).fetch,
+  });
 
   const refused = await client.register(registration).catch((error: unknown) => error);
   expect(refused).toBeInstanceOf(LegionDaemonApiError);
@@ -99,10 +103,10 @@ test("a refusal carries its status and the daemon's sentence", async () => {
 });
 
 test("a refusal whose body is not the daemon's refusal shape keeps its status and says so", async () => {
-  const client = createLegionDaemonClient(
-    "http://daemon.test",
-    daemon(() => new Response("upstream timed out", { status: 504 })).fetch
-  );
+  const client = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: daemon(() => new Response("upstream timed out", { status: 504 })).fetch,
+  });
 
   const refused = await client.register(registration).catch((error: unknown) => error);
   expect(refused).toBeInstanceOf(LegionDaemonApiError);
@@ -113,7 +117,7 @@ test("a refusal whose body is not the daemon's refusal shape keeps its status an
 
 test("ready and exit post the claim wire's requests and accept only the empty 204", async () => {
   const { fetch, requests } = daemon(() => new Response(null, { status: 204 }));
-  const client = createLegionDaemonClient("http://daemon.test", fetch);
+  const client = createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch });
   const ready = {
     claimToken: "legion-legion-legion-208-architect",
     sessionId: "ses_architect_208",
@@ -132,16 +136,16 @@ test("ready and exit post the claim wire's requests and accept only the empty 20
     },
   ]);
 
-  const talkative = createLegionDaemonClient(
-    "http://daemon.test",
-    daemon(() => Response.json({})).fetch
-  );
+  const talkative = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: daemon(() => Response.json({})).fetch,
+  });
   await expect(talkative.ready(ready)).rejects.toBeInstanceOf(LegionDaemonContractError);
 });
 
 test("activity posts the claim wire's report and accepts only the empty 204", async () => {
   const { fetch, requests } = daemon(() => new Response(null, { status: 204 }));
-  const client = createLegionDaemonClient("http://daemon.test", fetch);
+  const client = createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch });
   const report = {
     claimToken: "legion-legion-legion-208-implementer",
     sessionId: "ses_implementer_208",
@@ -158,10 +162,10 @@ test("activity posts the claim wire's report and accepts only the empty 204", as
     { method: "POST", url: "http://daemon.test/legion/v1/claims/activity", body: report },
   ]);
 
-  const talkative = createLegionDaemonClient(
-    "http://daemon.test",
-    daemon(() => Response.json({})).fetch
-  );
+  const talkative = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: daemon(() => Response.json({})).fetch,
+  });
   await expect(talkative.activity(report)).rejects.toBeInstanceOf(LegionDaemonContractError);
 });
 
@@ -203,7 +207,7 @@ test("the release records are read by a POST carrying the claim's token and secr
     ],
   };
   const { fetch, requests } = daemon(() => Response.json(records));
-  const client = createLegionDaemonClient("http://daemon.test", fetch);
+  const client = createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch });
   // The pod holds its claim and no operator token, so the claim's own token and secret
   // authenticate the read, and the secret rides in the body rather than a query string.
   const window = {
@@ -222,19 +226,19 @@ test("the release records are read by a POST carrying the claim's token and secr
   ]);
 
   // A window with nothing in it is three empty lists; a list the daemon left out is no answer.
-  const empty = createLegionDaemonClient(
-    "http://daemon.test",
-    daemon(() => Response.json({ releases: [], resumes: [], holds: [] })).fetch
-  );
+  const empty = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: daemon(() => Response.json({ releases: [], resumes: [], holds: [] })).fetch,
+  });
   await expect(empty.releaseRecords(window)).resolves.toEqual({
     releases: [],
     resumes: [],
     holds: [],
   });
-  const partial = createLegionDaemonClient(
-    "http://daemon.test",
-    daemon(() => Response.json({ releases: [], resumes: [] })).fetch
-  );
+  const partial = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: daemon(() => Response.json({ releases: [], resumes: [] })).fetch,
+  });
   await expect(partial.releaseRecords(window)).rejects.toBeInstanceOf(LegionDaemonContractError);
 });
 
@@ -244,7 +248,7 @@ test("a ready carrying the capability report is the daemon's golden ReadyRequest
   const fixture = daemonFixture("ready.json");
   const golden: ReadyInput = LegionReadyRequest.parse(fixture);
   const { fetch, requests } = daemon(() => new Response(null, { status: 204 }));
-  const client = createLegionDaemonClient("http://daemon.test", fetch);
+  const client = createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch });
 
   await expect(client.ready(golden)).resolves.toBeUndefined();
   expect(requests).toEqual([
@@ -257,9 +261,9 @@ test("reads the daemon's state over a bodyless GET", async () => {
   const state = daemonFixture("state.json");
   const { fetch, requests } = daemon(() => Response.json(state));
 
-  await expect(createLegionDaemonClient("http://daemon.test", fetch).state()).resolves.toEqual(
-    state as never
-  );
+  await expect(
+    createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch }).state()
+  ).resolves.toEqual(state as never);
   expect(requests).toEqual([
     { method: "GET", url: "http://daemon.test/legion/v1/state", body: undefined },
   ]);
@@ -276,7 +280,10 @@ test("a state read hands fetch its caller's signal, and an abort ends a read the
   const controller = new AbortController();
   const late = new Error("the reader stopped waiting");
 
-  const read = createLegionDaemonClient("http://daemon.test", hung).state({
+  const read = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: hung,
+  }).state({
     signal: controller.signal,
   });
   controller.abort(late);
@@ -396,7 +403,10 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     const call = calls.find(([, route]) => route === url.pathname);
     return Response.json(call === undefined ? { error: "no route" } : daemonFixture(call[3]));
   });
-  const client = createLegionDaemonClient("http://daemon.test", fetch) as unknown as WorkflowClient;
+  const client = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch,
+  }) as unknown as WorkflowClient;
 
   for (const [operation, route, body, fixture] of calls) {
     expect(client[operation], `${operation} is available`).toBeDefined();
@@ -410,15 +420,15 @@ test("posts every Stage 3 workflow request through its matching route", async ()
 });
 
 test("a workflow refusal surfaces its stable code and message", async () => {
-  const client = createLegionDaemonClient(
-    "http://daemon.test",
-    daemon(() =>
+  const client = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: daemon(() =>
       Response.json(
         { code: "GATE_UNAPPROVED", error: "the current spec version needs approval" },
         { status: 409 }
       )
-    ).fetch
-  ) as unknown as {
+    ).fetch,
+  }) as unknown as {
     readonly gateRegister?: (body: object) => Promise<unknown>;
   };
 
@@ -443,7 +453,7 @@ test("a workflow refusal surfaces its stable code and message", async () => {
 test("a controller registers on the claim route with its capability and reads the controller's answer", async () => {
   const issued = daemonFixture("register-controller.json");
   const { fetch, requests } = daemon(() => Response.json(issued));
-  const client = createLegionDaemonClient("http://daemon.test", fetch);
+  const client = createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch });
   const capability = { ...registration, bootToken: "controller-capability" };
 
   await expect(client.registerController(capability)).resolves.toEqual(issued as never);
@@ -451,21 +461,23 @@ test("a controller registers on the claim route with its capability and reads th
     { method: "POST", url: "http://daemon.test/legion/v1/claims/register", body: capability },
   ]);
   // A claim's registration is not a controller's, nor the other way round.
-  const claimAnswer = createLegionDaemonClient(
-    "http://daemon.test",
-    daemon(() => Response.json(daemonFixture("register.json"))).fetch
-  );
+  const claimAnswer = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: daemon(() => Response.json(daemonFixture("register.json"))).fetch,
+  });
   await expect(claimAnswer.registerController(capability)).rejects.toBeInstanceOf(
     LegionDaemonContractError
   );
   await expect(
-    createLegionDaemonClient("http://daemon.test", fetch).register(registration)
+    createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch }).register(
+      registration
+    )
   ).rejects.toBeInstanceOf(LegionDaemonContractError);
 });
 
 test("the registered controller mints its grant with the session form that names no tree", async () => {
   const { fetch, requests } = daemon(() => Response.json(daemonFixture("grant.json")));
-  const client = createLegionDaemonClient("http://daemon.test", fetch);
+  const client = createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch });
 
   await expect(
     client.controllerGrant({ sessionId: "ses_controller", secret: "registration-secret" })
@@ -483,15 +495,15 @@ test("the registration, the grant and the handoff completion are read whole when
   const registered = daemonFixture("register.json");
   const granted = daemonFixture("grant.json");
   const completed = daemonFixture("handoff-complete.json");
-  const client = createLegionDaemonClient(
-    "http://daemon.test",
-    daemon((url) => {
+  const client = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: daemon((url) => {
       if (url.pathname === "/legion/v1/claims/register")
         return Response.json({ ...registered, roleTokens: { reviewer: "t" } });
       if (url.pathname === "/legion/v1/grants") return Response.json({ ...granted, scope: "repo" });
       return Response.json({ ...completed, mergeQueuePosition: 2 });
-    }).fetch
-  );
+    }).fetch,
+  });
 
   const claim = await client.register(registration);
   expect(claim).toEqual(registered as never);
@@ -519,28 +531,28 @@ test("the registration, the grant and the handoff completion are read whole when
   expect(completion).not.toHaveProperty("mergeQueuePosition");
 });
 
-test("a body that drops a required field, or carries one of a type the contract does not describe, is refused by the path of the field that is wrong", async () => {
+test("a body that drops a field the plugin reads, or carries one of a type the contract does not describe, is refused by the path of the field that is wrong", async () => {
   const state = daemonFixture("state.json");
   const issues = state.issues as Record<string, Record<string, unknown>>;
 
-  const dropped = await createLegionDaemonClient(
-    "http://daemon.test",
-    daemon(() => Response.json(without(state, "capabilities"))).fetch
-  )
+  const dropped = await createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: daemon(() => Response.json(without(state, "issues"))).fetch,
+  })
     .state()
     .catch((error: unknown) => error);
   expect(dropped).toBeInstanceOf(LegionDaemonContractError);
-  expect((dropped as Error).message).toContain("capabilities");
+  expect((dropped as Error).message).toContain("issues");
 
-  const mistyped = await createLegionDaemonClient(
-    "http://daemon.test",
-    daemon(() =>
+  const mistyped = await createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: daemon(() =>
       Response.json({
         ...state,
         issues: { ...issues, "LEGION-208": { ...issues["LEGION-208"], generation: "three" } },
       })
-    ).fetch
-  )
+    ).fetch,
+  })
     .state()
     .catch((error: unknown) => error);
   expect(mistyped).toBeInstanceOf(LegionDaemonContractError);
@@ -549,15 +561,15 @@ test("a body that drops a required field, or carries one of a type the contract 
 
 /** A daemon whose every route refuses with that status, that code, and a key no schema names. */
 function refusing(status: number, code: string): LegionDaemonClient {
-  return createLegionDaemonClient(
-    "http://daemon.test",
-    daemon(() =>
+  return createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: daemon(() =>
       Response.json(
         { code, error: "Dispatch refused the write", retryAfterSeconds: 30 },
         { status }
       )
-    ).fetch
-  );
+    ).fetch,
+  });
 }
 
 test("a 409 refusal keeps its stable code through a key no schema names", async () => {
@@ -603,4 +615,243 @@ test("a 502 refusal keeps its stable code through a key no schema names, and is 
   expect(retried).toMatchObject({ status: 502, code: "DISPATCH_FAILED" });
   expect(attempts).toBe(1);
   expect(waits).toEqual([]);
+});
+
+/** A daemon that answers `body` with `contract` in its `Legion-Daemon-Contract` header, and
+ * states no contract where `contract` is undefined. */
+function stating(body: unknown, contract: number | undefined, status = 200): typeof fetch {
+  return (async (_input, _init) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: {
+        "Content-Type": "application/json",
+        ...(contract === undefined ? {} : { "Legion-Daemon-Contract": String(contract) }),
+      },
+    })) as typeof fetch;
+}
+
+/** The state as a daemon serves it to a build that reads only what plugin code reads: every
+ * field of `LEGION_ANSWER_READS` and nothing else. */
+const PARED_STATE = {
+  daemon: { project: "legion" },
+  issues: { "LEGION-208": { phase: "implementing" } },
+};
+
+test("an answer with every field no plugin code reads left out is read whole", async () => {
+  const client = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: stating(PARED_STATE, CONTRACT),
+  });
+
+  await expect(client.state()).resolves.toEqual(PARED_STATE as never);
+
+  // The per-issue record and the health body, pared the same way.
+  const record = { phase: "done", check: { role: "tester", looks: 2, last: false } };
+  const reading = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: stating(record, CONTRACT),
+  });
+  await expect(reading.record("LEGION-208")).resolves.toEqual(record as never);
+
+  const healthy = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: stating({ project: "legion" }, CONTRACT),
+  });
+  await expect(healthy.health()).resolves.toEqual({ project: "legion" });
+});
+
+test("an answer whose field carries a type the contract does not describe is refused", async () => {
+  const client = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: stating({ ...PARED_STATE, issues: { "LEGION-208": { phase: 7 } } }, CONTRACT),
+  });
+
+  const refused = await client.state().catch((error: unknown) => error);
+  expect(refused).toBeInstanceOf(LegionDaemonContractError);
+  expect((refused as Error).message).toContain("issues.LEGION-208.phase");
+});
+
+/** The refusal a build at `CONTRACT` raises for a state body it cannot read, from a daemon
+ * stating `daemon`. The body drops `issues`, which plugin code reads, and carries a word no
+ * message may quote. */
+async function refusalFrom(daemonContract: number | undefined): Promise<Error> {
+  const client = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: stating({ daemon: { project: "legion" }, secret: BODY_SECRET }, daemonContract),
+  });
+  return (await client.state().catch((error: unknown) => error)) as Error;
+}
+
+/** A value only the body carries: no refusal message may quote it. */
+const BODY_SECRET = "U3VwZXJ2aXNlZEJ5TGVnaW9u";
+
+test("a refusal from a build below the daemon says the pod waits for its update round", async () => {
+  const refused = await refusalFrom(CONTRACT + 1);
+
+  expect(refused).toBeInstanceOf(LegionDaemonContractError);
+  expect(refused.message).toContain("issues");
+  expect(refused.message).toContain(`This build speaks daemon API contract ${CONTRACT}.`);
+  expect(refused.message).toContain(`The daemon speaks ${CONTRACT + 1}.`);
+  expect(refused.message).toContain(
+    "This pod is behind the daemon, and it waits for its update round."
+  );
+  expect(refused.message).not.toContain(BODY_SECRET);
+});
+
+test("a refusal from a build above the daemon says the daemon is the older of the two", async () => {
+  const refused = await refusalFrom(CONTRACT - 1);
+
+  expect(refused).toBeInstanceOf(LegionDaemonContractError);
+  expect(refused.message).toContain(`This build speaks daemon API contract ${CONTRACT}.`);
+  expect(refused.message).toContain(`The daemon speaks ${CONTRACT - 1}.`);
+  expect(refused.message).toContain(
+    "The daemon is the older of the two, and the update round will not cure it."
+  );
+  expect(refused.message).not.toContain(BODY_SECRET);
+});
+
+test("a refusal of an answer carrying no contract says the daemon stated none", async () => {
+  const refused = await refusalFrom(undefined);
+
+  expect(refused).toBeInstanceOf(LegionDaemonContractError);
+  expect(refused.message).toContain(`This build speaks daemon API contract ${CONTRACT}.`);
+  expect(refused.message).toContain(
+    "The daemon stated no contract, so this build cannot say which side is behind."
+  );
+  expect(refused.message).not.toContain(BODY_SECRET);
+});
+
+test("a refusal raised on the retry of a dropped attempt says the earlier attempt may have been applied", async () => {
+  // The first attempt loses its connection before the daemon answers, as a restart makes it;
+  // the second reaches a daemon whose answer this build cannot read.
+  let attempts = 0;
+  const restarting = (async (_input, _init) => {
+    attempts += 1;
+    if (attempts === 1) throw new TypeError("fetch failed");
+    return new Response(JSON.stringify({ daemon: { project: "legion" }, secret: BODY_SECRET }), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Legion-Daemon-Contract": String(CONTRACT + 1),
+      },
+    });
+  }) as typeof fetch;
+  const client = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: restarting,
+  });
+
+  let clock = 0;
+  const refused = (await retryWhileDaemonRestarts("handoff_complete", () => client.state(), {
+    now: () => clock,
+    sleep: async (ms: number) => {
+      clock += ms;
+    },
+  }).catch((error: unknown) => error)) as Error;
+
+  expect(refused).toBeInstanceOf(LegionDaemonContractError);
+  expect(attempts).toBe(2);
+  expect(refused.message).toContain(
+    "an earlier attempt of handoff_complete lost its connection before the daemon answered, and may have been applied: read_record of your own issue says whether it landed"
+  );
+  expect(refused.message).toContain(
+    "This pod is behind the daemon, and it waits for its update round."
+  );
+  expect(refused.message).not.toContain(BODY_SECRET);
+});
+
+test("every request states this build's contract, a GET included", async () => {
+  const stated: { readonly method: string; readonly contract: string | null }[] = [];
+  const recording = (async (input, init) => {
+    stated.push({
+      method: init?.method ?? "GET",
+      contract: new Headers(init?.headers).get("Legion-Plugin-Contract"),
+    });
+    const url = new URL(input.toString());
+    if (url.pathname === "/legion/v1/state") return Response.json(PARED_STATE);
+    if (url.pathname === "/healthz") return Response.json({ project: "legion" });
+    if (url.pathname.endsWith("/record")) return Response.json({ phase: "implementing" });
+    return new Response(null, { status: 204 });
+  }) as typeof fetch;
+  const client = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: recording,
+  });
+
+  await client.state();
+  await client.record("LEGION-208");
+  await client.health();
+  await client.daemonContract();
+  await client.exit({
+    claimToken: "legion-legion-legion-208-architect",
+    sessionId: "ses_architect_208",
+    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+    generation: 3,
+    reason: "session ended",
+  });
+
+  expect(stated).toEqual([
+    { method: "GET", contract: String(CONTRACT) },
+    { method: "GET", contract: String(CONTRACT) },
+    { method: "GET", contract: String(CONTRACT) },
+    { method: "GET", contract: String(CONTRACT) },
+    { method: "POST", contract: String(CONTRACT) },
+  ]);
+});
+
+test("a record read answers undefined for RECORD_NOT_FOUND and throws for every other refusal", async () => {
+  const absent = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: stating(
+      { code: "RECORD_NOT_FOUND", error: "The daemon has no record for LEGION-404" },
+      CONTRACT,
+      404
+    ),
+  });
+  await expect(absent.record("LEGION-404")).resolves.toBeUndefined();
+
+  // A 404 of another code is a read that failed, not an absent record.
+  const otherCode = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: stating({ code: "ISSUE_NOT_FOUND", error: "no such issue" }, CONTRACT, 404),
+  });
+  await expect(otherCode.record("LEGION-404")).rejects.toBeInstanceOf(LegionDaemonApiError);
+
+  const refused = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: stating({ error: "the daemon is restarting" }, CONTRACT, 503),
+  });
+  await expect(refused.record("LEGION-208")).rejects.toBeInstanceOf(LegionDaemonApiError);
+
+  const unreadable = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: stating({ status: "ok" }, CONTRACT),
+  });
+  await expect(unreadable.record("LEGION-208")).rejects.toBeInstanceOf(LegionDaemonContractError);
+});
+
+test("the daemon's contract is read from the header, and no body is parsed", async () => {
+  const requests: string[] = [];
+  const unreadable = (async (input) => {
+    requests.push(new URL(input.toString()).pathname);
+    return new Response("this is no JSON body", {
+      status: 200,
+      headers: { "Legion-Daemon-Contract": "61" },
+    });
+  }) as typeof fetch;
+  const client = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: unreadable,
+  });
+
+  await expect(client.daemonContract()).resolves.toBe(61);
+  expect(requests).toEqual(["/healthz"]);
+  // The same answer through `health`, which does parse, is refused: the two differ by the body.
+  await expect(client.health()).rejects.toBeInstanceOf(LegionDaemonContractError);
+
+  const silent = createLegionDaemonClient("http://daemon.test", {
+    contract: CONTRACT,
+    fetch: stating({ project: "legion" }, undefined),
+  });
+  await expect(silent.daemonContract()).resolves.toBeUndefined();
 });

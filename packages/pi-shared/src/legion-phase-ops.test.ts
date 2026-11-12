@@ -15,6 +15,9 @@ import {
   phaseOpParameters,
 } from "./legion-phase-ops";
 
+/** The contract the build under test speaks, which its client states on every request. */
+const CONTRACT = 60;
+
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
 function daemonFixture(name: string): Record<string, unknown> {
   return JSON.parse(
@@ -60,7 +63,7 @@ function runtime(
     return Response.json(answers[route] ?? {});
   }) as typeof fetch;
   const ops: PhaseOpRuntime = {
-    daemon: createLegionDaemonClient("http://daemon.test", stub),
+    daemon: createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch: stub }),
     claim,
     handoffReport: async (phase, role) => {
       lookups.push(`${phase} ${role}`);
@@ -327,7 +330,7 @@ function closedRuntime(
     return Response.json({});
   }) as typeof fetch;
   const ops: PhaseOpRuntime = {
-    daemon: createLegionDaemonClient("http://daemon.test", stub),
+    daemon: createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch: stub }),
     claim,
     handoffReport: async (phase, role) => {
       throw new Error(`no handoff report expected for the ${role} at ${phase}`);
@@ -533,7 +536,7 @@ test("request_backward_move names the issue an architect returns from accepting,
     return Response.json({});
   }) as typeof fetch;
   const runtimeFor = (claim: ClaimCapability): PhaseOpRuntime => ({
-    daemon: createLegionDaemonClient("http://daemon.test", stub),
+    daemon: createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch: stub }),
     claim,
     handoffReport: async () => REPORT,
     branchHead: async () => {
@@ -735,7 +738,7 @@ function recordsRuntime(records: unknown) {
     return Response.json(records);
   }) as typeof fetch;
   const ops: PhaseOpRuntime = {
-    daemon: createLegionDaemonClient("http://daemon.test", stub),
+    daemon: createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch: stub }),
     claim: implementer,
     handoffReport: async () => {
       throw new Error("no handoff report expected");
@@ -825,7 +828,7 @@ test("ready_for_update answers for the round its task named, with the branch hea
   const head = "9f1c0a7d4b2e6f8a3c5d1e7b9a0f2c4d6e8b1a35";
   const round = "pod:9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22";
   const runtimeFor = (branchHead: () => Promise<string>): PhaseOpRuntime => ({
-    daemon: createLegionDaemonClient("http://daemon.test", stub),
+    daemon: createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch: stub }),
     claim: implementer,
     handoffReport: async () => {
       throw new Error("no handoff report expected");
@@ -892,7 +895,7 @@ test("ready_for_update with no round is refused before any daemon request", asyn
     return new Response(null, { status: 204 });
   }) as typeof fetch;
   const ops: PhaseOpRuntime = {
-    daemon: createLegionDaemonClient("http://daemon.test", stub),
+    daemon: createLegionDaemonClient("http://daemon.test", { contract: CONTRACT, fetch: stub }),
     claim: implementer,
     handoffReport: async () => {
       throw new Error("no handoff report expected");
@@ -925,7 +928,10 @@ test("ready_for_update signals without a head when the branch-head lookup fails,
   await expect(
     executePhaseOp(
       {
-        daemon: createLegionDaemonClient("http://daemon.test", stub),
+        daemon: createLegionDaemonClient("http://daemon.test", {
+          contract: CONTRACT,
+          fetch: stub,
+        }),
         claim: implementer,
         handoffReport: async () => {
           throw new Error("no handoff report expected");

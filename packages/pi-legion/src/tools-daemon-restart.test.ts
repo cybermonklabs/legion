@@ -8,6 +8,9 @@ import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi
 import { z } from "zod";
 import { createLegionTool } from "./tools";
 
+/** The contract the build under test speaks, which its client states on every request. */
+const CONTRACT = 60;
+
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
 function daemonFixture(name: string): string {
   return readFileSync(
@@ -113,7 +116,7 @@ function restartingClient(live: string, down: string, outage: number) {
     const url = String(input);
     return fetch(sent <= outage ? url.replace(live, down) : url, init);
   }) as typeof fetch;
-  return createLegionDaemonClient(live, fetchFn);
+  return createLegionDaemonClient(live, { contract: CONTRACT, fetch: fetchFn });
 }
 
 /** A virtual clock: each wait is recorded and moves time on at once. */
@@ -225,7 +228,7 @@ test("handoff_complete retries a connection the daemon closed before answering, 
   expect(result.isError).toBe(true);
   expect(result.content[0]).toEqual({
     type: "text",
-    text: `POST /legion/v1/handoff/complete failed with 409 HANDOFF_ALREADY_RECORDED: ${detail} (an earlier attempt of handoff_complete lost its connection before the daemon answered, and may have been applied: read the record before calling again)`,
+    text: `POST /legion/v1/handoff/complete failed with 409 HANDOFF_ALREADY_RECORDED: ${detail} (an earlier attempt of handoff_complete lost its connection before the daemon answered, and may have been applied: read_record of your own issue says whether it landed)`,
   });
   expect(completed).toEqual([]);
   expect(live.answered.filter((route) => route === "/legion/v1/handoff/complete")).toHaveLength(1);
@@ -406,7 +409,7 @@ test("a 503 from a proxy in front of the daemon is retried like a refused connec
   const clock = virtualClock();
   const tool = toolFor(
     "architect",
-    createLegionDaemonClient(`http://127.0.0.1:${server.port}`),
+    createLegionDaemonClient(`http://127.0.0.1:${server.port}`, { contract: CONTRACT }),
     clock
   );
 

@@ -80,7 +80,6 @@ import {
   roleHeldBy,
   type SubscribeResult,
 } from "@legion/envoy-client/transport"
-import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { findPushedBranchHead, paneHandoffReport } from "@legion/pi-shared/handoff-record"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
@@ -108,6 +107,7 @@ import {
   type LegionClaim,
   legionPane,
   logLegion,
+  paneDaemonClient,
   startLegionClaim,
   stopPane,
 } from "./legion-claim"
@@ -2163,7 +2163,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
   const clientInstanceID = newClientInstanceID()
   let runtime: ChannelToolRuntime | undefined
   let claim: LegionClaim | undefined
-  const daemon = pane === undefined ? undefined : createLegionDaemonClient(pane.daemonUrl)
+  const daemon = pane === undefined ? undefined : paneDaemonClient(pane.daemonUrl)
   // INFRA-220: the phase reminder's Claude Code host (`./legion-phase-hook`), which Claude Code's
   // own hooks drive through the `legion_phase_hook` tool. It is started here, beside the claim it
   // gates on, and restores this session's record as it starts, before any hook can be answered.

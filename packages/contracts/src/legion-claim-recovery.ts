@@ -76,6 +76,6 @@ export const LegionFreshSessionResponse = z.object({
  * rather than a failure, because the claim came back and whatever task it owed has gone to it
  * again. */
 export const LegionCompactResponse = z.object({
-  compacted: z.boolean(),
+  compacted: z.boolean().optional(),
   reason: z.string().optional(),
 });

@@ -14,6 +14,10 @@ import {
   LegionGrantResponse,
   LegionHandoffCompleteRequest,
   LegionHandoffCompleteResponse,
+  type LegionHealth,
+  LegionHealthResponse,
+  type LegionIssue,
+  LegionIssueRecordResponse,
   LegionIssueStatusRequest,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
@@ -88,6 +92,23 @@ export interface LegionDaemonClient {
    * that stops waiting for a daemon that does not answer (the phase reminder's bounded record
    * check) aborts it rather than leave it open. */
   readonly state: (options?: { readonly signal?: AbortSignal }) => Promise<LegionState>;
+  /** One issue's record, the value the whole state holds under `issues.<key>`, or `undefined`
+   * for an issue the daemon records nothing of, which it answers 404 `RECORD_NOT_FOUND`. Every
+   * other refusal throws, so a caller's `undefined` is the absent record and its `catch` is the
+   * read that failed. `signal` aborts the request as `state`'s does. */
+  readonly record: (
+    issue: string,
+    options?: { readonly signal?: AbortSignal }
+  ) => Promise<LegionIssue | undefined>;
+  /** That the daemon is serving, and the project it serves: one word for the controller's boot
+   * check, which read the whole state for it before. */
+  readonly health: (options?: { readonly signal?: AbortSignal }) => Promise<LegionHealth>;
+  /** The contract the daemon states on its answer, or `undefined` where it states none. It
+   * reads the health route's header and parses no body, so it answers for a daemon whose health
+   * body this build cannot read: the two numbers are what a reader compares. */
+  readonly daemonContract: (options?: {
+    readonly signal?: AbortSignal;
+  }) => Promise<number | undefined>;
   readonly register: (input: RegisterInput) => Promise<LegionRegistration>;
   /** The same route, for the operator-launched controller: `bootToken` is the capability `legion
    * controller start` fetched, and the answer is the controller's registration. */
@@ -162,14 +183,16 @@ export interface LegionDaemonClient {
 }
 
 /** The daemon answered with a status that is not success. `detail` is the sentence it put
- * under `error`; workflow refusals also carry their stable `code`. */
+ * under `error`; workflow refusals also carry their stable `code`. `daemonContract` is the
+ * contract the daemon stated on that answer, `undefined` where it stated none. */
 export class LegionDaemonApiError extends Error {
   constructor(
     readonly method: string,
     readonly path: string,
     readonly status: number,
     readonly code: string | undefined,
-    readonly detail: string
+    readonly detail: string,
+    readonly daemonContract?: number
   ) {
     super(
       `${method} ${path} failed with ${status}${code === undefined ? "" : ` ${code}`}: ${detail}`
@@ -178,17 +201,38 @@ export class LegionDaemonApiError extends Error {
   }
 }
 
-/** A success the daemon API contract does not describe. The body is never quoted: a
- * registration's carries the claim's secret. */
+/** Which of the two builds is behind, for the refusal below: this build's contract, the one the
+ * daemon stated, and what a role can do about the difference. A pod below the daemon is cured
+ * by its update round, which replaces the process with one that reads this answer. A pod above
+ * the daemon is not: the daemon is the older of the two, and no update round of the pod moves
+ * it. */
+function contractStanding(mine: number, daemon: number | undefined): string {
+  if (daemon === undefined) {
+    return `This build speaks daemon API contract ${mine}. The daemon stated no contract, so this build cannot say which side is behind.`;
+  }
+  if (mine < daemon) {
+    return `This build speaks daemon API contract ${mine}. The daemon speaks ${daemon}. This pod is behind the daemon, and it waits for its update round.`;
+  }
+  if (mine > daemon) {
+    return `This build speaks daemon API contract ${mine}. The daemon speaks ${daemon}. The daemon is the older of the two, and the update round will not cure it.`;
+  }
+  return `This build speaks daemon API contract ${mine}. The daemon speaks ${daemon}. Neither side is behind.`;
+}
+
+/** A success the daemon API contract does not describe: the path of each field that is wrong,
+ * the contract this build speaks, the contract the daemon stated, and which side is behind. The
+ * body is never quoted: a registration's carries the claim's secret. */
 export class LegionDaemonContractError extends Error {
   constructor(
     readonly method: string,
     readonly path: string,
     readonly status: number,
-    problem: string
+    readonly pluginContract: number,
+    readonly daemonContract: number | undefined,
+    readonly problem: string
   ) {
     super(
-      `${method} ${path} answered ${status} with a body the daemon API contract does not describe: ${problem}`
+      `${method} ${path} answered ${status} with a body the daemon API contract does not describe: ${problem}. ${contractStanding(pluginContract, daemonContract)}`
     );
     this.name = "LegionDaemonContractError";
   }
@@ -336,8 +380,11 @@ export async function retryWhileDaemonRestarts<T>(
     } catch (error) {
       const unreachable = daemonUnreachable(error);
       if (unreachable === undefined) {
-        if (dropped && error instanceof LegionDaemonApiError) {
-          error.message += ` (an earlier attempt of ${label} lost its connection before the daemon answered, and may have been applied: read the record before calling again)`;
+        if (
+          dropped &&
+          (error instanceof LegionDaemonApiError || error instanceof LegionDaemonContractError)
+        ) {
+          error.message += ` (an earlier attempt of ${label} lost its connection before the daemon answered, and may have been applied: read_record of your own issue says whether it landed)`;
         }
         throw error;
       }
@@ -384,31 +431,65 @@ function parseBody<T>(
   };
 }
 
+/** What `createLegionDaemonClient` needs of its host: the contract this build speaks, and the
+ * `fetch` the requests go through. `contract` is required, and each host passes its own
+ * manifest's `legion.daemonApiVersion` (`packages/pi-legion/extensions/legion.ts`,
+ * `packages/claude-envoy/src/envoy-channel-server.ts`): a client that stated nothing would be
+ * served the shape of whatever pod the daemon places it in, which is the defect
+ * dispatch://INFRA-2694 reports. */
+export interface LegionDaemonClientOptions {
+  readonly contract: number;
+  readonly fetch?: typeof fetch;
+}
+
+/** The request header a caller states its own contract in, and the response header the daemon
+ * states its own in (`packages/daemon/internal/api/server.go`). */
+const PLUGIN_CONTRACT_HEADER = "Legion-Plugin-Contract";
+const DAEMON_CONTRACT_HEADER = "Legion-Daemon-Contract";
+
+/** The contract the daemon stated on an answer, or `undefined` where it stated none or stated
+ * what is no positive whole number. A daemon older than the header states none. */
+function statedContract(headers: Headers): number | undefined {
+  const stated = headers.get(DAEMON_CONTRACT_HEADER);
+  if (stated === null) return undefined;
+  const contract = Number(stated);
+  return Number.isSafeInteger(contract) && contract > 0 ? contract : undefined;
+}
+
 export function createLegionDaemonClient(
   baseUrl: string,
-  fetchFn: typeof fetch = fetch
+  options: LegionDaemonClientOptions
 ): LegionDaemonClient {
   const endpoint = baseUrl.replace(/\/+$/, "");
+  const contract = options.contract;
+  const fetchFn = options.fetch ?? fetch;
 
-  /** The response's status and body once the daemon answered success; a refusal throws. */
+  /** The response's status, body and stated contract once the daemon answered success; a
+   * refusal throws. Every request carries this build's contract, a GET as much as a POST: the
+   * daemon serves each caller the shape that contract describes, and a caller that states none
+   * is served the shape of the pod the daemon places it in. */
   const call = async (
     method: "GET" | "POST",
     path: string,
     body?: object,
     signal?: AbortSignal
-  ): Promise<{ readonly status: number; readonly text: string }> => {
+  ): Promise<{
+    readonly status: number;
+    readonly text: string;
+    readonly daemonContract: number | undefined;
+  }> => {
     const response = await fetchFn(`${endpoint}${path}`, {
-      ...(body === undefined
-        ? {}
-        : {
-            method,
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          }),
+      method,
+      headers: {
+        [PLUGIN_CONTRACT_HEADER]: String(contract),
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       ...(signal === undefined ? {} : { signal }),
     });
     const text = await response.text();
-    if (response.ok) return { status: response.status, text };
+    const daemonContract = statedContract(response.headers);
+    if (response.ok) return { status: response.status, text, daemonContract };
     const refusal = parseBody(LegionErrorResponse, text);
     if ("value" in refusal) {
       throw new LegionDaemonApiError(
@@ -416,7 +497,8 @@ export function createLegionDaemonClient(
         path,
         response.status,
         refusal.value.code,
-        refusal.value.error
+        refusal.value.error,
+        daemonContract
       );
     }
     throw new LegionDaemonApiError(
@@ -424,7 +506,8 @@ export function createLegionDaemonClient(
       path,
       response.status,
       undefined,
-      `${JSON.stringify(text)} is not the daemon's refusal shape (${refusal.problem})`
+      `${JSON.stringify(text)} is not the daemon's refusal shape (${refusal.problem})`,
+      daemonContract
     );
   };
 
@@ -435,10 +518,17 @@ export function createLegionDaemonClient(
     body?: object,
     signal?: AbortSignal
   ): Promise<T> => {
-    const { status, text } = await call(method, path, body, signal);
+    const { status, text, daemonContract } = await call(method, path, body, signal);
     const parsed = parseBody(schema, text);
     if ("problem" in parsed) {
-      throw new LegionDaemonContractError(method, path, status, parsed.problem);
+      throw new LegionDaemonContractError(
+        method,
+        path,
+        status,
+        contract,
+        daemonContract,
+        parsed.problem
+      );
     }
     return parsed.value;
   };
@@ -453,20 +543,51 @@ export function createLegionDaemonClient(
 
   /** The claim routes that answer 204 and nothing else. */
   const acknowledge = async (path: string, body: object, signal?: AbortSignal): Promise<void> => {
-    const { status, text } = await call("POST", path, body, signal);
+    const { status, text, daemonContract } = await call("POST", path, body, signal);
     if (status !== 204 || text !== "") {
       throw new LegionDaemonContractError(
         "POST",
         path,
         status,
+        contract,
+        daemonContract,
         "the route answers 204 with no body"
       );
     }
   };
 
   return {
-    state: (options) =>
-      read("GET", "/legion/v1/state", LegionStateResponse, undefined, options?.signal),
+    state: (reading) =>
+      read("GET", "/legion/v1/state", LegionStateResponse, undefined, reading?.signal),
+    record: async (issue, reading) => {
+      try {
+        return await read(
+          "GET",
+          `/legion/v1/issues/${encodeURIComponent(issue)}/record`,
+          LegionIssueRecordResponse,
+          undefined,
+          reading?.signal
+        );
+      } catch (error) {
+        // The one refusal that is an answer: the daemon records nothing for this issue. Every
+        // other refusal is a read that failed and is thrown on, so a caller's `undefined` is
+        // the absent record and nothing else.
+        if (
+          error instanceof LegionDaemonApiError &&
+          error.status === 404 &&
+          error.code === "RECORD_NOT_FOUND"
+        ) {
+          return undefined;
+        }
+        throw error;
+      }
+    },
+    health: (reading) => read("GET", "/healthz", LegionHealthResponse, undefined, reading?.signal),
+    // The header alone, parsed from an answer whose body this build may be unable to read: a
+    // reader that reports the two numbers side by side must reach the daemon's number whatever
+    // its health body carries, so this parses no schema.
+    daemonContract: async (reading) =>
+      (await call("GET", "/healthz", undefined, reading?.signal)).daemonContract,
     register: (input) => read("POST", "/legion/v1/claims/register", LegionRegisterResponse, input),
     registerController: (input) =>
       read("POST", "/legion/v1/claims/register", LegionControllerRegisterResponse, input),

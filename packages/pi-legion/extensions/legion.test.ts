@@ -1500,6 +1500,33 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     // The boot measures nothing: no capability host member was called before its ready.
     expect(calls).toEqual([]);
   });
+
+  // dispatch://INFRA-2694: the daemon serves each caller the shape that caller's own contract
+  // describes, and reads that contract from a request header. This pane states the contract of
+  // the module it loaded, its own manifest's `legion.daemonApiVersion`, on every request it
+  // makes, a GET included.
+  test("every daemon request of a pane states this build's own daemon API contract", async () => {
+    const stated: { readonly path: string; readonly contract: string | null }[] = [];
+    const pane = await bootPane({
+      role: "tester",
+      sessionId: "ses_worker",
+      extraRoutes: (url, _body, init) => {
+        if (url.pathname.startsWith("/legion/")) {
+          stated.push({
+            path: url.pathname,
+            contract: new Headers(init?.headers).get("Legion-Plugin-Contract"),
+          });
+        }
+        return undefined;
+      },
+    });
+
+    expect(pane.exits).toEqual([]);
+    expect(stated.length).toBeGreaterThan(0);
+    expect(stated.map((request) => request.contract)).toEqual(
+      stated.map(() => String(pkg.legion.daemonApiVersion))
+    );
+  });
   test("does nothing for a session with no Legion environment markers", async () => {
     const requests: { readonly path: string }[] = [];
     process.env.ENVOY_URL = "http://envoy.test";

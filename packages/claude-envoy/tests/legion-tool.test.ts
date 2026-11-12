@@ -5,6 +5,7 @@ import type { LegionRole } from "@legion/contracts"
 import type { LegionPhase } from "@legion/contracts/legion-api"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
+import { legion } from "../package.json" with { type: "json" }
 import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
@@ -98,7 +99,13 @@ async function daemon(): Promise<{
     })
     return Response.json(answers[path])
   }) as typeof fetch
-  return { client: createLegionDaemonClient("http://daemon.test", stub), requests }
+  return {
+    client: createLegionDaemonClient("http://daemon.test", {
+      contract: legion.daemonApiVersion,
+      fetch: stub,
+    }),
+    requests,
+  }
 }
 
 const implementer: ClaimCapability = {
@@ -238,7 +245,10 @@ test("the MCP request's cancellation ends a handoff_complete waiting out a daemo
   await expect(
     executeLegionTool(
       {
-        daemon: createLegionDaemonClient("http://daemon.test", refusing),
+        daemon: createLegionDaemonClient("http://daemon.test", {
+          contract: legion.daemonApiVersion,
+          fetch: refusing,
+        }),
         claim: () => implementer,
         handoffReport: async () => ({ commit: "a".repeat(40) }),
         branchHead: noBranchHead,
@@ -335,11 +345,14 @@ test("read_release_records posts the claim's own credential and counts the windo
     executeLegionTool(runtime, { op: "read_release_records", since: "yesterday" }),
   ).rejects.toThrow("read_release_records' since is an RFC 3339 time, as 2026-11-02T09:00:00Z is")
   expect(requests).toHaveLength(1)
-  const refusing = createLegionDaemonClient("http://daemon.test", (async (_input, _init) =>
-    Response.json(
-      { error: "the daemon keeps no release records" },
-      { status: 500 },
-    )) as typeof fetch)
+  const refusing = createLegionDaemonClient("http://daemon.test", {
+    contract: legion.daemonApiVersion,
+    fetch: (async (_input, _init) =>
+      Response.json(
+        { error: "the daemon keeps no release records" },
+        { status: 500 },
+      )) as typeof fetch,
+  })
   await expect(
     executeLegionTool(
       { ...runtime, daemon: refusing },
