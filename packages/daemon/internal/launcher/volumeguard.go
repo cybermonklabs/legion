@@ -232,15 +232,15 @@ func (p *procProcess) refuse(what string, err error) {
 // is writing, which is the one deletion that costs more than the sweep saves.
 //
 // This and the two guards below read through an open handle on the directory the sweep listed
-// (os.Root) and name the entry inside it, never by a path of their own: a path string is
+// (dirHandle) and name the entry inside it, never by a path of their own: a path string is
 // resolved again at every call, and the directories above a cache root are the role's own to
 // rename, so two reads of one string are two chances for a role to put a symbolic link in it
-// and have the second read answer for somewhere else (sweepDir, volumetrim.go). The property
-// this had before survives the change: Root.Lstat does not follow a link at the entry itself,
-// and fs.WalkDir over Root.FS() reads every directory with ReadDir and walks into nothing but
-// what that directory itself calls a directory, so a link inside a tree is read as the link it
-// is and the tree it points into is not walked, exactly as filepath.WalkDir read it.
-func newestModTime(dir *os.Root, name string) (time.Time, error) {
+// and have the second read answer for somewhere else (sweepDir, volumetrim.go). Nothing below
+// the entry is named by a path either: the tree is walked by opening one element at a time
+// (walkEntries), where fs.WalkDir over a Root's FS named each entry by its path below the root
+// and had os.Root resolve every element of it but the last with the open this kernel follows a
+// link under (volumedir.go).
+func newestModTime(dir *dirHandle, name string) (time.Time, error) {
 	info, err := dir.Lstat(name)
 	if err != nil {
 		return time.Time{}, err
@@ -249,21 +249,7 @@ func newestModTime(dir *os.Root, name string) (time.Time, error) {
 	if !info.IsDir() {
 		return newest, nil
 	}
-	err = fs.WalkDir(dir.FS(), name, func(_ string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		// WalkDir reads every entry with lstat and follows no symbolic link, so a link a role
-		// left in a cache is read as the link it is and the tree it points into is not walked.
-		info, err := entry.Info()
-		if err != nil {
-			// The entry was removed between the listing and the stat: a cache is a live
-			// directory, and an entry that is gone holds nothing back.
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil
-			}
-			return err
-		}
+	err = walkEntries(dir, name, func(info os.FileInfo) error {
 		if at := info.ModTime(); at.After(newest) {
 			newest = at
 		}
@@ -279,7 +265,7 @@ func newestModTime(dir *os.Root, name string) (time.Time, error) {
 // all the pre-delete re-read needs: a second full walk of a go-build tree would cost as much as
 // the listing. It reads through dir's handle and follows no symbolic link, as newestModTime
 // above does and for the reasons given there.
-func newerThan(dir *os.Root, name string, cutoff time.Time) (bool, error) {
+func newerThan(dir *dirHandle, name string, cutoff time.Time) (bool, error) {
 	info, err := dir.Lstat(name)
 	if err != nil {
 		return false, err
@@ -291,28 +277,64 @@ func newerThan(dir *os.Root, name string, cutoff time.Time) (bool, error) {
 		return false, nil
 	}
 	newer := false
-	err = fs.WalkDir(dir.FS(), name, func(_ string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		info, err := entry.Info()
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil
-			}
-			return err
-		}
+	err = walkEntries(dir, name, func(info os.FileInfo) error {
 		if info.ModTime().After(cutoff) {
 			newer = true
-			return fs.SkipAll
+			return errWalkDone
 		}
 		return nil
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, errWalkDone) {
 		return false, err
 	}
 	return newer, nil
 }
+
+// walkEntries calls visit for every entry of the tree name holds, which dir holds, depth first,
+// and stops where a visit answers errWalkDone. Every level is opened by one name in the level
+// above and listed through that descriptor, and the time and the kind a visit reads are the
+// lstat that listing made through it (dirHandle), so a link inside a tree is read as the link
+// it is and the tree it points into is never walked, exactly as filepath.WalkDir read it.
+//
+// It holds one handle per level of the tree, which is two descriptors, until that level is
+// done. A cache entry is shallow — Go's own build trees and bun's install cache are two or
+// three levels — and the pod's limit is 1048576 descriptors (`ulimit -n`, measured in an issue
+// pod of this deployment at 2026-11-12T06:30Z); a level the kernel refuses for that or any
+// other reason is the error the guard answers with, and the entry is passed over.
+func walkEntries(dir *dirHandle, name string, visit func(info os.FileInfo) error) error {
+	under, err := dir.open(name)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = under.Close() }()
+	entries, err := under.ReadDir()
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			// The entry was removed between the listing and the stat: a cache is a live
+			// directory, and an entry that is gone holds nothing back.
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		if err := visit(info); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if err := walkEntries(under, entry.Name(), visit); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// errWalkDone ends a walk from inside a visit, as fs.SkipAll ended the walk this replaced.
+var errWalkDone = errors.New("the walk has what it was asked for")
 
 // entryKindOK reads name, which dir holds, with lstat and reports whether it is the kind of
 // file rule names, with the reason it is not when it is not.
@@ -329,7 +351,7 @@ func newerThan(dir *os.Root, name string, cutoff time.Time) (bool, error) {
 // The read goes through dir's handle, as the two guards above do: the lstat is of a name in the
 // directory the sweep opened, so the kind this answers for is the kind of the inode the removal
 // reaches (newestModTime, and remove in volumetrim.go).
-func entryKindOK(dir *os.Root, name string, rule EntryRule) (ok bool, why string, err error) {
+func entryKindOK(dir *dirHandle, name string, rule EntryRule) (ok bool, why string, err error) {
 	info, err := dir.Lstat(name)
 	if err != nil {
 		return false, "", err
