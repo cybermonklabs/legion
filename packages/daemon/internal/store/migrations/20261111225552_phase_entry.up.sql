@@ -42,21 +42,36 @@
 -- at all: its own claim read names serving_assignment (packages/daemon/internal/store/claims.go,
 -- claimSelect), so every claim read fails and the supervisor loads nothing. Rolling the image
 -- back therefore needs the three columns back first. This directory keeps no down migrations —
--- migrations here are forward-only and no .down.sql file exists — so the way back is these eleven
--- statements, to run in this order with the daemon stopped:
+-- migrations here are forward-only and no .down.sql file exists — so the way back is the eleven
+-- statements below, run with the daemon stopped. docs/kubernetes.md carries the same block as the
+-- step an operator runs, beside the other contracts' rollbacks, and the two say the same thing.
 --
---   alter table phases add column assignment text not null default '';
---   alter table claims add column serving_assignment text not null default '';
---   alter table pending_task_deliveries add column assignment text not null default '';
+--   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   begin;
+--   alter table phases add column if not exists assignment text not null default '';
+--   alter table claims add column if not exists serving_assignment text not null default '';
+--   alter table pending_task_deliveries add column if not exists assignment text not null default '';
 --   update outbox set payload = payload - 'entry' - 'resendEntry'
---     where kind = 'supervise' and (payload ? 'entry' or payload ? 'resendEntry');
---   alter table phases drop column entry;
---   alter table phases drop column entry_task;
---   alter table phases drop column entry_raised_at;
---   alter table claims drop column given_entry;
---   alter table claims drop column served_entry;
---   alter table pending_task_deliveries drop column entry;
+--   where kind = 'supervise' and (payload ? 'entry' or payload ? 'resendEntry');
+--   alter table phases drop column if exists entry;
+--   alter table phases drop column if exists entry_task;
+--   alter table phases drop column if exists entry_raised_at;
+--   alter table claims drop column if exists given_entry;
+--   alter table claims drop column if exists served_entry;
+--   alter table pending_task_deliveries drop column if exists entry;
 --   delete from schema_version where version = 20261111225552;
+--   commit;
+--   SQL
+--
+-- The run prints BEGIN, three ALTER TABLEs, UPDATE <n> for the supervise rows whose payload
+-- carried either key, six ALTER TABLEs, DELETE 1 and COMMIT. A rerun prints a NOTICE for each of
+-- the nine columns it finds as it means to leave them, the same ALTER TABLEs, UPDATE 0, DELETE 0
+-- and COMMIT, and changes nothing. The transaction, the ON_ERROR_STOP and the if-exists clauses
+-- are what make the eleven one act that may be run twice: run as bare statements in a psql
+-- without ON_ERROR_STOP, a failure stops nothing after it, and either half it leaves is broken —
+-- the drops taken while the delete fails give the newer image a schema it reads by names that no
+-- longer stand, and the delete taken while a drop fails stops the roll-forward at its first add
+-- column.
 --
 -- The first three statements are the columns that daemon reads; the fourth is the two payload
 -- keys this release writes, taken back out. This release writes entry into a supervise start's
@@ -71,16 +86,24 @@
 -- The six drops and the deleted version row are for the roll-forward that follows the rollback
 -- rather than for the older daemon, which reads none of the six columns this migration adds.
 -- Together they re-arm this migration. store.apply decides each migration on its own row —
--- versionRecorded asks `select exists (select 1 from schema_version where version = $1)` — so
--- deleting one row leaves this one migration unapplied and every other migration recorded and
--- untouched, and the older daemon never asks for this version at all, its embedded set holding no
--- such file. All the missing row costs while that image runs is the number the state read reports
--- (internal/daemon's state source, Store.SchemaVersionTx, the highest row recorded), which then
--- reads the version below this one — which is the truth about the image that is running. When the
--- newer image comes back, Migrate finds no row of 20261111225552 and runs this file again from
--- its first statement. The six columns have to go with the row because those first statements add
--- them and `add column` on a column that already stands fails, so dropping them is what lets the
--- file run a second time.
+-- versionRecorded asks `select exists (select 1 from schema_version where version = $1::bigint)`
+-- (internal/store/store.go) — so deleting one row leaves this one migration unapplied and every
+-- other migration recorded and untouched, and the older daemon never asks for this version at
+-- all, its embedded set holding no such file. All the missing row costs while that image runs is
+-- the number the state read reports (internal/daemon's state source, Store.SchemaVersionTx, the
+-- highest row recorded), which then reads the version below this one — which is the truth about
+-- the image that is running. When the newer image comes back, Migrate finds no row of
+-- 20261111225552 and runs this file again from its first statement. The six columns have to go
+-- with the row because those first statements add them and `add column` on a column that already
+-- stands fails, so dropping them is what lets the file run a second time.
+--
+-- Both of those hold while this migration is the newest one recorded on phases, claims and
+-- pending_task_deliveries. A migration recorded after it keeps its own row through the delete, so
+-- it never runs again, while the six drops take with them whatever index or constraint it built
+-- on the six columns; and the version the state read reports is that migration's, not the one
+-- below this. The strip of the assignment key this header expects in the release after this one
+-- is such a migration. Where one stands, reverse it by its own way back first, and run this block
+-- after it.
 --
 -- What the second run fills from is the record the older daemon kept current while it ran. That
 -- daemon moves every issue on by the token it mints at each phase change, writing it onto the
@@ -101,12 +124,12 @@
 -- leaves a claim that never got it at 0, and the fence compares the two sides only where both name
 -- an entry (internal/api/handoff.go).
 --
--- Why the re-arm is better than leaving the six columns standing at zero, which is what this
--- header named before: nothing re-derives a lost task from zeros. A role at entry 0 whose claim is
--- at 0 is owed nothing and is sent nothing — workflow.OwedEntry answers false while given is at or
--- above entry, and the repair that reads the slot sends only what admit's owedEntryRoles selects,
--- which is that same answer — and its entry_task is empty besides, so no pass has anything to send
--- it. The role that needs sending is the one whose task the older daemon lost inside the rollback
+-- Why the re-arm is better than a way back that left the six columns standing at zero: nothing
+-- re-derives a lost task from zeros. A role at entry 0 whose claim is at 0 is owed nothing and is
+-- sent nothing — workflow.OwedEntry answers false while given is at or above entry, and the
+-- repair that reads the slot sends only what admit's owedEntryRoles selects, which is that same
+-- answer — and its entry_task is empty besides, so no pass has anything to send it. The role that
+-- needs sending is the one whose task the older daemon lost inside the rollback
 -- window: that release writes a later transition's start over the start an issue already owes, in
 -- place, so a claim that has already queued a task from that row is left holding an id whose
 -- payload never reached its worker, and a start finished without acting leaves no row at all.
@@ -168,21 +191,26 @@ where c.token = d.claim_token and p.issue = c.issue and p.role = c.role
 -- The start rows the issue still owes its roles, built once here and read by the three statements
 -- below: the task of entry 1 is taken from one of them, and the entry and the resend mark are
 -- stamped into the payloads of all of them. One set is what holds those three to one reading of
--- what a role is owed. Written out three times, as they were, the copies drifted — only the task
--- fill asked for needsSlot, and the header's claim that the task taken and the row stamped are the
--- same row was true of the sentence alone.
+-- what a role is owed. Written out three times, the three copies of that reading would drift: a
+-- task fill asking for needsSlot where the two stamps did not would take its task from a row no
+-- stamp reached, and the claim that the task taken and the row stamped are the same row would
+-- hold of this sentence alone.
 --
--- It is a temporary table where migration 0044 builds its set in a CTE, because a CTE lives in the
--- statement that names it and these three cannot be one statement: two of them write the same
--- outbox rows, and a second write of a row inside one statement is not seen by it. The table is
--- dropped when this migration's transaction commits, which is the transaction store.apply runs
--- every migration in. The set is a snapshot taken before the three statements run, which is sound
--- because none of them writes a column it is selected on.
+-- It is a temporary table where migration 0044 builds its set in a CTE, because a CTE lives inside
+-- the one statement that names it and the work here is kept as three statements, each saying one
+-- thing: the task the phases row takes, the entry every owed start carries, and the mark that has
+-- a claim already at that entry take its task again. The two stamps could be one update with a
+-- case on c.given_entry, which would write each row once; they are two statements because each
+-- answers a question of its own. The table is dropped when this migration's transaction commits,
+-- which is the transaction store.apply runs every migration in. The set is a snapshot taken
+-- before the three statements run, which is sound because none of them writes a column or a
+-- payload key the set reads: the two stamps write o.payload, which the set is selected on, but
+-- the keys they add to it — entry and resendEntry — are read by no part of the set.
 --
 -- A row belongs to the set when it is a supervise start marked needsSlot carrying the token the
--- role's phases row names. needsSlot is in the set rather than in the one statement that asked for
--- it before, for two reasons: it is what "still owed" means, since such a row is waiting for the
--- issue's admission slot and so is the row a stopped tree is waiting on; and it holds of every
+-- role's phases row names. needsSlot is in the set rather than in the task fill alone, for two
+-- reasons: it is what "still owed" means, since such a row is waiting for the issue's admission
+-- slot and so is the row a stopped tree is waiting on; and it holds of every
 -- start carrying an assignment at all, because the one writer of an assignment onto a supervise
 -- payload in the release before this one is its workflow started, every such start goes out
 -- through StartOrOwe, and StartOrOwe marks needsSlot itself rather than taking the mark from its
