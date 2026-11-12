@@ -335,3 +335,61 @@ func TestARetrysTaskNamesThePullRequest(t *testing.T) {
 		t.Fatalf("task = %q, want it to name pull request #42", task)
 	}
 }
+
+// R2: an architect's claim failing holds nothing and writes no held notice, at admitted as at
+// accepting. Both phases are the architect's own (RoleFor), and claimFailed answers an architect
+// before it asks which role works the phase: a tree's own architect is told in a worker-died, and
+// a sub-architect below the root works no phase at all, so its failure is told to nobody. Nothing
+// here reaches HeldNotice, which is why no hold is ever recorded from either phase.
+func TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice(t *testing.T) {
+	const root = "LEGION-208"
+	for _, tc := range []struct {
+		name  string
+		key   string
+		at    phase.Phase
+		child bool
+		want  []record.OutboxPayload
+	}{
+		{
+			name: "the tree's architect while its root stands at admitted", key: root, at: phase.Admitted,
+			want: []record.OutboxPayload{
+				record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Admitted},
+				record.ControllerNotice(record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Admitted}),
+			},
+		},
+		{name: "a child's sub-architect while the child is in accepting", key: "LEGION-209", at: phase.Accepting, child: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			ctx := context.Background()
+			rootPhase := tc.at
+			if tc.child {
+				rootPhase = phase.Implementing
+			}
+			seedIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root,
+				Project: "LEGION", Title: "root", Phase: rootPhase, Generation: 1, Status: "in_progress", Rank: "U"})
+			if tc.child {
+				parent := root
+				seedIssue(t, pool, record.Issue{Key: tc.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root,
+					Parent: &parent, Project: "LEGION", Title: "child", Phase: tc.at, Generation: 1, Status: "needs_review", Rank: "V"})
+			}
+
+			if _, err := intake.ApplyFact(ctx, pool, "supervise", "architect-failed", intake.ClaimFailed{Issue: tc.key, Role: claim.RoleArchitect},
+				testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+				t.Fatalf("ApplyFact the architect's failed claim: %v", err)
+			}
+
+			var gotPhase phase.Phase
+			var heldFrom *string
+			if err := pool.QueryRow(ctx, "select phase, held_from from issues where key = $1", tc.key).Scan(&gotPhase, &heldFrom); err != nil {
+				t.Fatalf("read %s: %v", tc.key, err)
+			}
+			if gotPhase != tc.at || heldFrom != nil {
+				t.Fatalf("after the architect's failure %s is in %s held from %v, want %s and no hold", tc.key, gotPhase, heldFrom, tc.at)
+			}
+			if got := noticeRows(t, pool); !sameNotices(got, tc.want) {
+				t.Fatalf("notice rows = %+v, want %+v: no held notice is written for an architect", got, tc.want)
+			}
+		})
+	}
+}

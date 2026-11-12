@@ -361,8 +361,8 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		}
 		// Both roots stand where a root's own architect works and no phase worker does: at
 		// admitted, before the first phase, which is the one root phase that holds a slot
-		// (record.AtWork) and which no pass starts a worker for (workflow.RoleFor names none).
-		// So the only worker of this fixture is the member's implementer.
+		// (record.AtWork) and whose role is the architect (workflow.RoleFor), which no pass
+		// starts a worker for. So the only worker of this fixture is the member's implementer.
 		seedWorkflowTree(t, cfg.PostgresDSN, project, startedAgainIssue(cfg, root, root, phase.Admitted))
 		seedWorkflowTree(t, cfg.PostgresDSN, project, startedAgainIssue(cfg, other, other, phase.Admitted))
 		kept := stoppableWorker(cfg, project, implementer, root, member, claim.RoleImplementer, phase.Implementing)

@@ -2129,10 +2129,10 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 		// merging whose merge request a closed design gate holds (record.ReadyPending), whose
 		// role is the merger, where a second task would ask for a READY a person has still to
 		// approve. Every other phase the rule keeps a row for has no worker role of its own —
-		// workflow.RoleFor answers the architect for accepting, which the skip above passes
-		// over, and the empty role for held, awaiting_person, admitted, awaiting_merge and
-		// done. So the gate decides nothing here either: AtWork reads it in the phase.Admitted
-		// arm alone, and no issue at admitted reaches this line.
+		// workflow.RoleFor answers the architect for accepting and for admitted, both of which
+		// the skip above passes over, and the empty role for held, awaiting_person,
+		// awaiting_merge and done. So the gate decides nothing here either: AtWork reads it in
+		// the phase.Admitted arm alone, and no issue at admitted reaches this line.
 		if !record.AtWork(issue, facts.Gates[issue.Tree]) {
 			continue
 		}

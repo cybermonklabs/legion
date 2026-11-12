@@ -324,7 +324,8 @@ func TestABackstopReadTwiceFiresOnce(t *testing.T) {
 // R5: an architect gets no backstop. OpenPhaseRole is the one statement of "the worker of the
 // open phase" — which role a release arms a backstop for, which role a CI settlement wakes, and
 // which live claim has a phase reminder armed in it — and it answers none for a phase the
-// architect works and none for a phase no role works.
+// architect works and none for a phase no role works. Admitted and accepting are the two the
+// architect works (RoleFor).
 func TestAnArchitectGetsNoBackstop(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -333,6 +334,7 @@ func TestAnArchitectGetsNoBackstop(t *testing.T) {
 	}{
 		{name: "implementing", p: phase.Implementing, want: claim.RoleImplementer},
 		{name: "testing", p: phase.Testing, want: claim.RoleTester},
+		{name: "admitted is the architect's", p: phase.Admitted},
 		{name: "accepting is the architect's", p: phase.Accepting},
 		{name: "awaiting a person", p: phase.AwaitingPerson},
 		{name: "done", p: phase.Done},

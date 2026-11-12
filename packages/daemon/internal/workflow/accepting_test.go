@@ -29,11 +29,12 @@ func seedAccepting(t *testing.T, pool *pgxpool.Pool) {
 		Decision: &record.ReviewDecision{State: "approved", Head: "head"}})
 }
 
-// The reviewer's approval moves the issue to accepting and nothing else: the board already reads
-// needs_review, so no status is written; the tree's architect is already live, so no worker is
-// started and no claim is minted (a start row is what mints one); the reviewer's phase-finished is
-// the architect's cue to accept.
-func TestAnApprovalMovesTheIssueToAcceptingAndStartsNobody(t *testing.T) {
+// R2: the reviewer's approval moves the issue into accepting and starts nobody, though accepting
+// is a phase RoleFor answers the architect for. The board already reads needs_review, so no
+// status is written; the tree's architect is already live, so no worker is started, no architect
+// phase row is written and no assignment is minted (a start row is what mints one); the
+// reviewer's phase-finished is the architect's cue to accept.
+func TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffRecord: "review-1", HandoffVersion: 1, Summary: "looks right"})
@@ -54,6 +55,14 @@ func TestAnApprovalMovesTheIssueToAcceptingAndStartsNobody(t *testing.T) {
 	}
 	if kind != "phase-finished" || role != string(claim.RoleReviewer) || from != string(phase.Reviewing) || summary != "looks right" {
 		t.Fatalf("notice = %s %s %s %q, want the reviewer's phase-finished for reviewing with its summary", kind, role, from, summary)
+	}
+	var architectRows int
+	if err := pool.QueryRow(context.Background(),
+		"select count(*) from phases where issue = 'LEGION-208' and role = $1", string(claim.RoleArchitect)).Scan(&architectRows); err != nil {
+		t.Fatalf("read the architect's phase rows: %v", err)
+	}
+	if architectRows != 0 {
+		t.Fatalf("the move into accepting wrote %d architect phase rows, want none: nothing starts the architect, so nothing mints it an assignment", architectRows)
 	}
 }
 

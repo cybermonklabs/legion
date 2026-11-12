@@ -1022,11 +1022,16 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // base, or the merge queue failed its merge (TriggerChecksRed), why. Two moves tell it nothing (a
 // notice of no kind, which notice drops): its own sign-off, whose only recipient would be the
 // architect that just acted, and the merge that closes the issue, whose close tells a child's
-// architect child-closed itself (leave) and suspends a root's with the rest of its tree.
+// architect child-closed itself (leave) and suspends a root's with the rest of its tree. A third
+// move names no role: the gate's opening, the one move out of admitted (Table), whose role is the
+// architect. A phase-finished names the worker whose phase ended, and the architect is the tree's
+// own role and the reader of this notice, so a role there would tell the architect of itself.
 func noticeFor(trigger TriggerKind, from phase.Phase, handoff record.PhaseRow, reason string) record.Notice {
 	switch trigger {
 	case TriggerChecksRed:
 		return record.Notice{Kind: "checks-red", Role: claim.RoleArchitect, Phase: from, Reason: reason}
+	case TriggerGateOpened:
+		return record.Notice{Kind: "phase-finished", Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
 	case TriggerSignOff, TriggerPullRequestMerged:
 		return record.Notice{}
 	}

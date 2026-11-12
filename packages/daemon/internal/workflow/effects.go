@@ -21,9 +21,9 @@ import (
 // record the `legion` tool's `handoff_complete` reads for a phase with a handoff (phase.Handoff,
 // whose writer a test holds to this; packages/pi-shared/src/handoff-record.ts). A phase no role
 // works — awaiting_person, awaiting_merge, done, held —
-// has none. Accepting is the tree architect's, a claim per tree that no row starts: every site
-// that starts, resumes or reports a phase's worker skips it (start, admit's startMidPhaseMembers,
-// booted, Stranded).
+// has none. Admitted and accepting are the tree architect's, a claim per tree that no row starts:
+// every site that starts, resumes or reports a phase's worker skips the architect, so it skips
+// both phases (start, admit's startMidPhaseMembers, booted, Stranded).
 //
 // It is exported for admission too, which starts the mid-phase children of a tree it re-admits
 // and needs each child's own phase's role to start it on.
@@ -37,7 +37,7 @@ func RoleFor(p phase.Phase) claim.Role {
 		return claim.RoleTester
 	case phase.Reviewing:
 		return claim.RoleReviewer
-	case phase.Accepting:
+	case phase.Admitted, phase.Accepting:
 		return claim.RoleArchitect
 	case phase.Merging:
 		return claim.RoleMerger

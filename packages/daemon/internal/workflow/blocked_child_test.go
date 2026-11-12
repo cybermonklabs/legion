@@ -297,6 +297,40 @@ func TestTheGateOpeningStartsAnAdmittedRootWhateverItsLinksSay(t *testing.T) {
 	}
 }
 
+// R2: the notice that reports the move out of admitted carries no role. The gate's opening is
+// the one move out of that phase (Table), and admitted is the architect's own (RoleFor), so a
+// role on the notice would tell the architect that its own phase ended. noticeFor keeps the
+// notice roleless, as it was before admitted had a role.
+func TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 4, Status: "in_progress", Rank: "U",
+		LastDispatchSeq: 1})
+	seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
+	seedTreeLifecycle(t, pool, "LEGION-208")
+	seedMirror(t, pool, "LEGION-208", "in_progress")
+
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	applyMirrored(t, pool, engine, "approved", intake.DispatchArtifact{
+		Key: "LEGION-208", ArtifactID: "artifact-208", Kind: intake.DispatchArtifactApproved, Version: 2})
+	startUnblockedChildren(t, pool, engine)
+
+	if got := phaseOf(t, pool, "LEGION-208"); got != phase.Planning {
+		t.Fatalf("the admitted root = %s when its tree's gate opened, want planning", got)
+	}
+	// The role is written only when there is one (record.Notice's own encoding), so an absent
+	// key and an empty one both read as "no role".
+	var kind, role, from string
+	if err := pool.QueryRow(t.Context(),
+		`select payload->>'kind', coalesce(payload->>'role', ''), payload->>'phase' from outbox
+		where kind = 'notice' and payload->>'kind' = 'phase-finished'`).Scan(&kind, &role, &from); err != nil {
+		t.Fatalf("read the phase-finished notice of the gate's opening: %v", err)
+	}
+	if kind != "phase-finished" || role != "" || from != string(phase.Admitted) {
+		t.Fatalf("notice = %s role %q phase %s, want a phase-finished for admitted carrying no role", kind, role, from)
+	}
+}
+
 // A child still waiting on an unfinished issue when its tree finishes is handed to Legion as a
 // root of its own, though it never started under its tree's design: its blockers outlive the
 // tree, and leaving it admitted inside a closed tree would park it for good. Its sibling, also
