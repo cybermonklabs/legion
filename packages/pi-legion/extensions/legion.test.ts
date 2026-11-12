@@ -4298,6 +4298,10 @@ async function launchedController(options: {
   readonly register?: (
     body: Record<string, unknown>
   ) => Response | undefined | Promise<Response | undefined>;
+  /** The daemon's answer to a `claims/ready`, in place of its 204, when it gives one. */
+  readonly ready?: (
+    body: Record<string, unknown>
+  ) => Response | undefined | Promise<Response | undefined>;
   /** The project token the controller carries as LEGION_PROJECT; `legion controller start`
    * derives it from the configured project spelling. */
   readonly project?: string;
@@ -4389,7 +4393,9 @@ async function launchedController(options: {
     }
     if (url.pathname === "/legion/v1/state") return Response.json(daemonState);
     if (url.pathname === "/legion/v1/issues/status") return Response.json({});
-    if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
+    if (url.pathname === "/legion/v1/claims/ready") {
+      return (await options.ready?.(body)) ?? new Response(null, { status: 204 });
+    }
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: "no route" }, { status: 404 });
     }
@@ -5754,6 +5760,50 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.requests.map((request) => request.path)).not.toContain(
       "/legion/v1/claims/ready"
     );
+  });
+
+  // R3: the controller's own registration path takes the claim boot's bound and its retry, and
+  // its claims/ready is part of that path, as a worker's ready is part of the boot
+  // (dispatch://INFRA-2883/spec). The daemon answers a ready it could not decide inside its
+  // bound with the uncoded 503 every caller retries (R4), so the controller the daemon launched
+  // retries that ready inside its budget, as a worker's boot does, and keeps running.
+  test("a daemon-launched controller whose claims/ready the daemon refuses once as busy retries it and keeps running", async () => {
+    let readies = 0;
+    const controller = await launchedController({
+      sessionId: "ses_controller_pod",
+      stateFixture: "state-controller-claim.json",
+      daemonLaunched: true,
+      ready: () => {
+        readies += 1;
+        return readies === 1
+          ? Response.json(
+              {
+                error:
+                  "refused: the daemon is up and could not answer this inside its bound; ask again",
+              },
+              { status: 503 }
+            )
+          : undefined;
+      },
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, "launch-boot-token\n", { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    try {
+      await controller.handlers.get("session_start")?.(
+        {},
+        controller.context("ses_controller_pod")
+      );
+    } catch {
+      // the test's exit hook throws in place of exiting, which the assertions below read
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(controller.exits).toEqual([]);
+    expect(readies).toBe(2);
   });
 
   test("claims with the capability LEGION_CONTROLLER_SECRET_FILE names over LEGION_CONTROLLER_SECRET, and /legion-claim-controller moves the role to a hand-started session", async () => {
