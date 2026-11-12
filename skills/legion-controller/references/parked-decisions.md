@@ -15,9 +15,12 @@ A park means "should not run now", and a parked root keeps its `legion` label. A
 again when a person sets it to `todo`, when a wake tells you to re-admit it (`worker-died`,
 `held`), or when it is your own hold (a park you marked `Parked by Legion while it waits on:`, step
 2 of **Deciding**) and a person's decision after the park gives its work a next step, as below.
-A parked root that is your own hold also runs again when you checked that the hold's cause is
-gone, or that the event it waits on has happened, as the wakes reference says (the `held` wake,
-and [A tree that waits on an event outside Legion](skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion)).
+A parked root that is your own hold also runs again when you checked that the hold's cause or the
+architect's cause is gone, or that the event it waits on has happened, as the wakes reference
+says (the `held` and `worker-died` wakes, and
+[A tree that waits on an event outside Legion](skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion)):
+you set it to `todo` with a comment on the root that cites the park's mark and says what you
+checked.
 Every other park, a person's, another session's or an operator's `legion status`, stays parked
 until whoever parked it sets it to `todo`.
 
@@ -90,12 +93,12 @@ an approval of a document that is not the root's primary one.
    `comment.created` from a session (any controller session: its id changes when the controller
    restarts or is taken over) that begins `Parked by Legion while it waits on:`. That is the mark
    you post on the root, in the same turn, when you park a tree on a person's answer to the
-   `dispatch ask` you opened for a hold (the `held` section of
-   [the wakes reference](skill://legion-controller/references/wakes.md)) or for a tree that waits
-   on an event outside Legion (that reference's
-   [section of that name](skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion)),
-   and for no other park: a park a person asks for on their own, without your ask, or one you
-   make at triage, gets no mark. The window pairs the
+   `dispatch ask` you opened for a hold, for a failed architect or for a tree that waits on an
+   event outside Legion (the `held`, `worker-died` and
+   [A tree that waits on an event outside Legion](skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion)
+   sections of [the wakes reference](skill://legion-controller/references/wakes.md)), and for no
+   other park: a park a person asks for on their own, without your ask, or one you make at
+   triage, gets no mark. The window pairs the
    mark with the park it was posted for: `set_status` writes the status to Dispatch before it
    returns, so the mark's line follows the park's within the turn, and a mark older than the park
    line belongs to an earlier park. Every other park is someone else's: a person's (`user

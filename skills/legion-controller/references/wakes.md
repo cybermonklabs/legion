@@ -147,7 +147,9 @@ own hold (`skill://legion-controller/references/parked-decisions.md#deciding`, s
 root back to `todo` only when you checked that the hold's cause is gone, a person asks, or a
 person's decision after the park gives its work a next step (that reference's step 4), because
 the park took the tree out of the workflow: the `todo` after it starts a new generation of the
-tree, from its architect, and releases no hold.
+tree, from its architect, and releases no hold. For a `todo` after your check, post one comment
+on the root (`dispatch comment --issue <root> --body-file -`) that cites the park's
+`Parked by Legion while it waits on:` mark and says what you checked.
 
 ## A tree that waits on an event outside Legion
 
@@ -161,6 +163,8 @@ whose first line is `Parked by Legion while it waits on: <the event>`, the mark 
 Legion's own hold (`skill://legion-controller/references/parked-decisions.md#deciding`, step 2).
 Set the root back to `todo` once you checked that the event has happened, a person asks, or a
 person's decision after the park gives its work a next step, as the escalated hold above says.
+For a `todo` after your check, post a comment on the root that cites the park's mark and says
+what you checked.
 
 ## `worker-died on <KEY>` (`role: "architect"`)
 
@@ -179,7 +183,13 @@ the same way. Open a `dispatch ask` on the report issue that asks the person whe
 tree, with the options `Park it` and `Leave it admitted`. Record the cause and that ask's
 `dispatch://` reference in a comment on the root.
 Park the tree only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
-Cite the ask's answer in the park's comment.
+Cite the ask's answer in the park's comment, whose first line is
+`Parked by Legion while it waits on: <the cause>`, the mark that makes the park Legion's own hold
+(`skill://legion-controller/references/parked-decisions.md#deciding`, step 2). Set the root back
+to `todo` once you checked that the architect's cause is gone, a person asks, or a person's
+decision after the park gives its work a next step, as the escalated hold above says. For a
+`todo` after your check, post a comment on the root that cites the park's mark and says what you
+checked.
 
 This re-admission is not the hold release of the `held` wake above. The `backlog` takes the tree
 out of the workflow, so the `todo` after it starts a new generation whatever phase the root stood
