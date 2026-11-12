@@ -745,7 +745,14 @@ export class DispatchApiClient {
     arrived?: () => void,
     uploaded?: (loaded: number, total: number) => void
   ): Promise<Response> {
-    const sent = { credentials: "same-origin", ...init } satisfies RequestInit;
+    // Every read and write of the page funnels through here, so this one line asks Dispatch for
+    // the display tree of every stored text it answers with (`Dispatch-Trees`); no other client
+    // sends it, and no other client's bytes change.
+    const sent = {
+      credentials: "same-origin",
+      ...init,
+      headers: [...new Headers(init.headers), ["Dispatch-Trees", "1"]],
+    } satisfies RequestInit;
     const progress = (part?: UploadProgress) => {
       arrived?.();
       if (part !== undefined) uploaded?.(part.loaded, part.total);
@@ -850,7 +857,12 @@ export class DispatchApiClient {
 
   /** One read of a route the document holds, named by its own path pattern: `params` fills the
    *  pattern's `{name}`s and `query` its query parameters, and what it answers is the document's
-   *  `200` body for that route. No read states a response shape of its own. */
+   *  `200` body for that route, the display trees Dispatch adds to every stored text it answers
+   *  this client with (`Dispatch-Trees`, in `answered`) included: the route table names each
+   *  shaped read, so the trees are part of the body the document holds. A read states a response
+   *  shape of its own only where the document cannot hold it - `getBlockSchema`,
+   *  `getIssueEvents` and `listIssueAskThreads`, each saying beside it what that is - and those
+   *  three go through `json` with `routeUrl`. */
   private async read<P extends PathsOf<"get">>(
     pattern: P,
     params: PathParams<Op<P, "get">>,
@@ -1117,8 +1129,9 @@ export class DispatchApiClient {
   }
 
   /** `GET /api/v1/issues/{key}/results`: the checks of the issue's Verification document in
-   *  document order, each with every result recorded against it from any issue, newest first,
-   *  and each result's currency as the server judged it against the repository. */
+   *  document order, each with the commits and branches its results are compared with, whether a
+   *  pass of it stands, and every result recorded against it from any issue, newest first, each
+   *  with where its commit stands as the server judged it against the repository. */
   getIssueResults(key: string) {
     return this.read("/api/v1/issues/{key}/results", { key });
   }

@@ -24,7 +24,19 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, tree)
+	// Each component's prose is registered with the request's reader as the component is shaped
+	// into the answer: the trees are the table's rows where it holds them, and the read stores
+	// what it did not.
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	answer := architectureTreeRead{ArchitectureTree: tree, Components: make([]architectureComponentRead, len(tree.Components))}
+	for index, component := range tree.Components {
+		answer.Components[index].ArchitectureTreeComponent = component
+		reader.text(&answer.Components[index].ProseTree, component.Prose)
+	}
+	// The trees are filled before the answer is written, and the store of what the table did
+	// not hold runs on a goroutine of its own, beside the rest of the request.
+	reader.resolve()
+	WriteJSON(w, http.StatusOK, answer)
 }
 
 // architectureTree is GET /api/v1/projects/{key}/architecture's answer for project, and a 404

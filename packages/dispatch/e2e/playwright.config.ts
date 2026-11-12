@@ -277,11 +277,11 @@ const multiprocessProjects = [
 ];
 
 // The three rows of `heavy-bodies.e2e.ts` that read where a reader's place ends up once a long
-// body formats under them. The compensation they measure is layout Chromium and WebKit anchor
+// body fills under them. The compensation they measure is layout Chromium and WebKit anchor
 // differently, and those are the two engines it was ever measured on, so `firefox-alone` below
 // inverts them. Each fragment names one row of that file and no other.
 const readersPlaceRows =
-  /a long comment above the reader|a reader who scrolls while a long body|Jump to latest keeps a newest long comment/;
+  /a long message arriving above the reader|a reader who scrolls while a long body|Jump to latest keeps a newest long turn/;
 
 // The one spec of the containerised visual review (`visual.e2e.ts`), which runs in the `visual`
 // and `visual-phone` projects at the end of this list and in no project above them: a project
