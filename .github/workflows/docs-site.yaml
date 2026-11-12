@@ -60,7 +60,7 @@ jobs:
     # Budget (the Budgets note of .github/ci-budgets.md): 1500 s, the 25 minutes
     # this job carried, plus its slowest retried step alone — the Go module download's two
     # calls, 2 x (5 x 180 + 150) = 2100 s, above the Playwright install's 1650 s, the
-    # setup-bun step's 1482 s, the workspace install's 1050 s and the ci-ok report's 600 s.
+    # setup-bun step's 2562 s, the workspace install's 1050 s and the ci-ok report's 600 s.
     # That arithmetic is a whole number of
     # minutes, so the step's own budget takes one more and this job takes it too:
     # 1500 + 2160 = 3660 s -> 61 min.
@@ -86,7 +86,7 @@ jobs:
       # Its own retry arithmetic, which is the action's: .github/scripts/ci-tools.sh is sourced
       # in two of that action's steps - the second source's fetch of Bun and the digest check
       # after it - and rule 8 of .github/scripts/check-download-retry.sh credits that file's
-      # declared 741 s `ci_tools_fetch` to each of them, 2 x 741 = 1482 s -> 25 min.
+      # declared 1281 s `ci_tools_fetch` to each of them, 2 x 1281 = 2562 s -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # Astro runs on Node.js (22.12 or newer).

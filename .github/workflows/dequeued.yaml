@@ -59,7 +59,7 @@ jobs:
     # A GraphQL poll, one run list and one cancel. 300 s, the 5 minutes that gives, plus this
     # job's slowest retried step alone, as ci-budgets.md's Budgets note derives one: that step holds
     # the timeline read, which sits inside a seven-pass poll and so costs
-    # 7 x (5 x 30 + 150) + 6 x 10 = 2160 s, the run list's 300 s and the force-cancel's 300 s,
+    # 7 x (5 x 30 + 150) + 6 x 10 = 60 s, the run list's 300 s and the force-cancel's 300 s,
     # 2760 s together, a whole number of minutes, so that step's own budget takes one more and
     # this job takes it too. 300 + 2820 = 3120 s -> 52 min. That ceiling is reached only
     # against a host that accepts the connection and then sends nothing through every attempt
@@ -86,7 +86,7 @@ jobs:
         # Its own retry arithmetic, so an exhausted read fails this step by name rather than
         # being cut part way by the job. The timeline read is written inside the seven-pass
         # poll below, so the step waits for seven of its ladders and the six 10 s sleeps
-        # between the passes: 7 x (5 x 30 + 150) + 6 x 10 = 2160 s, where every read stalls
+        # between the passes: 7 x (5 x 30 + 150) + 6 x 10 = 60 s, where every read stalls
         # for the whole of every attempt, and 7 x 150 + 6 x 10 = 1110 s where GitHub refuses
         # each one at once. Then the run list's 5 x 30 + 150 = 300 s and the force-cancel's
         # 300 s, which counts once because the queue starts one ci.yaml run for a group and

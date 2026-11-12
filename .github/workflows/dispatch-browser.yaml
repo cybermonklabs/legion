@@ -336,9 +336,9 @@ jobs:
     # is this job's first term.
     #
     # Budget: that 780 s plus the arithmetic of this job's slowest retried step, which is the
-    # setup-bun step below at 1482 s - the figure its own comment derives - above the
+    # setup-bun step below at 2562 s - the figure its own comment derives - above the
     # workspace install's 5 x 180 + 150 = 1050 s.
-    # 780 + 1482 = 2262 s -> 38 min, which stands above the largest step budget of this job,
+    # 780 + 2562 = 3342 s -> 56 min, which stands above the largest step budget of this job,
     # so no job budget fires before a step's own and every `if: always()` upload still runs.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed
@@ -350,7 +350,7 @@ jobs:
     # pull-request lane names hold 1,178, of which that lane's `@pr` grep selects 282. The two
     # `visual` projects hold 20, which the visual job runs one row at a time, and the 50
     # wall-clock rows are the alone job's.
-    timeout-minutes: 43
+    timeout-minutes: 56
     strategy:
       fail-fast: false
       # Four legs. The count is written here and in the `--shard` denominator of the browser step
@@ -380,7 +380,7 @@ jobs:
       # Its own retry arithmetic, which is the action's: .github/scripts/ci-tools.sh is sourced
       # in two of that action's steps - the second source's fetch of Bun and the digest check
       # after it - and rule 8 of .github/scripts/check-download-retry.sh credits that file's
-      # declared 741 s `ci_tools_fetch` to each of them, 2 x 741 = 1482 s -> 25 min. The
+      # declared 1281 s `ci_tools_fetch` to each of them, 2 x 1281 = 2562 s -> 43 min. The
       # declaration is
       # in that check's DECLARED_LOOPS, which writes the sum out: a step sourcing the file
       # twice is charged twice, which over-prices this step rather than under-pricing it.
@@ -837,11 +837,11 @@ jobs:
     # this job's first term.
     #
     # Budget: that 360 s plus the arithmetic of this job's slowest retried step, which is the
-    # setup-bun step below at 1482 s - the shard job's step of that name derives the figure -
+    # setup-bun step below at 2562 s - the shard job's step of that name derives the figure -
     # above the workspace install's 5 x 180 + 150 = 1050 s.
-    # 360 + 1482 = 1842 s -> 31 min, which stands above the largest step budget of this job,
+    # 360 + 2562 = 2922 s -> 49 min, which stands above the largest step budget of this job,
     # so no job budget fires before a step's own and every `if: always()` upload still runs.
-    timeout-minutes: 43
+    timeout-minutes: 49
     strategy:
       fail-fast: false
       matrix:
@@ -862,7 +862,7 @@ jobs:
       # refusal would otherwise surface in a stack's own log, far from this cause.
       - name: Make the downloaded binaries executable
         run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
-      # The shard job's step of this name, at the same 1482 s its comment derives.
+      # The shard job's step of this name, at the same 2562 s its comment derives.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # The shard job's step of this name, and its comment holds for this one: retried at the
@@ -1101,17 +1101,19 @@ jobs:
     # term: it holds the install step at the 4 minutes that step measured, not at the ladder
     # the step's own budget now carries.
     #
-    # Budget: that 780 s plus the arithmetic of this job's slowest retried step, the Chromium
-    # install's one `retry_fetch` call, 5 x 300 + 150 = 1650 s, above the module download's
-    # and the workspace install's 1050 s each and above the setup-bun step's own ladder.
-    # 780 + 1650 = 2430 s -> 41 min, which stands above the largest step budget of this job,
+    # Budget: that 780 s plus the arithmetic of this job's slowest retried step, which is now
+    # the setup-bun step's two `ci_tools_fetch` calls at 2 x 1281 = 2562 s - until this change
+    # raised that ladder the Chromium install's one `retry_fetch` call, 5 x 300 + 150 = 1650 s,
+    # was the slowest, and it is now second - above the module download's and the workspace
+    # install's 1050 s each.
+    # 780 + 2562 = 3342 s -> 56 min, which stands above the largest step budget of this job,
     # the install's 28, so no job budget fires before a step's own and the `if: failure()`
     # upload below still runs, which a cancelled job skips.
     #
     # The move into this workflow changed none of that: the job runs the same steps on the same
     # machine, and full-lane run 42316487530 falls inside every figure above - 9 s install,
     # 191 s dashboard, 12 s sign-in, 96 s in the steps without a budget, 313 s whole.
-    timeout-minutes: 43
+    timeout-minutes: 56
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -1161,7 +1163,7 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
-      # The shard job's step of this name, at the same 1482 s its comment derives.
+      # The shard job's step of this name, at the same 2562 s its comment derives.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # Retried like every install of this repository's CI (the Retries note of
@@ -1284,15 +1286,16 @@ jobs:
   # That 660 s is the measured half of the rule this file's head writes, and it holds the
   # Chromium install at the 4 minutes that step measured rather than at the ladder the step's
   # own budget carries. Budget: that 660 s plus the arithmetic of this job's slowest retried
-  # step, the Chromium install's one `retry_fetch` call, 5 x 300 + 150 = 1650 s, above the
-  # setup-bun step's 1482 s and the module download's and the workspace install's 1050 s each,
-  # as the multiprocess job's own comment lists them. 660 + 1650 = 2310 s -> 39 min,
+  # step, which is now the setup-bun step's 2562 s rather than the Chromium install's one
+  # `retry_fetch` call of 5 x 300 + 150 = 1650 s - this change's ladder passed it - above the
+  # module download's and the workspace install's 1050 s each,
+  # as the multiprocess job's own comment lists them. 660 + 2562 = 3222 s -> 54 min,
   # which stands above the largest step budget of this job, the install's 28, so no job budget
   # fires before a step's own and the `if: failure()` upload below still runs, which a
   # cancelled job skips.
   embedder:
     runs-on: ubuntu-24.04
-    timeout-minutes: 43
+    timeout-minutes: 54
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -1326,7 +1329,7 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
-      # The shard job's step of this name, at the same 1482 s its comment derives.
+      # The shard job's step of this name, at the same 2562 s its comment derives.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # The shard job's step of this name, and its comment holds for this one: retried at the
@@ -1437,12 +1440,12 @@ jobs:
   # 494 s -> 9 min, and that is this job's first term.
   #
   # Budget: that 540 s plus the arithmetic of this job's slowest retried step, which is the
-  # setup-bun step below at 1482 s - the shard job's step of that name derives the figure -
+  # setup-bun step below at 2562 s - the shard job's step of that name derives the figure -
   # above the workspace install's 5 x 180 + 150 = 1050 s. The image
   # pull is no term of it: it is a ghcr.io pull of a package this repository publishes, which
   # retries nowhere in this tree, for the reason its own step says and
   # .github/scripts/check-download-retry.sh's exception (a) writes down.
-  # 540 + 1482 = 2022 s -> 34 min, which stands above the largest step budget of this job, so
+  # 540 + 2562 = 3102 s -> 52 min, which stands above the largest step budget of this job, so
   # no job budget fires before a step's own.
   #
   # The first of those runs was the only one this job had when these budgets were first written,
@@ -1461,7 +1464,7 @@ jobs:
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 43
+    timeout-minutes: 52
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1488,14 +1491,14 @@ jobs:
       # itself on a cache miss. Rule 11 of .github/scripts/check-download-retry.sh cannot see
       # it, because the build is in a script this job calls, which is the called-script limit
       # that rule's reach paragraph names. The job's 34 minutes stand: 1050 s is under this
-      # job's largest step budget, setup-bun's 1482 s, which the ceiling is derived from.
+      # job's largest step budget, setup-bun's 2562 s, which the ceiling is derived from.
       - name: Download the Go modules this job builds
         # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
         timeout-minutes: 18
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
-      # The shard job's step of this name, at the same 1482 s its comment derives.
+      # The shard job's step of this name, at the same 2562 s its comment derives.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # Retried like every install of this repository's CI (the Retries note of
@@ -1616,7 +1619,7 @@ jobs:
     # is what rule 8 of .github/scripts/check-download-retry.sh asks of any step that calls
     # that file, since it credits the file's whole ladder to every step that runs it whichever
     # mode the step asks for, 5 x 40 + 150 = 350 s; and the ci-ok report, whose two `gh api`
-    # ladders are 2 x (5 x 30 + 150) = 600 s -> 12 min. Of the two steps that run that file
+    # ladders are 2 x (5 x 30 + 150) = 600 s -> 10 min. Of the two steps that run that file
     # only "Reading one, the rows" waits on a host at all: `blobs-refused` is one `echo` and
     # makes no request. A step reaches any of those ceilings only against a host that accepts
     # the connection and then sends nothing, which is the one fault where every attempt runs
@@ -1630,9 +1633,9 @@ jobs:
     # and not its ladder, which is why each ladder is a step budget of its own.
     #
     # Budget: that 240 s plus the arithmetic of this job's slowest retried step, which is the
-    # setup-bun step below at 1482 s - the shard job's step of that name derives the figure -
+    # setup-bun step below at 2562 s - the shard job's step of that name derives the figure -
     # above the workspace install's 1050 s, the ci-ok report's 600 s and each reading's 350 s.
-    # 240 + 1482 = 1722 s -> 29 min, which stands above the largest step budget of this job,
+    # 240 + 2562 = 2802 s -> 47 min, which stands above the largest step budget of this job,
     # the setup-bun step's own 25, so no job budget fires before a step's own.
     #
     # What that sample does not hold: no browser step failed in any of those runs, so no blob
@@ -1640,12 +1643,12 @@ jobs:
     # three's per-leg merge all grow with those. A job cancelled at this budget posts no ci-ok,
     # so the run is red and read again from the jobs API; it cannot pass a verdict it never
     # reached.
-    timeout-minutes: 43
+    timeout-minutes: 47
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The shard job's step of this name, at the same 1482 s its comment derives.
+      # The shard job's step of this name, at the same 2562 s its comment derives.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # Retried like every install of this repository's CI (the Retries note of

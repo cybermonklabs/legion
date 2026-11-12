@@ -1933,6 +1933,58 @@ YAML
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
+# The job half of the same rule, which the clause above cannot reach: a step whose retries fit
+# inside its own budget is still cut by a job ceiling that is not above that budget, because the
+# job holds the step AND everything else it runs. Twenty-two job keys of this repository stood
+# below their own documented derivation while this check was green (dispatch://INFRA-1545,
+# round 27), every one of them past the clause above.
+echo "case: a job whose budget equals its slowest step's own budget is refused"
+root=$(fixture job-holds-step)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Install changie
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the changie tarball" 60 -- \
+            curl -fsSL --max-time 60 -o changie.tar.gz https://example.com/changie.tar.gz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the job's budget and the step's own" \
+  "$(contains "$out" "and its step .Install changie. carries .timeout-minutes: 8.")"
+check "says the job budget does not strictly exceed it" \
+  "$(contains "$out" "which that job budget does not strictly exceed")"
+check "says what to write on the job" "$(contains "$out" 'timeout-minutes: 9. or more on this job')"
+check "does not also report the step's own retries against this job" \
+  "$(is "$(printf '%s\n' "$out" | grep -c 'holds retries taking')" 0)"
+
+echo "case: one minute above that step passes, and the step's retries never reach its own budget"
+root=$(fixture job-holds-step-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    steps:
+      - name: Install changie
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the changie tarball" 60 -- \
+            curl -fsSL --max-time 60 -o changie.tar.gz https://example.com/changie.tar.gz
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
 # A step waits for every pass of every loop around a call, for every call of the function that
 # holds it, and for every pass of the loops around those calls — and it waits for all of that
 # again in each script it runs inside a loop of its own. Each shape below was a budget this

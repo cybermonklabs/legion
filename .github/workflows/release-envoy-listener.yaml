@@ -182,7 +182,7 @@ jobs:
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (the Budgets note of .github/ci-budgets.md) -> 25 min.
+      # 2 x 1281 = 2562 s (the Budgets note of .github/ci-budgets.md) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # The install retries: five bounded attempts through .github/scripts/ci-retry.sh, the last
@@ -259,9 +259,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     # Budget (the Budgets note of .github/ci-budgets.md): 4800 s, the 80 minutes
     # this job carried, plus its slowest retried step alone — setup-bun's two `ci_tools_fetch`
-    # calls, 1482 s, above the Go module download and the workspace install at
-    # 5 x 180 + 150 = 1050 s each. 4800 + 1482 = 6282 s -> 105 min.
-    timeout-minutes: 105
+    # calls, 2562 s, above the Go module download and the workspace install at
+    # 5 x 180 + 150 = 1050 s each. 4800 + 2562 = 7362 s -> 123 min.
+    timeout-minutes: 123
     # Builds and pushes images to ghcr.io; nothing here writes to the repository.
     permissions:
       contents: read
@@ -296,7 +296,7 @@ jobs:
           # of an Actions cache under 9 GB.
           cache: ${{ matrix.arch == 'amd64' }}
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (the Budgets note of .github/ci-budgets.md) -> 25 min.
+      # 2 x 1281 = 2562 s (the Budgets note of .github/ci-budgets.md) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # Retried as the build job's install is, and bounded as it is: 180 s per attempt, against
@@ -577,8 +577,8 @@ jobs:
           .github/scripts/release-push.sh version legion-envoy-v $LEGION_ENVOY_VERSION_ARGS >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/install-changie
         if: steps.version.outputs.skip != 'true'
-        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 741 s
-        # (the Budgets note of .github/ci-budgets.md) -> 13 min.
+        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+        # (the Budgets note of .github/ci-budgets.md) -> 22 min.
         timeout-minutes: 22
       # This release's own changelog entries, which release_publish writes into the GitHub
       # release's body. A fragment stays under packages/envoy/.changes/unreleased/ after the

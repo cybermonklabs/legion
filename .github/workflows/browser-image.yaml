@@ -57,11 +57,16 @@ jobs:
     # .github/ci-budgets.md). The job's own two terms are that 77 s measured
     # maximum and its slowest retried step alone — the record step, whose two `crane manifest`
     # reads are 2 x (5 x 60 + 150) = 900 s, above install-crane's one `ci_tools_fetch`
-    # of 741 s, the ci-ok report's 600 s and the decide step's one `crane config` read of
-    # 450 s. 77 + 900 = 977 s -> 17 min. A run whose row already names a served digest skips
+    # of 1281 s, the ci-ok report's 600 s and the decide step's one `crane config` read of
+    # 450 s. 77 + 900 = 977 s. The key below is not that figure: rule 8 of
+    # .github/scripts/check-download-retry.sh prices this job at install-crane's one
+    # `ci_tools_fetch`, 1281 s, which is above those 977 s. The job holds that step AND the
+    # 77 s measured above it, so its key is the two together, 77 + 1281 = 1358 s -> 23 min, one
+    # minute above the step's own 22: a job ceiling equal to a step's ceiling cuts that step
+    # before its budget can name the site, which rule 8 refuses since dispatch://INFRA-1545. A run whose row already names a served digest skips
     # the buildx, login and build steps and their post steps, 61 s of those 74, and is left
     # with about 13 s of work.
-    timeout-minutes: 22
+    timeout-minutes: 23
     # Job-level (not workflow-level): this file is a called workflow, and job-level concurrency
     # behaves identically for its two triggers, `workflow_call` and `workflow_dispatch`.
     # A pull request's runs share one group per PR number. A new head's run cancels the build of
@@ -107,8 +112,8 @@ jobs:
 
       # crane reads the published image's label for the publish decision below and writes the
       # pushed image's tag.
-      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 741 s
-      # (the Budgets note of .github/ci-budgets.md) -> 13 min.
+      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+      # (the Budgets note of .github/ci-budgets.md) -> 22 min.
       - uses: ./.github/actions/install-crane
         timeout-minutes: 22
 

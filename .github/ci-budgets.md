@@ -135,6 +135,9 @@ a budget nobody wrote is a budget nothing judges, which is how this file's `airl
 It holds for every retried step of this repository's workflows, and the browser suite's install steps in .github/workflows/dispatch-browser.yaml derive theirs the same way.
 
 A job carries its measured duration plus the arithmetic of its single slowest retried step, and nothing more.
+Two halves of that are checked rather than read: `.github/scripts/check-download-retry.sh`'s rule 8 refuses a job whose ceiling sits under a step's retry arithmetic, and refuses one whose ceiling is not above that step's own `timeout-minutes`, since the job holds that step and everything else it runs.
+The measured term is in neither, so a job key is still a figure a person derives and a reviewer reads; what the check gives is the floor it may not stand under.
+Twenty-two job keys stood below their own derivation while this check was green, because only the first of those two halves was read (dispatch://INFRA-1545).
 Both terms are written beside every `timeout-minutes` below, with the step named.
 The first term is the larger of the budget that job carried before dispatch://INFRA-1545
 — a ceiling its own comment derives, and in a Go test job one that a step's `-timeout` has to fire inside
@@ -201,7 +204,7 @@ Carrying that term would put this job's ceiling near three hours (1500 + 8299 = 
 — an outage of the package this job has to fail in rather than wait out, since the copy it fills is this repository's own.
 So the ceiling carries no term for that step.
 What a run that does exhaust those ladders ends on is that step's own budget, and that budget is the figure .github/scripts/check-download-retry.sh prices rather than the sum this paragraph adds up:
-the ladder's per-attempt bound is the row's `max_time`, a variable it cannot read, so its DECLARED_LOOPS entry for .github/scripts/ci-tools.sh `curl` writes what one call of that helper costs, 741 s, and the passes of a loop it cannot count are not multiplied into it.
+the ladder's per-attempt bound is the row's `max_time`, a variable it cannot read, so its DECLARED_LOOPS entry for .github/scripts/ci-tools.sh `curl` writes what one call of that helper costs, 1281 s, and the passes of a loop it cannot count are not multiplied into it.
 The step below carries the next whole minute above that figure, and the nine requests a row really makes are why this job's ceiling is not raised to meet them.
 
 ## The tool-fallback job

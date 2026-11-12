@@ -2128,7 +2128,7 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): 1800 s, the 30 minutes this job carried, above its
     # 1050 s measured maximum, plus its slowest retried step alone — the Go module download,
     # whose three calls are 3 x (5 x 180 + 150) = 3150 s, above setup-bun's two
-    # `ci_tools_fetch` calls at 1482 s, the workspace install's and the lockfile install's
+    # `ci_tools_fetch` calls at 2562 s, the workspace install's and the lockfile install's
     # 1050 s each and the ci-ok report's 600 s. 1800 + 3150 = 4950 s ->
     # 83 min. The pull request's text is checked in the `pr-title` job now, so that job carries
     # check-pr-text.sh's and post-check-run.sh's arithmetic.
@@ -2243,7 +2243,7 @@ jobs:
           fi
 
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
 
@@ -2380,7 +2380,7 @@ jobs:
     # `built` row, 300 + 4200 + 750 = 5250 s, as that step's own comment derives it. That is
     # above the image copy step, whose mirror-ci-images.sh makes two `crane config` ladders at
     # 5 x 60 + 150 = 450 s each, a `crane copy` at 5 x 300 + 150 = 1650 s and a `crane digest`
-    # at 450 s, 3000 s together; above install-crane's one `ci_tools_fetch` of 741 s; and
+    # at 450 s, 3000 s together; above install-crane's one `ci_tools_fetch` of 1281 s; and
     # above the ci-ok report's 600 s. 1500 + 5250 = 6750 s -> 113 min.
     #
     # The tool copy step's own ladders are the one term this sum leaves out, and why it does:
@@ -2399,8 +2399,8 @@ jobs:
         with:
           persist-credentials: false
 
-      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 741 s (ci-budgets.md's
-      # Budgets note) -> 13 min.
+      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
+      # Budgets note) -> 22 min.
       - uses: ./.github/actions/install-crane
         timeout-minutes: 22
 
@@ -2443,7 +2443,7 @@ jobs:
         run: .github/scripts/check-ci-images.sh package
 
       # The figure rule 8 prices for this step, and not what a cold fill of four rows costs:
-      # one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min. The job's own
+      # one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min. The job's own
       # comment above derives the nine requests a ghcr-mirror row really makes and says why
       # neither this budget nor this job's ceiling carries them.
       - name: Fill the copy of every tool asset the package does not hold
@@ -2564,9 +2564,10 @@ jobs:
     # npm, PyPI, get.pulumi.com and loopback, the two 107 MB Bun tarballs among them (3), and the
     # readings, the `ladder-report` step, the stop-fault step and the report (1).
     # That is 15, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the
-    # limit must stand above the sum rather than at it. IT IS NOT DERIVED FROM THAT SUM: 75 is
-    # the 65 this job carried with ten minutes added, and what has to fit inside it is the rule
-    # below - the staging step's own 2964 s - which is far above these 15 minutes of steps. The
+    # limit must stand above the sum rather than at it. IT IS NOT DERIVED FROM THAT SUM: 111 is
+    # the 101 this construction gives with ten minutes added, the same ten the 75 before it
+    # carried over 65, and what has to fit inside it is the rule below - the staging step's own
+    # 5124 s, 86 minutes - which is far above these 15 minutes of steps. The
     # sum is what runs beside that step, not the thing the limit is built from.
     # This budget replaces 65 minutes with a limit of 75, and 45 of those 65 were the twenty-one
     # steps whose primary the fault holds, allowed at 126 s each. That 126 s is what a negative
@@ -2581,31 +2582,31 @@ jobs:
     # to 22 minutes on those durations alone, and a measured duration is only the first term of
     # the rule below: the second is the job's slowest retried step, which at 22 minutes would be
     # cut before it could name its fetch - the gate refuses that job six ways, naming
-    # `bun-second-source`'s 1482 s against 1320 s. So the durations above stand and the limit
+    # `bun-second-source`'s ladder, 2 x 1281 = 2562 s at this change's bound, against 1320 s. So the durations above stand and the limit
     # does not (dispatch://INFRA-1545).
 
     # The rule every other budget of this file is written to (ci-budgets.md's Budgets note) — a
     # job carries its measured duration plus the arithmetic of its single slowest retried step
     # — sits inside that 75 rather than being added to it. The slowest retried step here is
-    # the staging step, whose twelve `ci_tools_curl` ladders its own comment derives as 2964 s
-    # under the 50 minutes that step carries, above install-jj's 1482 + 450 = 1932 s, either
-    # setup-bun step's 1482 s, the blob read's 1115 s and the ci-ok report's 600 s. The three
+    # the staging step, whose twelve `ci_tools_curl` ladders its own comment derives as 5124 s
+    # under the 86 minutes that step carries, above install-jj's 2562 + 450 = 3012 s, either
+    # setup-bun step's 2562 s, the blob read's 2015 s and the ci-ok report's 600 s. The three
     # minutes of steps counted above are all that runs before it - measured at 0.3 minutes in
     # job 129478173535, a 28.7-minute run of this job - so a staging step that spends its whole
-    # ladder ends on its own budget at about 50 minutes with this job's limit unspent, and that
+    # ladder ends on its own budget at about 86 minutes with this job's limit unspent, and that
     # step names the fetch that failed rather than the job reporting GitHub's bare timeout line.
     #
     # THAT GUARANTEE HOLDS BY POSITION AND NOT BY RULE, which is worth saying because the
     # arithmetic above does not give it. A retried step is diagnosable only where its whole
     # ladder fits before this limit, so a step whose ladder is N minutes has to START before
-    # minute 75 - N: the staging step's 2964 s needs to begin before minute 26, and a 13-minute
-    # install starting after minute 62 would be cut by the limit and would report GitHub's bare
-    # line rather than its own. What keeps
+    # minute 111 - N: the staging step's 5124 s needs to begin before minute 25, and a
+    # 22-minute install starting after minute 89 would be cut by the limit and would report
+    # GitHub's bare line rather than its own. What keeps
     # every retried step of this job diagnosable is that the long ones run early: the staging
     # step first, and no retried step of job 129478173535 reached past 41.6 minutes. A step
     # added late with a ladder of its own has to be read against this limit rather than assumed
     # safe by it.
-    timeout-minutes: 75
+    timeout-minutes: 111
     #
     # THIS CHANGE ADDS TEN STEPS TO THAT SUM, AND NINE OF THEM COST NOTHING A READER WOULD
     # NOTICE: eight marks, one before each install with nowhere to go, each a single `echo`
@@ -2683,17 +2684,17 @@ jobs:
       # a row whose second source does not exist yet is a pass for nothing.
       # Its own retry arithmetic, read off the loop below rather than taken as one ladder: the
       # anonymous pull token, at the 60 s an attempt .github/scripts/ci-tools.sh's token
-      # helper defaults to, 247 s; and one HEAD per ghcr-mirror row of .github/ci-tools.yaml,
-      # at the 30 s an attempt this step gives it, 217 s each over the four such rows, 868 s.
+      # helper defaults to, 427 s; and one HEAD per ghcr-mirror row of .github/ci-tools.yaml,
+      # at the 30 s an attempt this step gives it, 397 s each over the four such rows, 1588 s.
       # Both per-ladder figures come from one place, .github/scripts/ci-tools.sh's own
-      # `--retry-max-time` block, which writes them as 247 s at 60 and 217 s at 30; neither is
+      # `--retry-max-time` block, which writes them as 427 s at 60 and 397 s at 30; neither is
       # derived here.
-      # 247 + 868 = 1115 s -> 19 min. Rule 8 reads one `ci_tools_fetch` of 741 s for this step
+      # 427 + 1588 = 2015 s -> 34 min. Rule 8 reads one `ci_tools_fetch` of 1281 s for this step
       # instead, since a call of a function the sourced file defines is no call of that file
       # to it and the loop around this one is therefore not multiplied, so 19 min is written
       # by hand against the sum above and not against what the gate prices.
       - name: Check the package holds the blob of every mirrored row
-        timeout-minutes: 22
+        timeout-minutes: 34
         run: |
           set -euo pipefail
           # shellcheck source=.github/scripts/ci-tools.sh
@@ -2728,7 +2729,7 @@ jobs:
       # `ci_tools_field` read .github/ci-tools.yaml off this checkout, and the two greps read
       # this tree. Its arithmetic is the file it sources and the file its grep names —
       # .github/scripts/ci-tools.sh and the rig — so rule 8 charges it one `ci_tools_fetch`,
-      # 741 s (ci-budgets.md's Budgets note) -> 13 min. The grep of the rig's path is
+      # 1281 s (ci-budgets.md's Budgets note) -> 22 min. The grep of the rig's path is
       # written outside the row loop, which is also one walk of those trees instead of one per
       # row: written inside it, .github/scripts/check-download-retry.sh read it as a run of
       # that script once per pass of a loop whose passes it cannot count, and could put no
@@ -2770,22 +2771,24 @@ jobs:
       # one ladder: `stage` loops over its own STAGED_ROWS — crane, changie, mise, jj and
       # bun-linux-x64 — and calls ci_tools_fetch once for each of the five. A row whose
       # primary is a release asset of its own costs the three ladders the DECLARED_LOOPS entry
-      # for .github/scripts/ci-tools.sh prices at 741 s, which is crane, changie and mise; the
-      # jj row's `primary` is empty, so it costs the token and the blob alone, 494 s; and
-      # bun-linux-x64 costs its one npm tarball, 247 s. Those last two are that same entry's
-      # own figures for a row with no primary. 3 x 741 + 494 + 247 = 2964 s, which is twelve
-      # ladders of at most 247 s -> 50 min.
-      # Rule 8 prices this step at one `ci_tools_fetch` of 741 s: it reads a call of
-      # ci_tools_fetch as a
-      # call of that function and not as a call of the file defining it, so the loop around
-      # this one is not multiplied, and this budget is written by hand for that reason — the
-      # miscount list in .github/scripts/check-download-retry.sh says so where the reading is
-      # described.
+      # for .github/scripts/ci-tools.sh prices at 1281 s, which is crane, changie and mise; the
+      # jj row's `primary` is empty, so it costs the token and the blob alone, 854 s; and
+      # bun-linux-x64 costs its one npm tarball, 427 s. Those last two are that same entry's
+      # own figures for a row with no primary. 3 x 1281 + 854 + 427 = 5124 s, which is twelve
+      # ladders of at most 427 s -> 86 min.
+      # THIS BUDGET IS HELD BY HAND AND NO CHECK REFUSES IT, which is worth its own sentence:
+      # rule 8 prices this step at one `ci_tools_fetch` of 1281 s, far under the key below,
+      # because it reads a call of ci_tools_fetch as a call of that function and not as a call
+      # of the file defining it, so the loop around this one is not multiplied — the miscount
+      # list in .github/scripts/check-download-retry.sh says so where the reading is described.
+      # At the 120 s bound this change replaced, the same derivation gave twelve ladders of
+      # 247 s, 2964 s, and this key read 50; nothing but the bound moved it, and test round 39
+      # of dispatch://INFRA-1545 is what found it standing 36 minutes under its own worst case.
       - name: Stage the correct bytes of every row a case serves, before the fault
-        timeout-minutes: 50
+        timeout-minutes: 86
         run: .github/scripts/ci-tools-proof.sh stage
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - id: origin
         name: Start the origin that stands in for all four sources
         timeout-minutes: 22
@@ -2823,12 +2826,12 @@ jobs:
       # it staged, so a release-asset outage, which is what this whole job is about, leaves this
       # case exactly as it is. api.github.com is not a release-asset host and does not go down
       # with one.
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Corrupt nothing at the origin for the jj-primary case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh corrupt
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Seed mise's install of jj with the staged binary, one byte changed
         timeout-minutes: 22
         run: |
@@ -2841,7 +2844,7 @@ jobs:
           rm -f "$corrupted"
 
       # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
-      # of the jj release, 1482 + 450 = 1932 s (ci-budgets.md's Budgets note) -> 33 min.
+      # of the jj release, 2562 + 450 = 3012 s (ci-budgets.md's Budgets note) -> 51 min.
       - id: jj-primary
         continue-on-error: true
         timeout-minutes: 51
@@ -2849,7 +2852,7 @@ jobs:
         env:
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the jj-primary case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh report jj-primary --outcome ${{ steps.jj-primary.outcome }} --row jj --expect-source github-release
@@ -2906,7 +2909,7 @@ jobs:
       # The remedy is the position and not a guard in the stand-in on a state file the fault
       # writes: a position cannot drift out of the truth it states, while such a guard can.
       - name: Shorten the ladder of every fetch this job arranges to fail
-        # Its own retry arithmetic: one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+        # Its own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh shorten-ladder
 
@@ -2918,12 +2921,12 @@ jobs:
       # The runner resolves and downloads an action with its own environment rather than a
       # step's, so every action this job uses is already on disk when the fault starts, and the
       # fault is met only by what an action fetches.
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Start the fault in front of GitHub's release assets
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh start-fault
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the fault before any install meets it
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh probe github.com
@@ -3069,8 +3072,8 @@ jobs:
       # comment above names in the controls that lean on the merge base: it reads nothing of the
       # base tree, and the property it states — an install whose primary is faulted and whose
       # second source cannot be reached fails — is a property of the head itself.
-      # install-docker-plugin's own retry arithmetic: one `ci_tools_fetch`, 741 s
-      # (ci-budgets.md's Budgets note) -> 13 min.
+      # install-docker-plugin's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+      # (ci-budgets.md's Budgets note) -> 22 min.
       - id: nowhere-pulumi-docker
         continue-on-error: true
         timeout-minutes: 22
@@ -3109,7 +3112,10 @@ jobs:
       # which cancels it and fails ci-ok, so somebody looked.
       - name: Check all eight installs with nowhere to go failed, and failed in their own time
         # It reads the eight installs' own clocks, so it waits for every attempt they make:
-        # 2223 s of retries, which this budget stands strictly above -> 38 min.
+        # nine ladders of retries - 9 x 427 s, the per-ladder ceiling
+        # .github/scripts/ci-tools.sh derives at the 60 s bound, where before this change the
+        # same nine were 9 x 247 = 2223 s - so 3843 s, which this budget stands strictly
+        # above -> 65 min.
         timeout-minutes: 65
         env:
           CRANE: ${{ steps.base-crane.outcome }}
@@ -3202,8 +3208,8 @@ jobs:
       # fault: its `mise install` must reach the release asset mise fetches jj from, which the
       # fault holds, so that install fails and the action reads the copy. This step is therefore
       # the proof of jj's second source itself, rather than a warm directory answering for it.
-      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 741 s (ci-budgets.md's
-      # Budgets note) -> 13 min.
+      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
+      # Budgets note) -> 22 min.
       # This install is the one case that keeps the pinned ladder, and the ladder-report step
       # at the end of this job reads the measurement it leaves.
       - uses: ./.github/actions/install-crane
@@ -3211,18 +3217,18 @@ jobs:
         env:
           CI_TOOLS_PROOF_FULL_LADDER: crane-head
 
-      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 741 s
-      # (ci-budgets.md's Budgets note) -> 13 min.
+      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+      # (ci-budgets.md's Budgets note) -> 22 min.
       - uses: ./.github/actions/install-changie
         timeout-minutes: 22
 
       # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
-      # of the jj release, 1482 + 450 = 1932 s (ci-budgets.md's Budgets note) -> 33 min.
+      # of the jj release, 2562 + 450 = 3012 s (ci-budgets.md's Budgets note) -> 51 min.
       - uses: ./.github/actions/install-jj
         timeout-minutes: 51
 
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
 
@@ -3232,24 +3238,24 @@ jobs:
       - name: Take elan away, so the faulted install must read the copy
         run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
 
-      # install-elan's own retry arithmetic: one `ci_tools_fetch`, 741 s (ci-budgets.md's
-      # Budgets note) -> 13 min.
+      # install-elan's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
+      # Budgets note) -> 22 min.
       - uses: ./.github/actions/install-elan
         timeout-minutes: 22
 
       # uv's release tarball is behind the fault, so this install must read the wheel PyPI
       # serves, which packages the same binary. Another provider and not another GitHub host is
       # the whole reason that row's second source is PyPI.
-      # install-uv's own retry arithmetic: one `ci_tools_fetch`, 741 s (ci-budgets.md's
-      # Budgets note) -> 13 min.
+      # install-uv's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
+      # Budgets note) -> 22 min.
       - uses: ./.github/actions/install-uv
         timeout-minutes: 22
 
       # The docker provider plugin's release asset is behind the fault, so this install must
       # read get.pulumi.com, which serves that tarball byte for byte. The step carries an id
       # because the reading below is of the tarball it hands back.
-      # install-docker-plugin's own retry arithmetic: one `ci_tools_fetch`, 741 s
-      # (ci-budgets.md's Budgets note) -> 13 min.
+      # install-docker-plugin's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+      # (ci-budgets.md's Budgets note) -> 22 min.
       - id: docker-plugin
         timeout-minutes: 22
         uses: ./.github/actions/install-docker-plugin
@@ -3263,16 +3269,16 @@ jobs:
       # every step after the fault started: inside this job the origin is what can serve a
       # `github-release` second source at all, and what it serves is that release's own bytes,
       # staged and verified.
-      # install-pulumi's own retry arithmetic: one `ci_tools_fetch`, 741 s (ci-budgets.md's
-      # Budgets note) -> 13 min.
+      # install-pulumi's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
+      # Budgets note) -> 22 min.
       - uses: ./.github/actions/install-pulumi
         timeout-minutes: 22
         env:
           CI_TOOLS_URL_BASE: http://127.0.0.1:1
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
 
-      # One `ci_tools_fetch`, 741 s, from the rig this step runs (ci-budgets.md's Budgets
-      # note) -> 13 min.
+      # One `ci_tools_fetch`, 1281 s, from the rig this step runs (ci-budgets.md's Budgets
+      # note) -> 22 min.
       - name: Check every tool is the version its row pins
         timeout-minutes: 22
         run: |
@@ -3330,13 +3336,13 @@ jobs:
       #
       # Case 1 of 16: crane's primary serves one byte changed, and the second source must stay
       # untried — a digest mismatch is a supply-chain signal, never a reason to read elsewhere.
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Corrupt crane for its primary case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh corrupt crane
 
-      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 741 s (ci-budgets.md's
-      # Budgets note) -> 13 min.
+      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
+      # Budgets note) -> 22 min.
       - id: crane-primary
         continue-on-error: true
         timeout-minutes: 22
@@ -3345,20 +3351,20 @@ jobs:
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the crane-primary case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh report crane-primary --outcome ${{ steps.crane-primary.outcome }} --row crane --expect-source github-release --expect-untried ghcr-mirror
 
       # Case 2 of 16: crane's second source serves one byte changed, after the primary — the real
       # host, which the fault holds — did not serve them at all.
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Corrupt crane for its second-source case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh corrupt crane
 
-      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 741 s (ci-budgets.md's
-      # Budgets note) -> 13 min.
+      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
+      # Budgets note) -> 22 min.
       - id: crane-second-source
         continue-on-error: true
         timeout-minutes: 22
@@ -3366,19 +3372,19 @@ jobs:
         env:
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the crane-second-source case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh report crane-second-source --outcome ${{ steps.crane-second-source.outcome }} --row crane --expect-source ghcr-mirror
 
       # Case 3 of 16: changie's primary serves one byte changed.
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Corrupt changie for its primary case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh corrupt changie
 
-      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 741 s
-      # (ci-budgets.md's Budgets note) -> 13 min.
+      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+      # (ci-budgets.md's Budgets note) -> 22 min.
       - id: changie-primary
         continue-on-error: true
         timeout-minutes: 22
@@ -3387,19 +3393,19 @@ jobs:
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the changie-primary case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh report changie-primary --outcome ${{ steps.changie-primary.outcome }} --row changie --expect-source github-release --expect-untried ghcr-mirror
 
       # Case 4 of 16: changie's second source serves one byte changed.
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Corrupt changie for its second-source case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh corrupt changie
 
-      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 741 s
-      # (ci-budgets.md's Budgets note) -> 13 min.
+      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+      # (ci-budgets.md's Budgets note) -> 22 min.
       - id: changie-second-source
         continue-on-error: true
         timeout-minutes: 22
@@ -3407,7 +3413,7 @@ jobs:
         env:
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the changie-second-source case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh report changie-second-source --outcome ${{ steps.changie-second-source.outcome }} --row changie --expect-source ghcr-mirror
@@ -3420,7 +3426,7 @@ jobs:
       # Case 5, which ran before the fault, left ~/.local/bin/jj as it found it: install-jj
       # verifies the binary where mise put it and copies only after that passes, so a refused
       # jj never reaches that path.
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Corrupt the jj copy for its second-source case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh corrupt jj
@@ -3432,7 +3438,7 @@ jobs:
           echo "$HOME/.local/share/mise is gone, so mise must install jj rather than find it installed"
 
       # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
-      # of the jj release, 1482 + 450 = 1932 s (ci-budgets.md's Budgets note) -> 33 min.
+      # of the jj release, 2562 + 450 = 3012 s (ci-budgets.md's Budgets note) -> 51 min.
       - id: jj-second-source
         continue-on-error: true
         timeout-minutes: 51
@@ -3440,7 +3446,7 @@ jobs:
         env:
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the jj-second-source case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh report jj-second-source --outcome ${{ steps.jj-second-source.outcome }} --row jj --expect-source ghcr-mirror
@@ -3455,12 +3461,12 @@ jobs:
       # branch this case needs is the branch it takes. The step below reads that answer again
       # and refuses the case rather than proving another one, should a later Bun read its own
       # last byte.
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Corrupt nothing at the origin for the bun-primary case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh corrupt
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Change the last byte of the installed Bun
         timeout-minutes: 22
         run: |
@@ -3475,13 +3481,13 @@ jobs:
           fi
 
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - id: bun-primary
         continue-on-error: true
         timeout-minutes: 43
         uses: ./.github/actions/setup-bun
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the bun-primary case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh report bun-primary --outcome ${{ steps.bun-primary.outcome }} --row bun-linux-x64 --expect-source github-release
@@ -3496,13 +3502,13 @@ jobs:
       - name: Take any Bun away, so the second source must serve this case
         run: rm -f "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Corrupt the Bun package for its second-source case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh corrupt bun-linux-x64
 
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - id: bun-second-source
         continue-on-error: true
         timeout-minutes: 43
@@ -3510,7 +3516,7 @@ jobs:
         env:
           CI_TOOLS_NPM_BASE: ${{ steps.origin.outputs.npm }}
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the bun-second-source case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh report bun-second-source --outcome ${{ steps.bun-second-source.outcome }} --row bun-linux-x64 --expect-source npm
@@ -3519,13 +3525,13 @@ jobs:
       - name: Take elan away for its primary case
         run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Corrupt elan for its primary case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh corrupt elan
 
-      # install-elan's own retry arithmetic: one `ci_tools_fetch`, 741 s (ci-budgets.md's
-      # Budgets note) -> 13 min.
+      # install-elan's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
+      # Budgets note) -> 22 min.
       - id: elan-primary
         continue-on-error: true
         timeout-minutes: 22
@@ -3534,7 +3540,7 @@ jobs:
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the elan-primary case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh report elan-primary --outcome ${{ steps.elan-primary.outcome }} --row elan --expect-source github-release --expect-untried ghcr-mirror
@@ -3544,13 +3550,13 @@ jobs:
       - name: Take elan away for its second-source case
         run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Corrupt elan for its second-source case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh corrupt elan
 
-      # install-elan's own retry arithmetic: one `ci_tools_fetch`, 741 s (ci-budgets.md's
-      # Budgets note) -> 13 min.
+      # install-elan's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
+      # Budgets note) -> 22 min.
       - id: elan-second-source
         continue-on-error: true
         timeout-minutes: 22
@@ -3558,7 +3564,7 @@ jobs:
         env:
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the elan-second-source case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh report elan-second-source --outcome ${{ steps.elan-second-source.outcome }} --row elan --expect-source ghcr-mirror
@@ -3568,13 +3574,13 @@ jobs:
       # tarball GitHub serves, which is read before the binary is taken out of it: the row's own
       # `digest` is of that binary, so the archive carries a digest of its own and this is the
       # refusal this case is about.
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Corrupt uv for its primary case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh corrupt uv
 
-      # install-uv's own retry arithmetic: one `ci_tools_fetch`, 741 s (ci-budgets.md's
-      # Budgets note) -> 13 min.
+      # install-uv's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
+      # Budgets note) -> 22 min.
       - id: uv-primary
         continue-on-error: true
         timeout-minutes: 22
@@ -3583,7 +3589,7 @@ jobs:
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the uv-primary case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh report uv-primary --outcome ${{ steps.uv-primary.outcome }} --row uv --expect-source github-release --expect-untried pypi
@@ -3605,13 +3611,13 @@ jobs:
       # that filled up with one exit, so that refusal names no cause at all — it names the
       # member and the archive and leaves tar's own words on stderr to say why.
       # Either way nothing unverified is installed, which is what the case is for.
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Corrupt uv for its second-source case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh corrupt uv
 
-      # install-uv's own retry arithmetic: one `ci_tools_fetch`, 741 s (ci-budgets.md's
-      # Budgets note) -> 13 min.
+      # install-uv's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
+      # Budgets note) -> 22 min.
       - id: uv-second-source
         continue-on-error: true
         timeout-minutes: 22
@@ -3619,20 +3625,20 @@ jobs:
         env:
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the uv-second-source case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh report uv-second-source --outcome ${{ steps.uv-second-source.outcome }} --row uv --expect-source pypi
 
       # Case 13 of 16: the docker provider plugin's release asset serves one byte changed, and
       # get.pulumi.com must stay untried.
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Corrupt the docker provider plugin for its primary case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh corrupt pulumi-docker
 
-      # install-docker-plugin's own retry arithmetic: one `ci_tools_fetch`, 741 s
-      # (ci-budgets.md's Budgets note) -> 13 min.
+      # install-docker-plugin's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+      # (ci-budgets.md's Budgets note) -> 22 min.
       - id: pulumi-docker-primary
         continue-on-error: true
         timeout-minutes: 22
@@ -3641,7 +3647,7 @@ jobs:
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the pulumi-docker-primary case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh report pulumi-docker-primary --outcome ${{ steps.pulumi-docker-primary.outcome }} --row pulumi-docker --expect-source github-release --expect-untried pulumi-releases
@@ -3650,13 +3656,13 @@ jobs:
       # the release asset — the real host, which the fault holds — did not serve it at all.
       # Pulumi serves one file at both addresses, so the origin serves one payload under one
       # name on its two routes, and which route a case read is what its report prints.
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Corrupt the docker provider plugin for its second-source case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh corrupt pulumi-docker
 
-      # install-docker-plugin's own retry arithmetic: one `ci_tools_fetch`, 741 s
-      # (ci-budgets.md's Budgets note) -> 13 min.
+      # install-docker-plugin's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+      # (ci-budgets.md's Budgets note) -> 22 min.
       - id: pulumi-docker-second-source
         continue-on-error: true
         timeout-minutes: 22
@@ -3664,7 +3670,7 @@ jobs:
         env:
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the pulumi-docker-second-source case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh report pulumi-docker-second-source --outcome ${{ steps.pulumi-docker-second-source.outcome }} --row pulumi-docker --expect-source pulumi-releases
@@ -3676,13 +3682,13 @@ jobs:
       # origin can serve this row's second source, and what the case says is that it was never
       # asked to. Without it that source would be the faulted real host, which answers nothing
       # whether the rule holds or not.
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Corrupt the Pulumi CLI for its primary case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh corrupt pulumi-cli
 
-      # install-pulumi's own retry arithmetic: one `ci_tools_fetch`, 741 s (ci-budgets.md's
-      # Budgets note) -> 13 min.
+      # install-pulumi's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
+      # Budgets note) -> 22 min.
       - id: pulumi-cli-primary
         continue-on-error: true
         timeout-minutes: 22
@@ -3691,7 +3697,7 @@ jobs:
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the pulumi-cli-primary case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh report pulumi-cli-primary --outcome ${{ steps.pulumi-cli-primary.outcome }} --row pulumi-cli --expect-source pulumi-releases --expect-untried github-release
@@ -3701,13 +3707,13 @@ jobs:
       # The dead port and not the fault, because this job leaves get.pulumi.com alone; the
       # origin stands in for the release asset, as it does in the install that must succeed
       # above, and here it serves those bytes with one changed.
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Corrupt the Pulumi CLI for its second-source case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh corrupt pulumi-cli
 
-      # install-pulumi's own retry arithmetic: one `ci_tools_fetch`, 741 s (ci-budgets.md's
-      # Budgets note) -> 13 min.
+      # install-pulumi's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
+      # Budgets note) -> 22 min.
       - id: pulumi-cli-second-source
         continue-on-error: true
         timeout-minutes: 22
@@ -3716,7 +3722,7 @@ jobs:
           CI_TOOLS_URL_BASE: http://127.0.0.1:1
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
 
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the pulumi-cli-second-source case
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh report pulumi-cli-second-source --outcome ${{ steps.pulumi-cli-second-source.outcome }} --row pulumi-cli --expect-source github-release
@@ -3735,8 +3741,8 @@ jobs:
       # crane and changie are held to the version they answer, because their rows pin the release
       # tarball rather than the binary inside it; jj is held to its row's own digest, which is of
       # the installed binary.
-      # One `ci_tools_fetch`, 741 s, from the .github/scripts/ci-tools.sh this step
-      # sources and the rig it runs (ci-budgets.md's Budgets note) -> 13 min.
+      # One `ci_tools_fetch`, 1281 s, from the .github/scripts/ci-tools.sh this step
+      # sources and the rig it runs (ci-budgets.md's Budgets note) -> 22 min.
       - name: Print what every tool answers now
         timeout-minutes: 22
         run: |
@@ -3775,7 +3781,7 @@ jobs:
       # shorten-ladder step at its position. Every run of it that reads the log through prints
       # that count beside the bound, whether the reading passes or refuses.
       - name: Read what the stand-in curl measured of every fetch
-        # Its own retry arithmetic: one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+        # Its own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh ladder-report
 
@@ -3788,7 +3794,7 @@ jobs:
       # it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise
       # upload through a proxy that is about to go. The rig writes the emptied variables, as it
       # wrote the proxy ones.
-      # The rig's one `ci_tools_fetch`, 741 s (ci-budgets.md's Budgets note) -> 13 min.
+      # The rig's one `ci_tools_fetch`, 1281 s (ci-budgets.md's Budgets note) -> 22 min.
       - name: Stop routing this job through the fault
         if: always()
         timeout-minutes: 22
@@ -3822,8 +3828,8 @@ jobs:
     # (1), and the machine watch's start and its report (1). That is 16 minutes, 960 s, and this
     # job's unretried term; a job its own limit cuts off reports `cancelled`, which ci-ok fails.
     # The second term the rule adds is its slowest retried step alone - either setup-bun step's
-    # two `ci_tools_fetch` calls, 1482 s, above the rig steps' one of 741 s each.
-    # 960 + 1482 = 2442 s -> 41 min.
+    # two `ci_tools_fetch` calls, 2562 s, above the rig steps' one of 1281 s each.
+    # 960 + 2562 = 3522 s -> 59 min.
     # Measured, this job sits far inside that budget, and the ladder those 247 s allow for
     # is not driven in the runs measured. In five green runs on 2026-11-10 it took 41 s, 41 s,
     # 43 s, 45 s and 50 s (jobs 129726973920, 129733754662, 129745140461, 129743510021 and
@@ -3840,9 +3846,9 @@ jobs:
     # drive no such ladder, must not move. What moves here is the ceiling and not the
     # measurement: 15 minutes stood under this job's own slowest retried step, so the job would
     # have cut that step before it could name its fetch (dispatch://INFRA-1545).
-    timeout-minutes: 43
+    timeout-minutes: 59
     # Each of this job's two install steps declares `timeout-minutes: 25`, its own
-    # `ci_tools_fetch` arithmetic of 1482 s with the whole minute that figure takes. Neither
+    # `ci_tools_fetch` arithmetic of 2562 s with the whole minute that figure takes. Neither
     # carries `continue-on-error`, so a held install here is loud by itself: the bound fails the
     # job, the steps after it are skipped, and the job uploads its log. This job's own limit
     # reaches that install first only when the steps before it took more than about sixteen
@@ -3871,12 +3877,12 @@ jobs:
       # The healthy path, with nothing faulted: the release asset serves Bun, and the action's
       # setup-bun step holds what it installed to the row its bun-pin step read out of `uname -m`.
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
 
-      # One `ci_tools_fetch`, 741 s: the rig sources .github/scripts/ci-tools.sh
-      # (ci-budgets.md's Budgets note) -> 13 min.
+      # One `ci_tools_fetch`, 1281 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the Bun the release asset served
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64
@@ -3885,14 +3891,14 @@ jobs:
       # the rig starts the proxy over the release hosts its own FAULT_HOSTS names and writes the
       # four spellings of the two proxy variables and the two emptied bypass lists to
       # $GITHUB_ENV, so neither the hosts nor the variables are written in this file.
-      # One `ci_tools_fetch`, 741 s: the rig sources .github/scripts/ci-tools.sh
-      # (ci-budgets.md's Budgets note) -> 13 min.
+      # One `ci_tools_fetch`, 1281 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 22 min.
       - name: Start the fault in front of GitHub's release assets
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh start-fault
 
-      # One `ci_tools_fetch`, 741 s: the rig sources .github/scripts/ci-tools.sh
-      # (ci-budgets.md's Budgets note) -> 13 min.
+      # One `ci_tools_fetch`, 1281 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the fault before any install meets it
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh probe github.com
@@ -3905,15 +3911,15 @@ jobs:
       # The npm path on arm64: the release asset answers nothing behind the fault, so the
       # action's bun-second-source step reads the @oven/bun-linux-aarch64 package the row names.
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
 
       # --expect-refused is this half's own reading of the source: the proxy's 504 for
       # github.com after the probe is the refusal that sent this install to npm, and the
       # version and the digest cannot say it, since both sources serve one binary.
-      # One `ci_tools_fetch`, 741 s: the rig sources .github/scripts/ci-tools.sh
-      # (ci-budgets.md's Budgets note) -> 13 min.
+      # One `ci_tools_fetch`, 1281 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 22 min.
       - name: Read the Bun npm served
         timeout-minutes: 22
         run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64 --expect-refused github.com
@@ -3927,8 +3933,8 @@ jobs:
       # it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise
       # upload through a proxy that is about to go. The rig writes the emptied variables, as it
       # wrote the proxy ones.
-      # One `ci_tools_fetch`, 741 s: the rig sources .github/scripts/ci-tools.sh
-      # (ci-budgets.md's Budgets note) -> 13 min.
+      # One `ci_tools_fetch`, 1281 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 22 min.
       - name: Stop routing this job through the fault
         if: always()
         timeout-minutes: 22
@@ -4034,13 +4040,13 @@ jobs:
     #
     # The retried step this job's budget adds is its slowest alone (ci-budgets.md's Budgets note):
     # install-jj, whose two `ci_tools_fetch` calls and whose `mise install` of the jj release
-    # are 1482 + 450 = 1932 s. The tmux step's two calls led that list until the declaration
+    # are 2562 + 450 = 3012 s. The tmux step's two calls led that list until the declaration
     # priced the tool installs; at 625 + 775 = 1400 s they no longer do, so install-jj
-    # is this job's slowest retried step now. setup-bun's two calls come to 1482 s, the
-    # workspace install to 1050 s, install-changie's one call to 741 s, install-uv's one call to
-    # 741 s, install-omp's `mise install` to 450 s and the ci-ok report to 600 s, and none of
-    # those is larger. So 4948 + 1932 = 6880 s -> 115 min.
-    timeout-minutes: 115
+    # is this job's slowest retried step now. setup-bun's two calls come to 2562 s, the
+    # workspace install to 1050 s, install-changie's one call to 1281 s, install-uv's one call to
+    # 1281 s, install-omp's `mise install` to 450 s and the ci-ok report to 600 s, and none of
+    # those is larger. So 4948 + 3012 = 7960 s -> 133 min.
+    timeout-minutes: 133
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -4081,7 +4087,7 @@ jobs:
           persist-credentials: false
 
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - name: Setup Bun
         timeout-minutes: 43
         uses: ./.github/actions/setup-bun
@@ -4114,8 +4120,8 @@ jobs:
       # release-push.test.sh renders its fold-notes cases with the real changie, and the step
       # below renders this checkout's own fragments with it; where changie is absent, as on a
       # developer's machine, those cases print a SKIP line and count nothing.
-      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 741 s
-      # (ci-budgets.md's Budgets note) -> 13 min.
+      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+      # (ci-budgets.md's Budgets note) -> 22 min.
       - uses: ./.github/actions/install-changie
         timeout-minutes: 22
 
@@ -4400,7 +4406,7 @@ jobs:
       # working-copy filters are among what they plant), and the daemon resolves jj at boot and
       # refuses to start without it.
       # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
-      # of the jj release, 1482 + 450 = 1932 s (ci-budgets.md's Budgets note) -> 33 min.
+      # of the jj release, 2562 + 450 = 3012 s (ci-budgets.md's Budgets note) -> 51 min.
       - uses: ./.github/actions/install-jj
         timeout-minutes: 51
 
@@ -4415,8 +4421,8 @@ jobs:
       # internal/runtime/sandbox's uv link-mode test installs a wheel with the uv the worker image
       # ships (ARG UV_VERSION, checked against ARG UV_SHA256), and refuses on GitHub Actions
       # without one (.github/actions/install-uv).
-      # install-uv's own retry arithmetic: one `ci_tools_fetch` of the release tarball, 741 s
-      # (ci-budgets.md's Budgets note) -> 13 min.
+      # install-uv's own retry arithmetic: one `ci_tools_fetch` of the release tarball, 1281 s
+      # (ci-budgets.md's Budgets note) -> 22 min.
       - uses: ./.github/actions/install-uv
         timeout-minutes: 22
 
@@ -4508,15 +4514,15 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its 37 s
     # measured maximum, plus its slowest retried step alone — the setup-bun step's two
-    # `ci_tools_fetch` calls, 1482 s, above the workspace install's 5 x 180 + 150 = 1050 s and
-    # the ci-ok report's 600 s. 600 + 1482 = 2082 s -> 35 min.
-    timeout-minutes: 43
+    # `ci_tools_fetch` calls, 2562 s, above the workspace install's 5 x 180 + 150 = 1050 s and
+    # the ci-ok report's 600 s. 600 + 2562 = 3162 s -> 53 min.
+    timeout-minutes: 53
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
@@ -4559,15 +4565,15 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job came in with — it is
     # new here, so no run on main has measured it — plus its slowest retried step alone — the
-    # setup-bun step's two `ci_tools_fetch` calls, 1482 s, above the workspace install's
-    # 5 x 180 + 150 = 1050 s and the ci-ok report's 600 s. 600 + 1482 = 2082 s -> 35 min.
-    timeout-minutes: 43
+    # setup-bun step's two `ci_tools_fetch` calls, 2562 s, above the workspace install's
+    # 5 x 180 + 150 = 1050 s and the ci-ok report's 600 s. 600 + 2562 = 3162 s -> 53 min.
+    timeout-minutes: 53
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
@@ -4602,15 +4608,15 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (ci-budgets.md's Budgets note): this job carried none, so its unretried term is its
     # 41 s measured maximum, plus its slowest retried step alone — the setup-bun step's two
-    # `ci_tools_fetch` calls, 1482 s, above the workspace install's 5 x 180 + 150 = 1050 s and
-    # the ci-ok report's 600 s. 41 + 1482 = 1523 s -> 26 min.
-    timeout-minutes: 43
+    # `ci_tools_fetch` calls, 2562 s, above the workspace install's 5 x 180 + 150 = 1050 s and
+    # the ci-ok report's 600 s. 41 + 2562 = 2603 s -> 44 min.
+    timeout-minutes: 44
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
@@ -4645,15 +4651,15 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job came in with — it is
     # new here, so no run on main has measured it — plus its slowest retried step alone — the
-    # setup-bun step's two `ci_tools_fetch` calls, 1482 s, above the workspace install's
-    # 5 x 180 + 150 = 1050 s and the ci-ok report's 600 s. 600 + 1482 = 2082 s -> 35 min.
-    timeout-minutes: 43
+    # setup-bun step's two `ci_tools_fetch` calls, 2562 s, above the workspace install's
+    # 5 x 180 + 150 = 1050 s and the ci-ok report's 600 s. 600 + 2562 = 3162 s -> 53 min.
+    timeout-minutes: 53
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
@@ -4688,15 +4694,15 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its 83 s
     # measured maximum, plus its slowest retried step alone — the setup-bun step's two
-    # `ci_tools_fetch` calls, 1482 s, above the workspace install's 5 x 180 + 150 = 1050 s and
-    # the ci-ok report's 600 s. 600 + 1482 = 2082 s -> 35 min.
-    timeout-minutes: 43
+    # `ci_tools_fetch` calls, 2562 s, above the workspace install's 5 x 180 + 150 = 1050 s and
+    # the ci-ok report's 600 s. 600 + 2562 = 3162 s -> 53 min.
+    timeout-minutes: 53
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
@@ -4780,15 +4786,15 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its 36 s
     # measured maximum, plus its slowest retried step alone — the setup-bun step's two
-    # `ci_tools_fetch` calls, 1482 s, above the workspace install's 5 x 180 + 150 = 1050 s and
-    # the ci-ok report's 600 s. 600 + 1482 = 2082 s -> 35 min.
-    timeout-minutes: 43
+    # `ci_tools_fetch` calls, 2562 s, above the workspace install's 5 x 180 + 150 = 1050 s and
+    # the ci-ok report's 600 s. 600 + 2562 = 3162 s -> 53 min.
+    timeout-minutes: 53
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
@@ -4825,10 +4831,10 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its
     # 227 s measured maximum, plus its slowest retried step alone — install-jj's two
-    # `ci_tools_fetch` calls and its `mise install` of the jj release, 1482 + 450 = 1932 s,
-    # above setup-bun's 1482 s, the tmux install's 625 + 775 = 1400 s, the workspace install's
-    # 1050 s, install-omp's 450 s and the ci-ok report's 600 s. 600 + 1932 = 2532 s -> 43 min.
-    timeout-minutes: 51
+    # `ci_tools_fetch` calls and its `mise install` of the jj release, 2562 + 450 = 3012 s,
+    # above setup-bun's 2562 s, the tmux install's 625 + 775 = 1400 s, the workspace install's
+    # 1050 s, install-omp's 450 s and the ci-ok report's 600 s. 600 + 3012 = 3612 s -> 61 min.
+    timeout-minutes: 61
     # The NATS server extensions/card-delivery-omp.test.ts delivers Envoy cards and a person's Send
     # through (LEGION_TEST_NATS_URL on the test step): the 2.10 image the envoy-client job pulls,
     # pinned by digest as this file's other service images are.
@@ -4842,13 +4848,13 @@ jobs:
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # Only for the mise it leaves at ~/.local/bin/mise, which install-omp installs the pin through:
       # nothing in this package drives jj.
       # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
-      # of the jj release, 1482 + 450 = 1932 s (ci-budgets.md's Budgets note) -> 33 min.
+      # of the jj release, 2562 + 450 = 3012 s (ci-budgets.md's Budgets note) -> 51 min.
       - uses: ./.github/actions/install-jj
         timeout-minutes: 51
       # extensions/dispatch-first-omp.test.ts, extensions/askgate/askgate-omp.test.ts,
@@ -4962,7 +4968,7 @@ jobs:
     # own spread at the next file that lands: five stall-watchdog files and two model-fallback
     # files took that step from 297 s at 17:49Z on 2026-11-08 to 638 s by 22:16Z.
     # 43 rather than the next minute above today's sum: #2918 (dispatch://INFRA-1545) makes
-    # install-jj retry on a 1932 s ladder and gates a job's ceiling above its slowest retried
+    # install-jj retry on a 3012 s ladder and gates a job's ceiling above its slowest retried
     # step, so that ladder and not this suite is what decides this line.
     # The 2 s above is a cold-Bun figure, measured before this branch: it is the release asset
     # setup-bun downloaded when its own cache was the only one and no-cache held it off every
@@ -4973,9 +4979,9 @@ jobs:
     # Its two terms, in the shape ci-budgets.md's Budgets note asks for: 600 s, the 10 minutes
     # this job carried, above both its 374 s measured maximum and the 742 s sum above, plus
     # its slowest retried step alone - install-jj's two `ci_tools_fetch` calls and its
-    # `mise install` of the jj release, 1482 + 450 = 1932 s, above setup-bun's 1482 s and the
-    # workspace install's 1050 s. 600 + 1932 = 2532 s -> 43 min.
-    timeout-minutes: 51
+    # `mise install` of the jj release, 2562 + 450 = 3012 s, above setup-bun's 2562 s and the
+    # workspace install's 1050 s. 600 + 3012 = 3612 s -> 61 min.
+    timeout-minutes: 61
     # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
     # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
     services:
@@ -4988,11 +4994,11 @@ jobs:
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
-      # of the jj release, 1482 + 450 = 1932 s (ci-budgets.md's Budgets note) -> 33 min.
+      # of the jj release, 2562 + 450 = 3012 s (ci-budgets.md's Budgets note) -> 51 min.
       - uses: ./.github/actions/install-jj
         timeout-minutes: 51
       # extensions/legion-phase-stall-omp.test.ts and controller-start-omp.test.ts run the pinned
@@ -5105,15 +5111,15 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (ci-budgets.md's Budgets note): 900 s, the 15 minutes this job was written with, plus
     # its slowest retried step alone — the setup-bun step's two `ci_tools_fetch` calls,
-    # 1482 s, above the workspace install's 5 x 180 + 150 = 1050 s and the ci-ok report's
-    # 600 s. 900 + 1482 = 2382 s -> 40 min.
-    timeout-minutes: 43
+    # 2562 s, above the workspace install's 5 x 180 + 150 = 1050 s and the ci-ok report's
+    # 600 s. 900 + 2562 = 3462 s -> 58 min.
+    timeout-minutes: 58
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
@@ -5220,7 +5226,7 @@ jobs:
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # tests/answers-claude.test.ts runs the pinned Claude Code against a stand-in Messages
@@ -5294,7 +5300,7 @@ jobs:
     # runs packages/envoy/loadtest/cluster/cluster.test.sh, which renders the nats chart through
     # render-nats.sh and so holds that script's three retried fetches: the chart index and the
     # chart archive at 5 x 60 + 150 = 450 s each and the helm install at 5 x 180 + 150 = 1050 s,
-    # 1950 s together. That is above setup-bun's two `ci_tools_fetch` calls at 1482 s, which this
+    # 1950 s together. That is above setup-bun's two `ci_tools_fetch` calls at 2562 s, which this
     # comment named while render-nats.sh fetched without a retry at all, and above the Go module
     # download and the workspace install at 1050 s each and the ci-ok report's 600 s.
     # 1800 + 1950 = 3750 s -> 63 min. The gate reads no script outside .github/scripts/, so it
@@ -5306,7 +5312,7 @@ jobs:
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
@@ -5444,10 +5450,10 @@ jobs:
     #
     # Budget (ci-budgets.md's Budgets note): 3600 s, the 60 minutes this job carried, above both
     # the 53 the paragraph above derives and its 1376 s measured maximum, plus its slowest
-    # retried step alone — the setup-bun step's two `ci_tools_fetch` calls, 1482 s, above
+    # retried step alone — the setup-bun step's two `ci_tools_fetch` calls, 2562 s, above
     # packages/envoy's `go mod download` and the workspace install at 5 x 180 + 150 = 1050 s
-    # each and the ci-ok report's 600 s. 3600 + 1482 = 5082 s -> 85 min.
-    timeout-minutes: 85
+    # each and the ci-ok report's 600 s. 3600 + 2562 = 6162 s -> 103 min.
+    timeout-minutes: 103
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5472,7 +5478,7 @@ jobs:
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
@@ -6349,7 +6355,7 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): 1200 s, the 20 minutes this job carried, above the
     # 185 s maximum of the four runs made of it on this branch — it was selected by no main push
     # in the window that note names — plus its slowest retried step alone: install-elan's one
-    # `ci_tools_fetch` of the elan tarball, 741 s, above the ci-ok report's 600 s.
+    # `ci_tools_fetch` of the elan tarball, 1281 s, above the ci-ok report's 600 s.
     # 1200 + 741 = 1941 s -> 33 min.
     timeout-minutes: 33
     env:
@@ -6379,8 +6385,8 @@ jobs:
         with:
           path: ${{ runner.temp }}/elan
           key: elan-${{ runner.os }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
-      # install-elan's own retry arithmetic: one `ci_tools_fetch` of the release tarball, 741 s
-      # (ci-budgets.md's Budgets note) -> 13 min.
+      # install-elan's own retry arithmetic: one `ci_tools_fetch` of the release tarball, 1281 s
+      # (ci-budgets.md's Budgets note) -> 22 min.
       - uses: ./.github/actions/install-elan
         timeout-minutes: 22
       - name: Build the Lean model
@@ -6425,7 +6431,7 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): 1200 s, the 20 minutes this job carried, above its
     # 691 s measured maximum, plus its slowest retried step alone — the Go module download,
     # whose two calls for packages/envoy and packages/envoy/infra are 2 x (5 x 180 + 150) =
-    # 2100 s, above install-pulumi's 741 s, the docker provider plugin's 741 s and the ci-ok
+    # 2100 s, above install-pulumi's 1281 s, the docker provider plugin's 1281 s and the ci-ok
     # report's 600 s. That arithmetic is a whole number of minutes, so the step's own budget
     # takes one more and this job takes it too: 1200 + 2160 = 3360 s -> 56 min.
     timeout-minutes: 56
@@ -6552,8 +6558,8 @@ jobs:
       # first consumer pins. Each download is checked against its SHA-256 before it is unpacked or
       # installed.
       - name: Install the Pulumi CLI
-        # install-pulumi's own retry arithmetic: one `ci_tools_fetch`, 741 s (ci-budgets.md's
-        # Budgets note) -> 13 min.
+        # install-pulumi's own retry arithmetic: one `ci_tools_fetch`, 1281 s (ci-budgets.md's
+        # Budgets note) -> 22 min.
         timeout-minutes: 22
         uses: ./.github/actions/install-pulumi
       # The `pulumi-docker` row of .github/ci-tools.yaml pins the version and the sha256 of that
@@ -6566,8 +6572,8 @@ jobs:
       # PULUMI_HOME of their own, so the CLI downloads none.
       - name: Download the docker provider plugin the live tests install
         id: docker-plugin
-        # Its own retry arithmetic, which is the action's: one `ci_tools_fetch`, 741 s
-        # (ci-budgets.md's Budgets note) -> 13 min.
+        # Its own retry arithmetic, which is the action's: one `ci_tools_fetch`, 1281 s
+        # (ci-budgets.md's Budgets note) -> 22 min.
         timeout-minutes: 22
         uses: ./.github/actions/install-docker-plugin
       # The live tests build container images on this runner's disk, and a job that runs out of
@@ -6628,16 +6634,16 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its 92 s
     # measured maximum, plus its slowest retried step alone — the setup-bun step's two
-    # `ci_tools_fetch` calls, 1482 s, above packages/envoy's `go mod download` and the
+    # `ci_tools_fetch` calls, 2562 s, above packages/envoy's `go mod download` and the
     # workspace install at 5 x 180 + 150 = 1050 s each and the ci-ok report's 600 s.
-    # 600 + 1482 = 2082 s -> 35 min.
-    timeout-minutes: 43
+    # 600 + 2562 = 3162 s -> 53 min.
+    timeout-minutes: 53
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
@@ -6726,11 +6732,11 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (ci-budgets.md's Budgets note): 1200 s, the 20 minutes this job carries since
     # main's #3579 gave it a PostgreSQL service and the live Dispatch-stack suite, plus its
-    # slowest retried step alone — the setup-bun step's two `ci_tools_fetch` calls, 1482 s,
+    # slowest retried step alone — the setup-bun step's two `ci_tools_fetch` calls, 2562 s,
     # above packages/envoy's `go mod download` and the workspace install at 5 x 180 + 150 =
     # 1050 s each and the ci-ok report's 600 s.
-    # 1200 + 1482 = 2682 s -> 45 min.
-    timeout-minutes: 45
+    # 1200 + 2562 = 3762 s -> 63 min.
+    timeout-minutes: 63
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -6752,7 +6758,7 @@ jobs:
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # Retried at 180 s per attempt like every Bun install here (ci-budgets.md's Retries note).
@@ -6870,10 +6876,10 @@ jobs:
   # installs, the cache emptying, the unfaulted install the stalled Playwright site needs and
   # the 31 rig steps. That is 11310 s. Every faulted site runs its retries out inside its own
   # report budget above, so the term the rule adds is this job's slowest download that is not a
-  # faulted site: install-jj, whose two `ci_tools_fetch` calls are 1482 s and whose
-  # `mise install` of the jj release is 5 x 60 + 150 = 450 s, 1932 s together (ci-budgets.md's
-  # Budgets note) — above setup-bun's 1482 s, the unfaulted workspace install's 1050 s and the
-  # ci-ok report's 600 s. So 11310 + 1932 = 13242 s, or 221 minutes.
+  # faulted site: install-jj, whose two `ci_tools_fetch` calls are 2562 s and whose
+  # `mise install` of the jj release is 5 x 60 + 150 = 450 s, 3012 s together (ci-budgets.md's
+  # Budgets note) — above setup-bun's 2562 s, the unfaulted workspace install's 1050 s and the
+  # ci-ok report's 600 s. So 11310 + 3012 = 14322 s, or 221 minutes.
   #
   # Each site's budget above carries 20 s more than it did before the probe: `report` measures a
   # site from the moment its proxy started, and the probe's two requests are made between the
@@ -6900,14 +6906,14 @@ jobs:
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
       # Only for the mise it leaves at ~/.local/bin/mise, which install-omp installs the pin
       # through: nothing here drives jj. Unfaulted, because it is this job's prerequisite rather
       # than one of its sites.
       # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
-      # of the jj release, 1482 + 450 = 1932 s (ci-budgets.md's Budgets note) -> 33 min.
+      # of the jj release, 2562 + 450 = 3012 s (ci-budgets.md's Budgets note) -> 51 min.
       - uses: ./.github/actions/install-jj
         timeout-minutes: 51
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -6941,8 +6947,8 @@ jobs:
       - id: recover-changie
         continue-on-error: true
         # install-changie's own retry arithmetic, which rule 8 reads from the declaration for
-        # .github/scripts/ci-tools.sh: one `ci_tools_fetch`, three ladders, 741 s (ci-budgets.md's
-        # Budgets note) -> 13 min. What this fault costs is far less, and the report below reads
+        # .github/scripts/ci-tools.sh: one `ci_tools_fetch`, three ladders, 1281 s (ci-budgets.md's
+        # Budgets note) -> 22 min. What this fault costs is far less, and the report below reads
         # it: this proxy answers 504 at once and then serves, so the release asset's own ladder
         # makes its attempts for nothing but their waits and one of them lands inside the
         # recovery window - the second source is never reached, and the step succeeds.
@@ -7144,8 +7150,8 @@ jobs:
           .github/scripts/download-retry-proof.sh probe stall-changie
       - id: stall-changie
         continue-on-error: true
-        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 741 s
-        # (ci-budgets.md's Budgets note) -> 13 min.
+        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+        # (ci-budgets.md's Budgets note) -> 22 min.
         timeout-minutes: 22
         uses: ./.github/actions/install-changie
         env:
@@ -7529,9 +7535,9 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (ci-budgets.md's Budgets note): 900 s, the 15 minutes this job came in with — it is
     # new here, so no run on main has measured it — plus its slowest retried step alone — the
-    # setup-bun step's two `ci_tools_fetch` calls, 1482 s, above either frozen install's
-    # 5 x 180 + 150 = 1050 s and the ci-ok report's 600 s. 900 + 1482 = 2382 s -> 40 min.
-    timeout-minutes: 43
+    # setup-bun step's two `ci_tools_fetch` calls, 2562 s, above either frozen install's
+    # 5 x 180 + 150 = 1050 s and the ci-ok report's 600 s. 900 + 2562 = 3462 s -> 58 min.
+    timeout-minutes: 58
     # The hosts of the old route, named once: the proxy is started with them, and the verdict
     # below quotes them. The proxy faults each of them and every subdomain of one, and refuses
     # nothing else, so the verdict counts its refusals rather than matching this list again.
@@ -7542,7 +7548,7 @@ jobs:
         with:
           persist-credentials: false
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (ci-budgets.md's Budgets note) -> 25 min.
+      # 2 x 1281 = 2562 s (ci-budgets.md's Budgets note) -> 43 min.
       - uses: ./.github/actions/setup-bun
         timeout-minutes: 43
 

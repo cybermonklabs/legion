@@ -419,8 +419,8 @@ jobs:
 
       - uses: ./.github/actions/install-changie
         if: steps.version.outputs.skip != 'true'
-        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 741 s
-        # (the Budgets note of .github/ci-budgets.md) -> 13 min.
+        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+        # (the Budgets note of .github/ci-budgets.md) -> 22 min.
         timeout-minutes: 22
 
       # This release's own changelog entries, which publish writes into the GitHub release's body.
@@ -448,7 +448,7 @@ jobs:
           if-no-files-found: error
 
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (the Budgets note of .github/ci-budgets.md) -> 25 min.
+      # 2 x 1281 = 2562 s (the Budgets note of .github/ci-budgets.md) -> 43 min.
       - uses: ./.github/actions/setup-bun
         if: steps.version.outputs.skip != 'true'
         timeout-minutes: 43
@@ -572,8 +572,8 @@ jobs:
 
       - uses: ./.github/actions/install-changie
         if: steps.version.outputs.skip != 'true'
-        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 741 s
-        # (the Budgets note of .github/ci-budgets.md) -> 13 min.
+        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+        # (the Budgets note of .github/ci-budgets.md) -> 22 min.
         timeout-minutes: 22
 
       # This release's own changelog entries, as in pi_envoy_build and for the reasons given
@@ -598,7 +598,7 @@ jobs:
           if-no-files-found: error
 
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (the Budgets note of .github/ci-budgets.md) -> 25 min.
+      # 2 x 1281 = 2562 s (the Budgets note of .github/ci-budgets.md) -> 43 min.
       - uses: ./.github/actions/setup-bun
         if: steps.version.outputs.skip != 'true'
         timeout-minutes: 43
@@ -720,8 +720,8 @@ jobs:
 
       - uses: ./.github/actions/install-changie
         if: steps.version.outputs.skip != 'true'
-        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 741 s
-        # (the Budgets note of .github/ci-budgets.md) -> 13 min.
+        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+        # (the Budgets note of .github/ci-budgets.md) -> 22 min.
         timeout-minutes: 22
 
       # This release's own changelog entries, as in pi_envoy_build and for the reasons given
@@ -746,7 +746,7 @@ jobs:
           if-no-files-found: error
 
       # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
-      # 2 x 741 = 1482 s (the Budgets note of .github/ci-budgets.md) -> 25 min.
+      # 2 x 1281 = 2562 s (the Budgets note of .github/ci-budgets.md) -> 43 min.
       - uses: ./.github/actions/setup-bun
         if: steps.version.outputs.skip != 'true'
         timeout-minutes: 43

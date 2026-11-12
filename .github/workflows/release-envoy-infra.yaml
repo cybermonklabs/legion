@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (the Budgets note of .github/ci-budgets.md): 2400 s, the 40 minutes
     # this job carried, plus its slowest retried step alone — the Go module download,
-    # 5 x 180 + 150 = 1050 s, above install-pulumi's 741 s. 2400 + 1050 = 3450 s -> 58 min.
+    # 5 x 180 + 150 = 1050 s, above install-pulumi's 1281 s. 2400 + 1050 = 3450 s -> 58 min.
     timeout-minutes: 58
     permissions:
       contents: read
@@ -252,7 +252,7 @@ jobs:
       - name: Install the Pulumi CLI
         if: steps.version.outputs.skip != 'true'
         # install-pulumi's own retry arithmetic: one `ci_tools_fetch` of the release tarball,
-        # 741 s (the Budgets note of .github/ci-budgets.md) -> 13 min.
+        # 1281 s (the Budgets note of .github/ci-budgets.md) -> 22 min.
         timeout-minutes: 22
         uses: ./.github/actions/install-pulumi
       # The schema the linux/amd64 plugin serves carries the version it was built with and names

@@ -408,7 +408,7 @@ jobs:
     # Budget (the Budgets note of .github/ci-budgets.md): 1800 s, the 30 minutes
     # this job was written with — one toolchain download and one build of the model on a miss,
     # and a run that finds the key costs the checkout alone — plus its slowest retried step
-    # alone: install-elan's one `ci_tools_fetch` of the elan release tarball, 741 s, this job's
+    # alone: install-elan's one `ci_tools_fetch` of the elan release tarball, 1281 s, this job's
     # only retried call. 1800 + 741 = 2541 s -> 43 min.
     timeout-minutes: 43
     steps:
@@ -424,7 +424,7 @@ jobs:
           lookup-only: true
 
       # install-elan's own retry arithmetic: one `ci_tools_fetch` of the release tarball,
-      # 741 s (the Budgets note of .github/ci-budgets.md) -> 13 min.
+      # 1281 s (the Budgets note of .github/ci-budgets.md) -> 22 min.
       - if: steps.elan-cache.outputs.cache-hit != 'true'
         uses: ./.github/actions/install-elan
         timeout-minutes: 22

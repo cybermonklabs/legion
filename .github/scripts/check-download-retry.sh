@@ -318,6 +318,15 @@
 #      This is the rule ci-budgets.md's Budgets note already writes for a reader — a job carries its
 #      measured duration plus the arithmetic of its slowest retried step — read here as the
 #      half a check can make, which is the arithmetic and not the measurement.
+#      That half is read twice, because one reading of it left a whole class green. A job is
+#      refused when its ceiling sits under a step's RETRY ARITHMETIC, and refused again when its
+#      ceiling is not above that step's OWN `timeout-minutes`: the second is what catches a job
+#      whose steps each fit their own budgets while the job holds all of them together, and
+#      twenty-two job keys of this repository stood below their own documented derivation,
+#      under a green check, until it was added (dispatch://INFRA-1545, round 27). The measured
+#      term stays out of both readings, so a job's comment still carries arithmetic no program
+#      checks, and the step keys this check does demand are the floor under it rather than the
+#      budget itself.
 #
 #      How many times a step runs one call, and what this check can see of it. Rule 8
 #      multiplies a call by the loops and the function calls it resolves, which are the three
@@ -3123,6 +3132,30 @@ for budget in budgets:
                 "nothing: a job carries its measured duration plus the arithmetic of its "
                 "slowest retried step, which is the rule ci-budgets.md's Budgets note writes out. "
                 f"Write `timeout-minutes: {cost // 60 + 1}` or more on this job.")
+        continue
+    if budget.minutes is not None and allowed <= budget.minutes:
+        job_carries = (
+            f"job '{budget.job}' carries `timeout-minutes: {budget.job_minutes}`"
+            if budget.job_minutes is not None
+            else f"job '{budget.job}' writes no `timeout-minutes`, so GitHub gives it "
+                 f"{JOB_DEFAULT_MINUTES} minutes")
+        problem(budget.path, budget.job_line,
+                f"{job_carries}, and its step '{budget.step}' carries "
+                f"`timeout-minutes: {budget.minutes}`, which that job budget does not strictly "
+                "exceed. The step's retries fit inside the step's own budget here, so the clause "
+                "above says nothing; what cuts the step is the job, because the job holds that "
+                "step AND everything else it runs. A job ceiling at or below one of its steps' "
+                "ceilings therefore ends the run mid-ladder and reports GitHub's bare "
+                "`The job running on runner … has exceeded the maximum execution time` instead "
+                "of the step naming the site that failed, which is the same loss the clause "
+                "above refuses by another road. The Budgets note derives a job budget as its "
+                "measured duration plus its slowest retried step's whole ladder, and a program "
+                "cannot read a measurement, so this is the half of that rule a check can hold: "
+                f"write `timeout-minutes: {budget.minutes + 1}` or more on this job, or the "
+                "figure that job's own comment derives, whichever is larger. "
+                "(dispatch://INFRA-1545, round 27: twenty-two job keys stood below their own "
+                "documented derivation while this check was green, because it read only the "
+                "clause above.)")
 
 for entry in EXEMPTIONS:
     if entry.used:
