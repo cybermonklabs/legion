@@ -135,7 +135,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 
 // IssueRecordFields is every field of `record.Issue`, in the order the record declares them. No
 // field of it is a secret and none is the operator route's alone, so every entry is served to
-// the agent surfaces or withheld as bookkeeping.
+// the agent surfaces or withheld, as bookkeeping or, for ReleasedForWaitAt, because what it
+// causes is served in its place.
 var IssueRecordFields = []RecordFieldDecision{
 	{Field: "Key", Column: ColumnAgents, Keys: []string{"key"}, Reason: "the issue the whole view is about"},
 	{Field: "Tree", Column: ColumnAgents, Keys: []string{"tree"},
@@ -178,4 +179,6 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "the project's memory mode in force when the tree was drawn, which the group is read against"},
 	{Field: "MemoryDrawnAt", Column: ColumnAgents, Keys: []string{"memoryDrawnAt"},
 		Reason: "when the tree was drawn, which says the draw happened rather than was never reached"},
+	{Field: "ReleasedForWaitAt", Column: ColumnWithheld,
+		Reason: "the moment a started issue gave its admission slot back because it waits on another issue, which orders it in the waiting line; a reader acts on what it causes, the issue's place in `admission.waiting` and `admission.blocked` and its own `waitingLine`, and never on the moment itself"},
 }
