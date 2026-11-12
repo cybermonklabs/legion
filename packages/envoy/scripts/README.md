@@ -303,8 +303,13 @@ with, `--help` prints the usage, and a usage error exits 2.
 `DEV_BROKER_POSTGRES_URL` is required: the stack is driven against the server it
 names, and the record property is read from the broker's own database there, whose
 name the script takes from `dev-broker.sh`'s own log and puts in place of that URL's
-path, so no password is ever parsed out of a banner. It needs bash, curl, jq, go and
-psql, and takes a few minutes.
+path, so no password is ever parsed out of a banner. It needs bash, curl, jq, go,
+psql and setsid, and takes a few minutes once Go's build cache holds the stack's
+binaries. On a cold cache `dev-broker.sh`'s six builds take longer than all the rest,
+so the script waits for them under a bound of their own, up to 30 minutes, and then
+for the stack's start under a short one. The stack runs in a session of its own and
+is stopped as one process group, so a stop during the build — the script's exit, a
+wait that ran out, Ctrl-C — ends that build with the stack.
 
 ## airlock-lean-axioms.sh
 

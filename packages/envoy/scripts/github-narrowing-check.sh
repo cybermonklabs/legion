@@ -79,13 +79,18 @@
 # gave it, so no password is ever parsed out of a banner. That makes DEV_BROKER_POSTGRES_URL
 # necessary here rather than optional: a run without it exits 2 and starts nothing.
 #
+# The stack is waited for in its two phases, each under a bound of its own: dev-broker.sh's six
+# go builds, which take many minutes on a cold build cache, and the start of what they built. It
+# runs in a session of its own and is stopped as one process group, so a stop in the middle of a
+# build - this script's own exit, a wait that ran out, Ctrl-C - ends that build with the stack.
+#
 # Usage: DEV_BROKER_POSTGRES_URL=postgres://<user>@<host>:<port>/<database> \
 #          packages/envoy/scripts/github-narrowing-check.sh [--keep-stack]
 #        --keep-stack leaves the stack and the work directory up for a person to look at a
 #        failure with. --help prints this usage.
 #
-# Needs bash, curl, jq, go and psql. DEV_BROKER_POSTGRES_URL is required: it is passed to
-# dev-broker.sh as it is, so a pod with no container runtime names its test server there, and
+# Needs bash, curl, jq, go, psql and setsid. DEV_BROKER_POSTGRES_URL is required: it is passed
+# to dev-broker.sh as it is, so a pod with no container runtime names its test server there, and
 # this script reads the broker's own database of that same server through psql.
 set -euo pipefail
 
@@ -154,13 +159,17 @@ cleanup() {
 	fi
 	if [ "$KEEP_STACK" = true ] && [ -n "$STACK_PID" ]; then
 		echo "github-narrowing-check: the stack is still up (dev-broker.sh pid $STACK_PID, log $STACK_LOG);" >&2
-		echo "github-narrowing-check: stop it with kill $STACK_PID, which drops its database" >&2
+		echo "github-narrowing-check: stop it with kill -- -$STACK_PID, its process group, which drops its database and ends any build it is still running" >&2
 		return
 	fi
 	# SIGTERM, never SIGKILL: dev-broker.sh's own EXIT trap is what stops its processes and
-	# drops the database it made.
-	if [ -n "$STACK_PID" ] && kill -0 "$STACK_PID" 2>/dev/null; then
-		kill "$STACK_PID" 2>/dev/null || true
+	# drops the database it made. It goes to the stack's whole process group, a signal
+	# dev-broker.sh is written to take (its tees ignore it), so a go build of dev-broker.sh's
+	# ends with the stack. The group is signalled whether or not dev-broker.sh still runs: one
+	# killed outright in the middle of a build leaves that build in the group, and a group's id
+	# is handed to no other process while the group holds one.
+	if [ -n "$STACK_PID" ]; then
+		kill -TERM -- "-$STACK_PID" 2>/dev/null || true
 		wait "$STACK_PID" 2>/dev/null || true
 	fi
 	if [ "$KEEP_STACK" = true ]; then
@@ -259,9 +268,26 @@ await() { # <what> <seconds> <log> <pattern> <pid>
 
 echo "github-narrowing-check: starting the stack (dev-broker.sh)..." >&2
 : >"$STACK_LOG"
-bash "$SCRIPT_DIR/dev-broker.sh" >"$STACK_LOG" 2>&1 &
+# dev-broker.sh runs in a session of its own, so it leads a process group of its own whose id is
+# the pid $! names: setsid runs a process that leads no group in place rather than forking, and a
+# background job of this script leads none. cleanup stops that whole group, because a go build
+# dev-broker.sh is running is a process of its own that a signal to dev-broker.sh alone leaves
+# running, as an orphan, once dev-broker.sh's EXIT trap has ended it.
+setsid bash "$SCRIPT_DIR/dev-broker.sh" >"$STACK_LOG" 2>&1 &
 STACK_PID=$!
-await "the stack" 300 "$STACK_LOG" '^dev-broker: ready\.$' "$STACK_PID"
+STACK_STARTED=$SECONDS
+# One wait for each of the stack's two phases, so a wait that ends names the phase it ended in.
+# The first holds dev-broker.sh's six go builds, with the bound of a cold build cache: on a pod
+# of two CPUs with an empty cache the build of cmd/broker alone ran for more than 367 seconds
+# (dispatch://INFRA-3099's tester, 2026-11-12), and the six together took 388 seconds in a cold
+# run later that day, so 1800 leaves room for a pod slower or busier than either. dev-broker.sh
+# logs the line this waits for once all six have ended. The second holds the start of what they
+# built, and is longer than the 75 seconds dev-broker.sh's own waits after its builds add up to,
+# so a process that never starts is named by dev-broker.sh's line about it rather than by this
+# script's.
+await "the stack's build" 1800 "$STACK_LOG" '^dev-broker: built ' "$STACK_PID"
+echo "github-narrowing-check: the stack's binaries were built $((SECONDS - STACK_STARTED)) seconds after it was started; waiting for it to start them..." >&2
+await "the stack, once built," 120 "$STACK_LOG" '^dev-broker: ready\.$' "$STACK_PID"
 # Everything the banner exports, which is where this check's addresses, secret names and the pod
 # and service it enrols come from.
 eval "$(sed -n 's/^  \(export [A-Z][A-Z_0-9]*=.*\)$/\1/p' "$STACK_LOG")"
