@@ -364,7 +364,14 @@ run_recorded() {
     # nothing: the stage statuses are what tell the two apart.
     local command="$1" out="$2" script
     script="$out.sh"
+    : >"$out.failed"
     {
+        # Every command of the row that fails and that nothing guards writes its own text
+        # here. The status of a pipeline is its last stage's, and the status of a brace
+        # group is its last command's, so neither says that a read inside it failed; the
+        # ERR trap does, wherever the read stands.
+        printf '%s\n' 'set -o errtrace'
+        printf '%s\n' "trap 'printf \"%s\n\" \"\$BASH_COMMAND\" >>\"$out.failed\"' ERR"
         printf '%s\n' "$command"
         printf '%s\n' '__ioc_stages=("${PIPESTATUS[@]}")'
         printf '%s\n' 'printf "%s\n" "${__ioc_stages[*]}" >&9'
@@ -386,7 +393,23 @@ run_recorded() {
 # reader that exits non-zero read nothing, and the search after it found nothing because
 # nothing was there to search.
 corpus_read_failed() {
-    local out="$1" command="$2" stages tail_pipeline
+    local out="$1" command="$2" stages tail_pipeline failed_command
+    IOC_CORPUS_READ_FAILED=""
+    # Every unguarded failure the row's own commands made, whatever construct it stood in.
+    # A search that finds nothing exits 1 and is no failed read; anything else that failed
+    # read nothing, and the search after it searched half a corpus or none.
+    if [ -s "$out.failed" ]; then
+        while IFS= read -r failed_command; do
+            case "$(printf '%s' "$failed_command" | awk '{print $1}')" in
+            grep | egrep | fgrep | rg | ag | '[' | test | exit) continue ;;
+            git)
+                printf '%s' "$failed_command" | grep -q '\bgrep\b' && continue
+                ;;
+            esac
+            IOC_CORPUS_READ_FAILED="$failed_command"
+            return 0
+        done <"$out.failed"
+    fi
     [ -s "$out.pipe" ] || return 1
     read -r -a stages <"$out.pipe" || return 1
     [ "${#stages[@]}" -gt 1 ] || return 1
@@ -490,7 +513,7 @@ mode_replay() {
         if [ "$kind" = absence ]; then
             if corpus_read_failed "$work/$id.out" "$command"; then
                 absence_failures="$absence_failures $id"
-                fail absence-still-empty "$id searched a corpus this run never read: the stages of its last pipeline exited $(cat "$work/$id.out.pipe" 2>/dev/null), so the search found nothing because nothing was read"
+                fail absence-still-empty "$id searched a corpus this run never read: ${IOC_CORPUS_READ_FAILED:-the stages of its last pipeline exited $(cat "$work/$id.out.pipe" 2>/dev/null)} failed, so the search found nothing because nothing was read"
                 continue
             fi
             if grep -q '[^[:space:]]' "$work/$id.out"; then
@@ -1074,6 +1097,54 @@ false_references() {
         grep -oE 'dispatch://[A-Za-z0-9][A-Za-z0-9/_.-]*' | sed 's/[.,;:)]*$//' | sort -u
 }
 
+
+# report_live_pages
+#
+# What the Verification document asks of this mode beside the assertions: "where the live
+# address answers, reports whether the live page still carries that sentence; a live page
+# whose bytes have changed is reported as changed rather than failed, because a page
+# served from a content system changes its bytes between any two fetches."
+#
+# So this is a report and no assertion: one line per published copy, naming its address
+# and one of three readings. An address that does not answer is reported too, so the mode
+# runs with no network, and a changed page fails nothing.
+report_live_pages() {
+    local address copy sentence live flat
+    printf 'The live address of each published copy, read now. This is a report and no assertion: a page served from a content system changes its bytes between any two fetches.\n'
+    while IFS=$'\t' read -r address copy; do
+        [ -n "$address" ] && [ -n "$copy" ] || continue
+        case "$copy" in */) continue ;; esac
+        live="$RUN_SCRATCH/live-$(printf '%s' "$copy" | tr '/' '_')"
+        if ! curl -sS -L --max-time 30 -o "$live" "$address" 2>/dev/null || [ ! -s "$live" ]; then
+            printf '  %s: unreachable, the address did not answer; the committed copy %s is what this reading rests on.\n' "$address" "$copy"
+            continue
+        fi
+        if cmp -s "$live" "$EVIDENCE/$copy"; then
+            printf '  %s: answered, and its bytes are the committed copy %s byte for byte.\n' "$address" "$copy"
+            continue
+        fi
+        # The sentences this directory quotes from that copy, which is what a reader of a
+        # changed page wants to know about.
+        local missing=0 held=0
+        while IFS= read -r sentence; do
+            [ -n "$sentence" ] || continue
+            flat="$(printf '%s' "$sentence" | flatten_text)"
+            if copy_text "$live" | flatten_text | grep -qF -- "$flat"; then
+                held=$((held + 1))
+            else
+                missing=$((missing + 1))
+            fi
+        done < <(claims | jq -r --arg c "$copy" 'select(.kind=="published") | select((.evidence.copy // "")==$c) | .evidence.quote // empty')
+        if [ "$missing" -eq 0 ] && [ "$held" -eq 0 ]; then
+            printf '  %s: answered and changed since it was fetched, and this reading quotes no sentence of it; the committed copy %s is what it rests on.\n' "$address" "$copy"
+        elif [ "$missing" -eq 0 ]; then
+            printf '  %s: answered and changed since it was fetched, and it still carries each of the %s sentences this reading quotes from %s.\n' "$address" "$held" "$copy"
+        else
+            printf '  %s: answered and changed since it was fetched, and it no longer carries %s of the %s sentences this reading quotes from %s, which the committed copy holds.\n' "$address" "$missing" "$((held + missing))" "$copy"
+        fi
+    done < <(jq -r '.published[] | select(.copy) | [.address, .copy] | @tsv' "$EVIDENCE/sources.json")
+}
+
 mode_citations() {
     local commit bad_ours=0 bad_theirs=0 bad_published=0 bad_dispatch=0 row id file symbol repo rcommit
     # The flattened text of each committed copy, read once: eight rows cite one page of
@@ -1169,6 +1240,8 @@ mode_citations() {
     [ "$bad_ours" -eq 0 ] && pass citation-our-code "every citation into our own repository stands at $commit"
     [ "$bad_theirs" -eq 0 ] && pass citation-project-code "every citation into one of the projects stands in the clone at its pinned commit"
     [ "$bad_published" -eq 0 ] && pass citation-published "every citation of a published document names a committed copy that holds the sentence quoted"
+
+    report_live_pages
 
     local ref
     while IFS= read -r ref; do
@@ -1309,7 +1382,9 @@ mode_published() {
     for path in skills/legion-worker/references/pr-body.md skills/legion-worker/references/merge-gate.md; do
         case "$path" in
         *pr-body.md) sentence='each pair row reads' ;;
-        *) sentence='needs both halves at the reviewed head' ;;
+        # The answered form, which is the sentence this tree landed. The `APPROVE` half
+        # stands in the stricter form too, so reading it would pass on either.
+        *) sentence='is answered in the review body' ;;
         esac
         git -C "$ROOT" show "$head:$path" >"$work/published" 2>/dev/null || {
             missing=$((missing + 1))
