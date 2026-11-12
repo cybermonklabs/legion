@@ -1,8 +1,8 @@
 # The weekly audit
 
-Read this on your first turn of each UTC week, whatever woke you, and run all four passes below
-before you post the day's report. They are the week's own numbers, beside the daily ones. The
-fourth pass, the duplicate audit, serves R8 of dispatch://INFRA-1160 and is not optional.
+Read this on your first turn of each UTC week, whatever woke you, and run the three passes below,
+and sum the fourth, before you post the day's report. They are the week's own numbers, beside the
+daily ones.
 
 ## The week
 
@@ -104,43 +104,6 @@ List every nudge you sent in the day's report.
 
 ## 4. The duplicate audit
 
-For each open issue of the project, read the related items of its title and spec through the
-no-write related route, leaving the issue, its ancestors and its descendants out, and judge
-whether each pair the two issues' own records do not already settle is the same work.
-
-The project holds hundreds of open issues and one related read takes about a second, so a serial
-pass is ten minutes of HTTP before any judging. Shard the open list and dispatch one
-`task(agent="scout")` per shard of at most 50 issues, then `wait` for them: each returns the pairs
-it found with its evidence, and you judge and fold them yourself.
-
-Give each scout the shard's keys and these commands:
-
-```bash
-dispatch read --issue <KEY>                    # title, spec artifact, Links:, Referenced by:
-dispatch doc-read --issue <KEY>                # the spec text the related read uses
-dispatch related --project <PROJECT> --title '<its title>' --text-file - \
-  --exclude-issue <KEY> --exclude-issue <each ancestor> --exclude-issue <each descendant>
-```
-
-`--exclude-issue` is repeatable and takes up to 50 issues; the issue itself, its ancestors and its
-descendants all go in one call. The read names both: a `child_of` row under `Links:` is the
-issue's own parent, read again on that parent for the next ancestor up, and each `child_of` row
-under `Referenced by:` is a child, read again on each child for the next level down. Ask each
-scout for, per issue, every related item that is an issue with the reason it looks like the same
-work, and nothing else: no comment, no close, no message.
-
-A pair is settled, and is skipped rather than proposed, when the two issues already say so: one
-was closed as a duplicate of the other, one was reopened after such a close, or one was made a
-child of the other. Read the first two from `dispatch read --issue <KEY> --all-events`'s
-`Events:`: the close's reason is the `message.created` line just before `issue.closed`, and a
-reopen is an `issue.updated` line that moves the status off `done`. No `Events:` line reports a
-parent change, so read the third from the same read's `Links:` and `Referenced by:`.
-
-Fold each pair you judge the same work by the duplicate rule of `skill://dispatch-first`: keep the
-issue with the spec, copy to it what only the other has, and close the other
-(`--status done --reason 'Duplicate of dispatch://KEY.'`). An issue carrying the `legion` label,
-or another holder's claim, is not yours to close: comment the kept issue's name on it instead. A
-pair inside a Legion tree goes to that tree's architect with `envoy_publish`, which decides it.
-
-The report lists every pair you judged the same work, with what you did about it, and every pair
-you skipped with what settles it: the event, or the parent link.
+The consolidation pass runs it every six hours
+(`skill://legion-controller/references/consolidation.md`). The week's report sums the counts of
+the week's `Consolidation pass` messages. It serves R8 of dispatch://INFRA-1160.
