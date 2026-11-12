@@ -20,7 +20,22 @@ func TestResponseShapes(t *testing.T) {
 	at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 	artifact := model.Artifact{ID: "art-1", Project: "TEST", Slug: "spec", Name: "Spec", Kind: "doc"}
 	version := model.Version{Number: 7, Named: true, Summary: new("a named version"), CreatedAt: at}
-	checks := []model.CheckBlock{{BlockID: "b-1", Ref: "check-1", IssueKey: "TEST-1", Text: "go build"}}
+	// The results read's check carries what it compared with, whether a pass of it stands, and
+	// on each result where that result's commit stands, whether the check's words moved and the
+	// retraction standing against it, so the row below marshals the whole of that surface.
+	moved := false
+	readResult := model.CheckResult{
+		ID: "res-1", IssueKey: "TEST-1", CheckBlockID: "b-1", Verdict: "pass",
+		CommitStands:    &model.ResultCommitStands{Answer: model.CommitAtBasis},
+		CheckWordsMoved: &moved,
+		Retracted:       &model.CheckResultRetracted{Reason: "The run was wrong.", CreatedAt: at},
+	}
+	checks := []model.CheckBlock{{
+		BlockID: "b-1", Ref: "check-1", IssueKey: "TEST-1", Text: "go build",
+		Results:      []model.CheckResult{readResult},
+		ComparedWith: []model.CheckBasis{{Kind: model.CheckBasisBranch, Branch: "main"}},
+		PassStands:   model.CheckPassStands{Answer: model.PassStandsYes, Roles: []string{"implementer"}},
+	}}
 	result := model.CheckResult{ID: "res-1", IssueKey: "TEST-1", CheckBlockID: "b-1", Verdict: "pass"}
 	ask := model.Ask{ID: "ask-1", Question: "Approve?"}
 	comment := model.Comment{ID: "com-1", Body: "a comment"}

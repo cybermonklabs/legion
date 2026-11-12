@@ -74,9 +74,9 @@ other change to the head voids it.
   still in progress: wait for it. When no
   run at the head holds the job, or nothing will run it (a check only a commit status reports, a
   workflow another repository defines), tell the architect and do not approve.
-  Approval is refused while any `before_merge` check of the issue's own Verification document has no passing result that is current at the head being reviewed: `REQUEST_CHANGES` naming each such check by its block id, and `dispatch results --issue <issue>` is the read that decides it.
+  Approval is refused while any `before_merge` check of the issue's own Verification document has no pass standing at the head being reviewed: `REQUEST_CHANGES` naming each such check by its block id, and `dispatch results --issue <issue>` is the read that decides it, under the check's own line saying whether a pass stands and from which roles. That answer leaves out a pass at another commit, a pass recorded under an older wording of the check and a retracted pass, each of which the command still prints; a fail recorded after a pass leaves that pass standing until someone retracts it.
   An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
-  A result is current at that head while the head is the head of an open pull request, or the final head of a merged one, attributed to the check's own issue. A child's pull request never makes a root check's result current, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, and that result is current at the child's head. A root's own checks are proven at the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged into or on the repository's default branch, in the root's last round.
+  A result proves the head it was recorded at. A result a child recorded against a root's check proves nothing for the root, since it was recorded at the child's head, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, at the child's own head. A root's own checks are proven at the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged into or on the repository's default branch, in the root's last round.
   A passing result stays current across one push above the head you approved when that push changes no code that runs: read that push's own diff (`gh api repos/<o>/<r>/compare/<approved sha>...<new head>`), approve the new head, and say in that approval that you read the diff, that it changes no code that runs, the head each result ran at and the head you approve. The carry rests on the diff and on your statement of it, never on the push being called a text fix: where that push's diff changes code that runs every result is stale, as it is after any other push, so you tell the architect and the architect moves the issue to `testing` with `request_backward_move`, since a review submitted outside `reviewing` moves nothing.
   On a docs-only PR the `Thermo` line still records the simplify pass and the defects it
   reported, and its pair half reads `thermonuclear pair: not run (docs-only)`.
@@ -109,7 +109,7 @@ other change to the head voids it.
   one review. A return whose task's `Reason:` names a READY refusal is never a confirmation, even
   after a forward merge, and a no-fix `REQUEST_CHANGES` that answered one is never continued: the round
   after it reviews the refused change in full from the last `APPROVE` (*Retro*, below). That
-  round's approval needs the tester's results current at the head it approves, or carried to it
+  round's approval needs the tester's results at the head it approves, or carried to it
   by the rule above: a result that passed one push below, where the reviewer's approval states
   that it read that push's diff and that the diff changes no code that runs.
 - Answer every thread you opened, and every thread a bot opened that is none of Legion's role
@@ -223,15 +223,16 @@ reviewing until you finish.
   `; ` on the one READY line, or `none` — quoted from the `## For the reviewer` block at that same
   head (or one line saying the body carries no brief — the packet still goes out), then the
   `--summary` output and the PR body's gate facts. The READY packet names each `before_merge`
-  check with its latest result, as `dispatch results --issue <issue>` prints it; a check with no
-  current passing result is reported to the architect instead of completing, with one exception
-  the loop after an approval makes routine. A result passing at the head one push below READY's
-  head counts for READY when the reviewer's approval of READY's head states the carry: that it
-  read that push's own diff, that the diff changes no code that runs, and the two heads it
-  names. Dispatch marks every result older the moment a push moves the head, so after the
-  implementer's one commit of text fixes every result reads older and nothing is wrong; what the
-  merger reads is that approval, quotes in the packet beside the `Checks` lines, and takes to the
-  architect only when it is missing or names other heads.
+  check with its latest result and with whether a pass stands, as `dispatch results --issue
+  <issue>` prints them; a check with no pass standing at the head is reported to the architect
+  instead of completing, with one exception the loop after an approval makes routine. A result
+  passing at the head one push below READY's head counts for READY when the reviewer's approval
+  of READY's head states the carry: that it read that push's own diff, that the diff changes no
+  code that runs, and the two heads it names. Dispatch marks every result older the moment a
+  push moves the head, so after the implementer's one commit of text fixes every result reads
+  older and nothing is wrong; what the merger reads is that approval, quotes in the packet
+  beside the `Checks` lines, and takes to the architect only when it is missing or names other
+  heads.
 - READY is `handoff_complete` with `ready: true` and the packet as its `summary`; the merger runs
   no pre-flight of its own, and its completion reports the commit the workspace stands on. READY's
   checks run in the daemon, which reads the pull request's head on GitHub and refuses, before

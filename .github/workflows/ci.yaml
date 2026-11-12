@@ -5885,6 +5885,12 @@ jobs:
       - name: Design-gate advice of the real CLI against a real Dispatch
         run: bun test src/__tests__/design-gate-advice.live.test.ts
         working-directory: packages/envoy-client
+      # The moved-approval-request advice over the same real CLI and real Dispatch
+      # (dispatch://INFRA-3096): it proves the field the server fills on a write that takes an
+      # open approval request back from the person is the field the CLI reads and prints.
+      - name: Moved-approval advice of the real CLI against a real Dispatch
+        run: bun test src/__tests__/moved-approval-advice.live.test.ts
+        working-directory: packages/envoy-client
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

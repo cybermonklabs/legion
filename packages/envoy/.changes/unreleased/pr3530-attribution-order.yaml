@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+    A pull request is attributed to the issue its external link names, then the issue its linked
+    GitHub issue names, then the issue its head branch names, then the first key in its title or
+    body, then a key in its commit messages: a branch name and a link are acts that name an issue,
+    where a key in a title is a mention. `AttributionRuleVersion` is 2, so the reconcile judges
+    every stored head again, and a row whose issue changes appends
+    `issue.pull_request_attribution_changed` on the issue it left and on the issue it reached.
+time: 2026-11-11T10:10:02.000000000Z
+custom:
+    Issue: pr3530
