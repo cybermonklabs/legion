@@ -42,10 +42,16 @@ import { replayCase } from "./replay";
  * reached to within one group. The draw is at random under a seed it prints, so the same seed
  * over the same corpus draws the same slices.
  *
- * Two kinds of case never reach the draw. A question offering fewer than two options cannot be
- * judged as a choice. A case the never-decide rule holds is one the shipped skill would refuse,
- * and a coverage number counting it would be larger than anything the skill can deliver; the
- * count and the kinds held are printed and written.
+ * Three kinds of case never reach the draw. A question offering fewer than two options cannot be
+ * judged as a choice, and a question whose answer names no option cannot be scored against what
+ * the person chose, since set equality with an empty answer is nothing an arm could agree with.
+ * A case the never-decide rule holds is one the shipped skill would refuse, and a coverage
+ * number counting it would be larger than anything the skill can deliver; the counts and the
+ * kinds held are printed and written.
+ *
+ * An approval case whose answer names no option stops the whole draw instead: every approval
+ * case of this corpus carries the option the person chose, so one that does not is the corpus
+ * read wrongly and not a case to pass over.
  *
  * What is pinned and what is live. The cases are the corpus's, and each document is read at the
  * version the corpus pins, so those are the same bytes on every run. The one live reading is
@@ -143,6 +149,23 @@ export interface AnchorDescriptor {
   sha256: string;
 }
 
+/** Why a case the rule did not hold could still not be drawn. */
+export type UndrawableKind = "too-few-options" | "no-option-chosen";
+
+/** The undrawable kinds, in the order they are counted and printed. */
+const UNDRAWABLE_KINDS: readonly UndrawableKind[] = ["too-few-options", "no-option-chosen"];
+
+/** What each undrawable kind is called where a count of it is printed. */
+const UNDRAWABLE_NAMES: Readonly<Record<UndrawableKind, string>> = {
+  "too-few-options": "questions with too few options",
+  "no-option-chosen": "questions answered with no option",
+};
+
+/** The corpus is not what the draw takes it for, so no draw over it would mean anything. */
+export class DrawError extends Error {
+  override readonly name = "DrawError";
+}
+
 /** One case left out before the draw, and why. */
 export interface ExcludedCase {
   caseId: string;
@@ -150,6 +173,8 @@ export interface ExcludedCase {
   reason: string;
   /** The kind of hold, for a case the never-decide rule held. */
   heldKind?: NeverDecideKind;
+  /** Which rule left it out, for a case no arm could be scored on. */
+  undrawableKind?: UndrawableKind;
 }
 
 /** What one draw did: the slices, the counts they reached and what never reached them. */
@@ -163,6 +188,7 @@ export interface Draw {
   held: ExcludedCase[];
   heldByKind: Record<string, number>;
   undrawable: ExcludedCase[];
+  undrawableByKind: Record<UndrawableKind, number>;
   anchors: AnchorDescriptor[];
 }
 
@@ -241,20 +267,34 @@ function emptyDraw(seed: number): Draw {
     held: [],
     heldByKind: {},
     undrawable: [],
+    undrawableByKind: { "too-few-options": 0, "no-option-chosen": 0 },
     anchors: [],
   };
 }
 
 /**
- * The draw itself: the cases the rule holds and the questions with too few options are left out,
- * the rest are grouped, the groups are shuffled under `seed`, and each group goes into the first
- * slice its whole size still fits.
+ * The draw itself: the cases the rule holds and the questions no arm could be scored on are left
+ * out, the rest are grouped, the groups are shuffled under `seed`, and each group goes into the
+ * first slice its whole size still fits.
+ *
+ * It throws `DrawError` over an approval case whose answer names no option, which is the corpus
+ * read wrongly rather than a case to leave out.
  */
 export function drawSlices(cases: readonly DrawCase[], seed: number): Draw {
   const draw = emptyDraw(seed);
   const drawable: DrawCase[] = [];
+  const leaveOut = (row: CaseRow, undrawableKind: UndrawableKind, reason: string): void => {
+    draw.undrawable.push({ caseId: row.caseId, kind: row.kind, reason, undrawableKind });
+    draw.undrawableByKind[undrawableKind] += 1;
+  };
   for (const drawCase of cases) {
     const row = drawCase.row;
+    if (row.kind === "approval" && row.selected.length === 0) {
+      throw new DrawError(
+        `the approval case ${row.caseId} names no option the person chose, which the corpus ` +
+          "build cannot produce: the draw stops rather than passing over it"
+      );
+    }
     if (drawCase.hold.held) {
       const heldKind = drawCase.hold.kind;
       draw.held.push({
@@ -268,11 +308,20 @@ export function drawSlices(cases: readonly DrawCase[], seed: number): Draw {
       continue;
     }
     if (row.kind === "question" && row.options.length < LEAST_OPTIONS) {
-      draw.undrawable.push({
-        caseId: row.caseId,
-        kind: row.kind,
-        reason: `a question offering ${row.options.length} options cannot be judged as a choice`,
-      });
+      leaveOut(
+        row,
+        "too-few-options",
+        `a question offering ${row.options.length} options cannot be judged as a choice`
+      );
+      continue;
+    }
+    if (row.kind === "question" && row.selected.length === 0) {
+      leaveOut(
+        row,
+        "no-option-chosen",
+        "a question the person answered with no option cannot be scored by set equality with " +
+          "what they chose"
+      );
       continue;
     }
     drawable.push(drawCase);
@@ -595,7 +644,10 @@ async function draw(flags: Flags): Promise<number> {
   for (const [kind, count] of Object.entries(drawn.heldByKind).sort()) {
     console.log(`  ${kind.padEnd(22)}${count}`);
   }
-  console.log(`questions with too few options ${drawn.undrawable.length}`);
+  console.log(`undrawable                     ${drawn.undrawable.length}`);
+  for (const kind of UNDRAWABLE_KINDS) {
+    console.log(`  ${UNDRAWABLE_NAMES[kind].padEnd(35)}${drawn.undrawableByKind[kind]}`);
+  }
   console.log(`documents that could not be read ${rendered.unread}`);
   console.log("");
   for (const slice of SLICES) {
@@ -625,7 +677,11 @@ async function draw(flags: Flags): Promise<number> {
     parkedLegionRoots: parked,
     excluded: {
       held: { total: drawn.held.length, byKind: drawn.heldByKind, cases: drawn.held },
-      undrawable: { total: drawn.undrawable.length, cases: drawn.undrawable },
+      undrawable: {
+        total: drawn.undrawable.length,
+        byKind: drawn.undrawableByKind,
+        cases: drawn.undrawable,
+      },
     },
   });
   console.log("");
@@ -651,6 +707,7 @@ async function main(argv: readonly string[]): Promise<number> {
       error instanceof UsageError ||
       error instanceof OutputPathError ||
       error instanceof CorpusError ||
+      error instanceof DrawError ||
       error instanceof DispatchConfigError ||
       error instanceof DispatchRefusedError ||
       error instanceof DispatchUnreachableError

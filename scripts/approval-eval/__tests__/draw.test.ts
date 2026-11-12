@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { CaseKind, CaseRow } from "../build-corpus";
-import { type Draw, type DrawCase, drawSlices, SLICES, TARGETS } from "../draw";
+import { type Draw, type DrawCase, DrawError, drawSlices, SLICES, TARGETS } from "../draw";
 import type { NeverDecideAnswer } from "../never-decide";
 
 /**
@@ -17,7 +17,13 @@ const DECIDED: NeverDecideAnswer = {
 };
 
 /** One case, with only the fields the draw reads named. */
-function caseRow(caseId: string, kind: CaseKind, group: string, options = 2): CaseRow {
+function caseRow(
+  caseId: string,
+  kind: CaseKind,
+  group: string,
+  options = 2,
+  selected: string[] = ["Option 0"]
+): CaseRow {
   return {
     caseId,
     eventId: 1,
@@ -33,7 +39,7 @@ function caseRow(caseId: string, kind: CaseKind, group: string, options = 2): Ca
       label: `Option ${index}`,
       description: null,
     })),
-    selected: ["Option 0"],
+    selected,
     words: null,
     hasWords: false,
     askCreatedAt: "2026-11-06T09:00:00Z",
@@ -173,6 +179,25 @@ describe("drawSlices", () => {
     expect(where.has("q-one")).toBe(false);
     expect(draw.undrawable.map((one) => one.caseId).sort()).toEqual(["q-none", "q-one"]);
     expect(draw.undrawable[0]?.reason).toMatch(/cannot be judged as a choice/);
+    expect(draw.undrawableByKind).toEqual({ "too-few-options": 2, "no-option-chosen": 0 });
+  });
+
+  test("leaves a question the person answered with no option out of every slice", () => {
+    const cases = corpus();
+    cases.push(drawCase(caseRow("q-empty", "question", "ISSUE-empty", 2, [])));
+    const draw = drawSlices(cases, 7);
+    expect(placement(draw).has("q-empty")).toBe(false);
+    expect(draw.undrawable.map((one) => one.caseId)).toEqual(["q-empty"]);
+    expect(draw.undrawable[0]?.undrawableKind).toBe("no-option-chosen");
+    expect(draw.undrawable[0]?.reason).toMatch(/cannot be scored by set equality/);
+    expect(draw.undrawableByKind).toEqual({ "too-few-options": 0, "no-option-chosen": 1 });
+  });
+
+  test("refuses the whole draw over an approval case answered with no option", () => {
+    const cases = corpus();
+    cases.push(drawCase(caseRow("a-empty", "approval", "document-empty", 2, [])));
+    expect(() => drawSlices(cases, 7)).toThrow(DrawError);
+    expect(() => drawSlices(cases, 7)).toThrow(/a-empty/);
   });
 
   test("writes an anchor descriptor for every anchor case", () => {

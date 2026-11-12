@@ -7,10 +7,11 @@ import { listOf, numberOf, recordOf, stringOf } from "./corpus-io";
  *
  * - Claude, through the deployment's gateway: `POST $ANTHROPIC_BASE_URL/v1/messages`, with the
  *   key read from `/var/run/model-gateway-key/key` at the moment of the call, so a key rolled
- *   between two calls is picked up by the second. The answer is parsed for the one shape
- *   `recipes.ts` asks for - the label of a chosen option, on a line by itself - and an answer
- *   holding no such label is the `unreadable` fault, carrying the first 200 characters of what
- *   came back so the report can count those answers rather than guess at them.
+ *   between two calls is picked up by the second. The answer is parsed for the shape
+ *   `recipes.ts` asks for - the label of a chosen option, on a line of its own or at the head of
+ *   one, qualified - and an answer naming no label, or naming two of them, is the `unreadable`
+ *   fault, carrying the body of what came back so the report can count those answers rather
+ *   than guess at them.
  * - Jev, called directly at `https://api.typesafe.ai/v1/systemone` because the gateway serves no
  *   TypeSafe model: one choice question over the case as its state, which answers the chosen
  *   name with its confidence and its probabilities. The key is `TYPESAFE_API_KEY`, which the
@@ -71,8 +72,19 @@ const DEFAULT_TIME_MS = 180_000;
  * 2026-11-11 over three 84,000-byte cases: an answer that chose a label spent 170 to 223 output
  * tokens, and 6 of 15 answers at a budget of 256 carried a thinking block and no text. The
  * budget is what an answer may take and not what it costs, so it is set well past that.
+ *
+ * The same defect one size up, measured on 2026-11-12: at 2,048 all 32 unreadable approval rows
+ * of round 1 were `anthropic/claude-fable-5-1` - 18 of `bare-fable-5-1`, 9 of
+ * `distilled-fable-5-1`, 7 of `both-fable-5-1` - and every one of them was a body whose only
+ * block was `thinking`, not a label the parser missed. The control: that model on a short
+ * prompt at 2,048 stops at `end_turn` with blocks `thinking` and `text` and 255 output tokens,
+ * and at 8,192 answers the same text with 370, so only the large cases reach the budget.
+ *
+ * Raising the budget cannot change an answer that already fitted inside the old one - the
+ * budget bounds an answer and does not shape it - so the rows already scored stay comparable
+ * with the rows scored after this. That is why this is a fix to an arm and not a new arm.
  */
-const DEFAULT_MAX_TOKENS = 2_048;
+const DEFAULT_MAX_TOKENS = 8_192;
 
 /**
  * How much of a refusal or an unreadable answer is kept: the body, far enough in to reach the
@@ -344,6 +356,22 @@ function claudeText(body: unknown): string | null {
   return text.trim() === "" ? null : text;
 }
 
+/**
+ * Why an answer that carried no text stopped, and what it did carry: `max_tokens, blocks
+ * thinking` for the budget running out inside a thinking block. It heads that answer's fault
+ * detail so a reader of `round.json` sees the cause without parsing the body after it.
+ */
+export function noTextDetail(body: unknown): string {
+  const record = recordOf(body);
+  const stop = stringOf(record?.stop_reason) ?? "no stop reason";
+  const types = [
+    ...new Set(
+      listOf(record?.content).map((block) => stringOf(recordOf(block)?.type) ?? "unnamed")
+    ),
+  ];
+  return `${stop}, ${types.length === 0 ? "no blocks" : `blocks ${types.join(", ")}`}`;
+}
+
 /** What an answer reports it read and wrote, as both endpoints name those counts. */
 function usageOf(body: unknown): { inputTokens: number | null; outputTokens: number | null } {
   const usage = recordOf(recordOf(body)?.usage);
@@ -354,30 +382,71 @@ function usageOf(body: unknown): { inputTokens: number | null; outputTokens: num
 }
 
 /**
- * The labels a Claude answer chose: each line of it that is one of the labels the prompt
- * offered, matched without case and without the punctuation a model sometimes puts around a
- * label. An answer holding no such line chose nothing, which is the `unreadable` fault.
+ * What may follow a label at the head of a line for the line to still be naming that label: a
+ * separator, or a space and then a separator. A model that chose a label and then said why
+ * writes one of these between the two.
  */
-function labelsOf(text: string, labels: readonly string[]): string[] {
-  const wanted = new Map(labels.map((label) => [label.trim().toLowerCase(), label]));
+const AFTER_LABEL = /^ ?[-:,;.([{\u2013\u2014]/;
+
+/** One line of an answer, or one label, without the punctuation a model writes around a label. */
+function bare(line: string): string {
+  return line
+    .trim()
+    .replace(/^[-*\s]+/, "")
+    .replace(/^[`"']+|[`"'.,:;!]+$/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * The labels a Claude answer chose, matched without case and without that punctuation.
+ *
+ * A line that is one of the labels whole is the answer the prompt asked for, and every such line
+ * is taken. Where no line is a label whole, a line that begins with a label and then qualifies
+ * it - `Dismiss the review on #3170: one click, and the merge goes` - names that label, and is
+ * taken only when exactly one label is named that way: a line naming two has chosen nothing.
+ *
+ * The second rule is a prefix with a separator rather than a search for the label anywhere in
+ * the answer because an option's label is a sentence, and a sentence of one option appears
+ * inside the text of another option - its label, its description, the reasoning quoting it -
+ * often enough that a substring search would pick the wrong label. Requiring the label at the
+ * head of a line, and a separator after it, also keeps a label apart from the longer label it is
+ * a prefix of: `Dismiss` does not match the line `Dismiss the review on #3170: one click`,
+ * because what follows it there is a word and not a separator. The label is stripped of that
+ * punctuation the same way the line is, because a label of this corpus ends in a full stop
+ * often enough to matter: with the stop left on, the line `Done, but with a different name or
+ * size (say which in a comment).` would miss the label it is and match the label `Done`.
+ *
+ * An answer naming no label this way chose nothing, which is the `unreadable` fault.
+ */
+export function labelsOf(text: string, labels: readonly string[]): string[] {
+  const wanted = new Map<string, string>();
+  for (const label of labels) {
+    const key = bare(label);
+    if (key !== "" && !wanted.has(key)) wanted.set(key, label);
+  }
+  const lines = text.split("\n").map(bare);
   const chosen: string[] = [];
-  for (const line of text.split("\n")) {
-    const bare = line
-      .trim()
-      .replace(/^[-*\s]+/, "")
-      .replace(/^[`"']+|[`"'.,:;!]+$/g, "")
-      .trim()
-      .toLowerCase();
-    const label = wanted.get(bare);
+  for (const line of lines) {
+    const label = wanted.get(line);
     if (label !== undefined && !chosen.includes(label)) chosen.push(label);
   }
-  return chosen;
+  if (chosen.length > 0) return chosen;
+  // A line that is a label and nothing else was taken above, so what is left to read here is a
+  // label with something after it.
+  const qualified = new Set<string>();
+  for (const line of lines) {
+    for (const [key, label] of wanted) {
+      if (line.startsWith(key) && AFTER_LABEL.test(line.slice(key.length))) qualified.add(label);
+    }
+  }
+  return qualified.size === 1 ? [...qualified] : [];
 }
 
 /**
  * One judgement put to a Claude model through the gateway. The answer is one of the labels the
- * prompt offered, on a line by itself, and anything else is the `unreadable` fault with the
- * first 200 characters of what came back.
+ * prompt offered, on a line of its own or at the head of one, and anything else is the
+ * `unreadable` fault carrying what came back, bounded at `DETAIL_CHARS`.
  */
 export async function askClaude(ask: ClaudeAsk): Promise<ModelAnswer> {
   const endpoint = await claudeEndpoint();
@@ -423,7 +492,7 @@ export async function askClaude(ask: ClaudeAsk): Promise<ModelAnswer> {
   }
   const text = claudeText(parsed);
   if (text === null) {
-    return unreadable(sent.body, latencyMs, sent.attempts);
+    return unreadable(`${noTextDetail(parsed)}\n${sent.body}`, latencyMs, sent.attempts);
   }
   const chosen = labelsOf(text, ask.prompt.labels);
   const usage = usageOf(parsed);
