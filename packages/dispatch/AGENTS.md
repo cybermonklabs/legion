@@ -2012,13 +2012,10 @@ Playwright listings first, to prove it scanned the files the suite runs: the
 default selection, that selection under `DISPATCH_E2E_PROCESSES=2` and under
 `DISPATCH_E2E_SIGNIN=oidc` with it, and one that names the three wall-clock
 projects, whose rows a listing naming no project holds none of. The four
-collect at once, and the readings the timing comment above
-`listingTimeout` carries (`e2e/__tests__/no-browser-rows.test.ts`) are of
-the whole file: 13.72, 17.11 and 23.22 seconds in three runs of it, with
-the default listing 3.59 seconds on its own and the wall-clock one 1.25.
-The file allows three minutes,
-which is a ceiling for something being wrong rather than a budget for a
-listing. A row may stand all the same as a named exemption
+collect at once, and each is a bounded child, so the row states its limit as
+`rowLimit` over the four (`e2e/__tests__/no-browser-rows.test.ts`) and the file
+holds no number of its own. What each listing cost is in the line that child
+prints on stderr. A row may stand all the same as a named exemption
 with its reason, written in `e2e/no-browser-rows.ts`, whose list ships empty;
 the check refuses a stale exemption too — one naming a row the suite no longer
 holds, or one that drives a browser now — so the rule cannot come to lie in the
@@ -2026,6 +2023,30 @@ other direction either.
 INFRA-1554 moved the last four rows out: the CLI's nested-reply read, the
 agent API's duplicate gate, a spec write's invalid-markdown refusal, and the
 two-build rollout row.
+
+Every one-shot subprocess a row or hook of `e2e/__tests__` waits for starts
+through `runBounded` (`e2e/__tests__/bounded-subprocess.ts`): it bounds the
+child, kills its process group when the bound passes, fails with a message
+naming the file that started the child, its command and how long it waited,
+and prints one line per child on stderr with what that child cost. The bounds
+are `short` (60 000 ms, a command that starts nothing), `listing` (300 000 ms,
+one `playwright test --list`), `generation` (330 000 ms,
+`bun e2e/tools/row-map.ts`, which starts two listings of its own) and
+`twoStackBuild` (1 800 000 ms, the child that builds two stacks). One rule
+derives a row's limit from them: `rowLimit(...)` sums the bounds of the
+children the row waits for one after another, counts a group written
+`{ atOnce: [...] }` as the largest bound in it, and adds 30 000 ms for the
+row's own work. Each argument is a bound name and never a number, so a wrong
+value is a compiler error rather than a red run. A row or hook that drives a
+process rather than waiting for one keeps a number, with the reason it is that
+long on the line directly above it: the four driven rows of
+`e2e/__tests__/delivery-live-probe.test.ts` and the two hooks of
+`e2e/__tests__/psql-session.test.ts`. `e2e/row-limits.ts`, which
+`e2e/__tests__/row-limits.test.ts` runs over every `*.test.ts` directly under
+that directory, refuses every other limit: a limit is a call of that shared
+`rowLimit`, or it carries a reason of at least eight words on the line directly
+above it. `e2e/__tests__/fixtures/row-limits.fixture.ts` is its planted
+control, one limit of every shape the rule answers.
 
 The markdown shapes the parity rows read live in
 `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/`, and all three suites
@@ -2939,10 +2960,9 @@ every file whose rows stayed, each with the server behaviour those rows depend o
 committed file and a fresh generation differ. The generation reads two listings and takes the
 rows of both, because one listing is no longer the suite: a listing that names no project holds
 no wall-clock row, so a second names the three `-alone` projects, and `heavy-bodies.e2e.ts` and
-`nested-directive.e2e.ts` reach the map from it alone. The two cost about four seconds together
-on a two-core pod, the reading the comment above that tool's own `defaultListing` and
-`clockListing` carries (`e2e/tools/row-map.ts`: the default listing about three and a half
-seconds on its own and the wall-clock one about one).
+`nested-directive.e2e.ts` reach the map from it alone. Both listings are bounded children, so
+what each one cost is in the line it prints on stderr
+(`e2e/__tests__/bounded-subprocess.ts`).
 The map carries no count and names no `@pr` row, deliberately: both are read from those
 listings, which hold the whole suite, so a map that held them would be red on every pull
 request of every tree that adds or removes a row here. A **new spec file** still moves it,

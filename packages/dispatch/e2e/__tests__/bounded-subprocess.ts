@@ -23,8 +23,8 @@
  * - `generation`, 30 s above the listings inside it. The `row-map` generation starts two listings
  *   of its own, so the inner bound fires first and the inner message is what the reader sees. The
  *   30 s is the tool's own start and the work it does outside its two listings.
- * - `twoStackBuild`, against about nine minutes cold. That child builds two stacks, and each
- *   stack is a Go build and an initdb.
+ * - `twoStackBuild`, against about nine minutes measured from cold. That child builds two
+ *   stacks, and each stack is a Go build and an initdb.
  *
  * Where a stuck child fails. The lane runs in the `dispatch-ui` job of
  * `.github/workflows/ci.yaml`, whose limit is 15 minutes. The lane starts about 2 minutes into

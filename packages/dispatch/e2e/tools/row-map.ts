@@ -75,8 +75,8 @@ function table(header: readonly string[], rows: readonly (readonly string[])[]):
 // The two `playwright test --list` subprocesses this map is read from, started together so the
 // second collects while the first does. Each runs through `e2e/__tests__/playwright-listing.ts`,
 // which holds the argv, the working directory, the environment floor and what a non-zero exit
-// says. Measured at this head on this two-core pod: the default listing alone takes about three
-// and a half seconds, the wall-clock one about one, and the two together about four.
+// says. Each is a bounded child, so what it cost is in the line it prints on stderr when it
+// ends (`e2e/__tests__/bounded-subprocess.ts`).
 //
 // The second names the three wall-clock projects (`clockProjectNames`, e2e/configurations.ts).
 // They carry `default: false` since dispatch://INFRA-1280, so a listing that names no project
