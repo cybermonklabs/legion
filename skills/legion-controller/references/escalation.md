@@ -36,8 +36,10 @@ person's yes:
    `--label legion` only when the answer asks Legion to run it. `<PROJECT>` is the issue key's
    prefix before `-<n>` (`ACME-3` → `ACME`), which `read_state` shows as `daemon.project`; it is
    not the lowercase project token in role names such as `legion-<project>-controller`.
-2. Park the child (`set_status` to `icebox`) and comment a pointer to the new root on it. You
-   cannot close it, because only its architect or the daemon sets `done`.
+2. Park the child (`set_status` to `icebox`) and comment the new root's key on it, because the
+   child's work is folded into that root.
+   Park a child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+   You cannot close it, because only its architect or the daemon sets `done`.
 3. A root filed with the label opens in `triage`, and its triage wake brings it back to you
    (`skill://legion-controller/references/triage.md`).
 

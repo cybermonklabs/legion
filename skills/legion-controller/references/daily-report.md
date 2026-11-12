@@ -9,9 +9,13 @@ Use the issue the deployment instructions name for Legion's reports. With none n
 project's `Legion daily report` issue:
 `dispatch search --query '"Legion daily report"' --project <PROJECT>`. When it does not exist,
 create it once (the one issue you file unasked) and park it in `icebox`, so nobody takes it as
-work. It never carries the `legion` label. Assign it to the person who answers for the project:
-the one the deployment instructions name, else the owner `dispatch whoami` names, because its asks
-reach that person's Inbox.
+work.
+The report issue holds no work, which is why it stays in `icebox`, and it is the one issue you
+park with no person's request behind it:
+you move every other issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+It never carries the `legion` label.
+Assign it to the person who answers for the project: the one the deployment instructions name,
+else the owner `dispatch whoami` names, because its asks reach that person's Inbox.
 
 ```text
 dispatch issue --project <PROJECT> --title 'Legion daily report' --assignee '<email>' --spec-file - <<'EOF'
@@ -32,7 +36,8 @@ Each time you read it:
 
 - `Status: done` means someone closed it: the close withdrew its open asks (each recorded
   `withdrawn`; a reopen brings them back), and Dispatch refuses an ask there
-  (`409 ISSUE_CLOSED`). Reopen it with `set_status` to `icebox` and say so in the day's report.
+  (`409 ISSUE_CLOSED`). Reopen it with `set_status` to `icebox`, where the issue holds no work
+  and its asks stay answerable, and say so in the day's report.
 - `Assignee: unassigned` with a person known: assign it, naming your session (`dispatch whoami`):
   `curl -sS -X PATCH -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" -H 'Content-Type: application/json' -d '{"assignee": "<email>", "actor": {"kind": "session", "id": "<session id>"}}' "$DISPATCH_URL/api/v1/issues/<REPORT KEY>"`.
   An answer that does not print the issue with its new `assignee` left the assignee as it was

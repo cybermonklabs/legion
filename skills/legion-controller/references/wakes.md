@@ -97,15 +97,19 @@ handle it as an escalation (`skill://legion-controller/references/escalation.md`
 with no `holdReason` while its tree lingers (the time after its root closes when a reopen resumes
 it) or is closed waits for the tree's re-admission and needs nothing from you.
 
-When an escalated hold's cause is not gone, park the tree: `set_status` the root to `backlog`,
-then, in the same turn, post one comment on the root (`dispatch comment --issue <root>
---body-file -`) whose first line is `Parked by Legion while it waits on: <the hold's cause>`, the
-cause being what you found the held phase waits on (the payload's `phase` and `role`, and the held
-issue's `dispatch read`). That mark is what makes the park Legion's own hold
-(`skill://legion-controller/references/parked-decisions.md#deciding`, step 2). Set the root back to
-`todo` only when you checked that the hold's cause is gone, a person asks, or a person's decision
-after the park gives its work a next step (that reference's step 4), because `todo` re-admits it
-as a new generation: a new run of the tree that starts again from its architect.
+When an escalated hold's cause is not gone, do not park the tree. The tree stays admitted and
+keeps its slot. Post one comment on the root (`dispatch comment --issue <root> --body-file -`)
+that records what the held phase waits on (the payload's `phase` and `role`, and the held issue's
+`dispatch read`), and ask the person in it whether to park the tree. Name the tree in the day's
+report until they answer.
+Park the tree only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+Cite that answer in the comment you post with the park, and make that comment's first line `Parked by
+Legion while it waits on: <the hold's cause>`, because that mark is what makes the park Legion's
+own hold (`skill://legion-controller/references/parked-decisions.md#deciding`, step 2). Set the
+root back to `todo` only when you checked that the hold's cause is gone, a person asks, or a
+person's decision after the park gives its work a next step (that reference's step 4), because
+`todo` re-admits it as a new generation: a new run of the tree that starts again from its
+architect.
 
 ## `worker-died on <KEY>` (`role: "architect"`)
 
@@ -114,10 +118,15 @@ notice of the tree goes to that architect, so nobody inside the tree can act. Ch
 `issues.<KEY>.architect.state` is `failed`. When the root's `phase` is `done`, the tree is already
 parked: do nothing (a failed architect reads `failed` until the tree closes). Otherwise look for
 the cause: an open `capabilities` row whose `detail` names the architect's session, or the
-architect's last message on the root issue. When you find none, or it is gone, re-admit the tree
-(`set_status` the root to `backlog`, then to `todo`: a new generation whose architect starts with
-fresh budgets). When it stays, park the tree (`set_status` the root to `backlog`) and say why on
-the issue, because a relaunch would fail the same way.
+architect's last message on the root issue. When you find none, or it is gone, restart the tree
+(`set_status` the root to `backlog`, then, in the same turn, to `todo`: a new generation whose
+architect starts with fresh budgets). That pair is a restart and not a park: the daemon re-admits
+only a root whose tree lingers or is done, so the `backlog` write is how a restart reaches `todo`.
+When the cause stays, the tree stays admitted and keeps its slot, because a relaunch would fail
+the same way. Record the cause in a comment on the root, and ask the person in it whether to park
+the tree.
+Park the tree only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+Cite that answer in the park's comment.
 
 ## `worker-stalled on <KEY>` (`{kind: "worker-stalled", role: "architect", reason}`)
 

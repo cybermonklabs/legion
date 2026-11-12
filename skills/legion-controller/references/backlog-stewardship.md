@@ -98,6 +98,9 @@ tree (a root in `admission.trees`, or an issue whose `tree` is one); its archite
 A person's `legion` label outranks a plan's deferral. The daemon queues the root at once: a
 person's label on an unrecorded root in `triage` is the root's `todo`, written by the daemon. A
 labelled root the weekly plan says to defer is parked by you at your next backlog pass, not
-before: `set_status` it to `backlog`, or to `icebox` for a longer deferral, and cite the plan's
-directive in a comment on the issue. The cost is the architect's work between the daemon's `todo`
-and your park.
+before, and only when the plan's line names a person's request to defer it: `set_status` it to
+`backlog`, or to `icebox` for a longer deferral, and cite that request in a comment on the issue.
+Park a root only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+A plan row you wrote with no such request behind it moves nothing:
+name that row in the day's report instead. The cost is the architect's work between the daemon's
+`todo` and your park.

@@ -19,7 +19,7 @@ except a clear defect a role reports ([Issues handed to Legion](#issues-handed-t
 - Before any side effect, read `read_state` and the Dispatch issue, because a wake can be stale or sent twice.
 - Read a session's state from the Envoy registry, never from its absence from a list (`skill://envoy`). Start no replacement for an `unresponsive` session, take nothing from it, and never report it as gone, because it is working and keeps its claims.
 - Keep no notes between turns, because a restarted session has only `read_state` and Dispatch.
-- Reach the daemon only through the `legion` tool: `read_state`, and `set_status` to `todo`, `backlog` or `icebox`. Run no `legion` from bash, because the tool holds the controller grant.
+- Reach the daemon only through the `legion` tool: `read_state`, and `set_status` to `todo`, `backlog` or `icebox`. Run no `legion` from bash, because the tool holds the controller grant. Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Two writes are not that move: a root's restart, which sets `backlog` and then `todo` in the same turn, and the report issue, which holds no work.
 - Never edit a repository, push a commit or call `handoff_complete`, and never forward a raw event to an architect, because the daemon runs the phases and raw events only fill the architect's context.
 - Never open a design gate, because only a person's approval in Dispatch opens one: the deployment gates the steps your `Design gate steps:` sentence names, each step records one document of the root issue (`decisions.md`, `verification.md` or the primary document), and the tree's work starts when a person has approved every one of them.
 - When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message), because an empty read is no evidence. A Slack read answers a JSON object, and `skill://legion-controller/references/slack-mentions.md` holds its own success test.
@@ -72,7 +72,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |
 | `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation |
-| `worker-died on <KEY>` (`role: "architect"`) | Re-admit once its cause is gone, else park it |
+| `worker-died on <KEY>` (`role: "architect"`) | Re-admit once its cause is gone; otherwise record the cause and ask the person |
 | `worker-stalled on <KEY>` (`role: "architect"`) | Nothing, unless the notice says the claim failed: its turn was ended, its task is still owed, and the notice says what became of its process |
 | `update-stalled on <KEY>` | `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled` |
 | `provider-errors on <KEY>` | Name the run and its model in the day's report; send it to the issue's architect; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
@@ -133,7 +133,10 @@ which branch to open the pull request against; nothing else carries that.
 A free slot is no reason to take an issue: a labelled root in `todo` takes the next slot through
 `admission.waiting` without you, and a parked issue (status `backlog` or `icebox`) means "do not
 run now". Move an issue out of `backlog` or `icebox` only on a request or a plan directive that names
-it, and cite that request. A slot is one issue the daemon has started, a root or a child, not one
+it, and cite that request. A free slot is no reason to park an issue, and a full cap is no reason either.
+Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+Report the free slots, or the full cap, to the person in the day's report, and move nothing for them.
+A slot is one issue the daemon has started, a root or a child, not one
 tree: a tree of four started issues holds four slots. An issue takes its slot when the daemon
 starts it and keeps it
 until it is done, leaves the workflow or waits only for its merge,

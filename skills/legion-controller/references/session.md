@@ -33,8 +33,11 @@ answer to your ask, a mention), Envoy or Slack. No `legion controller start` can
   `settings` (the daemon's resolved `legion.yaml`, with no credential in it).
 - `op: "set_status"` with `issue` and `status` (`todo`, `backlog` or `icebox`) moves an issue. Each
   call mints its grant in-process from the secret the session registered with, so a stale secret
-  fails it with a 403. You cannot set `done`: only an issue's architect or the daemon closes an
-  issue.
+  fails it with a 403.
+  Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+  Cite that reason in a comment on the issue. A root's restart is not that move: it sets `backlog` and then
+  `todo` in the same turn. You cannot set `done`: only an issue's architect or the daemon closes
+  an issue.
 
 ## `gh`
 
