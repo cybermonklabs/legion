@@ -2202,7 +2202,7 @@ func TestApplyOperationsQuoteMissNamesTheOperationTheQuoteAndNearestBlocks(t *te
 // A quote cut before its closing `**` can never match rendered text, and "quote not found"
 // sends the agent looking for the wrong mistake.
 func TestApplyOperationRefusesAFindWithAnUnbalancedInlineMark(t *testing.T) {
-	tree, err := parseInput("1. **SUPERSEDED by the ruling** and the rest.\n")
+	tree, err := parseInput("1. **SUPERSEDED by the decision** and the rest.\n")
 	if err != nil {
 		t.Fatal(err)
 	}

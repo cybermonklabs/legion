@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -1599,14 +1600,20 @@ func countExceededError(code, field string, count, limit int) *apiError {
 		"%s is %d over the %d-item limit (%d/%d)", field, count-limit, limit, count, limit)
 }
 
-// blockBoundError is what a route answers an itemblocks.Check with: nil where the body passed
-// both bounds, else the refusal the typed error words (itemblocks.CapExceeded names the block,
-// itemblocks.CountExceeded the count), with the status and code every cap refusal carries.
-// Every route that bounds a body calls this one helper, so a route added later cannot word the
-// same refusal differently.
+// blockBoundError is what a route answers an itemblocks.Check with: nil where the body broke no
+// rule, else the refusal the typed error words, under the code that rule is refused by. A bound
+// broken (itemblocks.CapExceeded names the block, itemblocks.CountExceeded the count) carries
+// CAP_EXCEEDED, the code every cap refusal carries; a body holding a decision block
+// (itemblocks.DecisionBlock) carries DECISION_BLOCK_IN_BODY, since what it is refused for is
+// what it holds rather than how long it is. Every route that checks a body calls this one
+// helper, so a route added later cannot word the same refusal differently.
 func blockBoundError(err error) *apiError {
 	if err == nil {
 		return nil
+	}
+	var decision *itemblocks.DecisionBlock
+	if errors.As(err, &decision) {
+		return errorf(http.StatusBadRequest, "DECISION_BLOCK_IN_BODY", "%s", err)
 	}
 	return errorf(http.StatusBadRequest, "CAP_EXCEEDED", "%s", err)
 }
