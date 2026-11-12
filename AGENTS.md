@@ -467,7 +467,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - `bash scripts/e2e/stage1-skeleton.sh`
 
-  Stage 1's live proof: the Go daemon boots on a real Postgres, serves GET /legion/v1/state, restarts against the same store, and refuses an unreachable Postgres by host (scripts/e2e/README.md)
+  Stage 1's live proof: the Go daemon boots on a real Postgres, serves GET /legion/v1/state, answers GET /readyz 200 once it serves, at each of its two boots, restarts against the same store, and refuses an unreachable Postgres by host (scripts/e2e/README.md)
 
 - `LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic bash scripts/e2e/stage2-tmux-supervision.sh`
 

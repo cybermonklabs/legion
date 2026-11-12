@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Stage 1's gate for the Go coordinator: it boots against a real Postgres, answers /healthz and
-# GET /legion/v1/state, registers itself, survives a restart against the same store with its
-# first boot time intact, and refuses an unreachable Postgres by the host it could not reach and
-# never by the password. Every step is fatal — no `|| true` outside the cleanup a trap must never
-# fail on — and the run leaves no container, no daemon, and nothing in the real state home.
+# Stage 1's gate for the Go coordinator: it boots against a real Postgres, answers /healthz,
+# /readyz and GET /legion/v1/state, registers itself, survives a restart against the same store
+# with its first boot time intact, and refuses an unreachable Postgres by the host it could not
+# reach and never by the password. Every step is fatal — no `|| true` outside the cleanup a trap
+# must never fail on — and the run leaves no container, no daemon, and nothing in the real state
+# home.
 #
 # Everything it takes is this run's own: its work directory, its container name, its project key
 # and its port. Two runs on one box (a CI job and a devbox session, or two sessions) do not
@@ -107,6 +108,29 @@ wait_healthz() {
 held_by_daemon_and_keeper() {
   held_only_by "$port" "$pid" "$daemon_keeper_pid" ||
     fail "the socket the daemon serves on port $port is not held by exactly the daemon ($pid) and its keeper ($daemon_keeper_pid)${1:-}"
+}
+# readyz_200 [SUFFIX] reads GET /readyz on the daemon ($pid) on $port and requires 200, the answer
+# the daemon's one-way serving latch gives only from the moment the boot built its runtime,
+# installed its launcher acceptor and began serving (the daemon's servingLatch): 503 `starting`
+# until then, 503 `stopping` from the stop, and nothing read out of the database on the way.
+# It polls for 5 s rather than reading once, because the daemon sets the latch on a goroutine of
+# its own that starts when the serving goroutine does: /healthz can be answered in the instant
+# before that goroutine runs, and a single read would fail a daemon that is about to say so. A
+# daemon that answers /healthz and never latches still fails here, which is what this proves.
+# The status is read off curl's stdout rather than asserted by curl's -f, so the failure names what
+# it got, and the body with it, which says whether the daemon called itself starting or stopping; a
+# connection curl never made writes no body and exits non-zero, which the run names 000 and fails
+# on the same way.
+readyz_200() {
+  local i status
+  for i in $(seq 1 25); do
+    : >"$work/readyz.json" # curl writes nothing here when it never connected, and this is read below
+    status=$(curl -sS -o "$work/readyz.json" -w '%{http_code}' --max-time 2 \
+      "http://127.0.0.1:$port/readyz") || status=000
+    [ "$status" = 200 ] && return 0
+    sleep 0.2
+  done
+  fail "GET /readyz${1:-} answered $status $(cat "$work/readyz.json"), want 200"
 }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
@@ -264,6 +288,14 @@ grep -q 'hunter2' "$work/refusal.log" && {
 start_kept daemon daemon_keeper LEGION_LISTEN_FD -- "${pane_home[@]}" "$work/legion" start --config "$work/legion.yaml"
 pid=$daemon_pid
 wait_healthz
+# The daemon says it is ready, beside the /healthz above and the state read below (INFRA-3169).
+# It is read here and after the restart both, never at one boot alone: the latch is one-way and
+# the booting process's own, so each start begins unlatched and this read says nothing about the
+# next process; /healthz is answered off the mux whatever the boot reached, so a daemon that
+# answers it while /readyz never latches is exactly the state this proof exists to catch, and the
+# restart reaches serving down the other path — an existing store, a second boot — where it could
+# part from this one.
+readyz_200
 held_by_daemon_and_keeper
 "$work/legion" state --json --port "$port" >"$work/state1.json"
 jq -e --arg p "$project" \
@@ -321,6 +353,10 @@ stop_daemon SIGTERM
 start_kept daemon daemon_keeper LEGION_LISTEN_FD -- "${pane_home[@]}" "$work/legion" start --config "$work/legion.yaml"
 pid=$daemon_pid
 wait_healthz " after restart"
+# The restart's own latch, which the first boot's proves nothing about: a second boot, over a store
+# that already holds this project, must reach serving and say so, and its 503 would be as invisible
+# to the /healthz above as the first boot's would have been.
+readyz_200 " after restart"
 held_by_daemon_and_keeper " after restart"
 "$work/legion" state --json --port "$port" >"$work/state2.json"
 jq -e '.daemon.boots == 2' "$work/state2.json" || {
