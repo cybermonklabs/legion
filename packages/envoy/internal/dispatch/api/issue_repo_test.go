@@ -33,7 +33,8 @@ func lastIssueEventPayload(t *testing.T, database *store.Store, key string) map[
 
 // An issue's repository: its own when set, else its nearest ancestor's, else the project's default,
 // else none; every list row, the detail and every issue event carry both the own field and the
-// resolved one. A repository not mapped to the project is refused by name.
+// resolved one. Its own is any `owner/name`, mapped to its project or not; only a value that is
+// not `owner/name` is refused.
 func TestIssueRepoResolvesThroughParentsThenTheProjectDefault(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
@@ -89,18 +90,40 @@ func TestIssueRepoResolvesThroughParentsThenTheProjectDefault(t *testing.T) {
 	if payload["repo"] != nil || payload["resolved_repo"] != "acme/gadgets" {
 		t.Fatalf("issue.updated payload repo=%v resolved_repo=%v, want null and acme/gadgets", payload["repo"], payload["resolved_repo"])
 	}
-	for _, bad := range []struct{ repo, code string }{
-		{"acme/unmapped", "REPO_NOT_MAPPED"},
-		{"not-a-repo", "INVALID_ISSUE"},
+	// An issue's own repository is any `owner/name` (INFRA-2543 R3): one its project maps, one
+	// another project maps, and one no project maps are each taken, by the create route and by
+	// the patch route, and each is what the issue then resolves to.
+	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "OTHER", "name": "Other"}, "alice")
+	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/other/tools", map[string]any{"project": "OTHER", "default": true}, "alice")
+	for _, taken := range []struct{ name, repo string }{
+		{"a repository CORE maps", "acme/gadgets"},
+		{"a repository OTHER maps", "other/tools"},
+		{"a repository no project maps", "acme/unmapped"},
 	} {
-		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+leaf.Key, map[string]any{"repo": bad.repo}, "alice")
-		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), bad.code) {
-			t.Fatalf("patch repo %q: status=%d body=%s, want 400 %s", bad.repo, response.Code, response.Body.String(), bad.code)
+		patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+leaf.Key, map[string]any{"repo": taken.repo}, "alice")
+		if patched.Code != http.StatusOK {
+			t.Fatalf("patch the leaf's repo to %s (%s): status=%d body=%s, want 200", taken.repo, taken.name, patched.Code, patched.Body.String())
 		}
-		response = dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Bad " + bad.repo, "repo": bad.repo, "force": true}, "alice")
-		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), bad.code) {
-			t.Fatalf("create with repo %q: status=%d body=%s, want 400 %s", bad.repo, response.Code, response.Body.String(), bad.code)
+		if issue := decodeBody[model.Issue](t, patched); issue.Repo == nil || *issue.Repo != taken.repo || issue.ResolvedRepo == nil || *issue.ResolvedRepo != taken.repo {
+			t.Fatalf("patched leaf repo=%v resolved=%v, want its own %s (%s)", issue.Repo, issue.ResolvedRepo, taken.repo, taken.name)
 		}
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Created on " + taken.repo, "repo": taken.repo, "force": true}, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create with repo %s (%s): status=%d body=%s, want 201", taken.repo, taken.name, response.Code, response.Body.String())
+		}
+		if issue := decodeBody[model.Issue](t, response); issue.Repo == nil || *issue.Repo != taken.repo || issue.ResolvedRepo == nil || *issue.ResolvedRepo != taken.repo {
+			t.Fatalf("created issue repo=%v resolved=%v, want its own %s (%s)", issue.Repo, issue.ResolvedRepo, taken.repo, taken.name)
+		}
+	}
+	// A value that is not `owner/name` is refused by both routes, as it was.
+	const notARepo = "not-a-repo"
+	response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+leaf.Key, map[string]any{"repo": notARepo}, "alice")
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "INVALID_ISSUE") {
+		t.Fatalf("patch repo %q: status=%d body=%s, want 400 INVALID_ISSUE", notARepo, response.Code, response.Body.String())
+	}
+	response = dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Bad " + notARepo, "repo": notARepo, "force": true}, "alice")
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "INVALID_ISSUE") {
+		t.Fatalf("create with repo %q: status=%d body=%s, want 400 INVALID_ISSUE", notARepo, response.Code, response.Body.String())
 	}
 }
 

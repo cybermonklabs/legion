@@ -2451,11 +2451,11 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `issue.claimed` and `issue.released` carry `IssueClaimEventPayload {key, status, repo, resolved_repo, claim, previous_claim?, reason}` (`repo` and `resolved_repo` as on every issue event);
   the outbox publishes both to the previous claimant's own `notifications.agent.<session_id>` topic (`publishPreviousClaimant`), whatever the issue's route and regardless of `notify`, so a session learns it no longer holds the work.
 
-- Every issue has a nullable `repo`: its own repository, `owner/name` (`issues.repo`, migration `0113`), which must be a mapping of its project;
-  the composite foreign key `issues_repo_mapped_to_project` to `repo_projects (repo, project)` makes that a database invariant.
+- Every issue has a nullable `repo`: its own repository, `owner/name` (`issues.repo`, migration `0113`), any repository at all — one its project maps, one another project maps, one no project maps.
+  Migration `20261112004945` dropped the composite foreign key `issues_repo_mapped_to_project` that held it to a mapping of its project, and the unique constraint on `repo_projects (repo, project)` that backed only that key, because a project works wherever its issues say (INFRA-2543).
   `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` take it (`api/issue_repo.go`:
   absent leaves it, `null` clears it, a string is canonicalised as a mapping's path is;
-  not `owner/name` is `400 INVALID_ISSUE`, not mapped `400 REPO_NOT_MAPPED`, checked under a key-share lock on the mapping row so the mapping cannot move or go before the write commits;
+  not `owner/name` is `400 INVALID_ISSUE`;
   a closed issue refuses it, `409 ISSUE_CLOSED`).
   Every issue read and every issue event carries `repo` and `resolved_repo`, resolved on read by `refs.IssueRepoTerms`, the server's one repository-resolution rule (`internal/dispatch/refs/issues.go`, spliced by `api`'s issue reads with `refs.IssueRepoJoin` and `refs.IssueRepoColumns`):
   one walk climbs the parent chains of every issue the read answers for at once — its `subjects` term, which is a listing's page, a listing's whole match or the one issue a read names — and each issue takes the nearest issue on its chain (itself first) whose own `repo` is set, else its project's default mapping (`repo_projects.is_default`, at most one per project by the partial unique index `repo_projects_default_per_project`, read for every project of the read in one join), else null.
@@ -2475,7 +2475,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The API repairs an acyclic one: `PATCH` an ancestor that still reads (its `GET` answers 200) with `{"parent": null}`.
   The `PATCH` reads the issue it changes first (`issue_patch.go`), so a parent loop none of whose members reads, which only direct SQL can write, needs a database repair (`update issues set parent_key = null` on one member).
   A mapping's `PUT` takes `default` and moves the project's default in one transaction;
-  a mapping that issues name is neither deleted nor moved to another project (`409 REPO_PROJECT_IN_USE`, counted under the mapping's row lock);
+  a mapping that issues name as their repository is deleted and moved like any other, since an issue's own repository needs no mapping;
   and a moved mapping emits `settings.repo_project.updated` on the project it left (`deleted: true`) as well as the one it joined.
   Every writer of a mapping, the `PUT`, the `DELETE` and the boot seed of `DISPATCH_REPO_PROJECTS` (`api.SeedRepoProjects`), takes `lockRepoProjectWrite`'s locks in one order:
   an advisory lock on the repository, the event owners of every project it touches, then the row.

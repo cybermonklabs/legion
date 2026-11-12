@@ -2984,7 +2984,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Create or replace, or remove, a repository mapping; PUT takes `{project, default?, renamed_to?}`, and `default: true` moves the project's one default to it.
   `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`): absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
-  A mapping an issue names as its `repo` is neither deleted nor moved: `409 REPO_PROJECT_IN_USE`.
+  A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
   `AGENTS.md` gives the rules and the `settings.repo_project.updated` events.
 
 - `/api/v1/github/app-installation/{owner}/{repo}` (GET; cookie, trusted header, or bearer)
@@ -3192,8 +3192,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   Create an issue and its primary document.
   Omitting or leaving `spec` blank gives an empty primary document at version 1.
-  `repo` (`owner/name`) is the issue's own repository and must be mapped to its project:
-  `400 INVALID_ISSUE` when it is not `owner/name`, `400 REPO_NOT_MAPPED` when it is not mapped.
+  `repo` (`owner/name`) is the issue's own repository, any repository at all, one its project maps, one another project maps, or one no project maps:
+  `400 INVALID_ISSUE` when it is not `owner/name`.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
   Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true; external references skip the check.
   A forced create records the issues it went past on its `issue.created` event, under `forced.past`.

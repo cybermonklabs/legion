@@ -17,8 +17,9 @@ import (
 const repoProjectsDefaultVersion = 113
 
 // The migration adds the project's default repository and an issue's own repository. At most one
-// mapping of a project is the default; an issue's repository must be a mapping of its own project;
-// a mapping an issue names cannot be deleted or moved to another project.
+// mapping of a project is the default. The foreign key it also added, which held an issue's
+// repository to a mapping of its project, is gone again: 20261112004945 drops it, and
+// TestMigrationLetsAnIssueNameAnyRepository proves that.
 func TestMigrationAddsADefaultMappingAndTheIssueRepository(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
@@ -45,20 +46,8 @@ func TestMigrationAddsADefaultMappingAndTheIssueRepository(t *testing.T) {
 	if _, err := store.Pool.Exec(ctx, `update repo_projects set is_default = true`); !isSQLState(err, "23505") {
 		t.Fatalf("two defaults in CORE: %v, want unique_violation", err)
 	}
-	if _, err := store.Pool.Exec(ctx, `update issues set repo = 'acme/unmapped' where key = 'CORE-1'`); !isSQLState(err, "23503") {
-		t.Fatalf("an unmapped repository on CORE-1: %v, want foreign_key_violation", err)
-	}
 	if _, err := store.Pool.Exec(ctx, `update issues set repo = 'acme/widgets' where key = 'CORE-1'`); err != nil {
-		t.Fatalf("a mapped repository on CORE-1: %v", err)
-	}
-	if _, err := store.Pool.Exec(ctx, `update repo_projects set project = 'OTHER' where repo = 'acme/widgets'`); !isSQLState(err, "23503") {
-		t.Fatalf("moving a mapping CORE-1 names: %v, want foreign_key_violation", err)
-	}
-	if _, err := store.Pool.Exec(ctx, `delete from repo_projects where repo = 'acme/widgets'`); !isSQLState(err, "23503") {
-		t.Fatalf("deleting a mapping CORE-1 names: %v, want foreign_key_violation", err)
-	}
-	if _, err := store.Pool.Exec(ctx, `delete from repo_projects where repo = 'acme/gadgets'`); err != nil {
-		t.Fatalf("deleting a mapping no issue names: %v", err)
+		t.Fatalf("the issue's own repository column after the migration: %v", err)
 	}
 }
 

@@ -314,14 +314,6 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if !assigneeProvided {
 		assignee = defaultAssignee(actor, parentAssignee, projectDefaultAssignee)
 	}
-	// The project row is locked from here; the mapping check takes its key-share lock only now, in
-	// the project-then-mapping order every mapping write follows (lockRepoProjectWrite).
-	if repo != nil {
-		if err := checkIssueRepoMapped(r.Context(), tx, *repo, input.Project); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
 	key := fmt.Sprintf("%s-%d", input.Project, number)
 	actorJSON, err := encodeJSON(actor)
 	if err != nil {
