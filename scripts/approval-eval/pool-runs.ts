@@ -40,7 +40,8 @@ import { DEFAULT_CONFIDENCE, type Interval, regularizedIncompleteBeta } from "./
  *   difference is the first mean less the second;
  * - the pooled estimate is the mean of those case-level differences;
  * - its interval is a paired bootstrap over the case-level differences, resampling the cases
- *   with replacement, with the resample count and the seed printed beside the number.
+ *   with replacement, stated two-sided at 90 and at 95 per cent, with the resample count and
+ *   the seed printed beside the bounds.
  *
  * The bootstrap, and not McNemar, because a case's outcome is no longer binary once several
  * runs have judged it: a case the skill arm agreed on in three runs of five carries 0.6, which
@@ -52,15 +53,34 @@ import { DEFAULT_CONFIDENCE, type Interval, regularizedIncompleteBeta } from "./
  * reader sees whether the two agree. They are two readings of one quantity and not two
  * quantities.
  *
- * **No interval this record prints beside an estimate excludes it.** Either reading fails to be
+ * **Every interval this record states names its level and its sidedness where its numbers are,
+ * and every reading is stated at two levels.** A reader who meets a pair of bounds under no
+ * level reads into it the level they came with, which is usually 95 per cent, and this
+ * record's own level is 90. So each pair carries `two-sided at 90 per cent` or `two-sided at
+ * 95 per cent` in the line it is quoted in, and both levels are stated of every reading the
+ * record makes: the reading over every run, and each build's. Neither level is a flag, so a
+ * reader reads the one they came for off the record rather than off the command line.
+ *
+ * **Both levels are read off one measurement.** The bootstrap draws its resamples once, under
+ * the seed printed beside them, and takes the 90 and the 95 per cent quantiles of those same
+ * resample means; the t takes one mean and one standard error of the same differences and
+ * changes only its quantile. So the wider interval is the narrower one read further out on one
+ * draw, which is what makes the two comparable: two draws under two seeds would have differed
+ * by the draw as well as by the level, and no reader could have told which difference was
+ * which.
+ *
+ * **No interval this record states beside an estimate excludes it.** Either reading fails to be
  * read at all on an input the command takes, and each then carries what it lacks, in the words
  * the record prints, and no bounds at all: the t interval under two case-level differences,
  * where there is no standard error to take and Student t has 0 degrees of freedom; the
  * bootstrap where the means drawn fall wholly to one side of the estimate, which `--resamples
  * 1` does whenever the one mean it draws is not the estimate itself — one resample being one
  * mean printed as both bounds — which cases that differ make possible rather than certain and
- * which one case-level difference never does. A pair of numbers there reads as an interval
- * measured, and as one that excludes the estimate printed above it.
+ * which one case-level difference never does. A reading read at neither level says so once,
+ * naming the levels together, since the reason it carries is one reason; a draw whose narrower
+ * pair alone misses the estimate states the wider pair and says of the narrower one what it
+ * lacks. A pair of numbers there reads as an interval measured, and as one that excludes the
+ * estimate printed above it.
  *
  * **The bootstrap holds the runs fixed.** Resampling cases says what the expected difference is
  * given these runs, and carries nothing of the variation between them. So this prints each
@@ -103,6 +123,14 @@ const DEFAULT_RESAMPLES = 20_000;
 
 /** The seed the bootstrap is drawn under where no `--seed` names one. */
 const DEFAULT_SEED = 7;
+
+/**
+ * The two-sided levels every interval the record states is read at, narrowest first. Both are
+ * stated of every reading always: a reader who came for one of them reads it off the record
+ * rather than running the command again under the other, and both are quantiles of one draw,
+ * so the wider is the narrower read further out and not another measurement.
+ */
+const LEVELS: readonly number[] = [DEFAULT_CONFIDENCE, 0.95];
 
 /** How many case ids a refusal names before it counts the rest. */
 const NAMED_CASES = 10;
@@ -151,8 +179,9 @@ const USAGE = `usage: bun scripts/approval-eval/pool-runs.ts --run <dir> [--run 
   [--shape <with|without>] [--resamples <n>] [--seed <n>] [--out <dir>]
 
 Pools several runs of one fresh-agent comparison over one case list, reading each case as the
-mean over the runs of each arm's outcome, and prints the pooled difference with a paired
-bootstrap interval over the case-level differences.
+mean over the runs of each arm's outcome, and prints the pooled difference with paired
+bootstrap intervals over the case-level differences, two-sided at 90 and at 95 per cent and
+both read off one draw.
 
 Options:
   --run <dir>        Required, and repeated: each a directory fresh-agent.ts wrote, holding
@@ -160,8 +189,8 @@ Options:
                      refused, naming the cases.
   --shape <shape>    Which shape of run is pooled: with or without. Default ${DEFAULT_SHAPE}.
   --resamples <n>    How many resamples the bootstrap takes. Default ${DEFAULT_RESAMPLES}.
-  --seed <n>         The seed the bootstrap is drawn under, printed beside the interval so the
-                     same interval is drawn again. Default ${DEFAULT_SEED}.
+  --seed <n>         The seed the bootstrap is drawn under, printed beside the intervals so the
+                     same ones are drawn again. Default ${DEFAULT_SEED}.
   --out <dir>        Where pool-runs.json and pool-runs.md are written. An absolute path
                      outside this repository's workspace.
 
@@ -212,12 +241,16 @@ export interface PooledCase {
 }
 
 /**
- * The bootstrap interval where it was read: the bounds the tails of the resample means give.
- * `read` is what tells it from the reading that has no interval, in the markdown and in the
- * JSON alike, as it is of the t reading below.
+ * The bootstrap interval where it was read, at the level it was read at: the bounds the tails
+ * of the resample means give, and the two-sided level those tails were taken at. `read` is what
+ * tells it from the reading that has no interval, in the markdown and in the JSON alike, as it
+ * is of the t reading below, and `confidence` is what tells a reader of either which level
+ * these bounds are.
  */
 export interface BootstrapRead extends Interval {
   read: true;
+  /** The two-sided level these bounds were read at, which the line beside them names. */
+  confidence: number;
 }
 
 /**
@@ -230,33 +263,41 @@ export interface BootstrapRead extends Interval {
  */
 export interface Unread {
   read: false;
+  /** The two-sided level this reading would have been read at, had it been read at all. */
+  confidence: number;
   /** No lower bound: minus infinity, which the JSON carries as null. */
   lower: number;
   /** No upper bound: plus infinity, which the JSON carries as null. */
   upper: number;
-  /** Why there is no interval, in the words the record prints in place of one. */
+  /**
+   * Why there is no interval, in the words the record prints after naming the levels it was
+   * not read at. The level is this reading's own `confidence`, so a program holding one of
+   * these alone holds both the reason and the level it holds of.
+   */
   noInterval: string;
 }
 
 /**
- * The bootstrap interval of the mean, or what it lacks where the means drawn bound nothing of
- * the estimate: both tails of them fall to one side of it, which one resample does whenever
- * the one mean it draws is not the estimate itself, one resample being one mean and both tails
- * being then that one draw. Cases that differ make that possible rather than certain, and one
- * case-level difference never does it. An interval that excludes the estimate it is printed
- * beside is a measurement to read and a wrong one, so the reading then carries no bounds at
- * all and says why in the words the record prints in their place.
+ * The bootstrap interval of the mean at one level, or what it lacks where the means drawn bound
+ * nothing of the estimate: both tails of them fall to one side of it, which one resample does
+ * whenever the one mean it draws is not the estimate itself, one resample being one mean and
+ * both tails being then that one draw. Cases that differ make that possible rather than
+ * certain, and one case-level difference never does it. An interval that excludes the estimate
+ * it is printed beside is a measurement to read and a wrong one, so the reading then carries no
+ * bounds at all and says why in the words the record prints in their place.
  */
 export type BootstrapReading = BootstrapRead | Unread;
 
 /**
- * The t interval where it was read: the bounds, and the degrees of freedom the quantile was
- * taken on. `read` is what tells it from the reading that has no interval, in the markdown and
- * in the JSON alike, so neither a person nor a program meets a bound without meeting whether
- * it was measured.
+ * The t interval where it was read, at the level it was read at: the bounds, the two-sided
+ * level, and the degrees of freedom the quantile was taken on. `read` is what tells it from the
+ * reading that has no interval, in the markdown and in the JSON alike, so neither a person nor
+ * a program meets a bound without meeting whether it was measured and which level it is.
  */
 export interface TRead extends Interval {
   read: true;
+  /** The two-sided level the quantile was taken at, which the line beside it names. */
+  confidence: number;
   /** The degrees of freedom of the quantile, which is one less than the differences read. */
   freedom: number;
 }
@@ -291,12 +332,23 @@ export interface Pooling {
   /** How many runs each case carries, which every case carries equally or the runs are refused. */
   runsPerCase: number;
   difference: number;
-  confidence: number;
-  /** The bootstrap interval of the estimate, or what it lacks where the means drawn miss it. */
+  /**
+   * The bootstrap interval of the estimate at the level `LEVELS` states first, or what it
+   * lacks where the means drawn miss the estimate.
+   */
   bootstrap: BootstrapReading;
+  /**
+   * That same draw read at the wider level stated beside it: the same resample means under the
+   * same seed, with the tails taken further out, so the two differ by the level and by nothing
+   * else.
+   */
+  bootstrapWider: BootstrapReading;
   resamples: number;
   seed: number;
+  /** The t interval of that same estimate at the level `LEVELS` states first. */
   t: TReading;
+  /** That same mean and standard error read at the wider level, the quantile alone differing. */
+  tWider: TReading;
   spread: Spread;
   /** How many cases the two arms differed on in at least one run. */
   differedInSomeRun: number;
@@ -470,7 +522,7 @@ function caseListOf(runs: readonly RunOutcomes[]): string[] {
 /**
  * The mean of a sample, summed in the order given. Every mean this file reads of the
  * case-level differences is taken here: the estimate `pooledOf` prints, the estimate
- * `bootstrapInterval` reads its bounds against, and the means `tInterval` and `spreadOf`
+ * `bootstrapIntervals` reads its bounds against, and the means `tIntervals` and `spreadOf`
  * build their own numbers on. The bootstrap's branch turns on whether its bounds fall either
  * side of the estimate the record prints, so taking both from one place is what makes them
  * the same number bit for bit.
@@ -499,30 +551,31 @@ function atThisCount(resamples: number, size: number, seed: number): string {
 }
 
 /**
- * The paired bootstrap interval of the mean of `differences`: `resamples` resamples of the
- * cases themselves, with replacement, each giving one mean, with each tail taking half of what
- * `confidence` leaves. The same seed over the same differences draws the same interval, which
- * is what makes the seed worth printing beside it.
+ * The paired bootstrap intervals of the mean of `differences`, one per level of `levels`:
+ * `resamples` resamples of the cases themselves, with replacement, each giving one mean, with
+ * each tail of each level taking half of what that level leaves. The resamples are drawn once
+ * and every level is a pair of quantiles of those same means, so the two levels differ by the
+ * level and by nothing else; the same seed over the same differences draws them all again,
+ * which is what makes the seed worth printing beside them.
  *
- * Where both those tails fall to one side of that mean they are the interval of no number the
- * record prints, and a reader meets them beside the mean they exclude. `--resamples 1` is an
- * input the command takes and does this whenever the one mean it draws is not that mean — one
- * resample is one mean, and both tails are then that one draw — which cases that differ make
- * possible rather than certain and which one case-level difference never does. What comes back
- * then says it was not read, and carries no bound a reader could take for a measurement.
+ * Where both tails of a level fall to one side of that mean they are the interval of no number
+ * the record prints, and a reader meets them beside the mean they exclude. `--resamples 1` is
+ * an input the command takes and does this at every level whenever the one mean it draws is not
+ * that mean — one resample is one mean, and both tails of every level are then that one draw —
+ * which cases that differ make possible rather than certain and which one case-level difference
+ * never does. What comes back for such a level says it was not read, and carries no bound a
+ * reader could take for a measurement.
  */
-export function bootstrapInterval(
+export function bootstrapIntervals(
   differences: readonly number[],
   resamples: number,
   seed: number,
-  confidence: number = DEFAULT_CONFIDENCE
-): BootstrapReading {
+  levels: readonly number[] = LEVELS
+): BootstrapReading[] {
   const size = differences.length;
   if (size === 0 || resamples === 0) {
-    return {
-      ...NO_BOUNDS,
-      noInterval: `${atThisCount(resamples, size, seed)}: no mean was drawn to take a tail of`,
-    };
+    const noInterval = `${atThisCount(resamples, size, seed)}: no mean was drawn to take a tail of`;
+    return levels.map((confidence) => ({ ...NO_BOUNDS, confidence, noInterval }));
   }
   // The estimate the bounds are read against, taken as `pooledOf` takes the one it prints.
   const mean = meanOf(differences);
@@ -536,20 +589,24 @@ export function bootstrapInterval(
     means[resample] = total / size;
   }
   means.sort();
-  const tail = (1 - confidence) / 2;
-  const lower = quantileOf(means, tail);
-  const upper = quantileOf(means, 1 - tail);
-  if (lower > mean || upper < mean) {
-    return {
-      ...NO_BOUNDS,
-      noInterval:
-        `${atThisCount(resamples, size, seed)}: the tails of the means drawn both fall ` +
-        `${lower > mean ? "above" : "below"} the estimate of ${signed(mean)}, so they bound ` +
-        "those means and not the estimate they would be printed beside, which more resamples " +
-        "would reach",
-    };
-  }
-  return { read: true, lower, upper };
+  // One draw, read at each level: what follows takes quantiles of it and draws nothing.
+  return levels.map((confidence): BootstrapReading => {
+    const tail = (1 - confidence) / 2;
+    const lower = quantileOf(means, tail);
+    const upper = quantileOf(means, 1 - tail);
+    if (lower > mean || upper < mean) {
+      return {
+        ...NO_BOUNDS,
+        confidence,
+        noInterval:
+          `${atThisCount(resamples, size, seed)}: the tails of the means drawn both fall ` +
+          `${lower > mean ? "above" : "below"} the estimate of ${signed(mean)}, so they bound ` +
+          "those means and not the estimate they would be printed beside, which more resamples " +
+          "would reach",
+      };
+    }
+    return { read: true, confidence, lower, upper };
+  });
 }
 
 /**
@@ -572,39 +629,42 @@ function tQuantile(confidence: number, freedom: number): number {
 }
 
 /**
- * The t interval of the mean of `differences`, on the standard error of those same
- * differences. It is printed beside the bootstrap interval so that a reader sees the two agree
- * or not: they are two readings of one quantity, and a reader told only one of them cannot tell
- * whether the shape of the differences made the difference.
+ * The t intervals of the mean of `differences`, one per level of `levels`, on the standard
+ * error of those same differences. They are printed beside the bootstrap ones so that a reader
+ * sees the two agree or not: they are two readings of one quantity, and a reader told only one
+ * of them cannot tell whether the shape of the differences made the difference. One mean and
+ * one standard error are taken for every level, and only the quantile differs, so the two
+ * levels are comparable here as they are of the bootstrap.
  *
- * Under `T_LEAST` differences there is no interval to read, and what comes back says so: the
- * reading carries `read: false` and the words the record prints in place of a pair of numbers.
- * A caller reading a bound off it reads no bound at all rather than a zero, since a pair of
- * zeros is a measurement to look at and, over a difference of +1.000, one that excludes the
- * estimate it was printed beside.
+ * Under `T_LEAST` differences there is no interval to read at any level, and what comes back
+ * says so: every level carries `read: false` and the words the record prints in place of a pair
+ * of numbers. A caller reading a bound off one of them reads no bound at all rather than a
+ * zero, since a pair of zeros is a measurement to look at and, over a difference of +1.000, one
+ * that excludes the estimate it was printed beside.
  */
-export function tInterval(
+export function tIntervals(
   differences: readonly number[],
-  confidence: number = DEFAULT_CONFIDENCE
-): TReading {
+  levels: readonly number[] = LEVELS
+): TReading[] {
   const size = differences.length;
   if (size < T_LEAST) {
-    return {
-      ...NO_BOUNDS,
-      freedom: size - 1,
-      noInterval:
-        `no interval at this count (${counted(size, "case-level difference")}, ` +
-        `${T_LEAST} needed): a standard error needs two differences, and Student t is not ` +
-        "defined below one degree of freedom",
-    };
+    const freedom = size - 1;
+    const noInterval =
+      `no interval at this count (${counted(size, "case-level difference")}, ` +
+      `${T_LEAST} needed): a standard error needs two differences, and Student t is not ` +
+      "defined below one degree of freedom";
+    return levels.map((confidence) => ({ ...NO_BOUNDS, confidence, freedom, noInterval }));
   }
   const mean = meanOf(differences);
   const variance =
     differences.reduce((total, one) => total + (one - mean) * (one - mean), 0) / (size - 1);
   const error = Math.sqrt(variance / size);
   const freedom = size - 1;
-  const half = tQuantile(confidence, freedom) * error;
-  return { read: true, lower: mean - half, upper: mean + half, freedom };
+  // One mean and one standard error, read at each level: only the quantile below changes.
+  return levels.map((confidence): TReading => {
+    const half = tQuantile(confidence, freedom) * error;
+    return { read: true, confidence, lower: mean - half, upper: mean + half, freedom };
+  });
 }
 
 /** How far the runs' own differences spread, which is the variation the bootstrap holds fixed. */
@@ -627,7 +687,6 @@ export function spreadOf(runs: readonly RunReading[]): Spread {
 export interface PoolOptions {
   resamples?: number;
   seed?: number;
-  confidence?: number;
   shape?: Shape;
 }
 
@@ -637,12 +696,7 @@ export interface PoolOptions {
  * measured and how far those measurements spread.
  */
 export function pooledOf(runs: readonly RunOutcomes[], options: PoolOptions = {}): Pooling {
-  const {
-    resamples = DEFAULT_RESAMPLES,
-    seed = DEFAULT_SEED,
-    confidence = DEFAULT_CONFIDENCE,
-    shape = DEFAULT_SHAPE,
-  } = options;
+  const { resamples = DEFAULT_RESAMPLES, seed = DEFAULT_SEED, shape = DEFAULT_SHAPE } = options;
   const caseIds = caseListOf(runs);
   const cases: PooledCase[] = caseIds.map((caseId) => {
     const outcomes = runs.map((run) => run.cases.get(caseId) as ArmOutcome);
@@ -661,17 +715,22 @@ export function pooledOf(runs: readonly RunOutcomes[], options: PoolOptions = {}
   });
   const differences = cases.map((one) => one.difference);
   const readings = runs.map(runReadingOf);
+  // One draw read at both levels, and one mean and one standard error read at both: each pair
+  // comes back in the order `LEVELS` states its levels, narrowest first.
+  const [bootstrap, bootstrapWider] = bootstrapIntervals(differences, resamples, seed);
+  const [t, tWider] = tIntervals(differences);
   return {
     shape,
     runs: readings,
     cases,
     runsPerCase: runs.length,
     difference: meanOf(differences),
-    confidence,
-    bootstrap: bootstrapInterval(differences, resamples, seed, confidence),
+    bootstrap,
+    bootstrapWider,
     resamples,
     seed,
-    t: tInterval(differences, confidence),
+    t,
+    tWider,
     spread: spreadOf(readings),
     differedInSomeRun: cases.filter((one) => one.differed).length,
   };
@@ -764,6 +823,12 @@ export interface RecordJson {
  * interval, and `null` for each bound, which is what JSON holds of an infinity and is the one
  * thing a bound that bounds nothing can be. So a program reading this file alone tells an
  * absent interval from a measured one by `read`, and never by a pair of zeros.
+ *
+ * Every reading carries both levels, as the markdown states both: `bootstrap` and `t` carry the
+ * level stated first, `bootstrapWider` and `tWider` carry that same draw at the wider level,
+ * and each of the four carries the two-sided `confidence` it was read at. So a program reading
+ * this file alone tells which bounds are which level off the reading that holds them, and never
+ * off the name of its field alone.
  */
 export function recordJson(record: PooledRecord): RecordJson {
   return {
@@ -962,33 +1027,97 @@ function checkoutLines(record: PooledRecord): string[] {
   return lines;
 }
 
-/** The estimate and both of its intervals, in the three lines each reading prints them in. */
+/** One level as every line that states an interval at it names it. */
+function atLevel(confidence: number): string {
+  return `two-sided at ${Math.round(confidence * 100)} per cent`;
+}
+
+/**
+ * The levels one interval was not read at, as the line that says so names them: all of them in
+ * one sentence, since a reading read at neither level was read at neither for one reason.
+ */
+function levelsSay(levels: readonly number[]): string {
+  const said = levels.map((one) => `at ${Math.round(one * 100)} per cent`);
+  const last = said.pop() ?? "";
+  return said.length === 0 ? `${last} two-sided` : `${said.join(", ")} and ${last} two-sided alike`;
+}
+
+/**
+ * What the levels of one interval that were not read say, which is one sentence for all of
+ * them: they are named together and the reason is given once. Null where every level was read,
+ * which is where that sentence has nothing to say.
+ */
+function absentSays(readings: readonly (BootstrapReading | TReading)[]): string | null {
+  const unread = readings.filter((one): one is Unread => !one.read);
+  const first = unread[0];
+  if (first === undefined) return null;
+  return `${levelsSay(unread.map((one) => one.confidence))}, ${first.noInterval}`;
+}
+
+/**
+ * The bootstrap of one reading, in one statement per level read and one for the levels not
+ * read. The first statement names the resamples and the seed the means were drawn under, and
+ * the second names them as those same resamples: one draw is read at both levels, and a reader
+ * told twice over where the numbers came from would be reading two draws.
+ */
+function bootstrapStatements(pooling: Pooling): string[] {
+  const levels = [pooling.bootstrap, pooling.bootstrapWider];
+  const said: string[] = [];
+  const absent = absentSays(levels);
+  if (absent !== null) said.push(absent);
+  levels.forEach((reading, at) => {
+    if (!reading.read) return;
+    const drawn =
+      at === 0
+        ? `from ${counted(pooling.resamples, "resample")} of the ` +
+          `${counted(pooling.cases.length, "case-level difference")} under seed ${pooling.seed}`
+        : `from those same ${counted(pooling.resamples, "resample")} under that same seed`;
+    said.push(`${span(reading)} ${atLevel(reading.confidence)}, ${drawn}`);
+  });
+  return said;
+}
+
+/**
+ * The t of one reading, in one statement per level read and one for the levels not read. A t
+ * interval is read at `T_LEAST` differences or more, so the noun it is read over here is always
+ * the plural one.
+ */
+function tStatements(pooling: Pooling): string[] {
+  const differences = counted(pooling.cases.length, "difference");
+  const said: string[] = [];
+  const absent = absentSays([pooling.t, pooling.tWider]);
+  if (absent !== null) said.push(absent);
+  for (const reading of [pooling.t, pooling.tWider]) {
+    if (!reading.read) continue;
+    said.push(
+      `${span(reading)} ${atLevel(reading.confidence)}, on those same ${differences}, ` +
+        `${counted(reading.freedom, "degree")} of freedom`
+    );
+  }
+  return said;
+}
+
+/** Each statement of one interval under the label that says which interval it is. */
+function labelled(label: string, statements: readonly string[]): string[] {
+  const head = `  ${label}`.padEnd(18);
+  return statements.map((says) => `${head}${says}`);
+}
+
+/**
+ * The estimate and both of its intervals, in the lines each reading states them in: the
+ * estimate, then the bootstrap at each level it was read at, then the t at each of its own.
+ * Every line that carries a pair of bounds names the level and the sidedness of that pair where
+ * the pair is, and a level that could not be read says what it lacks in place of its bounds: a
+ * pair of numbers there is a measurement to read, and one that excludes the estimate above it.
+ */
 function estimateLines(pooling: Pooling): string[] {
-  const cases = pooling.cases.length;
-  const percent = `${Math.round(pooling.confidence * 100)} per cent`;
   // A reading over one run is that run's own reading, and calling it pooled would dress it as
   // a pooling of several that it is not.
   const named = (pooling.runs.length === 1 ? "difference" : "pooled difference").padEnd(17);
-  const bootstrap = pooling.bootstrap;
-  // Each interval line is a pair of numbers only where that interval was read. Where it was
-  // not, the line says what it lacks in its place: a pair of numbers there is a measurement to
-  // read, and one that excludes the estimate above it.
-  const bootstrapSays = bootstrap.read
-    ? `${span(bootstrap)} at ${percent}, from ` +
-      `${counted(pooling.resamples, "resample")} of the ` +
-      `${counted(cases, "case-level difference")} under seed ${pooling.seed}`
-    : bootstrap.noInterval;
-  const t = pooling.t;
-  // A t interval is read at `T_LEAST` differences or more, so the noun it is read over here
-  // is always the plural one.
-  const tSays = t.read
-    ? `${span(t)} at ${percent}, on those same ` +
-      `${counted(cases, "difference")}, ${counted(t.freedom, "degree")} of freedom`
-    : t.noInterval;
   return [
-    `${named} ${signed(pooling.difference)} over ${counted(cases, "case")}`,
-    `  bootstrap       ${bootstrapSays}`,
-    `  t interval      ${tSays}`,
+    `${named} ${signed(pooling.difference)} over ${counted(pooling.cases.length, "case")}`,
+    ...labelled("bootstrap", bootstrapStatements(pooling)),
+    ...labelled("t interval", tStatements(pooling)),
   ];
 }
 
