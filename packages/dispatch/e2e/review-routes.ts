@@ -24,6 +24,10 @@ export interface ReviewSeed {
   readonly broadcast: string;
   readonly projectDocumentSlug: string;
   readonly issueArtifactSlug: string;
+  /** The priority `/priorities/:id` is opened on: the one `e2e/review-seed.ts` writes, which
+   *  carries work in flight under it and work parked under it, so both pages draw rows rather
+   *  than the sentence a deployment that has written no priority draws. */
+  readonly priority: string;
   /** The `from=…&to=…` query string, without the leading "?". */
   readonly deliveryQuery: string;
   /** The `?at=` value the Pipeline page pins its seven days to. */
@@ -295,6 +299,49 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // `artifact-header` is drawn while the editor still says "Connecting to the document…",
     // and `ArtifactHeader.tsx` draws the dot inside that header.
     ready: (page) => [page.getByRole("status", { name: "connected" })],
+  },
+  {
+    kind: "reviewed",
+    layers: bothLayers,
+    name: "priorities",
+    path: () => "/priorities",
+    pattern: "/priorities",
+    // Three facts, because the page draws three tables out of one read and a heading proves
+    // none of them: the page's own heading and both fault headings are on the screen while
+    // that read is still out, over `Loading priorities`
+    // (`web/src/features/priorities/PrioritiesPage.tsx`). So each locator is a row the seed
+    // wrote - the first priority of the order, the in-flight issue that advances none, and the
+    // parked issue that advances one - and together they say the priorities table and both
+    // fault lists have their rows rather than their empty words. The three issues are
+    // `e2e/review-seed.ts`'s, so a change to that corpus fails this row rather than a baseline.
+    ready: (page) => [
+      page.getByRole("table", { name: "Priorities table" }).getByRole("row", { name: /^P1 / }),
+      page
+        .getByRole("table", { name: "In flight under no priority" })
+        .getByRole("row", { name: /Broadcast recipients keep their send order/ }),
+      page
+        .getByRole("table", { name: "Priority work in backlog or icebox" })
+        .getByRole("row", { name: /Agents page freshness folds/ }),
+    ],
+  },
+  {
+    kind: "reviewed",
+    layers: bothLayers,
+    name: "priority",
+    path: (seed) => `/priorities/${seed.priority}`,
+    pattern: "/priorities/:id",
+    // The title field, which is drawn with the priority itself and not with the skeleton; the
+    // margin's first act, which arrives with the history read beside it rather than with the
+    // page; and the work table's row for the in-flight issue the seed places under this
+    // priority, which is a second read again (`advancesIssuesQuery`). A page read on the title
+    // alone would be a page whose margin and whose work are both still empty boxes.
+    ready: (page) => [
+      page.getByRole("textbox", { name: "Title" }),
+      page.getByRole("complementary", { name: "Margin" }).getByRole("listitem").first(),
+      page
+        .getByRole("table", { name: "Project issues table" })
+        .getByRole("row", { name: /Local testing workflow for Dispatch/ }),
+    ],
   },
   {
     kind: "reviewed",

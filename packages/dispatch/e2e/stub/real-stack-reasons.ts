@@ -217,6 +217,8 @@ export const realStackReasons: Record<string, string> = {
     "the command bar's own search reads `/api/v1/search`, and the inbox peek lists the asks the server holds for the reader",
   "polish.e2e.ts": "opens the margin ask composer on the live document",
   "prefix-links.e2e.ts": "`sql`-forged id twins and the server's short-id resolution",
+  "priorities.e2e.ts":
+    "every row reads what the server decides about a priority: the two faults are its own queries over statuses and the `advances` tuples, a priority a child inherits is its walk down the parent chain, each write is read back out of the store after a reload, the margin is the history the server answers, and the rail's count falls under an open page with no reload",
   "progress.e2e.ts":
     "it asserts the progress the server computes over an issue's children before it opens a page",
   "project.e2e.ts": "the reference closure is the server's graph walk",
