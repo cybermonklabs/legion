@@ -7,8 +7,11 @@
  * than read as one of them: a run that meant two processes and got one passes every spec that
  * cannot tell them apart. `e2e/run-server.sh` refuses it the same way.
  *
- * Like `e2e/harness-ports.ts`, which imports it, this module reads only the environment and opens
- * nothing, so every process in `e2e/` may import it, and each refuses a bad value alike.
+ * Like `e2e/harness-ports.ts`, which imports it, this module reads only the environment, so every
+ * process in `e2e/` may import it and each refuses a bad value alike. Two of its helpers read a
+ * file as well: `webDistOf` names a build's dist and `entryChunkOf` reads the entry chunk that
+ * dist's `index.html` names, which the two multiprocess specs share rather than each deciding for
+ * itself.
  */
 
 import { readFileSync } from "node:fs";
@@ -56,7 +59,10 @@ export const binaryB = process.env.DISPATCH_E2E_BINARY_B
  *  build it is what the harness was told to serve (`DISPATCH_E2E_WEB_DIST_B`, a path from
  *  packages/envoy, as e2e/harness-listeners.ts hands it to run-server.sh), and A's dist where that
  *  is unset, which is the default run-server.sh itself takes. One place decides this, so a spec
- *  reading a page's own build and the harness serving it never disagree. */
+ *  that reads a page's own build reads the same answer as the one the harness was told, where the
+ *  caller gave the harness that same value: it is the rule both follow, not a check that they
+ *  agree, and a caller that hands run-server.sh some other dist is what the cross-build spec's own
+ *  assertion catches. */
 export function webDistOf(target: DispatchProcess): string {
   if (target === "a") return resolve(envoyDirectory, "../dispatch/web/dist");
   if (binaryB !== undefined) return resolve(dirname(binaryB), "web");

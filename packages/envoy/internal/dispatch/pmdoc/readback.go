@@ -632,7 +632,8 @@ func attributeDifference(want, got *Node, ignore skip) (string, any, any, bool) 
 	wanted, read := writtenAttrs(want), tokenAttrs(got.Type, got.Attrs)
 	// The capacity is a hint that only moves where a growth happens, so it names the written
 	// attributes alone rather than their sum with the read ones: a sum of two lengths is what
-	// the overflow check refuses, and the same keys are appended in the same order either way.
+	// CodeQL's go/allocation-size-overflow refuses, and the same keys are appended in the same
+	// order either way.
 	keys := make([]string, 0, len(wanted))
 	for key := range wanted {
 		keys = append(keys, key)

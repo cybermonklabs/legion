@@ -8,13 +8,9 @@ import (
 )
 
 // What the server README states of this package's own bounds, held to the constants that decide
-// them. The class this guards is the one dispatch://INFRA-558 met four times: a number the code
-// owns, written again in prose, with nothing holding the two together, so a raise leaves the
-// sentence a person reads behind while every test stays green.
-//
-// The reader is internal/docnumbers, which internal/dispatch/store registers its own connection
-// counts with; this is the second registration of it, and it is data: one entry per sentence,
-// naming the file, the pattern, the constant and what the number is of.
+// them: the candidates a pull request's attribution reads. The class and the reader are
+// internal/docnumbers' own documentation; what is here is the registration, one entry per
+// sentence.
 func TestTheServerReadmeStatesTheBoundsThisPackageHolds(t *testing.T) {
 	const readme = "packages/envoy/cmd/dispatch/README.md"
 	docnumbers.Check(t, filepath.Join("..", "..", "..", "..", ".."), []docnumbers.Stated{

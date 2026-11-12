@@ -163,8 +163,8 @@ func SetHeadingLevel(doc *Node, position, level int) (*Node, error) {
 	out := cloneNode(doc)
 	heading := nodeAtPath(out, target)
 	// The size of a map's make is a hint that nothing reads, so it names the attributes copied
-	// below rather than them and the level set after: a sum of a length is what the overflow
-	// check refuses, and the map holds the same entries either way.
+	// below rather than them and the level set after: a sum of a length is what CodeQL's
+	// go/allocation-size-overflow refuses, and the map holds the same entries either way.
 	attrs := make(Attrs, len(heading.Attrs))
 	for name, value := range heading.Attrs {
 		attrs[name] = value

@@ -64,18 +64,31 @@ func Check(t *testing.T, root string, stated []Stated) {
 		if err != nil {
 			t.Fatalf("read %s: %v", want.File, err)
 		}
-		matches := regexp.MustCompile(want.Pattern).FindAllStringSubmatch(string(body), -1)
-		if len(matches) == 0 {
+		text := string(body)
+		found := regexp.MustCompile(want.Pattern).FindAllStringSubmatchIndex(text, -1)
+		digits, word := strconv.Itoa(want.Number), asAWord(t, want.Number)
+		read := 0
+		for _, at := range found {
+			// The group has no left boundary of its own, because Go's regexp has no lookbehind
+			// and an entry's pattern usually ends in a space, which would eat the boundary. So
+			// the character before the number is read here: a letter, a digit or a hyphen means
+			// the pattern matched the tail of a longer token - "Four" of "Twenty-Four", "1" of
+			// "0-1" - which is the number of something else, and no match at all. A sentence
+			// that matched only that way then fails below as stating nothing this pattern
+			// reads, which is this reader saying the sentence it was told to read is not there
+			// rather than passing over a token it misread.
+			if start := at[2]; start > 0 && isTokenByte(text[start-1]) {
+				continue
+			}
+			read++
+			if said := text[at[2]:at[3]]; said != digits && !strings.EqualFold(said, word) {
+				t.Errorf("%s says %q of %s, want %s or %q: %s",
+					want.File, said, want.Says, digits, word, strings.TrimSpace(text[at[0]:at[1]]))
+			}
+		}
+		if read == 0 {
 			t.Errorf("%s states nothing this pattern reads, so the number it holds is unchecked: %s (%s)",
 				want.File, want.Pattern, want.Says)
-			continue
-		}
-		digits, word := strconv.Itoa(want.Number), asAWord(t, want.Number)
-		for _, match := range matches {
-			if said := match[1]; said != digits && !strings.EqualFold(said, word) {
-				t.Errorf("%s says %q of %s, want %s or %q: %s",
-					want.File, said, want.Says, digits, word, strings.TrimSpace(match[0]))
-			}
 		}
 	}
 }
@@ -106,5 +119,16 @@ func asAWord(t *testing.T, number int) string {
 		return tens[number/10]
 	default:
 		return tens[number/10] + "-" + ones[number%10]
+	}
+}
+
+// isTokenByte reports whether b continues a token to the left of a number: a letter, a digit, or
+// the hyphen that joins a spelled count's halves ("twenty-four").
+func isTokenByte(b byte) bool {
+	switch {
+	case b >= '0' && b <= '9', b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b == '-':
+		return true
+	default:
+		return false
 	}
 }

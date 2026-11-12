@@ -59,11 +59,11 @@ const builds: Record<DispatchProcess, string> = {
 
 const seedAgent = { kind: "session", id: "e2e-cross-build" } as const;
 
-/** packages/envoy, which `DISPATCH_E2E_BINARY_B` is a path from, and the directory
- *  build-dispatch-build.sh wrote that build into: the binary's own, which also holds the build's
- *  `pmdoc/schema/blocks.json` and its `web/` dist. */
+/** packages/envoy, and the directory build-dispatch-build.sh wrote the previous build into: the
+ *  binary's own, which also holds that build's `pmdoc/schema/blocks.json`. Its `web/` dist is
+ *  `webDistOf`'s to name, which this spec and e2e/two-builds.multiprocess.e2e.ts share. */
 const envoyDir = fileURLToPath(new URL("../../envoy", import.meta.url));
-const buildB = binaryB === undefined ? undefined : dirname(resolve(envoyDir, binaryB));
+const buildB = binaryB === undefined ? undefined : dirname(binaryB);
 
 /** The schema manifest version a build's server reads and admits a page by. */
 function manifestVersion(process: DispatchProcess): number {

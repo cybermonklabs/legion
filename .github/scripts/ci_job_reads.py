@@ -366,10 +366,17 @@ RULES = {
     f"{ENVOY}/internal/dispatch/store/counts_in_documents_test.go": reads(
         ("docs/site/src/content/docs/dispatch/running-dispatch.md",
          "internal/dispatch/store/counts_in_documents_test.go reads it: the connection counts it "
-         "states must equal store.LeasePoolSize and store.ConnectionsPerProcess"),
+         "states of this package's pools must equal the constants that decide them: "
+         "store.LeasePoolSize, store.ConnectionsPerProcess and every pool of the sum "
+         "(sharedPoolSize, RoomsPoolSize, roomAppendsPoolSize, compactionPoolSize, "
+         "healthPoolSize, outboxPoolSize, horizonPoolSize, registryPoolSize, listenerConnections)"),
         (".dispatch/architecture/dispatch-store.md",
-         "internal/dispatch/store/counts_in_documents_test.go reads it, for the same two counts, "
-         "which that document states in words")),
+         "internal/dispatch/store/counts_in_documents_test.go reads it, for the lease pool's own "
+         "count, which that document states in words")),
+    f"{ENVOY}/internal/dispatch/processes/counts_in_documents_test.go": reads(
+        ("docs/site/src/content/docs/dispatch/running-dispatch.md",
+         "internal/dispatch/processes/counts_in_documents_test.go reads it: the cadences it "
+         "states must equal processes.HeartbeatInterval and processes.LiveWindow")),
     f"{ENVOY}/internal/smoke/rdsbundle_test.go": [
         run(ENVOY, ["./internal/smoke/systemroots"], "internal/smoke/rdsbundle_test.go:36-41 cmdtest.BuildCommand ./systemroots CGO_ENABLED=0 GOOS=linux",
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"}),
