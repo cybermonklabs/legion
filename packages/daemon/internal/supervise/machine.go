@@ -1454,10 +1454,11 @@ func (m *Machine) unlock() {
 }
 
 // OnDurableState installs the daemon callback for the durable transitions it acts on: ready,
-// working and failed. Two of them are terminal for the workflow and one, working, is not: the
-// daemon reads a turn starting to stamp a woken pod's first turn. The callback runs after the
-// transition's claim write has succeeded, and a machine keeps one, so a daemon that observes
-// more than one of them observes them in that one callback.
+// working, idle and failed. Two of them are terminal for the workflow, and two are not: the
+// daemon reads a turn starting to stamp a woken pod's first turn, and a turn ending to take a
+// copy of the issue workspace's unpushed work. The callback runs after the transition's claim
+// write has succeeded, and a machine keeps one, so a daemon that observes more than one of them
+// observes them in that one callback.
 func (m *Machine) OnDurableState(callback func(Claim, ClaimState)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1479,10 +1480,10 @@ func (m *Machine) report(c Claim, state ClaimState) {
 // one order: the report follows the write, and a write the store did not take reports nothing
 // and owes the report instead, for whatever claim write lands next to make (oweDurableState,
 // settleOwedWrite). Every decision that reports a durable transition goes through here — the
-// turn that starts, the claim that is ready, the claim that failed — because the order is the
-// point and the owing works only on the error of the write it belongs to: a fourth caller that
-// wrote the three steps out itself and left the owing off would lose its report in silence,
-// which is the fault the mark exists to end.
+// turn that starts, the turn that ends, the claim that is ready, the claim that failed — because
+// the order is the point and the owing works only on the error of the write it belongs to: a
+// fifth caller that wrote the three steps out itself and left the owing off would lose its
+// report in silence, which is the fault the mark exists to end.
 //
 // write is the decision's own claim write: persist for most of them, and confirm for a turn
 // start that confirms the delivery whose turn it is.

@@ -97,14 +97,32 @@ type workflowRuntime struct {
 	controllerFirstWake time.Duration
 	// idlePeriod is how long an issue pod must have had no turn in progress and no turn due
 	// before the daemon releases it (runtime.kubernetes.idle_release.idle_minutes); zero turns
-	// release off, as `idle_minutes: 0` and every runtime but Kubernetes do. idleStore is the
-	// daemon's store, which holds the idle view and the release's mark, and idleImages the
-	// runtime's reading of an issue pod's image; both nil when release is off. idleTick is the
-	// tick's period, zero being idleTickInterval; a test shortens it.
+	// release off, as `idle_minutes: 0` and every runtime but Kubernetes do. idleImages is the
+	// runtime's reading of an issue pod's image, nil when release is off. idleTick is the tick's
+	// period, zero being idleTickInterval; a test shortens it.
+	//
+	// idleStore is the daemon's own store, which holds the idle view, the release's mark, the
+	// listener's liveness report and the running copies. It is the store of every tick and not
+	// release's alone, so attach sets it whatever the deployment releases, and what says release
+	// is off is idlePeriod and idleImages. It is nil only for a daemon built with no store at
+	// all, which is every hand-built workflowRuntime in a test.
 	idlePeriod time.Duration
 	idleStore  *store.Store
 	idleImages issuePodImages
 	idleTick   time.Duration
+	// copyBundler is the runtime's bundler of an issue workspace's unpushed work, which the
+	// cadence that keeps a copy of each workspace while its pod runs asks (tickWorkspaceCopies,
+	// copyWorkspaceAtTurnEnd). It is nil where the runtime implements no runtime.WorkspaceBundler
+	// — `runtime: tmux`, whose processes share the daemon's own disk — and the cadence then does
+	// nothing. copies is what that cadence holds in memory, one entry per issue it has copied.
+	//
+	// copyPeriod and copyBudget are the period between two copies of one issue and the budget one
+	// copy is given; zero means the production constants (runningCopyPeriod, runningCopyBudget).
+	// A test shortens both, as it shortens the ticks.
+	copyBundler runtime.WorkspaceBundler
+	copies      runningCopies
+	copyPeriod  time.Duration
+	copyBudget  time.Duration
 	// holdWarnAfter and holdWarnEvery bound the watchdog log a hold that never releases gets: zero
 	// means the production defaults. A test shortens both to bound how long the warning takes to
 	// observe.
@@ -857,10 +875,18 @@ func (w *workflowRuntime) enqueueOutbox(ctx context.Context, issue string, paylo
 }
 
 // attach gives the workflow what only supervision has: the outbox, built on its supervisor and
-// its runtime. The pace a paced catch-up's wake line names is the supervisor's own
-// (supervise.WakePace, the rate and the burst the machines are held to), which the outbox reads
-// through that supervisor where it writes the line (wakeRan); the limiter both lanes reserve
-// from was built before either of them (run).
+// its runtime, the daemon's store, and the runtime's bundler of an issue workspace. The pace a
+// paced catch-up's wake line names is the supervisor's own (supervise.WakePace, the rate and the
+// burst the machines are held to), which the outbox reads through that supervisor where it
+// writes the line (wakeRan); the limiter both lanes reserve from was built before either of them
+// (run).
+//
+// The store and the bundler are wired here and not in attachIdleRelease, which returns early
+// where the deployment releases no pod: the cadence that keeps a copy of each issue workspace
+// while its pod runs is no part of release (tickWorkspaceCopies). A deployment with
+// `idle_minutes: 0` releases nothing and still has pods the cluster can end under it, so it
+// takes the copies; what leaves the cadence with nothing to do is a runtime that bundles no
+// workspace, which is `runtime: tmux`.
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
@@ -868,6 +894,12 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, w.log)
 	w.outboxWake.Store(w.outbox)
+	w.idleStore = supervision.supervisor.store
+	if bundler, ok := supervision.supervisor.deps.Runtime.(runtime.WorkspaceBundler); ok {
+		w.copyBundler = bundler
+	} else {
+		w.log.Info("running copy: the runtime bundles no workspace, so no copy is kept of a running pod's work")
+	}
 	supervision.supervisor.OnDurableState(w.claimDurableState)
 	supervision.enqueue = w.enqueueOutbox
 	w.attachIdleRelease(supervision)
@@ -875,7 +907,8 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 
 // attachIdleRelease wires the idle tick, and leaves it off unless the deployment releases pods:
 // `runtime: kubernetes` with a non-zero idle_minutes, over a runtime that can say whether an
-// issue's pod runs the image the configuration names.
+// issue's pod runs the image the configuration names. The store every tick reads is attach's
+// (idleStore); what this decides is release itself.
 func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 	k := supervision.cfg.Runtime.Kubernetes
 	if supervision.cfg.Runtime.Name != "kubernetes" || k == nil || !k.IdleRelease.Releases() {
@@ -886,7 +919,7 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 		w.log.Warn("idle release: the runtime reads no pod image, so no pod is released")
 		return
 	}
-	w.idlePeriod, w.idleStore, w.idleImages = k.IdleRelease.Idle(), supervision.supervisor.store, images
+	w.idlePeriod, w.idleImages = k.IdleRelease.Idle(), images
 	w.outbox.backstop = k.IdleRelease.Backstop()
 }
 
@@ -996,11 +1029,19 @@ func (w *workflowRuntime) terminal(c supervise.Claim, state supervise.ClaimState
 }
 
 // claimDurableState is the daemon's one durable-state callback, because a supervisor keeps one
-// (supervisor.OnDurableState): a claim's ready and its failure are workflow facts (terminal), and
-// the same transitions measure a released pod's resume — its replacement pod is up at the first
-// ready, and the woken role took its work at the first turn (podResume).
+// (supervisor.OnDurableState). It reads four transitions:
+//
+//   - ready and failed are workflow facts (terminal);
+//   - ready and working measure a released pod's resume — its replacement pod is up at the first
+//     ready, and the woken role took its work at the first turn (podResume);
+//   - idle is a turn that ended, which is where a copy of the issue's workspace is taken
+//     (copyWorkspaceAtTurnEnd).
+//
+// It runs on the machine's own goroutine, so what it does with a transition is either a write of
+// its own (terminal, whose fact the daemon's boot replays when it fails) or a goroutine's.
 func (w *workflowRuntime) claimDurableState(c supervise.Claim, state supervise.ClaimState) {
 	w.podResume(c, state)
+	w.copyWorkspaceAtTurnEnd(c, state)
 	if state == supervise.StateReady || state == supervise.StateFailed {
 		w.terminal(c, state)
 	}
@@ -1076,6 +1117,10 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 	})
 	group.Go(func() error {
 		w.tickWakes(running)
+		return nil
+	})
+	group.Go(func() error {
+		w.tickWorkspaceCopies(running)
 		return nil
 	})
 	group.Go(func() error {

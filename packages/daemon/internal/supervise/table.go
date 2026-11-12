@@ -1712,6 +1712,17 @@ func (m *Machine) takeBackSignal(ownTask bool) {
 // says in its own words what became of the turn, and the pair of turn lines is the turn the
 // worker ran.
 //
+// The claim going idle is reported to the daemon as a durable transition of its own
+// (durableWrite, OnDurableState), as the turn's start is: the daemon takes the copy of the
+// issue's workspace that ends each turn from it (internal/daemon's copyWorkspaceAtTurnEnd), and
+// the work of a turn is in the workspace from the moment the turn ends. The report follows the
+// claim write, so a turn whose write the database did not take owes the report instead and makes
+// it when the write lands (oweDurableState, makeOwedReports); a copy taken of a turn the row
+// never recorded would tell the daemon a claim fact its store cannot say. Both writes of this
+// function that leave the claim idle go through it — the ordinary one and the fallback of a held
+// suspension whose stop the runtime refused, which leaves the claim idle holding that suspension
+// — because the claim is durably idle either way and the copy is owed either way.
+//
 // answerByTurnEnd runs first of all, before the marks it reads are cleared (askFirst, unseenTurn).
 //
 // A claim working because its session is being compacted is left exactly where it is: a
@@ -1741,12 +1752,12 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 				return err
 			}
 			m.claim.State = StateIdle
-			return errors.Join(err, m.persist(ctx))
+			return errors.Join(err, m.durableWrite(ctx, StateIdle, m.persist))
 		}
 		return nil
 	}
 	m.claim.State = StateIdle
-	if err := m.persist(ctx); err != nil {
+	if err := m.durableWrite(ctx, StateIdle, m.persist); err != nil {
 		return err
 	}
 	if err := m.settle(ctx); err != nil {

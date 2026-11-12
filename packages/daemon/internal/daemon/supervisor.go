@@ -40,7 +40,7 @@ type supervisor struct {
 	// it (supervision.start), since a relaunched worker's hello would wait for the relaunch itself.
 	restored chan struct{}
 	// durableState is the one callback every machine of this supervisor reports its durable
-	// transitions to (supervise.Machine.OnDurableState): ready, working and failed.
+	// transitions to (supervise.Machine.OnDurableState): ready, working, idle and failed.
 	durableState func(supervise.Claim, supervise.ClaimState)
 
 	mu       sync.RWMutex

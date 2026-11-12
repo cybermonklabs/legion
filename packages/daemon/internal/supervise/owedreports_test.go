@@ -108,13 +108,15 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 		}
 		// No prompt result follows this turn's end, so the task is still the claim's and the
 		// repair still owes both rows; the claim goes idle, then its agent starts a turn of its
-		// own, which confirms nothing and whose claim-only write lands.
+		// own, which confirms nothing and whose claim-only write lands. The turn's end is a
+		// durable transition of its own (turnEnded): its claim write lands, so it makes the
+		// owed working first and then reports the idle it wrote.
 		_ = h.handleQuiet(StreamTurnEnd{Claim: testToken})
 		h.wantState(StateIdle)
 		h.must(StreamTurnStart{Claim: testToken})
 		h.wantState(StateWorking)
-		if seen := states(reports()); !slices.Equal(seen, []ClaimState{StateReady, StateWorking, StateWorking}) {
-			t.Fatalf("the daemon was told %v, want the ready, the confirmation's owed working, and the foreign turn's own", seen)
+		if seen := states(reports()); !slices.Equal(seen, []ClaimState{StateReady, StateWorking, StateIdle, StateWorking}) {
+			t.Fatalf("the daemon was told %v, want the ready, the confirmation's owed working, the turn's end, and the foreign turn's own", seen)
 		}
 		if h.m.owedWrite != nil {
 			t.Fatal("the claim write that landed left the write owed; a landing claim write is the repair")
@@ -123,7 +125,7 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 		h.store.fail("PutDelivery", nil)
 		h.observe(runtime.Alive)
 
-		if seen := states(reports()); !slices.Equal(seen, []ClaimState{StateReady, StateWorking, StateWorking}) {
+		if seen := states(reports()); !slices.Equal(seen, []ClaimState{StateReady, StateWorking, StateIdle, StateWorking}) {
 			t.Fatalf("the daemon was told %v; the owed report was made when the claim write landed, and nothing is owed since", seen)
 		}
 	})
@@ -241,10 +243,11 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 			t.Fatal("the turn start whose write failed returned no error")
 		}
 		h.wantState(StateWorking)
-		// A second decision fails under the same outage and owes a report of its own: the mark
-		// is still one, and the reports it holds are two, which is what the count on the drop's
-		// line is of. The turn end between them owes no report — idle is no transition the
-		// daemon is told — and its write fails with the rest.
+		// Two more decisions fail under the same outage, each owing a report of its own: the
+		// mark is still one, and the reports it holds are three, which is what the count on the
+		// drop's line is of. The turn end between the two starts owes one as well — the turn's
+		// end is a durable transition the daemon is told (turnEnded) — and its write fails with
+		// the rest.
 		if err := h.handleQuiet(StreamTurnEnd{Claim: testToken}); err == nil {
 			t.Fatal("the turn end whose write failed returned no error")
 		}
@@ -255,8 +258,8 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 		if h.m.owedWrite == nil {
 			t.Fatal("the failed turn starts left no mark; the working reports they owe are what this row drops")
 		}
-		if held := len(h.m.owedWrite.reports); held != 2 {
-			t.Fatalf("the mark holds %d reports, want the two working transitions whose writes failed", held)
+		if held := len(h.m.owedWrite.reports); held != 3 {
+			t.Fatalf("the mark holds %d reports, want the two working transitions and the turn end whose writes failed", held)
 		}
 		written := len(h.records.of(owedWriteLine))
 
@@ -298,8 +301,8 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 		}
 		// The reports went with the mark, and this line is the only record that they did: it
 		// says how many of them the write was holding (R6).
-		if got, ok := line.attr("droppedReports"); !ok || got.Int64() != 2 {
-			t.Fatalf("the line reads droppedReports %v (present %v), want 2: the reports the dropped write held", got, ok)
+		if got, ok := line.attr("droppedReports"); !ok || got.Int64() != 3 {
+			t.Fatalf("the line reads droppedReports %v (present %v), want 3: the reports the dropped write held", got, ok)
 		}
 
 		// The decision went on to its own row rather than being dropped behind the refusal.
@@ -310,16 +313,18 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 			t.Fatalf("pending = %+v, want the task the deliver carried: the event was applied, not dropped", p)
 		}
 
-		// Nor does a later write make them true. The store takes claim writes again, the turn
-		// ends, that write lands, and the daemon is told nothing of what the drop took.
+		// Nor does a later write make them true. The store takes claim writes again and the
+		// turn ends; that write lands, so the daemon is told the idle this turn's end wrote and
+		// nothing of what the drop took.
 		h.store.fail("PutClaim", nil)
 		h.mustQuiet(StreamTurnEnd{Claim: testToken})
 		h.wantState(StateIdle)
 		if stored := h.store.load(testToken); stored.State != StateIdle {
 			t.Fatalf("the turn's end stored %s, want idle: this row needs a later write that lands", stored.State)
 		}
-		if seen := states(reports()); !slices.Equal(seen, []ClaimState{StateReady}) {
-			t.Fatalf("the daemon was told %v after a write that landed; the dropped reports are gone for good", seen)
+		if seen := states(reports()); !slices.Equal(seen, []ClaimState{StateReady, StateIdle}) {
+			t.Fatalf("the daemon was told %v after a write that landed, want the ready and this turn's own end; "+
+				"the dropped reports are gone for good", seen)
 		}
 	})
 
@@ -343,10 +348,12 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 		h.observe(runtime.Alive)
 
 		seen := reports()
-		if states := states(seen); !slices.Equal(states, []ClaimState{StateReady, StateWorking}) {
-			t.Fatalf("the daemon was told %v, want ready then the owed working", states)
+		if states := states(seen); !slices.Equal(states, []ClaimState{StateReady, StateWorking, StateIdle}) {
+			t.Fatalf("the daemon was told %v, want ready then the owed working and the owed end of that turn", states)
 		}
-		owed := seen[len(seen)-1]
+		// The working one: the turn's end owed a report of its own, and what this row reads is
+		// the claim each report carries rather than how many there are.
+		owed := seen[1]
 		if owed.claim.State != StateWorking {
 			t.Fatalf("the owed report carries a claim reading %s, want the working claim of the decision that owed it", owed.claim.State)
 		}

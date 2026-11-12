@@ -155,8 +155,14 @@ func (w *workflowRuntime) stuckResumeStep(ctx context.Context, resume store.PodR
 //
 // It is a supervisor terminal callback, so it runs on the machine's own goroutine and must not
 // block it; a failed stamp is logged and the resume keeps its zero time.
+//
+// It stamps nothing where the deployment releases no pod (idlePeriod): no pod of it was ever
+// released, so no resume of one is open, and the read that would find none is a read per
+// transition of every claim. The store alone no longer says that — it is the store of every tick
+// now, release's and the running copies' (workflowRuntime.attach) — so the period is what this
+// asks.
 func (w *workflowRuntime) podResume(c supervise.Claim, state supervise.ClaimState) {
-	if w.idleStore == nil || c.Issue == "" || c.Role == claim.RoleController {
+	if w.idlePeriod <= 0 || w.idleStore == nil || c.Issue == "" || c.Role == claim.RoleController {
 		return
 	}
 	mark, what := w.idleStore.MarkPodResumeReady, "ready"
