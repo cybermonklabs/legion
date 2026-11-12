@@ -82,8 +82,8 @@ type IssueSummary struct {
 	// ResolvedRepo is the repository (owner/name) Dispatch resolves the issue to: its own, else its
 	// nearest ancestor's, else its project's default; empty when it resolves to none.
 	ResolvedRepo string
-	// BlockedBy is the keys of the issues, in this issue's own project, that this issue waits on,
-	// in the order Dispatch lists them; none when it waits on nothing.
+	// BlockedBy is the keys of the issues that this issue waits on, in the order Dispatch lists
+	// them; none when it waits on nothing. A key may belong to another project.
 	BlockedBy []string
 	// ClaimedBy is who Dispatch shows holding the issue's claim, as Claim.Holder writes it, or
 	// empty for nobody. ClaimUnread says Dispatch showed a claim naming no actor: neither nobody

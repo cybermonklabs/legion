@@ -558,7 +558,7 @@ export const dispatchToolSpecs = [
       blocked_by: z
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_BLOCKERS })
         .describe(
-          "Issue keys in the same project this issue waits on. Dispatch refuses a dependency cycle."
+          "Issue keys this issue waits on; a key of any project, so work tracked elsewhere can be named. Dispatch refuses a dependency cycle."
         )
         .optional(),
       external: z.string().describe("Optional external issue reference.").optional(),
@@ -687,7 +687,7 @@ export const dispatchToolSpecs = [
       blocked_by: z
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_BLOCKERS })
         .describe(
-          "Replacement list of issue keys in the same project this issue waits on; [] clears it. Dispatch refuses a dependency cycle."
+          "Replacement list of issue keys this issue waits on, of any project; [] clears it. Dispatch refuses a dependency cycle."
         )
         .optional(),
       components: componentsArgument(z).optional(),
