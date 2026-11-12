@@ -399,6 +399,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
           />
         )}
         scrollTestId="issues-table-scroll"
+        stackColumn="title"
         trailingWidth={ACTION_WIDTH}
       />
 

@@ -2,7 +2,7 @@ import type { Row } from "@tanstack/react-table";
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
-import { flexRender } from "../../components/DataTable";
+import { DataTableCells, DataTableGroupRow } from "../../components/DataTable";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import {
   borderDefault,
@@ -52,33 +52,23 @@ export function IssueRow({
       ref={measure}
       tabIndex={-1}
     >
-      {row.getVisibleCells().map((cell) => {
-        const pinned = cell.column.getIsPinned() === "left";
-        return (
-          <td
-            className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? `sticky z-10 ${changed ? selectedCardBg : surfaceBg}` : ""} ${pinned && cell.column.getIsLastColumn("left") ? "border-r" : ""} ${row.depth > 0 && cell.column.id === "select" ? "pl-6" : ""}`}
-            key={cell.id}
-            style={{
-              width: cell.column.getSize(),
-              left: pinned ? cell.column.getStart("left") : undefined,
-            }}
-          >
-            {flexRender(cell.column.columnDef.cell, cell.getContext())}
-          </td>
-        );
-      })}
-      <td className={`border-b px-2 py-2 text-right ${borderDefault}`}>
-        {queue !== undefined && queue > 1 ? (
-          <button
-            className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
-            disabled={busy}
-            onClick={() => onStartNext(issue.key)}
-            type="button"
-          >
-            Start next
-          </button>
-        ) : null}
-      </td>
+      <DataTableCells
+        cellClass={(cell) => (row.depth > 0 && cell.column.id === "select" ? "pl-6" : "")}
+        highlight={changed ? selectedCardBg : undefined}
+        row={row}
+        trailing={
+          queue !== undefined && queue > 1 ? (
+            <button
+              className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
+              disabled={busy}
+              onClick={() => onStartNext(issue.key)}
+              type="button"
+            >
+              Start next
+            </button>
+          ) : null
+        }
+      />
     </tr>
   );
 }
@@ -138,31 +128,27 @@ export function GroupRow({
     .map((status) => [status, leafCounts.get(status) ?? 0] as const)
     .filter(([, count]) => count > 0);
   return (
-    <tr className={surfaceMutedBg} data-index={index} ref={measure}>
-      <td className="px-2 py-2" colSpan={columns}>
-        <div
-          className="sticky left-0 flex flex-wrap items-center gap-x-4 gap-y-1"
-          style={{ width: Math.max(180, viewportWidth - 20) }}
-        >
-          <button
-            aria-expanded={row.getIsExpanded()}
-            aria-label={`${row.getIsExpanded() ? "Collapse" : "Expand"} ${heading}, ${count}${continued ? ", continued" : ""}`}
-            className={`flex min-w-0 items-center gap-2 text-left font-semibold ${textPrimaryOnCanvas}`}
-            onClick={row.getToggleExpandedHandler()}
-            type="button"
-          >
-            <span className={`w-4 ${textMutedOnSurfaceMuted}`}>
-              {row.getIsExpanded() ? "▾" : "▸"}
-            </span>
-            {epicKey === undefined ? heading : null}
-            {continued ? (
-              <span className={`font-normal ${textMutedOnSurfaceMuted}`}>(continued)</span>
-            ) : null}
-            <span className={`font-normal ${textMutedOnSurfaceMuted}`}>
-              {count}
-              {Number.isFinite(next) ? ` · next in queue #${next}` : ""}
-            </span>
-          </button>
+    <DataTableGroupRow
+      columns={columns}
+      expanded={row.getIsExpanded()}
+      heading={
+        <>
+          {epicKey === undefined ? heading : null}
+          {continued ? (
+            <span className={`font-normal ${textMutedOnSurfaceMuted}`}>(continued)</span>
+          ) : null}
+          <span className={`font-normal ${textMutedOnSurfaceMuted}`}>
+            {count}
+            {Number.isFinite(next) ? ` · next in queue #${next}` : ""}
+          </span>
+        </>
+      }
+      index={index}
+      label={`${row.getIsExpanded() ? "Collapse" : "Expand"} ${heading}, ${count}${continued ? ", continued" : ""}`}
+      measure={measure}
+      onToggle={row.getToggleExpandedHandler()}
+      slot={
+        <>
           {epicKey === undefined ? null : (
             <Link
               className={`font-semibold ${linkText} ${linkHoverText}`}
@@ -195,9 +181,10 @@ export function GroupRow({
               onStartAll={() => onStartAll(epicKey)}
             />
           )}
-        </div>
-      </td>
-    </tr>
+        </>
+      }
+      width={Math.max(180, viewportWidth - 20)}
+    />
   );
 }
 

@@ -1,4 +1,6 @@
 import {
+  type Cell,
+  type Column,
   type ColumnDef,
   type ColumnFiltersState,
   type ExpandedState,
@@ -28,9 +30,12 @@ import { ViewportAnchor } from "../features/shell/ViewportAnchor";
 import {
   borderDefault,
   surfaceBg,
+  surfaceMutedBg,
   tableResizeActive,
   tableResizeHover,
   textMutedOnCanvas,
+  textMutedOnSurfaceMuted,
+  textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../theme/classes";
 import { ColumnFilter, type FilterCountNoun } from "./ColumnFilter";
@@ -306,6 +311,18 @@ export interface LineProps {
   readonly measure: (element: Element | null) => void;
 }
 
+/**
+ * What draws the filter in a column's header cell. The caller's, never the cell's own choice:
+ * one page's filter reads a registry of facets with a count against each value, another reads
+ * the column's own values, and a third narrows by two ends of a range. A caller that gives none
+ * gets the shared `ColumnFilter`, counting with `filterCounts` and `DataTableNames`' noun.
+ */
+export type ColumnFilterRenderer<Row> = (props: {
+  readonly column: Column<Row, unknown>;
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+}) => ReactNode;
+
 export interface DataTableProps<Row> {
   readonly model: DataTableModel<Row>;
   /** The table's accessible name. */
@@ -332,40 +349,44 @@ export interface DataTableProps<Row> {
   /** The pager drawn under the box, in the caller's own words. A table given none draws none:
    *  a listing that fits one page, or one paged elsewhere, has no line to show. */
   readonly pager?: PagerOptions;
-  /** The width of a last, unheaded column that each row draws itself. */
+  /** Draws the filter in a header cell, for every column that filters. */
+  readonly renderFilter?: ColumnFilterRenderer<Row>;
+  /** The column whose header stacks its sort and its filter one above the other in a box under
+   *  640 px, where the two side by side leave the name of a narrow column unreadable. `title`
+   *  is what the two listings that stack one call theirs; a table that stacks nothing names a
+   *  column it has not got, or a caller names its own. */
+  readonly stackColumn?: string;
+  /** The width of a last, unheaded column that each row draws itself (`DataTableCells`'
+   *  `trailing`). */
   readonly trailingWidth?: number;
 }
 
 /** One header cell: its sort control, which doubles as the handle that drags the column
  *  elsewhere, its filter, and the edge that resizes it. */
 function TableHeaderCell<TData>({
-  compact,
-  counts,
-  countNoun,
   dragColumn,
   header,
   openFilter,
   order,
+  renderFilter,
   setDragColumn,
   setOpenFilter,
   setOrder,
-  unloaded,
+  stacked,
 }: {
-  /** A phone, where the title's header stacks its controls. */
-  compact: boolean;
-  counts: ReadonlyMap<string, number>;
-  /** What the filter calls a count of rows. */
-  countNoun: FilterCountNoun;
   dragColumn: string | undefined;
   header: Header<TData, unknown>;
   openFilter: string | undefined;
   /** The columns in the order they are shown, which a drop rewrites. */
   order: readonly string[];
+  /** Draws this column's filter, which the cell never chooses for itself. */
+  renderFilter: ColumnFilterRenderer<TData>;
   setDragColumn: (id: string | undefined) => void;
   setOpenFilter: (id: string | undefined) => void;
   setOrder: (next: string[]) => void;
-  /** This column's filter values whose rows are not loaded yet. */
-  unloaded: readonly string[];
+  /** Whether this header stacks its sort and its filter one above the other: the caller's
+   *  `stackColumn`, in a box under 640 px. */
+  stacked: boolean;
 }): ReactNode {
   const column = header.column;
   const pinned = column.getIsPinned() === "left";
@@ -393,7 +414,7 @@ function TableHeaderCell<TData>({
       }}
     >
       <span
-        className={`flex justify-between ${compact && column.id === "title" ? "flex-col items-center" : "items-center gap-0 md:gap-1"}`}
+        className={`flex justify-between ${stacked ? "flex-col items-center" : "items-center gap-0 md:gap-1"}`}
       >
         {column.getCanSort() ? (
           <button
@@ -417,16 +438,13 @@ function TableHeaderCell<TData>({
         ) : (
           flexRender(column.columnDef.header, header.getContext())
         )}
-        {column.getCanFilter() ? (
-          <ColumnFilter
-            column={column}
-            countNoun={countNoun}
-            counts={counts}
-            onOpenChange={(open) => setOpenFilter(open ? column.id : undefined)}
-            open={openFilter === column.id}
-            unloaded={unloaded}
-          />
-        ) : null}
+        {column.getCanFilter()
+          ? renderFilter({
+              column,
+              onOpenChange: (open) => setOpenFilter(open ? column.id : undefined),
+              open: openFilter === column.id,
+            })
+          : null}
       </span>
       {column.getCanResize() ? (
         <span
@@ -455,9 +473,11 @@ export function DataTable<Row>({
   onOpenFilterChange,
   openFilter,
   pager,
+  renderFilter,
   renderGroup,
   renderRow,
   scrollTestId,
+  stackColumn = "title",
   trailingWidth = 0,
 }: DataTableProps<Row>): ReactNode {
   const { displayRows, layout, names, table, virtualizer } = model;
@@ -468,6 +488,20 @@ export function DataTable<Row>({
   // The space the rows above and below the drawn window would take.
   const first = virtualRows[0];
   const last = virtualRows.at(-1);
+  // The shared filter, for a caller that asked for no other: it counts with what the table was
+  // handed and reads what a count is called out of the caller's own `names`.
+  const drawFilter: ColumnFilterRenderer<Row> =
+    renderFilter ??
+    (({ column, onOpenChange, open }) => (
+      <ColumnFilter
+        column={column}
+        countNoun={names.filterCountNoun}
+        counts={column.id === openFilter ? filterCounts : EMPTY_COUNTS}
+        onOpenChange={onOpenChange}
+        open={open}
+        unloaded={filterUnloaded?.get(column.id) ?? NONE_UNLOADED}
+      />
+    ));
 
   return (
     <>
@@ -499,18 +533,16 @@ export function DataTable<Row>({
                 <tr key={group.id}>
                   {group.headers.map((header) => (
                     <TableHeaderCell
-                      compact={layout.boxWidth < 640}
-                      counts={header.column.id === openFilter ? filterCounts : EMPTY_COUNTS}
-                      countNoun={names.filterCountNoun}
                       dragColumn={dragColumn}
                       header={header}
                       key={header.id}
                       openFilter={openFilter}
                       order={columnOrder}
+                      renderFilter={drawFilter}
                       setDragColumn={setDragColumn}
                       setOpenFilter={onOpenFilterChange}
                       setOrder={layout.setOrder}
-                      unloaded={filterUnloaded?.get(header.column.id) ?? NONE_UNLOADED}
+                      stacked={layout.boxWidth < 640 && header.column.id === stackColumn}
                     />
                   ))}
                   {trailingWidth === 0 ? null : (
@@ -549,5 +581,117 @@ export function DataTable<Row>({
 
       {pager === undefined ? null : <Pager {...pager} pagerRef={layout.pagerRef} table={table} />}
     </>
+  );
+}
+
+export interface DataTableCellsProps<Row> {
+  readonly row: TableRow<Row>;
+  /** Anything one cell takes beyond the shared ones, by the caller's own rule: the project
+   *  List indents the first cell of a row inside a group. */
+  readonly cellClass?: (cell: Cell<Row, unknown>) => string;
+  /** What a row the caller is pointing at is painted with — an action's answer, a row just
+   *  moved. A pinned cell takes it in place of the surface it covers the scrolled cells with,
+   *  so a painted row is painted to its left edge rather than from the first scrolling column.
+   *  A row given none paints nothing and its pinned cells keep the surface. */
+  readonly highlight?: string;
+  /** What the trailing action cell holds. Every row of a table with a trailing head cell
+   *  (`DataTable`'s `trailingWidth`) gives this — `null` where that row has no action — so the
+   *  rows carry as many cells as the head; a row given nothing at all draws no cell. */
+  readonly trailing?: ReactNode;
+}
+
+/**
+ * The cells of one row: each visible column at its own width, the pinned ones held at the box's
+ * left edge in the order they are pinned, and the caller's trailing action cell after them.
+ * The caller draws the `<tr>` itself — its accessible name, its own data attributes, `data-index`
+ * and `ref={measure}` — and gives the cells what only it knows.
+ */
+export function DataTableCells<Row>({
+  cellClass,
+  highlight,
+  row,
+  trailing,
+}: DataTableCellsProps<Row>): ReactNode {
+  return (
+    <>
+      {row.getVisibleCells().map((cell) => {
+        const pinned = cell.column.getIsPinned() === "left";
+        return (
+          <td
+            className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? `sticky z-10 ${highlight ?? surfaceBg}` : ""} ${pinned && cell.column.getIsLastColumn("left") ? "border-r" : ""} ${cellClass?.(cell) ?? ""}`}
+            key={cell.id}
+            style={{
+              width: cell.column.getSize(),
+              left: pinned ? cell.column.getStart("left") : undefined,
+            }}
+          >
+            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+          </td>
+        );
+      })}
+      {trailing === undefined ? null : (
+        <td className={`border-b px-2 py-2 text-right ${borderDefault}`}>{trailing}</td>
+      )}
+    </>
+  );
+}
+
+export interface DataTableGroupRowProps {
+  /** How many of the table's columns the heading's line spans. */
+  readonly columns: number;
+  readonly expanded: boolean;
+  /** What the toggle shows beside its chevron: a node, not a string, so a heading can carry a
+   *  count, a state's own colour or a word the caller draws for its column's values. */
+  readonly heading: ReactNode;
+  readonly index: number;
+  /** The toggle's accessible name, which says what opens and closes and what is under it. */
+  readonly label: string;
+  readonly measure: (element: Element | null) => void;
+  readonly onToggle: () => void;
+  /** What is drawn beside the heading: the group's own actions, a strip of its rows by state, a
+   *  link to what the group stands for. */
+  readonly slot?: ReactNode;
+  /** How wide the strip that stays at the box's left edge is drawn, so a heading is readable
+   *  wherever the reader has scrolled sideways to. */
+  readonly width: number;
+}
+
+/**
+ * One group's heading: the line that spans the table's columns, with the toggle that opens and
+ * closes the group, the caller's heading beside the chevron and the caller's slot beside that.
+ * It stays at the box's left edge while the columns scroll under it.
+ */
+export function DataTableGroupRow({
+  columns,
+  expanded,
+  heading,
+  index,
+  label,
+  measure,
+  onToggle,
+  slot,
+  width,
+}: DataTableGroupRowProps): ReactNode {
+  return (
+    <tr className={surfaceMutedBg} data-index={index} ref={measure}>
+      <td className="px-2 py-2" colSpan={columns}>
+        <div
+          className="sticky left-0 flex flex-wrap items-center gap-x-4 gap-y-1"
+          style={{ width }}
+        >
+          <button
+            aria-expanded={expanded}
+            aria-label={label}
+            className={`flex min-w-0 items-center gap-2 text-left font-semibold ${textPrimaryOnCanvas}`}
+            onClick={onToggle}
+            type="button"
+          >
+            <span className={`w-4 ${textMutedOnSurfaceMuted}`}>{expanded ? "▾" : "▸"}</span>
+            {heading}
+          </button>
+          {slot}
+        </div>
+      </td>
+    </tr>
   );
 }
