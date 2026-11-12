@@ -1,5 +1,5 @@
 import { beforeAll, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -344,6 +344,63 @@ test("no file of the rig restates the daemon's refusal", () => {
   }
 });
 
+// The guards that reading stands on, one row each. Every one of them answers a daemon that
+// writes its refusal in a shape this program cannot fill, which today's daemon does not, so a
+// row reaches them only through an engine source of its own: the file the `refusal` command
+// takes after its three arguments (daemon-pane.go's main), which is the daemon's own file for
+// every other caller. Catches: any of the four dropped, each of which survived the mutation
+// pass of 3d88a1ed for want of this path. A dropped guard answers a drifted daemon with a
+// sentence built out of nothing — an empty argument, a `%!s(MISSING)` verb, a format some other
+// printer wrote — or with a panic, and the stand-in would teach every agent that sentence.
+const SUBSTITUTE_ENGINES = [
+  {
+    file: "unknown-argument",
+    shape: "an argument this program has no value for",
+    call: 'refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf("%s may not complete %s", fact.Role, issue.Tree))',
+    says: "fills the HANDOFF_NOT_CURRENT_PHASE message with issue.Tree, which this program has no value for",
+  },
+  {
+    file: "more-verbs",
+    shape: "a format with more verbs than the arguments it names",
+    call: 'refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf("%s may not complete %s of %s at %s", fact.Role, issue.Phase, issue.Key))',
+    says: "takes other arguments than the 3 it names",
+  },
+  {
+    file: "one-argument",
+    shape: "a refused call of another arity",
+    call: 'refused("HANDOFF_NOT_CURRENT_PHASE")',
+    says: 'holds no refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf(…)) call',
+  },
+  {
+    file: "other-printer",
+    shape: "a message another printer built",
+    call: 'refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Errorf("%s may not complete %s", fact.Role, issue.Phase))',
+    says: 'holds no refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf(…)) call',
+  },
+] as const;
+for (const { file, shape, call, says } of SUBSTITUTE_ENGINES) {
+  test.skipIf(skip)(
+    `the refusal reading refuses ${shape} and invents no sentence`,
+    () => {
+      const engine = path.join(rig, `engine-${file}.go`);
+      // Parsed, never compiled or linked: the reading is one `parser.ParseFile` of the file, so
+      // the substitute needs the shape of the engine's call and nothing the engine declares.
+      writeFileSync(engine, `package workflow\n\nfunc complete() error {\n\treturn ${call}\n}\n`);
+      expect(() =>
+        runDaemonPane(DAEMON_MODULE, [
+          "refusal",
+          "not-current-phase",
+          "implementer",
+          "accepting",
+          "LWEVAL-1",
+          engine,
+        ])
+      ).toThrow(says);
+    },
+    600_000
+  );
+}
+
 // worker-pane.ts reads the repository its addressing names, and the branch it gives as the
 // default, out of the run's own world (rig.sh's worker world comment), so the rig names neither
 // a second time. Catches: a pane built on names of its own, which is the addressing defect
@@ -397,3 +454,45 @@ test.skipIf(skip)(
   },
   600_000
 );
+
+// And a world that names no branch at all is refused there too, by the same parse: the row above
+// covers the branch the pane is given, this one the branch no world holds. Catches: `base` given
+// a default of its own (`main`), where a world written without it would compose a pane addressed
+// at a branch the world never named and a worker would follow it — the addressing defect the row
+// above catches, arriving through the reader rather than through the caller. The refusal is the
+// world parse, which runs before the daemon is asked for anything, so this row needs no go.
+test("worker-pane.ts refuses a world that names no default branch", () => {
+  const dir = path.join(rig, "worker-pane-no-base");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    path.join(dir, "world.json"),
+    JSON.stringify({
+      key: "LWEVAL-1",
+      repo: "widgets-org/widgets",
+      pr: 1001,
+      branch: "legion/LWEVAL-1",
+      head: "0".repeat(40),
+    })
+  );
+  writeFileSync(
+    path.join(dir, "base.env"),
+    Object.entries({ ...inherited, HOME: path.join(dir, "home") })
+      .map(([key, value]) => `${key}=${value}\n`)
+      .join("")
+  );
+  const built = Bun.spawnSync([
+    "bun",
+    path.join(import.meta.dir, "worker-pane.ts"),
+    dir,
+    path.join(dir, "base.env"),
+    "13399",
+    "rig-profile",
+    "skillsrig",
+    "LWEVAL-1",
+    "tester",
+    path.resolve(import.meta.dir, "../../../.."),
+  ]);
+  expect(built.stderr.toString()).toContain(`${dir}/world.json is no world`);
+  expect(built.exitCode).toBe(2);
+  expect(existsSync(path.join(dir, "worker.env"))).toBe(false);
+});

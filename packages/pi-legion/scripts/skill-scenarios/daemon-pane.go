@@ -46,7 +46,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-const usage = "usage: daemon-pane phase <role> | refusal not-current-phase <role> <phase> <issue> | pane < request.json"
+const usage = "usage: daemon-pane phase <role> | refusal not-current-phase <role> <phase> <issue> [<engine source>] | pane < request.json"
 
 func main() {
 	args := os.Args[1:]
@@ -54,8 +54,18 @@ func main() {
 	switch {
 	case len(args) == 2 && args[0] == "phase":
 		err = printPhase(claim.Role(args[1]))
-	case len(args) == 5 && args[0] == "refusal" && args[1] == "not-current-phase":
-		err = printNotCurrentPhase(args[2], args[3], args[4])
+	case (len(args) == 5 || len(args) == 6) && args[0] == "refusal" && args[1] == "not-current-phase":
+		// The engine source the refusal is read out of: the daemon's own, and the one a caller
+		// names otherwise. A caller names one so that a test can hold this reading to a
+		// substitute engine.go and watch each guard below fire — the guards answer a daemon
+		// that writes the refusal in some other shape, which today's daemon does not, so
+		// without a source of its own not one of them can be reached (daemon-pane.test.ts).
+		// The rig itself names none and reads the daemon's file.
+		engine := defaultEngineFile
+		if len(args) == 6 {
+			engine = args[5]
+		}
+		err = printNotCurrentPhase(args[2], args[3], args[4], engine)
 	case len(args) == 1 && args[0] == "pane":
 		err = pane()
 	default:
@@ -91,9 +101,11 @@ func printPhase(role claim.Role) error {
 	return fmt.Errorf("%q works no phase", role)
 }
 
-// engineFile is where the daemon builds the workflow's refusals, read relative to the module
-// this program is run inside (daemon-pane.ts).
-const engineFile = "internal/workflow/engine.go"
+// defaultEngineFile is where the daemon builds the workflow's refusals, read relative to the
+// module this program is run inside (daemon-pane.ts). Every reader below takes the file as an
+// argument rather than this constant, so a caller — a test — can hold the reading to a
+// substitute of its own.
+const defaultEngineFile = "internal/workflow/engine.go"
 
 // notCurrentPhaseCode is the refusal the daemon answers a completion of a phase the completing
 // role does not run with.
@@ -101,8 +113,8 @@ const notCurrentPhaseCode = "HANDOFF_NOT_CURRENT_PHASE"
 
 // printNotCurrentPhase prints that refusal's code and the daemon's own message for it, for the
 // stand-in to answer such a completion with (daemon-standin.ts).
-func printNotCurrentPhase(role, issuePhase, issue string) error {
-	message, err := notCurrentPhase(role, issuePhase, issue)
+func printNotCurrentPhase(role, issuePhase, issue, engineFile string) error {
+	message, err := notCurrentPhase(role, issuePhase, issue, engineFile)
 	if err != nil {
 		return err
 	}
@@ -119,8 +131,8 @@ func printNotCurrentPhase(role, issuePhase, issue string) error {
 // `refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf(<format>, <arguments>...))`, so this reads
 // that call's format and fills it with the arguments the engine itself names. A daemon that
 // writes the refusal in some other shape is an error here, never a sentence this invents.
-func notCurrentPhase(role, issuePhase, issue string) (string, error) {
-	format, arguments, err := refusalMessage(notCurrentPhaseCode)
+func notCurrentPhase(role, issuePhase, issue, engineFile string) (string, error) {
+	format, arguments, err := refusalMessage(notCurrentPhaseCode, engineFile)
 	if err != nil {
 		return "", err
 	}
@@ -142,7 +154,7 @@ func notCurrentPhase(role, issuePhase, issue string) (string, error) {
 
 // refusalMessage is the format string and the argument expressions, as the daemon writes them,
 // of the engine's `refused(code, fmt.Sprintf(…))` call for `code`.
-func refusalMessage(code string) (string, []string, error) {
+func refusalMessage(code, engineFile string) (string, []string, error) {
 	file, err := parser.ParseFile(token.NewFileSet(), engineFile, nil, 0)
 	if err != nil {
 		return "", nil, fmt.Errorf("read the daemon's %s: %w", engineFile, err)

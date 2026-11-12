@@ -3279,10 +3279,13 @@ const readRecord = (at = "2026-09-30T17:40:30.000Z", phase = "accepting", answer
 /** The same read made through a `write` to `xd://legion`, whose result carries the tool's own
  * answer one level down, and through an `eval` cell, whose result carries whatever it printed.
  * Which tool carried the call is no part of the rule, so the score reads the record from the
- * answer on each route through one schema. */
+ * answer on each route through one schema. `answeredAt` is when the tool returned, the call's
+ * own time by default: a cell that does more than read answers later than it was called, and
+ * what the cell did in between falls inside that span. */
 const readRecordVia = (
   route: "xd" | "eval" | "eval-unreadable",
-  at = "2026-09-30T17:40:30.000Z"
+  at = "2026-09-30T17:40:30.000Z",
+  answeredAt = at
 ) => {
   const record = { key: "LWEVAL-1", phase: "accepting", status: "needs_review" };
   const id = `call-read-${route}`;
@@ -3335,7 +3338,7 @@ const readRecordVia = (
     },
     {
       type: "message",
-      timestamp: at,
+      timestamp: answeredAt,
       message: {
         role: "toolResult",
         toolCallId: id,
@@ -3487,6 +3490,67 @@ reviewRun(
     "calls.jsonl": calls([submission(approval())]),
   },
   [...header, ...turn, ...readRecordVia("eval-unreadable")]
+);
+/** An `eval` cell that publishes and reads no record: the call is written when the session made
+ * it and the result when the cell returned, so a message the cell published lands between the
+ * two, where Oh My Pi puts every message a cell sends. */
+const publishingCell = (at: string, answeredAt: string) =>
+  stamped(
+    `call-publish-cell-${at}`,
+    "eval",
+    {
+      language: "py",
+      code: 'print(tool.envoy_publish({"topic": "notifications.role.legion-skills1-lweval-1-implementer", "message": "Approved."}))',
+    },
+    at,
+    {
+      text: "the cell printed {'published': True}",
+      details: { cells: [{ language: "py" }], language: "py" },
+      answeredAt,
+    }
+  );
+// head-117: the round head-39 passes on, made in one cell: the reviewer reads `accepting` and
+// publishes the wake inside the same `eval`, so the message reached the topic at 17:40:35 while
+// the cell's own result was written at 17:40:40. The read came first — a cell cannot publish
+// what it has not yet run — and the step was taken, so the round passes. head-118 and head-119
+// are the orderings that still fail, each from a cell of its own: one that published with no
+// accepting read behind it at all, and one that published before the cell that took the read it
+// would have had to follow.
+reviewRun(
+  "reviewer-text-findings-text-only-head-117",
+  {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([submission(approval())]),
+    "published.jsonl": bus(toldImplementer(head, "2026-09-30T17:40:35.000Z")),
+  },
+  [
+    ...header,
+    ...turn,
+    ...readRecordVia("eval", "2026-09-30T17:40:30.000Z", "2026-09-30T17:40:40.000Z"),
+  ]
+);
+reviewRun(
+  "reviewer-text-findings-text-only-head-118",
+  {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([submission(approval())]),
+    "published.jsonl": bus(toldImplementer(head, "2026-09-30T17:40:35.000Z")),
+  },
+  [...header, ...turn, ...publishingCell("2026-09-30T17:40:30.000Z", "2026-09-30T17:40:40.000Z")]
+);
+reviewRun(
+  "reviewer-text-findings-text-only-head-119",
+  {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([submission(approval())]),
+    "published.jsonl": bus(toldImplementer(head, "2026-09-30T17:40:35.000Z")),
+  },
+  [
+    ...header,
+    ...turn,
+    ...publishingCell("2026-09-30T17:40:30.000Z", "2026-09-30T17:40:40.000Z"),
+    ...readRecordVia("eval", "2026-09-30T17:41:00.000Z", "2026-09-30T17:41:10.000Z"),
+  ]
 );
 // head-42: the reviewer completed, read `accepting`, then submitted its approval and published.
 // The read cannot have shown the round ending — the stand-in moves to `accepting` on the
@@ -3976,12 +4040,15 @@ reviewRun(
     ...readRecord("2026-09-30T17:40:30.000Z"),
   ]
 );
-// head-61: a read whose call went out before the wake and whose answer came back after it. The
-// publish is ordered against the answer's own time, which is when the tool returned and when the
-// reviewer could act on what it said, so this wake was sent before the record was read and the
-// run fails. A reader ordering by the call's own time — the assistant message's, written when
-// the model asked — would pass it. Every other fixture here answers in the call's own
-// millisecond, as a real read does.
+// head-61: a native `legion` read whose call went out before the wake and whose answer came back
+// after it. Nothing of the session runs between that call and its answer — the tool suspends it
+// — so a message sent in the gap is not one this read ordered: the publish is ordered against
+// the answer's own time, which is when the tool returned and when the reviewer could act on what
+// it said, so this wake was sent before the record was read and the run fails. A reader ordering
+// every route by the call's own time — the assistant message's, written when the model asked —
+// would pass it; head-117 below is the one route where that time is the right one, a cell, whose
+// code is the reviewer's own and runs inside that gap. Every other fixture here answers in the
+// call's own millisecond, as a real read does.
 reviewRun(
   "reviewer-text-findings-text-only-head-61",
   { "case.txt": "text-only\n", "calls.jsonl": calls([submission(approval())]) },
@@ -8038,11 +8105,35 @@ test("reviewer-text-findings, text-only: a refused read_record is no read of the
 });
 // Catches: a scorer ordering the wake against the time the model asked for the record rather
 // than the time the tool answered, which would pass a round that published before it was told
-// anything.
-test("reviewer-text-findings, text-only: a read is ordered by the time its answer carries", () => {
+// anything. head-61's read is the native `legion` call, which suspends the session until it
+// answers, so nothing of the reviewer ran in that gap and nothing it published there followed
+// the read. The cell is the one route where the gap is the reviewer's own code, and the row
+// below holds that difference.
+test("reviewer-text-findings, text-only: a read off a tool that suspends the session is ordered by the time its answer carries", () => {
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-61\tpass=false\t.*toldImplementer=false /
   );
+});
+// Catches: the publish ordered against the read's answer alone. Oh My Pi writes a cell's result
+// once the cell has returned, so a reviewer that reads `accepting` and publishes the wake in one
+// `eval` cell publishes before its own answer is written, and that reading scored the correct
+// round `toldImplementer=false` (the reviewer's reopened thread PRRT_kwDORFy7ds61QQo3). The
+// publish is ordered against the read's own call for that reason, and head-117 is that round.
+// The ordering is what it was either side of it: head-118's cell published with no accepting
+// read behind it at all, and head-119's published from a cell that ran before the read it would
+// have had to follow — neither is a rig error, since both read as rounds that took no step.
+test("reviewer-text-findings, text-only: a read and a publish in one cell is the read first, and a publish before the read still fails", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-117\tpass=true\t.*event=APPROVE head=true doc=true workflow=true toldImplementer=true /
+  );
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-118\tpass=false\t.*event=APPROVE .*toldImplementer=false /
+  );
+  expect(out).not.toContain("reviewer-text-findings-text-only-head-118\trig error");
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-119\tpass=false\t.*event=APPROVE .*toldImplementer=false /
+  );
+  expect(out).not.toContain("reviewer-text-findings-text-only-head-119\trig error");
 });
 // Catches: a scorer that takes a read answered in the submission's own millisecond for a read
 // after it, which is the one reading under which the round's own submission could not have moved

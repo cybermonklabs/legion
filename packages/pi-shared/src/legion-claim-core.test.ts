@@ -212,6 +212,53 @@ test("a failure in the boot's own steps names that step and the daemon it dialle
   expect(steps.at(-1)).toBe("stop");
 });
 
+// One row per step of the boot that no other row fails in, since the sentence above names a
+// variable the boot moves from step to step: `claims/ready` is the row above and `claimRole` the
+// one above that, and a step whose own assignment is dropped is reported under the step before
+// it — the failure then names a call that answered. `afterRegister` is the initial value, so a
+// boot that names no step at all reports its first failure as that step and nothing says so.
+for (const { step, overrides } of [
+  {
+    step: "afterRegister",
+    overrides: {
+      afterRegister: async () => {
+        throw new Error("the host's own startup refused");
+      },
+    },
+  },
+  {
+    step: "setCapability",
+    overrides: {
+      setCapability: () => {
+        throw new Error("the host's own startup refused");
+      },
+    },
+  },
+  {
+    step: "onRoleRegained",
+    overrides: {
+      onRoleRegained: () => {
+        throw new Error("the host's own startup refused");
+      },
+    },
+  },
+] satisfies { step: string; overrides: Partial<LegionClaimHost> }[]) {
+  test(`a host whose ${step} throws is stopped, with ${step} named as the step`, async () => {
+    const { host, lines, steps } = claimHost({ overrides });
+
+    const booted = await bootLegionClaim(host);
+
+    expect(lines).toEqual([
+      `claim boot failed at ${step} after claims/register registered ${claimToken} with the daemon at http://daemon.test; exiting so the daemon launches it again: the host's own startup refused`,
+    ]);
+    expect(steps.at(-1)).toBe("stop");
+    expect(steps.some((taken) => taken.startsWith("claimRole"))).toBe(false);
+    // A boot that stopped in one of its own steps still settles its answer, as every other
+    // stopped boot does, so a caller waiting on the claim is not left waiting.
+    await booted.claimed;
+  });
+}
+
 test("a 4xx at claims/ready is not retried: one ready, then the agent stops, with no regain listener and no claim, whatever turn the registered signal reports", async () => {
   const { host, steps, firstTurn } = claimHost({
     ready: () => Response.json({ error: "Invalid session secret" }, { status: 403 }),

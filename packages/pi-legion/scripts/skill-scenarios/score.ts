@@ -1265,10 +1265,26 @@ function listsTheThreads(call: z.infer<typeof Call>): boolean {
  * ending whatever it answered — measured by the deep pass of 2026-11-10, which moved a recorded
  * run's own submission after its read and the run still passed.
  *
- * The read is the reviewer's own call and its own answer, both from the tool's result: the
- * result's timestamp is written when the tool returned, so it orders the publish without any
- * help from the server's log, where the call's own timestamp, written with the assistant
- * message, would not. Other callers read the same route — `handoff_complete` reads the state
+ * The read is the reviewer's own call and its own answer, and the approval is ordered against
+ * the answer, written when the tool returned: only an answer can show the round ending, so a
+ * read whose answer came before the approval shows nothing whenever it was asked for.
+ *
+ * What the publish is ordered against is the answer too, on every route but one. A native
+ * `legion` call and a `write` to `xd://legion` suspend the session until the tool returns, so
+ * nothing of the reviewer runs between the call and its answer and a message sent in that gap
+ * is not one the read ordered. A cell is the reviewer's own code, and Oh My Pi writes the
+ * cell's result after the cell has returned, so a cell that reads the record and publishes
+ * sends its message inside that gap: ordered against the answer, a reviewer that took the step
+ * in one `eval` cell would score as one that published before it read, which is the correct
+ * round failing (the reviewer's reopened thread PRRT_kwDORFy7ds61QQo3). So a read a cell took
+ * is ordered by the cell's own call, and the rule is that a read and a publish in one cell are
+ * read as the read coming first — which of the two the cell did is in no record this reads.
+ *
+ * The ordering is untouched everywhere else: a publish before the cell that took the accepting
+ * read, a publish from a cell that took no read, and a publish before a read on any other
+ * route all fail, as they did.
+ *
+ * Other callers read the same route — `handoff_complete` reads the state
  * before it posts (`pi-shared/src/legion-phase-ops.ts`), the phase reminder reads it to check
  * the record — so a reviewer that completed again after its acceptance and published would pass
  * on any reading taken from that route rather than from this call.
@@ -1304,14 +1320,25 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   const entries = session(runDir);
   const sender = ownSession(entries);
   const results = outcomes(entries);
-  // Every read of the record this run made, with the phases its answer carried: a call the tool
-  // refused is no answer of its own and is left out, as `read_record requires issue` is, which an
-  // agent then makes again with the issue.
+  // Every read of the record this run made, with the phases its answer carried, the answer's own
+  // time and the time a publish must follow for this read to have ordered it (`ordering`). A
+  // call the tool refused is no answer of its own and is left out, as `read_record requires
+  // issue` is, which an agent then makes again with the issue.
+  //
+  // The two times are the same on every route but one. A native `legion` call and a `write` to
+  // `xd://legion` suspend the session until the tool returns: nothing of the reviewer runs
+  // between the call and its answer, so a message sent in that gap is not one the read ordered,
+  // and the answer's time is what a publish must follow. A cell is the reviewer's own code, and
+  // Oh My Pi writes its result once the cell has returned, so a cell that reads the record and
+  // publishes sends its message inside that gap: there the call's own time is what a publish
+  // must follow, which is what makes the one-cell round the correct round it is. Which of the
+  // two the cell did first is in no record this reads (the header's rule).
   const reads = steps(entries).flatMap((step) => {
     const answer = results.get(step.id);
     if (answer === undefined || answer.failed === true) return [];
     const phases = recordRead(step, answer);
-    return phases === undefined ? [] : [{ at: answer.at, phases }];
+    if (phases === undefined) return [];
+    return [{ at: answer.at, ordering: step.tool === "eval" ? step.at : answer.at, phases }];
   });
   // Every time here is compared through `instant` and never as text: a read whose answer carries
   // no time of its own would sort before everything that happened, and a time that does not
@@ -1322,7 +1349,9 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
     approvedAt === undefined
       ? []
       : reads.filter((read) => instant(read.at, "a read_record answer's time") > approvedAt);
-  const readAfter = afterApproval.find((read) => read.phases.includes("accepting"))?.at;
+  // The approval is ordered against every read's answer, which is the only half of a read that
+  // can show the round ending; the publish against the read's own ordering time above.
+  const readAfter = afterApproval.find((read) => read.phases.includes("accepting"))?.ordering;
   // The wake's own names: the head the fix lands above, and each of the two findings by the path
   // its thread is on, which is the name this world lets the reviewer give it.
   const wake = (after: string) =>
@@ -1359,7 +1388,7 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   if (
     otherwise &&
     !toldImplementer &&
-    afterApproval.some((read) => read.phases.length === 0 && wake(read.at))
+    afterApproval.some((read) => read.phases.length === 0 && wake(read.ordering))
   )
     throw new Error(
       "a read_record after the approval was answered with no record this can read, so what the reviewer was shown is unknown"

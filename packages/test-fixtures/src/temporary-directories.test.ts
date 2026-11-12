@@ -4,7 +4,7 @@ import {
   existsSync,
   linkSync,
   mkdirSync,
-  readdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   statSync,
@@ -260,40 +260,87 @@ describe("the removal", () => {
 
 /**
  * A removal is work that grows with what a suite made, and the hooks of this file take a bound
- * of their own in place of Bun's five-second default for that reason: the tree below holds
- * twenty thousand directories, whose chmod walk and removal together took about nine seconds
- * when this was written, and a hook killed part-way leaves the tree on disk. Catches: that
- * bound dropped back to Bun's default, where a suite that made such a tree reports
- * `a beforeEach/afterEach hook timed out for this test` and names neither the hook nor the
- * directory — which is how the kill reads in the suites that meet it
- * (`packages/pi-legion/scripts/skill-scenarios/score.test.ts`, whose run directories each hold
- * a bare clone). The pair is written as the pairs above are: one row makes the tree, the next
- * finds it gone, so the removal is read by a row with a name of its own rather than by a hook
- * failure with none. The making is slow too, so that row takes a bound of its own; the
- * removal's is the fixture's.
+ * of their own in place of Bun's five-second default for that reason (`HOOK_BOUND_MS`). What
+ * that bound buys is read here: a `bun test` of its own, whose one row makes a tree whose
+ * removal takes longer than five seconds and whose removal is the fixture's own hook. The run
+ * must pass, the tree must be gone, and the removal must have taken longer than Bun's default,
+ * which is what says the bound is the reason the hook finished.
+ *
+ * It reads a run of its own because a hook Bun kills fails with no name: the kill is reported as
+ * `a beforeEach/afterEach hook timed out for this test`, which names neither the hook nor the
+ * directory, and the rows after it in that scope do not run, so a pair of rows in this file
+ * would report the dropped bound through a failure with no assertion in it (the architect's
+ * ruling on F308a: a pin whose failure has no name is not a pin). Here the kill is the child
+ * run's, and this row's own assertions name it.
+ *
+ * Catches: the bound dropped back to Bun's default, which is how the kill reads in the suites
+ * that meet it (`packages/pi-legion/scripts/skill-scenarios/score.test.ts`, whose run
+ * directories each hold a bare clone).
  */
 describe("a removal larger than Bun's own hook default allows", () => {
   const makeDirectory = temporaryDirectories("test-fixtures-slow");
-  /** The tree the first row makes, which the second finds gone. */
-  let slowTree = "";
-  /** Directories, each holding one file: the shape a suite's run directories have, and what
-   * makes the walk and the unlinking long rather than any one file's size. */
-  const DIRECTORIES = 20_000;
 
-  test("a tree whose removal takes longer than five seconds is made", () => {
-    slowTree = makeDirectory("tree");
-    for (let index = 0; index < DIRECTORIES; index += 1) {
-      const held = join(slowTree, `d${index}`);
-      mkdirSync(held);
-      writeFileSync(join(held, "held.txt"), "x");
-    }
-    expect(readdirSync(slowTree)).toHaveLength(DIRECTORIES);
+  test("the fixture's own bound is what lets a hook finish a removal of more than five seconds", () => {
+    const work = makeDirectory("run");
+    const root = join(work, "root");
+    mkdirSync(root);
+    const measurement = join(work, "removal.json");
+    writeFileSync(
+      join(work, "slow.test.ts"),
+      `import { afterEach, expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { temporaryDirectories } from ${JSON.stringify(join(import.meta.dir, "temporary-directories"))};
+
+const make = temporaryDirectories("slow", { root: ${JSON.stringify(root)} });
+/** The tree the row makes and when its removal began: the fixture's own afterEach, registered
+ * at the call above, is the removal, and the hook below was registered after it, so it runs
+ * after that removal and times it (Bun runs a scope's hooks in the order they were registered). */
+let tree = "";
+let startedAt = 0;
+afterEach(() => {
+  writeFileSync(${JSON.stringify(measurement)}, JSON.stringify({ tree, removalMs: Date.now() - startedAt }));
+});
+
+test("makes a tree whose removal outlasts Bun's five-second hook default", () => {
+  tree = make("tree");
+  // Grown by the clock and not to a count: the removal walks what the making wrote and takes
+  // longer than the making did, so a host fast enough to make the floor inside the target makes
+  // more and its removal still outlasts five seconds. The cap is there so a host on which this
+  // never holds gives up rather than fills its disk; the caller's own assertion on the measured
+  // removal is what says whether it held.
+  const since = Date.now();
+  let made = 0;
+  while (made < 200_000 && (made < 20_000 || Date.now() - since < 6_000)) {
+    const held = join(tree, "d" + made);
+    mkdirSync(held);
+    writeFileSync(join(held, "held.txt"), "x");
+    made += 1;
+  }
+  expect(made).toBeGreaterThanOrEqual(20_000);
+  startedAt = Date.now();
+}, 600_000);
+`
+    );
+    const run = Bun.spawnSync([process.execPath, "test", "./slow.test.ts"], {
+      cwd: work,
+      env: { ...process.env },
+    });
+    const output = `${run.stdout.toString()}${run.stderr.toString()}`;
+    // Defaults that fail the row: a run whose hook was killed part-way writes no measurement,
+    // since Bun runs no later hook of a scope once one of them is killed.
+    const measured = existsSync(measurement)
+      ? (JSON.parse(readFileSync(measurement, "utf8")) as { tree: string; removalMs: number })
+      : { tree: "", removalMs: 0 };
+    // Read before the leftovers are cleared, so the fact the row reports is the child run's.
+    const removedWhole = measured.tree !== "" && !existsSync(measured.tree);
+    rmSync(root, { recursive: true, force: true });
+
+    expect(output).toContain("1 pass");
+    expect(run.exitCode).toBe(0);
+    expect(measured.removalMs).toBeGreaterThan(5_000);
+    expect(removedWhole).toBe(true);
   }, 600_000);
-
-  test("and is removed whole, where a five-second bound would kill the hook part-way", () => {
-    expect(slowTree).not.toBe("");
-    expect(existsSync(slowTree)).toBe(false);
-  });
 });
 
 /**

@@ -148,7 +148,13 @@ export function temporaryDirectory(
  * of one of those that genuinely hangs now fails after two minutes rather than five seconds, and
  * Bun's message still names neither the hook nor its work. Raise this number only for a removal
  * larger than the one it was measured against; a hook that reaches it is a hook to read rather
- * than a bound to raise. */
+ * than a bound to raise.
+ *
+ * What holds it: "the fixture's own bound is what lets a hook finish a removal of more than five
+ * seconds" (`temporary-directories.test.ts`), which runs a `bun test` of its own over a tree
+ * whose removal outlasts five seconds and reads that run's own measurement of it. The row is in
+ * a run of its own because a hook Bun kills fails with no assertion and no name, so this number
+ * dropped back to the default can be read in no other way. */
 const HOOK_BOUND_MS = 120_000;
 /** `-`, the one character the name template trims from a caller's prefix. */
 const DASH = 45;
