@@ -459,9 +459,17 @@ func (s *server) runRelatedCheck(
 		var crossRead context.Context
 		if input.question {
 			read, crossErr := store.ForConcurrentRead(meaningCtx)
-			if crossErr == nil {
-				crossRead = read
+			if crossErr != nil {
+				// The leg is dropped with no reason recorded, which is what R3 asks of a
+				// contained failure, so this line is the only place a refusal is said at all:
+				// a reader of a check that offered nothing cannot otherwise tell a connection
+				// the store refused from no other project holding a qualifying answer.
+				slog.Warn("dispatch: the related-item check offers no answered question of another project",
+					"reason", "the store refused a connection for the leg", "error", crossErr)
 			}
+			// ForConcurrentRead answers a nil context with its error, so a refusal leaves
+			// crossRead nil and relatedMeaningStage runs the leg for nobody.
+			crossRead = read
 		}
 		meaningDone = meaningCtx.Done()
 		meaning = make(chan relatedStage, 1)
