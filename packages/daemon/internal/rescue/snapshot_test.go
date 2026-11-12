@@ -75,10 +75,17 @@ func (c *commands) in(dir string) []ran {
 }
 
 // snapshotPins is the configuration the snapshot puts on its own command line, which outranks
-// the repository's, the workspace's and the user's configuration files (rescue.snapshot). Six
-// hold this build's own default; the last two are the package's own, and the size limit is read
-// here as the text it is pinned with, 64 GiB, which is the raised limit the whole route rests on
-// — a file a workspace's own configuration would refuse is carried because of it.
+// the repository's, the workspace's and the user's configuration files (rescue.snapshot). Eight
+// hold this build's own default, among them the two that say what a file's own bytes and mode
+// are recorded as (working-copy.eol-conversion and working-copy.exec-bit-change, which
+// TestTheSnapshotsPinsOutrankTheWorkspacesOwnBytesAndModeConfiguration reads as the recorded
+// file rather than as text); the ninth is the git jj itself starts.
+//
+// The size limit is not among them, and theSnapshotOf reads that it is on the command line
+// under no value at all: the snapshot runs under the workspace's own
+// snapshot.max-new-file-size, since a pin above it would have jj track the large file in the
+// role's own working-copy commit, where it would stay. What jj refuses for that limit is
+// carried into the tree the check pushes by a git of its own (rescue.carried).
 func snapshotPins(t *testing.T) []string {
 	t.Helper()
 	// The git the check runs is the one this process would run: the package resolves it with
@@ -94,7 +101,8 @@ func snapshotPins(t *testing.T) []string {
 		`signing.behavior="keep"`,
 		`snapshot.auto-track="all()"`,
 		`snapshot.auto-update-stale=false`,
-		`snapshot.max-new-file-size="64GiB"`,
+		`working-copy.eol-conversion="none"`,
+		`working-copy.exec-bit-change="auto"`,
 		`git.executable-path="` + git + `"`,
 	}
 }
@@ -132,6 +140,11 @@ func theSnapshotOf(t *testing.T, c *commands, dir string) ran {
 	for _, pin := range snapshotPins(t) {
 		if !carries(snapshot.args, "--config", pin) {
 			t.Errorf("the check's snapshot of %s carries no `--config %s`: %v", dir, pin, snapshot.args)
+		}
+	}
+	for i, arg := range snapshot.args {
+		if arg == "--config" && i+1 < len(snapshot.args) && strings.HasPrefix(snapshot.args[i+1], "snapshot.max-new-file-size") {
+			t.Errorf("the check's snapshot of %s pins %s, want the workspace's own size limit left standing: %v", dir, snapshot.args[i+1], snapshot.args)
 		}
 	}
 	for _, suppressed := range []string{"--ignore-working-copy", "--at-op=@"} {
@@ -279,6 +292,20 @@ func rescuedBySnapshot(t *testing.T, d *rescuetest.Disk, edits map[string]string
 	return theRefsTheCheckWrote(t, before, refsOf(t, d), w.Branches)
 }
 
+// pushedByTheRole commits what a role's own jj has snapshotted of the workspace and pushes that
+// commit to the remote, which answers it. A case that reads what a role's jj recorded has to
+// run one, and the working copy it leaves behind holds that work and is unpushed: the check
+// would then rescue it and the files beside it as two branches, where the case is about the one
+// commit the check makes for the files. Committing it and pushing it leaves the working copy
+// empty again, so that one commit is the whole of what the check has to push.
+func pushedByTheRole(t *testing.T, d *rescuetest.Disk, message string) string {
+	t.Helper()
+	d.JJ("commit", "-m", message)
+	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
+	d.Run(d.Clone, "git", "push", "--quiet", "origin", commit+":refs/heads/main")
+	return commit
+}
+
 // requireIndexWithoutStatData fails the test where the workspace's colocated git index carries
 // stat data. The fixture is the pod's own state: an index jj wrote and no git command has
 // refreshed since, every entry of it carrying ctime, mtime, dev, ino, uid, gid and size 0, which
@@ -360,11 +387,16 @@ func TestADivergedGitHeadIsRescuedAsOneCommitWithoutChangingTheWorkspace(t *test
 	}
 }
 
-// A new file above the size limit the workspace's own configuration sets is rescued. The check
-// pins its own limit on the snapshot's command line, above anything a pod's volume holds, and a
-// command line outranks every configuration file: this workspace holds jj's default of 1 MiB in
-// its repository configuration, a role's own jj leaves the 2 MiB file out for it, and the check
-// carries it all the same.
+// A new file above the size limit the workspace's own configuration sets is rescued. The
+// snapshot runs under that limit — a pin above it would have jj track the file in the role's
+// own working-copy commit, where it would stay — so jj refuses the file, and the check carries
+// it into the tree it pushes through a scratch index of its own (rescue.carried). This
+// workspace holds jj's default of 1 MiB in its repository configuration and a 2 MiB file, which
+// a role's own jj leaves out for it.
+//
+// What the carry must not do is track that file for the role: the working copy jj holds the
+// workspace at is read before the check and after it, and tracks the file no more after than
+// before, which `jj st` says in its own words as well.
 func TestANewFileAboveTheWorkspacesOwnSizeLimitIsRescued(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	d.JJ("config", "set", "--repo", "snapshot.max-new-file-size", `"1MiB"`)
@@ -376,7 +408,9 @@ func TestANewFileAboveTheWorkspacesOwnSizeLimitIsRescued(t *testing.T) {
 	// A role's own jj snapshots what it can and leaves the file out for the workspace's limit,
 	// so the working copy it writes holds every file of the tree but this one.
 	d.JJ("status")
-	if tracked := d.Git("ls-tree", "-r", "--name-only", workingCopy(t, d)); strings.Contains(tracked, "big.bin") {
+	wasAt := workingCopy(t, d)
+	tracked := d.Git("ls-tree", "-r", "--name-only", wasAt)
+	if strings.Contains(tracked, "big.bin") {
 		t.Fatalf("the working copy a role's own jj wrote holds big.bin (%q), want it refused for the workspace's own limit", tracked)
 	}
 	head := d.Git("rev-parse", "HEAD")
@@ -392,23 +426,85 @@ func TestANewFileAboveTheWorkspacesOwnSizeLimitIsRescued(t *testing.T) {
 	if size := d.Run(d.Remote, "git", "cat-file", "-s", commit+":big.bin"); size != strconv.Itoa(big) {
 		t.Errorf("the rescued commit's big.bin is %s bytes, want the %d the workspace holds", size, big)
 	}
+	if now, was := d.Git("ls-tree", "-r", "--name-only", workingCopy(t, d)), tracked; now != was {
+		t.Errorf("the role's working copy (%s, was %s) tracks %q after the check, want the %q it tracked before: the carry is made in a scratch index and tracks nothing of the role's",
+			workingCopy(t, d), wasAt, now, was)
+	}
+	if status := d.JJ("status"); !strings.Contains(status, "? big.bin") {
+		t.Errorf("`jj st` says %q after the check, want big.bin still among its untracked paths", status)
+	}
 }
 
-// A workspace whose snapshot refused files fails, and nothing of it is pushed: those files are in
-// no commit the check can push, and a workspace reported clean would have the pod replaced and
-// them lost. The failure names ten of them and counts the rest, which is what keeps the message
-// inside what Dispatch takes (rescue.maxRefusedNamed).
+// The two pins that say what a file's own bytes and mode are recorded as outrank the
+// repository's own configuration of them, which is what a pin read as text does not show. This
+// workspace configures the other value of each — working-copy.eol-conversion = "input", which
+// records a file of CRLF lines with LF, and working-copy.exec-bit-change = "ignore", which
+// records the mode the commit under it carries rather than the mode the file has — and holds
+// two pairs of files.
 //
-// The limit is lowered here through the package's own variable, since the snapshot pins it on its
-// command line and a command line outranks every configuration file a test could plant.
-func TestAWorkspaceWhoseSnapshotRefusedFilesFailsNamingTenOfThem(t *testing.T) {
-	rescue.SetSnapshotMaxNewFileSize(t, "1KiB")
+// A role's own jj snapshots the first pair and loses both: measured on this build, the commit
+// it wrote holds `x\n` for the CRLF file and mode 100644 for the executable. That commit is
+// pushed, so the one commit left for the check to make is the one for the files beside it. The
+// second pair is written after that snapshot and is new to the check's own, which records
+// `x\r\n` and mode 100755 under the same repository configuration — and nothing re-records the
+// first pair, since jj answers `No snapshot needed.` for a file nothing has touched since.
+func TestTheSnapshotsPinsOutrankTheWorkspacesOwnBytesAndModeConfiguration(t *testing.T) {
 	d := rescuetest.New(t, issue)
-	var refused []string
+	d.JJ("config", "set", "--repo", "working-copy.eol-conversion", `"input"`)
+	d.JJ("config", "set", "--repo", "working-copy.exec-bit-change", `"ignore"`)
+	executable := func(name string) {
+		t.Helper()
+		if err := os.Chmod(filepath.Join(d.Workspace, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d.Write(d.Workspace, "role-crlf.txt", "x\r\n")
+	d.Write(d.Workspace, "role.sh", "#!/bin/sh\necho hi\n")
+	executable("role.sh")
+	role := pushedByTheRole(t, d, "the pair a role's own jj recorded")
+	if size := d.Git("cat-file", "-s", role+":role-crlf.txt"); size != "2" {
+		t.Fatalf("a role's own jj recorded role-crlf.txt as %s bytes, want the 2 of `x\\n`: this case stands on the repository's configuration losing the file's own bytes", size)
+	}
+	if mode := d.Git("ls-tree", role, "--", "role.sh"); !strings.HasPrefix(mode, "100644 ") {
+		t.Fatalf("a role's own jj recorded role.sh as %q, want mode 100644: this case stands on the repository's configuration losing the file's own mode", mode)
+	}
+	d.Write(d.Workspace, "crlf.txt", "x\r\n")
+	d.Write(d.Workspace, "run.sh", "#!/bin/sh\necho hi\n")
+	executable("run.sh")
+
+	w := only(t, d, d.Check(context.Background(), prefix))
+	if w.Status != rescue.Rescued || len(w.Branches) != 1 {
+		t.Fatalf("the check reported %+v, want one rescued branch holding the files as the worktree holds them", w)
+	}
+	commit := w.Branches[0].Commit
+	if size := d.Run(d.Remote, "git", "cat-file", "-s", commit+":crlf.txt"); size != "3" {
+		t.Errorf("the rescued commit's crlf.txt is %s bytes, want the 3 of `x\\r\\n` the worktree holds", size)
+	}
+	if got, want := d.Run(d.Remote, "git", "rev-parse", commit+":crlf.txt"), d.Git("hash-object", "--no-filters", "--", "crlf.txt"); got != want {
+		t.Errorf("the rescued commit's crlf.txt is the blob %s, want %s, the worktree's own bytes", got, want)
+	}
+	if mode := d.Run(d.Remote, "git", "ls-tree", commit, "--", "run.sh"); !strings.HasPrefix(mode, "100755 ") {
+		t.Errorf("the rescued commit holds %q, want run.sh at mode 100755, as the worktree holds it", mode)
+	}
+}
+
+// A workspace whose snapshot left out paths the carry cannot add fails, and nothing of it is
+// pushed: those paths are in no commit the check can push, and a workspace reported clean would
+// have the pod replaced and them lost. The failure names ten of them and counts the rest, which
+// is what keeps the message inside what Dispatch takes (rescue.maxNamedPaths).
+//
+// The fifteen are the fail-closed case the check's own text names. jj writes a refusal as
+// `<path>: <size>; the maximum size allowed is <limit>`, and the path is read as what stands
+// before the first `: `, so a file whose own name holds `: ` is cut short there: `git add -f`
+// is then handed `huge-01`, which is no path of the worktree, and the carry cannot add it.
+// Measured on this build, that is the line jj writes for a file named `huge-01: notes.bin`.
+func TestAWorkspaceWhoseRefusedPathsTheCarryCannotAddFailsNamingTenOfThem(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	d.JJ("config", "set", "--repo", "snapshot.max-new-file-size", `"1KiB"`)
+	var cut []string
 	for i := 1; i <= 15; i++ {
-		name := fmt.Sprintf("big-%02d.bin", i)
-		refused = append(refused, name)
-		d.Write(d.Workspace, name, strings.Repeat("x", 4096))
+		d.Write(d.Workspace, fmt.Sprintf("huge-%02d: notes.bin", i), strings.Repeat("x", 4096))
+		cut = append(cut, fmt.Sprintf("huge-%02d", i))
 	}
 	before := d.RemoteBranches()
 
@@ -416,23 +512,122 @@ func TestAWorkspaceWhoseSnapshotRefusedFilesFailsNamingTenOfThem(t *testing.T) {
 	if w.Status != rescue.Failed || len(w.Branches) != 0 {
 		t.Fatalf("the check reported %+v, want the workspace failed with nothing pushed", w)
 	}
-	if !strings.Contains(w.Error, "jj refused to snapshot files of "+d.Workspace) {
-		t.Errorf("the failure says %q, want it to name the workspace whose files jj refused", w.Error)
+	failedAt(t, w, rescuetest.FileStep)
+	if !strings.Contains(w.Error, "jj's snapshot of "+d.Workspace+" left out paths that git could not carry") {
+		t.Errorf("the failure says %q, want it to name the workspace whose left-out paths the carry could not add", w.Error)
 	}
 	named := 0
-	for _, name := range refused {
-		if strings.Contains(w.Error, name) {
+	for _, path := range cut {
+		if strings.Contains(w.Error, strconv.Quote(path)) {
 			named++
 		}
 	}
 	if named != 10 {
-		t.Errorf("the failure names %d of the %d refused files, want ten of them: %q", named, len(refused), w.Error)
+		t.Errorf("the failure names %d of the %d paths the carry could not add, want ten of them: %q", named, len(cut), w.Error)
 	}
 	if !strings.Contains(w.Error, "and 5 more") {
-		t.Errorf("the failure says %q, want it to count the five files it does not name", w.Error)
+		t.Errorf("the failure says %q, want it to count the five paths it does not name", w.Error)
 	}
 	if after := d.RemoteBranches(); !slices.Equal(after, before) {
-		t.Errorf("the remote's branches are %v, want %v unchanged: a workspace whose files were refused pushes nothing", after, before)
+		t.Errorf("the remote's branches are %v, want %v unchanged: a workspace holding a path no commit can hold pushes nothing", after, before)
+	}
+}
+
+// The files jj refused are carried, every one of them, and the workspace is rescued. A refusal
+// stops no other file: measured on this build, a second new file was snapshotted all the same,
+// so the rescued commit holds what jj took and what the carry added alike.
+func TestTheFilesTheSnapshotRefusedAreCarriedAndTheWorkspaceIsRescued(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	d.JJ("config", "set", "--repo", "snapshot.max-new-file-size", `"1KiB"`)
+	refused := map[string]string{}
+	for i := 1; i <= 3; i++ {
+		name := fmt.Sprintf("refused-%02d.bin", i)
+		refused[name] = strings.Repeat(strconv.Itoa(i), 4096)
+		d.Write(d.Workspace, name, refused[name])
+	}
+	d.Write(d.Workspace, "notes.txt", "a file small enough for the workspace's own limit\n")
+
+	w := only(t, d, d.Check(context.Background(), prefix))
+	if w.Status != rescue.Rescued || len(w.Branches) != 1 {
+		t.Fatalf("the check reported %+v, want one rescued branch holding the files jj refused", w)
+	}
+	commit := w.Branches[0].Commit
+	for name, body := range refused {
+		if got := d.Run(d.Remote, "git", "rev-parse", commit+":"+name); got != d.Git("hash-object", "--no-filters", "--", name) {
+			t.Errorf("the rescued commit's %s is the blob %s, want the %d bytes the workspace holds", name, got, len(body))
+		}
+	}
+	if got := d.Run(d.Remote, "git", "show", commit+":notes.txt"); got != "a file small enough for the workspace's own limit" {
+		t.Errorf("the rescued commit's notes.txt holds %q, want the file jj's own snapshot took beside the refused ones", got)
+	}
+}
+
+// A file whose name is not valid UTF-8 is skipped by jj's snapshot, with a warning and an exit
+// status of 0, and is carried into the tree the check pushes by its name's own bytes. The
+// workspace does not fail for it: the file is in the commit the check pushes, read back out of
+// it by that same name.
+//
+// Measured on this build, jj writes the skip as `  .: "bad\xFD.txt"` — the directory, then the
+// name as Rust debug-quotes it — which is the one place it says anything of the file.
+func TestAPathWhoseNameIsNotValidUTF8IsCarriedIntoTheRescuedCommit(t *testing.T) {
+	const skipped = "bad\xfd.txt"
+	d := rescuetest.New(t, issue)
+	d.Write(d.Workspace, skipped, "work under a name that is not valid UTF-8\n")
+	// A role's own jj skips it, so the working copy it wrote names no such path: what the
+	// rescued commit holds is the carry's doing and not jj's.
+	d.JJ("status")
+	if tracked := d.Git("ls-tree", "-r", "--name-only", "-z", workingCopy(t, d)); strings.Contains(tracked, skipped) {
+		t.Fatalf("the working copy a role's own jj wrote names %q (%q), want it skipped for its name", skipped, tracked)
+	}
+
+	w := only(t, d, d.Check(context.Background(), prefix))
+	if w.Status != rescue.Rescued || len(w.Branches) != 1 {
+		t.Fatalf("the check reported %+v, want one rescued branch holding the file jj skipped", w)
+	}
+	commit := w.Branches[0].Commit
+	if got := d.Run(d.Remote, "git", "show", commit+":"+skipped); got != "work under a name that is not valid UTF-8" {
+		t.Errorf("the rescued commit's %q holds %q, want the work the role left under that name", skipped, got)
+	}
+}
+
+// A directory holding a nested .jj directory is left out of jj's snapshot whole, with no warning
+// of any kind, and is carried into the tree the check pushes as it stands. The workspace does
+// not fail for it, and what the directory holds — the nested .jj's own files as the plain files
+// they are to git, and the file beside them — is in the commit the check pushes.
+//
+// What jj leaves out is read here first, so the case stands on the carry and not on jj:
+// measured on this build, a worktree holding d/.jj/f and d/plain.txt snapshotted to a tree with
+// neither of them in it, while top.txt was taken. That commit of a role's own is pushed, so the
+// one commit left for the check to make is the one that carries the directory.
+func TestADirectoryHoldingANestedJJIsCarriedIntoTheRescuedCommit(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	d.Write(d.Workspace, "d/.jj/f", "the nested jj's own file\n")
+	d.Write(d.Workspace, "d/plain.txt", "a file of the directory jj leaves out\n")
+	d.Write(d.Workspace, "top.txt", "a file jj's own snapshot takes\n")
+	role := pushedByTheRole(t, d, "the file a role's own jj took")
+	tracked := d.Git("ls-tree", "-r", "--name-only", role)
+	if !strings.Contains(tracked, "top.txt") {
+		t.Fatalf("the commit a role's own jj wrote holds %q, want top.txt among its files", tracked)
+	}
+	for _, left := range []string{"d/plain.txt", "d/.jj/f"} {
+		if strings.Contains(tracked, left) {
+			t.Fatalf("the commit a role's own jj wrote holds %s (%q), want the directory holding a nested .jj left out whole", left, tracked)
+		}
+	}
+
+	w := only(t, d, d.Check(context.Background(), prefix))
+	if w.Status != rescue.Rescued || len(w.Branches) != 1 {
+		t.Fatalf("the check reported %+v, want one rescued branch holding the directory jj left out", w)
+	}
+	commit := w.Branches[0].Commit
+	for file, want := range map[string]string{
+		"d/.jj/f":     "the nested jj's own file",
+		"d/plain.txt": "a file of the directory jj leaves out",
+		"top.txt":     "a file jj's own snapshot takes",
+	} {
+		if got := d.Run(d.Remote, "git", "show", commit+":"+file); got != want {
+			t.Errorf("the rescued commit's %s holds %q, want %q", file, got, want)
+		}
 	}
 }
 
@@ -493,6 +688,71 @@ func TestASparseWorkspaceHoldingPartOfItsTreeFails(t *testing.T) {
 	}
 	if after := d.RemoteBranches(); !slices.Equal(after, before) {
 		t.Errorf("the remote's branches are %v, want %v unchanged: a narrowed workspace has nothing snapshotted", after, before)
+	}
+}
+
+// A workspace whose sparse patterns are more than one and still cover its whole tree is no
+// narrowing, and it is rescued. `.` is the whole tree, and `jj sparse set --add <dir>` over a
+// workspace checked out whole leaves the two patterns `.` and that directory, which together
+// are still every file of the tree (measured on this build). A check that failed such a
+// workspace would hold a pod's replacement back for a tree it holds all of.
+func TestASparseWorkspaceWhosePatternsCoverItsWholeTreeIsRescued(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	d.Write(d.Workspace, "dir/kept.txt", "a file of the directory the patterns name\n")
+	d.JJ("sparse", "set", "--add", "dir")
+	patterns := strings.Fields(d.JJ("sparse", "list"))
+	if !slices.Equal(patterns, []string{".", "dir"}) {
+		t.Fatalf("the workspace's sparse patterns are %v, want the `.` and `dir` this case stands on", patterns)
+	}
+	// The file that directory holds was snapshotted by the jj that set the patterns, and is
+	// pushed, so the one commit left for the check to make is the one for the edit beside it.
+	pushedByTheRole(t, d, "the file of the directory the patterns name")
+	d.Write(d.Workspace, "notes.txt", "an edit in no commit\n")
+
+	w := only(t, d, d.Check(context.Background(), prefix))
+	if w.Status != rescue.Rescued || len(w.Branches) != 1 {
+		t.Fatalf("the check reported %+v, want the workspace rescued: its patterns hold every file of its tree", w)
+	}
+	commit := w.Branches[0].Commit
+	for file, want := range map[string]string{
+		"dir/kept.txt": "a file of the directory the patterns name",
+		"notes.txt":    "an edit in no commit",
+	} {
+		if got := d.Run(d.Remote, "git", "show", commit+":"+file); got != want {
+			t.Errorf("the rescued commit's %s holds %q, want %q", file, got, want)
+		}
+	}
+}
+
+// A workspace holding no sparse pattern at all fails, with nothing snapshotted and nothing
+// pushed, and in words of its own rather than the narrowed workspace's: it holds no file of its
+// tree, which is what an unfinished checkout leaves, and the failure names what a person runs
+// to put the files back. Measured on this build, `jj sparse set --clear` leaves exactly that
+// set, and `jj sparse list` then prints nothing.
+func TestASparseWorkspaceHoldingNoPatternAtAllFails(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	d.JJ("sparse", "set", "--clear")
+	if patterns := d.JJ("sparse", "list"); patterns != "" {
+		t.Fatalf("the workspace's sparse patterns are %q, want the empty set this case stands on", patterns)
+	}
+	before := d.RemoteBranches()
+
+	w := only(t, d, d.Check(context.Background(), prefix))
+	if w.Status != rescue.Failed || len(w.Branches) != 0 {
+		t.Fatalf("the check reported %+v, want the workspace holding no pattern failed with nothing pushed", w)
+	}
+	failedAt(t, w, rescuetest.FileStep)
+	if !strings.Contains(w.Error, "holds no sparse pattern") || !strings.Contains(w.Error, d.Workspace) {
+		t.Errorf("the failure says %q, want it to say that the workspace holds no sparse pattern", w.Error)
+	}
+	if !strings.Contains(w.Error, "jj sparse reset") {
+		t.Errorf("the failure says %q, want it to name the command a person puts the workspace's files back with", w.Error)
+	}
+	if strings.Contains(w.Error, "holds part of its tree") {
+		t.Errorf("the failure says %q, want the empty set's own words and not the narrowed workspace's", w.Error)
+	}
+	if after := d.RemoteBranches(); !slices.Equal(after, before) {
+		t.Errorf("the remote's branches are %v, want %v unchanged: a workspace holding no pattern has nothing snapshotted", after, before)
 	}
 }
 

@@ -528,25 +528,20 @@ func TestPodUpdateHoldsTheRoundWhenAWorkspaceCheckFails(t *testing.T) {
 		step: rescuetest.FileStep,
 		says: "holds part of its tree",
 	}, {
-		name: "a file jj refused to snapshot",
-		// The snapshot pins its size limit on its own command line, above anything a pod's
-		// volume holds, and a command line outranks every configuration file: the one file jj
-		// refuses here is one above that pin, which the check's own package reaches by lowering
-		// it (rescue.SetSnapshotMaxNewFileSize) and this one reaches with a sparse file of 65
-		// GiB. Measured on this pod: jj read the size from the file's metadata, refused it in
-		// 46 ms and read none of it, and the volume's free space did not move.
-		disk: func(t *testing.T, d *rescuetest.Disk) {
-			huge, err := os.Create(filepath.Join(d.Workspace, "huge.bin"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer huge.Close()
-			if err := huge.Truncate(65 << 30); err != nil {
-				t.Fatal(err)
-			}
+		name: "a path jj's snapshot left out that git could not carry",
+		// The snapshot runs under the workspace's own size limit, and what jj refuses for it is
+		// carried into the tree the check pushes — except where the refusal names a path the
+		// carry cannot add. jj writes a refusal as `<path>: <size>; ...`, so a file whose own
+		// name holds `: ` is cut short at it and `git add -f` is handed a path that is not
+		// there, which is the fail-closed answer and loses no file silently (the check's own
+		// package reads the same fixture, with fifteen of them, in
+		// TestAWorkspaceWhoseRefusedPathsTheCarryCannotAddFailsNamingTenOfThem).
+		disk: func(_ *testing.T, d *rescuetest.Disk) {
+			d.JJ("config", "set", "--repo", "snapshot.max-new-file-size", `"1MiB"`)
+			d.Write(d.Workspace, "huge: notes.bin", strings.Repeat("x", 2*1024*1024))
 		},
 		step: rescuetest.FileStep,
-		says: "jj refused to snapshot files of",
+		says: "left out paths that git could not carry",
 	}, {
 		name: "a read of a worktree's files the bound cuts",
 		// Another worktree of the clone, whose files the check reads with the whole-tree git

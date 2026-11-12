@@ -26,8 +26,13 @@
 // the pod.
 //
 // The snapshot writes the colocated git index, so a role's own staged git index in that
-// workspace can be overwritten. The file content of that role's work is not lost with it: the
-// snapshot reads every file of the worktree as it stands and carries it.
+// workspace can be overwritten. One file of that index goes with it, and only one: a file
+// .gitignore ignores that a role forced in with `git add -f`. jj never commits such a file,
+// and the snapshot writes an index that does not name it, so it goes at the next jj command
+// that checks out a new working-copy commit. The git read this snapshot replaces keeps it,
+// so that file is the one this check loses where the git read would have carried it. Every
+// other file of the worktree is read as it stands and carried, the paths the snapshot itself
+// leaves out among them (snapshotTree).
 package rescue
 
 import (
@@ -37,6 +42,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +50,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -261,6 +268,20 @@ func (s step) failed(err error) error {
 	return fmt.Errorf("%s failed after %s: %w", s.what, time.Since(s.started).Round(time.Millisecond), err)
 }
 
+// folded is two of a workspace's failures as the one text its entry carries, the earlier first.
+// Either may be nil. An entry is one field of a log line and one line of a notice, and
+// errors.Join would write a newline between the two, so they are joined with "; " here instead:
+// the step the first of them names is then still what a reader reads first (rescuetest.Step).
+func folded(earlier, later error) error {
+	switch {
+	case earlier == nil:
+		return later
+	case later == nil:
+		return earlier
+	}
+	return fmt.Errorf("%w; %w", earlier, later)
+}
+
 // check is one workspace's check and push. The workspace's repository is the one its git names
 // (its common git directory), so a directory under workspaces/ that is no git worktree is an error
 // rather than a pass: whatever it holds, nothing can push it.
@@ -441,9 +462,11 @@ func check(ctx context.Context, req Request, dir string, used, seen map[string]b
 	var unread error
 	// cut is a read the workspace's bound stopped, and it is the one failure that ends the walk:
 	// every worktree after it has no more of that bound than this one had. Every other failure —
-	// a stale working copy, a narrowed workspace, a file jj refused — is kept in unread and the
-	// walk goes on to the next worktree, whose files the bound still has the time to read. The
-	// entry fails either way, and unread may hold more than one failure.
+	// a stale working copy, a narrowed workspace, a path the snapshot left out that git could not
+	// carry — is kept in unread and the walk goes on to the next worktree, whose files the bound
+	// still has the time to read. The entry fails either way, and unread may hold more than one
+	// failure. Every failure below that ends the check carries what unread holds with it
+	// (folded), so an earlier worktree's is still named in the entry.
 	cut := false
 	readRun := run
 	if deadline, ok := ctx.Deadline(); ok {
@@ -467,7 +490,7 @@ func check(ctx context.Context, req Request, dir string, used, seen map[string]b
 			if readRun.ctx.Err() != nil {
 				why, cut = "could not be read in the time the workspace's bound left for them", true
 			}
-			unread = errors.Join(unread, at.failed(
+			unread = folded(unread, at.failed(
 				fmt.Errorf("the files %s holds that no commit does %s, so they are not rescued: %w", w, why, err)))
 			continue
 		}
@@ -476,7 +499,7 @@ func check(ctx context.Context, req Request, dir string, used, seen map[string]b
 		}
 		tree, err := run.git(clone, nil, "rev-parse", edits+"^{tree}")
 		if err != nil {
-			return fail(at.failed(err))
+			return fail(folded(at.failed(err), unread))
 		}
 		same := false
 		for _, tip := range tips {
@@ -492,7 +515,7 @@ func check(ctx context.Context, req Request, dir string, used, seen map[string]b
 	if len(tips) > 1 {
 		independent, err := run.git(clone, nil, append([]string{"merge-base", "--independent"}, tips...)...)
 		if err != nil {
-			return fail(at.failed(err))
+			return fail(folded(at.failed(err), unread))
 		}
 		tips = fields(independent)
 		slices.Sort(tips)
@@ -514,11 +537,11 @@ func check(ctx context.Context, req Request, dir string, used, seen map[string]b
 		}
 		at = began("the leak guard's check of the push")
 		if err := guardPush(ctx, req, run, clone, pushed); err != nil {
-			return fail(errors.Join(at.failed(err), unread))
+			return fail(folded(at.failed(err), unread))
 		}
 		at = began("the push of the rescue branches to the remote")
 		if _, err := run.git(clone, []string{"GIT_TERMINAL_PROMPT=0"}, append([]string{"push", "--atomic", "--quiet", "origin"}, refspecs...)...); err != nil {
-			return fail(errors.Join(at.failed(fmt.Errorf("push %s: %w", strings.Join(refspecs, " "), err)), unread))
+			return fail(folded(at.failed(fmt.Errorf("push %s: %w", strings.Join(refspecs, " "), err)), unread))
 		}
 		result.Branches = append(result.Branches, pushed...)
 	}
@@ -728,32 +751,38 @@ func (r runner) jj(dir string, args ...string) (string, error) {
 	return r.command(dir, nil, nil, "jj", append([]string{"--ignore-working-copy", "--at-op=@", "--no-pager", "--color=never", "-R", dir}, args...)...)
 }
 
-// snapshotMaxNewFileSize is the size limit the snapshot pins, set above any file a pod's volume
-// can hold: a new file larger than the limit is one jj refuses to snapshot and `git add --all`
-// would have kept, so the limit is put where nothing meets it. It is a variable because the
-// snapshot's own `--config` outranks every configuration file a test could plant, so lowering
-// it here is the only way a test reaches the refusal snapshotTree reads.
-var snapshotMaxNewFileSize = "64GiB"
-
 // snapshot takes jj's own snapshot of the worktree at dir: jj stats the files it tracks against
 // the per-file state it keeps and hashes only what changed, which costs what any jj command of
 // a role costs, where the git read it replaces hashes every tracked file of a pod's workspace
 // (worktreeRead). It returns what jj wrote to its standard error, which its caller must read:
-// jj refuses to snapshot a file above the size limit with a warning there and an exit status of
-// 0, so that refusal reaches a caller nowhere else.
+// jj refuses a file above the workspace's size limit and skips a path whose name is not valid
+// UTF-8, each with a warning there and an exit status of 0, so what it left out reaches a
+// caller nowhere else (snapshotTree, leftOut).
 //
 // It carries neither --ignore-working-copy nor --at-op, since either one suppresses the
 // snapshot; that is why it cannot go through runner.jj.
 //
 // Every pin is on the command line, which outranks the repository's, the workspace's and the
-// user's configuration, so none of theirs changes what the snapshot does. Five hold this
-// build's own default: no file-system monitor is started (fsmonitor.backend), no filter of
-// git's runs over a file (git.filter.enabled), nothing is signed and no signature is remade
+// user's configuration, so none of theirs changes what the snapshot does, and that was measured
+// on this build on 2026-11-12: with a repository configuring the other value of each of the
+// last two below, the snapshot recorded what the command line pinned. Eight hold this build's
+// own default. No file-system monitor is started (fsmonitor.backend), no filter of git's runs
+// over a file (git.filter.enabled), nothing is signed and no signature is remade
 // (signing.backend, signing.behavior), and every file of the tree is tracked
 // (snapshot.auto-track, quoted because this build reads an unquoted all() as a bare string).
 // snapshot.auto-update-stale is a default as well, and is pinned because a configuration that
-// turns it on has jj write the worktree's own files, which this check never does. The last two
-// are no defaults: the size limit above, and the git jj starts.
+// turns it on has jj write the worktree's own files, which this check never does. So are the
+// two that say what a file's own bytes and mode are recorded as: working-copy.eol-conversion,
+// which under any other value would record other bytes than the worktree holds — a file of
+// CRLF lines recorded with LF — and working-copy.exec-bit-change, which under `ignore` would
+// record the mode the commit under it carries rather than the mode the file has. The ninth is
+// no default: the git jj starts.
+//
+// The size limit is not among them. jj refuses a new file above the workspace's own
+// snapshot.max-new-file-size, and a pin above that limit would have jj track the file in the
+// role's own working-copy commit, where it stays tracked long after this check is over. So the
+// snapshot runs under the workspace's own limit, and what it refused is carried into the tree
+// this check pushes by a git that writes nothing of the role's (snapshotTree, carried).
 func (r runner) snapshot(dir string) (string, error) {
 	git, err := exec.LookPath("git")
 	if err != nil {
@@ -767,7 +796,8 @@ func (r runner) snapshot(dir string) (string, error) {
 		`signing.behavior="keep"`,
 		`snapshot.auto-track="all()"`,
 		"snapshot.auto-update-stale=false",
-		"snapshot.max-new-file-size=" + jjString(snapshotMaxNewFileSize),
+		`working-copy.eol-conversion="none"`,
+		`working-copy.exec-bit-change="auto"`,
 		"git.executable-path=" + jjString(git),
 	} {
 		args = append(args, "--config", pin)
@@ -920,19 +950,21 @@ func heldByJJ(dir string) bool {
 
 // edits is one commit holding the workspace's files as they stand, on top of head, when they
 // differ from head's tree; "" when they do not. A file .gitignore ignores is left out, as a
-// role's own push would leave it.
+// role's own push would leave it; the one exception is a directory jj's snapshot leaves out
+// whole for a nested .jj, which is carried as it stands (nestedJJ).
 //
 // Where the worktree holds a .jj directory, the tree is jj's own: the check takes jj's snapshot
-// of the worktree and then the tree of the working-copy commit that snapshot wrote
-// (snapshotTree). Where it does not, the tree is git's, read into an index of its own from a
-// copy of the worktree's where it has one, so that neither the worktree's index nor any ref
-// moves (indexTree). The two answer the same question, and the jj one is the one a pod can
-// afford: the git read hashes every tracked file there (worktreeRead).
+// of the worktree, then the tree of the working-copy commit that snapshot wrote, and then
+// carries into it every path that snapshot left out (snapshotTree). Where it does not, the
+// tree is git's, read into an index of its own from a copy of the worktree's where it has one,
+// so that neither the worktree's index nor any ref moves (indexTree). The two answer the same
+// question, and the jj one is the one a pod can afford: the git read hashes every tracked file
+// there (worktreeRead).
 //
 // Of the two reads, only the snapshot writes anything of that worktree's own: its colocated git
-// index, over a role's own staged index there, losing no file content (this package's doc). The
-// git read writes no index of the worktree at all, since it builds its tree in an index of its
-// own.
+// index, over a role's own staged index there, which costs the one file this package's doc
+// names and no other. The git read writes no index of the worktree at all, since it builds its
+// tree in an index of its own.
 //
 // A conflicted working copy is no failure. jj writes a conflict into the worktree itself, as
 // .jjconflict-base-0/, .jjconflict-side-0/, .jjconflict-side-1/, JJ-CONFLICT-README and the
@@ -1010,20 +1042,28 @@ func (r runner) indexTree(dir, head string) (string, error) {
 }
 
 // snapshotTree is the tree of the worktree's files as jj holds them once jj has snapshotted
-// them. The three things that can lose a file are read in this order.
+// them, with every path that snapshot left out carried into it. The things that can lose a file
+// are read in this order.
 //
 // The workspace's sparse patterns come first, before anything is written: a workspace narrowed
 // to part of its tree would have jj snapshot only that part, while the git read kept every file
-// outside it, so such a workspace fails having had nothing snapshotted.
+// outside it, so such a workspace fails having had nothing snapshotted. A set holding `.` is no
+// narrowing, whatever else it holds: `.` is the whole tree, a workspace checked out whole holds
+// it alone, and `jj sparse set --add d` over such a workspace leaves the two patterns `.` and
+// `d`, which together are still every file of the tree (measured on this build on 2026-11-12).
+// A set holding nothing is no narrowing either, but a workspace that holds no file of its tree
+// at all — what an unfinished checkout leaves, and the same set workspace.CheckedOut reads it
+// by — so it fails in words of its own.
 //
 // The snapshot itself fails the workspace where it fails, and is not made twice: it leaves the
 // working copy as the last jj command of a role wrote it, and no retry of ours makes a lock or
 // a stale working copy any newer. A stale one is the single case a person can clear, so the
 // failure says what they run, since nothing else tells them.
 //
-// The refusal comes last, out of the standard error the snapshot answers with: jj refuses to
-// snapshot a file above the size limit, says so there and exits 0, so a check that did not read
-// it would push a commit missing a file `git add --all` would have carried.
+// What the snapshot left out comes last (leftOut): a file above the workspace's own size limit,
+// a path whose name is not valid UTF-8, and a directory holding a nested .jj. Each is carried
+// into the tree this check pushes (carried), since the `git add --all` this read replaces kept
+// every one of them, and a commit missing one would be pushed as the whole of a role's work.
 func (r runner) snapshotTree(dir string) (string, error) {
 	patterns, err := r.jj(dir, "sparse", "list")
 	if err != nil {
@@ -1035,12 +1075,11 @@ func (r runner) snapshotTree(dir string) (string, error) {
 			held = append(held, p)
 		}
 	}
-	if len(held) != 1 || held[0] != "." {
-		what := strings.Join(held, ", ")
-		if what == "" {
-			what = "none"
-		}
-		return "", fmt.Errorf("the jj workspace %s holds part of its tree and not all of it, so jj's snapshot would leave out every file the git read kept: its sparse patterns are %s", dir, what)
+	switch {
+	case len(held) == 0:
+		return "", fmt.Errorf("the jj workspace %s holds no sparse pattern, so it holds no file of its tree and jj's snapshot of it would carry nothing the git read kept: that is what an unfinished checkout leaves, and a person clears it by running `jj sparse reset` in %s", dir, dir)
+	case !slices.Contains(held, "."):
+		return "", fmt.Errorf("the jj workspace %s holds part of its tree and not all of it, so jj's snapshot would leave out every file the git read kept: its sparse patterns are %s", dir, strings.Join(held, ", "))
 	}
 	stderr, err := r.snapshot(dir)
 	if err != nil {
@@ -1049,51 +1088,254 @@ func (r runner) snapshotTree(dir string) (string, error) {
 		}
 		return "", err
 	}
-	if files := refused(stderr); len(files) > 0 {
-		named, rest := files, ""
-		if len(files) > maxRefusedNamed {
-			named, rest = files[:maxRefusedNamed], fmt.Sprintf("; and %d more", len(files)-maxRefusedNamed)
-		}
-		return "", fmt.Errorf("jj refused to snapshot files of %s, which are therefore in no commit this check can push: %s%s", dir, strings.Join(named, "; "), rest)
-	}
 	commit, err := r.jj(dir, "log", "--no-graph", "-r", "@", "-T", "commit_id")
 	if err != nil {
 		return "", err
 	}
-	return r.git(dir, nil, "rev-parse", commit+"^{tree}")
+	tree, err := r.git(dir, nil, "rev-parse", commit+"^{tree}")
+	if err != nil {
+		return "", err
+	}
+	left, err := leftOut(dir, stderr)
+	if err != nil {
+		return "", err
+	}
+	if len(left) == 0 {
+		return tree, nil
+	}
+	return r.carried(dir, tree, left)
+}
+
+// carried is tree with each of paths added to it. It is built in a scratch index of its own, so
+// that neither the worktree's own index nor any ref moves and jj's record of what the role's
+// working copy tracks is untouched: jj's tree is read into that index, each path is added to it
+// with `git add -f`, which an ignore rule and jj's own refusal both leave standing, and the
+// tree that index writes is the answer. Measured on this build on 2026-11-12: such an index
+// carried a file jj had refused at its full 2 MiB and carried a directory holding a nested .jj
+// whole, and `jj st` in the workspace afterwards still reported the large file untracked.
+//
+// Each path is added by a command of its own, so one path git cannot add does not take the
+// others down with it, and a path it could not add fails the workspace: that file is in no
+// commit this check can push, and a workspace reported clean would have the pod replaced and
+// the file lost with it. The failure names ten of them and counts the rest, which is what keeps
+// the message inside what Dispatch takes, and writes each with %q, so that a name which is not
+// valid UTF-8 and a name holding the separator are both readable.
+func (r runner) carried(dir, tree string, paths []string) (string, error) {
+	scratch, err := os.MkdirTemp("", "legion-rescue-carry-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(scratch)
+	env := []string{"GIT_INDEX_FILE=" + filepath.Join(scratch, "index")}
+	if _, err := r.git(dir, env, "read-tree", tree); err != nil {
+		return "", err
+	}
+	var missed []string
+	for _, path := range paths {
+		if _, err := r.git(dir, env, "add", "-f", "--", path); err != nil {
+			missed = append(missed, path)
+		}
+	}
+	if len(missed) > 0 {
+		named, rest := missed, ""
+		if len(missed) > maxNamedPaths {
+			named, rest = missed[:maxNamedPaths], fmt.Sprintf(", and %d more", len(missed)-maxNamedPaths)
+		}
+		quoted := make([]string, len(named))
+		for i, path := range named {
+			quoted[i] = fmt.Sprintf("%q", path)
+		}
+		return "", fmt.Errorf("jj's snapshot of %s left out paths that git could not carry into the tree this check pushes, which are therefore in no commit it can push: %s%s", dir, strings.Join(quoted, ", "), rest)
+	}
+	return r.git(dir, env, "write-tree")
 }
 
 // staleWorkingCopy is what jj says of a working copy an operation elsewhere moved on from: it
 // refuses the snapshot and exits 1, so this text reaches the check inside the command's error.
 const staleWorkingCopy = "working copy is stale"
 
-// refusedHeader is the line jj writes before each file it refused to snapshot, and
-// maxRefusedNamed is how many of those files a failure names: a workspace of many of them would
-// otherwise make a message longer than Dispatch takes.
+// refusedHeader and skippedHeader are the lines jj writes before the paths its snapshot left
+// out, each with an exit status of 0, and maxNamedPaths is how many paths a failure names: a
+// workspace of many of them would otherwise make a message longer than Dispatch takes.
 const (
-	refusedHeader   = "Refused to snapshot some files:"
-	maxRefusedNamed = 10
+	refusedHeader = "Refused to snapshot some files:"
+	skippedHeader = "Skipped some paths because they are not valid UTF-8:"
+	maxNamedPaths = 10
 )
 
-// refused is the files jj's standard error says it refused to snapshot: the lines after the
-// header that start with two spaces, up to the first line that does not, which leaves jj's
-// Hint: block and the ` *` lines under it out.
-func refused(stderr string) []string {
-	var files []string
-	header := false
+// leftOut is every path of the worktree at dir that jj's snapshot did not carry and the `git
+// add --all` it replaces would have kept, each relative to dir and each once. There are three
+// kinds, and the first two are read out of the standard error of the snapshot itself, which is
+// where jj says it left them and where it says nothing else of them.
+//
+// A new file above the workspace's own snapshot.max-new-file-size is refused, one to a line
+// under refusedHeader, as `<path>: <size>; the maximum size allowed is <limit>`. The path is
+// what stands before the first `: `, so a path that holds `: ` itself is cut short; git can
+// then add nothing of that name and the workspace fails naming it (carried), which is the
+// fail-closed answer and loses no file silently.
+//
+// A path whose name is not valid UTF-8 is skipped, one to a line under skippedHeader, as the
+// directory it is in, then `: `, then the name as Rust debug-quotes it (`  .: "bad\xFD.txt"`).
+// The name is decoded back to the bytes it holds (unquoted) and joined to that directory, whose
+// `.` is the worktree's own root. A Go string holds those bytes whatever they are and
+// exec.Command passes them to git as they are, so nothing here re-encodes a name.
+//
+// A directory holding a .jj directory of its own is left out whole, and jj says nothing at all:
+// measured on this build on 2026-11-12, a worktree holding d/.jj/f and d/plain.txt snapshotted
+// to a tree with neither of them in it, where `git add --all` keeps both. So the worktree is
+// walked for one (nestedJJ) and the directory itself is the path carried.
+func leftOut(dir, stderr string) ([]string, error) {
+	var paths []string
+	add := func(path string) {
+		if path != "" && !slices.Contains(paths, path) {
+			paths = append(paths, path)
+		}
+	}
+	for _, line := range warned(stderr, refusedHeader) {
+		path, _, _ := strings.Cut(line, ": ")
+		add(path)
+	}
+	for _, line := range warned(stderr, skippedHeader) {
+		where, name, ok := strings.Cut(line, ": ")
+		if !ok {
+			// Not the shape jj writes. The line is carried as it stands rather than
+			// dropped, so that git refuses it and the workspace fails naming it.
+			add(line)
+			continue
+		}
+		add(filepath.Join(where, unquoted(name)))
+	}
+	nested, err := nestedJJ(dir)
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range nested {
+		add(path)
+	}
+	return paths, nil
+}
+
+// warned is what jj wrote under header on its standard error: the lines after it that start
+// with two spaces, up to the first line that does not, which leaves jj's Hint: block and the
+// ` *` lines under it out. Each is answered with that indent taken off and nothing else, since
+// a path may hold a space of its own at either end.
+func warned(stderr, header string) []string {
+	var lines []string
+	found := false
 	for line := range strings.Lines(stderr) {
 		line = strings.TrimRight(line, "\r\n")
-		if !header {
-			header = strings.Contains(line, refusedHeader)
+		if !found {
+			found = strings.Contains(line, header)
 			continue
 		}
 		rest, ok := strings.CutPrefix(line, "  ")
 		if !ok {
 			break
 		}
-		files = append(files, strings.TrimSpace(rest))
+		lines = append(lines, rest)
 	}
-	return files
+	return lines
+}
+
+// nestedJJ is every directory under root that holds a .jj directory of its own, as a path
+// relative to root. jj leaves such a directory out of its snapshot whole (leftOut), so the
+// directory is what the carry adds, and `git add -f` over it keeps the nested .jj's own files
+// as the plain files they are to git. That `-f` also keeps a file of that directory an ignore
+// rule covers, which the snapshot and `git add --all` would both have left: the directory jj
+// left out is carried as it stands rather than read a second way, and work is kept rather than
+// lost.
+//
+// The worktree's own .jj is no nesting and is not one of them. Neither it, nor a nested one,
+// nor any .git is descended into: jj's store and a nested git repository both hold more than
+// the worktree does, and what a nested git repository holds is carried by neither read (edits).
+// What is left is a walk of the worktree's directory entries, which hashes nothing and reads no
+// file.
+func nestedJJ(root string) ([]string, error) {
+	var found []string
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() || path == root {
+			return nil
+		}
+		switch entry.Name() {
+		case ".git":
+			return fs.SkipDir
+		case ".jj":
+			holder, err := filepath.Rel(root, filepath.Dir(path))
+			if err != nil {
+				return err
+			}
+			if holder != "." {
+				found = append(found, holder)
+			}
+			return fs.SkipDir
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("the worktree %s could not be walked for the nested .jj directories jj's snapshot leaves out: %w", root, err)
+	}
+	return found, nil
+}
+
+// unquoted is the bytes a Rust debug-quoted string stands for: jj writes the name of a path
+// that is not valid UTF-8 that way (`"bad\xFD.txt"`), and those bytes are the name on disk.
+// Text that is not quoted at both ends, and an escape this does not know, are left as they
+// stand: the path then names no file, git refuses it and the workspace fails naming it
+// (carried), which loses no file silently.
+func unquoted(text string) string {
+	body, ok := strings.CutPrefix(text, `"`)
+	if !ok {
+		return text
+	}
+	body, ok = strings.CutSuffix(body, `"`)
+	if !ok {
+		return text
+	}
+	var name []byte
+	for i := 0; i < len(body); {
+		if body[i] != '\\' || i+1 == len(body) {
+			name, i = append(name, body[i]), i+1
+			continue
+		}
+		switch escape := body[i+1]; escape {
+		case '\\', '"', '\'':
+			name, i = append(name, escape), i+2
+			continue
+		case 'n':
+			name, i = append(name, '\n'), i+2
+			continue
+		case 'r':
+			name, i = append(name, '\r'), i+2
+			continue
+		case 't':
+			name, i = append(name, '\t'), i+2
+			continue
+		case '0':
+			name, i = append(name, 0), i+2
+			continue
+		case 'x':
+			if i+4 <= len(body) {
+				if b, err := strconv.ParseUint(body[i+2:i+4], 16, 8); err == nil {
+					name, i = append(name, byte(b)), i+4
+					continue
+				}
+			}
+		case 'u':
+			if braced, ok := strings.CutPrefix(body[i+2:], "{"); ok {
+				if digits, after, closed := strings.Cut(braced, "}"); closed {
+					if point, err := strconv.ParseUint(digits, 16, 32); err == nil && utf8.ValidRune(rune(point)) {
+						name, i = utf8.AppendRune(name, rune(point)), len(body)-len(after)
+						continue
+					}
+				}
+			}
+		}
+		name, i = append(name, body[i]), i+1
+	}
+	return string(name)
 }
 
 // emptyTree is git's tree with nothing in it.

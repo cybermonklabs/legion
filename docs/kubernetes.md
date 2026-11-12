@@ -4338,7 +4338,7 @@ A commit someone else made, which the pod fetched while it ran and GitHub delete
 Files in the workspace, or in another worktree of the clone the walk takes, that no commit holds become one commit on top of that worktree's git HEAD.
 For a worktree that holds a `.jj` directory those files come from jj's own snapshot of that worktree.
 For a worktree that holds no `.jj` directory they come from a copy of that worktree's index and `git add --all`, built in an index of its own, as before.
-A file `.gitignore` ignores is left out of either read, as a role's own push leaves it.
+A file `.gitignore` ignores that no index names is left out of either read, as a role's own push leaves it.
 What the snapshot writes was measured in an issue pod on 2026-11-12, on jj 0.45.1-sami.20260910 and git 2.47.3.
 A snapshot of a quiescent colocated worktree writes one jj operation, a new working-copy commit, the colocated git index, and one `refs/jj/keep/<commit>` ref in the shared clone.
 Where the worktree's git HEAD had moved behind jj's back, it prints `Reset the working copy parent to the new Git HEAD.` and writes three such refs: the new working-copy commit, the git HEAD it imported, and the empty commit it makes on that HEAD.
@@ -4346,10 +4346,17 @@ Where a bookmark points at the working-copy commit, it moves that bookmark and e
 That bookmark move is the move any `jj` command of any role makes in that same workspace.
 The worktree's git HEAD is unchanged in each case.
 The shared clone is on the pod's own disk, which goes with the pod.
-The snapshot writes the colocated git index, so a role's own staged git index in that workspace can be overwritten, while the file content of that role's work is still carried by the snapshot.
-The snapshot answers five cases differently from the git read.
-A workspace whose jj sparse patterns hold part of its tree fails, with nothing snapshotted, because a file outside those patterns is one the git read kept.
-Where jj refuses to snapshot files of a workspace, that workspace fails, and the failure names up to ten of those files and counts the rest.
+The snapshot writes the colocated git index, so a role's own staged git index in that workspace can be overwritten, while the file content of that role's work is still carried.
+One file of that index is not carried: a file `.gitignore` ignores that a role forced in with `git add -f`.
+jj never commits such a file, a snapshot alone leaves it in the index, and it goes at the next jj command that checks out a new working-copy commit.
+Today's whole-tree git read keeps it, so this is a file the snapshot loses and the check does not name.
+The snapshot answers seven cases differently from the git read, and three of them are carried rather than lost.
+A file above the workspace's own `snapshot.max-new-file-size`, which jj refuses with a warning and an exit status of 0, is carried into the rescued tree through a scratch git index seeded with jj's own tree (`git read-tree`, then `git add -f` for each path, then `git write-tree`).
+The check does not raise that limit: a snapshot that raised it would make jj track the file in the role's own working-copy commit, where it would stay, and the role's next push would carry it.
+A path whose name is not valid UTF-8, which jj skips with a warning of its own, is carried the same way.
+A directory holding a nested `.jj` directory, which jj leaves out whole and with no warning, is carried the same way, the whole directory with it.
+A path the carry cannot add fails the workspace, and the failure names up to ten such paths and counts the rest.
+A workspace whose jj sparse patterns do not cover its tree fails, with nothing snapshotted, because a file outside those patterns is one the git read kept; a set holding `.` covers the tree, and an empty set, which an unfinished checkout leaves, fails with words of its own.
 A snapshot that fails fails the workspace, and no second snapshot is made.
 A stale working copy is one such failure, and its message names `jj workspace update-stale` as what a person runs.
 A conflicted working copy is carried in jj's own shape (`.jjconflict-base-0/`, `.jjconflict-side-0/`, `.jjconflict-side-1/`, `JJ-CONFLICT-README` and the one-sided file) and does not fail, so no content is lost.
