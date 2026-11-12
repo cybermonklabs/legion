@@ -231,7 +231,8 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// scopeProjectInBody and withinProjectScope leaves the check here, as it leaves createIssue's
 	// (issue_create.go). It runs before the row is written: a credential that may write one
 	// project asks only of that project, and asking of every project is asking outside it.
-	if covers, scoped := s.callerProject(r); scoped && covers != project {
+	covers, scoped := s.callerProject(r)
+	if scoped && covers != project {
 		refuseWriteOutsideProjectScope(w, covers, project)
 		return
 	}
@@ -248,6 +249,7 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 		login:   goingRunLogin(caller),
 		actions: s.going.runnableBy(credential),
 		session: credential.session,
+		reads:   s.goingReadsFor(credential, scoped),
 	}
 	// Detached from the request, as a broadcast's deliveries are (broadcasts.go): SIGTERM
 	// cancels the server's lifetime before the HTTP drain begins, so a run bound to either the
@@ -413,6 +415,10 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest, start 
 		defer found.Unlock()
 		return append([]going.Hit{}, found.hits...)
 	}
+	// The read tools the caller may call, each made as the run's author (decision 22); the
+	// block's fill makes its read through the same functions, and the roster read is what the
+	// roster frame reports.
+	reads := s.goingRunReads(request, start)
 	ended := false
 	err := s.deps.Answerer.Run(answering, going.Request{
 		Words: request.Words,
@@ -425,6 +431,7 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest, start 
 		},
 		Bodies: s.goingBodies,
 		Offer:  offer,
+		Reads:  reads.funcs,
 		OnOutcome: func(outcome going.Outcome) error {
 			if running.Err() != nil {
 				// Cancelled under the answer on this process: the answer's ending is the
@@ -435,6 +442,21 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest, start 
 			parts := goingRunParts{Hits: hits(), Finished: true}
 			if outcome.StructuredOutput != "" {
 				parts.StructuredOutput = &outcome.StructuredOutput
+			}
+			if outcome.StructuredOutput != "" {
+				// After every text frame and before the proposal and the ending (R2): the block
+				// the structured reply wrote, filled from its read, and how fresh the roster the
+				// run read was (decision 18). Neither counts against the answer's word cut.
+				if block, drawn := reads.block(answering, outcome.Final, request.Words, decision.Display.Chart); drawn {
+					if err := emit(going.Event{Name: contracts.GoingEventBlock, Data: block}); err != nil {
+						return err
+					}
+				}
+				if roster, read := reads.rosterRead(); read {
+					if err := emit(going.Event{Name: contracts.GoingEventRoster, Data: roster}); err != nil {
+						return err
+					}
+				}
 			}
 			// A run whose answer came to nothing - it failed before the model answered or
 			// refused - proposes nothing either.

@@ -150,6 +150,13 @@ type deliveryPipelineQuery struct {
 	At string `query:"at"`
 }
 
+// projectActivityQuery is GET /api/v1/projects/{key}/activity's query.
+type projectActivityQuery struct {
+	// Weeks is how many ISO weeks the read spans, this week included: 1 to 52, default 8. Any
+	// other value is 400 INVALID_QUERY.
+	Weeks int `query:"weeks"`
+}
+
 // issueListQuery is GET /api/v1/issues's query: the filters and the offset page.
 type issueListQuery struct {
 	// Pinned, `true`, lists the caller's pinned issues; it needs the person scope, the pins
@@ -501,7 +508,10 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/projects/{key}/architecture-sources/sync":                {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
 	"POST /api/v1/projects/{key}/architecture-source/sync":                 {Status: http.StatusOK, Response: model.ArchitectureSource{}},
 	"GET /api/v1/projects/{key}/architecture":                              {Status: http.StatusOK, Response: model.ArchitectureTree{}},
-	"GET /api/v1/settings/project-default-assignees":                       {Status: http.StatusOK, Response: []projectDefaultAssignee{}},
+	"GET /api/v1/projects/{key}/activity": {
+		Status: http.StatusOK, Response: projectActivity{}, Params: projectActivityQuery{},
+	},
+	"GET /api/v1/settings/project-default-assignees": {Status: http.StatusOK, Response: []projectDefaultAssignee{}},
 	"PUT /api/v1/projects/{key}/default-assignee": {
 		Status: http.StatusOK, Response: projectDefaultAssignee{}, Request: projectDefaultAssigneeInput{},
 	},

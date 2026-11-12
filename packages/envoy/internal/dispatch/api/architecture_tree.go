@@ -19,39 +19,44 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	project := r.PathValue("key")
+	tree, err := s.architectureTree(r.Context(), r.PathValue("key"))
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, tree)
+}
+
+// architectureTree is GET /api/v1/projects/{key}/architecture's answer for project, and a 404
+// SOURCE_NOT_FOUND apiError for a project with no architecture source. The route and the going
+// run's architecture read (going_reads.go) answer through it alike.
+func (s *server) architectureTree(ctx context.Context, project string) (model.ArchitectureTree, error) {
 	pool := s.deps.Store.Pool
 	var tree model.ArchitectureTree
-	rows, err := pool.Query(r.Context(), `
+	rows, err := pool.Query(ctx, `
 		select repo, branch, last_commit, last_sync_at, last_error from architecture_sources
 		where project_key = $1 order by id
 	`, project)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return model.ArchitectureTree{}, err
 	}
 	tree.Sources, err = pgx.CollectRows(rows, pgx.RowToStructByPos[model.ArchitectureTreeSource])
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return model.ArchitectureTree{}, err
 	}
 	if len(tree.Sources) == 0 {
-		writeError(w, "SOURCE_NOT_FOUND", http.StatusNotFound, "no architecture source configured for "+project)
-		return
+		return model.ArchitectureTree{}, errorf(http.StatusNotFound, "SOURCE_NOT_FOUND", "no architecture source configured for %s", project)
 	}
-	components, byID, err := loadTreeComponents(r.Context(), pool, project)
+	components, byID, err := loadTreeComponents(ctx, pool, project)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return model.ArchitectureTree{}, err
 	}
-	issues, err := loadTreeIssues(r.Context(), pool, project)
+	issues, err := loadTreeIssues(ctx, pool, project)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return model.ArchitectureTree{}, err
 	}
-	if err := attachTreeIssues(r.Context(), pool, project, issues, byID); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if err := attachTreeIssues(ctx, pool, project, issues, byID); err != nil {
+		return model.ArchitectureTree{}, err
 	}
 
 	tree.Components = make([]model.ArchitectureTreeComponent, 0, len(components))
@@ -102,7 +107,7 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 	tree.Totals.Unassigned = len(tree.Unassigned)
 	tree.Totals.NotArchitectural = len(tree.NotArchitectural)
 	tree.Totals.RetiredLinks = len(tree.RetiredLinks)
-	WriteJSON(w, http.StatusOK, tree)
+	return tree, nil
 }
 
 // loadTreeComponents reads the project's current model — every source's components — in id

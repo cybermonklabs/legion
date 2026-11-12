@@ -384,7 +384,10 @@ type server struct {
 	routeIndex []routeIndexEntry
 	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
 	// write, held to the table this server mounts (going_catalogue.go).
-	going           GoingCatalogue
+	going GoingCatalogue
+	// goingReads is the route rows each read tool of a going run reads through, held to the
+	// table this server mounts (going_reads.go).
+	goingReads      map[string][]GoingRoute
 	adviceQueryHook func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
@@ -711,6 +714,13 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		panic("api.Register: the route table holds a row the going catalogue cannot hold: " + err.Error())
 	}
 	s.going = going
+	goingReads, err := goingReadRoutesOf(routes)
+	if err != nil {
+		// A read tool naming a row this table does not serve would offer a read nothing judges
+		// the caller's credential against, so the table is refused rather than mounted.
+		panic("api.Register: the route table does not serve a row a going read tool reads: " + err.Error())
+	}
+	s.goingReads = goingReads
 	if shapeless := shapelessRoutes(routes); len(shapeless) > 0 {
 		// A row with no shape is a row the generated OpenAPI document would leave out, so the
 		// one definition of the API would stop being one; the table is refused rather than

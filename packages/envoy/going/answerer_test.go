@@ -521,7 +521,8 @@ func TestStructuredOutputRefusedByA400FallsBackToProse(t *testing.T) {
 // TestRunTellsTheStructuredCallTheOffer: the structured call is told each offered action with its
 // argument schema and the chart the decision settled on, which is what lets it write their
 // arguments and the chart's block; the prose call that follows a refusal is told neither, since
-// prose carries no arguments and no block.
+// prose carries no arguments and no block. The chart is offered because the run holds a read that
+// fills one (TestNoBlockIsOfferedWithoutAReadThatFillsIt is the other side).
 func TestRunTellsTheStructuredCallTheOffer(t *testing.T) {
 	model := goingtest.NewModel(t, goingtest.Reply{
 		Final:        &goingtest.Final{Answer: "Claimed.", Arguments: `{"dispatch_claim":[{"issue":"DEMO-12"}]}`},
@@ -530,6 +531,9 @@ func TestRunTellsTheStructuredCallTheOffer(t *testing.T) {
 	answerer := testAnswerer(t, model, going.AnswererConfig{})
 	stream := &answerStream{}
 	request := testReads().request("claim DEMO-12", stream)
+	request.Reads = map[string]going.ReadFunc{going.ReadProjectActivity: func(context.Context, json.RawMessage) (going.Read, error) {
+		return going.Read{}, nil
+	}}
 	request.Offer = going.Offer{
 		Actions: []going.OfferedAction{
 			{Name: "dispatch_claim", Schema: json.RawMessage(`[{"name":"issue","kind":"string","required":true}]`)},

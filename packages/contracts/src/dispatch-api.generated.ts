@@ -1260,7 +1260,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (decision, text, item, cut, changed, none, block, roster, proposal, end, error) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on end or error. With a measured decision model the first frame is decision, what it chose before the answer was written, and the last before the ending is proposal, the arguments of each action it offered. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error ANSWER_DID_NOT_ARRIVE, which is how a stream ends when the pod that took the POST is gone. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, so an id tells a caller nothing it did not already know. */
+    /** @description One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (decision, text, item, cut, changed, none, block, roster, proposal, end, error) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on end or error. With a measured decision model the first frame is decision, what it chose before the answer was written, and the last before the ending is proposal, the arguments of each action it offered. After the answer's text frames and before the proposal come block, the one typed block the words asked for, filled from the read its spec names, and roster, {age_ms, source: live or stored}, when the run read the roster. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error ANSWER_DID_NOT_ARRIVE, which is how a stream ends when the pod that took the POST is gone. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, so an id tells a caller nothing it did not already know. */
     get: operations["getApiV1GoingRequestsByIdStream"];
     put?: never;
     post?: never;
@@ -2212,6 +2212,23 @@ export interface paths {
     put?: never;
     /** @description Create a project {key, name}: any signed-in person or agent session; a bearer names its session in actor. A key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF); combining marks, format characters, private-use characters and whitespace don't count) is 400 INVALID_PROJECT; a name over 80 characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS. */
     post: operations["postApiV1Projects"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{key}/activity": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The events of a project's issues counted per ISO week over the last ?weeks= weeks (default 8, 1 to 52), this week last: {project, weeks: [{week (2026-W45), start (Monday 00:00 UTC), events, kinds: {event type: count}}]}, every week of the span listed, a week with no event as 0. 400 INVALID_PROJECT for a key that is no project key, 400 INVALID_QUERY for a weeks outside that bound, 404 PROJECT_NOT_FOUND for a project Dispatch does not hold. */
+    get: operations["getApiV1ProjectsByKeyActivity"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -5157,6 +5174,19 @@ export interface components {
       key: string;
       name: string;
       open_asks: number;
+    };
+    ProjectActivity: {
+      project: string;
+      weeks: components["schemas"]["ProjectActivityWeek"][] | null;
+    };
+    ProjectActivityWeek: {
+      events: number;
+      kinds: {
+        [key: string]: number;
+      } | null;
+      /** Format: date-time */
+      start: string;
+      week: string;
     };
     ProjectDefaultAssignee: {
       assignee: null | string;
@@ -11295,6 +11325,41 @@ export interface operations {
       };
     };
   };
+  getApiV1ProjectsByKeyActivity: {
+    parameters: {
+      query?: {
+        weeks?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectActivity"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1ProjectsByKeyArchitecture: {
     parameters: {
       query?: {
@@ -13088,6 +13153,8 @@ export type PersonSignInRevokedResponse = components["schemas"]["PersonSignInRev
 export type PersonSignInsResponse = components["schemas"]["PersonSignInsResponse"];
 export type ProgressCount = components["schemas"]["ProgressCount"];
 export type Project = components["schemas"]["Project"];
+export type ProjectActivity = components["schemas"]["ProjectActivity"];
+export type ProjectActivityWeek = components["schemas"]["ProjectActivityWeek"];
 export type ProjectDefaultAssignee = components["schemas"]["ProjectDefaultAssignee"];
 export type ProjectDefaultAssigneeInput = components["schemas"]["ProjectDefaultAssigneeInput"];
 export type ProjectGatedSteps = components["schemas"]["ProjectGatedSteps"];

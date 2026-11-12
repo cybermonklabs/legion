@@ -103,12 +103,14 @@ func (c GoingCatalogue) runnableBy(caller goingCredential) []GoingAction {
 
 // goingRunStart is what a run is started with beyond its request row: the context chip, the
 // login its record is kept under ("" for a caller that is no person, whose run keeps no record),
-// the actions its caller may be offered, and the session its caller's credential proved.
+// the actions its caller may be offered, the session its caller's credential proved, and the read
+// tools its caller may call (goingReadsFor).
 type goingRunStart struct {
 	chip    *goingContext
 	login   string
 	actions []GoingAction
 	session string
+	reads   []string
 }
 
 // action is the runnable action of that name, and whether the caller may be offered one.

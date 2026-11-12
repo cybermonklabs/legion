@@ -78,8 +78,10 @@ Each is in `packages/contracts/src/dispatch-api.ts`:
   answer's `text`, `item`, `cut`, `changed`, `none`, `end` and `error` frames, and the four the
   command bar's decision and blocks add - `GoingDecisionEvent` (with `GoingDecidedAction` and
   `GoingDecidedContext`), `GoingProposalEvent` (with `GoingOffer`, `GoingInvocation` and
-  `GoingMissingArgument`), `GoingBlockEvent` (with `GoingBlockKind`) and `GoingRosterEvent`. A
-  frame union is not an OpenAPI response, and `packages/contracts/src/going.ts` holds them.
+  `GoingMissingArgument`), `GoingBlockEvent` (with `GoingBlockKind`, `GoingBlockData`,
+  `GoingBlockSource` and each kind's spec, `GoingChartSpec`, `GoingTableSpec`, `GoingMetricSpec`
+  and `GoingProgressSpec`) and `GoingRosterEvent`. A frame union is not an OpenAPI response, and
+  `packages/contracts/src/going.ts` holds them.
 - **`DispatchEvent` and the event payloads.** Go's `model.Event.Payload` is bytes, so the
   document can only say `payload: unknown`; `DispatchEvent` is the union over the same bytes,
   per event type, and is what every event read is typed as. The payloads themselves travel the

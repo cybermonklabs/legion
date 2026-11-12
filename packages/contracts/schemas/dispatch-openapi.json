@@ -4769,7 +4769,7 @@
     },
     "/api/v1/going/requests/{id}/stream": {
       "get": {
-        "description": "One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (decision, text, item, cut, changed, none, block, roster, proposal, end, error) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on end or error. With a measured decision model the first frame is decision, what it chose before the answer was written, and the last before the ending is proposal, the arguments of each action it offered. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error ANSWER_DID_NOT_ARRIVE, which is how a stream ends when the pod that took the POST is gone. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, so an id tells a caller nothing it did not already know.",
+        "description": "One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (decision, text, item, cut, changed, none, block, roster, proposal, end, error) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on end or error. With a measured decision model the first frame is decision, what it chose before the answer was written, and the last before the ending is proposal, the arguments of each action it offered. After the answer's text frames and before the proposal come block, the one typed block the words asked for, filled from the read its spec names, and roster, {age_ms, source: live or stored}, when the run read the roster. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error ANSWER_DID_NOT_ARRIVE, which is how a stream ends when the pod that took the POST is gone. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, so an id tells a caller nothing it did not already know.",
         "operationId": "getApiV1GoingRequestsByIdStream",
         "parameters": [
           {
@@ -8800,6 +8800,60 @@
         },
         "x-auth": "any",
         "x-write-scope": "deployment"
+      }
+    },
+    "/api/v1/projects/{key}/activity": {
+      "get": {
+        "description": "The events of a project's issues counted per ISO week over the last ?weeks= weeks (default 8, 1 to 52), this week last: {project, weeks: [{week (2026-W45), start (Monday 00:00 UTC), events, kinds: {event type: count}}]}, every week of the span listed, a week with no event as 0. 400 INVALID_PROJECT for a key that is no project key, 400 INVALID_QUERY for a weeks outside that bound, 404 PROJECT_NOT_FOUND for a project Dispatch does not hold.",
+        "operationId": "getApiV1ProjectsByKeyActivity",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "weeks",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectActivity"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
       }
     },
     "/api/v1/projects/{key}/architecture": {
@@ -21860,6 +21914,57 @@
           "open_asks",
           "gated_steps",
           "created_at"
+        ],
+        "type": "object"
+      },
+      "ProjectActivity": {
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "weeks": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectActivityWeek"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "project",
+          "weeks"
+        ],
+        "type": "object"
+      },
+      "ProjectActivityWeek": {
+        "properties": {
+          "events": {
+            "type": "integer"
+          },
+          "kinds": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "start": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "week": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "week",
+          "start",
+          "events",
+          "kinds"
         ],
         "type": "object"
       },

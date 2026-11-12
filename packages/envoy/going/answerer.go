@@ -40,7 +40,8 @@ Answer in at most %d words. An answer past that is cut where it passes them.
 Answer only from the items given to you. When they do not hold the answer, say that Dispatch holds no answer to the question; never answer from anything else you know.
 Link each item you use as a markdown link whose target is that item's own href, exactly as it is given to you.
 Never link anything else, and write no bare web address, host or email address in your words: a link to any other target reaches the reader as its own visible text alone, with the target dropped, and a word a reader's renderer would make a link of on its own is dropped from the answer whole, with the reader told the answer was changed.
-Call %s to search Dispatch again when the items you have do not answer the question. It takes q, the words to search for.`,
+Call %s to search Dispatch again when the items you have do not answer the question. It takes q, the words to search for.
+Call the other tools to read the counts, the progress, the roster, the activity and the delivery figures Dispatch holds when the question needs them. Every number you write comes from an item or a read you were given.`,
 	contracts.GoingAnswerWordMax, contracts.GoingSearchTool)
 
 // searchToolSchema is the one tool's arguments: the words to search for, and nothing else. The
@@ -201,9 +202,9 @@ func (a *Answerer) Blocks() (blocks, known bool) {
 	return false, false
 }
 
-// Request is one question and the two reads the answerer makes through its caller, which is what
-// lets this package stay outside internal/ while the reads live in the API package. Both reads
-// are required.
+// Request is one question and the reads the answerer makes through its caller, which is what
+// lets this package stay outside internal/ while the reads live in the API package. Search and
+// Bodies are required; Reads is the caller's to supply or leave empty.
 type Request struct {
 	// Words is the question.
 	Words string
@@ -222,6 +223,10 @@ type Request struct {
 	// the structured reply writes, and the display. The zero value offers no action and asks
 	// for no display, which is a run with no decision.
 	Offer Offer
+	// Reads are the read tools the caller lets this run call beside the search, by tool name
+	// (ReadRoster and the rest), each made as the run's author. A name it omits is a tool the
+	// model is not offered, and a block whose kind only that read fills is not offered either.
+	Reads map[string]ReadFunc
 }
 
 // Offer is what the decision model chose before the answer call, for that call to write: the
@@ -281,7 +286,7 @@ func (a *Answerer) Run(ctx context.Context, request Request, emit func(Event) er
 	call := agentloop.Request{
 		Model:  a.paced(run),
 		System: answerRules,
-		Tools:  []agentloop.Tool{run.searchTool()},
+		Tools:  append([]agentloop.Tool{run.searchTool()}, run.readTools()...),
 	}
 
 	outcome := Outcome{StructuredOutput: StructuredOutputRefused}
@@ -492,7 +497,8 @@ type answerRun struct {
 	searches  int
 	runesLeft int
 	spent     bool
-
+	// reads counts the read tools' calls, against readMax.
+	reads int
 	// input is the question with its items, as both calls are asked it; the structured call
 	// is asked it with the offer besides (offerText).
 	input string
@@ -722,16 +728,16 @@ func (r *answerRun) ask(items string) string {
 	return out.String()
 }
 
-// offerText is what the structured call is told beside the question: the actions the decision
-// offered, each with its argument schema, whose arguments the reply's arguments text carries as
-// decision 2 shapes it, and a chart where the decision settled on one. A run with no offer is
-// told only that it offers nothing, so its arguments are {}.
+// offerText is what the structured call is told beside the question: the blocks it may draw -
+// the kinds the words name, and a chart where the decision settled on one, each only where one
+// of the run's reads fills it (BlockGuide) - and the actions the decision offered, each with its
+// argument schema, whose arguments the reply's arguments text carries as decision 2 shapes it. A
+// run with no offer is told only that it offers nothing, so its arguments are {}.
 func (r *answerRun) offerText() string {
 	offer := r.request.Offer
+	chart := offer.Display == DisplayChart
 	var out strings.Builder
-	if offer.Display == DisplayChart {
-		out.WriteString("\n\nThe answer is best shown as a chart: write a chart block beside it.\n")
-	}
+	out.WriteString(BlockGuide(OfferedKinds(r.request.Words, chart, r.request.Reads), chart))
 	if len(offer.Actions) == 0 {
 		out.WriteString("\n\nYou are offered no action: write arguments as {}.\n")
 		return out.String()

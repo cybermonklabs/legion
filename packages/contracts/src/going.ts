@@ -249,18 +249,72 @@ export type GoingBlockKind =
   | "metric"
   | "timeline";
 
-/** One block drawn beside the answer: its kind, its title, its specification as the server
- *  parsed it against that kind's schema (the read it names, the fields and encodings, never a
- *  number), and `rows`, the records the server's own read of that source answered, which carry
- *  every number the block shows. */
+/** The part of every block's spec that names the read filling it: `source` is the read tool
+ *  (`read_progress`, `read_architecture`, `read_project_activity`, `read_delivery` or
+ *  `read_roster`), `params` the arguments the server ran it with, and `table` the table of its
+ *  answer the block's rows come from. A spec names fields and never carries a number. */
+export interface GoingBlockSource {
+  readonly source: string;
+  readonly params: Readonly<Record<string, unknown>>;
+  readonly table: string;
+}
+
+/** A chart: one series of at least two points, `x` the field along the axis (a week, a status, a
+ *  component, a day) and `y` the numeric field plotted, drawn as bars or a line. */
+export interface GoingChartSpec extends GoingBlockSource {
+  readonly x: string;
+  readonly y: string;
+  readonly mark: "bar" | "line";
+}
+
+/** A table: the rows' `columns`, in order. */
+export interface GoingTableSpec extends GoingBlockSource {
+  readonly columns: readonly string[];
+}
+
+/** A metric: one number, the one row's `field`, named by `label`, and at most one comparison,
+ *  the row's `compare` field named by `compare_label`; both absent for none. No axes, no series. */
+export interface GoingMetricSpec extends GoingBlockSource {
+  readonly field: string;
+  readonly label: string;
+  readonly compare?: string;
+  readonly compare_label?: string;
+}
+
+/** Progress: one bar per row, named by its `label` field, `done` of `total`. */
+export interface GoingProgressSpec extends GoingBlockSource {
+  readonly label: string;
+  readonly done: string;
+  readonly total: string;
+}
+
+/** Fields shared by every block frame: its title, and its rows, the records the server's own
+ *  read of the spec's source answered, cut to the fields the block draws. Every number a block
+ *  shows is a value of these rows. */
+interface GoingBlockFrame<K extends GoingBlockKind, S> {
+  readonly kind: K;
+  readonly title: string;
+  readonly spec: S;
+  readonly rows: readonly Readonly<Record<string, unknown>>[];
+}
+
+/** One block drawn beside the answer, after the answer's text frames and outside its word cut.
+ *  `issue_list` rows carry `key`, `title` and `status`; `agent_status` rows `session_id`,
+ *  `title`, `state`, `open_asks` and `last_activity`; `timeline` rows `at` (RFC3339), `lane`
+ *  and `label`; every other kind's rows carry the fields its spec names. */
+export type GoingBlockData =
+  | GoingBlockFrame<"chart", GoingChartSpec>
+  | GoingBlockFrame<"table", GoingTableSpec>
+  | GoingBlockFrame<"metric", GoingMetricSpec>
+  | GoingBlockFrame<"progress", GoingProgressSpec>
+  | GoingBlockFrame<"issue_list", GoingBlockSource>
+  | GoingBlockFrame<"agent_status", GoingBlockSource>
+  | GoingBlockFrame<"timeline", GoingBlockSource>;
+
+/** The frame carrying one typed block, filled from a read the server serves. */
 export interface GoingBlockEvent {
   readonly event: typeof GOING_EVENT_BLOCK;
-  readonly data: {
-    readonly kind: GoingBlockKind;
-    readonly title: string;
-    readonly spec: Readonly<Record<string, unknown>>;
-    readonly rows: readonly Readonly<Record<string, unknown>>[];
-  };
+  readonly data: GoingBlockData;
 }
 
 /** How fresh the roster the answer read was: `age_ms` since Dispatch's copy of the listener's

@@ -82,6 +82,12 @@ type routeRoster struct {
 	// envoy.ErrRefilling when reason is model.RouteReasonRefilling and envoy.ErrUnavailable
 	// otherwise. It is nil when the roster answered or the listener is unconfigured.
 	err error
+	// sent is when the listener was asked for this answer, by the database's clock: the sent_at
+	// of the stored row it came from, or of the fetch that stored it. It is zero for an answer no
+	// fetch stored - an unconfigured listener's, or one a shutdown drain or an end-to-end
+	// process asked for on its own request - which was read just now. The roster's age is the
+	// database's now less it (the going run's roster frame, decision 18).
+	sent time.Time
 }
 
 // state is the state the roster holds for a session: the row's own, or envoy.StateGone when the
@@ -331,6 +337,7 @@ func (c *rosterCache) remember(sent time.Time, answered bool, reason, retryAfter
 		}
 		roster = buildRouteRoster(listed)
 	}
+	roster.sent = sent
 	c.keep(sent, roster)
 	return roster, nil
 }
@@ -384,6 +391,7 @@ const storeRouteRosterQuery = `
 // refill as a refill, rather than each waiting out the listener on its own. Should the database
 // refuse the write, the waiting reads in this process are served own, which no other process sees.
 func (s *server) storeRouteRoster(ctx context.Context, sent time.Time, own routeRoster) routeRoster {
+	own.sent = sent
 	sessions := []byte("[]")
 	if len(own.sessions) > 0 {
 		encoded, err := json.Marshal(own.sessions)

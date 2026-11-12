@@ -139,6 +139,7 @@ POST /api/v1/messages/{id}/deliveries/{attempt}/accept bearer
 POST /api/v1/messages/{id}/reply bearer
 GET /api/v1/projects any
 POST /api/v1/projects any
+GET /api/v1/projects/{key}/activity any
 GET /api/v1/projects/{key}/architecture any
 GET /api/v1/projects/{key}/architecture-source any
 POST /api/v1/projects/{key}/architecture-source/sync any
