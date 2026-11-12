@@ -28,12 +28,12 @@ body: |-
   The plugin declares daemon API contract 84, whose state carries `mergeJumps`, `mergeHolds`,
   `mergeHeld` and `mergeJumpRecords`.
 
-  Rolling back to the release before this one is not free. The older daemon refuses the three
+  Rolling back to the release before this one is not free. The older daemon refuses the four
   new `ready_merge` payload fields on every retry of every such row this daemon wrote, which
   stops those merges, and its reader knows neither of the two new notice kinds, which holds
   every waiting notice of the project behind them. Two statements clear both, with `<KEY>` the
   Dispatch project key:
-  `update outbox set payload = payload - 'held' - 'heldSince' - 'heldTold' where kind = 'ready_merge' and (payload ? 'held' or payload ? 'heldSince' or payload ? 'heldTold') and split_part(issue, '-', 1) = '<KEY>';`
+  `update outbox set payload = payload - 'held' - 'heldSince' - 'heldTold' - 'heldPosted' where kind = 'ready_merge' and (payload ? 'held' or payload ? 'heldSince' or payload ? 'heldTold' or payload ? 'heldPosted') and split_part(issue, '-', 1) = '<KEY>';`
   and
   `delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' in ('merge-held', 'merge-jump-refused') and split_part(issue, '-', 1) = '<KEY>';`.
   The notices are deleted rather than rewritten, because an older kind would tell an architect
