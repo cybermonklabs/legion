@@ -241,12 +241,16 @@ the first ask. After that, copy it exactly from the second line of that ask's co
 root. A tree in which an issue stands at `phase: held` with `holdReason: escalated` takes the
 `held` key above for that issue, and a tree whose root's `architect.state` is `failed` takes the
 `architect failed:` key below. Neither takes the `event:` key, whichever wake or pass brought the
-tree to you. Park the tree only on the person's
-answer, and cite the ask's answer in the park's comment, whose first line is
+tree to you.
+Park the tree only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+A person's `Park it` answer to that ask is such a request. Only a park on that answer carries the
+mark: cite the ask's answer in the park's comment, whose first line is
 `Parked by Legion while it waits on: <the event>`, the mark that makes the park Legion's own hold
-(`skill://legion-controller/references/parked-decisions.md#deciding`, step 2).
-Set the root back to `todo` once you checked that the event has happened, a person asks, or a
-person's decision after the park gives its work a next step, as the escalated hold above says.
+(`skill://legion-controller/references/parked-decisions.md#deciding`, step 2). A park for any
+other reason that this rule allows gets no mark, as that step says.
+Set the root of a park with that mark back to `todo` once you checked that the event has
+happened, a person asks, or a person's decision after the park gives its work a next step, as the
+escalated hold above says.
 For a `todo` after your check, post a comment on the root that cites the park's mark and says
 what you checked.
 
