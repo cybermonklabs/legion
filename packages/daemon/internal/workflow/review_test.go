@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -552,6 +553,39 @@ func TestAMergeStateReadForAHeadTheRecordHasMovedPastIsDropped(t *testing.T) {
 	}
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the stale read the issue is in %s, want reviewing: the conflict was of a head the branch has left", got)
+	}
+}
+
+// The fence keeps the newest run of each check name with the head GitHub ran it on, so after a
+// push it still holds the runs of the head the push left until the new head's own CI settles.
+// Those runs say nothing about the new head: a round on the new head waits until a run of that
+// head itself has been reported and concluded (classify.ChecksConcludedOnHead, over
+// classify.HeadRuns), and the architect is told nothing while GitHub holds the new head blocked
+// for checks still running there. A head test that counted the left head's runs would tell the
+// architect the new head is stuck while its CI runs, naming the old head's checks, and would
+// count them into mergeWait.checkRuns: the very reading this change exists to keep honest.
+func TestARoundOnANewHeadIsNotJudgedByTheRunsOfTheHeadItLeft(t *testing.T) {
+	pool := migratedPool(t)
+	seedMergeStateRound(t, pool, record.MergeStateBlocked)
+	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+	apply("push", intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: headTwo, Pusher: "legion-reviewer[bot]"})
+	apply("sync", intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headTwo})
+	if got := recordedPR(t, pool, "LEGION-208"); len(got.CheckRuns) == 0 || got.CheckRuns[0].Head != headOne {
+		t.Fatalf("after the push the fence holds %+v, want the left head's run still there: this test proves nothing without it", got.CheckRuns)
+	}
+	apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headTwo,
+		HeadSHA: headTwo, Author: testReviewApp, Body: reviewBody("ship it", headTwo)})
+	apply("blocked", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headTwo,
+		Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked})
+	if got := issuePhase(t, pool); got != phase.Reviewing {
+		t.Fatalf("after the approval of %s the issue is in %s, want reviewing: GitHub holds the head blocked", headTwo, got)
+	}
+	if told := reviewStuckNotices(t, pool); len(told) != 0 {
+		t.Fatalf("the architect was told the round was stuck %+v, want nothing: no run of %s itself has been reported, and the only run in the fence is %s's",
+			told, headTwo, headOne)
+	}
+	if got := classify.HeadRuns(recordedPR(t, pool, "LEGION-208")); len(got) != 0 {
+		t.Fatalf("classify.HeadRuns = %+v, want none: every run in the fence ran on %s, the head the push left", got, headOne)
 	}
 }
 
