@@ -785,8 +785,8 @@ the first one checks its keys again before it counts as live once more, and besi
 **Every release keeps the build before it working** (Two builds at once, below):
 a rolling update runs the old build and the new build against one database and one NATS at once, and the page and the `dispatch` command of either build reach either process.
 A release is an exception to it only where this document says so, and each exception is named here or in the section that owns it.
-Three crossings came before this rule, each taken once:
-migration `0117` (Database migrations, below), which a deployment still on a release before it crosses with Dispatch stopped, before it runs more than one replica;
+Each crossing before this rule is named where it happened rather than counted here:
+the migrations the Database migrations section below marks as deployed with no server of the earlier release running, which a deployment still on a release before them crosses with Dispatch stopped;
 the release that introduced the process registry (`server.started`, below), deployed with no process of the release before it serving beside it;
 and the release that moves live updates to `/ws/live` and keys every write (INFRA-258, immediately below), which deploys with no server of the earlier release running because of its API.
 One exception is still to come rather than past: an upgrade of ygo that changes its update encoding (Two builds at once, Stored documents, below), which no build can roll through because the build that cannot read the new encoding is already serving when it arrives.
