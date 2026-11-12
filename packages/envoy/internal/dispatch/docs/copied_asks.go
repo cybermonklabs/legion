@@ -161,8 +161,9 @@ const projectCopiesLock = `select pg_advisory_xact_lock($1, hashtext($2))`
 // namespaces are the loop leases' (duty.leaseNamespace, "LOOP"), the test hooks' (the api package's
 // testHookLockNamespace, "HOOK"), a conditional edit's admission's
 // (conditionalEditQueueLockNamespace), the issue dependencies' (api's
-// lockProjectIssueDependencies) and the deployment's own issue dependencies' (api's
-// lockDeploymentIssueDependencies), each a first key of its own.
+// lockProjectIssueDependencies), the deployment's own issue dependencies' (api's
+// lockDeploymentIssueDependencies), one repository mapping's write (api's lockRepoProjectWrite)
+// and the rename graph's own (api's refuseRepoRenameChain), each a first key of its own.
 const copiedAsksLockNamespace int32 = 0x434F5059
 
 // lockProjectCopies serialises, for a project document, its project's copy bookkeeping: a
