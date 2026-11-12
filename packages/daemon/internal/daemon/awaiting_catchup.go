@@ -557,3 +557,42 @@ func (w *workflowRuntime) applyCatchUp(ctx context.Context, eventID string, fact
 	}
 	return nil
 }
+
+// applyFacts applies each fact of one sweep of supervision that this daemon has not applied
+// already, under source, and is the whole of what supervision is given of the workflow for that
+// (supervision.applyFacts). Each fact is applied on its own, as every fact applies, and the
+// first error is returned once every other fact of the batch has had its turn: one silence the
+// store refused is no reason to leave the rest of the sweep unapplied.
+//
+// Which ids are applied already is read first, in one query outside the fact lock
+// (intake.Applied), and that read is the point of taking the batch rather than one fact at a
+// time. A sweep runs every minute over every claim, and a claim that is silent and stays silent
+// mints the same id at every sweep for ever, since the id is the claim token and a last step
+// that does not move. A reading of the INFRA deployment on 2026-11-12 found 214 claims with a
+// last step more than an hour old (dispatch://INFRA-3163), so without this read the pass would
+// open 214 transactions a minute on the one advisory lock every fact of the daemon takes
+// (intake.ApplyFact), each one only to be told the fact was applied already.
+func (w *workflowRuntime) applyFacts(ctx context.Context, source string, facts []intake.Identified) error {
+	ids := make([]string, 0, len(facts))
+	for _, fact := range facts {
+		ids = append(ids, fact.ID)
+	}
+	applied, err := intake.Applied(ctx, w.pool, source, ids)
+	if err != nil {
+		return err
+	}
+	var first error
+	for _, fact := range facts {
+		if applied[fact.ID] {
+			continue
+		}
+		if _, err := intake.ApplyFact(ctx, w.pool, source, fact.ID, fact.Fact, w.handlers...); err != nil {
+			w.log.Warn("the workflow could not apply a fact a sweep of supervision read; it is read again at the next sweep",
+				"source", source, "id", fact.ID, "error", err)
+			if first == nil {
+				first = err
+			}
+		}
+	}
+	return first
+}

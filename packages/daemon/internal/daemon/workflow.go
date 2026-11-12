@@ -961,6 +961,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.outboxWake.Store(w.outbox)
 	supervision.supervisor.OnDurableState(w.claimDurableState)
 	supervision.enqueue = w.enqueueOutbox
+	supervision.applyFacts = w.applyFacts
 	w.attachIdleRelease(supervision)
 }
 

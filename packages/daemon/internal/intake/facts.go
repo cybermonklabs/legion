@@ -1104,6 +1104,15 @@ type WorkerSilent struct {
 
 func (WorkerSilent) isFact() {}
 
+// Identified is one fact and the id ApplyFact records it under (the eventID of its source). It
+// exists so that a caller that applies many facts at once can ask which of them are applied
+// already before it applies any (Applied), which is one query for the batch where ApplyFact
+// would take the fact lock once per fact only to be told the same.
+type Identified struct {
+	ID   string
+	Fact Fact
+}
+
 // Handler changes the workflow record inside the caller-owned transaction.
 type Handler interface {
 	Apply(context.Context, pgx.Tx, Fact) (Result, error)
