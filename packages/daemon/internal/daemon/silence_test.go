@@ -593,6 +593,17 @@ func TestSilentPhaseWorkerExits(t *testing.T) {
 		"the issue is not at work": {
 			set: func(r *podUpdateRig) { r.movesTo(phase.Held) },
 		},
+		// The merger merged the pull request, which ends its phase, and the root stands in
+		// merging, where record.AtWork holds it at work, until the rest of its tree leaves the
+		// workflow. That merger is owed no turn, and only the record's pull request says so
+		// (workflow.PhaseFinished): its silence is the ordinary shape of a finished merger.
+		"the merge its phase is for is already recorded": {
+			roles: []podUpdateRole{silentWorker(claim.RoleMerger)},
+			set: func(r *podUpdateRig) {
+				r.movesTo(phase.Merging)
+				r.recordsItsPullRequest(record.PullRequestMerged)
+			},
+		},
 		"the role does not work the issue's phase": {
 			roles: []podUpdateRole{silentWorker(claim.RoleTester)},
 			quiet: claim.RoleTester,
@@ -686,6 +697,18 @@ func (r *podUpdateRig) movesTo(to phase.Phase) {
 		return r.records.PutIssue(r.ctx, tx, issue)
 	}); err != nil {
 		r.t.Fatalf("move %s to %s: %v", podUpdateIssue, to, err)
+	}
+}
+
+// recordsItsPullRequest records the issue's pull request in the state named, as the daemon's own
+// reading of GitHub leaves it (record.Store.PutPullRequest).
+func (r *podUpdateRig) recordsItsPullRequest(state record.PullRequestState) {
+	r.t.Helper()
+	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+		return r.records.PutPullRequest(r.ctx, tx, record.PullRequest{State: state, Issue: podUpdateIssue,
+			Repo: "acme/widgets", Number: 42, Branch: "legion/" + podUpdateIssue, HeadSHA: "head", Failing: []string{}})
+	}); err != nil {
+		r.t.Fatalf("record the pull request of %s as %s: %v", podUpdateIssue, state, err)
 	}
 }
 
@@ -884,6 +907,34 @@ func TestWorkerBackgroundStalledIsToldAgainWhenTheSessionsReportMoves(t *testing
 	}
 	if got := rig.starts(); len(got) != 0 {
 		t.Fatalf("the supervise rows of %s = %+v, want none: neither telling sends that worker anything", podUpdateIssue, got)
+	}
+}
+
+// A merged root's merger whose own session's report of background work has stood past the bound
+// tells nobody: the merge ends its phase (workflow.PhaseFinished), the root stands in merging
+// until the rest of its tree leaves the workflow, and an architect told of that worker's
+// background work would be asked to decide about a worker of a phase that is over. The handler
+// of this fact reads the same record the silence handler reads (workflow's phaseWorkerRecord),
+// and this case holds that record to the exclusion for this fact too.
+func TestWorkerBackgroundOfAMergedRootsMergerTellsNobody(t *testing.T) {
+	worker := claim.RoleMerger
+	rig := newPodUpdateRig(t, silentWorker(worker))
+	rig.s.cfg.WorkerBackground = podUpdateBackground
+	rig.assigns(worker, silenceAssignment)
+	rig.movesTo(phase.Merging)
+	rig.recordsItsPullRequest(record.PullRequestMerged)
+	rig.goesQuiet(worker)
+	rig.reportsBackgroundWork(worker, "async-job")
+	rig.clock.advance(podUpdateBackground + time.Minute)
+
+	rig.sweepForSilence()
+
+	if got := rig.starts(); len(got) != 0 {
+		t.Fatalf("the supervise rows of %s = %+v, want none: a merged root's merger is owed no turn", podUpdateIssue, got)
+	}
+	if notices := rig.silenceNotices(); len(notices) != 0 {
+		t.Fatalf("the notices of %s = %+v, want none: the merge ended the phase whose worker the report is of",
+			podUpdateIssue, notices)
 	}
 }
 

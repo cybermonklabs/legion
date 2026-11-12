@@ -87,8 +87,9 @@ func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.Worker
 // read inside the fact's own transaction: the issue, the root of its tree, that tree's design
 // gate and the role's run. It answers nil for a fact there is nothing to do about — an issue the
 // record holds none of, a run of the issue the sweep did not read, a role that does not work the
-// issue's phase, or a key that yields no claim token — so each handler's own reading begins with
-// a record that is worth deciding on. Every store error is returned, never written over.
+// issue's phase, a phase its own terminating fact has already met (PhaseFinished), or a key that
+// yields no claim token — so each handler's own reading begins with a record that is worth
+// deciding on. Every store error is returned, never written over.
 //
 // The role term (PhaseWorkerRole, which SilentPhaseWorker and backgroundStalled both ask again
 // of the record) needs only the issue, which is in hand, so it is asked before the three reads
@@ -109,6 +110,21 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	}
 	if working := PhaseWorkerRole(*issue); working == "" || working != role {
 		return nil, nil
+	}
+	// A phase its own terminating fact has already met has no worker owed a turn
+	// (PhaseFinished): a merged root stands in merging, which record.AtWork holds at work, until
+	// the rest of its tree leaves the workflow, which can be days. Its merger going quiet over
+	// that stretch would otherwise be sent the task of a merge already done and its architect
+	// told nothing will prompt it, again after every quiet spell, so neither handler writes
+	// anything for it. The daemon's own resume paths skip the same issue for the same reason:
+	// the boot's resume of every phase worker (booted, resume.go), the task of a worker that
+	// says it is ready (readyWorkerTask, catch_up.go) and admission's start of a promoted tree's
+	// members (admit's startMidPhaseMembers). It is asked right after the role term because it
+	// reads a pull request only for an issue in merging, and before the three reads below,
+	// which such an issue would otherwise spend for nothing.
+	finished, err := e.phaseFinished(ctx, tx, *issue)
+	if err != nil || finished {
+		return nil, err
 	}
 	// The record of the root of the issue's tree, which is the issue's own row when the fact
 	// names a tree root, read once rather than queried a second time for it (the rule treeRoot

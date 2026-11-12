@@ -639,6 +639,18 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 		if !workflow.SilentPhaseWorker(held.issue, held.root, facts.Gates[held.issue.Tree], held.role, run, a.workerSilence, now) {
 			continue
 		}
+		// A phase its own terminating fact has already met is left out, as the silence handlers
+		// leave it (workflow's phaseWorkerRecord): a merged root stands in merging until the rest
+		// of its tree leaves the workflow, and its merger is owed no turn. The rule reads no
+		// store, so the pull request that says so is read here, and only for a worker the rule
+		// has already named silent, never for every issue of the project.
+		finished, err := workflow.PhaseFinished(ctx, a.store, tx, held.issue)
+		if err != nil {
+			return nil, err
+		}
+		if finished {
+			continue
+		}
 		// The rule answered true, so this run has a claim and that claim's record holds the
 		// moment the rule judged it by (workflow.SilentPhaseWorker).
 		lastStep := run.Claim.Step.LastStep()

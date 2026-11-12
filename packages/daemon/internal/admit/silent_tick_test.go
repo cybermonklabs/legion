@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -123,6 +124,38 @@ func TestControllerTickNamesTheSilentIssues(t *testing.T) {
 
 		if silent := tickNotice(t, pool).Silent; len(silent) != 0 {
 			t.Fatalf("the tick names %#v as silent, want no list at all: every worker of this record stepped inside the bound", silent)
+		}
+	})
+	// A merged root stands in merging until the rest of its tree leaves the workflow, and its
+	// merger, its phase over by the merge (workflow.PhaseFinished), is owed no turn however long
+	// it is quiet. Both roots here stand in merging with a merger silent as long; they differ in
+	// the state of their pull request alone, and the tick names the one whose merge is not done.
+	t.Run("a merged root's merger beside an unmerged one", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := quiet(t, 2)
+		admission.UseWorkerSilence(silenceBound)
+		registerController(t, pool)
+		seedPhaseWorker(t, pool, "LEGION-720", "A", phase.Merging, claim.RoleMerger, silentStep)
+		seedPhaseWorker(t, pool, "LEGION-730", "B", phase.Merging, claim.RoleMerger, silentStep)
+		inTx(t, pool, func(tx pgx.Tx) {
+			records := record.NewStore()
+			for _, pr := range []record.PullRequest{
+				{State: record.PullRequestMerged, Issue: "LEGION-720", Number: 720},
+				{State: record.PullRequestOpen, Issue: "LEGION-730", Number: 730},
+			} {
+				pr.Repo, pr.Branch, pr.HeadSHA, pr.Failing = "acme/widgets", "legion/"+pr.Issue, "head-"+pr.Issue, []string{}
+				if err := records.PutPullRequest(context.Background(), tx, pr); err != nil {
+					t.Fatalf("record the pull request of %s: %v", pr.Issue, err)
+				}
+			}
+		})
+
+		tick(t, pool, admission, "tick-1")
+
+		silent := tickNotice(t, pool).Silent
+		if len(silent) != 1 || silent[0].Issue != "LEGION-730" || silent[0].Role != claim.RoleMerger {
+			t.Fatalf("the tick names %#v as silent, want LEGION-730's merger alone: LEGION-720's pull request is recorded merged, which ends its merger's phase",
+				silent)
 		}
 	})
 	t.Run("no bound registered", func(t *testing.T) {

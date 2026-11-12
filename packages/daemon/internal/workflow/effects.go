@@ -237,6 +237,14 @@ func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 // the notice says what the daemon wrote rather than what the worker was sent (silence.go's
 // workerSilentRecord).
 //
+// Nor is a phase its own terminating fact has met (PhaseFinished) a term of this rule, though
+// no worker of it is owed a turn: a merged root stands in merging, which record.AtWork holds at
+// work, until its tree's other members leave the workflow, and what says its phase is over is
+// the record's pull request, which a rule that reads no store cannot read. So its callers ask
+// it themselves — both silence handlers, through the record they share (silence.go's
+// phaseWorkerRecord), and admission's tick list (admit's silentWorkers) — and leave such a
+// worker alone.
+//
 // It reads values and no store, as StartFor does, so it is tested as a table
 // (silent_phase_worker_test.go). Its two callers are the handler of the silence fact the
 // daemon's one-minute sweep writes, which re-reads the record inside the fact's own transaction
