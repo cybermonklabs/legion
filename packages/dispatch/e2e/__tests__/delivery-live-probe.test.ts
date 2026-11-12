@@ -538,6 +538,13 @@ test(
     expect(await run.exited()).toBe(1);
     expect(dispatch.upgrades).toEqual(["Bearer not-the-token"]);
     expect(run.stderr.join("\n")).toContain("Dispatch refused the connection to ws://127.0.0.1:");
+    // The guide (docs/site/src/content/docs/dispatch/delivery.md) says a connection that closes
+    // before it opens has a close line and no open line. This row holds that for the one such
+    // connection a row drives, a first connection Dispatch refuses; its wait_ms is null because
+    // that close ends the watch.
+    expect(run.lines.map(({ at: _at, ...line }) => line)).toEqual([
+      { code: 1006, reason: "", type: "close", wait_ms: null },
+    ]);
   },
   PROCESS_TEST_MS
 );
