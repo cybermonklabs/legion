@@ -165,3 +165,5 @@ runner_shutdown_kills() {
     printf '%s\n' "${kills[@]}"
   fi
 }
+
+# INFRA-1413 selection probe, never merged.
