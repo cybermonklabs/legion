@@ -340,6 +340,11 @@ func boundReason(text string) string {
 // runtime would not answer for, for a claim that records none, and for a launch parked over it
 // (refuseWorkingClaim).
 //
+// A claim the machine refused as working that the view, read after that refusal, no longer
+// shows working — its turn ended, or another request suspended it — is answered as one that
+// moved under the request, with nothing of it changed (refuseMovedClaim), rather than read:
+// every answer of the shared read says the claim "is stored working", which it no longer is.
+//
 // Where that shared read finds no process behind the claim, this door has no agent to ask and
 // no session to compact, so it answers as it answers every claim that runs none: the code of a
 // claim not running, naming what starts the claim again, which for every workflow role is the
@@ -353,6 +358,8 @@ func (s *server) refuseState(w http.ResponseWriter, r *http.Request, m *supervis
 	switch {
 	case view.SuspensionHeld:
 		return refuseHeldSuspension(w, token, state, view.Role, compactOp)
+	case state == supervise.StateWorking && view.State != supervise.StateWorking:
+		refuseMovedClaim(w, token, compactOp)
 	case state == supervise.StateWorking && view.Compacting:
 		writeFailure(w, http.StatusConflict, claimInATurn, fmt.Sprintf(
 			"%s is being compacted already. %s. %s", token, compactOp.reaches, askAgainLater))

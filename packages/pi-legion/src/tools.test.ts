@@ -214,7 +214,8 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "that no process stands behind (CLAIM_NOT_RUNNING: fresh_session reaches both), for a " +
   "claim whose process the daemon reads as running (CLAIM_IN_A_TURN), for a claim whose " +
   "session is being compacted already (CLAIM_IN_A_TURN), for a claim whose process the " +
-  "runtime would not answer for, and for one that records no process to read " +
+  "runtime would not answer for, for one that records no process to read, and for one " +
+  "that moved out of working while the request was made " +
   "(CLAIM_UNSETTLED), for a claim a " +
   "suspension is held over (CLAIM_IN_A_TURN where the claim is working, CLAIM_UNSETTLED " +
   "where it is not), for a claim between states — one queued, one whose launch is in " +

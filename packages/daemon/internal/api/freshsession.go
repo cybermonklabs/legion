@@ -600,12 +600,14 @@ func refuseUnrecordedProcess(w http.ResponseWriter, token claim.Token, op contro
 		token, op.reaches, askAgainLater))
 }
 
-// refuseMovedClaim is the refusal of a claim whose state moved between the fresh session's
-// read of it and the machine's answer to the suspension it posted (suspendForFreshSession):
-// the machine refused the suspension of a claim it found working, and the read made again
-// after that refusal found the process gone, which is the claim that suspension lands on. Its
-// state moved under the request, and this request does not chase it: the caller is told so,
-// that nothing of the claim changed, and to read the state and ask again (askAgainLater).
+// refuseMovedClaim is the refusal of a claim whose state moved under the request, which both
+// recoveries give. The fresh session gives it where the machine refused the suspension of a
+// claim it found working and either the view read after that refusal no longer shows it
+// working or the read made again found the process gone, which is the claim that suspension
+// lands on (suspendForFreshSession); the compaction gives it where the machine refused the
+// compaction of a claim it found working and the view read after that refusal no longer shows
+// it working (refuseState). This request does not chase the claim: the caller is told so, that
+// nothing of the claim changed, and to read the state and ask again (askAgainLater).
 func refuseMovedClaim(w http.ResponseWriter, token claim.Token, op controllerOp) {
 	writeFailure(w, http.StatusConflict, claimUnsettled, fmt.Sprintf(
 		"%s moved while the request was made, and nothing of it changed. %s. %s",

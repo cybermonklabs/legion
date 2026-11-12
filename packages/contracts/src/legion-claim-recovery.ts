@@ -54,7 +54,8 @@ const nonEmptyString = z.string().min(1);
  * request found them and told which read did not happen; `fresh_session` gives the same code,
  * with nothing changed, for a claim that moved under the request and that a second read finds
  * no longer working or gone once more; a claim that moved is otherwise answered as that second
- * read finds it. The compaction adds
+ * read finds it, and the compaction gives it for a claim that moved out of working while the
+ * request was made. The compaction adds
  * three refusals of its own:
  * `CLAIM_NOT_RUNNING` for a suspended, failed or retired claim, and for one stored working that
  * no process stands behind, which has no agent to ask either; all four run no session at all
