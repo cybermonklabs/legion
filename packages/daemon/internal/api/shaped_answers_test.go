@@ -175,13 +175,19 @@ func TestACallerAtTheFloorIsServedTheStandInsAndNoCheckRole(t *testing.T) {
 	}
 }
 
-// The mixed pod: a caller that states no contract, in a pod whose claims record 46 and 81 at
+// The mixed pod: a caller that states no contract, in a pod whose claims record 46 and 73 at
 // once, is served the keys the newer process requires — `check.role` and every other key added
-// after 46 — and the stand-ins for the keys removed after 46, which the older process requires.
-// The pod's third claim records no contract and moves neither half. A caller of that same pod
-// that states its own contract is served that contract's shape, whichever of the two it states.
+// between those two contracts — and the stand-ins for the keys removed after 46, which the
+// older process requires. The pod's third claim records no contract and moves neither half. A
+// caller of that same pod that states its own contract is served that contract's shape,
+// whichever of the two it states.
+//
+// Both builds of this pod read the body the pod reading decides, which is what makes the union
+// body the right one: neither states a contract of its own, so each is served what the pod
+// says, and no one body serves them both unless it carries the newer's keys and the older's
+// stand-ins. The pod of the next case differs in exactly that, and in nothing else.
 func TestAMixedPodIsServedTheHighestsKeysAndTheLowestsStandIns(t *testing.T) {
-	claims := mixedPodClaims(ServingFloor, DaemonAPIVersion)
+	claims := mixedPodClaims(ServingFloor, claimsToRefreshContract)
 	logs := &bytes.Buffer{}
 	handler := shapedServer(t, populatedState(t), claims, logs, true)
 	whole := stateStating(t, handler, "192.0.2.1:41000", 0)
@@ -196,6 +202,11 @@ func TestAMixedPodIsServedTheHighestsKeysAndTheLowestsStandIns(t *testing.T) {
 	for _, key := range keysAddedAfterTheFloor {
 		if !strings.Contains(string(mixed), key) {
 			t.Errorf("the mixed pod's state %s carries no %s, which the pod's newer process requires", mixed, key)
+		}
+	}
+	for _, key := range keysOfThisContract {
+		if strings.Contains(string(mixed), key) {
+			t.Errorf("the mixed pod's state %s carries %s, which neither of its contracts reads", mixed, key)
 		}
 	}
 	if len(served.fixAttempts) != served.pullRequests || served.maxFixAttempts == nil {
@@ -213,6 +224,40 @@ func TestAMixedPodIsServedTheHighestsKeysAndTheLowestsStandIns(t *testing.T) {
 	}
 }
 
+// The pod a roll makes, holding one build at the floor and one at this daemon's own contract,
+// is served the floor's shape and not the union of the two. The build at 81 states its
+// contract in the header, so contractsFor answers it there and it never reads the body the pod
+// decides; the build at 46 does read it, and it is the only process that does. Counting the
+// newer one would serve that reader `admission.trees`, the memory fields and the rest, which
+// its own schema refuses the whole body for (podContracts).
+//
+// This narrows no rule: where both builds of a pod read the pod-decided body, the union body
+// is still the one they can both read, which the `{46, 73}` case above holds. The two pods
+// differ in who reads the answer and in nothing else.
+func TestAPodWhoseNewestBuildStatesItsOwnContractIsServedTheOldests(t *testing.T) {
+	logs := &bytes.Buffer{}
+	handler := shapedServer(t, populatedState(t), mixedPodClaims(ServingFloor, DaemonAPIVersion), logs, true)
+	floor := stateStating(t, handler, "192.0.2.1:41000", ServingFloor)
+
+	rolled := stateStating(t, handler, statePodAddr+":41000", 0)
+
+	if string(rolled) != string(floor) {
+		t.Errorf("the rolled pod was served %s, want the very body a caller stating the floor reads %s", rolled, floor)
+	}
+	wantStandIns(t, rolled)
+	for _, key := range keysOfThisContract {
+		if strings.Contains(string(rolled), key) {
+			t.Errorf("the rolled pod's state %s carries %s, which the 46 process it is written for refuses", rolled, key)
+		}
+	}
+	if logs.Len() != 0 {
+		t.Errorf("the rolled pod logged %s, want no line: the floor is a shape this daemon describes", logs)
+	}
+
+	// The 81 build of that same pod is served this contract's own body, by its header.
+	wantThisContract(t, stateStating(t, handler, statePodAddr+":41000", DaemonAPIVersion))
+}
+
 // mixedPodClaims is the pod at statePodAddr holding one claim at low, one at high and one that
 // records no contract at all, beside a claim of another pod.
 func mixedPodClaims(low, high int) []supervise.Claim {
@@ -221,17 +266,21 @@ func mixedPodClaims(low, high int) []supervise.Claim {
 	return append(claims, claimInPod("legion-legion-legion-208-tester", statePodUID, 0))
 }
 
-// keysAddedAfterTheFloor is the sixteen keys the ten servings-down below remove, as the wire
-// names them: the two of the update round, the three of the memory draw, the two of the trees,
-// `wakesWaiting`, `gatedSteps`, the claim views' `step`, each waiting issue's place in the line,
-// and the five this contract's own entry adds, which shapedAnswersContract serves down. Three
-// keys a serving-down removes are left out of it, each read another way: each check's `role`,
-// which shapeOf reads because an issue carries a check only while its production check is open,
-// and `backwardMoves` and `claimsToRefresh`, whose own cases walk the bands they arrived at
-// (backward_moves_test.go, memory_test.go).
+// keysAddedAfterTheFloor is the thirteen keys the servings-down of the seven bands between the
+// floor and claimsToRefreshContract remove, as the wire names them: a caller served all of them
+// is served everything this daemon writes above the floor and below its own contract, but each
+// check's `role`, which shapeOf reads instead because an issue carries a check only while its
+// production check is open.
 var keysAddedAfterTheFloor = []string{
 	`"updateRound"`, `"updateHead"`, `"memoryGroup"`, `"memoryDrawMode"`, `"memoryDrawnAt"`,
 	`"trees"`, `"tree"`, `"wakesWaiting"`, `"gatedSteps"`, `"step"`, `"` + WaitingLineField + `"`,
+	`"backwardMoves"`, `"claimsToRefresh"`,
+}
+
+// keysOfThisContract is the five keys this change's own contract adds, which shapedAnswersContract
+// serves down: the state's own `lowestPluginContract` and the four of each claim view's round
+// report.
+var keysOfThisContract = []string{
 	`"lowestPluginContract"`, `"updateState"`, `"updateReaskedForPushCheck"`,
 	`"unpromptedTurnTakesAnswerBack"`, `"wake"`,
 }
@@ -240,6 +289,10 @@ var keysAddedAfterTheFloor = []string{
 // ends what the machine had with its process, and the claim gives up its locator with it
 // (supervise's letGo), so no such claim records a pod. That is why no fixture here holds a
 // retired claim of a pod: there is no such claim to hold.
+//
+// The pod's live claims record claimsToRefreshContract rather than this daemon's own, because a
+// claim at shapedAnswersContract or above is in no pod's reckoning either: it states its own
+// contract and reads no pod-decided body (podContracts).
 func TestAClaimThatHoldsNoProcessIsInNoPodsReckoning(t *testing.T) {
 	stopped := []supervise.Claim{
 		{Token: "legion-legion-legion-207-tester", State: supervise.StateRetired, PluginContract: 30},
@@ -252,14 +305,33 @@ func TestAClaimThatHoldsNoProcessIsInNoPodsReckoning(t *testing.T) {
 		}
 	}
 
-	lowest, highest, recorded := podContracts(append(podClaims(DaemonAPIVersion), stopped...), statePodUID)
+	lowest, highest, recorded := podContracts(append(podClaims(claimsToRefreshContract), stopped...), statePodUID)
 
-	if lowest != DaemonAPIVersion || highest != DaemonAPIVersion {
+	if lowest != claimsToRefreshContract || highest != claimsToRefreshContract {
 		t.Errorf("the pod's contracts = %d and %d, want %d on both sides: a claim with no process is in no pod",
-			lowest, highest, DaemonAPIVersion)
+			lowest, highest, claimsToRefreshContract)
 	}
 	if recorded == "" {
 		t.Error("the lowest contract names no claim, want the claim of the pod it was read from")
+	}
+}
+
+// A claim that states its own contract is in no pod's reckoning either: every build at
+// shapedAnswersContract or later writes its number in pluginContractHeader, and contractsFor
+// answers on the header before it reads the pod, so counting such a claim would shape the
+// pod-decided body for a process that never reads it (podContracts). A pod of those alone
+// reports nothing, and its callers that state no contract are served this daemon's own body.
+func TestAClaimThatStatesItsOwnContractIsInNoPodsReckoning(t *testing.T) {
+	lowest, highest, recorded := podContracts(podClaims(DaemonAPIVersion), statePodUID)
+
+	if lowest != 0 || highest != 0 || recorded != "" {
+		t.Errorf("a pod of claims at this daemon's own contract reports %d, %d and %q, want nothing on all three",
+			lowest, highest, recorded)
+	}
+	mixedLowest, mixedHighest, _ := podContracts(mixedPodClaims(ServingFloor, DaemonAPIVersion), statePodUID)
+	if mixedLowest != ServingFloor || mixedHighest != ServingFloor {
+		t.Errorf("the rolled pod reports %d and %d, want the floor on both sides: its 81 build reads no body this decides",
+			mixedLowest, mixedHighest)
 	}
 }
 
@@ -279,10 +351,10 @@ func TestTheEdgesOfTheContractACallerIsServed(t *testing.T) {
 		body := stateStating(t, handler, statePodAddr+":41000", 0)
 
 		// The restore side is the floor's, which carries both stand-ins, and the strip side is
-		// the caller's own number, which is below every one of the eight contracts those
-		// sixteen keys arrived at: it loses every key it loses today and no more.
+		// the caller's own number, which is below every contract the eighteen keys of the two
+		// lists arrived at: it loses every key it loses today and no more.
 		wantStandIns(t, body)
-		for _, key := range keysAddedAfterTheFloor {
+		for _, key := range append(append([]string{}, keysAddedAfterTheFloor...), keysOfThisContract...) {
 			if strings.Contains(string(body), key) {
 				t.Errorf("a pod at %d was served %s, which carries %s: it loses no key it loses today", recorded, body, key)
 			}

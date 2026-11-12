@@ -50,11 +50,12 @@ func statedContract(r *http.Request) (int, bool) {
 // A caller that states a contract (pluginContractHeader) decides both numbers itself. A caller
 // that states none keeps today's reading of its pod: restore is the lowest contract the claims
 // whose locator names that pod record, and strip the highest of the same set. A claim recording
-// no contract moves neither; a claim with no locator, or in another pod, is in no pod's
-// reckoning at all, which is why a retired, failed or suspended claim counts for nothing. A
-// caller the daemon cannot place in a pod — every caller under the tmux runtime, where
-// Options.CallerPod is nil — and one whose pod holds no such claim are served the body this
-// contract writes, both numbers DaemonAPIVersion.
+// no contract moves neither; a claim with no locator, in another pod, or recording a contract
+// that states itself in the header is in no pod's reckoning at all, which is why a retired,
+// failed or suspended claim counts for nothing and why a process of this change's own build
+// counts for nothing either (podContracts). A caller the daemon cannot place in a pod — every
+// caller under the tmux runtime, where Options.CallerPod is nil — and one whose pod holds no
+// such claim are served the body this contract writes, both numbers DaemonAPIVersion.
 //
 // The two halves differ because the two kinds of change differ. A key the daemon stopped serving
 // is restored at the lowest contract the pod records, which is safe for every process there: a
@@ -533,17 +534,29 @@ func recordsContract(c supervise.Claim) bool {
 	return c.Locator != nil && c.Locator.Sandbox != nil && c.PluginContract != 0
 }
 
-// podContracts is the lowest and the highest plugin contract the claims whose process runs in pod
-// record, and the claim the lowest was read from. All three are zero when no claim of the pod
-// records a contract: a claim in another pod, and a claim recordsContract answers false for, are
-// in no pod's reckoning.
+// podContracts is the lowest and the highest plugin contract recorded by the claims that run in
+// pod and read the body this reading shapes, and the claim the lowest was read from. All three
+// are zero where the pod holds no such claim: a claim of another pod, a claim recordsContract
+// answers false for, and a claim recording shapedAnswersContract or more are in no pod's
+// reckoning.
+//
+// The last of the three is left out because its process never reads a body this reading shaped.
+// Every build at shapedAnswersContract or later states its own contract in
+// pluginContractHeader, and contractsFor answers on the header before it reads the pod at all.
+// Counting such a claim would shape the pod-decided body for a reader that does not read it and
+// break the one that does: in the `{46, 81}` pod a roll makes, the highest would be 81, and the
+// 46 process — the one process this body is written for — would be served `admission.trees` and
+// the memory fields, which its reader refuses the whole body for. So the pod reading answers for
+// the processes that read it and for no others. The fleet's reading counts every claim that
+// holds a process, this change's own builds included, because it answers another question
+// (lowestPluginContract).
 //
 // Every role of a pod is served by the plugin that pod runs, so the lowest is the contract whose
-// removed keys every process there can read, and the highest the contract whose later keys the
-// pod's newest process requires (contractsFor says why the two halves differ).
+// removed keys every counted process there can read, and the highest the contract whose later
+// keys the pod's newest counted process requires (contractsFor says why the two halves differ).
 func podContracts(claims []supervise.Claim, pod string) (lowest, highest int, recorded claim.Token) {
 	for _, c := range claims {
-		if !recordsContract(c) || c.Locator.Sandbox.PodUID != pod {
+		if !recordsContract(c) || c.Locator.Sandbox.PodUID != pod || c.PluginContract >= shapedAnswersContract {
 			continue
 		}
 		if lowest == 0 || c.PluginContract < lowest {
