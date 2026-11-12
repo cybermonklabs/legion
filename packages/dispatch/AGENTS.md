@@ -208,9 +208,10 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   `Writes.run` refuses one that carries neither at once (a `TypeError`, for a caller no type
   checks). A line is `<row type>:<row id>` - `issue:<KEY>`, `pin:<KEY>` (the header's pin and the
   Conversation's and Activity tab's, one row on one line), `comment:<id>` (its actions and the
-  composer's edit send), `ask:<id>` (its answer, decline, hand-on, clarification and snooze),
-  `document:<id>` (the decisions writes), `project:<KEY>` for a write that adds a row to a
-  project (the issue create), `agent-token:<id>` and `agent-tokens:me`, `repo-mapping:<repo>`,
+  composer's edit send), `ask:<id>` (its answer, its decline, its clarification, its snooze and
+  the write that gives it to another person), `document:<id>` (the decisions writes),
+  `project:<KEY>` for a write that adds a row to a project (the issue create),
+  `agent-token:<id>` and `agent-tokens:me`, `repo-mapping:<repo>`,
   `architecture-source:<project>/<repo>` (`sourceLine`), `settings:delivery` - or, for a read
   mark, `read:` and then the row's own name; the sends that name no row (`broadcast`,
   `session:<id>`, `role:<role>`) carry those names. `features/writes/write-lines.test.ts` reads

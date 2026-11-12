@@ -204,6 +204,22 @@ export type WriteLine =
       readonly unlined: string;
     };
 
+/**
+ * What a reader waits on: one row's whole line (`line`), or every line under a name (`under`).
+ *
+ * A line is a whole name and never a prefix of another, which is why the two are told apart here
+ * rather than left to `startsWith`: a Dispatch issue key is `<PROJECT>-<n>`, so one key is the
+ * start of another the moment a project passes nine issues, and a reader of `issue:CORE-1` that
+ * matched by prefix would be held by a late write of `issue:CORE-10` for as long as it was tried
+ * (dispatch://INFRA-299/spec#b-r7).
+ *
+ * `under` is the rule of a set of rows, not a row's name with its tail cut off: it ends at the
+ * separator its set is bounded by - `issue:` for every issue, `issue:<PROJECT>-` for one
+ * project's, `architecture-source:<PROJECT>/` for one project's sources - so no row of another
+ * set can begin with it.
+ */
+export type WriteLineWait = { readonly line: string } | { readonly under: string };
+
 /** One write to make: its kind and record, what the indicator names it, where it shows, the line
  *  it is ordered on, and how it is made - from its request alone, or by an attempt of its
  *  own. */
@@ -415,15 +431,17 @@ export class Writes {
     return () => this.#outcomes.delete(listener);
   };
 
-  /** Whether the store holds a write that may still land on a line starting with one of `lines`:
+  /** Whether the store holds a write that may still land on one of the lines `waits` names:
    *  what `settled` below waits out, read on its own so a reader whose wait holds nothing fetches
    *  in the very task that started it (`api/row-query.ts`), as a reader that names no wait does. */
-  holding(lines: readonly string[]): boolean {
+  holding(waits: readonly WriteLineWait[]): boolean {
     return this.#rows.some((write) => {
       const { target } = write;
       return (
         target !== undefined &&
-        lines.some((line) => target.startsWith(line)) &&
+        waits.some((wait) =>
+          "line" in wait ? target === wait.line : target.startsWith(wait.under)
+        ) &&
         write.status !== "refused" &&
         write.status !== "made"
       );
@@ -431,8 +449,8 @@ export class Writes {
   }
 
   /**
-   * Resolves once the store holds no write that may still land on a line starting with one of
-   * `lines`, and rejects with the signal's reason once the read is cancelled: the one wait every
+   * Resolves once the store holds no write that may still land on one of the lines `waits` names,
+   * and rejects with the signal's reason once the read is cancelled: the one wait every
    * reader of a cache an optimistic write touches holds its fetch with, so an answer composed
    * before the write cannot put the older value back on screen. No reader names its own lines:
    * `api/row-query.ts` derives them from the key's own head and is the one factory every such
@@ -454,8 +472,11 @@ export class Writes {
    * invite. The wait must end on that cancel rather than resolve alone - the write engine cancels
    * the reads in flight at every press, so a cancelled fetch would otherwise hang here.
    */
-  settled(lines: readonly string[], context: { readonly signal: AbortSignal }): Promise<void> {
-    const holding = () => this.holding(lines);
+  settled(
+    waits: readonly WriteLineWait[],
+    context: { readonly signal: AbortSignal }
+  ): Promise<void> {
+    const holding = () => this.holding(waits);
     if (!holding()) return Promise.resolve();
     const { signal } = context;
     const waited = Promise.withResolvers<void>();

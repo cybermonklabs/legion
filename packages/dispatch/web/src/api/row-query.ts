@@ -9,7 +9,7 @@ import {
   type UndefinedInitialDataOptions,
 } from "@tanstack/react-query";
 
-import { writesOf } from "../features/writes/write-store";
+import { type WriteLineWait, writesOf } from "../features/writes/write-store";
 
 /**
  * The one factory every cache read of a row the page writes is built by (R7 of
@@ -27,30 +27,34 @@ import { writesOf } from "../features/writes/write-store";
  */
 
 /**
- * The lines each key head covers: a key covering one row waits for that row's lines, a list for
- * the lines of the rows it lists. Every rule reads the key it is given, because a head serves
- * every key under it.
+ * The lines each key head covers: a key covering one row waits for that row's whole line, a list
+ * for every line under the rule of the set it lists. Every rule reads the key it is given,
+ * because a head serves every key under it.
  *
- * A read mark (`read:issue:<KEY>`) holds nothing anywhere: it is `read:` and then the row's own
- * name, so no line here is a prefix of it, and it changes no value a person chose.
+ * A line is a whole name and never a prefix of one (`WriteLineWait`): a reader of one row names
+ * that row's line, and a reader of a set names the separator its set is bounded by. A read mark
+ * (`read:issue:<KEY>`) holds nothing anywhere: it is `read:` and then the row's own name, so no
+ * line here reaches it, and it changes no value a person chose.
  */
 const COVERS = {
   /** The viewer's agent tokens: the mint that adds a row to the list (`agent-tokens:me`) and
    *  each token's own scopes and revoke (`agent-token:<id>`). */
-  "agent-tokens": () => ["agent-token:", "agent-tokens:"],
+  "agent-tokens": () => [{ under: "agent-token:" }, { under: "agent-tokens:" }],
 
   /** One project's architecture tree, which its sources are read through
    *  (`architecture-source:<project>/<owner/repo>`, `sourceLine`). */
-  architecture: (key: readonly unknown[]) => [`architecture-source:${String(key[1])}/`],
+  architecture: (key: readonly unknown[]) => [{ under: `architecture-source:${String(key[1])}/` }],
 
   /** The architecture sources settings list: every source, or one project's
    *  (`["architecture-sources", <project>]`). */
   "architecture-sources": (key: readonly unknown[]) =>
-    key.length > 1 ? [`architecture-source:${String(key[1])}/`] : ["architecture-source:"],
+    key.length > 1
+      ? [{ under: `architecture-source:${String(key[1])}/` }]
+      : [{ under: "architecture-source:" }],
 
   /** A document's own comments list (`["artifact", <id>, "comments"]`), the margin's list under
    *  the document's key: the only `["artifact", …]` read this factory builds. */
-  artifact: () => ["comment:"],
+  artifact: () => [{ under: "comment:" }],
 
   /** One ask as a reference preview reads it (`["ask", <id>]`). */
   ask: (key: readonly unknown[]) => rowLines("ask", key[1]),
@@ -63,15 +67,15 @@ const COVERS = {
 
   /** The margin's and the Conversation's comments list of one owner: a comment id names no
    *  issue, so the list waits for any comment write. */
-  comments: () => ["comment:"],
+  comments: () => [{ under: "comment:" }],
 
   /** The delivery timeline's configuration record (`settings:delivery`). */
-  "delivery-settings": () => ["settings:delivery"],
+  "delivery-settings": () => [{ line: "settings:delivery" }],
 
   /** The Inbox's asks, every project's or one project's: an answer composed before a write of an
    *  issue or an ask would put the older row back on screen, and the Inbox's own presses
    *  (`inbox:read`, `inbox:dismiss`) patch these rows before the server has taken them. */
-  inbox: () => ["ask:", "inbox:", "issue:"],
+  inbox: () => [{ under: "ask:" }, { under: "inbox:" }, { under: "issue:" }],
 
   /** One issue with its details. */
   issue: (key: readonly unknown[]) => rowLines("issue", key[1]),
@@ -79,26 +83,27 @@ const COVERS = {
   /** A list of issue rows: a project's list, whose key `projectIssuesQueryKey` builds in
    *  `api/queries.ts`, the one module that writes it (dispatch://INFRA-299/spec#b-r12); the
    *  reference picker's list of one project, which is that prefix and the project; and the
-   *  sidebar's pinned issues, which every project's issues and every pin move. */
+   *  sidebar's pinned issues, which every project's issues and every pin move. A project's own
+   *  issues are the lines under `issue:<PROJECT>-`, the separator a key is built with. */
   issues: (key: readonly unknown[]) => {
     const project = key[1] === "project" ? key[2] : key[1];
-    if (project === "pinned") return ["issue:", "pin:"];
+    if (project === "pinned") return [{ under: "issue:" }, { under: "pin:" }];
     return typeof project === "string"
-      ? [`issue:${project}-`, `project:${project}`]
-      : ["issue:", "project:"];
+      ? [{ under: `issue:${project}-` }, { line: `project:${project}` }]
+      : [{ under: "issue:" }, { under: "project:" }];
   },
 
   /** The viewer's threads: the Inbox's own rows, what they have dismissed out of it, their
    *  count, and one owner's unread set - all of them ask and issue rows, which **Mark all read**
    *  (`inbox:read`) and **Dismiss** (`inbox:dismiss`) write as whole lists. */
-  me: () => ["ask:", "inbox:", "issue:"],
+  me: () => [{ under: "ask:" }, { under: "inbox:" }, { under: "issue:" }],
 
   /** The repository-to-project mappings of the Settings page and the issue header's picker. */
-  "repo-projects": () => ["repo-mapping:"],
+  "repo-projects": () => [{ under: "repo-mapping:" }],
 
   /** The viewer's per-issue read, pin and dismiss state, which the pin writes. */
-  "user-state": () => ["pin:"],
-} satisfies Record<string, (key: readonly unknown[]) => readonly string[]>;
+  "user-state": () => [{ under: "pin:" }],
+} satisfies Record<string, (key: readonly unknown[]) => readonly WriteLineWait[]>;
 
 /** The head of a key this factory has a rule for. A reader whose key starts with anything else
  *  does not compile. */
@@ -107,14 +112,14 @@ export type RowQueryHead = keyof typeof COVERS;
 /** A cache key of a row the page writes: its head names the lines it covers. */
 export type RowQueryKey = readonly [RowQueryHead, ...unknown[]];
 
-/** The line of one row, or no line at all for a key whose row id is not there: such a read is
- *  held by its own `enabled` and its fetch throws, so there is nothing for it to wait for. */
-function rowLines(type: string, id: unknown): readonly string[] {
-  return typeof id === "string" && id !== "" ? [`${type}:${id}`] : [];
+/** The whole line of one row, or no line at all for a key whose row id is not there: such a read
+ *  is held by its own `enabled` and its fetch throws, so there is nothing for it to wait for. */
+function rowLines(type: string, id: unknown): readonly WriteLineWait[] {
+  return typeof id === "string" && id !== "" ? [{ line: `${type}:${id}` }] : [];
 }
 
 /** The lines `key` covers, by its head alone. */
-function linesOf(key: RowQueryKey): readonly string[] {
+function linesOf(key: RowQueryKey): readonly WriteLineWait[] {
   return COVERS[key[0]](key);
 }
 
