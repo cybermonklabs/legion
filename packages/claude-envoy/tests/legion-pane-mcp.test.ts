@@ -41,6 +41,12 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
       if (path === "/legion/v1/claims/register") return Response.json(registered)
       if (path === "/legion/v1/claims/ready") return new Response(null, { status: 204 })
       if (path === "/legion/v1/state") return Response.json(await daemonFixture("state.json"))
+      // `read_record` and the reminder's record check read one issue's record
+      // (dispatch://INFRA-2694).
+      if (path === "/legion/v1/issues/LEGION-208/record") {
+        const state = (await daemonFixture("state.json")) as { issues: Record<string, unknown> }
+        return Response.json(state.issues["LEGION-208"])
+      }
       return Response.json({ error: "unexpected" }, { status: 500 })
     },
   })
@@ -202,6 +208,11 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     expect(record.content).toEqual([
       { type: "text", text: JSON.stringify({ record: state.issues["LEGION-208"] }) },
     ])
+
+    // Nothing this pane's server asks the daemon is the whole project body: `read_record` and
+    // the phase reminder's own check both read one issue's record (dispatch://INFRA-2694).
+    expect(daemonCalls.map(({ path }) => path)).toContain("/legion/v1/issues/LEGION-208/record")
+    expect(daemonCalls.map(({ path }) => path)).not.toContain("/legion/v1/state")
 
     broker.deliver(
       `notifications.agent.${SESSION}`,

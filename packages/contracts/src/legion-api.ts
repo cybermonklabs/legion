@@ -515,9 +515,13 @@ const legionIssue = z.object({
   memoryDrawnAt: timestamp.optional(),
 });
 
-/** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history. */
+/** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history.
+ * No plugin code reads a field of it: the controller's boot check read `project` here until it
+ * read the health answer instead, and the controller's `read_state` hands the state to its
+ * agent whole. So every field is optional, as `LEGION_ANSWER_READS` requires of a field no
+ * plugin code takes the value of. */
 const daemonInfo = z.object({
-  project: nonEmptyString,
+  project: nonEmptyString.optional(),
   schemaVersion: z.number().int().nonnegative().optional(),
   boots: z.number().int().nonnegative().optional(),
   firstBootAt: timestamp.optional(),
@@ -701,7 +705,7 @@ const legionConsumerLag = z.object({
  * wait; it is never a daemon older than this plugin, whom the boot gate and `legion probe-image`
  * refuse. */
 export const LegionStateResponse = z.object({
-  daemon: daemonInfo,
+  daemon: daemonInfo.optional(),
   admission: legionAdmission.optional(),
   issues: z.record(z.string(), legionIssue),
   pendingStatusWrites: z.array(legionPendingStatusWrite).optional(),
@@ -1257,13 +1261,16 @@ export const LegionChildRequest = z.strictObject({
  * member of the union, so the union requires it whatever a reader takes.
  */
 export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = {
-  // `legion-phase-ops.ts` takes one issue's record out of `issues` for `read_record` and
-  // `handoff_complete`, and the completion reads the issue's phase and its open check;
-  // `phase-reminder.ts` and `pi-legion/src/stall-evidence.ts` read the architect's claim state;
-  // `pi-legion/src/controller-session.ts` reads the daemon's project at boot.
+  // The record of one issue is the same node as the state's `issues{}` (`LegionIssueRecordResponse`
+  // below), so both carry the same lines: `legion-phase-ops.ts` reads the issue's phase and its
+  // open check for `handoff_complete`, and `phase-reminder.ts` and
+  // `pi-legion/src/stall-evidence.ts` read the architect's claim state. Those three readers ask
+  // the record route for them (dispatch://INFRA-2694), and the controller's `read_state` hands
+  // the state to its agent whole, so no line of the plugin takes the value of a field the state
+  // alone holds. `daemon` and `daemon.project` stood here until the controller's boot check read
+  // the project from the health answer instead (`pi-legion/src/controller-session.ts`), and both
+  // are optional above.
   LegionStateResponse: [
-    "daemon",
-    "daemon.project",
     "issues",
     "issues{}.phase",
     "issues{}.architect",

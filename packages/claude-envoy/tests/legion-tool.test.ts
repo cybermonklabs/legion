@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test"
-import { readFile } from "node:fs/promises"
-import { resolve } from "node:path"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join, resolve } from "node:path"
 import type { LegionRole } from "@legion/contracts"
 import type { LegionPhase } from "@legion/contracts/legion-api"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
-import { legion } from "../package.json" with { type: "json" }
+import { legion, name, version } from "../package.json" with { type: "json" }
 import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
@@ -78,12 +79,13 @@ interface Request {
   readonly body: unknown
 }
 
-async function daemon(): Promise<{
+async function daemon(options: { readonly daemonContract?: number } = {}): Promise<{
   readonly client: LegionDaemonClient
   readonly requests: Request[]
 }> {
+  const state = (await daemonFixture("state.json")) as { issues: Record<string, unknown> }
   const answers: Record<string, unknown> = {
-    "/legion/v1/state": await daemonFixture("state.json"),
+    "/legion/v1/state": state,
     "/legion/v1/grants": await daemonFixture("grant.json"),
     "/legion/v1/handoff/complete": await daemonFixture("handoff-complete.json"),
     "/legion/v1/phase/backward": {},
@@ -97,6 +99,29 @@ async function daemon(): Promise<{
       path,
       body: init?.body == null ? undefined : JSON.parse(String(init.body)),
     })
+    // The health route states the daemon's contract in its header, which `read_build` reads.
+    if (path === "/healthz") {
+      return new Response(JSON.stringify({ status: "ok", project: "legion" }), {
+        headers: {
+          "Content-Type": "application/json",
+          ...(options.daemonContract === undefined
+            ? {}
+            : { "Legion-Daemon-Contract": String(options.daemonContract) }),
+        },
+      })
+    }
+    // One issue's record, as the daemon answers it, and its 404 for an issue it records
+    // nothing of (dispatch://INFRA-2694).
+    const named = /^\/legion\/v1\/issues\/([^/]+)\/record$/.exec(path)
+    if (named !== null) {
+      const held = state.issues[decodeURIComponent(named[1] ?? "")]
+      return held === undefined
+        ? Response.json(
+            { code: "RECORD_NOT_FOUND", error: `The daemon has no record for ${named[1]}` },
+            { status: 404 },
+          )
+        : Response.json(held)
+    }
     return Response.json(answers[path])
   }) as typeof fetch
   return {
@@ -134,7 +159,7 @@ const grantRequest = {
   },
 }
 
-test("declares the five phase-worker operations under one op, and names the Envoy publish tool as Claude Code shows it", () => {
+test("declares the six phase-worker operations under one op, and names the Envoy publish tool as Claude Code shows it", () => {
   const definition = legionToolDefinition()
   expect(definition.name).toBe("legion")
   expect(definition.inputSchema).toMatchObject({
@@ -146,6 +171,7 @@ test("declares the five phase-worker operations under one op, and names the Envo
           "handoff_complete",
           "request_backward_move",
           "ready_for_update",
+          "read_build",
         ],
       },
       issue: { type: "string" },
@@ -162,7 +188,7 @@ test("declares the five phase-worker operations under one op, and names the Envo
     "this tool cannot spawn workers. read_record returns the record of `issue` from the daemon's state. read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: every release, resume and hold the daemon recorded, and over them the counts of releases, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. handoff_complete",
   )
   expect(definition.description).toContain(
-    "arm nothing. ready_for_update answers the daemon's update task on this issue's pod: `round` is the round id that task names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first, because the pod and its disk are replaced after every worker of the pod has answered. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`): a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which counts a review round. What a later phase needs",
+    "arm nothing. ready_for_update answers the daemon's update task on this issue's pod: `round` is the round id that task names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first, because the pod and its disk are replaced after every worker of the pod has answered. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`): a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which counts a review round. read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. It also reports the contract the daemon states on its answer to the health route, or that the daemon stated none. The two numbers can differ, and the answer shows both. Report the version this call answers, never the one at the plugin's path on the image. A relaunch installs the build this process loaded under the role's own state home. read_build reads no project state. What a later phase needs",
   )
   expect(definition.description).toContain("with mcp__legion__envoy_publish.")
 })
@@ -189,7 +215,7 @@ test("handoff_complete finds the record and commit for the issue's phase and the
   expect(lookups).toEqual(["implementing implementer"])
   expect(answer).toEqual(await daemonFixture("handoff-complete.json"))
   expect(requests).toEqual([
-    { method: "GET", path: "/legion/v1/state", body: undefined },
+    { method: "GET", path: "/legion/v1/issues/LEGION-208/record", body: undefined },
     grantRequest,
     {
       method: "POST",
@@ -224,7 +250,7 @@ test("a handoff report the pane refuses posts nothing and mints nothing", async 
       { op: "handoff_complete", summary: "Done." },
     ),
   ).rejects.toThrow("LEGION-208 has no implement handoff in Dispatch")
-  expect(requests.map(({ path }) => path)).toEqual(["/legion/v1/state"])
+  expect(requests.map(({ path }) => path)).toEqual(["/legion/v1/issues/LEGION-208/record"])
 })
 
 test("the MCP request's cancellation ends a handoff_complete waiting out a daemon restart", async () => {
@@ -259,7 +285,7 @@ test("the MCP request's cancellation ends a handoff_complete waiting out a daemo
   ).rejects.toThrow(
     "handoff_complete: the Legion daemon was unreachable (Unable to connect. Is the computer able to access the url?) and the call was aborted; call it again once the daemon is back",
   )
-  expect(requests).toEqual(["/legion/v1/state"])
+  expect(requests).toEqual(["/legion/v1/issues/LEGION-208/record"])
 })
 
 test("read_record answers the issue's record, and request_backward_move posts with its grant", async () => {
@@ -381,7 +407,7 @@ test("refuses before the claim registered, an operation a phase worker has not, 
   await expect(
     executeLegionTool(runtime, { op: "set_status", issue: "LEGION-208" }),
   ).rejects.toThrow(
-    "op is one of read_record, read_release_records, handoff_complete, request_backward_move, ready_for_update",
+    "op is one of read_record, read_release_records, handoff_complete, request_backward_move, ready_for_update, read_build",
   )
   await expect(
     executeLegionTool(runtime, { op: "read_record", issue: "LEGION-208", summary: "x" }),
@@ -390,4 +416,63 @@ test("refuses before the claim registered, an operation a phase worker has not, 
     "handoff_complete requires summary",
   )
   expect(requests).toEqual([])
+})
+
+// R6: a role reads which plugin build its own process runs. The build is this module's own
+// manifest, so a stale copy at the image's own path changes nothing about the answer.
+test("read_build answers the package and version this process loaded, both contract numbers, and reads no project state", async () => {
+  const stale = await mkdtemp(join(tmpdir(), "claude-envoy-image-path-"))
+  await writeFile(
+    join(stale, "package.json"),
+    JSON.stringify({ name: "@sjawhar/claude-envoy", version: "0.0.0-stale", legion: {} }),
+  )
+  try {
+    const { client, requests } = await daemon({ daemonContract: legion.daemonApiVersion + 1 })
+    const runtime = {
+      daemon: client,
+      claim: () => implementer,
+      handoffReport: async (): Promise<never> => {
+        throw new Error("no handoff report expected")
+      },
+      branchHead: noBranchHead,
+    }
+
+    await expect(executeLegionTool(runtime, { op: "read_build" })).resolves.toEqual({
+      plugin: name,
+      version,
+      contract: legion.daemonApiVersion,
+      daemonContract: legion.daemonApiVersion + 1,
+    })
+    // The health route alone, read for its header: no project state is asked for.
+    expect(requests.map(({ path }) => path)).toEqual(["/healthz"])
+
+    const atImagePath = JSON.parse(await readFile(join(stale, "package.json"), "utf8")) as {
+      version: string
+    }
+    expect(atImagePath.version).toBe("0.0.0-stale")
+    expect(version).not.toBe(atImagePath.version)
+  } finally {
+    await rm(stale, { recursive: true, force: true })
+  }
+})
+
+test("read_build says so where the daemon states no contract, and takes no field", async () => {
+  const { client, requests } = await daemon()
+  const runtime = {
+    daemon: client,
+    claim: () => implementer,
+    handoffReport: async (): Promise<never> => {
+      throw new Error("no handoff report expected")
+    },
+    branchHead: noBranchHead,
+  }
+
+  await expect(executeLegionTool(runtime, { op: "read_build" })).resolves.toMatchObject({
+    contract: legion.daemonApiVersion,
+    daemonContract: "the daemon stated no contract",
+  })
+  await expect(
+    executeLegionTool(runtime, { op: "read_build", issue: "LEGION-208" }),
+  ).rejects.toThrow('read_build does not accept field "issue"')
+  expect(requests.map(({ path }) => path)).toEqual(["/healthz"])
 })

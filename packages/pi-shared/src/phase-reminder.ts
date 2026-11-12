@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ROLE_TOPIC_PREFIX, roleForPhase, roleToken } from "@legion/contracts";
-import type { LegionIssue, LegionState } from "@legion/contracts/legion-api";
+import type { LegionIssue } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
   EnvoyApiError,
@@ -67,10 +67,13 @@ export interface PhaseReminderDeps {
   readonly saveEntry: (entry: PhaseStallEntry) => void;
   /** This session's own claim, or undefined before it has registered one. */
   readonly claim: () => ClaimCapability | undefined;
-  /** The daemon's whole state, read as the `legion` tool's `read_record` reads it. `signal` is
-   * aborted once the record check's bound passes without an answer, and the read is to abort with
-   * it (`LegionDaemonClient.state`'s `signal`), so a daemon that hangs is left no open request. */
-  readonly readState: (signal: AbortSignal) => Promise<LegionState>;
+  /** One issue's record, read as the `legion` tool's `read_record` reads it
+   * (`LegionDaemonClient.record`): the record, or `undefined` for an issue the daemon records
+   * nothing of. Every other refusal rejects, so the check's `undefined` is the absent record
+   * and its `catch` is the read that failed. `signal` is aborted once the record check's bound
+   * passes without an answer, and the read is to abort with it, so a daemon that hangs is left
+   * no open request. */
+  readonly readRecord: (issue: string, signal: AbortSignal) => Promise<LegionIssue | undefined>;
   /** The Envoy listener the architect notice goes to, or undefined when Envoy is off for this
    * session. Built lazily and once by the caller. */
   readonly publisher: () => EnvoyPublish | undefined;
@@ -253,7 +256,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
     if (claim === undefined) return { reminds: true };
     let record: LegionIssue | undefined;
     try {
-      record = (await withBound(deps.readState, boundMs)).issues[claim.issue];
+      record = await withBound((signal) => deps.readRecord(claim.issue, signal), boundMs);
     } catch (error) {
       deps.log.debug("legion: the daemon did not answer the phase reminder's record check", {
         issue: claim.issue,

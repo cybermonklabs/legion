@@ -2199,7 +2199,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
           claim: () => claim?.capability(),
           booted: claimBooted.promise,
           firstTurnStarted: () => reportFirstTurn?.(),
-          readState: (signal) => daemon.state({ signal }),
+          readRecord: (issue, signal) => daemon.record(issue, { signal }),
           reportActivity: (input) => daemon.activity(input),
           inbox: inbox === undefined ? undefined : (text) => inbox.notification({ content: text }),
           publish: client.publish,

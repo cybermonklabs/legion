@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
-import type { LegionState } from "@legion/contracts/legion-api";
+import type { LegionIssue } from "@legion/contracts/legion-api";
 import {
   createEnvoyClient,
   EnvoyApiError,
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport";
+import { createLegionDaemonClient } from "./daemon-client";
 import { createPhaseReminder, type PhaseReminder } from "./phase-reminder";
 import type { PhaseStallEntry } from "./phase-stall";
 import { DEFAULT_STALL_LIMITS } from "./stall-limits";
@@ -23,16 +24,16 @@ const implementer = {
 // A daemon that never answers the record check: the check fails open once its bound passes, and
 // the read it started is aborted then rather than left open, one request per reminder.
 test("the record check aborts a daemon read that outlives its bound, and reminds all the same", async () => {
-  const handed: AbortSignal[] = [];
+  const handed: { readonly issue: string; readonly signal: AbortSignal }[] = [];
   const debugged: string[] = [];
   const reminder = createPhaseReminder({
     sendReminder: () => {},
     armTimer: () => {},
     saveEntry: () => {},
     claim: () => implementer,
-    readState: (signal) => {
-      handed.push(signal);
-      return new Promise<LegionState>(() => {});
+    readRecord: (issue, signal) => {
+      handed.push({ issue, signal });
+      return new Promise<LegionIssue | undefined>(() => {});
     },
     publisher: () => undefined,
     project: "LEGION",
@@ -46,9 +47,65 @@ test("the record check aborts a daemon read that outlives its bound, and reminds
 
   expect(continuation).toBeString();
   expect(handed).toHaveLength(1);
-  expect(handed[0]?.aborted).toBe(true);
-  expect((handed[0]?.reason as Error).message).toBe("no answer within 20ms");
+  expect(handed[0]?.issue).toBe("LEGION-208");
+  expect(handed[0]?.signal.aborted).toBe(true);
+  expect((handed[0]?.signal.reason as Error).message).toBe("no answer within 20ms");
   expect(debugged).toEqual(["legion: the daemon did not answer the phase reminder's record check"]);
+});
+
+/** A reminder over a real daemon client whose fetch is `answer`, recording every route the
+ * check asks for and every line it logs at debug. */
+function overDaemon(answer: typeof fetch) {
+  const routes: string[] = [];
+  const debugged: string[] = [];
+  const recording = (async (input, init) => {
+    routes.push(new URL(input.toString()).pathname);
+    return answer(input, init);
+  }) as typeof fetch;
+  const daemon = createLegionDaemonClient("http://daemon.test", {
+    contract: 60,
+    fetch: recording,
+  });
+  const reminder = createPhaseReminder({
+    sendReminder: () => {},
+    armTimer: () => {},
+    saveEntry: () => {},
+    claim: () => implementer,
+    readRecord: (issue, signal) => daemon.record(issue, { signal }),
+    publisher: () => undefined,
+    project: "LEGION",
+    limits: DEFAULT_STALL_LIMITS,
+    log: { debug: (message) => debugged.push(message), warn: () => {} },
+  });
+  reminder.apply({ kind: "assignment" });
+  return { reminder, routes, debugged };
+}
+
+// The check keeps its two branches apart: the route's own 404 for an issue the daemon records
+// nothing of is the absent record, and everything else is a read that failed. It asks for its
+// own issue's record and never for the whole project.
+test("the record check reads one record: the route's 404 is the absent record, a transport failure the read that failed", async () => {
+  const absent = overDaemon((async (_input, _init) =>
+    Response.json(
+      { code: "RECORD_NOT_FOUND", error: "The daemon has no record for LEGION-208" },
+      { status: 404 }
+    )) as typeof fetch);
+
+  expect(await absent.reminder.settle("Pushed.")).toBeString();
+  expect(absent.routes).toEqual(["/legion/v1/issues/LEGION-208/record"]);
+  expect(absent.debugged).toEqual([
+    "legion: the daemon holds no record for this phase reminder's issue",
+  ]);
+
+  const failed = overDaemon((async (_input, _init): Promise<Response> => {
+    throw new TypeError("fetch failed");
+  }) as typeof fetch);
+
+  expect(await failed.reminder.settle("Pushed.")).toBeString();
+  expect(failed.routes).toEqual(["/legion/v1/issues/LEGION-208/record"]);
+  expect(failed.debugged).toEqual([
+    "legion: the daemon did not answer the phase reminder's record check",
+  ]);
 });
 
 interface ArmedTimer {
@@ -88,7 +145,7 @@ function rig(options: {
     },
     saveEntry: (entry) => entries.push(entry),
     claim: () => implementer,
-    readState: async () => ({ issues: {} }) as unknown as LegionState,
+    readRecord: async () => undefined,
     publisher: () => async (input) => {
       published.push(input);
       return options.publish === undefined ? {} : options.publish(input);

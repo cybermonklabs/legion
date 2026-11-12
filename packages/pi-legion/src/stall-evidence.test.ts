@@ -309,9 +309,9 @@ function tellerRig(
       },
     claim: () => ("claim" in options ? options.claim : claimOf()),
     project: options.project ?? "legion",
-    readState: async () => {
+    readRecord: async (issue) => {
       if (typeof state.state === "string") throw new Error(state.state);
-      return state.state;
+      return state.state.issues[issue];
     },
     publisher: () => (state.envoy ? publish : undefined),
     appendEntry: (customType, data) => {

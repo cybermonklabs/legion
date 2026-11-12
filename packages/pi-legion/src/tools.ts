@@ -17,10 +17,22 @@ import {
   legionToolDescription,
   mintClaimGrant,
   PHASE_OP_SENTENCES,
+  type PluginBuild,
   phaseOpParameters,
 } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext, ToolResult } from "@legion/pi-shared/pi-types";
 import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
+import pkg from "../package.json";
+
+/** This plugin's own build, which `read_build` answers with: the manifest of the module this
+ * process loaded, never a path on the image. A relaunch installs the plugin pair fresh under
+ * the role's state home and loads it with `--extension`, so `/opt/legion/pi-legion` is another
+ * build on every pod made from an older image. */
+const BUILD: PluginBuild = {
+  name: pkg.name,
+  version: pkg.version,
+  contract: pkg.legion.daemonApiVersion,
+};
 
 export type LegionToolRole = "architect" | "phase-worker" | "controller";
 
@@ -56,6 +68,7 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "read_release_records",
     "handoff_complete",
     "ready_for_update",
+    "read_build",
   ],
   "phase-worker": [
     "request_backward_move",
@@ -63,6 +76,7 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "read_release_records",
     "handoff_complete",
     "ready_for_update",
+    "read_build",
   ],
   controller: ["read_state", "set_status", "fresh_session", "compact"],
 };
@@ -198,15 +212,16 @@ export function createLegionTool(deps: {
     label: "legion",
     // No sentence on read_record, whose name says what it reads; the shared sentence on
     // read_release_records before handoff_complete's contract, since the records it answers are
-    // not read from its name; after that contract the shared sentence on request_backward_move
-    // (an architect's names the issue it returns from accepting), then the architect's sign_off
-    // and the controller's operations: the exact text tools.test.ts pins, so a change to the
-    // shared template cannot reach an Oh My Pi agent unnoticed.
+    // not read from its name; after that contract the shared sentences on request_backward_move
+    // (an architect's names the issue it returns from accepting) and read_build, then the
+    // architect's sign_off and the controller's operations: the exact text tools.test.ts pins,
+    // so a change to the shared template cannot reach an Oh My Pi agent unnoticed.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readReleaseRecords,
       after:
         PHASE_OP_SENTENCES.requestBackwardMove +
+        PHASE_OP_SENTENCES.readBuild +
         "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
         "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
         "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: take each one " +
@@ -271,7 +286,7 @@ export function createLegionTool(deps: {
         }
         if (active.kind !== "controller" && isPhaseOp(operation)) {
           const answer = await executePhaseOp(
-            { daemon: daemon(), claim: active, handoffReport, branchHead, restart },
+            { daemon: daemon(), claim: active, build: BUILD, handoffReport, branchHead, restart },
             parameters
           );
           // A call that returned without throwing: a completion, and a backward move, which hands

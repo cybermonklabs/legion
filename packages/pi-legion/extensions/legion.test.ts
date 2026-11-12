@@ -1918,9 +1918,9 @@ describe.skipIf(skip)("Legion OMP extension", () => {
        * test moves it, which is how the record check decides the reminder is no longer this
        * role's to get. */
       readonly phase?: string;
-      /** The daemon's whole answer to `GET /legion/v1/state`, for a daemon that does not answer
-       * with a record at all. */
-      readonly stateAnswer?: () => Response;
+      /** The daemon's whole answer to `GET /legion/v1/issues/REPO-43/record`, for a daemon that
+       * does not answer with a record at all. */
+      readonly recordAnswer?: () => Response;
       /** What `ctx.getAsyncJobSnapshot()` answers this pane. */
       readonly asyncJobs?: () => AsyncJobSnapshot | null;
     }) => {
@@ -1975,8 +1975,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         branch: options.branch,
         asyncJobs: options.asyncJobs,
         extraRoutes: (url) => {
-          if (url.pathname === "/legion/v1/state") {
-            return options.stateAnswer?.() ?? Response.json(state);
+          if (url.pathname === "/legion/v1/issues/REPO-43/record") {
+            return options.recordAnswer?.() ?? Response.json(state.issues["REPO-43"]);
           }
           if (url.pathname === "/legion/v1/grants") {
             return Response.json({ grantId: "grant-stall", expiresAt: "2099-01-01T00:00:00Z" });
@@ -2413,7 +2413,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     test("a daemon that does not answer the record check reminds all the same: the check fails open", async () => {
       // An unreachable daemon is exactly when a stalled worker must still be nudged.
       const worker = await bootStalling({
-        stateAnswer: () => Response.json({ error: "the daemon is restarting" }, { status: 503 }),
+        recordAnswer: () => Response.json({ error: "the daemon is restarting" }, { status: 503 }),
       });
       await worker.arrives(assignment);
 
@@ -2424,6 +2424,21 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         reported: false,
         lastMessage: "Pushed.",
       });
+    });
+
+    // R5: the check reads this issue's record, about two kilobytes, and never the whole project
+    // body — the read a field changed on another issue's view used to refuse
+    // (dispatch://INFRA-2694). This is the reader the plugin itself supplies.
+    test("the reminder's record check asks for this issue's record and never for the project", async () => {
+      const worker = await bootStalling({});
+      const before = worker.requests.length;
+      await worker.arrives(assignment);
+
+      expect(await worker.settles("Pushed.")).toEqual(followUp("handoff_complete"));
+
+      const paths = worker.requests.slice(before).map((request) => request.path);
+      expect(paths).toContain("/legion/v1/issues/REPO-43/record");
+      expect(paths).not.toContain("/legion/v1/state");
     });
 
     test("a request_backward_move closes the phase too: the next settle sends nothing", async () => {
@@ -2506,11 +2521,11 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
       const { result, calls } = await worker.completes();
       expect(result).toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
-      // The issue's phase is read from the daemon's state, the commit is found in the pane's
-      // workspace with its jj, and the grant is minted in-process and travels only in the request;
-      // nothing is written to the pane.
+      // The issue's phase is read from the daemon's record of this issue, the commit is found in
+      // the pane's workspace with its jj, and the grant is minted in-process and travels only in
+      // the request; nothing is written to the pane.
       expect(calls).toEqual([
-        { path: "/legion/v1/state", body: undefined },
+        { path: "/legion/v1/issues/REPO-43/record", body: undefined },
         {
           path: "/legion/v1/grants",
           body: {
@@ -2639,7 +2654,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         isError: true,
       });
       expect(calls.map((call) => call.path)).toEqual([
-        "/legion/v1/state",
+        "/legion/v1/issues/REPO-43/record",
         "/legion/v1/grants",
         "/legion/v1/handoff/complete",
       ]);
@@ -3962,6 +3977,11 @@ async function launchedController(options: {
       });
     }
     if (url.pathname === "/legion/v1/state") return Response.json(daemonState);
+    // The controller's boot check reads the project here (dispatch://INFRA-2694), where it read
+    // the whole project body before.
+    if (url.pathname === "/healthz") {
+      return Response.json({ status: "ok", project: daemonState.daemon.project });
+    }
     if (url.pathname === "/legion/v1/issues/status") return Response.json({});
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
     if (url.pathname.startsWith("/legion/")) {
@@ -4189,8 +4209,12 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
 
     expect(await runStartCommand(controller, controller.context("ses_controller"))).toEqual([]);
 
+    // The boot check reads the daemon's project from the health answer and asks for no state
+    // (dispatch://INFRA-2694): the whole project body reached the controller's `read_state`
+    // alone from here on.
+    expect(controller.requests.map((request) => request.path)).toContain("/healthz");
+    expect(controller.requests.map((request) => request.path)).not.toContain("/legion/v1/state");
     expect(daemonRequests(controller.requests)).toEqual([
-      { path: "/legion/v1/state", body: undefined },
       {
         path: "/legion/v1/claims/register",
         body: {
@@ -5252,7 +5276,6 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       delete process.env.LEGION_BOOT_TOKEN_FILE;
     }
     expect(daemonRequests(controller.requests)).toEqual([
-      { path: "/legion/v1/state", body: undefined },
       {
         path: "/legion/v1/claims/register",
         body: {
@@ -6167,9 +6190,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       expect.stringContaining('"sessionId":"ses_controller_after"'),
     ]);
     expect(daemonRequests(controller.requests).map((request) => request.path)).toEqual([
-      "/legion/v1/state",
       "/legion/v1/claims/register",
-      "/legion/v1/state",
       "/legion/v1/claims/register",
     ]);
   });

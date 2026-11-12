@@ -122,7 +122,7 @@ export function createControllerSession(deps: {
    * daemon's, or the topic would be one nobody publishes on. Both are settled before registering,
    * since a registration replaces the running controller's session and secret: an unset
    * `LEGION_PROJECT` stops the claim, and so does one whose controller role is not that of the
-   * project `GET /legion/v1/state` names (`legionProjectToken`, the rule the daemon applies to its
+   * project `GET /healthz` names (`legionProjectToken`, the rule the daemon applies to its
    * own). The registration's claim token is compared once more after it, the daemon's own answer.
    * Once the registration is in, the session is the controller to the `legion` tool: its grants
    * are minted with the registration's secret from then on, before the role claim, so the start
@@ -260,7 +260,9 @@ export function createControllerSession(deps: {
     // channels; any other ignores whatever LEGION_SLACK_CHANNELS it inherited.
     const slackChannels = supervised ? daemonControllerSlackChannels(process.env) : [];
     const client = daemon();
-    const { daemon: served } = await client.state();
+    // The health route, which answers the project in one word: the boot check read the whole
+    // project body for it before (dispatch://INFRA-2694).
+    const served = await client.health();
     const servedRole = controllerToken(legionProjectToken(served.project, "the daemon's project"));
     if (controllerToken(project) !== servedRole) {
       throw new Error(

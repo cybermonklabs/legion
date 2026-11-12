@@ -203,6 +203,17 @@ worker on the new pod, in the same session. The record holds the wait as the pla
 WAITING reply buys (`recordedPhaseStall`): only a relaunched process reads a record, and that
 relaunch is the round over.
 
+**What build this pane runs.**
+The `legion` tool's `read_build` answers the package name and version of the plugin module this
+process loaded, the daemon API contract that build speaks (`package.json`
+`legion.daemonApiVersion`), and the contract the daemon states on its answer to `GET /healthz`,
+or that the daemon stated none.
+The two numbers can differ, and the answer shows both.
+`src/legion-tool.ts` reads this package's own manifest and passes the three values to the shared
+executor, so the answer is the module this process loaded and never the version at the plugin's
+path on the image, which a relaunch does not update.
+The operation reads no project state.
+
 **The state file.** This host has no transcript entry to record in, so the record is
 `<CLAUDE_CONFIG_DIR>/legion-phase-stall-<session id>.json` (`phaseStallFile`), written whole
 through a temporary file in the same directory renamed into place, before the hook answers. It

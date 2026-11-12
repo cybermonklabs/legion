@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
-import type { LegionState } from "@legion/contracts/legion-api"
+import type { LegionIssue } from "@legion/contracts/legion-api"
 import { messageFor } from "@legion/envoy-client/errors"
 import type { ActivityInput } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
@@ -173,9 +173,10 @@ export interface PhaseHookDeps {
    * registered its step — the bridge's seeding `/rename` — signals nothing, and one after the
    * name is taken costs nothing. */
   readonly firstTurnStarted: () => void
-  /** The daemon's whole state, for the reminder's record check, aborted with `signal` once the
-   * check's bound passes (`PhaseReminderDeps.readState`). */
-  readonly readState: (signal: AbortSignal) => Promise<LegionState>
+  /** One issue's record, for the reminder's record check, aborted with `signal` once the
+   * check's bound passes (`PhaseReminderDeps.readRecord`): the record, or `undefined` for an
+   * issue the daemon records nothing of. */
+  readonly readRecord: (issue: string, signal: AbortSignal) => Promise<LegionIssue | undefined>
   /** Sends this session's activity report to the daemon (`LegionDaemonClient.activity`), so the
    * idle rule can decide whether the pane's pod may be released (INFRA-945). */
   readonly reportActivity: (input: ActivityInput) => Promise<void>
@@ -401,7 +402,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     // count was never recorded is what the count exists to catch.
     saveEntry: saveRecord,
     claim: deps.claim,
-    readState: deps.readState,
+    readRecord: deps.readRecord,
     // The server's own listener client, so the notice reaches the one this session already talks
     // to; Envoy off for the session leaves it undefined, the runner says so once at debug, and
     // the reminder keeps coming without a notice.

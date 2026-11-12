@@ -237,7 +237,10 @@ async function startRolePane(): Promise<RolePane> {
       grants += 1;
       return Response.json({ grantId: `act-grant-${grants}`, expiresAt: "2099-01-01T00:00:00Z" });
     }
-    if (url.pathname === "/legion/v1/state") return Response.json(MOVED_ON);
+    // The reminder's record check reads one issue's record (dispatch://INFRA-2694).
+    if (url.pathname === `/legion/v1/issues/${ISSUE}/record`) {
+      return Response.json(MOVED_ON.issues[ISSUE]);
+    }
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }

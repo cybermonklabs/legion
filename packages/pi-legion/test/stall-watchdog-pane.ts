@@ -390,7 +390,11 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
     if (url.pathname === "/legion/v1/claims/activity") return new Response(null, { status: 204 });
-    if (url.pathname === "/legion/v1/state") return Response.json(MOVED_ON);
+    // The stall notice's record check and the phase reminder's both read one issue's record
+    // (dispatch://INFRA-2694); no reader of this pane asks for the whole project body.
+    if (url.pathname === `/legion/v1/issues/${ISSUE}/record`) {
+      return Response.json(MOVED_ON.issues[ISSUE]);
+    }
     if (url.pathname === "/legion/v1/grants") {
       grants += 1;
       return Response.json({

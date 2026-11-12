@@ -69,6 +69,7 @@ function liveDaemon(refuse?: { path: string; status: number; body: object }) {
       }
       const fixture = {
         "/legion/v1/state": "state.json",
+        "/legion/v1/issues/LEGION-208/record": "issue-record.json",
         "/legion/v1/grants": "grant.json",
         "/legion/v1/handoff/complete": "handoff-complete.json",
         "/legion/v1/signoff": "signoff.json",
@@ -194,7 +195,7 @@ test("handoff_complete waits out a daemon that refuses connections while it rest
   expect(result.details).toEqual(JSON.parse(daemonFixture("handoff-complete.json")));
   expect(completed).toEqual(["ses_208"]);
   expect(live.answered).toEqual([
-    "/legion/v1/state",
+    "/legion/v1/issues/LEGION-208/record",
     "/legion/v1/grants",
     "/legion/v1/handoff/complete",
   ]);

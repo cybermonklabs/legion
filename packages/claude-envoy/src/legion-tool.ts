@@ -8,9 +8,20 @@ import {
   legionToolDescription,
   PHASE_OP_SENTENCES,
   PHASE_OPS,
+  type PluginBuild,
   phaseOpParameters,
 } from "@legion/pi-shared/legion-phase-ops"
 import { z } from "zod"
+import pkg from "../package.json" with { type: "json" }
+
+/** This plugin's own build, which `read_build` answers with: the manifest of the module this
+ * process loaded, never a path on the image. A relaunch installs the plugin pair fresh under
+ * the role's state home, so the build at the image's own path is another one. */
+const BUILD: PluginBuild = {
+  name: pkg.name,
+  version: pkg.version,
+  contract: pkg.legion.daemonApiVersion,
+}
 
 /** The tool's name: Claude Code shows it as `mcp__legion__legion`, under the pane's one server. */
 export const LEGION_TOOL_NAME = "legion"
@@ -23,7 +34,7 @@ export function legionToolDefinition() {
     description: legionToolDescription({
       envoyPublish: "mcp__legion__envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
-      after: PHASE_OP_SENTENCES.requestBackwardMove,
+      after: PHASE_OP_SENTENCES.requestBackwardMove + PHASE_OP_SENTENCES.readBuild,
     }),
     inputSchema: z.toJSONSchema(z.object({ op: z.enum(PHASE_OPS), ...phaseOpParameters(z) })),
   }
@@ -60,6 +71,7 @@ export async function executeLegionTool(
     {
       daemon: runtime.daemon,
       claim,
+      build: BUILD,
       handoffReport: runtime.handoffReport,
       branchHead: runtime.branchHead,
       ...(signal === undefined ? {} : { restart: { signal } }),

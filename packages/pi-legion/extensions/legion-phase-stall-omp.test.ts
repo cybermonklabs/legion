@@ -273,7 +273,11 @@ async function stallPane(
       answer: (url, body) => {
         const own = options.answer?.(url, body);
         if (own !== undefined) return own;
-        if (url.pathname === "/legion/v1/state") return Response.json(STALL_STATE);
+        // The reminder's check and `handoff_complete` read one issue's record
+        // (dispatch://INFRA-2694); nothing of this pane asks for the whole project body.
+        if (url.pathname === "/legion/v1/issues/STALL-2/record") {
+          return Response.json(STALL_STATE.issues["STALL-2"]);
+        }
         if (url.pathname === "/legion/v1/handoff/complete") return Response.json({});
         if (url.pathname === "/api/v1/issues/STALL-2/handoffs/implement/latest") {
           const newest = records.at(-1);
@@ -360,8 +364,8 @@ test.skipIf(omp === undefined && !onActions)(
     expect(daemonRoutes(pane)).toEqual([
       "/legion/v1/claims/register",
       "/legion/v1/claims/ready",
-      "/legion/v1/state",
-      "/legion/v1/state",
+      "/legion/v1/issues/STALL-2/record",
+      "/legion/v1/issues/STALL-2/record",
       "/legion/v1/grants",
       "/legion/v1/handoff/complete",
     ]);
@@ -512,7 +516,7 @@ test.skipIf(omp === undefined && !onActions)(
         .map((request) => request.path)
         .filter(
           (path) =>
-            path !== "/legion/v1/state" &&
+            path !== "/legion/v1/issues/STALL-2/record" &&
             path !== ACTIVITY_ROUTE &&
             path !== "/v1/interests/subscribe" &&
             !answersRead.test(path)
@@ -653,7 +657,9 @@ test.skipIf(omp === undefined && !onActions)(
       {
         quietMs: 4_000,
         answer: (url) =>
-          url.pathname === "/legion/v1/state" ? Response.json(MOVED_ON) : undefined,
+          url.pathname === "/legion/v1/issues/STALL-2/record"
+            ? Response.json(MOVED_ON.issues["STALL-2"])
+            : undefined,
       }
     );
 
@@ -684,11 +690,12 @@ test.skipIf(omp === undefined && !onActions)(
         env: { LEGION_STALL_REMINDER_MS: "500" },
         quietMs: 4_000,
         answer: (url) => {
-          if (url.pathname !== "/legion/v1/state") return undefined;
+          if (url.pathname !== "/legion/v1/issues/STALL-2/record") return undefined;
           reads += 1;
           // The first read is the continuation reminder's own check; by the timer's read the
           // daemon has moved the issue on.
-          return Response.json(reads === 1 ? STALL_STATE : MOVED_ON);
+          const seen = reads === 1 ? STALL_STATE : MOVED_ON;
+          return Response.json(seen.issues["STALL-2"]);
         },
       }
     );

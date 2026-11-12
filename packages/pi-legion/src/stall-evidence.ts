@@ -7,7 +7,7 @@ import {
   roleToken,
   roleTopic,
 } from "@legion/contracts";
-import type { LegionState } from "@legion/contracts/legion-api";
+import type { LegionIssue } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import {
@@ -558,9 +558,10 @@ export interface StallTellerDeps {
   readonly claim: () => ClaimCapability | undefined;
   /** `LEGION_PROJECT`. */
   readonly project: string | undefined;
-  /** The daemon's whole state, read as `read_record` reads it; `signal` is aborted once the
-   * record check's bound passes without an answer. */
-  readonly readState: (signal: AbortSignal) => Promise<LegionState>;
+  /** One issue's record, read as `read_record` reads it (`LegionDaemonClient.record`): the
+   * record, or `undefined` for an issue the daemon records nothing of. `signal` is aborted once
+   * the record check's bound passes without an answer. */
+  readonly readRecord: (issue: string, signal: AbortSignal) => Promise<LegionIssue | undefined>;
   /** The Envoy listener the notice goes to, or undefined when Envoy is off for this session.
    * Built lazily and once by the caller, as the phase reminder's is. */
   readonly publisher: () => EnvoyPublish | undefined;
@@ -614,8 +615,11 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
    */
   const liveArchitect = async (issue: string): Promise<boolean> => {
     try {
-      const state = await withBound(deps.readState, deps.recordBoundMs ?? RECORD_READ_BOUND_MS);
-      return architectLive(state.issues[issue]);
+      const record = await withBound(
+        (signal) => deps.readRecord(issue, signal),
+        deps.recordBoundMs ?? RECORD_READ_BOUND_MS
+      );
+      return architectLive(record);
     } catch (error) {
       deps.log.debug("legion: the daemon did not answer the stall notice's record check", {
         issue,

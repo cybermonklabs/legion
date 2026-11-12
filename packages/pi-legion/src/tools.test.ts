@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { type LegionRole, roleToken } from "@legion/contracts";
 import type { LegionPhase } from "@legion/contracts/legion-api";
 import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
@@ -10,6 +13,7 @@ import {
 import { phaseOpParameters } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, SessionContext } from "@legion/pi-shared/pi-types";
 import { z } from "zod";
+import pkg from "../package.json";
 import { createLegionTool, type LegionToolSession } from "./tools";
 
 function context(sessionId = "ses_208"): SessionContext {
@@ -75,11 +79,13 @@ function claimSession(role: LegionRole, issue = "LEGION-208"): LegionToolSession
   };
 }
 
-/** A daemon stub that records every call: `grant` answers a grant, `state` the state given, and
- * every other route the answer given for it (an empty object by default). */
+/** A daemon stub that records every call: `grant` answers a grant, `state` the state given,
+ * `record` the issue's record out of that state, `daemonContract` the contract the daemon
+ * states, and every other route the answer given for it (an empty object by default). */
 function recordingDaemon(options: {
   readonly state?: unknown;
   readonly answers?: Readonly<Record<string, unknown>>;
+  readonly daemonContract?: number;
 }) {
   const calls: Array<readonly [string, object | undefined]> = [];
   const routes = [
@@ -105,6 +111,15 @@ function recordingDaemon(options: {
     state: async () => {
       calls.push(["state", undefined]);
       return options.state ?? { issues: {} };
+    },
+    record: async (issue: string) => {
+      calls.push(["record", { issue }]);
+      const state = (options.state ?? { issues: {} }) as { issues: Record<string, unknown> };
+      return state.issues[issue];
+    },
+    daemonContract: async () => {
+      calls.push(["daemonContract", undefined]);
+      return options.daemonContract;
     },
     ...Object.fromEntries(
       routes.map((name) => [
@@ -160,7 +175,14 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "daemon holds your next task until your process comes back on the new pod, in this same session. " +
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`): " +
   "a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which " +
-  "counts a review round. sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
+  "counts a review round. " +
+  "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
+  "It also reports the contract the daemon states on its answer to the health route, or that the daemon stated none. " +
+  "The two numbers can differ, and the answer shows both. " +
+  "Report the version this call answers, never the one at the plugin's path on the image. " +
+  "A relaunch installs the build this process loaded under the role's own state home. " +
+  "read_build reads no project state. " +
+  "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
   "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
   "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: take each one " +
   "to done, or out of the workflow with park_child, and sign off again. close_root is refused the same way and with the " +
@@ -252,6 +274,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "read_release_records",
         "handoff_complete",
         "ready_for_update",
+        "read_build",
         "read_state",
         "set_status",
         "fresh_session",
@@ -843,7 +866,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     },
   });
   expect(calls).toEqual([
-    ["state", undefined],
+    ["record", { issue: "LEGION-208" }],
     [
       "grant",
       { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-208" },
@@ -930,7 +953,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
       text: "handoff_complete's verdict is pass or fail on a phase completion; pending is a production check's",
     },
   ]);
-  expect(calls.at(-1)).toEqual(["state", undefined]);
+  expect(calls.at(-1)).toEqual(["record", { issue: "LEGION-208" }]);
   expect(completed).toHaveLength(4);
 
   // Each refusal of the report is the tool's error, naming the remedy: the state is read, and
@@ -965,7 +988,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     );
     expect(result.isError).toBe(true);
     expect(result.content).toEqual([{ type: "text", text: message }]);
-    expect(calls.at(-1)).toEqual(["state", undefined]);
+    expect(calls.at(-1)).toEqual(["record", { issue: "LEGION-208" }]);
   }
   expect(completed).toHaveLength(4);
 });
@@ -1083,7 +1106,7 @@ test("a report on its closed issue's production check carries a verdict and no c
       })
     ).resolves.toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
     expect(calls.slice(-3)).toEqual([
-      ["state", undefined],
+      ["record", { issue: "LEGION-208" }],
       [
         "grant",
         { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-208" },
@@ -1121,7 +1144,7 @@ test("a report on its closed issue's production check carries a verdict and no c
     });
     expect(result.isError).toBe(true);
     expect(result.content).toEqual([{ type: "text", text: message }]);
-    expect(calls.at(-1)).toEqual(["state", undefined]);
+    expect(calls.at(-1)).toEqual(["record", { issue: "LEGION-208" }]);
   }
   expect(completed).toHaveLength(3);
 
@@ -1346,4 +1369,84 @@ test("the controller reads the whole state without a grant and sets an issue's s
   }
   expect(calls).toHaveLength(before);
   expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller"]);
+});
+
+// R6: a role reads which plugin build its own process runs. The build is this module's own
+// manifest, so a stale copy at the image's own path (`/opt/legion/pi-legion`, which a relaunch
+// never updates) changes nothing about the answer.
+test("read_build answers the package and version this process loaded, both contract numbers, and reads no state", async () => {
+  const stale = await mkdtemp(path.join(tmpdir(), "pi-legion-image-path-"));
+  await writeFile(
+    path.join(stale, "package.json"),
+    JSON.stringify({ name: "@sjawhar/pi-legion", version: "0.0.0-stale", legion: {} })
+  );
+  try {
+    const { calls, daemon } = recordingDaemon({ daemonContract: pkg.legion.daemonApiVersion + 1 });
+    const tool = createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => claimSession("implementer"),
+    });
+
+    await expect(
+      tool.execute("", { op: "read_build" }, undefined, undefined, context())
+    ).resolves.toMatchObject({
+      details: {
+        plugin: pkg.name,
+        version: pkg.version,
+        contract: pkg.legion.daemonApiVersion,
+        daemonContract: pkg.legion.daemonApiVersion + 1,
+      },
+    });
+    // The version at the image's own path is another one, and no answer carries it.
+    const atImagePath = JSON.parse(await readFile(path.join(stale, "package.json"), "utf8")) as {
+      version: string;
+    };
+    expect(atImagePath.version).toBe("0.0.0-stale");
+    expect(pkg.version).not.toBe(atImagePath.version);
+    // The health route's header is the one read, and no project state is asked for.
+    expect(calls).toEqual([["daemonContract", undefined]]);
+  } finally {
+    await rm(stale, { recursive: true, force: true });
+  }
+});
+
+test("read_build says the daemon stated no contract, and belongs to no controller session", async () => {
+  const { daemon } = recordingDaemon({});
+  const toolFor = (active: LegionToolSession) =>
+    createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => active,
+    });
+
+  for (const active of [claimSession("architect"), claimSession("implementer")]) {
+    await expect(
+      toolFor(active).execute("", { op: "read_build" }, undefined, undefined, context())
+    ).resolves.toMatchObject({ details: { daemonContract: "the daemon stated no contract" } });
+  }
+  await expect(
+    toolFor({ kind: "controller", sessionID: "ses_controller" }).execute(
+      "",
+      { op: "read_build" },
+      undefined,
+      undefined,
+      context("ses_controller")
+    )
+  ).resolves.toMatchObject({
+    isError: true,
+    content: [{ type: "text", text: "read_build is not available to a controller session" }],
+  });
 });

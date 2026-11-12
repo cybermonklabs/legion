@@ -3,8 +3,9 @@
  * A stand-in for the Legion daemon that serves exactly the routes a phase worker's `legion` tool
  * hits in a skill scenario: the worker's claim registration (`claims/register`, `claims/ready`,
  * the daemon's claim routes the plugin boots through), the grant the tool mints in-process before
- * each of its own daemon calls (`grants`), the issue's record (`GET /legion/v1/state`, the tool's
- * `read_record`) and the phase completion (`handoff/complete`, the tool's `handoff_complete`, the
+ * each of its own daemon calls (`grants`), the issue's record (`GET /legion/v1/issues/<key>/record`,
+ * the tool's `read_record` and the reminder's own check, with `GET /legion/v1/state` beside it)
+ * and the phase completion (`handoff/complete`, the tool's `handoff_complete`, the
  * one route here that redeems a grant). No credential route and no grant file: a pane's `gh` and
  * `git` read the rig's token from the gh files under its `GH_CONFIG_DIR`, which `daemon-pane.go`
  * writes, and no agent runs `legion` from bash.
@@ -245,12 +246,25 @@ const server = Bun.serve({
         body = undefined;
       }
     }
+    const record =
+      request.method === "GET" ? /^\/legion\/v1\/issues\/([^/]+)\/record$/.exec(path) : null;
+    const held = record === null ? undefined : STATE.issues[decodeURIComponent(record[1] ?? "")];
     const { response, mintedGrantId } =
       request.method === "POST"
         ? handle(path, body)
         : request.method === "GET" && path === "/legion/v1/state"
           ? { response: json(200, STATE) }
-          : { response: json(404, { error: `no route for ${request.method} ${path}` }) };
+          : record !== null
+            ? {
+                response:
+                  held === undefined
+                    ? json(404, {
+                        code: "RECORD_NOT_FOUND",
+                        error: `The daemon has no record for ${record[1]}`,
+                      })
+                    : json(200, held),
+              }
+            : { response: json(404, { error: `no route for ${request.method} ${path}` }) };
     const line: LogLine = {
       at: new Date().toISOString(),
       path,
