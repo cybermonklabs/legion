@@ -34,3 +34,4 @@
   `waiting line: none` while nothing waits, and
   `waiting line: the daemon sent no reasons at this caller's contract` where the daemon served
   this caller no sentence at all, which is what a daemon older than the sentence serves.
+
