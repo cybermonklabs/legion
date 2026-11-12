@@ -627,9 +627,10 @@ type SuperviseRequest struct {
 	// admission's promotion of its root where the derivation serves it a task, and the resume of
 	// a root a person answered (workflow.Engine.EnterArchitect and ResumeAwaitedRoot). The
 	// architect's start names no phase (Phase above), so the outbox holds it to the generation
-	// and the claim's given entry alone. Two more carry the entry the role's row already names
-	// without raising it: the send of an owed entry (workflow's SendOwedEntry) and the held
-	// phase's retry, which marks it with ResendEntry below. It is zero for every other
+	// and the claim's given entry alone. Three more carry the entry the role's row already names
+	// without raising it: the send of an owed entry (workflow's SendOwedEntry), the sweep's start
+	// of a root architect behind its entry (workflow's SendArchitectStart) and the held phase's
+	// retry, which marks it with ResendEntry below. It is zero for every other
 	// operation, and for every start that hands no entry's work at all. Those starts, in full, so
 	// that no other comment need list them: the promotion's architect start of a root the
 	// derivation serves no task (admit's promotion), the roles admission brings back beside a

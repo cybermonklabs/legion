@@ -525,8 +525,9 @@ func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // of the phase the issue has moved into (start), the promotion's start of a mid-phase worker a
 // re-admitted tree brings back (StartPromotedWorker), and a root architect's start of work it was
 // not on (EnterArchitect, ResumeAwaitedRoot). Every other start carries the entry its role's
-// phases row already names — the send of an owed entry (SendOwedEntry), the held phase's retry
-// (restart) — or is a start of no entry (record.SuperviseRequest.Entry), so none of them moves
+// phases row already names — the send of an owed entry (SendOwedEntry), the sweep's start of a
+// root architect behind its entry (SendArchitectStart), the held phase's retry (restart) — or is
+// a start of no entry (record.SuperviseRequest.Entry), so none of them moves
 // the row and a worker's in-flight completion is never refused for an entry it was never given.
 //
 // The number counts the entries this role has been handed on this issue, which is why it is raised
