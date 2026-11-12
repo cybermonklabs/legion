@@ -10463,9 +10463,15 @@ describe("executeDispatchTool", () => {
   // packages/envoy/internal/dispatch/api/artifacts.go): a blank create goes to the server, which
   // refuses it under a held name whatever --force says, in the sentence that names its own rule.
   // Refusing it here would answer it with --force, which changes nothing for it.
+  //
+  // R11: that `blank` is Go's `unicode.IsSpace`, which JavaScript's `trim` is not. U+0085 is
+  // one of the two characters they differ on: the server empties it, so this create writes no
+  // version, and reading `trim` here would refuse it and name --force instead.
   test.each([
     ["empty", ""],
     ["spaces alone", "   "],
+    ["a next line (U+0085) alone, which Go empties and `trim` keeps", "\u0085"],
+    ["a no-break space (U+00A0) alone, which both empty", "\u00A0"],
   ])("sends a create under a name the issue holds whose content is %s", async (_what, content) => {
     const held = {
       id: "artifact-plan",
@@ -10521,6 +10527,60 @@ describe("executeDispatchTool", () => {
     expect(failure).not.toBeInstanceOf(ToolInputError);
     expect(String(failure)).toContain(refusal);
     expect(String(failure)).not.toContain(ARTIFACT_NAME_EXISTS_RULE);
+  });
+
+  // INFRA-1334 R11: U+FEFF is the other character JavaScript's `trim` and Go's `unicode.IsSpace`
+  // differ on. The server reads it as content, so this create writes the held document's next
+  // version over the text it holds, and the command's refusal is the one that applies. Read with
+  // `trim` the create was blank here, skipping both this refusal and the stored-text check, and
+  // the upload stored version 2 with no --force asked for.
+  test.each([
+    ["a zero-width no-break space (U+FEFF) alone", "\uFEFF"],
+    ["an ordinary letter", "x"],
+  ])("refuses a create under a name the issue holds whose content is %s", async (_what, content) => {
+    const held = {
+      id: "artifact-plan",
+      issue_key: "DSP-42",
+      name: "plan.md",
+      slug: "plan-md",
+      kind: "doc",
+      created_by: { kind: "session", id: "session-7" },
+      versions: [{ number: 1, authors: [{ kind: "user", id: "alice" }] }],
+    };
+    const requests: Array<{ path: string; method: string }> = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      requests.push({ path: pathname, method: init?.method ?? "GET" });
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([held]);
+      }
+      throw new Error(`unexpected request: ${pathname}`);
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "plan.md", content },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    // The held-name sentence, which names --force as what asks for the version.
+    expect(failure.problems).toEqual([
+      "issue DSP-42 already holds plan.md (slug plan-md, kind doc) at version 1, which user alice wrote. " +
+        ARTIFACT_NAME_EXISTS_RULE,
+    ]);
+    // Nothing was uploaded, and the round trip was never asked for: the name decided it.
+    expect(requests.every((request) => request.method === "GET")).toBe(true);
   });
 
   test("writes the next version of a name the issue holds with --force", async () => {

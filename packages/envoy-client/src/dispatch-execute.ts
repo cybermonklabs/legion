@@ -2444,6 +2444,24 @@ function withoutFinalLineFeed(text: string): string {
   return text.endsWith("\n") ? text.slice(0, -1) : text;
 }
 
+/**
+ * Text Go's `strings.TrimSpace` empties: no characters at all, or only characters Go's
+ * `unicode.IsSpace` reports - `\t`, `\n`, `\v`, `\f`, `\r`, a space, U+0085 and U+00A0, and the
+ * Unicode `White_Space` property above Latin-1, which is U+1680, U+2000 to U+200A, U+2028,
+ * U+2029, U+202F, U+205F and U+3000 (`IsSpace` in Go's `unicode/graphic.go`, reading the
+ * `_White_Space` table of its `unicode/tables.go`).
+ *
+ * The set is written out because it is Go's and not JavaScript's: `String.prototype.trim`
+ * removes another one, the same split this repository records of `\s` in
+ * `packages/envoy/internal/dispatch/text/refs.go` ("The whitespace is spelled out rather than
+ * written `\s`, which means another set in each language: JavaScript's also matches a vertical
+ * tab and U+FEFF"). Walked over every Unicode scalar, `trim` and `TrimSpace` differ on exactly
+ * two characters: `trim` removes U+FEFF, which Go keeps, and Go removes U+0085, which `trim`
+ * keeps.
+ */
+const goBlankPattern =
+  /^[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]*$/u;
+
 /** The Components line of an issue read: the effective set with where it came from. */
 function componentsLine(components: IssueComponents): string {
   const ids = components.ids ?? [];
@@ -5894,11 +5912,13 @@ export async function executeDispatchTool(
       // What every create carries, whatever it stores under the name.
       const options = { name, ...(summary === undefined ? {} : { summary }), actor };
       const artifactOwner = documentOwner();
-      // The server's own `blank`: a body carrying no content, or content whose text is blank -
-      // the `blank :=` line of jsonArtifactUpload in
-      // packages/envoy/internal/dispatch/api/artifacts.go. Both checks below read this one
-      // predicate, so the two sides refuse the same calls.
-      const blank = content === undefined || content.trim() === "";
+      // The server's own `blank`: a body carrying no content, or content Go's
+      // `strings.TrimSpace` empties - the `blank :=` line of jsonArtifactUpload in
+      // packages/envoy/internal/dispatch/api/artifacts.go, whose set is goBlankPattern's.
+      // JavaScript's `trim` is another set, so it is not read here: it calls U+FEFF blank where
+      // the server reads content, and calls U+0085 content where the server reads blank. Both
+      // checks below read this one predicate.
+      const blank = content === undefined || goBlankPattern.test(content);
       // An upload under a name the owner already holds writes that document's next version, over
       // the text it holds, so the command reads what the owner holds and refuses it. --force is
       // what asks for the version, and the API writes one for every other caller as before.
@@ -5933,10 +5953,13 @@ export async function executeDispatchTool(
       // The round trip is the store's own parse and render (POST /api/v1/markdown/round-trip).
       // Only a Dispatch that holds no such route leaves the upload to make its own refusal, as
       // it did before this check: every other failure refuses the upload, since a check that did
-      // not run says nothing about what the store would write. Blank text is no other spelling:
-      // the store holds nothing for it (storedMarkdown, in that package's
-      // markdown_round_trip.go), which is the empty document such a create asks for, so it goes
-      // to the server unchecked.
+      // not run says nothing about what the store would write. Blank text goes to the server
+      // unchecked: the round trip answers the empty string for every text this predicate calls
+      // blank, since storedMarkdown returns "" for whatever `strings.TrimSpace` empties before
+      // it parses anything (that package's markdown_round_trip.go), and the empty document is
+      // what such a create asks for. That short answer is not what the store writes for each of
+      // them: the parse and render a seed runs keep a no-break or an ideographic space, which
+      // renders to itself.
       if (!blank) {
         let stored: string | undefined;
         try {
