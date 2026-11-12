@@ -75,7 +75,9 @@ const NoEvent int64 = 0
 
 // The refusals a caller maps to an answer of its own.
 var (
-	// ErrNoPriority is a write or a read of an id no node row carries.
+	// ErrNoPriority is a write or a read of an id no node row carries, and a write of a
+	// priority whose state is StateGone, which is no priority to write (liveRow, write.go);
+	// the restore that writes StateLive again is the one write it does not refuse.
 	ErrNoPriority = errors.New("no priority of that id")
 	// ErrPriorityExists is a Create of an id a node row already carries.
 	ErrPriorityExists = errors.New("a priority of that id is already written")

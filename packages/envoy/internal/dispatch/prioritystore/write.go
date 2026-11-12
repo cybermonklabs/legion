@@ -70,8 +70,8 @@ func Create(ctx context.Context, tx pgx.Tx, id string, values map[string]string,
 // SetAttributes moves the node row's attributes and appends one value tuple per attribute, in the
 // caller's one transaction: the row answers the next read and the tuples answer the history. The
 // attributes values does not name are left as they were, so a write of one attribute states one
-// fact. It refuses an id the store does not hold with ErrNoPriority, and states nothing for an
-// empty values.
+// fact. It refuses an id the store does not hold, and an id whose priority is gone, with
+// ErrNoPriority (liveRow), and states nothing for an empty values.
 func SetAttributes(ctx context.Context, tx pgx.Tx, id string, values map[string]string, actor model.Actor, at time.Time) error {
 	if len(values) == 0 {
 		return nil
@@ -80,7 +80,7 @@ func SetAttributes(ctx context.Context, tx pgx.Tx, id string, values map[string]
 	if err != nil {
 		return fmt.Errorf("encode the attributes of priority %s: %w", id, err)
 	}
-	if err := moveNode(ctx, tx, `attributes = priority_nodes.attributes || $2::jsonb`, id, attributes); err != nil {
+	if err := moveNode(ctx, tx, `attributes = priority_nodes.attributes || $2::jsonb`, liveRow, id, attributes); err != nil {
 		return err
 	}
 	return appendTuples(ctx, tx, attributeTuples(id, values, actor, at))
@@ -89,8 +89,16 @@ func SetAttributes(ctx context.Context, tx pgx.Tx, id string, values map[string]
 // SetState moves the node row's state and appends the tuple that states it. Deleting a priority
 // is StateGone and restoring it is StateLive: no row is removed, and the history holds who ended
 // it and when.
+//
+// Writing StateLive is the one write that lands on a gone row (anyRow), because a restore is
+// what takes a priority out of that state; writing any other state, StateGone included, asks for
+// a live priority, so a second delete is refused ErrNoPriority and appends no second tuple.
 func SetState(ctx context.Context, tx pgx.Tx, id, state string, actor model.Actor, at time.Time) error {
-	if err := moveNode(ctx, tx, `state = $2`, id, state); err != nil {
+	rows := liveRow
+	if state == StateLive {
+		rows = anyRow
+	}
+	if err := moveNode(ctx, tx, `state = $2`, rows, id, state); err != nil {
 		return err
 	}
 	return appendTuples(ctx, tx, []Tuple{valueTuple(id, AttributeState, state, actor, at)})
@@ -120,13 +128,28 @@ func relate(ctx context.Context, tx pgx.Tx, issueKey, id string, asserted bool, 
 	}})
 }
 
+// The rows a node write lands on, beside the id it names. liveRow is every write but one: a
+// priority whose state is gone is no priority, so a write of one matches no row and is refused
+// ErrNoPriority, the refusal an id no row carries takes — which is the 404 its own page, the
+// listing and an issue's `advances` relation already answer for it. The guard stands here, in
+// the one place a row is updated, so a rename, a rank move and a second delete are each refused
+// by it; and it stands ahead of every append, so a refused write states nothing.
+//
+// anyRow is the restore's: SetState writing StateLive again reaches a gone row, since a guard
+// that caught that one too would make a delete final to this store and not just to a caller.
+const (
+	liveRow = ` and state = '` + StateLive + `'`
+	anyRow  = ``
+)
+
 // moveNode writes one column of one node row and answers ErrNoPriority where the store holds no
-// such priority. It is the one place a row is updated: a tuple never is.
-func moveNode(ctx context.Context, tx pgx.Tx, assignment, id string, value any) error {
+// such priority, or none that rows names. It is the one place a row is updated: a tuple never
+// is.
+func moveNode(ctx context.Context, tx pgx.Tx, assignment, rows, id string, value any) error {
 	var written string
 	err := tx.QueryRow(ctx, `
 		update priority_nodes set `+assignment+`
-		where kind = '`+KindPriority+`' and id = $1
+		where kind = '`+KindPriority+`' and id = $1`+rows+`
 		returning id
 	`, id, value).Scan(&written)
 	if errors.Is(err, pgx.ErrNoRows) {

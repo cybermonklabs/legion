@@ -208,6 +208,11 @@ type patchPriorityInput struct {
 	Actor *model.Actor `json:"actor"`
 }
 
+// patchPriority is PATCH /api/v1/priorities/{id}: the attributes the body names, and the move
+// its rank names, in one transaction. A priority whose state is `gone` takes neither: the store
+// writes the node row of a live priority alone (prioritystore's liveRow), so both calls answer
+// ErrNoPriority and this route answers 404 PRIORITY_NOT_FOUND, in the wording its page and its
+// history already answer. The transaction is rolled back, so a refused write appends no tuple.
 func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 	var input patchPriorityInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -291,6 +296,10 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 // listing then answers without it, and a read of the row still answers who ended it and when. No
 // route writes `live` again, so a delete is final to a caller; what the row and its log keep is
 // the record of it.
+//
+// A second delete is 404 PRIORITY_NOT_FOUND rather than a second `gone` tuple: the store takes a
+// write of a live priority alone (prioritystore's liveRow), and a priority already gone is no
+// priority to write.
 func (s *server) deletePriority(w http.ResponseWriter, r *http.Request) {
 	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {
@@ -377,9 +386,10 @@ func priorityActFrom(tuple prioritystore.Tuple, id string) model.PriorityAct {
 	return act
 }
 
-// refusePriorityWrite is the answer a store refusal gives a caller: an id no row carries is 404,
-// a move to a place the order does not have is 400, and anything else is the handler error every
-// route answers a failed statement with.
+// refusePriorityWrite is the answer a store refusal gives a caller: an id no row carries and an
+// id whose priority is gone are both 404 ErrNoPriority, since a priority whose state is gone is
+// no priority; a move to a place the order does not have is 400; and anything else is the
+// handler error every route answers a failed statement with.
 func (s *server) refusePriorityWrite(w http.ResponseWriter, id string, err error) {
 	switch {
 	case errors.Is(err, prioritystore.ErrNoPriority):
