@@ -53,8 +53,8 @@ func rowRuleRoot(t *testing.T, pool *pgxpool.Pool, row rowRuleCase, rank string)
 }
 
 // An issue holds one of the cap's rows from the moment the daemon starts it until its work is
-// past its review: the phases up to the review keep a row, and accepting, retro, merging and
-// awaiting_merge keep none (record.KeepsSlot). A hold keeps the row of the phase it came from,
+// past its review: the phases up to the review keep a row, and accepting, retro and merging
+// keep none (record.KeepsSlot). A hold keeps the row of the phase it came from,
 // because that is where the work stands (record.StandsAt), and a hold the record names no phase
 // for keeps one: the daemon knows only that the issue is held.
 //
