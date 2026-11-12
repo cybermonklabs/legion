@@ -13,20 +13,32 @@
 #
 #   baseline_start
 #       Inputs: BASELINE_SHA, the commit the baseline server is built from (any revision this
-#       repository resolves to a commit), and LEGION_TEST_PG_DSN, a PostgreSQL server this run may
-#       create a database on. The database LEGION_TEST_PG_DSN itself names is only connected to,
-#       to create and to drop this run's own database, and nothing in it is ever written.
-#       LEGION_WORKSPACE names the checkout the commit is read from; unset, the checkout this file
-#       is part of is read instead.
+#       repository resolves to a commit). LEGION_WORKSPACE names the checkout the commit is read
+#       from; unset, the checkout this file is part of is read instead.
+#
+#       The database is the run's when the run gives one. `c-decisions-converted` and `c-derived`
+#       each drop and create an empty database of their own (`infra_1098_decisions`,
+#       `infra_1098_census`) and hand it to their driver as DATABASE_URL, so with DATABASE_URL set
+#       this harness boots on that database, creates none, and drops none: the run that made it
+#       owns it. Creating a second one here would either collide with the run's or quietly leave
+#       the check reading a different database than the one the servers wrote. With DATABASE_URL
+#       unset, as under --selftest, the harness creates a database named for this run alone on the
+#       server LEGION_TEST_PG_DSN names, connecting to the database that DSN names only to create
+#       and drop its own, and drops it again in baseline_stop.
+#
+#       The agent bearer is the run's when the run gives one. The two checks pass
+#       DISPATCH_TOKEN=e2e-token and boot every server with DISPATCH_AGENT_TOKEN set to that bearer,
+#       so with DISPATCH_TOKEN set both servers accept exactly it; unset, the harness makes a random
+#       one. A driver calls baseline_start before lib.sh's read_bearer, which unsets DISPATCH_TOKEN.
+#
 #       It takes the commit's tree with `git archive` into a directory of its own under TMPDIR —
 #       a read of the repository: no worktree, no checkout, no write of any kind — builds
-#       `./cmd/dispatch` from that tree's packages/envoy, creates a database named for this run
-#       alone, and boots the binary on it. It returns once the server has reported that it is
-#       listening, and leaves the caller
-#           baseline_database_url   the database it made, which this branch's server then takes as
-#                                   its own DATABASE_URL
+#       `./cmd/dispatch` from that tree's packages/envoy, and boots the binary on the database.
+#       It returns once the server has reported that it is listening, and leaves the caller
+#           baseline_database_url   the database the servers serve, which this branch's server then
+#                                   takes as its own DATABASE_URL
 #           baseline_url            the baseline server's address, http://127.0.0.1:<port>
-#           baseline_token          the agent bearer that server accepts, for a driver that writes
+#           baseline_token          the agent bearer both servers accept, for a driver that writes
 #                                   the old release's rows through its API. It is printed nowhere.
 #       It prints the first two on stdout, one per line.
 #
@@ -36,12 +48,13 @@
 #       it, and goes only when the caller asks.
 #
 #   baseline_stop
-#       Stops the baseline server, drops the database and removes the work directory. This is the
-#       one a caller's cleanup trap calls, so that a failed run leaves no database, no server and
-#       no build directory behind.
+#       Stops the baseline server, drops the database when this harness made it, and removes the
+#       work directory. This is the one a caller's cleanup trap calls, so that a failed run leaves
+#       no server and no build directory behind, and no database of its own making.
 #
 # Both stops are safe to call twice and safe to call when `baseline_start` refused or failed part
-# way: each one stops and removes what this run actually made, and nothing else.
+# way: each one stops and removes what this run actually made, and nothing else — never a
+# database the run handed in.
 #
 # A missing or bad input is refused on stderr with status 2, as lib.sh's own refusals are; a step
 # of the harness that cannot do its job — the archive, the build, the database, a server that
@@ -86,6 +99,8 @@ baseline_commit=""
 baseline_work=""
 baseline_database=""
 baseline_database_url=""
+# 1 when this harness created the database and so drops it; empty when the run handed one in.
+baseline_database_owned=""
 baseline_url=""
 baseline_token=""
 baseline_signin_key=""
@@ -200,6 +215,8 @@ baseline_boot() {
     # shellcheck disable=SC2030 # the server's TMPDIR is this run's own work directory; the shell
     # that started it keeps the caller's, which the line in baseline_start below reads
     export TMPDIR="$baseline_work"
+    # shellcheck disable=SC2030 # the server's DATABASE_URL is the database it serves; the shell
+    # that started it keeps the run's, which baseline_start below reads before any server boots
     export DATABASE_URL="$database_url"
     export DISPATCH_AGENT_TOKEN="$baseline_token"
     export DISPATCH_DEV_SIGNIN=1
@@ -262,19 +279,27 @@ baseline_stop_server() {
   baseline_url=""
 }
 
-# baseline_drop_database: drops this run's own database. FORCE ends a connection the stopped
-# server has not closed yet, which would otherwise leave the database behind.
+# baseline_drop_database: drops the database when this harness made it. FORCE ends a connection
+# the stopped server has not closed yet, which would otherwise leave the database behind. A
+# database the run handed in is the run's to drop: this forgets it and touches nothing.
 baseline_drop_database() {
   local refusal
+  if [[ -z "$baseline_database_owned" ]]; then
+    baseline_database=""
+    baseline_database_url=""
+    return 0
+  fi
   [[ -n "$baseline_database" ]] || return 0
   refusal="$(baseline_psql "$LEGION_TEST_PG_DSN" -q \
     -c "drop database if exists \"$baseline_database\" with (force)" 2>&1)" ||
     printf 'lib-baseline.sh: could not drop the database %s: %s\n' "$baseline_database" "$refusal" >&2
   baseline_database=""
   baseline_database_url=""
+  baseline_database_owned=""
 }
 
-# baseline_stop: stops the baseline server, drops its database and removes the work directory.
+# baseline_stop: stops the baseline server, drops the database when this harness made it, and
+# removes the work directory.
 baseline_stop() {
   baseline_stop_server
   baseline_drop_database
@@ -285,10 +310,15 @@ baseline_stop() {
   baseline_signin_key=""
 }
 
-# baseline_start: the baseline server of BASELINE_SHA, serving a database of this run's own. The
-# head comment above is its contract.
+# baseline_start: the baseline server of BASELINE_SHA, serving the run's database or one of its
+# own. The head comment above is its contract.
 baseline_start() {
-  require_env BASELINE_SHA LEGION_TEST_PG_DSN
+  # Read before anything else: a driver that calls lib.sh's read_bearer after this unsets
+  # DISPATCH_TOKEN, and the run's DATABASE_URL must be the one every server here is booted on.
+  # shellcheck disable=SC2031 # the run's own DATABASE_URL, which no server's subshell changes
+  local given_database_url="${DATABASE_URL:-}" given_token="${DISPATCH_TOKEN:-}"
+  require_env BASELINE_SHA
+  [[ -n "$given_database_url" ]] || require_env LEGION_TEST_PG_DSN
   require_commands git go openssl psql python3 sleep tar
   baseline_workspace="${LEGION_WORKSPACE:-}"
   if [[ -z "$baseline_workspace" ]]; then
@@ -299,10 +329,16 @@ baseline_start() {
     baseline_refuse "$baseline_workspace holds no git repository to read BASELINE_SHA out of"
   baseline_commit="$(git -C "$baseline_workspace" rev-parse --verify --quiet "${BASELINE_SHA}^{commit}")" ||
     baseline_refuse "BASELINE_SHA '$BASELINE_SHA' names no commit of $baseline_workspace"
-  # The name is this run's alone: a second run, of this check or the other one, gets a database of
-  # its own and neither run drops the other's.
-  baseline_database="dispatch_baseline_$(date +%s)_$$"
-  baseline_database_url="$(baseline_dsn_for "$baseline_database")"
+  if [[ -n "$given_database_url" ]]; then
+    # The run's own database, which it dropped and created empty: boot on it, make no other.
+    baseline_database=""
+    baseline_database_url="$given_database_url"
+  else
+    # The name is this run's alone: a second run, of this check or the other one, gets a
+    # database of its own and neither run drops the other's.
+    baseline_database="dispatch_baseline_$(date +%s)_$$"
+    baseline_database_url="$(baseline_dsn_for "$baseline_database")"
+  fi
 
   # shellcheck disable=SC2031 # this shell's own TMPDIR, which the subshell above never changed
   baseline_work="$(mktemp -d "${TMPDIR:-/tmp}/dispatch-baseline.XXXXXXXX")" ||
@@ -316,9 +352,17 @@ baseline_start() {
   go -C "$baseline_work/tree/packages/envoy" build -o "$baseline_work/bin/dispatch-baseline" ./cmd/dispatch ||
     baseline_fail "the ./cmd/dispatch of $baseline_commit did not build"
 
-  baseline_psql "$LEGION_TEST_PG_DSN" -q -c "create database \"$baseline_database\"" >/dev/null ||
-    baseline_fail "could not create the database $baseline_database on the server LEGION_TEST_PG_DSN names"
-  baseline_token="$(openssl rand -hex 24)" || baseline_fail "could not make an agent bearer"
+  if [[ -z "$given_database_url" ]]; then
+    baseline_psql "$LEGION_TEST_PG_DSN" -q -c "create database \"$baseline_database\"" >/dev/null ||
+      baseline_fail "could not create the database $baseline_database on the server LEGION_TEST_PG_DSN names"
+    baseline_database_owned=1
+  fi
+  # The run's bearer when it gives one, since both checks boot every server with
+  # DISPATCH_AGENT_TOKEN set to the DISPATCH_TOKEN they pass; a random one otherwise.
+  baseline_token="$given_token"
+  if [[ -z "$baseline_token" ]]; then
+    baseline_token="$(openssl rand -hex 24)" || baseline_fail "could not make an agent bearer"
+  fi
   baseline_signin_key="$(openssl rand -hex 32)" || baseline_fail "could not make a dev sign-in key"
 
   baseline_boot baseline-server "$baseline_work/bin/dispatch-baseline" "$baseline_database_url"
