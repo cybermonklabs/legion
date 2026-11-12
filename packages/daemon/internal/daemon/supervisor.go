@@ -198,15 +198,25 @@ func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
 	go func() {
 		defer s.feeding.Done()
 		for {
-			ev, ok := queue.take()
+			item, ok := queue.take()
 			if !ok {
 				return
 			}
-			if err := m.Handle(s.ctx, ev); err != nil {
-				s.decisionFailed(token, fmt.Sprintf("%T", ev), err, "supervise: an event failed")
-			}
+			s.decide(token, m, item)
 		}
 	}()
+}
+
+// decide runs one item of a machine's queue — an event, or a decision a route posted — and
+// releases what the post holds for the daemon's stop, whatever the decision answered.
+func (s *supervisor) decide(token claim.Token, m *supervise.Machine, item work) {
+	if item.released != nil {
+		defer item.released()
+	}
+	err := item.run(s.ctx, m)
+	if err != nil {
+		s.decisionFailed(token, item.what(), err, item.failed())
+	}
 }
 
 // decisionFailed logs err, a decision on token's claim failing (what names it: the event its
@@ -239,18 +249,39 @@ func (s *supervisor) inDecision() []string {
 // post queues ev for the claim's machine. An event for a claim the daemon does not supervise, or
 // one that arrives once supervision is stopping, goes nowhere.
 func (s *supervisor) post(token claim.Token, ev supervise.Event) {
+	s.postWork(token, work{event: ev})
+}
+
+// PostStaleRelaunch queues the relaunch a stale registration raised, which the route that refused
+// that registration could not await (api.Supervisor): it runs on the claim's own machine, behind
+// whatever that machine is deciding and whatever its queue already holds, and the route's
+// decision record is released when it has run — or at once, where nothing will run it, so the
+// daemon's stop never waits for a relaunch that will not happen.
+func (s *supervisor) PostStaleRelaunch(token claim.Token, generation uint64, released func()) {
+	s.postWork(token, work{released: released, name: "stale-registration relaunch",
+		call: func(ctx context.Context, m *supervise.Machine) error {
+			return m.RelaunchStaleRegistration(ctx, generation)
+		}})
+}
+
+// postWork queues one item for the claim's machine. An item for a claim the daemon does not
+// supervise, or one that arrives once supervision is stopping, goes nowhere, and what it holds
+// for the daemon's stop is released here.
+func (s *supervisor) postWork(token claim.Token, item work) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.stopped {
+		item.drop()
 		return
 	}
 	m, ok := s.machines[token]
 	if !ok {
-		s.log.Warn("supervise: an event for a claim this daemon does not supervise", "claim", token,
-			"event", fmt.Sprintf("%T", ev))
+		s.log.Warn("supervise: "+item.kind()+" for a claim this daemon does not supervise", "claim", token,
+			"event", item.what())
+		item.drop()
 		return
 	}
-	m.inbox.put(ev)
+	m.inbox.put(item)
 }
 
 // count is how many claims the daemon supervises. It waits on no lock a decision holds.
@@ -420,21 +451,76 @@ func knownClaims(claims []supervise.Claim) []runtime.Known {
 	return known
 }
 
-// inbox is one machine's queue of events: unbounded, so neither pump ever waits on a machine that
+// work is one item of a machine's queue: an event the machine decides, or a decision a route
+// posted whole because it could not await it (supervisor.PostStaleRelaunch). A posted item
+// carries the route's decision record, which is released once the item has run or once nothing
+// is left to run it (supervisor.decide, inbox.close).
+type work struct {
+	// event is the event to decide, and nil for a posted call.
+	event supervise.Event
+	// call is the posted decision, and nil for an event; name is what the log calls it.
+	call func(ctx context.Context, m *supervise.Machine) error
+	name string
+	// released is the route's decision record, nil for everything no route posted.
+	released func()
+}
+
+// run makes this item's decision on m.
+func (w work) run(ctx context.Context, m *supervise.Machine) error {
+	if w.call != nil {
+		return w.call(ctx, m)
+	}
+	return m.Handle(ctx, w.event)
+}
+
+// what names this item for a log line: the event's own type, or what the post called itself.
+func (w work) what() string {
+	if w.call != nil {
+		return w.name
+	}
+	return fmt.Sprintf("%T", w.event)
+}
+
+// kind is what this item is, for the line that says one could not be delivered: an event, or the
+// work a route posted.
+func (w work) kind() string {
+	if w.call != nil {
+		return "posted work"
+	}
+	return "an event"
+}
+
+// failed is the sentence its failure is logged under.
+func (w work) failed() string {
+	if w.call != nil {
+		return "supervise: a decision a route posted failed"
+	}
+	return "supervise: an event failed"
+}
+
+// drop releases what this item holds for the daemon's stop, for an item nothing will run.
+func (w work) drop() {
+	if w.released != nil {
+		w.released()
+	}
+}
+
+// inbox is one machine's queue: unbounded, so neither pump ever waits on a machine that
 // is deciding — the worker stream's own queue is unbounded for the same reason — and in order,
-// so a claim sees its events as its sources reported them.
+// so a claim sees its events as its sources reported them, and a relaunch a route posted behind
+// them runs behind them.
 type inbox struct {
 	mu     sync.Mutex
-	events []supervise.Event
+	items  []work
 	closed bool
 	wake   chan struct{}
 }
 
 func newInbox() *inbox { return &inbox{wake: make(chan struct{}, 1)} }
 
-func (b *inbox) put(ev supervise.Event) {
+func (b *inbox) put(item work) {
 	b.mu.Lock()
-	b.events = append(b.events, ev)
+	b.items = append(b.items, item)
 	b.mu.Unlock()
 	select {
 	case b.wake <- struct{}{}:
@@ -442,30 +528,37 @@ func (b *inbox) put(ev supervise.Event) {
 	}
 }
 
-// take is the next event, waiting for one; false once the inbox is closed, whatever it still
+// take is the next item, waiting for one; false once the inbox is closed, whatever it still
 // holds.
-func (b *inbox) take() (supervise.Event, bool) {
+func (b *inbox) take() (work, bool) {
 	for {
 		b.mu.Lock()
 		if b.closed {
 			b.mu.Unlock()
-			return nil, false
+			return work{}, false
 		}
-		if len(b.events) > 0 {
-			ev := b.events[0]
-			b.events = b.events[1:]
+		if len(b.items) > 0 {
+			item := b.items[0]
+			b.items = b.items[1:]
 			b.mu.Unlock()
-			return ev, true
+			return item, true
 		}
 		b.mu.Unlock()
 		<-b.wake
 	}
 }
 
+// close ends the queue and drops what it still holds: nothing will run those items now, so what
+// a posted one holds for the daemon's stop is released here rather than held for ever.
 func (b *inbox) close() {
 	b.mu.Lock()
 	b.closed = true
+	left := b.items
+	b.items = nil
 	b.mu.Unlock()
+	for _, item := range left {
+		item.drop()
+	}
 	select {
 	case b.wake <- struct{}{}:
 	default:

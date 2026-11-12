@@ -542,11 +542,21 @@ func TestARelaunchedProcessStillStaleIsChargedUntilWorkerDied(t *testing.T) {
 		t.Fatalf("spawn the planner: %v", err)
 	}
 
+	// The relaunch a stale registration raises runs on the claim's machine after that
+	// registration has been answered, which is where the daemon posts it (PostStaleRelaunch,
+	// supervise.Machine.RelaunchStaleRegistration).
 	register := func() error {
-		return machine.Handle(ctx, supervise.RequestRegister{
-			Claim: planner, Generation: machine.Claim().Generation, Session: "ses-plan", SessionFile: "/tmp/plan.jsonl",
+		generation := machine.Claim().Generation
+		err := machine.Handle(ctx, supervise.RequestRegister{
+			Claim: planner, Generation: generation, Session: "ses-plan", SessionFile: "/tmp/plan.jsonl",
 			CapabilityHash: []byte("planner-capability"), PluginContract: 1,
 		})
+		if errors.Is(err, supervise.ErrStaleRegistrationRelaunch) {
+			if relaunch := machine.RelaunchStaleRegistration(ctx, generation); relaunch != nil {
+				t.Fatalf("the relaunch the stale registration raised: %v", relaunch)
+			}
+		}
+		return err
 	}
 	wantStale := func(err error) {
 		t.Helper()

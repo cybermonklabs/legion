@@ -264,7 +264,7 @@ func TestAStaleRegistrationRelaunchesOnceUnchargedThenChargesUntilFailed(t *test
 	h.m.deps.Limits.LaunchFailures = 2
 
 	register := func() error {
-		return h.handle(RequestRegister{
+		return h.registerStale(RequestRegister{
 			Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
 			CapabilityHash: []byte("capability"), PluginContract: 1,
 		})
@@ -318,7 +318,7 @@ func TestACurrentRegistrationClearsPluginRelaunchFor(t *testing.T) {
 	h.m.deps.PluginContract = 24
 	h.m.deps.PluginRelaunchable = true
 
-	if err := h.handle(RequestRegister{
+	if err := h.registerStale(RequestRegister{
 		Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
 		CapabilityHash: []byte("capability"), PluginContract: 1,
 	}); err == nil {

@@ -853,6 +853,12 @@ var ErrOtherDelivery = errors.New("the claim's row holds another delivery")
 
 // Machine is one claim's decision owner.
 type Machine struct {
+	// gate is the machine itself, one place in a channel, taken before mu by both entries into a
+	// decision (Handle, HandleWithin) and released after it. A sync.Mutex has no bounded Lock, and
+	// a caller that must answer within a bound needs one: the channel is what a select can offer
+	// against that caller's context. mu alone still guards the fields below, for every reader that
+	// takes no decision (Claim, OnDurableState).
+	gate           chan struct{}
 	mu             sync.Mutex
 	ctx            context.Context
 	deps           Deps
@@ -1056,6 +1062,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		deps:   deps,
 		log:    deps.Log.With("claim", string(c.Token)),
 		claim:  copyClaim(c),
+		gate:   make(chan struct{}, 1),
 		timers: map[TimerKind]armed{},
 		stale:  map[string]bool{},
 	}
@@ -1083,6 +1090,13 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	return m, nil
 }
 
+// ErrMachineBusy is HandleWithin's refusal: the caller's bound passed with the machine still
+// deciding something else, so the event was never looked at — nothing of it was decided, nothing
+// of it was recorded, and the caller is free to ask again. It is a sentinel because its one
+// caller, a route that must answer within a bound (internal/api's register and ready), answers it
+// with the retryable refusal and every other failure with the refusal that failure earned.
+var ErrMachineBusy = errors.New("supervise: the claim's machine is busy")
+
 // Handle is one event: fenced, then looked up in the transition table, then acted on. A request
 // the claim's state does not allow is refused with a RefusedError; a fenced request is refused
 // with the claim refusal it violates (claim.StaleGeneration, claim.SameAgentRefusal). Any other
@@ -1093,11 +1107,39 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // over a launch parked above a process the claim still records, runs that launch first, so the
 // row that queues the task is the row of the claim that launch leaves (runParkedLaunchNow).
 //
-// Handle returns when the decision is made, which includes the runtime call it makes: a stop
-// waits out its grace, a resume waits out the previous incarnation. A caller feeding many claims
-// from one source hands each machine its events on its own goroutine, so one claim's stop does
-// not hold another's hello. Meanwhile Deciding names ev, whoever the caller.
+// Handle waits as long as it must for the machine, and returns when the decision is made, which
+// includes the runtime call it makes: a stop waits out its grace, a resume waits out the previous
+// incarnation. A caller feeding many claims from one source hands each machine its events on its
+// own goroutine, so one claim's stop does not hold another's hello. A caller that must answer
+// within a bound of its own takes the machine through HandleWithin instead. Meanwhile Deciding
+// names ev, whoever the caller.
 func (m *Machine) Handle(ctx context.Context, ev Event) error {
+	m.gate <- struct{}{}
+	return m.handle(ctx, ev)
+}
+
+// HandleWithin is Handle for a caller with a deadline: it takes the machine only while ctx
+// allows, and answers ErrMachineBusy where the bound passes with the machine still busy, having
+// decided and recorded nothing. The decision it does make runs on ctx like any other, so the
+// store writes it makes before it answers are bounded by the same deadline.
+//
+// The machine is taken through a one-place channel rather than mu alone because a sync.Mutex
+// offers no bounded Lock: the channel is what a select can offer against ctx.Done(). Both entries
+// take it before mu, so a decision in flight — a resume waiting out the previous incarnation —
+// holds it for exactly as long as it holds the machine.
+func (m *Machine) HandleWithin(ctx context.Context, ev Event) error {
+	select {
+	case m.gate <- struct{}{}:
+	case <-ctx.Done():
+		return fmt.Errorf("%w: %w", ErrMachineBusy, ctx.Err())
+	}
+	return m.handle(ctx, ev)
+}
+
+// handle is the decision both entries make, with the machine already taken: the gate is released
+// after mu, so a caller that takes the gate next finds the claim as this decision left it.
+func (m *Machine) handle(ctx context.Context, ev Event) error {
+	defer func() { <-m.gate }()
 	m.mu.Lock()
 	defer m.unlock()
 	m.decide(ev)

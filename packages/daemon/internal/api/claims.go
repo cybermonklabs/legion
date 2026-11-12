@@ -41,6 +41,14 @@ type Supervisor interface {
 	// operator answer about one claim reads it here (operatorAnswer), as the listing of them all
 	// reads it with the claims. A claim the store no longer holds has the zero record.
 	Step(ctx context.Context, token claim.Token) (supervise.StepRecord, error)
+	// PostStaleRelaunch posts to a claim's machine the relaunch its stale registration raised
+	// and the route that refused that registration could not await: it can take the pod's launch
+	// turn, which nothing bounds (supervise.Machine.RelaunchStaleRegistration). generation is the
+	// launch whose registration was refused, so a claim that has launched again since is left
+	// alone. released is the route's decision record (server.posted): whatever takes the post
+	// calls it exactly once — when the relaunch has run, or at once where nothing will run it
+	// (supervision stopped, a claim this daemon does not supervise).
+	PostStaleRelaunch(token claim.Token, generation uint64, released func())
 }
 
 // register is the agent's first call: its pane's boot token, and the session it became. The token
@@ -52,7 +60,18 @@ type Supervisor interface {
 // be the controller capability `legion controller start` fetched, which registers the project's
 // controller (registerController), and only under `controller: operator`: a daemon that launches
 // its own controller registers no other, so such a token is the unknown one it is.
+//
+// The whole of it is answered within one bound, taken here at the first statement
+// (Options.WorkerRPCTimeout, R4 of dispatch://INFRA-2883): the agent runs a whole phase with no
+// `legion` tool while this hangs, so it is told to retry rather than left waiting. The bound
+// covers the body read, the boot token's resolve, the entry into the claim's machine and every
+// store write the decision makes before this answers. A registration that cannot have the
+// machine inside it is refused that retryable refusal with nothing recorded, and the work the
+// decision would do beyond recording the registration — the relaunch a stale plugin contract
+// raises — is posted to the claim's machine rather than awaited (staleRelaunchPosted).
 func (s *server) register(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := s.bound(w, r)
+	defer cancel()
 	var req claim.RegisterRequest
 	if !s.readRegisterBody(w, r, &req) || !requireFields(w,
 		field{"bootToken", req.BootToken}, field{"sessionId", req.SessionID},
@@ -60,8 +79,12 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	) {
 		return
 	}
-	launch, known, err := s.bootTokens.Resolve(r.Context(), req.BootToken)
+	launch, known, err := s.bootTokens.Resolve(ctx, req.BootToken)
 	if err != nil {
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			s.refuseRegistrationUnanswered(w, r, req.BootToken, "the boot token's resolve did not answer inside the bound")
+			return
+		}
 		s.logRequestFailure(r, err, "api: resolve a registration's boot token")
 		writeJSON(w, http.StatusInternalServerError, errorBody("register failed: the daemon could not resolve the boot token"))
 		return
@@ -71,7 +94,7 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, claim.InvalidBootToken.Status, claim.InvalidBootToken)
 			return
 		}
-		s.registerController(w, r, req)
+		s.registerController(ctx, w, r, req)
 		return
 	}
 	m, supervised := s.supervisor.Machine(launch.Claim)
@@ -79,7 +102,7 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, claim.InvalidBootToken.Status, claim.InvalidBootToken)
 		return
 	}
-	if m.Claim().Role == claim.RoleController {
+	if published(m).Role == claim.RoleController {
 		if !s.controllerLaunched {
 			s.log.Warn("api: refused a launched controller's registration: this daemon leaves the controller to its operator",
 				"claim", launch.Claim, "generation", launch.Generation, "session", req.SessionID)
@@ -87,15 +110,16 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 				"%s is a launch of the daemon's own controller, and this daemon leaves the controller to its operator (controller: operator)", launch.Claim)))
 			return
 		}
-		s.registerLaunchedController(w, r, req, launch, m)
+		s.registerLaunchedController(ctx, w, r, req, launch, m)
 		return
 	}
 	secret := rand.Text()
-	// The decision is the machine's and runs to its end, or to the daemon's stop: a caller that hangs
-	// up mid-request does not get to leave a registration half-recorded.
-	ctx, decided := s.decision(r, launch.Claim)
-	defer decided()
-	err = m.Handle(ctx, supervise.RequestRegister{
+	// The decision is the machine's and runs to its end, or to the bound this route answers
+	// within: a caller that hangs up mid-request does not get to leave a registration
+	// half-recorded, and a machine that is busy for the whole bound leaves it unrecorded.
+	decided, decide := s.decisionOn(ctx, launch.Claim)
+	defer decide()
+	err = m.HandleWithin(decided, supervise.RequestRegister{
 		Claim:          launch.Claim,
 		Generation:     launch.Generation,
 		Session:        req.SessionID,
@@ -104,10 +128,16 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		PluginContract: req.PluginContract,
 	})
 	if err != nil {
+		if errors.Is(err, supervise.ErrMachineBusy) {
+			s.refuseRegistrationUnanswered(w, r, req.BootToken,
+				"the claim's machine was deciding something else for the whole bound")
+			return
+		}
+		s.postStaleRelaunch(launch, err)
 		s.claimFailure(w, "register", launch.Claim, err)
 		return
 	}
-	c := m.Claim()
+	c := published(m)
 	s.log.Info("api: claim registered", "claim", c.Token, "generation", launch.Generation,
 		"session", req.SessionID, "agent", req.AgentID, "pluginContract", req.PluginContract)
 	writeJSON(w, http.StatusOK, claim.RegisterResponse{
@@ -119,6 +149,39 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		Secret:       secret,
 		PromptAgents: s.promptAgentsList(),
 	})
+}
+
+// refuseRegistrationUnanswered is the retryable refusal a registration gets when this process
+// could not answer it inside its bound, and the memory of the launch it belongs to: that launch
+// got no answer from this daemon, so it must not be charged for one (Answering.Refused). The
+// launch is named by its boot token, which is all a registration carries.
+func (s *server) refuseRegistrationUnanswered(w http.ResponseWriter, r *http.Request, bootToken, reason string) {
+	if s.refusals != nil {
+		s.refusals.RefusedRegistration(bootToken)
+	}
+	s.retryable(w, r, reason)
+}
+
+// refuseReadyUnanswered is refuseRegistrationUnanswered for a ready, which names its launch by
+// the claim and generation it carries rather than by a boot token.
+func (s *server) refuseReadyUnanswered(w http.ResponseWriter, r *http.Request, token claim.Token, generation uint64, reason string) {
+	if s.refusals != nil {
+		s.refusals.RefusedReady(token, generation)
+	}
+	s.retryable(w, r, reason, "claim", token, "generation", generation)
+}
+
+// postStaleRelaunch posts to the claim's machine the relaunch its stale registration raised,
+// which the decision no longer makes itself: it can take the pod's launch turn, which nothing
+// bounds (supervise.Machine.RelaunchStaleRegistration). The post carries this route's decision
+// record, so the daemon's stop waits for the relaunch as it waits for a decision made inside the
+// request, and whatever takes it releases that record — at once, where nothing will run it.
+// Every other refusal of a registration posts nothing.
+func (s *server) postStaleRelaunch(launch BootToken, err error) {
+	if !errors.Is(err, supervise.ErrStaleRegistrationRelaunch) {
+		return
+	}
+	s.supervisor.PostStaleRelaunch(launch.Claim, launch.Generation, s.posted(launch.Claim))
 }
 
 // promptAgentsList is Options.PromptAgents as the registration answers it: never nil, so a role
@@ -136,35 +199,47 @@ func (s *server) promptAgentsList() []string {
 // ready: what the report says is never a reason to refuse the ready — the daemon runs the session
 // and reports what it lacks — and a row the table has no live row for is dropped and logged by its
 // name cleaned as a detail is (capabilities.Normalize).
+//
+// It answers within the registration's own bound (Options.WorkerRPCTimeout, register), since its
+// refusal is the same answer: an agent whose ready never returns is an agent that cannot be
+// prompted, and one told to retry asks again. A ready whose machine is busy for the whole bound
+// takes nothing and is remembered as a launch this process did not answer.
 func (s *server) ready(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := s.bound(w, r)
+	defer cancel()
 	var req claim.ReadyRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,
 		field{"claimToken", string(req.ClaimToken)}, field{"sessionId", req.SessionID}, field{"secret", req.Secret},
 	) || !requireGeneration(w, req.Generation) {
 		return
 	}
-	m, ok := s.authenticated(req.ClaimToken, req.Secret)
+	m, ok := s.authenticatedWithin(req.ClaimToken, req.Secret)
 	if !ok {
 		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
 	}
-	if s.refuseIfStaleClaim(w, r, m.Claim()) {
+	if s.refuseIfStaleClaim(w, r, published(m)) {
 		return
 	}
-	ctx, decided := s.decision(r, req.ClaimToken)
-	defer decided()
-	err := m.Handle(ctx, supervise.RequestReady{
+	decided, decide := s.decisionOn(ctx, req.ClaimToken)
+	defer decide()
+	err := m.HandleWithin(decided, supervise.RequestReady{
 		Claim: req.ClaimToken, Generation: req.Generation, Session: req.SessionID,
 	})
 	if err != nil {
+		if errors.Is(err, supervise.ErrMachineBusy) {
+			s.refuseReadyUnanswered(w, r, req.ClaimToken, req.Generation,
+				"the claim's machine was deciding something else for the whole bound")
+			return
+		}
 		s.claimFailure(w, "ready", req.ClaimToken, err)
 		return
 	}
-	c := m.Claim()
+	c := published(m)
 	if req.Capabilities != nil {
 		report := s.capabilityReport(c, req)
 		if s.capabilityReported != nil {
-			s.capabilityReported(ctx, c, report)
+			s.capabilityReported(decided, c, report)
 		}
 	}
 	if s.claimReady != nil {
@@ -433,11 +508,40 @@ func (s *server) authenticated(token claim.Token, secret string) (*supervise.Mac
 	if !ok {
 		return nil, false
 	}
-	held := m.Claim().CapabilityHash
-	if len(held) == 0 || subtle.ConstantTimeCompare(held, capabilityHash(secret)) != 1 {
+	if !holdsCapability(m.Claim(), secret) {
 		return nil, false
 	}
 	return m, true
+}
+
+// authenticatedWithin is authenticated for a route that answers within a bound: the claim is read
+// as its machine last published it, so the compare never waits out the decision in flight
+// (published). A secret the decision in flight is about to clear authenticates here exactly as it
+// would have a moment earlier, which is what the caller's own request was.
+func (s *server) authenticatedWithin(token claim.Token, secret string) (*supervise.Machine, bool) {
+	m, ok := s.supervisor.Machine(token)
+	if !ok {
+		return nil, false
+	}
+	if !holdsCapability(published(m), secret) {
+		return nil, false
+	}
+	return m, true
+}
+
+// holdsCapability is whether secret is the one c's registration was issued. A claim that holds
+// none — none has registered, or a relaunch cleared it — holds no secret at all.
+func holdsCapability(c supervise.Claim, secret string) bool {
+	held := c.CapabilityHash
+	return len(held) > 0 && subtle.ConstantTimeCompare(held, capabilityHash(secret)) == 1
+}
+
+// published is the claim as its machine last published it, which a route that answers within a
+// bound reads in place of Machine.Claim: Claim waits out the decision in flight, and a decision
+// that holds the machine through a runtime call holds it for minutes — the very wait the bound
+// exists for (supervise.Machine.View, register, ready).
+func published(m *supervise.Machine) supervise.Claim {
+	return m.View().Claim
 }
 
 // claimFailure answers an agent request its machine did not take: a claim refusal with its own

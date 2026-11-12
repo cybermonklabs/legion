@@ -116,6 +116,21 @@ func (s *memoryClaims) Step(_ context.Context, token legionclaim.Token) (supervi
 	return s.rows[token].Step, nil
 }
 
+// PostStaleRelaunch runs on this claim's machine the relaunch a stale registration raised, which
+// the daemon runs on that claim's own queue goroutine (api.Supervisor): `legion claims` registers
+// nothing, so no run of this fixture posts one, and a run that did would see the relaunch made
+// rather than silently dropped.
+func (s *memoryClaims) PostStaleRelaunch(token legionclaim.Token, generation uint64, released func()) {
+	defer released()
+	m, ok := s.Machine(token)
+	if !ok {
+		return
+	}
+	if err := m.RelaunchStaleRegistration(s.ctx, generation); err != nil {
+		panic(err)
+	}
+}
+
 func (s *memoryClaims) PutClaim(_ context.Context, c supervise.Claim) error {
 	s.rowsMu.Lock()
 	defer s.rowsMu.Unlock()

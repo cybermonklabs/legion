@@ -1996,6 +1996,12 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		CapabilityReported: s.capabilityReported,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
+		// The bound the registration and the ready answer within is this daemon's own name for
+		// one bounded call, so an operator who raises it raises both sides together
+		// (dispatch://INFRA-2883, R4), and the memory of what those two refused unanswered is the
+		// memory the start handler already writes on this same listener.
+		WorkerRPCTimeout: cfg.WorkerRPCTimeout,
+		Refusals:         answering,
 	}))
 
 	group, serving := errgroup.WithContext(ctx)

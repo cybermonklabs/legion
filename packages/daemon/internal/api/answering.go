@@ -43,8 +43,10 @@ const startRefusalCap = 256
 // leaves a caller a refused connection, and an inherited socket its holder keeps stays listening
 // for the next process.
 //
-// It also remembers what its start handler refused (Refused) and the moment the real routes first
-// served (FirstServed): a launch the daemon could not answer is a launch it must not charge.
+// It also remembers every launch this process refused without answering it — what its start
+// handler refused, and what a route refused because its own bound passed first
+// (RefusedRegistration, RefusedReady) — and the moment the real routes first served
+// (FirstServed): a launch the daemon could not answer is a launch it must not charge (Refused).
 type Answering struct {
 	listener net.Listener
 	server   *http.Server
@@ -202,9 +204,39 @@ func (a *Answering) Superseded(token claim.Token, generation uint64) {
 	}
 }
 
+// RefusedRegistration remembers one registration this process refused without answering it: the
+// retryable refusal a route gives a caller it could not answer inside its bound
+// (server.refuseRegistrationUnanswered), beside the ones the start handler gave. It is the same
+// memory and the same key — the hash of the boot token the launch was minted with — because it
+// says the same thing: this launch asked and got no answer from this daemon, so it must not be
+// charged for one (Refused). bootToken is the token the request carried, hashed here and never
+// kept.
+//
+// It is called at the refusal itself, never inferred from a status: the daemon's own stopping
+// refusal (server.stopped) wears the same 503 and writes nothing here, because the stop's
+// relaunch on the next boot answers what it refused.
+func (a *Answering) RefusedRegistration(bootToken string) {
+	if bootToken == "" {
+		return
+	}
+	a.refused(refusedLaunch{hash: hex.EncodeToString(supervise.HashBootToken(bootToken))})
+}
+
+// RefusedReady remembers one ready this process refused without answering it, by the claim and
+// generation the request named: a ready carries no boot token, and this is the key the start
+// handler's own memory of a ready uses (refuseStarting, Refused). RefusedRegistration states the
+// rest of the rule.
+func (a *Answering) RefusedReady(token claim.Token, generation uint64) {
+	if token == "" || generation == 0 {
+		return
+	}
+	a.refused(refusedLaunch{token: token, generation: generation})
+}
+
 // refuseStarting answers one request while the daemon starts, and remembers the launch it refused:
 // a registration by the hash of its boot token, a ready by the claim and generation it names.
-// Nothing is inferred from the status; this is the one site that writes the memory, and the
+// Nothing is inferred from the status; this writes the memory where the start handler refuses, as
+// the routes write it where their own bound refuses (RefusedRegistration, RefusedReady), and the
 // daemon's own stopping refusal (server.stopped) writes nothing, because the stop's relaunch on
 // the next boot answers what it refused.
 //

@@ -258,9 +258,16 @@ func (s *server) controllerCapabilityCurrent(r *http.Request, secret string) (bo
 // whose plugin speaks another daemon API contract is refused here, naming both, and nothing is
 // recorded. The registration is issued a secret of its own, persisted by its hash before this
 // answers, which the session's controller grants authenticate with.
-func (s *server) registerController(w http.ResponseWriter, r *http.Request, req claim.RegisterRequest) {
-	ctx := context.WithoutCancel(r.Context())
-	s.controllerMu.Lock()
+//
+// ctx is the registration route's own bound (register): the controller lock is taken under it, so
+// a registration never waits out another caller's mint, and the reads and writes this makes carry
+// it too. A caller that meets the bound is told to retry, having recorded nothing.
+func (s *server) registerController(ctx context.Context, w http.ResponseWriter, r *http.Request, req claim.RegisterRequest) {
+	if !s.controllerMu.LockWithin(ctx) {
+		s.refuseRegistrationUnanswered(w, r, req.BootToken,
+			"the controller lock was held by another caller for the whole bound")
+		return
+	}
 	defer s.controllerMu.Unlock()
 	stored, found, err := s.controller.Controller(ctx, s.project)
 	if err != nil {
@@ -312,16 +319,30 @@ func (s *server) registerController(w http.ResponseWriter, r *http.Request, req 
 // and keeps the boot token out of the record, whose invariant that function's doc states. The
 // answer is the operator's controller's registration, its generation the launch's, which the
 // agent's ready names.
-func (s *server) registerLaunchedController(w http.ResponseWriter, r *http.Request, req claim.RegisterRequest, launch BootToken, m *supervise.Machine) {
-	ctx, decided := s.decision(r, launch.Claim)
+//
+// bound is the registration route's own bound (register), which the controller lock, the claim's
+// machine and every write this makes before it answers are taken under.
+func (s *server) registerLaunchedController(bound context.Context, w http.ResponseWriter, r *http.Request,
+	req claim.RegisterRequest, launch BootToken, m *supervise.Machine) {
+	ctx, decided := s.decisionOn(bound, launch.Claim)
 	defer decided()
 	secret := rand.Text()
-	s.controllerMu.Lock()
+	if !s.controllerMu.LockWithin(ctx) {
+		s.refuseRegistrationUnanswered(w, r, req.BootToken,
+			"the controller lock was held by another caller for the whole bound")
+		return
+	}
 	defer s.controllerMu.Unlock()
-	if err := m.Handle(ctx, supervise.RequestRegister{
+	if err := m.HandleWithin(ctx, supervise.RequestRegister{
 		Claim: launch.Claim, Generation: launch.Generation, Session: req.SessionID, SessionFile: req.OmpSessionFile,
 		CapabilityHash: capabilityHash(secret), PluginContract: req.PluginContract,
 	}); err != nil {
+		if errors.Is(err, supervise.ErrMachineBusy) {
+			s.refuseRegistrationUnanswered(w, r, req.BootToken,
+				"the claim's machine was deciding something else for the whole bound")
+			return
+		}
+		s.postStaleRelaunch(launch, err)
 		s.claimFailure(w, "register", launch.Claim, err)
 		return
 	}

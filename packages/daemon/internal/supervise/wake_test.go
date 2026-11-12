@@ -933,7 +933,7 @@ func TestATakeBackTheStoreRefusesAtTheTurnLeavesNoMarkBehind(t *testing.T) {
 	// The agent of the process that was never replaced registers again, on the contract it is
 	// still running: the first stale registration this claim has had relaunched, so it is
 	// relaunched for free and refused as every stale registration is.
-	err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
+	err := h.registerStale(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
 		SessionFile: sessionFile, CapabilityHash: []byte("capability"), PluginContract: 24})
 
 	var refusal claim.Refusal
@@ -1613,7 +1613,7 @@ func TestAStalePluginRelaunchRefusedAtItsTurnLeavesNoMarkBehind(t *testing.T) {
 	// still running. It is the first stale registration this claim has had relaunched, so it is
 	// relaunched and charged nothing, and refused as every stale registration is.
 	store.failing = false
-	err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
+	err := h.registerStale(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
 		SessionFile: sessionFile, CapabilityHash: []byte("capability"), PluginContract: 24})
 
 	var refusal claim.Refusal
@@ -1688,7 +1688,7 @@ func TestARefusedRelaunchOnTheChargedPathKeepsTheMarkOfTheRelaunchThatRan(t *tes
 	// The store answers again and the same process registers again, still on the old contract.
 	// It is the second stale registration in a row of a relaunch that did run, so it is charged.
 	store.failing = false
-	err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
+	err := h.registerStale(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
 		SessionFile: sessionFile, CapabilityHash: []byte("capability"), PluginContract: 24})
 
 	var refusal claim.Refusal
@@ -2325,7 +2325,7 @@ func TestAStalePluginRelaunchThatRunsMarksTheClaim(t *testing.T) {
 	// The process that relaunch started speaks the old contract too — the plugin it was put on
 	// is itself behind this daemon — so its registration is the second stale one in a row.
 	h.connect()
-	err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
+	err := h.registerStale(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
 		SessionFile: sessionFile, CapabilityHash: []byte("capability"), PluginContract: 24})
 
 	var refusal claim.Refusal
@@ -2366,7 +2366,7 @@ func TestASecondStalePluginRelaunchOverAParkedOneLeavesNoMarkBehind(t *testing.T
 
 	// The old process re-registers on the old contract inside that round. No launch waits yet,
 	// so the stale lane relaunches it, and that launch waits its turn.
-	err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
+	err := h.registerStale(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
 		SessionFile: sessionFile, CapabilityHash: []byte("capability"), PluginContract: 24})
 
 	var refusal claim.Refusal
@@ -2398,7 +2398,7 @@ func TestASecondStalePluginRelaunchOverAParkedOneLeavesNoMarkBehind(t *testing.T
 	// The process neither relaunch replaced registers again, still on the old contract: the
 	// first stale registration this claim has had relaunched, so it is relaunched for free.
 	store.failing = false
-	err = h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
+	err = h.registerStale(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
 		SessionFile: sessionFile, CapabilityHash: []byte("capability"), PluginContract: 24})
 
 	if !errors.As(err, &refusal) || refusal != claim.StalePluginContract(24, 25) {
