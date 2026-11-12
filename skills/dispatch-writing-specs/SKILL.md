@@ -14,7 +14,7 @@ Reach shared understanding at the least cost of the person's time. A spec is a c
 3. Write each part only after the answers it rests on.
 4. A wrong premise or a changed request changes the request first.
 
-Before designs, options or approval requests: `skill://following-best-practices`.
+Before choosing a design, writing options or requesting approval: `skill://following-best-practices`.
 
 ## The outline
 
@@ -56,7 +56,7 @@ For each spec, ask, comment and message:
 
 ## Each version
 
-1. After a person's answer, comment or edit, reread the problem and rewrite what the answer touches, deleting what it contradicts: an answer is integrated, never appended. Answer each comment in its thread. Never narrate an edit: versions and comments hold the history.
+1. After a person's answer, comment or edit, reread the problem and rewrite what the answer touches, deleting what it contradicts. Answer each comment in its thread. Never narrate an edit: versions and comments hold the history.
 2. Before each spec write, paste the whole spec, never a path, into a fresh subagent to list gaps, conflicts, uncheckable requirements, unclear text and needless questions. Fix or record each.
 3. Before each approval request, `wait` for a read-only fact check: `task(agent="scout")`.
 4. Name each version with `dispatch doc-edit --summary`.
