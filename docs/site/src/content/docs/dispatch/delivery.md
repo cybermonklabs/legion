@@ -209,7 +209,8 @@ Dispatch closed it or the probe replaced it as silent; the one it holds when the
 or not, is let go and closed with no close line. A close line carries `wait_ms`: the milliseconds
 the probe will wait before it opens again, or `null` where it answers that close with no timer,
 which is the rotation close it answers at once, the silent socket it replaces at once, and a first
-connection Dispatch refused. When the time is up,
+connection Dispatch refused. What the guide says of the silent socket rests on a reading of the
+probe's code: no row of its test drives a silent socket. When the time is up,
 `--compare` reads the GET routes for the last window it applied and writes, for each, whether the
 pull request ids, run ids and every measure equal what it holds; it exits 1 when one does not.
 `--body-file <file>` writes the body it holds.
