@@ -442,3 +442,27 @@ test.each([
   for (const phrase of phrases) expect(text).toContain(phrase);
   for (const phrase of NO_PERSON_PHRASES) expect(text).not.toContain(phrase);
 });
+
+// The Legion texts that tell a person, or the controller writing to one, what becomes of the
+// questions of an issue nobody holds. Such an issue is still stored (a create that names a null
+// assignee, an issue-update that clears one), and its questions reach the project's default
+// assignee, so none of these texts may say they reach nobody, reach only the Inbox's Unassigned
+// filter, or that a project's default exists only where a person set one. Each phrase below is
+// the false claim one of these texts made before INFRA-3090, read over the text with its
+// whitespace collapsed as the dispatch pages above are.
+const UNASSIGNED_REACHES_NOBODY_PHRASES = [
+  "reach nobody's Inbox",
+  "nobody's Inbox shows",
+  "reach only the Inbox's `Unassigned` filter",
+  "where a person set one",
+];
+
+test.each([
+  "docs/site/src/content/docs/legion/using-legion.md",
+  "skills/legion-controller/references/triage.md",
+  "skills/legion-controller/references/daily-report.md",
+])("%s says an unassigned issue's questions reach the project's default assignee, not nobody", (path) => {
+  const text = readFileSync(join(REPO_ROOT, path), "utf8").replace(/\s+/g, " ");
+
+  for (const phrase of UNASSIGNED_REACHES_NOBODY_PHRASES) expect(text).not.toContain(phrase);
+});
