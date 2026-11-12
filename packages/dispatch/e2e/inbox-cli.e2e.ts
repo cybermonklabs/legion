@@ -193,8 +193,9 @@ interface SeededInbox {
 /**
  * One person's workspace as the Inbox shows it: questions waiting on them, one waiting on an
  * agent, one they deferred, an approval request, a credential request from the broker, a question
- * on someone else's issue and one on a document (neither is theirs, and neither list holds them),
- * an unread reply thread and a one-off message to a session that has been answered.
+ * on someone else's issue (not theirs, so neither list holds it) and one on a project document
+ * (which waits on the project's default assignee, the reader, so both lists hold it), an unread
+ * reply thread and a one-off message to a session that has been answered.
  */
 async function seedInbox(): Promise<SeededInbox> {
   await setLiveSessions([worker]);
@@ -241,7 +242,8 @@ async function seedInbox(): Promise<SeededInbox> {
   const approval = withOpenedAsk(await requestApproval(gate.primary_artifact_id, {}, asker));
   await createAsk(elsewhere.key, { question: "Does this block bob's release?" }, asker);
 
-  // A document has no assignee, so its question is nobody's own: neither list holds it.
+  // A document has no assignee, so its question waits on CORE's default assignee: alice, who
+  // created CORE naming nobody else. It is her own, and both lists hold it.
   const runbook = await createProjectDocument("CORE", {
     content: "# Runbook\n\nRestart, reseed, reopen the signed-in URL.\n",
     name: "Runbook",
@@ -343,10 +345,10 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
       (await bandAsks(page, "agent")).length
     );
     expect(section(sections, "Later").count).toBe((await bandAsks(page, "later")).length);
-    // Neither list holds a question that is not the person's own: bob's issue's and the
-    // document's are on the server's list and in neither of these. The Inbox list holds the
-    // reader's own threads beside the asks, and those are the command's `Unread threads`, so
-    // each kind of row is counted against the bands that list it.
+    // Neither list holds a question that is not the person's own: bob's issue's is on the
+    // server's list and in neither of these, and the document's is hers through CORE's default.
+    // The Inbox list holds the reader's own threads beside the asks, and those are the command's
+    // `Unread threads`, so each kind of row is counted against the bands that list it.
     const listed = await listedRows(page);
     expect(listed.filter((id) => !isThreadRow(id))).toHaveLength(
       section(sections, "Needs you").rows.length +

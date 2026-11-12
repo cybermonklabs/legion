@@ -1,6 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
 
+import { projectDefaultAssigneesQuery } from "../../api/queries";
 import type { InboxRow, IssueDetails, IssueSummary } from "../../api/types";
+import { rowProject } from "../inbox/list-row";
 import { inboxKey, projectListsKey, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 export interface IssueAssigneeWrite {
@@ -24,8 +26,13 @@ export interface IssueAssigneeWrite {
  * failure, and the lists refetch once the server has answered (see `useIssueFieldWrite`).
  *
  * An inbox row is judged by the person it waits on, which the server answers as
- * `coalesce(asked_of, assignee)`: so a row whose ask nobody has handed on follows the new
- * assignee here, and one somebody handed to a person keeps that person whoever holds its issue.
+ * `coalesce(a.asked_of, i.assignee, p.default_assignee)`: so a row whose ask nobody has handed on
+ * follows the new assignee here, and one somebody handed to a person keeps that person whoever
+ * holds its issue. An unassign moves a row nobody handed on to its project's default assignee,
+ * taken from the defaults read the Settings page holds (`projectDefaultAssigneesQuery`) where the
+ * client has it; where it does not, the row keeps the person it waited on until the refetch names
+ * the default. It never names nobody: every project names a default, so no row the server
+ * answers does, and one written so would read as an ask no person waits on.
  */
 export function useIssueAssignee(issueKey: string): IssueAssigneeWrite {
   const queryClient = useQueryClient();
@@ -37,18 +44,19 @@ export function useIssueAssignee(issueKey: string): IssueAssigneeWrite {
     queryClient.setQueriesData<IssueSummary[]>({ queryKey: projectListsKey }, (current) =>
       current?.map((issue) => (issue.key === issueKey ? { ...issue, assignee } : issue))
     );
+    const defaults =
+      assignee === null
+        ? queryClient.getQueryData(projectDefaultAssigneesQuery().queryKey)
+        : undefined;
     queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-      current?.map((row) =>
-        row.issue_key === issueKey && row.issue !== undefined
-          ? {
-              ...row,
-              issue: { ...row.issue, assignee },
-              ...(row.asked_of === null || row.asked_of === undefined
-                ? { waiting_on_person: assignee ?? undefined }
-                : {}),
-            }
-          : row
-      )
+      current?.map((row) => {
+        if (row.issue_key !== issueKey || row.issue === undefined) return row;
+        const moved = { ...row, issue: { ...row.issue, assignee } };
+        if (row.asked_of !== null && row.asked_of !== undefined) return moved;
+        const project = rowProject({ ask: row, kind: "ask" });
+        const person = assignee ?? defaults?.find((entry) => entry.project === project)?.assignee;
+        return person === undefined ? moved : { ...moved, waiting_on_person: person };
+      })
     );
   };
   return useIssueFieldWrite<string | null>(issueKey, {

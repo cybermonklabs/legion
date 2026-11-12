@@ -96,10 +96,11 @@ export function askWaitingOnPerson(ask: Ask): string | null {
 
 /**
  * Who holds the row. An ask is held by the person it waits on (`askWaitingOnPerson`, the
- * server's own answer), and a document ask is held by nobody. A thread is the reader's own -
- * the route answers nobody else's - so it is held by whoever is reading, which is why the
- * viewer is an argument here rather than something this module could look up: the Inbox has it
- * already, and a helper that read it again would be a second answer to the same question.
+ * server's own answer), a document ask included, which waits on its project's default assignee
+ * until somebody hands it on. A thread is the reader's own - the route answers nobody else's -
+ * so it is held by whoever is reading, which is why the viewer is an argument here rather than
+ * something this module could look up: the Inbox has it already, and a helper that read it again
+ * would be a second answer to the same question.
  */
 export function rowAssignee(row: InboxListRow, viewer: string): string | null {
   return row.kind === "ask" ? askWaitingOnPerson(row.ask) : viewer;

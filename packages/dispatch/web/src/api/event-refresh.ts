@@ -424,10 +424,10 @@ function isMessageEvent(event: DispatchEvent): boolean {
 //
 // A hand-on (`ask.asked_of`) is here for the same reason an assignee move is: the Inbox leaves
 // out the Reply row of an open ask it already lists (`myRepliesOwner` in the server's
-// replies.go, over `coalesce(a.asked_of, i.assignee)`), so handing the ask from one person to
-// another makes that row appear for the person who gave it up and disappear for the person who
-// took it. The event names both of them in its `thread_logins`, which is what decides whose
-// list refreshes below.
+// replies.go, over `coalesce(a.asked_of, i.assignee, p.default_assignee)`), so handing the ask
+// from one person to another makes that row appear for the person who gave it up and disappear
+// for the person who took it. The event names both of them in its `thread_logins`, which is
+// what decides whose list refreshes below.
 //
 // An issue-less `message.created` or `message.answered` is here for the Inbox's Agent rows: a
 // one-off message to a session, and that session's reply to one.

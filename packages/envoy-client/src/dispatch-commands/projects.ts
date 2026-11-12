@@ -7,6 +7,7 @@ import {
   stringArg,
 } from "./context";
 import { refusalWithCode } from "./failures";
+import { namedPerson } from "./render-item";
 
 /** One source's answer to `dispatch architecture-sync`: its imported commit, or the recorded
  *  failure and what of that source's model stays up. A source re-saved on another branch has no
@@ -29,17 +30,6 @@ function architectureSyncLines(project: string, source: ArchitectureSource): str
   ].join("\n");
 }
 
-/** The person a project's create answered as its default assignee, read as `waitsOnPerson`
- *  reads a question's person: every project names one, and the create answers it, so it is
- *  undefined only from a Dispatch older than that answer, and the output then names nobody
- *  rather than printing a person it was not given. */
-function projectDefaultAssignee(project: {
-  readonly default_assignee?: string;
-}): string | undefined {
-  const person = project.default_assignee;
-  return person === undefined || person === "" ? undefined : person;
-}
-
 /** `dispatch project`: open a project. */
 export async function projectCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, linkBase } = context;
@@ -58,7 +48,10 @@ export async function projectCommand(context: CommandContext): Promise<DispatchT
     throw refusalWithCode(error);
   }
   const href = new URL(`/projects/${encodeURIComponent(project.key)}`, linkBase).toString();
-  const projectDefault = projectDefaultAssignee(project);
+  // Every project names a default assignee and the create answers it, so it is absent only from
+  // a Dispatch older than that answer, and the output then names nobody rather than a person it
+  // was not given.
+  const projectDefault = namedPerson(project.default_assignee);
   return {
     // The default assignee is on the create's own line: the project's unowned work lands on
     // that person, and every question on an issue nobody holds reaches them, so the agent

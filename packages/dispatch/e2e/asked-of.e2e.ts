@@ -27,9 +27,9 @@ import { asUser } from "./users";
  *
  * The first row drives the hand-on control the ask card carries on every surface that draws an
  * open ask, with both people's Inboxes open at once, and holds the server's one expression
- * (`coalesce(a.asked_of, i.assignee)`, which it answers as `waiting_on_person`) to what every
- * reader of that ask shows: which list the row is in, the counts beside it, each person's
- * Replies, and the issue page.
+ * (`coalesce(a.asked_of, i.assignee, p.default_assignee)`, which it answers as
+ * `waiting_on_person`) to what every reader of that ask shows: which list the row is in, the
+ * counts beside it, each person's Replies, and the issue page.
  *
  * The second row drives `dispatch issue-update --assignee` as an agent runs it, against the
  * issue page a person is reading, so the command's write and the page agree with no reload.

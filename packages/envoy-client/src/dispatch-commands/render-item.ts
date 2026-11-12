@@ -146,6 +146,12 @@ function openAskAge(ageSeconds: number): string {
   return `${days}d${hours % 24 === 0 ? "" : ` ${hours % 24}h`}`;
 }
 
+/** A person a Dispatch answer names, or undefined where it names none: the field absent, or
+ *  empty. Every line that prints a person reads it through this, so none prints an empty name. */
+export function namedPerson(person: string | undefined): string | undefined {
+  return person === undefined || person === "" ? undefined : person;
+}
+
 /** The person a question reaches, for every line that names one: an open-asks row, and the
  *  answers of the two writes that carry a question, the ask create's and the approval request's.
  *  It is the server's `waiting_on_person`, the one rule every read of that person shares
@@ -155,8 +161,7 @@ function openAskAge(ageSeconds: number): string {
  *  stores. It is undefined only from a Dispatch older than that rule, and the line then names
  *  nobody rather than claiming a person. */
 export function waitsOnPerson(ask: { readonly waiting_on_person?: string }): string | undefined {
-  const person = ask.waiting_on_person;
-  return person === undefined || person === "" ? undefined : person;
+  return namedPerson(ask.waiting_on_person);
 }
 
 /** One row of `dispatch open-asks`, in both of the listing's groups: the person it is asked of

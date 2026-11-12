@@ -245,19 +245,6 @@ export const ProjectSchema = z
   })
   .readonly();
 
-/**
- * A project's default assignee: the last step of an issue create's assignee chain, reached when
- * the create named nobody, the session acts for nobody, and no parent carries one. `assignee` is
- * a person's lowercase email, or null for a project that names nobody — which
- * `GET /api/v1/settings/project-default-assignees` leaves out of its list entirely.
- */
-/** One project's default assignee: the person its unowned work lands on, the last step of the
- *  chain that decides who a question reaches. Every project names one and no write clears it, so
- *  `assignee` is always a person's lowercase email. */
-export const ProjectDefaultAssigneeSchema = z
-  .strictObject({ project: z.string(), assignee: z.string() })
-  .readonly();
-
 export const RepoProjectSchema = z
   .strictObject({
     repo: z.string(),

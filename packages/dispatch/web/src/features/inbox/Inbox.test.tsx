@@ -1744,7 +1744,8 @@ test("Assign to me PATCHes the viewer's lowercase login and keeps its row until 
     );
     expect(rowIds()).toEqual(["ask-orphan"]);
     // Once the server has recorded it, the refetched inbox carries the new assignee, and with
-    // it the person the row waits on (`coalesce(asked_of, assignee)`, which the server resolves).
+    // it the person the row waits on (`coalesce(a.asked_of, i.assignee, p.default_assignee)`,
+    // which the server resolves).
     getInbox.mockResolvedValue([
       {
         ...orphan,

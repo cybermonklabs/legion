@@ -57,7 +57,8 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return `Ask handed back: ${event.payload.question}`;
     case "ask.asked_of":
       // Who the ask waits on now. The payload names no login where it was handed to the
-      // assignee of its own issue, which is where an ask with no `asked_of` waits.
+      // assignee of its own issue: an ask with no `asked_of` waits on that assignee, or on its
+      // project's default assignee while the issue holds nobody.
       return `Ask handed to ${event.payload.asked_of ?? "the issue's assignee"}: ${event.payload.question}`;
     case "comment.resolved":
       return "Comment resolved";

@@ -15,10 +15,10 @@ import (
 )
 
 // One expression decides whose list an ask is in: askedOfPersonExpression, the person somebody
-// handed the ask to and the assignee of its issue until somebody does. This file is the Go half
-// of dispatch://INFRA-1576's c-one-expression-decides, whose `run` names
-// TestOneExpressionDecidesWhoWaits, so the test and the file carry that name rather than the
-// package's sentence-style one.
+// handed the ask to, else the assignee of its issue, else the default assignee of its project,
+// which every project names. This file is the Go half of dispatch://INFRA-1576's
+// c-one-expression-decides, whose `run` names TestOneExpressionDecidesWhoWaits, so the test and
+// the file carry that name rather than the package's sentence-style one.
 
 // inboxFor reads one person's Inbox rows through the person filter `dispatch inbox` sends
 // (?assignee=me), or through filter where the test names another.

@@ -287,8 +287,9 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
           }}
           value={waitingOn}
         >
-          {/* The ask waits on nobody until somebody is picked, and nobody is not a pick: the
-              route takes a person's email and refuses anything else. */}
+          {/* Selected only where the server names no person, which only a Dispatch older than
+              every project naming a default answers. Nobody is not a pick: the route takes a
+              person's email and refuses anything else. */}
           <option disabled value="">
             Nobody
           </option>
