@@ -26,6 +26,13 @@ type adoption struct {
 // A child already recorded in fact.Tree needs nothing, and a member of another child's queued tree
 // joins with that child.
 //
+// A released child that is a member of a closed tree joins alone (workflow's Engine.AdoptMember),
+// which is C4 of dispatch://INFRA-3107: the tree it stood in runs nothing again, and the tree that
+// takes it takes the one issue the architect released, never the rest of that tree. A member that
+// holds an admission slot is work the daemon has already started, which C4 leaves where it stands:
+// the slot rows are read once for the wave, beside the root of fact.Tree, and such a member
+// refuses the wave by name (intake.ChildNotAdoptable).
+//
 // The wave is one decision: when any child cannot join (workflow's AdoptionRefusal), or the tree
 // is not live when the first child that could join is asked about, that refusal is the answer and
 // nothing is written, no adoption and no promotion, since intake commits a refused fact.
@@ -47,9 +54,11 @@ func (a *Admission) adoptChildren(ctx context.Context, tx pgx.Tx, fact intake.Ch
 			outside = append(outside, adoption{issue: *stored, parent: child.Parent})
 		}
 	}
-	// The tree's root and its liveness are read once for every child the release asks about.
+	// The tree's root, its liveness and the project's slot rows are read once for every child the
+	// release asks about.
 	var root *record.Issue
 	live := false
+	var slotted map[string]record.Slot
 	if len(outside) > 0 {
 		var err error
 		if root, err = a.store.Issue(ctx, tx, fact.Tree); err != nil {
@@ -60,6 +69,14 @@ func (a *Admission) adoptChildren(ctx context.Context, tx pgx.Tx, fact intake.Ch
 				return nil, nil, fmt.Errorf("read whether the tree of %s is live: %w", fact.Tree, err)
 			}
 		}
+		rows, err := a.store.Slots(ctx, tx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read the admission slots for the release of %s: %w", fact.Tree, err)
+		}
+		slotted = make(map[string]record.Slot, len(rows))
+		for _, slot := range rows {
+			slotted[slot.Issue] = slot
+		}
 	}
 	queued := make(map[string]bool, len(outside))
 	for _, child := range outside {
@@ -67,9 +84,10 @@ func (a *Admission) adoptChildren(ctx context.Context, tx pgx.Tx, fact intake.Ch
 			queued[child.issue.Key] = true
 		}
 	}
-	var roots []adoption
+	var joining []adoption
 	for _, child := range outside {
-		if !claim.IsTreeRoot(child.issue.Key, child.issue.Tree) && queued[child.issue.Tree] {
+		member := !claim.IsTreeRoot(child.issue.Key, child.issue.Tree)
+		if member && queued[child.issue.Tree] {
 			continue
 		}
 		refusal, err := a.engine.AdoptionRefusal(ctx, tx, child.issue, fact.Tree)
@@ -82,12 +100,22 @@ func (a *Admission) adoptChildren(ctx context.Context, tx pgx.Tx, fact intake.Ch
 		if !live {
 			return nil, intake.ChildNotAdoptable(child.issue.Key, fact.Tree, fmt.Sprintf("the tree of %s is not live", fact.Tree)), nil
 		}
+		// C4 takes a member of a closed tree that holds no admission slot: one that holds a row is
+		// at work in the tree it stands in, and the daemon keeps what it started out of the route.
+		if slot, holds := slotted[child.issue.Key]; member && holds {
+			return nil, intake.ChildNotAdoptable(child.issue.Key, fact.Tree,
+				fmt.Sprintf("it holds admission slot %d in the tree of %s", slot.Index, child.issue.Tree)), nil
+		}
 		// A live tree's root is recorded.
 		child.target = *root
-		roots = append(roots, child)
+		joining = append(joining, child)
 	}
-	for _, child := range roots {
-		if err := a.engine.Adopt(ctx, tx, child.issue, child.target, child.parent); err != nil {
+	for _, child := range joining {
+		join := a.engine.Adopt
+		if !claim.IsTreeRoot(child.issue.Key, child.issue.Tree) {
+			join = a.engine.AdoptMember
+		}
+		if err := join(ctx, tx, child.issue, child.target, child.parent); err != nil {
 			return nil, nil, fmt.Errorf("adopt %s into the tree of %s: %w", child.issue.Key, fact.Tree, err)
 		}
 	}
@@ -105,6 +133,11 @@ func (a *Admission) adoptChildren(ctx context.Context, tx pgx.Tx, fact intake.Ch
 // does one handed over as a root of its own (record.Issue.HandedOverFrom), its old root's
 // re-admission included: the hand-over made it a tree of its own for good. A key Reconcile holds,
 // the candidate's or its target's, is left for release to apply first, when respectHolds is set.
+//
+// Only a root is a candidate here, so no member of a closed tree is moved by a pass: C4 of
+// dispatch://INFRA-3107 adopts such a member on an architect's release alone (adoptChildren,
+// workflow's Engine.AdoptMember), and until one releases it the member stands in admission.held
+// with the reason tree_closed.
 //
 // It loops until a pass adopts nothing, and returns the issues, slots and line facts that pass
 // read: it wrote nothing, so they are the record as it stands, and promotion reuses them rather

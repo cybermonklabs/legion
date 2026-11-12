@@ -289,6 +289,16 @@ type LineFacts struct {
 	// parked one. Waiting's placement reads it nowhere — classification alone does
 	// (HeldFacts.Roots) — so the line cannot change for this read.
 	Roots map[string]Issue
+	// Now is the moment the pass reads the record, which classification alone reads: the
+	// tree_closed word asks whether a root's linger is still running at it (Lingering,
+	// HeldReasonOf), so that a root a person parked reads tree_parked once its linger has run
+	// out rather than tree_closed for ever. The one caller that fills it is the judgement every
+	// reader of the line comes through (blockers.JudgeLine), which takes the clock of the pass
+	// that called it. The zero moment reads every armed linger as still running, which is what a
+	// caller that builds the line itself — a test, a reader with no clock — gets, and it leaves
+	// each such member reading tree_closed. Waiting's placement reads it nowhere, so the line
+	// cannot change for it.
+	Now time.Time
 	// Held is the unfinished blockers of each issue a Dispatch blocker holds where it stands, by
 	// key: the issues whose first phase the line must not offer a slot to, however long they
 	// have waited, and what each of them waits on, which the held list names beside the word

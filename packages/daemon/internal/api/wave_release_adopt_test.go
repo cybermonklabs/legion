@@ -528,3 +528,51 @@ func TestReleaseRefusesAChildItCannotAdopt(t *testing.T) {
 		}
 	})
 }
+
+// One release_children wave that names a member of a closed tree is accepted whole: the member's
+// record stands in the closed tree when the request starts, so the wave's own read of it after
+// the adoption fact (enterTodoChild) would answer CHILD_IN_OTHER_TREE had the adoption not
+// already moved it. That is what this proves — the adoption's write lands before that read — and
+// with it the rest of C4 of dispatch://INFRA-3107 end to end: the member joins the live tree at
+// the generation it had raised by one, on the repository it was recorded with, a root of none,
+// and the open gate starts it planning at the slot that stands free.
+func TestReleaseOfAClosedTreesMemberIsAcceptedWhole(t *testing.T) {
+	const closed, member = "LEGION-500", "LEGION-501"
+	a := newAdoptionHarness(t, 2)
+	// A tree whose root is finished with no linger left to run, holding one member that never
+	// started a phase, recorded on a repository of its own.
+	a.recordIssue(record.Issue{Key: closed, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: closed, Project: testProject, Title: closed, Phase: phase.Done, Generation: 3,
+		Status: record.DoneStatus, DispatchStatus: record.DoneStatus, Rank: "C", HandedOver: true, LastDispatchSeq: 1})
+	a.recordIssue(record.Issue{Key: member, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: closed, Project: testProject, Title: member, Parent: record.ParentOf(closed), Phase: phase.Admitted,
+		Generation: 3, Status: "todo", DispatchStatus: "todo", Rank: "B", HandedOver: true, LastDispatchSeq: 1})
+	a.shows(member, "todo", adoptionTree, 2, true)
+
+	recorder := a.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": a.architect.grant(t), "issues": []string{member}}, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("release of %s = %d: %s", member, recorder.Code, recorder.Body)
+	}
+	var response WaveReleaseResponse
+	decodeInto(t, recorder, &response)
+	want := WaveReleaseResponse{Released: []string{member}, Started: []string{member}, Held: []HeldChild{}}
+	if !reflect.DeepEqual(response, want) {
+		t.Fatalf("release answer = %#v, want %#v: the whole wave is accepted", response, want)
+	}
+	a.assertJoinedAndPlanning(member, 4)
+	got := a.record(member)
+	if got.Repo != "sjawhar/legion" || got.DefaultBranch != "main" || got.GitHubRepo != "sjawhar/legion" {
+		t.Fatalf("%s = %#v, want it on the repository it was recorded with", member, got)
+	}
+	if got.Parent == nil || *got.Parent != adoptionTree {
+		t.Fatalf("%s's parent = %v, want %s, the parent the release read", member, got.Parent, adoptionTree)
+	}
+	if lifecycles := a.count(`select count(*) from tree_lifecycles where tree = $1`, member); lifecycles != 0 {
+		t.Fatalf("%s has %d tree lifecycles, want none: the release made a root of it", member, lifecycles)
+	}
+	if len(a.statuses.writes) != 0 {
+		t.Fatalf("Dispatch writes = %#v, want none: the member is already todo", a.statuses.writes)
+	}
+	// The member is the taking tree's now: its architect parks it as it parks any child of it.
+	a.assertParked(member)
+}

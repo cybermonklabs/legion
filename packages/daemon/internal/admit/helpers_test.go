@@ -219,7 +219,7 @@ func waitingLine(t *testing.T, pool *pgxpool.Pool, project string, steps []recor
 		if err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}
-		_, _, line, _, err := blockers.JudgeLine(ctx, tx, records, project, issues, slots, facts, nil)
+		_, _, line, _, err := blockers.JudgeLine(ctx, tx, records, project, issues, slots, facts, nil, time.Now())
 		if err != nil {
 			t.Fatalf("judge the waiting line: %v", err)
 		}

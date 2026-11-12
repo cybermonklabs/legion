@@ -113,8 +113,9 @@ type HeldFacts struct {
 	// the same map Waiting walks, so the word and the hold that caused it answer alike about
 	// one chain.
 	Chain map[string]Issue
-	// Facts is the pass's own facts, for the gates, the Dispatch blockers and the
-	// children-first rows the ladder reads straight from them.
+	// Facts is the pass's own facts, for the gates, the Dispatch blockers, the children-first
+	// rows and the moment the pass read the record (LineFacts.Now), which the tree_closed word
+	// reads a root's linger against.
 	Facts LineFacts
 }
 
@@ -168,14 +169,18 @@ func openChildren(wait ChildWait) []string {
 //
 // Status is the daemon's own status field throughout, never DispatchStatus: it is what
 // OutOfWorkflow reads, and what the linger's hand-over of a closed tree's members reads, so a
-// word that says a tree is closed and a release that acts on it agree.
+// word that says a tree is closed and a release that acts on it agree. The linger the first word
+// reads is the one still running at the moment the pass read the record (Lingering,
+// LineFacts.Now), never Issue.Lingers, which stays true for ever once a deadline was armed: every
+// park arms one (workflow's beginLinger) and nothing but a re-admission clears it, so the broader
+// reading would give every parked tree's member tree_closed and leave tree_parked unreachable.
 func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	root, recorded := facts.treeRoot(issue.Tree)
 	ancestry := liveAncestry(issue, facts.Live)
 	blockedBy := facts.Facts.Held[issue.Key]
 	children := facts.Facts.ChildWaits[issue.Key]
 	switch {
-	case recorded && (root.Status == DoneStatus || root.Lingers()):
+	case recorded && (root.Status == DoneStatus || Lingering(root, facts.Facts.Now)):
 		return HeldTreeClosed, []string{issue.Tree}
 	case recorded && (root.Status == "backlog" || root.Status == "icebox"):
 		return HeldTreeParked, []string{issue.Tree}

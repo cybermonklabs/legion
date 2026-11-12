@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -279,15 +280,20 @@ func HeldIssues(rows map[string]Row, issues []record.Issue) map[string][]string 
 //
 // The held rows are what the line left behind, with the word for why (record.Waiting's second
 // answer). Only the state and the controller's tick read them; every other caller takes the
-// value and ignores it, so no caller of the promotion path builds a list it does not use.
+// value and ignores it, so no caller of the promotion path builds a list it does not use. now is
+// the caller's own clock, and the one thing it decides is one of those words: the tree_closed
+// word asks whether a root's linger is still running at it (record.Lingering), so that a parked
+// root's member reads tree_parked once that root's linger has run out. It reaches the judgement
+// as record.LineFacts.Now, which the line's own placement reads nowhere.
 //
 // It is the one place the line is judged: admission's own pass (admit's promoteHolds), the
 // projected state and the controller tick's read of what the project waits on all come through
 // here, so no two of them can judge the line from different reads or leave a later hold out of
 // one of the three.
 func JudgeLine(ctx context.Context, tx pgx.Tx, store record.Store, project string, issues []record.Issue,
-	slots []record.Slot, facts record.LineFacts, rows map[string]Row,
+	slots []record.Slot, facts record.LineFacts, rows map[string]Row, now time.Time,
 ) (map[string]Row, record.LineFacts, []record.LineEntry, []record.HeldIssue, error) {
+	facts.Now = now
 	if rows == nil {
 		rows = map[string]Row{}
 	}
