@@ -87,22 +87,24 @@ const deletedPostDeliveryError = "not sent: the post was deleted"
 // (refs.TombstoneItem). It returns the time the delete carries, in UTC as every time this API
 // answers one, and the reference changes the delete's event carries.
 //
-// alsoClears is what a kind clears besides the body, as the rest of the update's set list: the
-// comment's own ", suggestion = null", since the suggestion's replacement text is the comment's
-// text too, and nothing for a message, which carries no suggestion. It rides the one update, so
-// the kind's search trigger rewrites the row's vector once from the cleared body and the deleted
-// post stops matching a search. It is this server's own constant and never caller input, as kind
-// is.
+// A comment clears its suggestion with its body, since the suggestion's replacement text is the
+// comment's text too, and a message carries no suggestion: the kind decides which, and the clear
+// rides the one update, so the kind's search trigger rewrites the row's vector once from the
+// cleared body and the deleted post stops matching a search.
 func (s *server) clearDeletedPostBody(
 	ctx context.Context,
 	tx pgx.Tx,
 	kind refs.ItemKind,
-	itemID, previousBody, alsoClears string,
+	itemID, previousBody string,
 	actor model.Actor,
 ) (time.Time, model.ReferenceChanges, error) {
 	items, _, err := postHistoryOwner(kind)
 	if err != nil {
 		return time.Time{}, model.ReferenceChanges{}, err
+	}
+	alsoClears := ""
+	if kind == refs.ItemComment {
+		alsoClears = ", suggestion = null"
 	}
 	if err := recordPostBodyHistory(ctx, tx, kind, itemID, previousBody, actor); err != nil {
 		return time.Time{}, model.ReferenceChanges{}, err
@@ -158,8 +160,8 @@ func (s *server) settleDeletedPostDeliveries(
 		return nil, err
 	}
 	events := make([]model.Event, 0, len(owed))
-	for _, receipt := range owed {
-		appended, err := s.appendEvent(ctx, tx, receipt)
+	for _, settled := range owed {
+		appended, err := s.appendEvent(ctx, tx, settled)
 		if err != nil {
 			return nil, err
 		}

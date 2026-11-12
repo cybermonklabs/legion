@@ -186,7 +186,7 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	deletedAt, referenceChanges, err := s.clearDeletedPostBody(
-		r.Context(), tx, refs.ItemMessage, message.ID, message.Body, "", actor)
+		r.Context(), tx, refs.ItemMessage, message.ID, message.Body, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

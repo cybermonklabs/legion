@@ -337,7 +337,7 @@ type deletedPostKey struct {
 // Each is part of the event of the post that quoted it, and only the quoted post's own events
 // are marked here.
 func (s *server) attachDeletedPostFields(ctx context.Context, events []model.Event) error {
-	// The ids the page names, by the kind of post each is an id of, which is the table
+	// The ids the page names, by the kind of post each is an id of; that kind names the table
 	// readDeletedPosts reads it in.
 	ids := map[refs.ItemKind][]string{}
 	// What the first pass found for each event, which the second reads rather than finding

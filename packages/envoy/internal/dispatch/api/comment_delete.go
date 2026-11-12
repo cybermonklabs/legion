@@ -79,10 +79,8 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	// The suggestion goes with the body in the one update that clears it: the suggestion's
-	// replacement text is the comment's text too.
 	deletedAt, referenceChanges, err := s.clearDeletedPostBody(
-		r.Context(), tx, refs.ItemComment, comment.ID, comment.Body, ", suggestion = null", actor)
+		r.Context(), tx, refs.ItemComment, comment.ID, comment.Body, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
