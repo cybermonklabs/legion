@@ -59,7 +59,7 @@ var (
 // projects (every project's first issue is "U"), nothing makes one unique within a project, and
 // created_at is the creating transaction's start.
 func issueSummaryQuery(pinned, paged bool) string {
-	parameter := 9
+	parameter := 11
 	pinnedJoin := ""
 	if pinned {
 		pinnedJoin = fmt.Sprintf("\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $%d and s.pinned", parameter)
@@ -94,8 +94,10 @@ func issueSummaryQuery(pinned, paged bool) string {
 `
 }
 
-// issueListFilters are the eight filters a listing request carries, written against `issues i`
-// alone so the filtered term joins nothing: the page and the count both read it.
+// issueListFilters are the ten filters a listing request carries, written against `issues i`
+// alone so the filtered term joins nothing: the page and the count both read it. The closed
+// window ($9, $10) is [closed_since, closed_before), and an open issue, closed at no time, is
+// outside every window.
 const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and ($2 = '' or i.status = $2)
 		  and ($3 = '' or i.parent_key = $3)
@@ -104,7 +106,9 @@ const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and (not $6::boolean or i.closed_at is null)
 		  and ((cardinality($7::smallint[]) = 0 and not $8::boolean)
 		       or i.priority = any($7::smallint[])
-		       or ($8::boolean and i.priority is null))`
+		       or ($8::boolean and i.priority is null))
+		  and ($9::timestamptz is null or i.closed_at >= $9)
+		  and ($10::timestamptz is null or i.closed_at < $10)`
 
 // issueListOrder is the listing's order, over the issue aliased `i`: the lifecycle status, the
 // rank, the creation time, then the key. The paged text orders the filtered keys by it and the
@@ -139,7 +143,8 @@ const issueSummaryColumns = `i.key, i.title, i.status, i.priority, i.rank, i.lab
 	       case when i.closed_at is null then coalesce(open_asks.total, 0) else 0 end,
 	       ` + issueProgressColumns + `,
 	       ` + issueComponentsColumns + `,
-	       ` + refs.IssueRepoColumns
+	       ` + refs.IssueRepoColumns + `,
+	       i.closed_at`
 
 // issueSummaryJoins resolve the six values a listing row carries beside the issue's own columns,
 // each for every issue of `subjects` at once rather than for one row at a time. The open-ask
@@ -197,6 +202,24 @@ func parsePriorityFilter(values []string) (priorities []int16, unset bool, err e
 		}
 	}
 	return priorities, unset, nil
+}
+
+// microsecondCeiling is a listing's time bound as the statement compares it. Postgres stores a
+// timestamptz to the microsecond and pgx encodes a bound by truncating its nanoseconds, which
+// lowers it: an issue stored at the truncated microsecond, before the bound the caller named,
+// would be kept by `>= since` and dropped by `< before`. Every stored time is a whole
+// microsecond, so it is at or after a bound exactly when it is at or after the bound rounded up
+// to the next microsecond, and before the bound exactly when it is before that: rounding up keeps
+// both meanings. nil is no bound.
+func microsecondCeiling(bound *time.Time) *time.Time {
+	if bound == nil {
+		return nil
+	}
+	ceiling := bound.Truncate(time.Microsecond)
+	if ceiling.Before(*bound) {
+		ceiling = ceiling.Add(time.Microsecond)
+	}
+	return &ceiling
 }
 
 // claimScan reads an issue's two claim columns as one nullable claim. A row has both or
@@ -288,6 +311,8 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	for index, label := range labels {
 		labels[index] = strings.ToLower(label)
 	}
+	// Each time bound is read under its literal key rather than through a helper taking the key,
+	// so routes_query_keys_test.go's walk can tie each one to issueListQuery.
 	var updatedSince *time.Time
 	if query.Has("updated_since") {
 		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(query.Get("updated_since")))
@@ -296,6 +321,31 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		updatedSince = &parsed
+	}
+	var closedSince *time.Time
+	if query.Has("closed_since") {
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(query.Get("closed_since")))
+		if err != nil {
+			writeError(w, "INVALID_CLOSED_SINCE", http.StatusBadRequest, "closed_since must be an RFC3339 timestamp")
+			return
+		}
+		closedSince = &parsed
+	}
+	var closedBefore *time.Time
+	if query.Has("closed_before") {
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(query.Get("closed_before")))
+		if err != nil {
+			writeError(w, "INVALID_CLOSED_BEFORE", http.StatusBadRequest, "closed_before must be an RFC3339 timestamp")
+			return
+		}
+		closedBefore = &parsed
+	}
+	// The window is judged as the caller wrote it, before rounding: two bounds inside one
+	// microsecond are a valid window, not a backwards one, and the statement answers whatever
+	// stored times fall between their rounded values (none, unless the lower bound is whole).
+	if closedSince != nil && closedBefore != nil && !closedSince.Before(*closedBefore) {
+		writeError(w, "INVALID_CLOSED_WINDOW", http.StatusBadRequest, "closed_since must be before closed_before")
+		return
 	}
 	priorities, unsetPriority, err := parsePriorityFilter(query["priority"])
 	if err != nil {
@@ -318,6 +368,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	filters := issueListRead{
 		project: project, status: status, parent: parent, updatedSince: updatedSince,
 		labels: labels, open: open, priorities: priorities, unsetPriority: unsetPriority,
+		closedSince: closedSince, closedBefore: closedBefore,
 		pinnedBy: login,
 	}
 	// SQL cuts the page only when no route_status filter runs after the read: that filter needs
@@ -382,9 +433,9 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 }
 
 // issueListRead is one read of the issue listing as GET /api/v1/issues's query parses it: the
-// eight filters every statement of that listing binds (issueListFilters is the SQL they are
+// ten filters every statement of that listing binds (issueListFilters is the SQL they are
 // written as), the person whose pins narrow it, and the page SQL cuts. It is one value rather
-// than eight parameters because its two readers - that route and GET /api/v1/landing, which
+// than ten parameters because its two readers - that route and GET /api/v1/landing, which
 // carries the caller's pinned issues and a project's open ones - must bind the same arguments in
 // the same order as the statement they choose.
 type issueListRead struct {
@@ -396,6 +447,11 @@ type issueListRead struct {
 	open          bool
 	priorities    []int16
 	unsetPriority bool
+	// closedSince and closedBefore are the closed window [closedSince, closedBefore) the read
+	// narrows to, each nil for a bound the caller named none of. An open issue, closed at no
+	// time, is outside every window.
+	closedSince  *time.Time
+	closedBefore *time.Time
 	// pinnedBy is the person whose pinned issues the read answers (?pinned=true, the calling
 	// person), and "" for a read of every issue the other filters match.
 	pinnedBy string
@@ -419,13 +475,16 @@ func (f issueListRead) statement() string {
 	return listIssuesQuery
 }
 
-// arguments binds that statement's parameters in its own order: the eight filters, then the
+// arguments binds that statement's parameters in its own order: the ten filters, then the
 // person whose pins narrow it, then the page's limit and offset.
 //
 // The two list filters are bound as the empty list where the read names none. A nil slice binds
 // as SQL NULL, and every term that reads them - `$5::text[] = '{}'` for the labels and
 // `cardinality($7::smallint[]) = 0` for the priorities - answers NULL for it, which is not true,
 // so a read that named no label would match no issue at all (issueListFilters).
+//
+// Every time bound is bound as microsecondCeiling reads it, which is the value the statement's
+// comparisons mean (microsecondCeiling says why), so no reader of this type rounds its own.
 func (f issueListRead) arguments() []any {
 	labels, priorities := f.labels, f.priorities
 	if labels == nil {
@@ -434,7 +493,10 @@ func (f issueListRead) arguments() []any {
 	if priorities == nil {
 		priorities = []int16{}
 	}
-	arguments := []any{f.project, f.status, f.parent, f.updatedSince, labels, f.open, priorities, f.unsetPriority}
+	arguments := []any{
+		f.project, f.status, f.parent, microsecondCeiling(f.updatedSince), labels, f.open, priorities,
+		f.unsetPriority, microsecondCeiling(f.closedSince), microsecondCeiling(f.closedBefore),
+	}
 	if f.pinnedBy != "" {
 		arguments = append(arguments, f.pinnedBy)
 	}
@@ -500,7 +562,8 @@ func (r *issueSummaryRow) targets(leading ...any) []any {
 	targets = append(targets, &r.issue.OpenAsks)
 	targets = append(targets, r.progress.targets()...)
 	targets = append(targets, r.components.targets()...)
-	return append(targets, r.repo.targets()...)
+	targets = append(targets, r.repo.targets()...)
+	return append(targets, &r.issue.ClosedAt)
 }
 
 // resolve turns the scanned row into the summary the response carries, refusing an issue whose

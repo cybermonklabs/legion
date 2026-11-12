@@ -6,11 +6,14 @@
  *
  * Why the two halves are two modules. The table's write kind is registered by the shell at boot
  * so that a reload finds a kept table write's kind (`features/writes/kinds.ts`), and that kind
- * reads an interrupted action from here (`issues-table-recovery.ts`). The layout half reads
- * `COLUMN_SIZES` and `PINNED`, which are built from the table's whole column list, so a shell
- * that reached this storage was pulling the table model and its match ranking - about 16,000
+ * reads an interrupted action from here (`issues-table-recovery.ts`). The layout half read
+ * `COLUMN_SIZES` and `PINNED`, built from the table's whole column list, so a shell that
+ * reached this storage was pulling the table model and its match ranking - about 16,000
  * bytes - into the entry chunk every page of the dashboard parses before it draws anything
- * (dispatch://INFRA-1109, R13). Nothing of the table is drawn by a first paint: it is a page.
+ * (dispatch://INFRA-1109, R13). The layout half takes that list from its caller now
+ * (`ISSUE_TABLE_COLUMNS`, in the table model), so the shell reaches the model through
+ * neither half, and this one is all a reload's kind needs.
+ * Nothing of the table is drawn by a first paint: it is a page.
  *
  * One failure rule, for every field, as before: a browser that refuses storage, a full quota or
  * a corrupt value is a table with no saved preferences, never an exception out of a click.
