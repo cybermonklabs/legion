@@ -2403,9 +2403,10 @@ func TestRoleRunsSkipsAnotherRolesUndecodableRow(t *testing.T) {
 // statement without its first. The undecodable supervise row of the same issue is the witness
 // that no row is read at all — RoleRuns fails that very role's run on it — and a token no claim
 // stands under is absent from the answer, which is the nil claim RoleRuns reports for it. The
-// task a claim holds comes with it, as it does through RoleRuns, and so does the update round
-// the claim is in (RoleClaim.UpdateRound), which a rule over a run reads to tell a worker whose
-// round prompts it from one nothing will prompt (workflow.SilentPhaseWorker).
+// task a claim holds comes with it, as it does through RoleRuns, and so do the update round
+// the claim is in (RoleClaim.UpdateRound) and the record of its agent's last step
+// (RoleClaim.Step), which a rule over a run reads to tell a worker whose round prompts it, or
+// whose agent is still moving, from one nothing will prompt (workflow.SilentPhaseWorker).
 func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -2418,6 +2419,14 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 		QueuedAt: time.Now(), DeliveredAt: time.Now(), ConfirmedAt: time.Now()}
 	if err := st.PutClaimAndDelivery(ctx, held, task); err != nil {
 		t.Fatalf("record the tester's claim and the task it holds: %v", err)
+	}
+	// The step columns are written by this call alone (store's PutClaimStep), never by a write
+	// of the whole claim, so the fixture writes them as the daemon does: a step seen at stepped
+	// inside a turn that began before it.
+	turnStarted := time.Date(2026, 11, 12, 7, 0, 0, 0, time.UTC)
+	stepped := turnStarted.Add(30 * time.Minute)
+	if known, err := st.PutClaimStep(ctx, tester, supervise.StepRecord{At: stepped, TurnStartedAt: turnStarted}); err != nil || !known {
+		t.Fatalf("record the step of the tester's claim = %t, %v", known, err)
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		_, err := tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
@@ -2439,6 +2448,10 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 		}
 		if read.UpdateRound != supervise.PodRound("a-pod-uid") {
 			t.Fatalf("the round the tester's claim is in = %q, want the pod round the fixture wrote", read.UpdateRound)
+		}
+		if !read.Step.At.Equal(stepped) || !read.Step.TurnStartedAt.Equal(turnStarted) || !read.Step.LastStep().Equal(stepped) {
+			t.Fatalf("the step record of the tester's claim = %+v, want the step at %s inside the turn begun at %s the fixture wrote",
+				read.Step, stepped, turnStarted)
 		}
 		if _, found := claims[merger]; found {
 			t.Fatalf("the answer holds %s, a role the store has no claim of", merger)

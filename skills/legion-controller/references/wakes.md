@@ -32,7 +32,7 @@ child, so the issue it names may be either. Name the free slots; take nothing.
 daemon waits half a minute and folds that window's events into one wake. Take nothing: it is not
 Legion's.
 
-## `tick on <PROJECT>` (`{kind: "tick", openCapabilities?, blocked?}`)
+## `tick on <PROJECT>` (`{kind: "tick", openCapabilities?, blocked?, silent?}`)
 
 The daemon's periodic wake, a minute after it starts and then every
 `controller_wake_interval_seconds` (an hour by default), whatever the slots. Run the skill's every-turn
@@ -56,6 +56,21 @@ A link's wait ends when each blocker reaches `done` (a person's close, or the bl
 link is taken off (by a person or the tree's architect), and a children-first wait ends when the
 last open child leaves the workflow: name the waits in the day's report and
 take nothing for them.
+
+`silent`, when present, is `[{issue, role, lastStep, silent}, …]`: every issue whose phase worker
+nothing will prompt, with the role whose claim is silent, the moment that claim's agent last
+stepped, and how long it has been quiet.
+Such a worker's process is up and between turns, it holds no task, and its last recorded step is
+older than this deployment's `worker_silence_minutes`, so nothing in the daemon and nothing in the
+worker's own process was going to prompt it again.
+The daemon sent that phase's task again where the record let it, and told the issue's architect the
+same fact in a `worker-silent` notice, so every entry here is one that architect was told of.
+Read the issue's record before you act: `read_state`'s `issues.<KEY>` gives its phase and each
+role's claim, and says whether the worker has moved since the tick was queued.
+Where the architect of that issue is itself a claim that is not answering — its claim reads
+`failed`, or the Envoy registry shows its session gone — `fresh_session` on that architect, because
+a notice sent to a claim that reads nothing reaches nobody and the work stands still.
+Name each silent issue in the day's report, with its role and the length of its silence.
 
 ## `unslotted on <KEY>` (`{kind: "unslotted", reason}`)
 

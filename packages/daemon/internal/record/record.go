@@ -1648,8 +1648,9 @@ type QueuedSupervise struct {
 
 // RoleClaim is a claim as RoleRun reads it: its state, the tree it is in, who suspended it while it
 // is suspended, the newest start the outbox ran against it (last_start_row), the update round it is
-// in (update_round), the write mark its retirement took (retired_at_write_mark), and the task it
-// holds, nil for none, with the task's generation, phase and confirmation.
+// in (update_round), the write mark its retirement took (retired_at_write_mark), the moment its
+// agent last stepped (step_at, turn_started_at), and the task it holds, nil for none, with the
+// task's generation, phase and confirmation.
 type RoleClaim struct {
 	State        supervise.ClaimState
 	Tree         string
@@ -1660,6 +1661,19 @@ type RoleClaim struct {
 	// a worker the round itself prompts, whose replacement is what starts it again, from one
 	// nothing will prompt (workflow.SilentPhaseWorker).
 	UpdateRound string
+	// Step is the claim's record of its agent's last step as far as the two columns this read
+	// takes it: At from step_at and TurnStartedAt from turn_started_at, both of them the zero
+	// time where the column is null, and none of the call's own fields (supervise.StepRecord,
+	// whose other columns say which call was open and are no rule's to read). It is the whole
+	// record rather than one moment so that a reader asks it the one question the record
+	// answers, supervise.StepRecord.LastStep, as the daemon's stall backstop asks it, and so no
+	// second reading of "the last step" is written anywhere.
+	//
+	// What it is for: a rule over a run that must tell a worker still moving from one nothing
+	// will prompt (workflow.SilentPhaseWorker, whose lastStep this is) needs the moment from
+	// the record, because the one reader that has the live claim at hand is the sweep over the
+	// supervisor, and admission has no claim of that supervisor at all (admit's silentWorkers).
+	Step supervise.StepRecord
 	// RetiredAtWriteMark is the number outbox_write_mark_seq handed the write that recorded this
 	// claim's retirement (store's putClaim, whose doc holds what that sequence orders and what it
 	// does not), and 0 for a claim that has never retired and for one an earlier release retired,

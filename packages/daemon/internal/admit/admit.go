@@ -78,6 +78,14 @@ type Admission struct {
 	// (capabilities.Deployment.Open), for the tick notice to carry; nil until the daemon registers
 	// it (ReportCapabilities), when a tick names none.
 	openCapabilities func() []string
+
+	// workerSilence is how long a phase worker's last recorded step may be in the past before
+	// the tick notice names its issue silent (config.Config.WorkerSilence,
+	// `worker_silence_minutes`), the one bound the sweep, the silence handler and this list are
+	// all read against (workflow.SilentPhaseWorker). Zero, the admission nobody registered one
+	// with, switches the list off exactly as a deployment that sets the key to zero does, and
+	// the tick then names nothing silent.
+	workerSilence time.Duration
 }
 
 // ReportCapabilities registers open, whose answer every tick controller notice carries as its
@@ -94,6 +102,16 @@ func (a *Admission) ReportCapabilities(open func() []string) {
 // builds an admission, and none of them configures memory.
 func (a *Admission) UseMemory(memory config.Memory) {
 	a.memory = memory
+}
+
+// UseWorkerSilence registers the bound a phase worker's silence is read against, which every
+// tick controller notice derives its silent list from (silentWorkers). It is a setter rather
+// than a parameter of New for the reason UseMemory and ReportCapabilities are: every test that
+// admits anything builds an admission, and none of them configures a silence bound. A deployment
+// that registers none has the rule off, which is what a bound of zero means everywhere else it
+// is read.
+func (a *Admission) UseWorkerSilence(bound time.Duration) {
+	a.workerSilence = bound
 }
 
 var _ intake.Handler = (*Admission)(nil)
@@ -368,10 +386,17 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 // notice of the same kind still waits in the outbox, so a burst of events or ticks queues one
 // wake. The wake needs no record: the controller reads Dispatch and the daemon's state
 // (skill://legion-controller). A tick alone carries the daemon's open capabilities
-// (ReportCapabilities) and every issue Legion is waiting to start behind an unfinished Dispatch
-// issue (blocked), the turn that posts the day's report. Every other kind is queued as the
+// (ReportCapabilities), every issue Legion is waiting to start behind an unfinished Dispatch
+// issue (blocked) and every issue whose phase worker nothing will prompt (silentWorkers), the
+// turn that posts the day's report. Every other kind is queued as the
 // caller built it, so a kind that says something of its own — the role and the reason of
 // TellController's — carries it here.
+//
+// The two lists a tick carries are derived from one read of the project's live issues and one
+// read of the line facts those issues are judged from, made here and handed to both: the tree
+// gates the silent list reads are the gates blocked's own judgement reads
+// (record.LineFacts.Gates), and a second read of them inside this one transaction would answer
+// the same thing at twice the cost.
 //
 // Which notices count as the same one is the kind's own rule (record.NoticePerClaim): a kind
 // that speaks for the project is one wake per project, which is what the slot wakes and the tick
@@ -397,7 +422,14 @@ func (a *Admission) wakeController(ctx context.Context, tx pgx.Tx, notice record
 		if a.openCapabilities != nil {
 			notice.OpenCapabilities = a.openCapabilities()
 		}
-		if notice.Blocked, err = a.blocked(ctx, tx); err != nil {
+		issues, facts, err := a.lineFacts(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if notice.Blocked, err = a.blockedFrom(ctx, tx, issues, facts); err != nil {
+			return err
+		}
+		if notice.Silent, err = a.silentWorkers(ctx, tx, issues, facts); err != nil {
 			return err
 		}
 	}
@@ -443,30 +475,152 @@ func (a *Admission) queuePersonHandover(ctx context.Context, tx pgx.Tx, key, obs
 	return nil
 }
 
+// lineFacts is the project's live issues and the facts the waiting line judges them from, read
+// once for a caller that needs both (wakeController, which hands them to blocked's judgement
+// and to silentWorkers). Every reader of these two reads them in one transaction, so one read
+// is one snapshot and two reads would be the same snapshot read twice.
+func (a *Admission) lineFacts(ctx context.Context, tx pgx.Tx) ([]record.Issue, record.LineFacts, error) {
+	issues, err := a.store.LiveIssues(ctx, tx, a.project)
+	if err != nil {
+		return nil, record.LineFacts{}, fmt.Errorf("list admission issues: %w", err)
+	}
+	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
+	if err != nil {
+		return nil, record.LineFacts{}, err
+	}
+	return issues, facts, nil
+}
+
 // blocked is every issue Legion is waiting to start that waits on something else, as the tick
 // notice carries it: the candidates promotion passes over, the children the workflow holds
 // behind an unfinished Dispatch issue, and the parents whose own children are still open
 // (workflow.ChildWaitRows), judged from this transaction's own reads by the function the state's
 // `blocked` is built with (blockers.Blocked), so the controller is told exactly what
-// `legion state` shows.
+// `legion state` shows. It reads the issues and the line facts itself, for a caller that holds
+// neither; the tick reads them once and calls blockedFrom with them.
 func (a *Admission) blocked(ctx context.Context, tx pgx.Tx) ([]record.BlockedIssue, error) {
-	issues, err := a.store.LiveIssues(ctx, tx, a.project)
+	issues, facts, err := a.lineFacts(ctx, tx)
 	if err != nil {
-		return nil, fmt.Errorf("list admission issues: %w", err)
+		return nil, err
 	}
+	return a.blockedFrom(ctx, tx, issues, facts)
+}
+
+// blockedFrom is blocked's judgement over issues and facts the caller has already read. The
+// slots are read here, because they are the one fact of the judgement no other reader of this
+// pass wants.
+func (a *Admission) blockedFrom(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) ([]record.BlockedIssue, error) {
 	slots, err := a.store.Slots(ctx, tx)
 	if err != nil {
 		return nil, fmt.Errorf("list admission slots: %w", err)
-	}
-	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
-	if err != nil {
-		return nil, err
 	}
 	rows, facts, line, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil)
 	if err != nil {
 		return nil, err
 	}
 	return blockers.Blocked(rows, issues, line, record.ChildWaitRows(facts.ChildWaits)), nil
+}
+
+// silentWorkers is every issue of the project whose phase worker is one nothing will prompt, as
+// the tick notice carries it: its process is up and between turns, it holds no task, and its
+// agent's last recorded step is older than the bound this deployment gives a phase worker
+// (UseWorkerSilence, config.Config.WorkerSilence). The rule is workflow.SilentPhaseWorker, the
+// one the minute sweep and the silence handler read, so the controller's list and the
+// `worker-silent` notices the architects were sent can never disagree about which worker is
+// silent.
+//
+// Why the controller is told at all, when the issue's own architect already was: an architect
+// whose own claim is the silent one cannot act on a notice sent to itself, and the controller is
+// the role that holds `fresh_session` and reads the whole project (this root's architect ruled
+// it on 2026-11-12, dispatch://INFRA-3163). The tick carries the list, and no field is added to
+// the state route, so no daemon API contract number is taken for it.
+//
+// What that costs, plainly: record.DecodeOutboxPayload refuses an unknown field, so a daemon of
+// an older release that met a queued row carrying this list would retry that row for ever. It
+// is the cost every notice field of this record has, and the deployment's roll-forward is the
+// answer to it.
+//
+// The read is one batched record.RoleRuns call for every issue at work whose phase has a worker
+// role (workflow.RoleFor), as the repair of a slot with no worker reads its own
+// (resumeSlottedWorkers), and never a call per issue: a tick runs over the whole project. The
+// last step comes from the claim the record holds (record.RoleClaim.Step), because admission
+// holds no claim of the supervisor at all, where the sweep reads the live one. A bound of zero
+// switches the rule off, which is the one reading this makes of its own: with no bound nothing
+// is silent, and the read is not made at all.
+//
+// The list is in issue order so that two ticks over one record name the silent issues in one
+// order, whatever order the live read answered in.
+func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) ([]record.SilentIssue, error) {
+	if a.workerSilence <= 0 {
+		return nil, nil
+	}
+	byKey := make(map[string]record.Issue, len(issues))
+	for _, issue := range issues {
+		byKey[issue.Key] = issue
+	}
+	project, err := claim.ProjectToken(a.project)
+	if err != nil {
+		return nil, err
+	}
+	type worker struct {
+		issue record.Issue
+		root  record.Issue
+		role  claim.Role
+		token claim.Token
+	}
+	var workers []worker
+	var keys []record.RoleRunKey
+	for _, issue := range issues {
+		if issue.Project != a.project {
+			continue
+		}
+		role := workflow.RoleFor(issue.Phase)
+		if role == "" || role == claim.RoleArchitect {
+			continue
+		}
+		// An issue whose work the record does not show under way has no worker that is owed a
+		// turn, so none of its roles can be quiet for the wrong reason. The rule asks this
+		// again of the values it is given; asking it here is what keeps the batched read to
+		// the runs that can answer true.
+		if !record.AtWork(issue, facts.Gates[issue.Tree]) {
+			continue
+		}
+		root, rooted := byKey[issue.Tree]
+		if !rooted || root.Lingers() {
+			continue
+		}
+		// An issue whose key yields no claim token has no run to read, and this list passes
+		// over it rather than failing the whole wake, as the repair of a slot does.
+		token, err := claim.NewToken(project, issue.Key, role)
+		if err != nil {
+			continue
+		}
+		workers = append(workers, worker{issue: issue, root: root, role: role, token: token})
+		keys = append(keys, record.RoleRunKey{Token: token, Issue: issue.Key, Role: role, Generation: issue.Generation})
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	runs, err := a.store.RoleRuns(ctx, tx, keys)
+	if err != nil {
+		return nil, err
+	}
+	now := a.now()
+	var silent []record.SilentIssue
+	for _, held := range workers {
+		run := runs[held.token]
+		lastStep := time.Time{}
+		if run.Claim != nil {
+			lastStep = run.Claim.Step.LastStep()
+		}
+		if !workflow.SilentPhaseWorker(held.issue, held.root, facts.Gates[held.issue.Tree], held.role, run, lastStep, a.workerSilence, now) {
+			continue
+		}
+		silent = append(silent, record.SilentIssue{Issue: held.issue.Key, Role: held.role, LastStep: lastStep,
+			Silent: now.Sub(lastStep).Round(time.Minute).String()})
+	}
+	slices.SortFunc(silent, func(x, y record.SilentIssue) int { return cmp.Compare(x.Issue, y.Issue) })
+	return silent, nil
 }
 
 // Reconcile applies the bounded Dispatch boot read to existing records, then fills newly available

@@ -316,6 +316,14 @@ type Notice struct {
 	// report, so the controller names each there and takes nothing for it. A tick with nothing
 	// blocked carries none.
 	Blocked []BlockedIssue `json:"blocked,omitempty"`
+	// Silent is every issue of the project whose phase worker is one nothing will prompt
+	// (workflow.SilentPhaseWorker, dispatch://INFRA-3163), as admission derives the list
+	// (admit.Admission.silentWorkers). Only a tick controller notice carries it, as Blocked
+	// does: the tick is the turn that posts the day's report, and a tick with nothing silent
+	// carries none. The issue's architect was told each of these by a `worker-silent` notice of
+	// its own; the controller is the second reader, because an architect whose own claim is the
+	// silent one cannot act on a notice sent to itself.
+	Silent []SilentIssue `json:"silent,omitempty"`
 	// Actor is who made the spec decision a design-approved, design-changes-requested or
 	// carried-gate-opened notice reports, or the decision a parked-decision notice relays: the
 	// Dispatch actor as `<kind>:<id>`, a person `user:<login>`. Empty where no person decided:
@@ -408,6 +416,27 @@ func (b BlockedIssue) MarshalJSON() ([]byte, error) {
 		out.BlockedBy = []string{}
 	}
 	return json.Marshal(out)
+}
+
+// SilentIssue is one issue whose phase worker nothing will prompt, as the tick notice above
+// carries it: the issue, the role whose claim is silent, the moment that claim's agent last
+// stepped (supervise.StepRecord.LastStep, never the zero time, which the rule refuses to judge
+// from), and how long it has been quiet. It lives here beside BlockedIssue, below its reader,
+// for the same reason that one does: one shape of the fact, named where every reader of the
+// notice can see it.
+//
+// Silent is text rather than a number of seconds or a time.Duration, and it is
+// time.Duration.String's own text rounded to the minute ("2h30m0s"): the controller reads this
+// list in the day's report, where a reader needs the length at a glance, and the `worker-silent`
+// notice the issue's architect was sent states the same silence the same way (workflow's
+// workerSilentRecord). The minute is the smallest unit any of this is measured in — the sweep
+// that finds a silence runs every minute, and the bound is `worker_silence_minutes` — so no
+// reader is owed the seconds.
+type SilentIssue struct {
+	Issue    string     `json:"issue"`
+	Role     claim.Role `json:"role"`
+	LastStep time.Time  `json:"lastStep"`
+	Silent   string     `json:"silent"`
 }
 
 // CatchUp is what a tree's root architect is told of its tree when its claim is ready at a launch
