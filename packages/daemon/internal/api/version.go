@@ -1118,32 +1118,86 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 80: INFRA-2543 -- the GitHub App installation, and no longer the project's Dispatch repository
+// 85: INFRA-2554 (cybermonklabs/legion) -- every issue of `GET /legion/v1/state` that is not
+// working now carries one rendered answer, `why` (`api.WhyView`): its `state` —
+// `claim_stopped`, `waiting`, `blocked` or `unlisted` — and the `reason`, the sentence a person
+// reads. It is present only for an issue the record holds in the workflow whose sentence
+// renders something, so an issue at work carries no such key, and it sits on the issue beside
+// `waitingLine` and never inside it, because an issue whose claim has stopped can stand in the
+// line or outside it — such a member carries both keys, and reads `claim_stopped`, the state
+// that wins where both hold — and the answer is the same answer for every issue that carries
+// one. Beside it `api.WaitingLineView` gains the waiting line's own fields, for a program that
+// acts on the line rather than reading the sentence: `part` (`returned` or `starting`) and
+// `kind` (`returning`, `answered`, `queued_root` or `first_phase`), the member's `partPlace`
+// and its part's `partLength`, `holdsSlot` — whether it already holds one of the cap's slots,
+// written `false` for a member that does not — `since` for a member of the returned part,
+// `rootRank`, `ownRank` and `rootKey` for a member of the starting part, and `reason`, that
+// member's own rendered sentence. Each is absent where the member has no fact for it, so a
+// returned member names no rank and a starting member no `since`. The two halves take one
+// number because they are one answer read two ways and one pass of the projection renders both
+// from the same facts (internal/projection), so no caller stands between them.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 85 is served every issue without `why` and every member of the line with its
+// `place` and its `length` alone (api's stateFor, withoutWhyAndLineFields), which is the body
+// 58 describes, as a caller below 75 is served it without the nine keys the decided claim and
+// issue records added and without the `contract` mark beside the daemon's block
+// (withoutRecordFields), as a caller below 73 is served it without `claimsToRefresh`, one
+// below 62 the workers without their counts of the moves back, one below 58 the issues with no
+// `waitingLine` at all (withoutWaitingLine), one below 57 the claim views with no `step`, one
+// below 56 the stranded report without its retired entries, one below 55 the issues without
+// the gated steps, one below 53 a body with no wakes waiting, one below 51 the issues without
+// the admission's trees and each issue's tree, one below 49 without the memory draw and one
+// below 46 without the claim views' update rounds; the twelve compose, and every reader from
+// 85 on takes these fields as optional. A plugin from 58 through 84 refuses none of them, as a
+// plugin before one of the earlier contracts above refuses its own: every answer-side schema
+// of `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788, which
+// that package's own test holds it to, so such a plugin reads this state and sees neither the
+// answer nor the line's fields. The strip is still what serves it: a caller that did not ask
+// for these fields is not given them, and a plugin built before #2788 is strict and would
+// refuse the whole body for one of them. Nothing else of this change is on the wire: the
+// record and the projection fill the two shapes above and add no route, and the sentence each
+// renders is text a person reads rather than a shape a reader parses.
+// (This branch took 76 while main held 68, took 84 at the forward merge of 2026-11-12 that
+// brought main in at e98fc56e, which declares 73, and takes 85 now at the second such merge,
+// which brought main in at 9009dc1d, which declares the 75 right above. A reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 143 open pull requests of
+// cybermonklabs/legion at 2026-11-12T13:00Z gives, above 75: 76 (#3830), 77 (#3677), 78
+// (#3708), 79 (#3712), 80 (#3730), 81 (#3659), 82 (#3573), 83 (#2539) and 84 (#3534 and this
+// one before the move). #3534 declares 84 as well, so this branch moves off it; 76 through 83
+// are taken by the heads named above; and 85 is the lowest free number above the base and
+// above every open head, which is the number to take, because a release declaring any of 76 to
+// 84 without these shapes would land first and force the renumber then, which is what
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// records. That reading is of this file at refs/pull/<n>/head for every open pull request, not
+// of a file list: GitHub cuts a pull request's file list short, so one that changes more files
+// than the page holds answers without this path. Read the base's own number and every open
+// pull request again at every forward merge rather than from this line.)
+//
+// 86: INFRA-2543 -- the GitHub App installation, and no longer the project's Dispatch repository
 // mapping, decides which repositories a project works in, so the `repositories` block of
 // `GET /legion/v1/state` stops being that mapping. `mapped` is every repository the daemon
 // serves, the ones the mapping names and the ones the project's own records name, and each entry
 // gains `apps`, the installation of each role App on that repository (`implement` and `review`,
-// both always emitted): that is the answer an operator and a plugin ask of a repository, and no
+// both always written): that is the answer an operator and a plugin ask of a repository, and no
 // reader should have to parse it out of a refusal's prose. `refused` keeps `repo` and `reason`
 // and holds a repository a role App is not installed on, or one whose installation could not be
 // read, and never one for want of a mapping; `withoutWebhookApp` and `caches` cover the
 // repositories the records name beside the mapped ones. `packages/contracts/src/legion-api.ts`
-// mirrors the entry, and its answer side strips a key it does not name, so a plugin from an
-// earlier contract reads this state and loses `apps` rather than refusing the body; the bump is
-// for what a reader takes the block to mean — a plugin built before it reads `mapped` as the
-// project's mapping, which it no longer is, and `refused` as the mapping's leftovers — and the
-// boot gate and `legion probe-image` are what keep daemon and plugin from meeting across it at
-// all. The addressing every pane, pod and controller is launched with moves with the same
-// change: it names the issue's own repository and then the owner accounts the role's App is
-// installed on, in place of the project's repositories, which are no bound on the work any more
-// and would be a whole installation's worth of names (`daemon.RepositoriesClause`).
-// (This branch's own base carried 59, and the forward merge of 2026-11-12 that brought main in
-// carries 75, the entry right above this one. The open pull requests of this repository declared
-// 69 through 79 when the gate was last run on 2026-11-12 — 69 by #2539, #2731 and #3519, 70 by
-// #3573, 71 by #3577, 72 by #3534, 73 by #3536, 74 by #3575, 75 by #3662, 76 by #3718, 77 by
-// #3677, 78 by #3708 and 79 by #3712 — each of them a release that would declare its number
-// without these shapes, so this change takes 80, the number
-// .github/scripts/check-daemon-api-contract.sh named free, as
+// mirrors the entry and reads `apps` as optional, so a plugin of this contract meeting a daemon
+// of an earlier one mid-roll loses that one answer rather than refusing the whole body, and a
+// plugin of an earlier contract loses it the same way, its answer side stripping a key it does
+// not name. The bump is for what a reader takes the block to mean — a plugin built before it
+// reads `mapped` as the project's mapping, which it no longer is, and `refused` as the mapping's
+// leftovers — and the boot gate and `legion probe-image` are what keep daemon and plugin from
+// meeting across it at all. The addressing every pane, pod and controller is launched with moves
+// with the same change: it names the issue's own repository and then the owner accounts the
+// role's App is installed on, in place of the project's repositories, which are no bound on the
+// work any more and would be a whole installation's worth of names
+// (`daemon.RepositoriesClause`).
+// (This branch's own base carried 59; it declared 80 until the forward merge of 2026-11-12 that
+// brought main in at 85, the entry right above this one, so it takes 86, the number
+// .github/scripts/check-daemon-api-contract.sh names free at that merge. Read main's own number
+// and every open pull request's again at the next forward merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says. Read main's own number again at the next merge rather than from this line.)
-const DaemonAPIVersion = 80
+// says.)
+const DaemonAPIVersion = 86
