@@ -707,6 +707,27 @@ func privateMounts() error {
 	return unix.Mount("none", "/", "", unix.MS_REC|unix.MS_PRIVATE, "")
 }
 
+// containDeletions is the cache trimmer's deleter put where it sees no more than a role sees:
+// this process's mounts held to itself, then the roles directory covered by an empty filesystem
+// as prepareRoleNamespace covers it for a role, with /legion left as the container mounted it.
+// It is the same cover and the same clone flags (roleNamespaceAttr) the role generations run
+// under, made for a process that only deletes: a link the kernel follows inside Root.RemoveAll
+// then reaches nothing of another role's credentials, since nothing of them is there to reach
+// (volumedelete.go, which says what that bounds and what it does not).
+//
+// A roles directory that cannot be covered is a refusal rather than a deletion made uncovered:
+// the deleter holds descriptors on the pod's cache directories, and the whole of what it is for
+// is that what it follows out of them reaches only the role's own.
+func containDeletions(rolesDir string) error {
+	if err := privateMounts(); err != nil {
+		return fmt.Errorf("hold the deletions' mounts to themselves: %w", err)
+	}
+	if err := mountTmpfs(rolesDir, "size=1m,mode=0755"); err != nil {
+		return fmt.Errorf("cover %s: %w", rolesDir, err)
+	}
+	return nil
+}
+
 func mountTmpfs(path, options string) error {
 	return unix.Mount("tmpfs", path, "tmpfs", 0, options)
 }

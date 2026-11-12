@@ -16,3 +16,7 @@ var errRoleNamespacesNeedLinux = errors.New("launcher: a role's own namespaces n
 func roleNamespaceAttr() (*syscall.SysProcAttr, error) { return nil, errRoleNamespacesNeedLinux }
 
 func roleInit(context.Context, RoleInitConfig) error { return errRoleNamespacesNeedLinux }
+
+// The deletions' own namespace is the same machinery, so it refuses the same way: a sweep that
+// cannot contain its deletions deletes nothing (volumedelete.go).
+func containDeletions(string) error { return errRoleNamespacesNeedLinux }
