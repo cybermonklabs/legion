@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -140,10 +141,11 @@ type Tokens interface {
 	// before anything is minted, since there is no account to mint on.
 	Token(ctx context.Context, role AppRole, owner string) (Lease, error)
 	// ReadToken is the App's installation token for owner narrowed to reading: contents, pull
-	// requests, Actions and metadata read. A pane holds one for every owner of the project but
-	// the one its issue's repository is under (a configured rename's two owners count as that
-	// one, GitHubCredential), a controller holds one for every owner it has, and the Kubernetes
-	// runtime's provisioning token is one of the implement App for the issue's own owner, which
+	// requests, Actions and metadata read. A pane holds one for every owner its App is
+	// installed on but the one its issue's repository is under (a configured rename's two
+	// owners count as that one, GitHubCredential), a controller holds one for every owner its
+	// App is installed on, and the Kubernetes runtime's provisioning token is one of the
+	// implement App for the issue's own owner, which
 	// every issue pod's workspace-fetch and every repository cache clones with
 	// (implementTokens, internal/daemon). An App on token_command gets what its command's
 	// read-only release holds instead, which the command decides: the secrets broker's is the
@@ -248,14 +250,15 @@ type pendingIdentity struct {
 	err      error
 }
 
-// A Manager answers every interface a caller reaches it through, the optional ones included: a
-// bundle takes the two Forgetters by type assertion (dirEntry), so a method renamed without its
-// interface would leave the Manager silently un-forgotten rather than fail the build.
+// A Manager answers every interface a caller reaches it through, the optional one included: a
+// bundle takes the RefusalForgetter by type assertion (listInstallation's caller is the other),
+// so a method renamed without its interface would leave the Manager silently un-forgotten
+// rather than fail the build.
 var (
 	_ Tokens             = (*Manager)(nil)
+	_ OwnerInstallations = (*Manager)(nil)
 	_ Forgetter          = (*Manager)(nil)
 	_ RefusalForgetter   = (*Manager)(nil)
-	_ ReadScopeForgetter = (*Manager)(nil)
 )
 
 // New makes an App token manager. Config.Load resolves command and secret key sources before
@@ -345,47 +348,24 @@ func (m *Manager) Forget(role AppRole, owner string) {
 
 // RefusalForgetter drops the narrowing refusal a token source remembers for one owner's read
 // lease, so the next ask of that scope reaches GitHub rather than the memory
-// (Manager.ForgetNarrowingRefusal). It is optional, as Forgetter is: a caller reaches it through
-// a type assertion on its Tokens (dirEntry), so a test fake and a harness that implement Tokens
-// alone keep working — a source that remembers no refusal has none to drop.
+// (Manager.ForgetNarrowingRefusal). It is optional, as Forgetter is: a source that remembers no
+// refusal has none to drop, so a test fake and a harness that implement Tokens alone keep
+// working.
 type RefusalForgetter interface {
 	ForgetNarrowingRefusal(role AppRole, owner string)
 }
 
 // ForgetNarrowingRefusal drops the narrowing refusal remembered for role's read lease on owner
 // (lease, narrowingRefusalWindow), and nothing else: no lease, and no other scope's refusal. It
-// is for the caller that knows that one memory is stale — a directory's lease asked for again
-// (dirEntry) — where Forget, which drops every lease and every refusal of the owner, would
-// throw away a token that is good and make the owner's other scope mint again.
+// is for the caller that knows that one memory is stale — the token-mode mapping check, which
+// asks whether the App's installation holds a repository and must have GitHub's answer rather
+// than the memory of a refusal met before an operator fixed the grant (listInstallation) —
+// where Forget, which drops every lease and every refusal of the owner, would throw away a
+// token that is good and make the owner's other scope mint again.
 func (m *Manager) ForgetNarrowingRefusal(role AppRole, owner string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.refusals, leaseScope(true, role, owner))
-}
-
-// ReadScopeForgetter drops what a token source holds for one owner's read scope — the lease it
-// cached and the narrowing refusal it remembers, both — so the next ask of that scope is
-// GitHub's answer of this moment and not an answer of the hour before it
-// (Manager.ForgetReadScope). It is optional, as Forgetter and RefusalForgetter are: a caller
-// reaches it through a type assertion on its Tokens (dirEntry), so a test fake and a harness
-// that implement Tokens alone keep working — a source that caches nothing has nothing to drop,
-// and every ask it is made is GitHub's answer already.
-type ReadScopeForgetter interface {
-	ForgetReadScope(role AppRole, owner string)
-}
-
-// ForgetReadScope drops the lease cached for role's read lease on owner and the narrowing
-// refusal remembered for it, and nothing else: no write lease, and no other owner's read scope.
-// It is for the caller whose question is not what a token it holds may do but what the
-// installation answers now, which a cached lease cannot say (dirEntry, INFRA-513). Forget would
-// throw away every good token of the owner, and ForgetNarrowingRefusal alone would leave the
-// ask answered from the cache, which is the answer that misled it.
-func (m *Manager) ForgetReadScope(role AppRole, owner string) {
-	key := leaseScope(true, role, owner)
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.leases, key)
-	delete(m.refusals, key)
 }
 
 // scope is one lease's identity, and the key every lease is cached, awaited and warned under:
@@ -433,17 +413,18 @@ func (r mintRequest) scope() scope { return leaseScope(r.read, r.role, r.owner) 
 // scope that succeeds drops what was remembered of it.
 //
 // The memory answers the ask that would repeat a refusal, never one that already knows better.
-// A caller holding what the window cannot know — a directory's lease asked for again after
-// something an operator changed (dirEntry) — drops that one scope's memory before it asks
-// (ForgetNarrowingRefusal), so what it is served is GitHub's answer now.
+// A caller holding what the window cannot know — the token-mode mapping check, which asks
+// whether an installation holds a repository after an operator may have changed the grant
+// (listInstallation) — drops that one scope's memory before it asks (ForgetNarrowingRefusal),
+// so what it is served is GitHub's answer now.
 //
 // What a cached answer is worth is worth saying, since a caller may read such an ask as what
 // its installation does: a lease served from here says a token of that scope was minted within
 // the hour, not that GitHub mints one now. An App an account uninstalls leaves every lease of
-// that owner cached and good-looking until its expiry nears (refreshWindow), which is why a
-// caller that reads a cached answer as the installation's own and is then refused the next ask
-// drops the scope whole — the lease with the refusal — and asks again (ForgetReadScope,
-// dirEntry, INFRA-513).
+// that owner cached and good-looking until its expiry nears (refreshWindow), so a bundle built
+// in that hour may hold a directory whose token GitHub would no longer mint; what the bundle
+// does not do is guess, since the owners it holds a directory for at all are read from GitHub
+// at every build (InstalledOwners, credential.go).
 //
 // A mint that succeeds also drops every lease the cache holds that has expired. The cache is
 // keyed by the owner a lease is minted on, so a mapping that changes over a long-lived daemon's
@@ -659,6 +640,61 @@ var ErrNarrowingRefused = errors.New("the installation does not hold the permiss
 // ErrNotInstalled is a mint refused because the App has no installation on the owner: an answer
 // about the owner, not GitHub's trouble, which a retry would only repeat.
 var ErrNotInstalled = errors.New("github_app_not_installed")
+
+// OwnerInstallations reads the owner accounts an App is installed on. It is what decides the
+// directories of a role's gh bundle (credential.go's GitHubCredential and ControllerCredential):
+// the installation is the whole of a role's reach, since every token this package mints reaches
+// every repository its installation holds and names no repository at all (INFRA-2543), so the
+// accounts the App is installed on are the owners a bundle can hold a directory for. It is an
+// interface of its own, as Tokens is, so a bundle can be built over a fake in a test and over
+// the Manager in the daemon.
+type OwnerInstallations interface {
+	InstalledOwners(ctx context.Context, role AppRole) ([]string, error)
+}
+
+// InstalledOwners is the owner accounts role's App is installed on, lowercased and sorted, read
+// from GitHub at the moment of the call: GET /app/installations under the App's own JWT, every
+// page of it (discoverInstallations), or, in token mode, the accounts the command's release of
+// every installation names (runTokenCommand with no owner, which records them as this role's
+// installations itself).
+//
+// It asks GitHub every time rather than answering from the installations the Manager has found
+// before, because its caller builds a bundle from the answer: an owner the account removed the
+// App from must stop minting at the next bundle, and one that installed it must mint at that
+// same bundle, with no cached set and no timer between the account's change and the role's
+// reach. What it read replaces the installation ids the Manager holds for the role, so a mint
+// that follows reaches the installation GitHub names now and an owner no longer listed is
+// looked for again rather than minted on a stale id.
+func (m *Manager) InstalledOwners(ctx context.Context, role AppRole) ([]string, error) {
+	app, err := m.app(role)
+	if err != nil {
+		return nil, err
+	}
+	found := map[string]string{}
+	if app.TokenCommand != "" {
+		released, err := m.runTokenCommand(ctx, app, mintRequest{role: role})
+		if err != nil {
+			return nil, err
+		}
+		for owner := range released {
+			found[owner] = owner
+		}
+	} else if found, err = m.discoverInstallations(ctx, app); err != nil {
+		return nil, err
+	}
+	installations := make(map[string]string, len(found))
+	owners := make([]string, 0, len(found))
+	for owner, installation := range found {
+		key := strings.ToLower(owner)
+		installations[key] = installation
+		owners = append(owners, key)
+	}
+	m.mu.Lock()
+	m.installations[role] = installations
+	m.mu.Unlock()
+	slices.Sort(owners)
+	return owners, nil
+}
 
 func (m *Manager) discoverInstallations(ctx context.Context, app config.GitHubApp) (map[string]string, error) {
 	jwt, err := m.generateJWT(app.AppID, app.PrivateKey, m.now())

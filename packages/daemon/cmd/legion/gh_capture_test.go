@@ -444,7 +444,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{nil, []string{"pr", "view", "--json", "title", "https://github.com/sjawhar/legion/pull/2"}, "sjawhar", ""},
 		{nil, []string{"api", "repos/acme/widgets"}, "acme", ""},
 		{nil, []string{"api", "graphql", "-f", "query={viewer{login}}"}, "acme", ""},
-		{nil, []string{"api", "repos/other/thing"}, "", `"other" is not an owner of this project`},
+		{nil, []string{"api", "repos/other/thing"}, "", `the role's GitHub App is not installed on "other"`},
 		{nil, []string{"pr", "view", "1", "-R", "sjawhar/legion", "--bogus"}, "", `"--bogus" is no option`},
 	} {
 		check(home, tc.env, tc.args, tc.owner, tc.refuse)
@@ -486,7 +486,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{otherClone, nil, []string{"repo", "view", "--json", "nameWithOwner"}, "sjawhar", ""},
 		{otherClone, nil, []string{"api", "repos/{owner}/{repo}"}, "sjawhar", ""},
 		{otherClone, nil, []string{"-R", "acme/widgets", "pr", "view", "1", "--json", "title"}, "acme", ""},
-		{outsideClone, nil, []string{"pr", "list", "--json", "title"}, "", `"octocat" is not an owner of this project`},
+		{outsideClone, nil, []string{"pr", "list", "--json", "title"}, "", `the role's GitHub App is not installed on "octocat"`},
 		{upstream, nil, []string{"pr", "list", "--json", "title"}, "", `remote "upstream" (git@github.com:sjawhar/legion.git)`},
 		{setDefault, nil, []string{"pr", "list", "--json", "title"}, "", "remote.origin.gh-resolved sjawhar/legion"},
 		// Round 4's: remote spellings gh reads as github.com's (deep 2, quality A, final B1).
@@ -501,7 +501,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{otherClone, nil, []string{"issue", "close", "3", "--duplicate-of", "https://github.com/acme/widgets/issues/1"}, "", "more than one owner||is no option"},
 		{otherClone, nil, []string{"repo", "sync", "--source", "acme/widgets"}, "", "more than one owner"},
 		{otherClone, nil, []string{"issue", "develop", "3", "--branch-repo", "acme/widgets", "--name", "x"}, "", "more than one owner"},
-		{outsideClone, nil, []string{"pr", "comment", "1", "--body", "https://github.com/sjawhar/legion/pull/2"}, "", `"octocat" is not an owner of this project`},
+		{outsideClone, nil, []string{"pr", "comment", "1", "--body", "https://github.com/sjawhar/legion/pull/2"}, "", `the role's GitHub App is not installed on "octocat"`},
 		{home, []string{"GH_REPO=acme/widgets"}, []string{"issue", "close", "3", "--duplicate-of", "https://github.com/sjawhar/legion/issues/5"}, "", "more than one owner||is no option"},
 		{issueWorkspace, []string{"GH_REPO=sjawhar/legion"}, []string{"project", "link", "1", "--owner", "acme"}, "", "more than one owner"},
 		// Round 5's: a passthrough leaf's repository after `--` (deep 1); repo set-default's
@@ -511,7 +511,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{issueWorkspace, nil, []string{"repo", "fork", "--org", "acme", "--", "sjawhar/legion"}, "", "more than one owner"},
 		{issueWorkspace, nil, []string{"repo", "clone", "--", "sjawhar/legion"}, "sjawhar", ""},
 		{issueWorkspace, nil, []string{"repo", "set-default", "sjawhar/legion"}, "", "more than one owner"},
-		{outsideClone, nil, []string{"pr", "comment", "sjawhar/legion#2", "--body", "hi"}, "", `"octocat" is not an owner of this project`},
+		{outsideClone, nil, []string{"pr", "comment", "sjawhar/legion#2", "--body", "hi"}, "", `the role's GitHub App is not installed on "octocat"`},
 		{issueWorkspace, nil, []string{"pr", "view", "sjawhar/legion#2", "--json", "title"}, "acme", ""},
 		{issueWorkspace, nil, []string{"pr", "view", "https://github.com/sjawhar/legion/issues/5", "--json", "title"}, "", "more than one owner"},
 		{otherClone, nil, []string{"pr", "view", "https://github.com/acme/widgets/tree/x", "--json", "title"}, "", "more than one owner"},

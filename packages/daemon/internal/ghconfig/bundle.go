@@ -45,10 +45,15 @@ func IsOwner(owner string) bool { return ownerLogin.MatchString(owner) }
 // name splits it exactly.
 //
 // HostsFile and ConfigFile are no repository directory, though both are repository names GitHub
-// allows: an owner's own two gh files sit beside its repositories' directories, so a bundle
-// holding `<owner>/hosts.yml` would have WriteBundle make a directory where that owner's
-// hosts.yml is and fail every directory of the bundle. A repository of either name is left out
-// of the bundle instead (appauth's bundleDirs).
+// allows: an owner's own two gh files sit beside a repository directory, so a bundle holding
+// `<owner>/hosts.yml` would have WriteBundle make a directory where that owner's hosts.yml is
+// and fail every directory of the bundle.
+//
+// No bundle this daemon builds holds a repository directory at all: a role's token reaches every
+// repository its App's installation holds, so one directory per owner carries it (appauth's
+// bundleDirs). The `<owner>/<repo>` shape stays a name this answers for, because a pod launched
+// before that change holds such a directory on its disk, which `legion git-credential` reads and
+// the Sandbox drift check reports (cmd/legion's repositoryGHConfigDir, sandbox's movedGhDirs).
 func IsDirName(name string) bool {
 	owner, repo, nested := strings.Cut(name, "/")
 	if !IsOwner(owner) {

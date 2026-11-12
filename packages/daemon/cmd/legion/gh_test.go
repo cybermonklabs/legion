@@ -886,6 +886,10 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		{[]string{"api", "repos/sjawhar/legion/pulls/1", "--jq", ".title"}, filepath.Join(root, "sjawhar", "legion")},
 		{[]string{"issue", "transfer", "3", "sjawhar/legion", "-R", "sjawhar/legion-smoke"}, filepath.Join(root, "sjawhar")},
 		{[]string{"repo", "list", "sjawhar"}, filepath.Join(root, "sjawhar")},
+		// A repository of an owner the project maps nothing of: the bundle holds that owner's
+		// directory because the role's App is installed on the account, and the token in it
+		// reaches every repository of that installation.
+		{[]string{"pr", "create", "-R", "theorem-labs/agent-infra", "--fill"}, filepath.Join(root, "theorem-labs")},
 	} {
 		code, stdout, stderr := legionGh(t, env, tc.args...)
 		want := stub + "|" + tc.dir + "|" + strings.Join(tc.args, " ") + "\n" + wantEnv
@@ -898,8 +902,8 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"pr", "view", "https://github.com/other/thing/pull/1"}, `"other" is not an owner of this project`},
-		{[]string{"api", "repos/Other/thing"}, `"other" is not an owner of this project`},
+		{[]string{"pr", "view", "https://github.com/other/thing/pull/1"}, `the role's GitHub App is not installed on "other"`},
+		{[]string{"api", "repos/Other/thing"}, `the role's GitHub App is not installed on "other"`},
 		{[]string{"pr", "view", "1", "--bogus"}, `"--bogus" is no option`},
 		{[]string{"issue", "view", "1"}, "cannot read `gh issue view`"},
 		{[]string{"co", "1"}, `"co" is a gh alias`},

@@ -31,11 +31,14 @@ var gitCredentialStdin io.Reader = os.Stdin
 // request's path names (credential.useHttpPath, which every shared clone sets): its first segment
 // is the owner and its second the repository, and the token comes from the hosts.yml in that
 // repository's own directory of LEGION_GH_OWNERS_DIR, `<owner>/<repo>`, where the bundle holds
-// one, from the owner's directory otherwise (repositoryGHConfigDir), and from nothing else. A
-// repository the bundle holds no directory for — the one the role writes to, every repository of
-// an owner it writes to none of, and a name no bundle directory can hold — is the owner's
-// directory's to answer. Any other host or protocol, a request with no path, a path whose owner
-// is no GitHub login or one the bundle holds no directory for, an unset LEGION_GH_OWNERS_DIR,
+// one, from the owner's directory otherwise (repositoryGHConfigDir), and from nothing else. The
+// bundle a daemon builds now holds one directory per owner the role's App is installed on and
+// no repository directory at all, so the owner's directory is what answers every repository of
+// that owner; a pod launched before that change projects the repository directories of its own
+// launch, which is what the first step still looks for. Any other host or protocol, a request
+// with no path, a path whose owner
+// is no GitHub login or one the bundle holds no directory for — an owner the role's App is not
+// installed on — an unset LEGION_GH_OWNERS_DIR,
 // and a hosts.yml with no token answer nothing, exit 1, naming why on stderr, and git, which every
 // shared clone tells credential.interactive=false, then fails rather than prompts. `store` and
 // `erase` change nothing: the daemon is the one writer of the gh files.
@@ -126,16 +129,22 @@ func readCredentialRequest(r io.Reader) map[string]string {
 }
 
 // repositoryGHConfigDir is the gh directory the bundle under ownersDir answers for owner's
-// repository repo: the repository's own, `<owner>/<repo>`, whose token reaches that one
-// repository, where the bundle holds it, and the owner's own otherwise. It normalizes the name
-// for a directory (ghRepositoryName), so a caller — the gh wrapper's target
-// (gh_selectors.go) as much as a git credential request's path — may hand it as it was given
-// it; the gh wrapper keys a repository by that same name as it reads a command, so two
+// repository repo: the repository's own, `<owner>/<repo>`, where the bundle holds it, and the
+// owner's own otherwise. The bundle this daemon builds holds no repository directory at all —
+// a token reaches every repository its installation holds, so an owner's directory answers for
+// every repository of that owner (appauth.GitHubCredential) — and the two-step pick stays all
+// the same: a pod launched by a daemon before this change projects the directories of its
+// launch, which hold repository directories, and the step costs one stat.
+//
+// It normalizes the name for a directory (ghRepositoryName), so a caller — the gh wrapper's
+// target (gh_selectors.go) as much as a git credential request's path — may hand it as it was
+// given it; the gh wrapper keys a repository by that same name as it reads a command, so two
 // spellings of one repository are one repository, and normalizing it again here changes
 // nothing for any name GitHub holds.
 // A repo no bundle directory could be named for (ghconfig.IsDirName) is one
-// the bundle holds none for, so it answers the owner's rather than refusing. An owner the bundle
-// holds no directory for at all is refused (ownerGHConfigDir): it is no owner of this project.
+// the bundle holds none for, so it answers the owner's rather than refusing. An owner the
+// bundle holds no directory for at all is refused (ownerGHConfigDir): the role's App is not
+// installed on it.
 func repositoryGHConfigDir(ownersDir, owner, repo string) (string, error) {
 	if name := owner + "/" + ghRepositoryName(repo); repo != "" && ghconfig.IsDirName(name) {
 		if dir := ghconfig.Dir(ownersDir, name); isGHConfigDir(dir) {
@@ -154,12 +163,14 @@ func ghRepositoryName(repo string) string {
 	return strings.TrimSuffix(strings.ToLower(repo), ".git")
 }
 
-// ownerGHConfigDir is owner's gh directory of the bundle under ownersDir, refused when the bundle
-// holds none: owner is then no owner of this project.
+// ownerGHConfigDir is owner's gh directory of the bundle under ownersDir, refused when the
+// bundle holds none: the bundle holds one directory per owner the role's App is installed on
+// (appauth.GitHubCredential), so a name it does not hold is an account that App has no
+// installation on, and no token of this bundle reaches anything of it.
 func ownerGHConfigDir(ownersDir, owner string) (string, error) {
 	dir := ghconfig.Dir(ownersDir, owner)
 	if !isGHConfigDir(dir) {
-		return "", fmt.Errorf("%q is not an owner of this project: %s holds no gh directory for it", owner, ownersDir)
+		return "", fmt.Errorf("the role's GitHub App is not installed on %q: %s holds no gh directory for it", owner, ownersDir)
 	}
 	return dir, nil
 }

@@ -942,14 +942,21 @@ func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backen
 		opts := tmuxOptions(cfg, project, launchers, providerEnvDir, dispatchTokenFile, log)
 		opts.StreamAddress, opts.Conns = streamAddress, listener
 		if tokens != nil {
-			// The one record of what the mints found GitHub refuses, shared by both credentials
-			// as the Kubernetes runtime's three share one (appauth.LeftOut, kubernetes.go's
-			// sandboxRuntime): a pane projects nothing, so nothing reads it here, and a
-			// directory left out of one pane's bundle is left out of the next pane's by the
-			// mint, not by this record.
-			left := appauth.NewLeftOut()
-			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, repos, cfg.RepositoryRenames, left, log), gh
-			opts.ControllerCredential = appauth.ControllerCredential(tokens, repos, cfg.RepositoryRenames, left, log)
+			installations, ok := tokens.(appauth.OwnerInstallations)
+			if !ok {
+				return nil, fmt.Errorf("the GitHub App token source answers no App installations, " +
+					"which every pane's gh bundle holds one directory per owner of")
+			}
+			// The two records the credentials write, shared by both as the Kubernetes runtime's
+			// three share them (appauth.Installed and appauth.LeftOut, kubernetes.go's
+			// sandboxRuntime): a pane projects nothing and nothing compares one, so nothing
+			// reads either here — a directory left out of one pane's bundle is left out of the
+			// next pane's by the mint, not by a record — and they are made all the same, since
+			// the credentials write to them and a nil record is the API route's case, not a
+			// runtime's.
+			installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
+			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, installations, repos, cfg.RepositoryRenames, installed, left, log), gh
+			opts.ControllerCredential = appauth.ControllerCredential(tokens, installations, repos, cfg.RepositoryRenames, installed, left, log)
 			opts.ClaimRepository = claimRepository(st.ClaimIssue, repository)
 		}
 		rt, err := tmux.New(opts)

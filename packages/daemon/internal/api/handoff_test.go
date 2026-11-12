@@ -51,6 +51,13 @@ func (t handoffTokens) ReadToken(_ context.Context, role appauth.AppRole, owner 
 	return lease, nil
 }
 
+// InstalledOwners is the owner accounts each App is installed on, which the controller's gh
+// bundle reads from GitHub at every build (appauth.OwnerInstallations): the two accounts these
+// harnesses' project serves repositories under.
+func (handoffTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return []string{"acme", "sjawhar"}, nil
+}
+
 // handoffGitHub is GitHub's REST API for one repository, acme/widgets unless a test names another
 // (repo), as a completion reads it: READY's reads of pull request #42 on main, and the
 // implementer's completion's list of the open pull requests on its branch, which lists #42 while

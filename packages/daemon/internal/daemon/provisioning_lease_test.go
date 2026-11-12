@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"maps"
 	"net/http"
 	"strings"
@@ -190,9 +189,12 @@ func provisioningRefusal(w http.ResponseWriter) {
 //   - one not granted Actions: the mint asks for what the installation is granted of the reading
 //     set, so the one request leaves actions out and the adapter is served that token, with no
 //     second call;
-//   - one that refuses the reading request: the adapter falls back to the App's own write token
-//     for that owner, the one fallback there is, and says so once for that owner;
-//   - one in GitHub's trouble (a 500): the error is returned as it came, with no fallback mint and
+//   - one that refuses the reading request: the refusal is returned as it came and nothing else
+//     is minted. It once fell back to the App's own write token for that owner, from when a
+//     request named the repository and a 422 could mean the installation did not reach it; no
+//     request names a repository now (INFRA-2543), so a 422 is a permission the account has not
+//     granted, which a wider request is refused for just the same;
+//   - one in GitHub's trouble (a 500): the error is returned as it came, with no second mint and
 //     nothing logged.
 func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 	const (
@@ -262,15 +264,9 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 				fmt.Fprint(w, `{"message":"Server Error"}`)
 			}},
 	)
-	var logged syncBuffer
 	// The adapter as sandboxRuntime builds it, with the identity serving map of a deployment that
 	// configures no rename.
-	adapter := newImplementTokens(github.tokens, func(repo ghrepo.Repository) ghrepo.Repository { return repo },
-		slog.New(slog.NewJSONHandler(&logged, nil)))
-	fallbacks := func() []map[string]any {
-		t.Helper()
-		return loggedLines(t, logged.String(), "refuses a read-only provisioning token")
-	}
+	adapter := newImplementTokens(github.tokens, func(repo ghrepo.Repository) ghrepo.Repository { return repo })
 	ctx := context.Background()
 
 	// The request carries the reading permissions, and that token is what a pod clones with.
@@ -300,47 +296,21 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 		t.Fatalf("the token request asked for %v, want %v: the reading set without actions", requests[0].permissions, withoutActions)
 	}
 
-	// An installation that refuses the reading request: the App's own write token on that
-	// owner is the one fallback, said once.
+	// An installation that refuses the reading request: the refusal is the adapter's answer, and
+	// the one request is all GitHub is asked.
 	token, err = adapter.Token(ctx, refusedRepo)
-	if err != nil || token != "own-installation-token" {
-		t.Fatalf("the token for %s = %q, %v; want the App's own write token", refusedRepo, token, err)
+	if !appauth.NarrowingRefused(err) || token != "" {
+		t.Fatalf("the token for %s = %q, %v; want the refusal returned and no token", refusedRepo, token, err)
 	}
 	requests = github.requestsTo(refusedInstallation)
-	if len(requests) != 2 {
-		t.Fatalf("%d token requests for %s, want the read mint and the fallback: %+v", len(requests), refusedRepo, requests)
+	if len(requests) != 1 {
+		t.Fatalf("%d token requests for %s, want the read mint alone: %+v", len(requests), refusedRepo, requests)
 	}
 	if !maps.Equal(requests[0].permissions, readingSet) {
-		t.Fatalf("the first token request asked for %v, want the reading set %v", requests[0].permissions, readingSet)
-	}
-	if !maps.Equal(requests[1].permissions, writeSet) {
-		t.Fatalf("the fallback token request asked for %v, want the App's write set %v", requests[1].permissions, writeSet)
-	}
-	lines := fallbacks()
-	if len(lines) != 1 {
-		t.Fatalf("%d fallback lines, want exactly one: %s", len(lines), logged.String())
-	}
-	if lines[0]["owner"] != refusedOwner || lines[0]["level"] != "WARN" {
-		t.Fatalf("the fallback line = %v, want a WARN naming %s", lines[0], refusedOwner)
+		t.Fatalf("the token request asked for %v, want the reading set %v", requests[0].permissions, readingSet)
 	}
 
-	// The same owner provisioned again says nothing more, for the life of the process. The lease
-	// the first call cached is dropped first, so this call really mints again (appauth's Forget,
-	// as TestForgetMakesTheNextTokenAndReadTokenMintAgain uses it): served from the cache it
-	// would make no GitHub request at all and prove nothing about the once-per-owner rule.
-	github.tokens.Forget(appauth.Implement, refusedOwner)
-	token, err = adapter.Token(ctx, refusedRepo)
-	if err != nil || token != "own-installation-token" {
-		t.Fatalf("the second token for %s = %q, %v; want the App's own write token again", refusedRepo, token, err)
-	}
-	if again := github.requestsTo(refusedInstallation); len(again) != 4 {
-		t.Fatalf("%d token requests for %s after Forget, want the two of each call: %+v", len(again), refusedRepo, again)
-	}
-	if lines := fallbacks(); len(lines) != 1 {
-		t.Fatalf("%d fallback lines after the second mint for the same owner, want the first one alone: %s", len(lines), logged.String())
-	}
-
-	// GitHub's trouble is returned as it came: no fallback mint, and nothing logged.
+	// GitHub's trouble is returned as it came, and no second mint is made.
 	token, err = adapter.Token(ctx, flakyRepo)
 	var transient *appauth.TransientError
 	if !errors.As(err, &transient) || token != "" {
@@ -355,19 +325,15 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 	}
 	for _, request := range requests {
 		if request.permissions["contents"] != "read" {
-			t.Fatalf("a token request for %s asked for %v, want no fallback to the App's write token: %+v", flakyRepo, request.permissions, requests)
+			t.Fatalf("a token request for %s asked for %v, want no mint of the App's write token: %+v", flakyRepo, request.permissions, requests)
 		}
-	}
-	if lines := fallbacks(); len(lines) != 1 {
-		t.Fatalf("%d fallback lines after GitHub's trouble, want only the refused owner's: %s", len(lines), logged.String())
 	}
 }
 
 // A 422 carrying GitHub's rate limit is GitHub's trouble and not its answer about the
-// installation, so the provisioning read is never softened into the App's own write token for
-// it: a rate limit would otherwise hand every pod of that owner the widest credential this issue
-// narrows, for as long as the limit lasts. The adapter returns the trouble, makes no fallback
-// mint and says nothing; the next provisioning asks again.
+// installation, and the adapter tells the two apart so that a caller reading its failure reads
+// a rate limit as nothing about what the account grants: the trouble is returned as it came,
+// and the next provisioning asks again.
 func TestARateLimited422OfTheProvisioningReadIsNoFallbackToTheWriteToken(t *testing.T) {
 	const (
 		limitedOwner        = "acme-rate-limited"
@@ -385,9 +351,7 @@ func TestARateLimited422OfTheProvisioningReadIsNoFallbackToTheWriteToken(t *test
 				fmt.Fprint(w, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`)
 			}},
 	)
-	var logged syncBuffer
-	adapter := newImplementTokens(github.tokens, func(repo ghrepo.Repository) ghrepo.Repository { return repo },
-		slog.New(slog.NewJSONHandler(&logged, nil)))
+	adapter := newImplementTokens(github.tokens, func(repo ghrepo.Repository) ghrepo.Repository { return repo })
 
 	token, err := adapter.Token(context.Background(), limitedRepo)
 	var transient *appauth.TransientError
@@ -399,10 +363,7 @@ func TestARateLimited422OfTheProvisioningReadIsNoFallbackToTheWriteToken(t *test
 	}
 	for _, request := range github.requestsTo(limitedInstallation) {
 		if request.permissions["contents"] != "read" {
-			t.Fatalf("a token request asked for %v, want no fallback to the App's write token", request.permissions)
+			t.Fatalf("a token request asked for %v, want the reading lease and no second mint", request.permissions)
 		}
-	}
-	if lines := loggedLines(t, logged.String(), "refuses a read-only provisioning token"); len(lines) != 0 {
-		t.Errorf("%d fallback lines, want none: %s", len(lines), logged.String())
 	}
 }

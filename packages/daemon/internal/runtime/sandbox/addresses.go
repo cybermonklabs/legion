@@ -405,18 +405,16 @@ func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress 
 // App's installation does not reach is one its own `gh` reaches all the same, so a controller
 // pod without that owner's directory has drifted and is replaced by its next launch.
 //
-// Owner directories alone are compared, on both sides (ghOwnerDirs). A bundle built now holds a
-// `<owner>/<repo>` directory for each other repository the pod's recorded owner and the owner
-// whose installation serves its repository serve, and a pod that
-// lacks one of those is not a pod to replace: a repository the mapping gains under another owner
-// is reached through that owner's directory, whose read lease the refresher re-mints over the
-// repositories the mapping serves now, and one it gains under the pod's own write owner is read
-// through that owner's directory too, whose lease names the pod's own repository alone and so
-// does not reach it, until the pod is replaced for a reason of its own and the issue's next pod
-// projects it. Were a repository directory read as an address, a repository added to the mapping
-// would replace every running pod of that owner at once.
-// An owner's own directory is the other case: a pod without it holds no token of that owner at
-// all.
+// Owner directories alone are compared, on both sides (ghOwnerDirs). A bundle this daemon
+// builds holds none but owner directories: a lease reaches every repository its installation
+// holds, so there is nothing narrower for a directory to stand for (appauth.GitHubCredential,
+// INFRA-2543). A pod holding a `<owner>/<repo>` directory was launched before that change and
+// has drifted on that alone — the names ghOwnerDirs drops are the second reason below, which
+// names the directory — since its gh holds a token that reaches one repository where the
+// bundle of a pod created now holds its owner's, which reaches every repository of that
+// installation.
+// An owner's own directory is the first reason: a pod without it holds no token of that owner
+// at all.
 //
 // The pod's own repository is still read from its workspace fetch (fetchRepository), and a pod
 // that fetches none — the controller's — asked for with the zero Repository, since the owner
@@ -448,17 +446,25 @@ func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, b
 		}
 	}
 	slices.Sort(held)
-	held = ghOwnerDirs(held)
+	owned := ghOwnerDirs(held)
+	// A `<owner>/<repo>` directory is no bundle of this daemon's: the pod was launched by one
+	// that still cut a directory per repository, and its token reaches that repository where
+	// the owner's own directory of a bundle built now reaches every repository of the
+	// installation. The names ghOwnerDirs drops are exactly those.
+	if repositories := slices.DeleteFunc(slices.Clone(held), func(dir string) bool { return !strings.Contains(dir, "/") }); len(repositories) > 0 {
+		return movedAddress{where: name + " holds a repository directory", held: ghDirsName(repositories),
+			handed: "the owner directories alone"}, true
+	}
 	repo, _ := fetchRepository(pod)
 	served := ghOwnerDirs(r.gitHubDirs(repo, podAppRoles(podKindFor(role))))
 	lacking := slices.ContainsFunc(served, func(dir string) bool {
-		_, found := slices.BinarySearch(held, dir)
+		_, found := slices.BinarySearch(owned, dir)
 		return !found
 	})
 	if !lacking {
 		return movedAddress{}, false
 	}
-	return movedAddress{where: name, held: ghDirsName(held), handed: ghDirsName(served)}, true
+	return movedAddress{where: name, held: ghDirsName(owned), handed: ghDirsName(served)}, true
 }
 
 // podAppRoles are the GitHub Apps a pod of kind holds a bundle of, each named once

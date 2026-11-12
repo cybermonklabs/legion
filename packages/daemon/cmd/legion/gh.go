@@ -23,15 +23,19 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // runGh is `legion gh`, the gh a pane or pod runs. It reads the repository the command acts on,
 // and its owner, as gh resolves them (ghTargetOf) and execs the real gh (LEGION_GH_PATH) as `gh`
 // with its arguments untouched and GH_CONFIG_DIR set to a gh directory under
-// LEGION_GH_OWNERS_DIR: the repository's own, `<owner>/<repo>`, whose token reaches that one
-// repository, when every selector of the command named that one repository and the bundle holds
-// its directory, and the owner's otherwise (repositoryGHConfigDir) — a command naming no
-// repository, one naming two repositories of the one owner, one where a selector named the owner
-// alone beside a repository, and one whose repository the bundle holds no directory for, which
-// is every repository of an owner the role writes to one of. A command naming no owner at all,
+// LEGION_GH_OWNERS_DIR: the repository's own, `<owner>/<repo>`, when every selector of the
+// command named that one repository and the bundle holds its directory, and the owner's
+// otherwise (repositoryGHConfigDir) — a command naming no repository, one naming two
+// repositories of the one owner, one where a selector named the owner alone beside a
+// repository, and one whose repository the bundle holds no directory for, which the bundle a
+// daemon builds now holds for every repository: it holds one directory per owner the role's
+// App is installed on, whose token reaches every repository that installation holds, and a
+// repository directory only in the projection of a pod launched before that change. A command
+// naming no owner at all,
 // in a working directory whose git remotes name none, keeps GH_CONFIG_DIR, the issue's owner's.
 // A command it cannot read for certain, one naming two owners, and one naming an owner the
-// bundle holds no directory for are refused, exit 2, naming why, and the real gh never runs: no
+// bundle holds no directory for — an owner the role's App is not installed on — are refused,
+// exit 2, naming why, and the real gh never runs: no
 // token but the target repository's or its owner's is ever sent.
 //
 // The git gh runs itself (a clone, a fetch of a fork's parent, `pr checkout`) authenticates

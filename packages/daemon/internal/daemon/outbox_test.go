@@ -2515,12 +2515,24 @@ func (t outboxTokens) ReadToken(context.Context, appauth.AppRole, string) (appau
 	return appauth.Lease{Token: "outbox-token-read", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
+// InstalledOwners is the owners each App is installed on, which a bundle reads from GitHub at
+// every build (appauth.OwnerInstallations): the one account these rigs' project serves its
+// repository under.
+func (outboxTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return []string{"legion"}, nil
+}
+
 // legionRepos is a project whose one repository is legion/legion, as the sandbox rigs here name
-// it, and legionDirs the gh directories a bundle built over it holds.
+// it, and legionDirs the gh directories a bundle built over it holds. legionInstalled is the
+// record those bundles write and legionDirs reads, as the daemon's own three share one
+// (appauth.Installed, sandboxRuntime): before the first bundle of an App it names no directory
+// for that App and no pod is moved, as it does for a bundle it cannot describe.
+var legionInstalled = appauth.NewInstalled()
+
 func legionRepos() []ghrepo.Repository { return []ghrepo.Repository{ghrepo.MustParse("legion/legion")} }
 
 func legionDirs(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-	return appauth.GitHubDirs(legionRepos, ghrepo.Renames{}, nil, roles, repo)
+	return appauth.GitHubDirs(legionRepos, ghrepo.Renames{}, legionInstalled, nil, roles, repo)
 }
 
 type outboxSpecs struct{}

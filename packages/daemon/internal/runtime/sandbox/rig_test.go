@@ -223,6 +223,23 @@ var renamedDirs = slices.Sorted(slices.Values([]string{recordedSmoke.Owner(), se
 // owner predicate read as the project owning that owner.
 var otherOfRecordedOwner = ghrepo.MustParse(recordedSmoke.Owner() + "/other")
 
+// installedOnMapped is the owner accounts a role's App is installed on, as a bundle reads them
+// from GitHub at every build (appauth.OwnerInstallations): every owner of the repositories
+// served, which is the ordinary deployment and what a test that is not about an installation's
+// own reach wants.
+type installedOnMapped struct{ served func() []ghrepo.Repository }
+
+func (i installedOnMapped) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	owners := make([]string, 0, 2)
+	for _, repo := range i.served() {
+		if owner := strings.ToLower(repo.Owner()); !slices.Contains(owners, owner) {
+			owners = append(owners, owner)
+		}
+	}
+	slices.Sort(owners)
+	return owners, nil
+}
+
 // servingRenamed is a daemon serving repos with the smoke pair configured, built as the daemon
 // builds its own answers from one mapping (daemon's sandboxRuntime): the directories it serves,
 // the gh bundles it renders, the provisioning tokens it mints and the mapping its cache sweep
@@ -232,16 +249,18 @@ func servingRenamed(repos ...ghrepo.Repository) func(*Options) {
 	return func(o *Options) {
 		served := func() []ghrepo.Repository { return repos }
 		renames := ghrepo.MustRenames(smokeRename)
-		// One record of what the mints found GitHub refuses, as the daemon builds one per
-		// project and hands it to both credentials and the directory set alike.
-		left := appauth.NewLeftOut()
+		// The two records the bundles write, as the daemon builds one pair per project and
+		// hands them to both credentials and the directory set alike: the owners each App's
+		// last bundle read installed, and what the mints found GitHub refuses.
+		installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
 		leases := &namedLeases{}
+		installs := installedOnMapped{served: served}
 		o.Mapped = served
 		o.Tokens = servingTokens{served: served, renames: renames}
-		o.GitHubCredential = appauth.GitHubCredential(leases, served, renames, left, nil)
-		o.ControllerCredential = appauth.ControllerCredential(leases, served, renames, left, nil)
+		o.GitHubCredential = appauth.GitHubCredential(leases, installs, served, renames, installed, left, nil)
+		o.ControllerCredential = appauth.ControllerCredential(leases, installs, served, renames, installed, left, nil)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-			return appauth.GitHubDirs(served, renames, left, roles, repo)
+			return appauth.GitHubDirs(served, renames, installed, left, roles, repo)
 		}
 	}
 }

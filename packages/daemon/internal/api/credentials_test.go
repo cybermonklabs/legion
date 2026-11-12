@@ -33,6 +33,12 @@ func (s tokenSource) ReadToken(ctx context.Context, role appauth.AppRole, _ stri
 	return lease, err
 }
 
+// InstalledOwners is the owner accounts each App is installed on, which a gh bundle reads from
+// GitHub at every build (appauth.OwnerInstallations): the two these harnesses serve.
+func (tokenSource) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return []string{"acme", "sjawhar"}, nil
+}
+
 func newCredentialHarness(t *testing.T, tokens appauth.Tokens) *harness {
 	t.Helper()
 	h := newHarness(t)

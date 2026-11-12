@@ -1024,8 +1024,11 @@ func (g *keyModeGitHub) serve(t *testing.T) *httptest.Server {
 	return githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/app/installations":
-			listed := make([]string, 0, len(g.owners))
-			for i, owner := range g.owners {
+			g.mu.Lock()
+			owners := slices.Clone(g.owners)
+			g.mu.Unlock()
+			listed := make([]string, 0, len(owners))
+			for i, owner := range owners {
 				listed = append(listed, fmt.Sprintf(`{"id":%d,"account":{"login":%q}}`, 101+i, owner))
 			}
 			fmt.Fprintf(w, "[%s]", strings.Join(listed, ","))
@@ -1063,6 +1066,14 @@ func (g *keyModeGitHub) serve(t *testing.T) *httptest.Server {
 			t.Errorf("unexpected GitHub path %s", r.URL.Path)
 		}
 	}})
+}
+
+// installOn gives the App an installation on owner, as an account installing it does: the next
+// read of /app/installations lists it, and nothing else about the stand-in changes.
+func (g *keyModeGitHub) installOn(owner string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.owners = append(g.owners, owner)
 }
 
 // exchanges is every access_tokens body GitHub was sent, in the order it got them.

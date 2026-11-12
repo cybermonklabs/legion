@@ -18,12 +18,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
-// gitCredentialBundle writes a gh bundle of a role whose issue is acme's: acme's write token, the
-// read token of the other owner sjawhar, and, under sjawhar, the narrower read token of the one
-// repository sjawhar/legion, as a role's bundle holds one directory per repository of an owner it
-// writes to none of. sjawhar's other repositories — legion-smoke among them — have no directory
-// of their own, as acme's have none under acme. It returns the bundle's root and acme's
-// directory, which GH_CONFIG_DIR names.
+// gitCredentialBundle writes a gh bundle of a role whose issue is acme's: acme's write token,
+// the read token of the other owner sjawhar, the read token of theorem-labs, an owner the App
+// is installed on and the project maps no repository of, and, under sjawhar, the narrower read
+// token of the one repository sjawhar/legion, which a bundle built now holds for no repository
+// at all — a lease reaches every repository its installation holds (appauth.GitHubCredential,
+// INFRA-2543) — and which a pod launched before that change projects, since its gh is the
+// Secret projection of its own creation. It returns the bundle's root and acme's directory,
+// which GH_CONFIG_DIR names.
 func gitCredentialBundle(t *testing.T) (root, defaultDir string) {
 	t.Helper()
 	root = filepath.Join(t.TempDir(), "gh")
@@ -32,6 +34,7 @@ func gitCredentialBundle(t *testing.T) (root, defaultDir string) {
 		"acme":           ghconfig.Render("ghs_acme_write", "implement", expires),
 		"sjawhar":        ghconfig.Render("ghs_sjawhar_read", "implement", expires),
 		"sjawhar/legion": ghconfig.Render("ghs_sjawhar_legion_read", "implement", expires),
+		"theorem-labs":   ghconfig.Render("ghs_theorem_labs_read", "implement", expires),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -113,6 +116,16 @@ func TestGitCredentialAnswersFromTheOwnersDirectory(t *testing.T) {
 			stdout: strings.Replace(answer, "%s", "ghs_sjawhar_read", 1),
 		},
 		{
+			// A repository of an owner the project maps nothing of: the bundle holds that
+			// owner's directory because the App is installed on the account, and its token
+			// reaches every repository of that installation.
+			name:   "a repository of an owner the project maps nothing of",
+			env:    both,
+			args:   []string{"get"},
+			stdin:  "protocol=https\nhost=github.com\npath=theorem-labs/agent-infra.git\n\n",
+			stdout: strings.Replace(answer, "%s", "ghs_theorem_labs_read", 1),
+		},
+		{
 			name:   "the issue owner's directory",
 			env:    map[string]string{"LEGION_GH_OWNERS_DIR": root},
 			args:   []string{"get"},
@@ -120,12 +133,12 @@ func TestGitCredentialAnswersFromTheOwnersDirectory(t *testing.T) {
 			stdout: strings.Replace(answer, "%s", "ghs_acme_write", 1),
 		},
 		{
-			name:     "an owner the bundle does not hold",
+			name:     "an owner the role's App is not installed on",
 			env:      both,
 			args:     []string{"get"},
 			stdin:    "protocol=https\nhost=github.com\npath=Other/Thing\n\n",
 			code:     1,
-			stderrIn: `"other" is not an owner of this project`,
+			stderrIn: `the role's GitHub App is not installed on "other"`,
 		},
 		{
 			name:     "a path that is no owner",
@@ -242,6 +255,14 @@ func (namedTokens) ReadToken(_ context.Context, role appauth.AppRole, owner stri
 	return appauth.Lease{Token: "ghs_" + string(role) + "_read_" + owner, ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
+// namedTokens also answers which owners the App is installed on (appauth.OwnerInstallations),
+// which a bundle reads from GitHub at every build: cybermonklabs alone, the account this
+// deployment's App is installed on, so sjawhar's directory is the configured rename's and
+// holds the token of the installation its repository moved to.
+func (namedTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return []string{"cybermonklabs"}, nil
+}
+
 // renamedCredentialBundle writes to disk the bundle appauth.GitHubCredential builds for an
 // implementer whose issue's record names sjawhar/legion — the repository as it was recorded
 // before the transfer — in a project that serves served, under renames. It returns the bundle's
@@ -249,7 +270,7 @@ func (namedTokens) ReadToken(_ context.Context, role appauth.AppRole, owner stri
 func renamedCredentialBundle(t *testing.T, served []ghrepo.Repository, renames ghrepo.Renames) (root, defaultDir string) {
 	t.Helper()
 	repos := func() []ghrepo.Repository { return served }
-	credential := appauth.GitHubCredential(namedTokens{}, repos, renames, nil, slog.Default())
+	credential := appauth.GitHubCredential(namedTokens{}, namedTokens{}, repos, renames, nil, nil, slog.Default())
 	bundle, err := credential(context.Background(), legionclaim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
 	if err != nil {
 		t.Fatalf("build the bundle: %v", err)

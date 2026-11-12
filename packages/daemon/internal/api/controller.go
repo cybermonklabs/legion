@@ -200,10 +200,18 @@ func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Reque
 		writeFailure(w, http.StatusInternalServerError, "GITHUB_TOKEN_SOURCE_UNAVAILABLE", "GitHub token source is unavailable")
 		return
 	}
-	// No left-out record (appauth.LeftOut): this bundle is built per request and reaches a
-	// `legion controller start` that rewrites its own gh directory every minute, so no pod's
-	// fixed projection is ever compared against it.
-	bundle, err := appauth.ControllerCredential(s.tokens, s.githubRepositories, s.renames, nil, s.log)(r.Context(), req.Default)
+	installations, ok := s.tokens.(appauth.OwnerInstallations)
+	if !ok {
+		s.log.Warn("api: refused a controller GitHub credential: the token source answers no App installations")
+		writeFailure(w, http.StatusInternalServerError, "GITHUB_TOKEN_SOURCE_UNAVAILABLE",
+			"the GitHub token source answers no App installations, which the controller's gh bundle holds one directory per owner of")
+		return
+	}
+	// No record of the owners read or of what a mint found refused (appauth.Installed,
+	// appauth.LeftOut): this bundle is built per request and reaches a `legion controller
+	// start` that rewrites its own gh directory every minute, so no pod's fixed projection is
+	// ever compared against it.
+	bundle, err := appauth.ControllerCredential(s.tokens, installations, s.githubRepositories, s.renames, nil, nil, s.log)(r.Context(), req.Default)
 	switch {
 	case errors.Is(err, runtime.ErrNoGitHubOwner):
 		writeFailure(w, http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED", "no repository owner is configured for GitHub App tokens")

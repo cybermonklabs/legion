@@ -670,6 +670,13 @@ func (leaseTokens) ReadToken(_ context.Context, _ appauth.AppRole, owner string)
 	return appauth.Lease{Token: "read-" + owner, ExpiresAt: staticCredentialExpiry}, nil
 }
 
+// leaseTokens also answers the owners each App is installed on, which a bundle reads at every
+// build (appauth.OwnerInstallations): the two accounts the pane's project serves repositories
+// of, which is the ordinary deployment.
+func (leaseTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return []string{"acme", "sjawhar"}, nil
+}
+
 // A pane that holds no write token keeps holding none. A tree pane launched on no repository gets
 // every owner read-only, its default the first owner; a refresh renders it for that same absent
 // repository, never for its default. A tree pane the runtime adopted, whose claim the daemon
@@ -678,11 +685,11 @@ func (leaseTokens) ReadToken(_ context.Context, _ appauth.AppRole, owner string)
 func TestARefreshNeverGivesAReadOnlyPaneAWriteToken(t *testing.T) {
 	ctx := context.Background()
 	var logs strings.Builder
-	credential := appauth.GitHubCredential(leaseTokens{},
+	credential := appauth.GitHubCredential(leaseTokens{}, leaseTokens{},
 		func() []ghrepo.Repository {
 			return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")}
 		},
-		ghrepo.Renames{}, nil, slog.Default())
+		ghrepo.Renames{}, nil, nil, slog.Default())
 	f := newFakeServerRuntime(t, credential, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	spec := f.spec(t, claim.RoleImplementer)
 	spec.Repository, spec.DefaultBranch = ghrepo.Repository{}, ""

@@ -433,6 +433,87 @@ func TestAddingAGitHubOwnerDriftsAnIssuePodWhoseGhVolumeLacksIt(t *testing.T) {
 	}
 }
 
+// repositoryDirectory is a `<owner>/<repo>` gh directory, which a daemon before INFRA-2543 cut
+// one of for each repository of an owner beside the one its role writes to, and which no bundle
+// of this daemon holds: a lease reaches every repository its installation holds, so the owner's
+// own directory answers for all of them.
+const repositoryDirectory = "acme/widgets"
+
+// projectingARepositoryDirectory is a daemon of before that change: every bundle it renders
+// holds a repository directory beside the owner directories, so a pod it launches projects one.
+func projectingARepositoryDirectory(o *Options) {
+	o.GitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		bundle, err := staticCredential(ctx, role, repo)
+		if err != nil {
+			return bundle, err
+		}
+		bundle.Dirs[repositoryDirectory] = ghconfig.Render(staticReadToken(role, "acme"), string(appauth.AppRoleFor(role)), staticCredentialExpiry)
+		return bundle, nil
+	}
+}
+
+// A pod launched before INFRA-2543 projects a `<owner>/<repo>` gh directory, whose token reaches
+// that one repository, where the owner's directory of a bundle built now holds a lease over
+// every repository of that installation. That is drift of its own: the pod holds every owner
+// directory the daemon serves, so the lacking-directory reason names nothing, and without this
+// one the pod would keep its narrower token until something else replaced it. Its workers are
+// reachable, so the daemon opens an update round and the relaunch keeps the pod, as it does for
+// an owner directory the pod lacks; the pod the round ends is replaced by one holding owner
+// directories alone, which has drifted from nothing.
+func TestAPodProjectingARepositoryDirectoryHasDrifted(t *testing.T) {
+	g := newRig(t, nil, withOptions(projectingARepositoryDirectory))
+	tester := workerSpec(t)
+	testerLoc := g.spawn(tester)
+	ghVolumeName := roleVolume(ghVolume, claim.RoleTester)
+	projected := slices.Sorted(slices.Values(append(slices.Clone(staticDirs), repositoryDirectory)))
+	if held := ghItems(t, g.pod(testerLoc.Sandbox.Name), claim.RoleTester); !slices.Equal(held, ghItemsFor(projected...)) {
+		t.Fatalf("the tester's gh volume projects %+v, want the two files of each of %q", held, projected)
+	}
+
+	// The daemon of now: its bundles hold owner directories alone, and it serves every owner
+	// this pod already projects, so the repository directory is the whole of the drift.
+	r2 := secondRuntime(t, g, func(*Options) {})()
+	g.connectRunning(workerToken, testerLoc.Sandbox.Generation)
+	g.eventually("the tester's launcher to report its child to the restarted daemon", func() bool {
+		state, connected := r2.launchers.state(workerToken, testerLoc.Sandbox.PodUID)
+		return connected && state.Child != nil
+	})
+	want := (movedAddress{ghVolumeName + " holds a repository directory", repositoryDirectory, "the owner directories alone"}).String()
+	if drifted := driftOf(t, g.ctx, r2, testerLoc); !slices.Contains(drifted, want) {
+		t.Fatalf("PodDrift = %q, want %q among it", drifted, want)
+	}
+	obs := readopt(t, g.ctx, r2, testerLoc)[0]
+	if obs.Kind != runtime.Alive || obs.Locator != testerLoc {
+		t.Fatalf("%s at %+v, want the tester alive at its recorded locator until its round ends: %s", obs.Kind, obs.Locator, obs.Detail)
+	}
+
+	tester.Generation, tester.BootToken, tester.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
+	kept, err := r2.Resume(g.ctx, &testerLoc, tester)
+	if err != nil {
+		t.Fatalf("Resume the tester: %v", err)
+	}
+	if kept.Sandbox.PodUID != testerLoc.Sandbox.PodUID {
+		t.Fatalf("Resume replaced the pod %s, which the tester's own update round replaces: the launch would delete the issue's disk", testerLoc.Sandbox.PodUID)
+	}
+	if err := r2.ReplacePod(g.ctx, runtime.Known{Claim: workerToken, Locator: &kept}, stillDue); err != nil {
+		t.Fatalf("ReplacePod: %v", err)
+	}
+	tester.Generation, tester.BootToken = 3, "boot-tester-g3"
+	newTester, err := r2.Resume(g.ctx, &kept, tester)
+	if err != nil {
+		t.Fatalf("Resume the tester after its round: %v", err)
+	}
+	if newTester.Sandbox.PodUID == testerLoc.Sandbox.PodUID {
+		t.Fatalf("the round kept the pod %s, whose gh volume projects the repository directory %s", testerLoc.Sandbox.PodUID, repositoryDirectory)
+	}
+	if held := ghItems(t, g.pod(testerLoc.Sandbox.Name), claim.RoleTester); !slices.Equal(held, ghItemsFor(staticDirs...)) {
+		t.Errorf("the replaced pod's gh volume projects %+v, want the two files of each of %q and no repository directory", held, staticDirs)
+	}
+	if drifted := driftOf(t, g.ctx, r2, newTester); len(drifted) > 0 {
+		t.Fatalf("the replaced pod has drifted: %q", drifted)
+	}
+}
+
 // ownerRuleOwners is the answer of the owner predicate this branch replaces, for the project
 // serving repos with pair configured: the owner of every repository served, and the owner the
 // pair moved a repository away from beside them whenever the project owned the pair's `to` owner
@@ -454,6 +535,25 @@ func ownerRuleOwners(repos []ghrepo.Repository, pair ghrepo.Rename) []string {
 		owners = append(owners, from)
 	}
 	return slices.Sorted(slices.Values(owners))
+}
+
+// servedOwnerDirs is the directory set a daemon serving repos with the smoke pair configured
+// answers for the issue recorded on recordedSmoke (appauth.GitHubDirs), over both Apps as an
+// issue pod's projection is read. GitHubDirs answers from the record each App's last bundle
+// build wrote and calls GitHub itself not at all, so a bundle of each App is built first, over
+// an App installed on every owner the mapping names, which is this deployment's.
+func servedOwnerDirs(t *testing.T, repos []ghrepo.Repository) []string {
+	t.Helper()
+	served := func() []ghrepo.Repository { return repos }
+	renames := ghrepo.MustRenames(smokeRename)
+	installed := appauth.NewInstalled()
+	credential := appauth.GitHubCredential(&namedLeases{}, installedOnMapped{served: served}, served, renames, installed, nil, nil)
+	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleReviewer} {
+		if _, err := credential(context.Background(), role, recordedSmoke); err != nil {
+			t.Fatalf("the %s's bundle: %v", role, err)
+		}
+	}
+	return appauth.GitHubDirs(served, renames, installed, nil, appauth.Roles, recordedSmoke)
 }
 
 // A pod created before this change, whose gh volume projects one directory for each owner the
@@ -483,8 +583,7 @@ func TestARenamedIssuesPodIsUnmovedInEitherOwnerSetState(t *testing.T) {
 	stateA := []ghrepo.Repository{servingSmoke}
 	stateB := []ghrepo.Repository{servingSmoke, otherOfRecordedOwner}
 	for state, repos := range map[string][]ghrepo.Repository{"A": stateA, "B": stateB} {
-		serves := ghOwnerDirs(appauth.GitHubDirs(func() []ghrepo.Repository { return repos }, ghrepo.MustRenames(smokeRename),
-			nil, appauth.Roles, recordedSmoke))
+		serves := ghOwnerDirs(servedOwnerDirs(t, repos))
 		owned := ownerRuleOwners(repos, smokeRename)
 		if !slices.Equal(serves, renamedDirs) || !slices.Equal(owned, renamedDirs) {
 			t.Fatalf("state %s serves the owner directories %q by the repository rule and %q by the owner predicate it replaces, want %q from both: the new set gains no owner name, so a pod built under the old one lacks no directory",

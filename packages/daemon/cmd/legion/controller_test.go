@@ -1468,6 +1468,13 @@ func (c *controllerCredentialTokens) ReadToken(_ context.Context, _ appauth.AppR
 	return lease, err
 }
 
+// InstalledOwners is the owner accounts the review App is installed on, which the controller's
+// bundle reads from GitHub at every build (appauth.OwnerInstallations): the two accounts this
+// daemon's project serves repositories under, which is what its bundle holds directories for.
+func (c *controllerCredentialTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return []string{"acme", "sjawhar"}, nil
+}
+
 func (c *controllerCredentialTokens) lease(owner string) (appauth.Lease, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
