@@ -365,10 +365,13 @@ const DAEMON_RESTART_FIRST_DELAY_MS = 500;
 const DAEMON_RESTART_MAX_DELAY_MS = 30_000;
 
 /** Why a request got no answer from the daemon: `refused` never reached it (nothing was sent);
- * `dropped` may have reached it (a connection reset or closed before a response, or a 502 or 503
- * from a proxy in front of it, whose body is not the daemon's refusal shape). Undefined for an
- * answer the daemon gave, which is never retried: a 4xx above all, and the daemon's own 502/503,
- * which carry a code. */
+ * `dropped` may have reached it — a connection reset or closed before a response, a 502 or 503
+ * from a proxy in front of it whose body is not the daemon's refusal shape, and the daemon's own
+ * uncoded 503, which it answers while it stops and, between its listener and its routes, while it
+ * starts (`startRefusal`, `packages/daemon/internal/api/answering.go`): neither is a decision of
+ * the daemon's about this request, so a caller that waits out a restart waits out a start the
+ * same way (dispatch://INFRA-2883). Undefined for an answer the daemon decided, which is never
+ * retried: a 4xx above all, and a 502 or 503 that carries a code. */
 export function daemonUnreachable(error: unknown): "refused" | "dropped" | undefined {
   if (error instanceof LegionDaemonApiError) {
     return (error.status === 502 || error.status === 503) && error.code === undefined

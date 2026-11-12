@@ -2108,7 +2108,8 @@ The commits already stamped keep their line: it is in their messages, which noth
 ### Contract discipline
 
 `DaemonAPIVersion` (`packages/daemon/internal/api/version.go`) is the Go daemon's own contract number;
-each claim records the contract its process registered with as `pluginContract`.
+each claim records the contract its process registered with as `pluginContract`, and the generation whose registration declared it.
+Every view of a claim gives that number only while the claim still stands in that generation, and gives none for a claim whose current generation has not registered, whatever an earlier generation of it declared (the views are listed at the end of this section; dispatch://INFRA-2883).
 A role's `pi-legion` declares the contract it was built against (`legion.daemonApiVersion`, `packages/pi-legion/AGENTS.md`), and the daemon's boot pass (`refreshStalePlugins` in `packages/daemon/internal/daemon/daemon.go`) and its registration path (`internal/supervise/plugin.go`) agree on one rule:
 a registered claim whose recorded contract differs from the daemon's own, or is unrecorded
 — every claim is unrecorded the first time a daemon boots on a release that records contracts at all
@@ -2192,6 +2193,10 @@ Every other undecodable request body is logged `api: refused an undecodable requ
 A relaunched process that registers still on the old contract is charged as a launch failure (the claim remembers `PluginRelaunchFor`), ending, like any other exhausted budget, in a `worker-died`.
 The contract shows on every claim view — `GET /legion/v1/state`, `legion state --json`, `read_record`'s `pluginContract` field
 — on `legion claims list`'s line, whose last three columns are the claim's `updateRound`, the `updateHead` its worker reported (`-` for neither) and the tool call its agent is in (`-` for none), and on the state's controller locator.
+What each of those gives is the contract the claim's current generation registered:
+`0` on the API views, and `-` in the contract column of `legion claims list`, for a claim whose current generation has not registered — one not yet registered, and one suspended, failed or retired in a generation that never did — whatever an earlier generation of it declared.
+The state's controller locator has no such case: it is written with the registration it reports and is served only while that session holds the current capability.
+The daemon's own decisions read the recorded number as they always did — the stale-plugin relaunch, the pod update, the boot sweep, the idle rule and the stale-caller refusals — so a view saying nothing never changes what the daemon does about a contract.
 `legion claims list` also prints one line of its own under the claims, what the daemon's last pod-update sweep decided about the project's two limits on opening rounds ("The disk dies with its pod" below, `podUpdateRoundsLine` in `packages/daemon/cmd/legion/claims.go`):
 `pod update rounds: max open 2, 1 a minute; in a round: 2 — INFRA-10, INFRA-1000; waiting on the open-round limit: 25 — <keys>; waiting on the limit a minute: none`, with `no limit` in place of a limit the file does not set, at most 20 keys of a list and then `and <n> more`, and `pod update rounds: the daemon has not swept yet` before the first sweep.
 It is that sweep's own word, written whole when the sweep decided it, and it is printed whenever the command prints at all, over no claims as over many:
@@ -2716,9 +2721,11 @@ With several `nats_urls`, or a clustered NATS whose advertised addresses this da
 no servers available for connection" answer, from a different server nats.go tries next, so the boot waits and the logged `detail` may never name the authorization error at all (LEGION-580).
 
 While the readiness gate waits, callers outside the daemon see it as still booting, not as down:
-the API port is already bound by this point (the same as during the image probe, both before this gate), so it accepts a connection but serves nothing until the gate passes, and `legion status` reports the daemon's PID alive but not yet answering.
+the API port is already bound by this point (the same as during the image probe, both before this gate), so every request it takes is answered `503 {"error":"refused: the daemon is starting and has not served its routes yet; ask again once it is up"}` — no `code`, the shape and status the daemon's stopping refusal has — until the daemon swaps its own routes in, and `legion status` reports the daemon's PID alive but not yet answering.
 The repository mapping read waits before the port is bound, so while it waits a connection to the API is refused, as for a daemon that is not running, and only the daemon's log says it waits.
 A pane's `legion` tool calls (`read_record` and `handoff_complete`, the latter minting its grant in-process first) and `controller start` all wait on that same API, so none of them succeeds until the daemon actually serves;
+a plugin reads that refusal as a daemon that is not there and asks again, which is what a claim boot does until its own 20-second budget is spent, and then the role's process ends for the daemon to launch it again;
+that launch costs the claim no launch failure, because this daemon refused its registration itself, and the run of generations one claim is excused that way is bounded at `launch_failure_limit` (dispatch://INFRA-2883);
 a pane's plain `gh` and `git` do not, since they read the role's credential from its gh files and call the daemon for nothing.
 
 Rollout order for the server's `legion-daemon` user:

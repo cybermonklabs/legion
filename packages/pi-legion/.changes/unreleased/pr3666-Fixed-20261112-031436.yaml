@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A Legion role''s process ends instead of running on without its `legion` tool. Every ending of the claim boot that is not a registered claim — a refusal of any status, a request that never reached the daemon, a call that did not answer inside its bound, the boot''s budget spent, and a failure of any step of the boot — writes one line naming the claim, the daemon it called and the cause, and exits 1, so the daemon launches the role again. The whole of `session_start` ends that way, from its first statement through the `legion` tool''s registration, and so does `/legion-claim-controller`. Each daemon call of the boot is bounded at 6 s and asked again while the daemon cannot answer, the boot runs under one 20 s budget, and the handler under 25 s, below Oh My Pi''s own 30 s. It covers an agent the daemon launched for a role and no other process: a session a person started is left to run.'
+time: 2026-11-12T03:14:36.616229087Z
+custom:
+    Issue: pr3666

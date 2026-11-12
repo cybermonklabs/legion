@@ -67,7 +67,10 @@ const (
 // Code claim is named the fresh session (claimNotOnOmp). A refusal says what the claim is doing
 // when it is given and what the caller may do, and nothing of what the next report, turn, hold
 // or relaunch will make of it: each of those ends is the machine's to decide when it comes, and
-// a sentence that named one of them sent callers back for states that never arrived. So the
+// a sentence that named one of them sent callers back for states that never arrived. One state
+// adds a third thing, a fact of the deployment rather than an outcome: a shim_connected claim's
+// refusal names the registration deadline as a length, counted from the shim's hello, which is
+// how long the wait the caller is sent back to can run (registrationDeadlineSentence). So the
 // caller is sent to the list the state is published on rather than to a moment, in both the
 // forms its two callers have: the controller reads `read_state`, the one of the two it holds a
 // grant for, and the operator runs `legion claims list` (freshSessionName spells its own
