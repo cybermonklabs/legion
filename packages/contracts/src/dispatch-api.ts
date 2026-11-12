@@ -107,22 +107,6 @@ export type IssueClaimHolderState = "live" | "unresponsive" | "gone" | "unknown"
  */
 export type IssueRouteStatus = (typeof ISSUE_ROUTE_STATUSES)[number];
 
-/** Maximum entries in an issue's blocked_by input, before duplicate keys are removed. */
-export const MAX_ISSUE_BLOCKERS = 20;
-
-/**
- * The most issues one page of `GET /api/v1/issues` holds: `limit` is 1 to this. Generated into Go
- * as `contracts.MaxIssuePageLimit`, which the server enforces, and the `dispatch_issues` tool's
- * `limit` takes the same bound, so the two ends agree.
- */
-export const MAX_ISSUE_PAGE_LIMIT = 250;
-
-/**
- * The page size of `GET /api/v1/issues` when a caller pages with `offset` alone, and of
- * `dispatch_issues` when it names no `limit`. Generated into Go as `contracts.DefaultIssuePageLimit`.
- */
-export const DEFAULT_ISSUE_PAGE_LIMIT = 50;
-
 /** The part an issue's document plays beside its spec. `decisions` is absent from a Dispatch
  *  older than the design gate's steps. */
 export type DocumentRole = "verification" | "plan" | "decisions";
@@ -1108,12 +1092,6 @@ export interface IssueRead {
   readonly issue: IssueDetails;
   readonly events: DispatchEvent[];
 }
-
-/**
- * How many of an issue's events `dispatch_read` lists, the newest ones, when it names neither
- * `events` nor `all_events`: what `DispatchClient.read` returns by default.
- */
-export const DEFAULT_ISSUE_READ_EVENTS = 10;
 
 /** The reason the document websocket closes with `DOCUMENT_SCHEMA_CLOSE_CODE`: the code reads of
  *  that document answer (`409 DOC_SCHEMA`). Generated into Go as

@@ -8,10 +8,11 @@ export * from "./dispatch-tools-constants";
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DEFAULT_ISSUE_READ_EVENTS,
+  ISSUE_TITLE_MAX,
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
-} from "./dispatch-api";
-import { ISSUE_TITLE_MAX, PROJECT_NAME_MAX } from "./dispatch-api-constants";
+  PROJECT_NAME_MAX,
+} from "./dispatch-api-constants";
 import {
   ASK_URGENCIES,
   DISPATCH_BLOCK_UNITS,

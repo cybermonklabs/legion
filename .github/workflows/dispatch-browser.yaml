@@ -55,11 +55,15 @@ name: Dispatch browser suite
 # (run 42868987140).
 #
 # That cost is now held to a budget by the run itself, at the merge job's step "Reading five,
-# the lane's machine time": the jobs of a full lane, this merge job apart, may cost 2,004 s and
-# those of a pull-request lane 864 s, which are R5's 2,040 s and 900 s less the merge job's own
-# measured maximum of 36 s. The three readings above are what that budget was set against: it
-# passes 1,974 s and 1,997 s, and it refuses 2,061 s, the first of the three, whose other seven
-# jobs sum to 2,025 s. .github/scripts/dispatch-browser-run-reads.sh's `machine-time` branch
+# the lane's machine time": the jobs of a full lane, this merge job apart, may cost 2,003 s and
+# those of a pull-request lane 863 s, which are R5's 2,040 s and 900 s less that job's own worst
+# case of 37 s. The three readings above are what that budget was set against, each taken as the
+# budget takes it, which is the lane less its own merge job: 2,025 s (43045412941, whose merge
+# job took 36 s), 1,946 s (43074443876, 28 s) and 1,964 s (43079610268, 33 s). It passes the
+# second and the third and refuses the first, and that refusal is the commitment being kept and
+# not a fault of the suite: that run cost 2,061 s over its eight jobs, past R5's own bound of
+# 2,040 s, so a lane that costs what it cost is one this issue left no room for and the shape is
+# what has to get cheaper. .github/scripts/dispatch-browser-run-reads.sh's `machine-time` branch
 # carries the arithmetic and the runs each figure came from. Nothing else in this tree refused
 # a run that cost more than the one before it, which is how this suite went from about 25
 # runner-minutes to 45 to 49 in three days (dispatch://INFRA-1109, R12).
@@ -194,7 +198,7 @@ jobs:
       # bundled package whose license cannot be determined, and the listing shows it shipped.
       # `bun run build:web-b` writes web/dist-b, the second rollout bundle the multiprocess
       # job's two-builds rows read. DISPATCH_BUILD=e2e-b, which that script carries, is what
-      # gives it a build id of its own: web/vite.config.ts:100-107 defaults the id to
+      # gives it a build id of its own: web/vite.config.ts:102-109 defaults the id to
       # GITHUB_SHA, and e2e/two-builds.multiprocess.e2e.ts:91-99 fails when the two entries
       # match. It is built on the full lane alone, the only lane that runs the multiprocess job,
       # so a pull-request run pays nothing for it.
@@ -1738,11 +1742,14 @@ jobs:
     #
     # So by the rule in this file's head the job's budget is the sum of its step budgets, that
     # one step's 180 s, plus the measured maximum of every step without one: 40 s less reading
-    # one's 4 s is 36 s, 1 s for "Report a refused blob download as a refused read", which
-    # runs one `echo` and has no measurement of its own - 1 s is what this job's other
-    # one-command steps measure - and 1 s for "Reading five, the lane's machine time", which
-    # runs one jq over the jobs file reading one already wrote and makes no request at all.
-    # 180 + 38 = 218 s, which is 3 min 38 s, so 4 min. The job's budget is above the step's,
+    # one's 4 s is 36 s, and 1 s each for the three steps that sample does not hold - "Report a
+    # refused blob download as a refused read", which runs one `echo`, "Reading four, the row
+    # durations", which runs one jq over the merged report, and "Reading five, the lane's
+    # machine time", which runs one jq over the jobs file reading one already wrote and makes
+    # no request at all. 1 s is what this job's other one-command steps measure, and it is the
+    # second the lane's budget takes off R5's bound for this step
+    # (.github/scripts/dispatch-browser-run-reads.sh, `merge_maximum`).
+    # 180 + 39 = 219 s, which is 3 min 39 s, so 4 min. The job's budget is above the step's,
     # so the step's own budget fires first and names the step, which is the reason this file's
     # head gives for putting budgets on steps.
     #
@@ -2156,12 +2163,12 @@ jobs:
       # API already answers them - so this reading costs no request and no second route.
       #
       # It is a reading that fails, unlike the four above it: above the lane's budget the step
-      # exits 1 and the job is red. The budgets, 2,004 s on the full lane and 864 s on the
-      # pull-request lane, are R5's 2,040 s and 900 s less this job's own measured maximum of
-      # 36 s, which a job reading inside its own run cannot see of itself: its `completed_at`
-      # is null while it runs. The script's `machine-time` branch carries that subtraction,
-      # the five runs the 36 s was measured over, and why a jobs file it cannot read refuses
-      # rather than passes.
+      # exits 1 and the job is red. The budgets, 2,003 s on the full lane and 863 s on the
+      # pull-request lane, are R5's 2,040 s and 900 s less this job's own worst case of 37 s,
+      # which a job reading inside its own run cannot see of itself: its `completed_at` is null
+      # while it runs. The script's `machine-time` branch carries that subtraction, the five
+      # runs the measured 36 s of it came from, the second this step itself adds, and why a
+      # jobs file it cannot read refuses rather than passes.
       #
       # The lane is this workflow's own input, which every other job of the file already reads
       # for the work it does; nothing new is passed in for it.

@@ -23,9 +23,12 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * THIS BUDGET REFUSED THIS BRANCH'S OWN BUILD when it was written, on purpose: the entry was
  * 1,028,690 bytes then, and a budget written only once the number already fits is a budget
  * nobody has seen refuse anything. The shell was split after it (R13 of the same spec), and
- * `bun run build:web` at this head writes an entry of 490,159 bytes
- * (`web/dist/assets/index-C8OjWdOs.js`, measured 2026-11-12), which leaves 9,841 bytes of room
- * under this budget. A change that adds to what every page parses spends that room and then
+ * `bun run build:web` at this head writes an entry of 490,184 bytes (the one
+ * `web/dist/assets/index-*.js` that `dist/index.html` names, measured 2026-11-12), which leaves
+ * 9,816 bytes of room under this budget. No hash is recorded with it: that hash carries the
+ * build id, which falls back to the clock (`__DISPATCH_BUILD__`, `web/vite.config.ts`), so two
+ * builds of one tree write the same bytes under two names. A change that adds to what every
+ * page parses spends that room and then
  * fails `bun run check:asset-sizes`, which is the point: the next shell boundary is cheaper to
  * find now than the 233,923 bytes above were.
  *
@@ -91,38 +94,64 @@ export function entryChunk(dist: string): EntryChunk {
   return { path, bytes: statSync(join(dist, path)).size };
 }
 
+/** One budget's reading of a build: the line the run prints for it, and whether that line is a
+ *  refusal. */
+export interface BudgetReading {
+  message: string;
+  refused: boolean;
+}
+
+/**
+ * Both budgets read over the build at `dist`, in the order the run prints them, and nothing
+ * printed or exited here: this is what the check decides, and `main` below is what says it.
+ *
+ * Both are read whatever either finds, so a build over on each is told about each in one run.
+ * The verdict is the readings' own - the run refuses when any reading does - which is what the
+ * tests hold: a row over the entry budget that returned no refusal would be a build CI waves
+ * through.
+ */
+export function budgetReadings(dist: string): BudgetReading[] {
+  const readings: BudgetReading[] = [];
+  const oversized = oversizedAssets(join(dist, "assets"));
+  for (const asset of oversized) {
+    readings.push({
+      message: `web/dist/assets/${asset.path} is ${asset.bytes} bytes, over the ${MAX_ASSET_BYTES}-byte limit: the server refuses to boot on this build.`,
+      refused: true,
+    });
+  }
+  if (oversized.length === 0) {
+    readings.push({
+      message: `Every file of web/dist/assets is at most ${MAX_ASSET_BYTES} bytes.`,
+      refused: false,
+    });
+  }
+  const entry = entryChunk(dist);
+  if (entry.bytes > MAX_ENTRY_BYTES) {
+    readings.push({
+      message: `web/dist/${entry.path} is ${entry.bytes} bytes, over the ${MAX_ENTRY_BYTES}-byte entry budget: it is the chunk web/dist/index.html names in its module script, so every page of the dashboard parses all of it before it draws anything, and a new browser context has none of it cached.`,
+      refused: true,
+    });
+  } else {
+    readings.push({
+      message: `The entry chunk web/dist/${entry.path} is ${entry.bytes} bytes, inside the ${MAX_ENTRY_BYTES}-byte budget.`,
+      refused: false,
+    });
+  }
+  return readings;
+}
+
 function main(): void {
   if (!existsSync(DIST_ASSETS_DIR)) {
     throw new Error(
       `No built assets found at ${DIST_ASSETS_DIR}. Run "bun run build:web" before "bun run check:asset-sizes".`
     );
   }
-  // Both budgets are read and both say what they found before either exits: a build that is
-  // over on each refuses on each, so one run of this check tells the whole story.
-  let refused = false;
-  const oversized = oversizedAssets(DIST_ASSETS_DIR);
-  for (const asset of oversized) {
-    console.error(
-      `web/dist/assets/${asset.path} is ${asset.bytes} bytes, over the ${MAX_ASSET_BYTES}-byte limit: the server refuses to boot on this build.`
-    );
+  const readings = budgetReadings(DIST_DIR);
+  for (const reading of readings) {
+    if (reading.refused) console.error(reading.message);
+    else console.log(reading.message);
   }
-  if (oversized.length > 0) {
-    refused = true;
-  } else {
-    console.log(`Every file of web/dist/assets is at most ${MAX_ASSET_BYTES} bytes.`);
-  }
-  const entry = entryChunk(DIST_DIR);
-  if (entry.bytes > MAX_ENTRY_BYTES) {
-    console.error(
-      `web/dist/${entry.path} is ${entry.bytes} bytes, over the ${MAX_ENTRY_BYTES}-byte entry budget: it is the chunk web/dist/index.html names in its module script, so every page of the dashboard parses all of it before it draws anything, and a new browser context has none of it cached.`
-    );
-    refused = true;
-  } else {
-    console.log(
-      `The entry chunk web/dist/${entry.path} is ${entry.bytes} bytes, inside the ${MAX_ENTRY_BYTES}-byte budget.`
-    );
-  }
-  if (refused) {
+  if (readings.some((reading) => reading.refused)) {
     process.exit(1);
   }
 }

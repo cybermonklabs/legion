@@ -5,18 +5,19 @@
  *
  * Why the Inbox is not in the entry any more. The entry is what every page of the dashboard
  * parses before it draws anything, and no cache spares a new browser context that parse, so each
- * of the browser suite's rows pays it as well as each person opening a page. Of the 1,028,690
- * bytes the entry held at this branch's head (`bun run build:web`, 2026-11-12), the Inbox's own
- * graph was the largest part no page but the Inbox itself draws: the card list, the ask cards,
+ * of the browser suite's rows pays it as well as each person opening a page. The Inbox's graph
+ * was the largest part of it no page but the Inbox itself draws: the card list, the ask cards,
  * the thread bodies and the Markdown surfaces under them. A reader on an issue, a board or a
- * document parsed all of it to be shown none of it.
+ * document parsed all of it to be shown none of it. What the entry cost before the split and
+ * costs now is measured in one place, `packages/dispatch/AGENTS.md` under "Layout".
  *
- * What a reader loses by its being late, and when it is fetched. On `/` and `/credentials/*` the
- * list is the page, so the download starts with the navigation rather than after it
- * (`app.tsx`, `preloadRouteChunk`) and the landing read runs beside it: the reads are the reads
- * of the head before this split, and the frames before the chunk lands show the page's heading
- * over the list's skeleton. Anywhere else the chunk is fetched the moment the reader opens the
- * peek drawer, and nothing on the page waits for it until then.
+ * What a reader loses by its being late, and when it is fetched. Where the Inbox is the page,
+ * the list is what the reader came for, so the download starts with the navigation rather than
+ * after it (`app.tsx`, `preloadRouteChunk`) and the landing read runs beside it: the reads are
+ * the reads of the head before this split, and the frames before the chunk lands show the page's
+ * heading over the list's skeleton. Where the Inbox is the peek drawer instead, the chunk is
+ * fetched the moment the reader opens that drawer, nothing on the page waits for it until then,
+ * and no landing there asks for it at all.
  */
 export { Inbox } from "./Inbox";
 export { InboxDrawer } from "./InboxDrawer";

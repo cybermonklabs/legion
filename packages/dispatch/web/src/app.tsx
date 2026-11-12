@@ -112,9 +112,9 @@ import {
 
 /** The three route chunks a cold landing can need, each named once: the router's `lazy` below
  *  and the entry's preload (`preloadRouteChunk`) call the same import, so the chunk the entry
- *  starts cannot be another than the one the router renders. The Inbox at `/` is the fourth
- *  such chunk, and its import is named once in the same way, in the module that owns it
- *  (`features/inbox/InboxHost.tsx`, `loadInboxChunk`). */
+ *  starts cannot be another than the one the router renders. The Inbox's chunk is the fourth,
+ *  started wherever the Inbox is the page rather than the peek, and its import is named once in
+ *  the same way, in the module that owns it (`features/inbox/InboxHost.tsx`, `loadInboxChunk`). */
 const loadIssuePage = () =>
   import("./features/issue/IssuePage").then((module) => ({ default: module.IssuePage }));
 const loadProjectPage = () =>
@@ -181,10 +181,14 @@ function issueDrawsDocument(route: IssueRoute): boolean {
  * decides which page is coming. The document chunks go to the addresses whose page draws a
  * document and to no others: a project's document page always draws one, and an issue page
  * draws one on the tabs `issueDrawsDocument` names and on no other, so the Conversation of an
- * issue downloads no editor. The board and the Inbox draw no document and take neither chunk,
- * and an address that is no page of a cold landing starts nothing. A chunk that fails here is
- * left to the router: `lazy` asks for the same import again, and that failure - a reader in
- * front of a page that cannot draw - is the one `DeploymentResilience` reloads for
+ * issue downloads no editor. The board draws no document and takes neither chunk, and an
+ * address that is no page of a cold landing starts nothing. The Inbox's own chunk holds to the
+ * same rule - a chunk is started where the landed page draws it - and needs a second question
+ * to hold it: the landing read takes every address that is neither an issue nor a project as
+ * the Inbox, while the Inbox is the page at the addresses `InboxPage` is mounted at and a peek
+ * drawer over every other, so the arm below asks `routeIsInbox` as well. A chunk that fails
+ * here is left to the router: `lazy` asks for the same import again, and that failure - a
+ * reader in front of a page that cannot draw - is the one `DeploymentResilience` reloads for
  * (`prefetchChunk`).
  *
  * `pathname` is the caller's and has no default: the one call site is `main.tsx`, which passes
@@ -210,11 +214,15 @@ export function preloadRouteChunk(pathname: string): void {
       prefetchChunk(loadProjectPage);
       break;
     case "inbox":
-      // The Inbox is a chunk of its own now (`features/inbox/InboxHost.tsx`), so a landing on
-      // `/` starts it here as the three page chunks above are started: beside the landing read
-      // rather than after it, which is what keeps the list's own reads in the wave that follows
-      // the landing's answer.
-      prefetchChunk(loadInboxChunk);
+      // The Inbox is a chunk of its own now (`features/inbox/InboxHost.tsx`), and this arm is
+      // every address that is neither an issue nor a project, so the chunk is started only
+      // where the page draws the list (`routeIsInbox`, which is the router's own ranking of
+      // `InboxPage`'s routes): beside the landing read rather than after it, which is what
+      // keeps the list's own reads in the wave that follows the landing's answer. Where the
+      // Inbox is the peek drawer instead, nothing on the page waits for this chunk and the
+      // drawer's own import fetches it when the reader opens it, so starting it here would
+      // download a surface the page never draws.
+      if (routeIsInbox(pathname)) prefetchChunk(loadInboxChunk);
       break;
   }
 }

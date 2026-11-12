@@ -52,6 +52,28 @@ export const ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS = 20 * 60 * 1000;
  */
 export const ISSUE_TITLE_MAX = 1000;
 
+/** Maximum entries in an issue's blocked_by input, before duplicate keys are removed. */
+export const MAX_ISSUE_BLOCKERS = 20;
+
+/**
+ * The most issues one page of `GET /api/v1/issues` holds: `limit` is 1 to this. Generated into Go
+ * as `contracts.MaxIssuePageLimit`, which the server enforces, and the `dispatch_issues` tool's
+ * `limit` takes the same bound, so the two ends agree.
+ */
+export const MAX_ISSUE_PAGE_LIMIT = 250;
+
+/**
+ * The page size of `GET /api/v1/issues` when a caller pages with `offset` alone, and of
+ * `dispatch_issues` when it names no `limit`. Generated into Go as `contracts.DefaultIssuePageLimit`.
+ */
+export const DEFAULT_ISSUE_PAGE_LIMIT = 50;
+
+/**
+ * How many of an issue's events `dispatch_read` lists, the newest ones, when it names neither
+ * `events` nor `all_events`: what `DispatchClient.read` returns by default.
+ */
+export const DEFAULT_ISSUE_READ_EVENTS = 10;
+
 /**
  * The longest project name, in UTF-16 units, counted after the trim `POST /api/v1/projects`
  * applies; a longer one is `400 CAP_EXCEEDED`. A name shows beside its key in the sidebar's

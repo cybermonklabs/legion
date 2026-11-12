@@ -59,7 +59,7 @@ export const lazyPieces = {
     "boot (features/refs/markdown-engine.ts)",
   inbox:
     "the Inbox list, its cards and the peek drawer (features/inbox/inbox-chunk.ts), which the " +
-    "entry starts on a landing at `/` and the drawer loads anywhere else",
+    "entry starts where the Inbox is the page and the drawer loads anywhere else",
   "markdown-worker":
     "the Markdown parse worker (features/refs/markdown-parse.worker.ts), which a body longer " +
     "than markdownWorkerThreshold is parsed in rather than on the page's own thread " +

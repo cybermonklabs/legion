@@ -317,18 +317,14 @@ function visits(seed: Seeded): readonly Visit[] {
       // The Inbox's list is a chunk of its own, which the entry starts with the landing read
       // (`web/src/app.tsx`, `preloadRouteChunk`), and the heading above it is the entry's. The
       // list is what shows that chunk ran. The reference-preview layer is the shell's own
-      // chunk, asked for in its first effect, on this page as on every other.
-      loads: ["inbox", "ref-preview"],
-      route: "/",
-      shows: (page) => [heading(page, "Inbox"), page.getByTestId("inbox-list")],
-      url: "/",
-    },
-    {
-      // Three surfaces no address reaches, each its own chunk and each opened by its key: the
+      // chunk, asked for in its first effect, on this page as on every other. Three surfaces no
+      // address reaches are opened here too, each its own chunk and each opened by its key: the
       // search bar, the Create issue dialog and the shortcut sheet. A walk that never opened
       // them would leave three of this build's scripts unasked for, which is what the last
-      // assertion of `walk` refuses.
-      loads: ["search-bar", "create-issue", "shortcut-help"],
+      // assertion of `walk` refuses, and they are opened on this visit rather than on a second
+      // landing at the same address, which would cost the walk another cold navigation, landing
+      // read and shell render for nothing.
+      loads: ["inbox", "ref-preview", "search-bar", "create-issue", "shortcut-help"],
       opens: async (page) => {
         // Each dialog is waited out of the way before the next key: these keys reach the
         // shell's global scope, and a dialog still on the stack consults its own scope alone,
@@ -348,7 +344,11 @@ function visits(seed: Seeded): readonly Visit[] {
         await page.keyboard.press("?");
       },
       route: "/",
-      shows: (page) => [page.getByRole("dialog", { name: "Keyboard shortcuts" })],
+      shows: (page) => [
+        heading(page, "Inbox"),
+        page.getByTestId("inbox-list"),
+        page.getByRole("dialog", { name: "Keyboard shortcuts" }),
+      ],
       url: "/",
     },
     {

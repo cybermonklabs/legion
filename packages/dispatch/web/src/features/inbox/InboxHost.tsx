@@ -5,25 +5,27 @@ import { renderChunk } from "../shell/DeploymentResilience";
 import type { InboxProps } from "./Inbox";
 
 /**
- * Where the shell places the Inbox, and where the Inbox's code is fetched: after the first paint
- * of whatever page the reader landed on, never before it.
+ * Where the shell places the Inbox, and where the Inbox's code is fetched: with the navigation
+ * at the addresses whose page is the Inbox, and at the reader's own press of the peek
+ * everywhere else, so no page that merely offers the peek waits for it or fetches it before its
+ * first paint.
  *
  * The shell mounted the Inbox itself until dispatch://INFRA-1109: the page at `/` rendered it,
  * and the peek drawer rendered it over every other page, so the list, the ask cards, the thread
  * bodies and the Markdown surfaces under them were all in the entry chunk. That chunk is what
  * every page parses before it draws anything, and a browser context with a cold cache has none
  * of it, so an issue, a board or a document paid for the Inbox to be shown none of it. It was
- * the largest such part of the entry: of the 1,028,690 bytes the entry held at this branch's
- * head (`bun run build:web`, 2026-11-12) the Inbox's graph was about a third.
+ * the largest such part of the entry; what the entry cost then and costs now is measured in one
+ * place, `packages/dispatch/AGENTS.md` under "Layout".
  *
  * Both hosts below load the one module (`inbox-chunk.ts`), so the page and the drawer share one
  * download: a reader who peeks at the Inbox from an issue and then opens `/` fetches nothing the
  * second time.
  */
-// Under `renderChunk`, like every chunk a render waits on: a reader who lands on `/` or opens
-// the peek is in front of a page that cannot draw until this arrives, so a download that fails
-// must spend one of the tab's recovery reloads rather than be read as the entry's prefetch
-// (`features/shell/DeploymentResilience.tsx`).
+// Under `renderChunk`, like every chunk a render waits on: a reader who lands on the Inbox's own
+// page or opens the peek is in front of a page that cannot draw until this arrives, so a
+// download that fails must spend one of the tab's recovery reloads rather than be read as the
+// entry's prefetch (`features/shell/DeploymentResilience.tsx`).
 const InboxList = lazy(() =>
   renderChunk(() => import("./inbox-chunk").then((module) => ({ default: module.Inbox })))
 );
@@ -32,11 +34,12 @@ const InboxPeek = lazy(() =>
   renderChunk(() => import("./inbox-chunk").then((module) => ({ default: module.InboxDrawer })))
 );
 
-/** The same import the hosts below render, for the entry to start on a landing at `/`
- *  (`app.tsx`, `preloadRouteChunk`): the download then overlaps the landing read's round trip,
- *  so the Inbox's own reads still go out in the wave that follows the landing's answer and the
- *  list draws as soon as both are in. Named here rather than in the shell, so the chunk the
- *  entry starts cannot be another than the one these hosts render. */
+/** The same import the hosts below render, for the entry to start at the addresses whose page is
+ *  the Inbox (`app.tsx`, `preloadRouteChunk`, which asks `routeIsInbox`): the download then
+ *  overlaps the landing read's round trip, so the Inbox's own reads still go out in the wave
+ *  that follows the landing's answer and the list draws as soon as both are in. Named here
+ *  rather than in the shell, so the chunk the entry starts cannot be another than the one these
+ *  hosts render. */
 export const loadInboxChunk = (): Promise<unknown> => import("./inbox-chunk");
 
 /**
@@ -53,10 +56,12 @@ export function InboxHost(props: InboxProps): ReactNode {
 }
 
 /**
- * The Inbox as a peek over whatever page is open. Nothing is fetched until the reader opens it,
- * which is what makes this a boundary rather than a rename: the drawer is mounted on every page
- * of the shell and closed on almost all of them (`InboxDrawer.tsx` draws nothing while closed,
- * and this host asks for no chunk while closed either).
+ * The Inbox as a peek over whatever page is open. On those pages nothing is fetched until the
+ * reader opens it, which is what makes this a boundary rather than a rename: the drawer is
+ * mounted on every page of the shell and closed on almost all of them (`InboxDrawer.tsx` draws
+ * nothing while closed, and this host asks for no chunk while closed either). The Inbox's own
+ * page is not one of them - neither the rail's peek button nor its shortcut is offered there
+ * (`routeIsInbox`) - so the entry's prefetch and this host never ask for the chunk on one page.
  *
  * The host keeps the drawer mounted once it has been opened, as the shell always did: the drawer
  * holds the filters, the sort and the search text of this peek, and a reader who closes it and

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Tests for `dispatch-browser-run-reads.sh`, the two reads dispatch-browser.yaml's merge job
+# Tests for `dispatch-browser-run-reads.sh`, the three reads dispatch-browser.yaml's merge job
 # makes of its own run: the jobs of this attempt, which the merge job's readings name legs from,
-# and the line that says a blob download could not be completed.
+# the line that says a blob download could not be completed, and the lane's machine time, summed
+# out of the jobs file the first read wrote.
 #
 # Each case writes the one slurped page a stand-in `gh` answers with - the array of page objects
 # `gh api --paginate --slurp` prints - and how many calls that stand-in refuses first, then runs
@@ -179,13 +180,15 @@ page() {
 # the caller's own jobs are in the same list: `lint` and `dispatch-multiprocess`, the second of
 # which the name filter keeps out only by the hyphen before `multiprocess`.
 #
-# The seconds are a full lane of this file's shape, rounded: the eight jobs of run 43074443876
-# took binaries 171, shard (1) 577, shard (2) 705, alone 199, multiprocess 125, embedder 55,
-# visual 114 and merge 28 seconds (the jobs API, read 2026-11-11). The five jobs of this
-# workflow that this page gives a conclusion and an end, the merge job apart, sum to 1,750 s,
-# which is inside the full lane's budget and over the pull-request lane's, so one fixture
-# drives both arms of the machine-time cases below. The caller's two jobs carry 9,999 s each:
-# a sum that held either of them would be past every budget this file has.
+# The seconds are a full lane of this file's shape, in round numbers rather than readings: the
+# eight jobs of run 43074443876 took binaries 171, shard (1) 577, shard (2) 705, alone 199,
+# multiprocess 125, embedder 55, visual 114 and merge 28 seconds (the jobs API, read
+# 2026-11-11), and this page carries numbers of that order, no embedder job and a skipped
+# multiprocess job, because what the cases read is the arithmetic and not the run. The five jobs
+# of this workflow that this page gives a conclusion and an end, the merge job apart, sum to
+# 1,750 s, which is inside the full lane's budget and over the pull-request lane's, so one
+# fixture drives both arms of the machine-time cases below. The caller's two jobs carry 9,999 s
+# each: a sum that held either of them would be past every budget this file has.
 happy_page() {
   page "10|dispatch-browser / binaries|success|150" \
     "11|dispatch-browser / shard (1)|success|600" \
@@ -603,12 +606,12 @@ check "exits 0" "$(is "$status" 0)"
 check "calls gh once" "$(is "$(calls)" 1)"
 check "and waits not at all" "$(at_most "$seconds" 1)"
 
-# THE MACHINE-TIME CASES. The budgets are 2,004 s on the full lane and 864 s on the
-# pull-request lane, which are R5's 2,040 s and 900 s less the merge job's own measured
-# maximum of 36 s (the script's own branch says where that 36 s was measured). Each case below
+# THE MACHINE-TIME CASES. The budgets are 2,003 s on the full lane and 863 s on the
+# pull-request lane, which are R5's 2,040 s and 900 s less the merge job's own worst case of
+# 37 s (the script's own branch says what that figure is made of). Each case below
 # drives the arithmetic to one side of a budget or the other: a budget nothing is ever refused
-# by refuses nothing, which is the defect class this mode exists against
-# (dispatch://INFRA-3139).
+# by refuses nothing, which is the defect class this mode exists against (R12 of
+# dispatch://INFRA-1109/spec).
 
 echo "case: the lane's machine time is summed out of the file the jobs mode wrote"
 # The two modes over one page, one after the other: the `jobs` mode writes the file and this
@@ -622,9 +625,9 @@ drive machine-time "$work/out.json" full
 check "the full lane passes under its budget" "$(is "$status" 0)"
 check "naming the seconds it summed and the budget they are held to" \
   "$(contains "$(notice_line)" \
-    'the full lane cost 1750 s over 5 concluded jobs, this merge job apart, against a budget of 2004 s')"
-check "which it says is R5's bound less this job's own measured maximum" \
-  "$(contains "$(notice_line)" '2040 s less this job.s own measured maximum of 36 s')"
+    'the full lane cost 1750 s over 5 concluded jobs, this merge job apart, against a budget of 2003 s')"
+check "which it says is R5's bound less this job's own worst case" \
+  "$(contains "$(notice_line)" '2040 s less this job.s own worst case of 37 s')"
 check "and prints no ::error:: line" "$(is "$(errors)" 0)"
 # 1,750 s is binaries, both shards, alone and visual: a red leg cost its machine time like any
 # other and is in the sum, while the skipped job (-1 s), the merge job (still running) and the
@@ -639,9 +642,9 @@ check "fails the step" "$(is "$status" 1)"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
 check "naming the sum and the pull-request lane's budget" \
   "$(contains "$(error_line)" \
-    'this pull-request lane has cost 1750 s of machine time over its 5 concluded jobs, this merge job apart, which is above the 864 s')"
+    'this pull-request lane has cost 1750 s of machine time over its 5 concluded jobs, this merge job apart, which is above the 863 s')"
 check "and R5's bound for that lane with this job's own maximum taken off it" \
-  "$(contains "$(error_line)" "R5's bound of 900 s for this lane, less this job's own measured maximum of 36 s")"
+  "$(contains "$(error_line)" "R5's bound of 900 s for this lane, less this job's own worst case of 37 s")"
 check "and says this is the suite costing more and not a failed row" \
   "$(contains "$(error_line)" 'costing more machine time than dispatch://INFRA-1109 left it costing, and not a failed browser row')"
 
@@ -649,20 +652,20 @@ echo "case: each budget bites at its own second"
 # The one case that would catch a budget written one second out, or a `-ge` where the rule is
 # `-gt`: the bound itself passes and one second more does not, on each lane.
 fixture 0
+lane_jobs "dispatch-browser / shard (1)|success|2003"
+drive machine-time "$work/jobs.json" full
+check "the full lane passes at 2,003 s exactly" "$(is "$status" 0)"
 lane_jobs "dispatch-browser / shard (1)|success|2004"
 drive machine-time "$work/jobs.json" full
-check "the full lane passes at 2,004 s exactly" "$(is "$status" 0)"
-lane_jobs "dispatch-browser / shard (1)|success|2005"
-drive machine-time "$work/jobs.json" full
-check "and is refused at 2,005" "$(is "$status" 1)"
+check "and is refused at 2,004" "$(is "$status" 1)"
 check "naming the second it was over by" \
-  "$(contains "$(error_line)" 'cost 2005 s of machine time over its 1 concluded jobs')"
+  "$(contains "$(error_line)" 'cost 2004 s of machine time over its 1 concluded jobs')"
+lane_jobs "dispatch-browser / shard (1)|success|863"
+drive machine-time "$work/jobs.json" pull-request
+check "the pull-request lane passes at 863 s exactly" "$(is "$status" 0)"
 lane_jobs "dispatch-browser / shard (1)|success|864"
 drive machine-time "$work/jobs.json" pull-request
-check "the pull-request lane passes at 864 s exactly" "$(is "$status" 0)"
-lane_jobs "dispatch-browser / shard (1)|success|865"
-drive machine-time "$work/jobs.json" pull-request
-check "and is refused at 865" "$(is "$status" 1)"
+check "and is refused at 864" "$(is "$status" 1)"
 
 echo "case: this merge job's own seconds are not in the sum"
 # The reason the budget is R5's bound less this job's maximum rather than R5's bound itself:
@@ -753,7 +756,7 @@ check "the next after it" \
   "$(contains "$(summary_text)" '^| dispatch-browser / binaries | 150 |$')"
 check "and the sum against the budget, with the subtraction that made it" \
   "$(contains "$(summary_text)" \
-    "cost 750 s against a budget of 2004 s, which is R5's 2040 s less this job's own measured maximum of 36 s")"
+    "cost 750 s against a budget of 2003 s, which is R5's 2040 s less this job's own worst case of 37 s")"
 
 echo "case: a machine-time call that names no lane, or too much, is a usage error"
 fixture 0

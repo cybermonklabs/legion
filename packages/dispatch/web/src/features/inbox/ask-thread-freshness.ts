@@ -1,9 +1,11 @@
 interface FreshnessState {
   activeInboxFetches: Set<number>;
   latestInboxFetch: number;
-  /** Ask id → the Inbox generation in flight when an event on that ask arrived. */
+  /** Ask id → the newest Inbox generation at the moment an event on that ask arrived: the read
+   *  in flight, or the one that last landed, or 0 where the landing seeded the list and no read
+   *  of it has run. */
   pending: Map<string, number>;
-  /** Issue key → the Inbox generation in flight when an event moving every thread on it arrived. */
+  /** Issue key → the same generation, for an event moving every thread on that issue. */
   pendingIssues: Map<string, number>;
 }
 
@@ -33,8 +35,8 @@ function discardEmptyState(queryClient: object, state: FreshnessState): void {
   }
 }
 
-/** Starts an Inbox query generation. A marker records the generation that was in flight when
- * its event arrived, so only a later Inbox request can supersede that marker. */
+/** Starts an Inbox query generation. A marker records the newest generation at the moment its
+ * event arrived, so only an Inbox request made after that event can supersede the marker. */
 export function beginInboxFetch(queryClient: object): number {
   const state = stateFor(queryClient);
   state.latestInboxFetch += 1;

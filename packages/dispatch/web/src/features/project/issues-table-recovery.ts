@@ -6,7 +6,7 @@ import { defineWriteKind, useWrites } from "../writes/write-store";
 import { readTableAction, type TableAction, writeTableAction } from "./issues-table-action-storage";
 import { WRITES_IN_FLIGHT } from "./issues-table-limits";
 
-export type { TableAction } from "./issues-table-storage";
+export type { TableAction } from "./issues-table-action-storage";
 
 // Keep the answer's issue key even when the table that started creation is no longer mounted.
 export const tableEpicWrite = defineWriteKind<string>({

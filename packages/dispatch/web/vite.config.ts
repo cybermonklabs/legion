@@ -114,14 +114,19 @@ export default defineConfig({
     dedupe: ["prosemirror-model"],
     alias: {
       "decode-named-character-reference": characterReferenceDecoder,
-      // Each module of `@legion/contracts` this bundle reads a value from, named before the
-      // package itself: Vite's alias matches a prefix, so `@legion/contracts` alone would
-      // resolve every subpath to a path inside `index.ts`. The subpaths are what keeps the
-      // barrel out of this bundle - one import of it reaches every module of the package, and
-      // rollup may drop none whose top level builds anything, which is how the whole
-      // `DISPATCH_TEXT_REFERENCES` table and zod's schema modules were in the entry chunk of a
-      // page that reads neither (dispatch://INFRA-1109, R13). Each is published by that
-      // package's own `exports`, which is what Bun, tsc and every other consumer read.
+      // Every subpath of `@legion/contracts` this tree reads, named before the package itself:
+      // Vite's alias matches a prefix, so `@legion/contracts` alone would resolve every subpath
+      // to a path inside `index.ts`. The subpaths are what keeps the barrel out of this bundle
+      // - one import of it reaches every module of the package, and rollup may drop none whose
+      // top level builds anything, which is how the whole `DISPATCH_TEXT_REFERENCES` table and
+      // zod's schema modules were in the entry chunk of a page that reads neither
+      // (dispatch://INFRA-1109, R13). Each is published by that package's own `exports`, which
+      // is what Bun, tsc and every other consumer read. Three keys are read by no shipped module
+      // of this bundle today - `dispatch-api` by nothing in the repository, `dispatch-tools` by
+      // one `import type` the compiler erases, and `dispatch-text-references` by three Bun
+      // tests, which resolve through `exports` and never see this config - and they are kept so
+      // that a value import of one resolves to its module rather than being rewritten into
+      // `index.ts` by the bare key below it.
       "@legion/contracts/actor-label": fileURLToPath(
         new URL("../../contracts/src/actor-label.ts", import.meta.url)
       ),
@@ -196,7 +201,7 @@ export default defineConfig({
     // Every size here was measured with `bun run build:web` on 2026-11-12, at this head. The
     // largest chunk is ECharts (an `index-*.js` of 1,134,772 bytes raw), which only the
     // Delivery page loads, and the entry - the one `assets/index-*.js` that dist/index.html
-    // names - is 490,159 bytes, down from 1,028,690 before dispatch://INFRA-1109 split the
+    // names - is 490,184 bytes, down from 1,028,690 before dispatch://INFRA-1109 split the
     // shell: the Inbox and its peek, the ask card, the search bar, the Create issue dialog,
     // the shortcut sheet, the reference-preview layer and the event-refresh map are each a
     // chunk of their own now, and `@legion/contracts`' subpaths keep that package's reference

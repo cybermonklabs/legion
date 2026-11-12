@@ -18,11 +18,6 @@
 # blob download `actions/download-artifact` could not complete and exits 0: that step has
 # already failed the job, and this one exists only to say what kind of failure it was.
 #
-# `machine-time` makes no request either: it reads the file `jobs` wrote, sums the seconds of
-# every job of this run that has concluded except the merge job itself, and fails the job above
-# the lane's budget. Its own branch below carries the budgets, where they came from and why
-# they are lower than R5's own bounds.
-#
 # That line names the download step and this run's attempt and nothing else, because this job
 # knows nothing else. The download step passes no `github-token`, so the action never reads
 # `repos/<owner>/<repo>/actions/runs/<id>/artifacts`: it lists over the internal Twirp
@@ -34,6 +29,11 @@
 # Which of those it was is in that step's own error line in this job's log, which this mode
 # cannot read, so the line names neither a route nor a retry count nor what a re-run would
 # find on the run.
+#
+# `machine-time` makes no request either: it reads the file `jobs` wrote, sums the seconds of
+# every job of this workflow that concluded with a duration, this merge job and every skipped
+# job apart, and fails the job above the lane's budget. Its own branch below carries the
+# budgets, where they came from and why they are lower than R5's own bounds.
 #
 # Why the route is the attempt endpoint and not `filter=all`. The merge job read
 # `.../runs/<id>/jobs?filter=all&per_page=100`, which lists every attempt's jobs, so each re-run
@@ -310,8 +310,8 @@ case "$mode" in
         test("(^| )(binaries|shard|alone|multiprocess|embedder|visual|merge)( \\(|$)"))]
       | map({id, name, conclusion, started_at, completed_at,
           leg: ((.name | capture("(^| )shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
-            // (if (.name | test("(^| )alone$")) then "alone" else null end)
-            // null)})' "$pages" > "$out_file"
+            // (if (.name | test("(^| )alone$")) then "alone" else null end))})' \
+      "$pages" > "$out_file"
     ;;
   blobs-refused)
     [ "$#" -eq 1 ] || usage "$@"
@@ -358,22 +358,27 @@ case "$mode" in
     # THE BOUND, AND WHY IT IS NOT R5's OWN. R5 of dispatch://INFRA-1109/spec holds a full lane
     # to 2,040 s and a pull-request lane to 900 s, over every job of the run. This reading is
     # short of one job - its own - so the figure it holds the others to is that bound less this
-    # job's own measured maximum:
+    # job's own worst case, which is `merge_maximum` below and is subtracted from each bound in
+    # one place:
     #
-    #   full lane:         2,040 - 36 = 2,004 s
-    #   pull-request lane:   900 - 36 =   864 s
+    #   full lane:         2,040 - 37 = 2,003 s
+    #   pull-request lane:   900 - 37 =   863 s
     #
-    # The 36 s is measured, not allowed for: the `dispatch-browser / merge` job took 36 s in
-    # run 43045412941, 28 s in 43074443876, 33 s in 43079610268 and 22 s in 43002633713 (the
-    # pull-request lane), and 36 s at the merge base, job 129810291860 of run 42809067358 - the
-    # five runs this issue reads, from the jobs API on 2026-11-11. The merge job's own budget
-    # comment in dispatch-browser.yaml holds another sample, the 32 concluded merge jobs of the
-    # last 43 ci.yaml runs of 2026-11-08, whose maximum is 34 s; 36 s is the larger of the two
-    # readings, which is why it is the one taken off. That job's timeout-minutes is 4, so a
-    # merge job above either figure and not cancelled is one whose seconds both comments then
-    # understate, and this budget is the looser for it by exactly the difference.
+    # The 37 s is 36 s measured plus 1 s this file's own new step. The 36 s is measured, not
+    # allowed for: the `dispatch-browser / merge` job took 36 s in run 43045412941, 28 s in
+    # 43074443876, 33 s in 43079610268 and 22 s in 43002633713 (the pull-request lane), and
+    # 36 s at the merge base, job 129810291860 of run 42809067358 - the five runs this issue
+    # reads, from the jobs API on 2026-11-11. The merge job's own budget comment in
+    # dispatch-browser.yaml holds another sample, the 32 concluded merge jobs of the last 43
+    # ci.yaml runs of 2026-11-08, whose maximum is 34 s; 36 s is the larger of the two
+    # readings, which is why it is the one taken off. Every one of those jobs ran before the
+    # step this mode is the body of, so neither sample holds it, and the 1 s on top is what
+    # that job's budget comment allots it - one jq over a file an earlier step wrote, with no
+    # request of its own. That job's timeout-minutes is 4, so a merge job above the whole
+    # figure and not cancelled is one whose seconds both comments then understate, and this
+    # budget is the looser for it by exactly the difference.
     # Subtracting the maximum rather than the median is what keeps this reading stricter than
-    # R5 and never looser: a lane that passes here at 2,004 s and then spends a worst-case 36 s
+    # R5 and never looser: a lane that passes here at 2,003 s and then spends a worst-case 37 s
     # in this job lands on R5's 2,040 exactly.
     #
     # The same bound read after the run, over every job of it and this one included, is R5's
@@ -392,11 +397,9 @@ case "$mode" in
     case "$lane" in
       full)
         bound=2040
-        budget=2004
         ;;
       pull-request)
         bound=900
-        budget=864
         ;;
       *)
         echo "::error::dispatch-browser-run-reads.sh machine-time takes the lane this run is," \
@@ -404,8 +407,11 @@ case "$mode" in
         exit 1
         ;;
     esac
-    # This job's own measured maximum, the one the two budgets above are the bound less.
-    merge_maximum=36
+    # This job's own worst case, and the one subtraction both lanes' budgets are: a figure
+    # changed here moves each budget with it, where a budget written out beside its bound could
+    # leave this job's seconds counted twice or not at all.
+    merge_maximum=37
+    budget=$(( bound - merge_maximum ))
     if [ ! -f "$jobs_file" ]; then
       echo "::error::this run's machine time could not be summed: the jobs of this run are" \
         "read from $jobs_file and that file is not there, so the $lane lane was held to no" \
@@ -430,8 +436,10 @@ case "$mode" in
         "a refused reading and not a lane inside its budget."
       exit 1
     }
-    count=$(wc -l < "$measured" | tr -d ' ')
-    seconds=$(awk -F'\t' '{ total += $1 } END { print total + 0 }' "$measured")
+    # Both numbers in one pass, with the guard above the sum they are read for: a reading of no
+    # job at all is refused rather than summed to zero.
+    read -r count seconds <<<"$(awk -F'\t' '{ total += $1 } END { print NR, total + 0 }' \
+      "$measured")"
     if [ "$count" -eq 0 ]; then
       echo "::error::no job of this $lane lane has concluded with a duration, so its machine" \
         "time could not be summed and the lane was held to no budget. This is a refused" \
@@ -452,13 +460,13 @@ case "$mode" in
         echo
         echo "The $count concluded jobs of this $lane lane, this merge job apart, cost" \
           "$seconds s against a budget of $budget s, which is R5's $bound s less this job's" \
-          "own measured maximum of $merge_maximum s."
+          "own worst case of $merge_maximum s."
       } >> "$GITHUB_STEP_SUMMARY"
     fi
     if [ "$seconds" -gt "$budget" ]; then
       echo "::error::this $lane lane has cost $seconds s of machine time over its $count" \
         "concluded jobs, this merge job apart, which is above the $budget s they are held to:" \
-        "R5's bound of $bound s for this lane, less this job's own measured maximum of" \
+        "R5's bound of $bound s for this lane, less this job's own worst case of" \
         "$merge_maximum s, which a reading taken inside the run cannot hold. The table in this" \
         "run's summary names each job's seconds. This is the suite costing more machine time" \
         "than dispatch://INFRA-1109 left it costing, and not a failed browser row."
@@ -466,7 +474,7 @@ case "$mode" in
     fi
     echo "::notice title=dispatch-browser machine time::the $lane lane cost $seconds s over" \
       "$count concluded jobs, this merge job apart, against a budget of $budget s ($bound s" \
-      "less this job's own measured maximum of $merge_maximum s)"
+      "less this job's own worst case of $merge_maximum s)"
     ;;
   *)
     usage "$@"
