@@ -214,9 +214,10 @@ go test -timeout 20m ./internal/dispatch/api
 
 A Legion issue pod does not run that whole package: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
 
-CI's `envoy-go` job runs it that way, alone and before the module's other packages
-(`.github/workflows/ci.yaml`), and `envoy-go-race-api`, the race job that runs that package by
-itself, gives it 30 minutes; `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
+CI leaves that package out of `envoy-go`'s package list and runs it under `-race` in
+`envoy-go-race-api`, the job that runs it by itself, which gives it 27 minutes
+(`.github/workflows/ci.yaml`); `docs` runs under `-race` in `envoy-go-race-docs`, which gives it
+55. Of that package `envoy-go` keeps only the few tests the race build cannot make, by name.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
@@ -318,6 +319,24 @@ process and removes the directory when `testbuild.Main` ends the run.
 A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): the server
 `DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on
 `packages/envoy/scripts/dev-postgres.sh`'s container.
+
+**The template stays, and that is the one exception to "a test drops every database it makes".**
+Both harnesses clone from one migrated template.
+Applying 210 Dispatch migrations, each in its own committed transaction, cost about 21 s of every test process that wanted a database (measured on a two-core pod: `internal/dispatch/events` ran in 60 s building a template and 39 s cloning one already there), and a lane runs about twenty packages on the Dispatch harness and thirteen on the broker's.
+The template is named `dispatch_template_<fingerprint>` or `broker_template_<fingerprint>`, where the fingerprint digests the migration set the build embeds (`store.MigrationsFingerprint`): the first process to want it builds it under a cluster-wide advisory lock, under a `…_building_<random>` name it is renamed out of only once every migration is applied, and every process after it clones what is already there.
+
+No process drops it.
+The test processes of one run start minutes apart, so a process that dropped the template on its way out would take it from the processes still cloning it, and no process can know it is the last.
+A developer or operator who finds a `dispatch_template_…` or `broker_template_…` database on a server is looking at that: a read-only copy of one migration set's schema, holding no row any test wrote, left for the next test process.
+A set that gains, loses or edits a migration gets a template of its own, so no run clones a stale schema; what a stale template costs is 13 MB on a server that outlives the run.
+CI's Postgres is a container deleted with the job.
+On a long-lived server, such as `packages/envoy/scripts/dev-postgres.sh`'s, reclaim them by hand:
+
+```sh
+psql "$DISPATCH_TEST_DATABASE_URL" -tAc \
+  "select datname from pg_database where datname like 'dispatch\_template\_%' or datname like 'broker\_template\_%'" |
+  xargs -r -n1 -I{} psql "$DISPATCH_TEST_DATABASE_URL" -c 'drop database "{}"'
+```
 
 ## A test Postgres's five settings
 

@@ -320,10 +320,9 @@ func ciReconcileCursorSuitesPath(number int) string {
 }
 
 // cursorGitHub is the loopback GitHub the cursor test's process calls: the installation lookup
-// and the token mint, the repository's identity, its ten open pull requests and each head's two
-// listings, and the one-shot rate limit a test arms on one of those reads.
+// and the token mint, the repository's identity, its ciReconcileCursorHeads open pull requests
+// and each head's two listings, and the one-shot rate limit a test arms on one of those reads.
 type cursorGitHub struct {
-	t      *testing.T
 	server *httptest.Server
 
 	mu sync.Mutex
@@ -364,7 +363,7 @@ func (g *cursorGitHub) limited(w http.ResponseWriter, r *http.Request) bool {
 // and the webhook redelivery sweep's own listing answers empty.
 func startCIReconcileCursorGitHub(t *testing.T) *cursorGitHub {
 	t.Helper()
-	github := &cursorGitHub{t: t, limits: map[string]time.Duration{}}
+	github := &cursorGitHub{limits: map[string]time.Duration{}}
 	write := func(w http.ResponseWriter, status int, payload any) {
 		body, err := json.Marshal(payload)
 		if err != nil {
@@ -394,7 +393,7 @@ func startCIReconcileCursorGitHub(t *testing.T) *cursorGitHub {
 		// with a null repository and a FORBIDDEN entry rather than with an HTTP error. The
 		// pass then reads that repository's open pull requests and every head of it over REST,
 		// two requests a head, which is the read this test's cursor walks: a pass every query
-		// of which answered would cover ten heads in one query and leave no cursor to prove.
+		// of which answered would cover every head in one query and leave no cursor to prove.
 		write(w, http.StatusOK, map[string]any{
 			"data": map[string]any{
 				"rateLimit":  map[string]any{"cost": 1, "remaining": 4999, "resetAt": time.Now().Add(time.Hour).Format(time.RFC3339)},

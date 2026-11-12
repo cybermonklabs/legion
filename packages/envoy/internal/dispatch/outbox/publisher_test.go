@@ -1286,7 +1286,7 @@ func TestADeclineTellsEveryFollowingSessionInDispatchsOwnWords(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "decline publication", func() bool {
+	waitFor(t, eventWait, "decline publication", func() bool {
 		return len(publisher.all()) == len(wantTopics) && publishedAt(t, database, event.ID) != nil
 	})
 	items := publisher.all()

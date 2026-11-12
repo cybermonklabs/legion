@@ -308,6 +308,7 @@ func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 // pass is for - an issue the queue holds no row of - reached without the superuser setting
 // that turns triggers off (withTriggersOff).
 func TestCoverLabelsTheIssueRowItAddsWithTheIssuesProject(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "PRJK", "PRJK-1", "An issue the queue holds no row of")
 	mustExec(t, database.Pool, `delete from embeddings where kind = 'issue' and id = 'PRJK-1'`)

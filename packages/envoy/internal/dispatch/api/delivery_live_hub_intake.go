@@ -30,6 +30,19 @@ func (h *deliveryHub) intake(g *hubGeneration) {
 		if held {
 			feed.cancel()
 		}
+		// The seed sends its feed into a channel of one, so a send can land while g is still
+		// live and this goroutine return on g's end before it takes it. Nobody would then
+		// cancel that subscription, and the relay would keep its generation, and its wait, for
+		// a feed no goroutine will ever take. This goroutine is the channel's only reader and
+		// it is returning, so whatever stands in it now is nobody's (dispatch://INFRA-1075).
+		for {
+			select {
+			case taken := <-g.feeds:
+				taken.feed.cancel()
+			default:
+				return
+			}
+		}
 	}()
 	for attempt := 1; !h.readChangeCursor(g); attempt++ {
 		if !waitFor(g.ctx, pglisten.RedialBackoff(attempt)) {

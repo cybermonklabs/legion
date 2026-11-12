@@ -70,15 +70,23 @@ if [ "${1:-}" = --throwaway ]; then
       fi
     done < <(printf '%s\n' /usr/lib/postgresql/*/bin | sort -V -r)
   fi
-  if [ ! -x "${bindir}/initdb" ] || [ ! -x "${bindir}/postgres" ]; then
-    refuse "no PostgreSQL server binaries for a throwaway server: no initdb on PATH and none under /usr/lib/postgresql/*/bin." \
-      "Name the directory holding initdb and postgres in DISPATCH_E2E_PG_BIN, or run this script with no argument for the $container container instead."
-  fi
+  # Every program this path runs, not the server alone: a directory holding initdb and postgres
+  # but not pg_isready reaches the readiness loop, where thirty seconds of failed execs end in a
+  # refusal naming a server that is in fact serving.
+  for program in initdb postgres pg_isready createdb; do
+    if [ ! -x "${bindir}/${program}" ]; then
+      refuse "no PostgreSQL ${program} for a throwaway server: none on PATH and none under /usr/lib/postgresql/*/bin." \
+        "Name the directory holding initdb, postgres, pg_isready and createdb in DISPATCH_E2E_PG_BIN, or run this script with no argument for the $container container instead."
+    fi
+  done
   root="$(mktemp -d "${TMPDIR:-/tmp}/dispatch-throwaway-pg.XXXXXX")"
   # UTF8 whatever the host's locale is, since a C locale would otherwise give initdb SQL_ASCII.
   # The collation stays the host's: it is the server's own locales that decide it, and a host
   # with only C locales orders by bytes, which one api test refuses by its own message.
-  if ! "${bindir}/initdb" -D "${root}/data" -U postgres -A trust -E UTF8 >"${root}/initdb.log" 2>&1; then
+  # --no-sync for the same reason the settings below are what they are: this cluster's data dies
+  # with the server, so nothing it writes has to survive a crash, and initdb would otherwise
+  # fsync the whole fresh data directory before it returns.
+  if ! "${bindir}/initdb" -D "${root}/data" -U postgres -A trust -E UTF8 --no-sync >"${root}/initdb.log" 2>&1; then
     refuse "initdb failed in ${root}; its output:" "$(cat "${root}/initdb.log")"
   fi
   # The five settings of every CI job's Postgres service, with their values

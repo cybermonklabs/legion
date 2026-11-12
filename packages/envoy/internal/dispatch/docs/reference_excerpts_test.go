@@ -298,6 +298,14 @@ func TestAFailingDocumentsExcerptsAreRetriedAtGrowingIntervals(t *testing.T) {
 			t.Fatalf("retry %d came %v after the attempt before, inside the %v its own backoff owes it (the base doubled once per failure): a document tried again before its retry falls due fills every batch ahead of the documents that sort after it",
 				index, gap, want)
 		}
+		// A ceiling far above any load this row can meet: a loaded runner read 3.294 s against a
+		// want of about 1.6 s, so a bound at twice the want fires on load and says nothing, where
+		// a backoff that stopped growing upward - one that jumped to minutes, or a due time whose
+		// timer was lost - is an order of magnitude out and fails here whatever the machine.
+		if ceiling := want*10 + 10*time.Second; gap > ceiling {
+			t.Fatalf("retry %d came %v after the attempt before, past the %v this row allows for a backoff of %v: the retry is no longer the backoff doubling",
+				index, gap, ceiling, want)
+		}
 		t.Logf("retry %d came %v after the attempt before, its backoff being %v", index, gap, want)
 	}
 	if !isOwed(t, database, failing) {

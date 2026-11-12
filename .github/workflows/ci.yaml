@@ -4799,17 +4799,16 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # Every go test call of this job and of the race lane is sized from one pair of
-    # workflow_dispatch runs at this head: attempt 1, run 42930887149, and attempt 2, run
-    # 42938867893, both green on every job. R6 sizes a limit from "the call's slowest package,
-    # on the slower attempt", and the subject of that clause is the call, so each limit takes
-    # the LARGER of the pair's two readings for its own call, which can only raise a limit and
-    # never lower one; each figure below names the attempt it came from, which is why two
-    # limits may cite different runs. The jobs themselves measured: envoy-go 694 s on attempt 1
-    # (job 130229106742) against 479 s on attempt 2; envoy-go-race 525 s on attempt 1 (job
-    # 130229106433) against 512 s; envoy-go-race-api 920 s on attempt 2 (job 130255672183)
-    # against 916 s; envoy-go-race-docs 1703 s on attempt 2 (job 130255672370) against 1173 s,
-    # and each job's timeout-minutes is that larger time plus its largest -timeout plus 6
+    # Every go test call of this job and of the race lane is sized from THE LARGEST READING THIS
+    # CHANGE HAS of that call's slowest package, over every measurement pair it ran, each pair
+    # two workflow_dispatch runs of this file at one head. R6 sizes a limit from "the call's
+    # slowest package, on the slower attempt", and the subject of that clause is the call, so a
+    # limit takes the larger reading, which can only raise a limit and never lower one; taking
+    # the largest of every pair is that same rule over every measurement, and it is what makes
+    # a number settle, since a later pair moves one only by reading higher than every pair
+    # before it. Each job's own timeout-minutes is sized the same way, from the largest time
+    # this change measured of that job, and the derivation and the run it was read in stand in
+    # the comment on that job rather than here, so one reading lives in one place
     # (dispatch://INFRA-1075, check 6224bb0e).
     #
     # Each go test call's -timeout meets two conditions. The first is R6's: the limit is the
@@ -4825,15 +4824,19 @@ jobs:
     # Each limit is the smallest whole minute its package's time is at most half of, taking the
     # largest reading this branch has of that package:
     #
-    #   call              slowest package       limit  fills    arithmetic
-    #   the package list  pmdoc 511.6 s          18m   47.4 %   511.6 / 30 = 17.05 -> 18
-    #   race-impossible   docs 234.2 s            8m   48.8 %   234.2 / 30 = 7.81 -> 8
-    #   pgmigrate         pgmigrate 299.3 s      10m   49.9 %   299.3 / 30 = 9.98 -> 10
-    #   shutdown          cmd/dispatch 67.3 s     3m   37.4 %   67.3 / 30 = 2.24 -> 3
-    #   routes            routes 45.3 s           2m   37.8 %   45.3 / 30 = 1.51 -> 2
-    #   natslive (rig)    testnats 7.5 s          1m   12.5 %   7.5 / 30 = 0.25 -> 1
-    #   natslive (cap)    bus 9.1 s               1m   15.2 %   9.1 / 30 = 0.30 -> 1
-    #   integration       integration 9.6 s       1m   16.0 %   9.6 / 30 = 0.32 -> 1
+    #   call              slowest package       limit  fills    read in
+    #   the package list  pmdoc 511.6 s          18m   47.4 %   run 43120324547, job 130874347417
+    #   race-impossible   docs 234.2 s            8m   48.8 %   run 43021338811
+    #   pgmigrate         pgmigrate 299.3 s      10m   49.9 %   run 43129905604
+    #   shutdown          cmd/dispatch 67.3 s     3m   37.4 %   run 43021338811
+    #   routes            routes 45.3 s           2m   37.8 %   run 43129905604
+    #   natslive (rig)    testnats 7.5 s          1m   12.5 %   run 43086525158
+    #   natslive (cap)    bus 9.1 s               1m   15.2 %   run 43120324547
+    #   integration       integration 9.6 s       1m   16.0 %   run 43086525158
+    #
+    # Each row is its package's time divided by 30 and rounded up, which is the smallest whole
+    # minute that time is at most half of, and each is the one place that reading is written:
+    # the comment on each call below names its limit and points here.
     #
     # The package list and the race-impossible call are the two whose tests read a margin, and
     # both clear it: 18m leaves 568.4 s over pmdoc's own time, against the 60 s of its
@@ -5248,11 +5251,10 @@ jobs:
           # envoy-go-race-api now. The one -run list is derived in
           # .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
           # //go:build !race and raceEnabled, so a test added to either and missing here fails
-          # the ci-filters job naming this step. -timeout 8m: this call's slowest package on
-          # envoy-go's slower attempt of this change's own pair is internal/dispatch/docs at
-          # 220.6 s (attempt 1, run 42930887149, job 130229106742), which is 46.0 per cent of
-          # 8m and would be 52.5 per cent of 7m. It leaves 259.4 s above that package's own
-          # time, over the 30 s of the documents package's roomWaitMargin.
+          # the ci-filters job naming this step. -timeout 8m: this call's slowest package is
+          # internal/dispatch/docs, whose largest reading and the run it came from are in the
+          # table on this job, and the limit leaves 245.8 s above that reading, over the 30 s of
+          # the documents package's roomWaitMargin.
           #
           # One go test over the three packages rather than one per package: go builds the three
           # test binaries together and runs each package's tests as soon as its own binary is
@@ -5280,9 +5282,8 @@ jobs:
           # ran past 240 s on a slower one, where go killed it mid-test ("panic: test timed out
           # after 4m0s, running tests: TestRedactionAgainstServerOutcomes (3m20s)", run
           # 42856652273). A call's limit is the smallest whole minute at which its slowest
-          # package takes at most half of it, and on envoy-go's slower attempt of this change's
-          # own pair the package took 285.5 s (attempt 1, run 42930887149, job 130229106742):
-          # 47.6 per cent of 10m, where 9m it would fill to 52.9 per cent. No floor stands
+          # package takes at most half of it, and this package's largest reading and the run it
+          # came from are in the table on this job: 10m. No floor stands
           # above that rule here: no test of internal/pgmigrate reads the test binary's
           # deadline, so it declares no margin of its own the way the documents package's
           # roomWaitMargin (30 s) and pmdoc's perCallReportMargin (60 s) are theirs.
@@ -5291,9 +5292,8 @@ jobs:
           # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
           # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
           # its own tests'. It is on the call rather than on the step because every other call
-          # here runs against 5432. -timeout 2m: the package took 44.6 s on envoy-go's slower
-          # attempt of this change's own pair (attempt 1, run 42930887149, job 130229106742),
-          # 37.2 per cent of 2m, where 1m it would fill to 74.3 per cent.
+          # here runs against 5432. -timeout 2m, from this package's largest reading and the run
+          # it came from, which are in the table on this job.
           DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5433/postgres?sslmode=disable go test -json -count=1 -timeout 2m ./internal/dispatch/routes/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
           routes=$!
           # The one untagged test of cmd/dispatch that reads a live event feed, on the third
@@ -5303,11 +5303,10 @@ jobs:
           # direction - routes' own tests hold transaction ids on purpose, and its horizon loop
           # has been blown by a sibling's clone before - so 5434 is named on this call and
           # nowhere else. The package list above skips this test by name, which is unique in the
-          # module (dispatch://INFRA-1075). -timeout 3m: the cmd/dispatch binary this call runs
-          # that one test of took 67.3 s at the larger of this head's pair (attempt 1, run
-          # 43021338811), 37.4 per cent of 3m, where 2m it would fill to 56.1. Two earlier pairs
-          # read it at 58.3 s and 63.0 s, which 2m holds, so this limit follows the measurement
-          # rather than the reading that was smallest.
+          # module (dispatch://INFRA-1075). -timeout 3m, from this package's largest reading and
+          # the run it came from, which are in the table on this job; two earlier pairs read it
+          # at 58.3 s and 63.0 s, which 2m would hold, so the limit follows the largest reading
+          # rather than the smallest.
           DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5434/postgres?sslmode=disable go test -json -count=1 -timeout 3m -run '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' ./cmd/dispatch/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
           shutdown=$!
           # internal/testnats runs its server in the test process, so the package list above
@@ -5330,19 +5329,16 @@ jobs:
           # source at run time, and no test name is spelled here. Each assignment is a line of
           # its own and runs before the call it feeds: under bash -e it carries the script's exit
           # status, so an empty or refused list fails the step instead of running -run "", which
-          # matches every test. -timeout 1m on each call, the smallest whole minute there is:
-          # on envoy-go's slower attempt of this change's own pair internal/testnats took 6.4 s
-          # and internal/bus 6.0 s (attempt 1, run 42930887149, job 130229106742), which fill
-          # it to 10.7 and 10.0 per cent.
+          # matches every test. -timeout 1m on each call, the smallest whole minute there is;
+          # each package's largest reading and the run it came from are in the table on this job.
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
           { go test -json -count=1 -timeout 1m -tags natslive -run "$rig" ./internal/testnats/ &&
             go test -json -count=1 -timeout 1m -tags natslive -run "$cap" -v ./internal/bus/; } > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
           natslive=$!
           # The integration suite, which runs a real NATS server in the test process.
-          # -timeout 1m, the smallest whole minute there is: the package took 4.2 s on
-          # envoy-go's slower attempt of this change's own pair (attempt 1, run 42930887149,
-          # job 130229106742), 7.0 per cent of it.
+          # -timeout 1m, the smallest whole minute there is; the package's largest reading and
+          # the run it came from are in the table on this job.
           go test -json -count=1 -timeout 1m ./internal/integration/ > "$RUNNER_TEMP/go-test-json/integration.json" 2> "$RUNNER_TEMP/go-test-logs/integration.log" &
           integration=$!
           # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
@@ -6590,11 +6586,15 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # One second, as every other Postgres service of this file probes: docker runs the first
+        # health check an interval after the container starts, so at ten a server ready at about
+        # a second is reported healthy at fourteen and the job's first step waits that out
+        # (dispatch://INFRA-1075, and the measurement on envoy-go's own service above).
         options: >-
           --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
+          --health-interval 1s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 50
     env:
       LEGION_E2E_ENVOY_STACK: "1"
       LEGION_E2E_DISPATCH_STACK: "1"

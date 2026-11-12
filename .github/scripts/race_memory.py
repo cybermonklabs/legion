@@ -22,7 +22,7 @@ so what a test binary grows to in its last seconds is never seen: the next walk 
 
 Usage: race_memory.py <command> [args...], for example
 
-    .github/scripts/race_memory.py go test -json -race -count=1 -timeout 54m ./internal/dispatch/docs/
+    .github/scripts/race_memory.py go test -json -race -count=1 -timeout 55m ./internal/dispatch/docs/
 
 It has no options of its own: everything after the script name is the command. RACE_MEM_LIMIT_KB
 sets the limit in kB, 8388608 (8 GiB) when it is unset or empty. The command's stdout is read
