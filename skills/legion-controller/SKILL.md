@@ -52,6 +52,8 @@ because Envoy keeps no copy of a wake sent while no controller ran.
 1. Read `read_state`. Handle each issue whose `phase` is `held` with `holdReason: escalated`, its
    `heldFrom` and the failed claim's `failure` beside it, and
    each root whose `architect.state` is `failed` and whose `phase` is not `done`, as its wake says.
+   The wake's ask procedure (`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`)
+   opens no second ask for a cause that already has one.
    Name in your summary each root at `phase: done` whose `status` is `in_progress`, `testing`,
    `needs_review` or `retro`: Legion runs it no longer, as the `unslotted` wake reports: someone
    else moved it there while it waited for a slot, or it waited on a person (`awaiting_person`) and
@@ -82,6 +84,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `provider-errors on <KEY>` | Name the run and its model in the day's report; send it to the issue's architect; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
 | An architect's escalation | `skill://legion-controller/references/escalation.md` |
 | A finding ask's reference, or its answer | `skill://legion-controller/references/finding-asks.md` |
+| An answer to a park ask (`Park it`, `Leave it admitted`) or a deferral ask (`Defer it`, `Let it run`) | The procedure that opened it: `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` step 4, or `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4 |
 | A clear defect a role sends | `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect` |
 | A finding sent as text | Open an ask ([Findings](#findings-and-the-issues-you-file)) |
 | READY, a scope question, a routing request | `skill://legion-controller/references/backlog-stewardship.md` |

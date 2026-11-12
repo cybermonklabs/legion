@@ -101,8 +101,28 @@ labelled root the weekly plan says to defer is parked by you at your next backlo
 before, and only when the plan's line names a person's request to defer it: `set_status` it to
 `backlog`, or to `icebox` for a longer deferral, and cite that request in a comment on the issue.
 Park a root only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
-A plan row you wrote with no such request behind it moves nothing:
-open a `dispatch ask` on the report issue that asks the person whether to defer that root, with
-the options `Defer it` and `Let it run`, and name the row and that ask in the day's report until
-they answer. The cost is the architect's work between the daemon's
-`todo` and your park.
+A plan row you wrote with no such request behind it moves nothing. Ask the person whether to
+defer that root instead:
+
+1. Look for your earlier ask for that row. Read the root's comments with the command of
+   `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` step 1, with
+   `Asked whether to defer: ` in place of `Asked whether to park: `, and take the newest that
+   names that row. A comment or a reply from any session counts as yours. When its ask is open,
+   open nothing and post nothing. When it is answered, and no reply of yours under it starts
+   `Deferred dispatch://` or `Let run dispatch://`, act on its answer now (step 4). When your
+   reply under it starts with one of those, the person decided already: open nothing and post
+   nothing.
+2. Otherwise open a `dispatch ask` on the report issue that names the root and the plan row and
+   asks the person whether to defer that root, with the options `Defer it` and `Let it run`.
+   Follow it (`dispatch follow --ask '<ref>' --action follow`). Post one comment on the root
+   (`dispatch comment --issue <root> --body-file -`). Make its first line
+   `Asked whether to defer: dispatch://<REPORT KEY>/ask/<id>`, and name the plan row under it.
+3. Name the row and that ask in the day's report until the person answers.
+4. On `Defer it`, park the root as above, and cite the answer in a comment on the issue. On
+   `Let it run`, move nothing, and take the deferral off that plan row with `dispatch doc-edit`,
+   as step 4 of [Reconcile the weekly plan](#reconcile-the-weekly-plan) edits a row, so that the
+   next backlog pass asks nothing. Either way, reply under the ask with what you did, its first
+   line exactly `Deferred dispatch://<root>` or `Let run dispatch://<root>`:
+   `dispatch comment --issue <REPORT KEY> --reply-to-ask '<ask id>' --body-file -`.
+
+The cost is the architect's work between the daemon's `todo` and your park.

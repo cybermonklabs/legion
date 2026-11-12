@@ -35,9 +35,9 @@ answer to your ask, a mention), Envoy or Slack. No `legion controller start` can
   call mints its grant in-process from the secret the session registered with, so a stale secret
   fails it with a 403.
   Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
-  Cite that reason in a comment on the issue. A root's restart is not that move: it sets `backlog` and then
-  `todo` in the same turn. You cannot set `done`: only an issue's architect or the daemon closes
-  an issue.
+  Cite that reason in a comment on the issue. Two writes are not that move: a root's restart,
+  which sets `backlog` and then `todo` in the same turn, and the report issue, which holds no
+  work. You cannot set `done`: only an issue's architect or the daemon closes an issue.
 
 ## `gh`
 
