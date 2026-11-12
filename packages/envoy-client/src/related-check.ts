@@ -215,7 +215,10 @@ function otherProjectLines(suggestions: Suggestions, configUrl: string): string[
 /**
  * One item's lines: the line that names it and links it, and, for an ask, where the ask stands.
  * `namesProject` puts the item's project first, which an item of another project needs and an
- * item of the asking project does not. An item whose owner names no project prints without one.
+ * item of the asking project does not. It goes on an issue owner's label alone: a document
+ * owner's label already spells the project (`<name> (<project>/<slug>)`), and the asks a
+ * cross-project check offers include asks owned by a project's documents. An item whose owner
+ * names no project prints without one.
  */
 function relatedItemLines(
   item: WriteSuggestion,
@@ -223,12 +226,13 @@ function relatedItemLines(
   namesProject = false
 ): string[] {
   try {
+    const label = suggestionLabel(item);
     const project = item.owner.project;
-    const label =
-      namesProject && project !== undefined && project !== ""
-        ? `${project}: ${suggestionLabel(item)}`
-        : suggestionLabel(item);
-    const lines = [`- ${label} → ${absoluteHref(item.href, configUrl)}`];
+    const named =
+      namesProject && item.owner.kind === "issue" && project !== undefined && project !== ""
+        ? `${project}: ${label}`
+        : label;
+    const lines = [`- ${named} → ${absoluteHref(item.href, configUrl)}`];
     if (item.kind === "ask") {
       lines.push(...askLines(item.ask));
     }

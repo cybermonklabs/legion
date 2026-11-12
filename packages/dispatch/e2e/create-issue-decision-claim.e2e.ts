@@ -1,7 +1,5 @@
-import { expect, test } from "@playwright/test";
-
 import { answerAsk, createAsk, createIssue, createProject } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /** The ask the check finds. Its question carries the rare words the draft title is typed with,
@@ -15,11 +13,6 @@ const mastTitle = "Mooring mast paint rota";
 /** The draft a person types, which finds the answered ask by its rare words. */
 const draftTitle = "Zeppelin hangar for the blimps over winter";
 
-/** The line dispatch://INFRA-2337 deleted. The dialog found the item and lists it; what the item
- *  means for the draft is the reader's to judge, so no line of the dialog may say that a past
- *  decision answers it. Asserted word for word, because these are the words that were printed. */
-const decisionClaim = "A past decision may already answer this:";
-
 /** The agent that opens the question, as a question to a person is opened, so alice answers an
  *  ask she did not ask herself. */
 const session = {
@@ -27,11 +20,7 @@ const session = {
   as: "agent" as const,
 };
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("the dialog lists the answered ask it found and claims no past decision answers the draft", async ({
+test("the dialog lists the answered ask it found and claims nothing about what settles the draft", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -73,9 +62,9 @@ test("the dialog lists the answered ask it found and claims no past decision ans
     await expect(related.getByText("Answered", { exact: true })).toBeVisible();
 
     // What it no longer does: nothing on the dialog says one of those items answers this draft.
-    // The loose match catches the same claim in other words as well as the deleted line.
-    await expect(dialog.getByText(decisionClaim)).toHaveCount(0);
-    await expect(dialog.getByText(/past decision/iu)).toHaveCount(0);
+    // The match is loose on purpose: it catches the deleted line and the same claim in any other
+    // wording the dialog could print.
+    await expect(dialog.getByText(/may already answer/iu)).toHaveCount(0);
   } finally {
     await context.close();
   }

@@ -446,23 +446,27 @@ func (s *server) runRelatedCheck(
 			reason = relatedReasonMeaningFailed
 			break
 		}
-		// The cross-project leg reads on a connection mark of its own, and both marks are taken
-		// here, before beginMeaningScan opens the one-project transaction: Pool.Begin marks the
+		// The cross-project leg reads on a connection mark of its own, taken only where the
+		// write is a question, since no other check runs that leg. Both marks are taken here,
+		// before beginMeaningScan opens the one-project transaction: Pool.Begin marks the
 		// context it is given, and a later ForConcurrentRead on a marked context is refused
 		// (store.ErrNestedAcquire). Where this mark is refused, that leg alone is dropped and
 		// the stage runs as it runs without it.
 		//
-		// One check held two marks; this makes three. One document edit runs up to
+		// One check held two marks; a question's makes three. One document edit runs up to
 		// decisionBlockCheckLimit (5) checks at once, so an edit moves from 10 to 15
 		// connections of a shared pool of 64 (store.sharedPoolSize). That is accepted.
-		crossRead, crossErr := store.ForConcurrentRead(meaningCtx)
-		if crossErr != nil {
-			crossRead = nil
+		var crossRead context.Context
+		if input.question {
+			read, crossErr := store.ForConcurrentRead(meaningCtx)
+			if crossErr == nil {
+				crossRead = read
+			}
 		}
 		meaningDone = meaningCtx.Done()
 		meaning = make(chan relatedStage, 1)
 		go func() {
-			stage := s.relatedMeaningStage(meaningRead, crossRead, project, input.text, pick, excluded, input.question)
+			stage := s.relatedMeaningStage(meaningRead, crossRead, project, input.text, pick, excluded)
 			stage.took = time.Since(stagesStarted)
 			meaning <- stage
 		}()
@@ -487,14 +491,11 @@ func (s *server) runRelatedCheck(
 	var answer relatedStage
 	answered := false
 	if meaning != nil {
+		var stage relatedStage
+		got := false
 		select {
-		case stage := <-meaning:
-			record.meaningMS = milliseconds(stage.took)
-			if stage.reason == "" {
-				answer, answered = stage, true
-			} else {
-				reason = stage.reason
-			}
+		case stage = <-meaning:
+			got = true
 		case <-meaningDone:
 			// Both channels can be ready at once, and Go then picks between them at random,
 			// which would have one check answer meaning_and_keywords and the next fall back to
@@ -503,16 +504,19 @@ func (s *server) runRelatedCheck(
 			// deadline (crossProjectGraceMargin), which makes this a safety net rather than the
 			// rule.
 			select {
-			case stage := <-meaning:
-				record.meaningMS = milliseconds(stage.took)
-				if stage.reason == "" {
-					answer, answered = stage, true
-				} else {
-					reason = stage.reason
-				}
+			case stage = <-meaning:
+				got = true
 			default:
 				record.meaningMS = milliseconds(time.Since(stagesStarted))
 				reason = relatedReasonMeaningTimeout
+			}
+		}
+		if got {
+			record.meaningMS = milliseconds(stage.took)
+			if stage.reason == "" {
+				answer, answered = stage, true
+			} else {
+				reason = stage.reason
 			}
 		}
 	}
@@ -561,12 +565,13 @@ func (s *server) runRelatedCheck(
 // reason is empty when it answered and names why it did not otherwise; ctx ends at the meaning
 // allowance.
 //
-// question says the check's own write is a question (relatedInput.question). Such a check also
-// reads the answered questions of the other projects (relatedOtherProjects), on crossRead: the
-// second connection mark runRelatedCheck took for it, nil where the pool refused it. That leg
-// starts as soon as the embedding is in hand, before the wait on pick.ready, because it needs
-// the vector alone and starting it there gives it the most time. It reuses this stage's own
-// embedding, so the check calls the embedding service no more often than it does without it.
+// crossRead is the second connection mark runRelatedCheck took for the cross-project leg, which
+// it takes only where the check's own write is a question (relatedInput.question), and nil
+// where it took none or the pool refused it. With a mark in hand this stage also reads the
+// answered questions of the other projects (relatedOtherProjects). That leg starts as soon as
+// the embedding is in hand, before the wait on pick.ready, because it needs the vector alone
+// and starting it there gives it the most time. It reuses this stage's own embedding, so the
+// check calls the embedding service no more often than it does without it.
 //
 // The one-project response is the stage's answer whenever it has one. A cross-project leg that
 // failed, that overran its grace or that found nothing leaves that response whole, with no
@@ -581,7 +586,7 @@ func (s *server) runRelatedCheck(
 // it not, the bound this server holds on its own query would reach the writer as "meaning search
 // failed", which is what the check says when something broke.
 func (s *server) relatedMeaningStage(
-	ctx, crossRead context.Context, project, text string, pick *relatedPick, excluded []string, question bool,
+	ctx, crossRead context.Context, project, text string, pick *relatedPick, excluded []string,
 ) relatedStage {
 	failed := func(reason string, err error) relatedStage {
 		if ctx.Err() != nil || meaningStatementEnded(err) {
@@ -597,7 +602,7 @@ func (s *server) relatedMeaningStage(
 		return failed(relatedReasonEmbedFailed, err)
 	}
 	var cross chan []model.SearchResult
-	if question && crossRead != nil {
+	if crossRead != nil {
 		// The leg runs on a context of its own, cancelled when this function returns, which is
 		// where the grace below ends: an overrunning query then gives its pool connection back
 		// at the grace rather than at the meaning deadline.

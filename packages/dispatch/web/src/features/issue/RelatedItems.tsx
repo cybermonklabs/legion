@@ -108,13 +108,13 @@ function RelatedForm({
   title: string;
 }): ReactNode {
   const check = relatedCheckFormOf(suggestions);
-  let form: ReactNode;
   if (check.form === "not_made") {
-    form = (
+    return (
       <p className={textMutedOnSurface}>{notMadeText(check.reason, title, check.searchQuery)}</p>
     );
-  } else if (check.form === "items") {
-    form = (
+  }
+  if (check.form === "items") {
+    return (
       <>
         <p className={`font-medium ${textSecondaryOnSurface}`}>
           {/* A server predating the forms names no search mode, so the heading names none. */}
@@ -133,16 +133,14 @@ function RelatedForm({
         </ul>
       </>
     );
-  } else {
-    form = (
-      <p className={textMutedOnSurface}>
-        {check.mode === undefined
-          ? "Related-item check searched and found nothing."
-          : `Related-item check searched (${check.mode}) and found nothing.`}
-      </p>
-    );
   }
-  return form;
+  return (
+    <p className={textMutedOnSurface}>
+      {check.mode === undefined
+        ? "Related-item check searched and found nothing."
+        : `Related-item check searched (${check.mode}) and found nothing.`}
+    </p>
+  );
 }
 
 /** A suggestion's kind as the badge says it. The kind reaches the browser as the string the route

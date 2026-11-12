@@ -14,18 +14,23 @@
 -- check (internal/dispatch/store/README.md).
 --
 -- The new check keeps `decision`, so every row already written stays valid. No release after this
--- one writes a new row of that role, because the check no longer claims that a past decision
--- answers the write, but the stored rows of that role are the record of what earlier checks
+-- one writes a new row of that role, because the check no longer claims that an earlier answer
+-- settles the write, but the stored rows of that role are the record of what earlier checks
 -- offered, and the sweep and the counts read them as before.
 --
 -- No row is backfilled and no row is rewritten: the role of a stored row is what the check that
 -- wrote it offered, and the census refuses a migration that rewrites rows.
 --
--- Adding a check constraint scans write_suggestions under the ACCESS EXCLUSIVE lock this statement
--- takes, so the hold grows with the table. Every stored row satisfies the new check, since the one
--- it replaces is narrower, so the scan refuses none. Its identifier is the UTC moment it was
--- written, as `migrationid` requires of every migration past the numbered series, which closed at
--- 0161 (cmd/dispatch/README.md, "Database migrations").
+-- The add records the check in the catalog and scans no stored row (`not valid`), which is the
+-- rule for a constraint a migration adds to a table that already has rows
+-- (packages/envoy/cmd/dispatch/README.md): the statement takes ACCESS EXCLUSIVE on
+-- write_suggestions for the catalog write alone, so its hold does not grow with the table. The
+-- check still refuses every row written or updated after it, which is what the new role needs.
+-- That no stored row would violate it is what the census beside this file shows, and no release
+-- validates it: the check it replaces is narrower, so every row the table holds already satisfies
+-- the new one. Its identifier is the UTC moment it was written, as `migrationid` requires of every
+-- migration past the numbered series, which closed at 0161 (cmd/dispatch/README.md, "Database
+-- migrations").
 alter table write_suggestions
     drop constraint write_suggestions_role_check,
-    add constraint write_suggestions_role_check check (role in ('related', 'decision', 'other_project'));
+    add constraint write_suggestions_role_check check (role in ('related', 'decision', 'other_project')) not valid;

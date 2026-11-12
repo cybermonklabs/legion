@@ -411,6 +411,19 @@ func TestCrossProjectRelatedSkipsAsksThatDoNotQualify(t *testing.T) {
 		 where id = $1`, resolved); err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("resolve the answered ask %s: %v (%d rows)", resolved, err, tag.RowsAffected())
 	}
+	// A write of an ask's answer marks it owed a block index and owed its windows
+	// (item_blocks_owe, migration 20261107194001), and the statement above writes that column.
+	// The marks are this statement's own artefact: no route writes this row, so nothing in the
+	// server owes the arms anything for it, and they are cleared here so the parts and the
+	// windows the answer was indexed into stay as they are, which is what this ask stands for.
+	// Left standing, the window arm would read the row's parts, find them out of step with the
+	// part rows the index holds - the answer part this statement took off the row - and window
+	// the ask to nothing (refs.WriteItemWindows, currentItemBlockIDs).
+	if tag, err := database.Pool.Exec(context.Background(),
+		`update ask_block_state set owed_at = null, windows_owed_at = null where ask_id = $1`,
+		resolved); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("clear the index marks of the settled ask %s: %v (%d rows)", resolved, err, tag.RowsAffected())
+	}
 
 	requested := sessionRequest(t, handler, http.MethodPost,
 		"/api/v1/artifacts/"+owner.PrimaryArtifactID+"/approval-requests", map[string]any{"actor": sessionActor()})

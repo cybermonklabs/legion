@@ -1357,6 +1357,56 @@ describe("the answered questions of other projects", () => {
     );
   });
 
+  // A document owner's label already spells its project, so the row must not spell it twice.
+  test("an ask owned by another project's document names that project once", async () => {
+    const runbookAsk: WriteSuggestion = {
+      kind: "ask",
+      owner: {
+        artifact_id: "document-7",
+        kind: "document",
+        name: "Delivery runbook",
+        project: "OPS",
+        slug: "delivery-runbook",
+      },
+      id: "a7",
+      snippet: "Should webhook deliveries back off?",
+      href: "/projects/OPS/documents/delivery-runbook?ask=a7",
+      ask: {
+        state: "answered",
+        answer: {
+          user: "sami",
+          selected: [],
+          text: "Back off exponentially.",
+          at: "2026-09-12T13:20:00Z",
+        },
+      },
+    };
+    const result = await executeWrite(
+      "dispatch_ask",
+      question,
+      advice({
+        suggestions: {
+          outcome: "found",
+          search: "meaning_and_keywords",
+          related: [ownItem],
+          other_projects: [runbookAsk],
+        },
+      })
+    );
+
+    expect(result.text).toBe(
+      [
+        askedLine,
+        ...ownLines,
+        "Answered questions in other projects:",
+        "- Delivery runbook (OPS/delivery-runbook) → http://dispatch.test/projects/OPS/documents/delivery-runbook?ask=a7",
+        "  Answered by sami at 2026-09-12T13:20:00Z · options chosen: none",
+        "  Answer text: Back off exponentially.",
+        followsLine,
+      ].join("\n")
+    );
+  });
+
   test("dispatch_doc_edit prints them under the new block's own items", async () => {
     const result = await executeWrite(
       "dispatch_doc_edit",

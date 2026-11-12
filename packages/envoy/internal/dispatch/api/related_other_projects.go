@@ -142,8 +142,6 @@ func (s *server) relatedOtherProjects(
 				Status:  deref(issueStatus),
 				Project: rowProject,
 			}
-			// The legacy mirror of the owner, as scanSearchRows writes it.
-			result.Issue = &model.SearchIssue{Key: *issueKey, Title: deref(issueTitle), Status: deref(issueStatus)}
 		} else {
 			result.Owner = model.SearchOwner{
 				Kind:       "document",
