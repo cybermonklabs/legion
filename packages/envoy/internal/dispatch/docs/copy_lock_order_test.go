@@ -7,9 +7,11 @@ import (
 )
 
 // Two project sets whose keys collide in hashtext in opposite key order - hashtext('HNDC') =
-// hashtext('KLVN') and hashtext('CCKH') = hashtext('MBHM') - must take their copy locks in one
-// id order, or two holders would wait on each other in a cycle. Both sets put the shared id
-// -2012274736 first.
+// hashtext('KLVN') and hashtext('CCKH') = hashtext('MBHM') - must take their locks in one id
+// order, or two holders would wait on each other in a cycle. ProjectsInLockOrder is the one order
+// of both lock families keyed by a project's hashtext: the copy lock (lockProjectCopies) and the
+// API's dependency lock (lockProjectIssueDependencies in package api), so this test is the proof
+// for both. Both sets put the shared id -2012274736 first.
 func TestProjectsInLockOrderFollowsTheLockID(t *testing.T) {
 	service, _ := newTestService(t)
 	ctx := context.Background()

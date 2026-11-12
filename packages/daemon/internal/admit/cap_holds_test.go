@@ -226,7 +226,7 @@ func TestAMergingRowHolderStartsItsMerger(t *testing.T) {
 // (record.KeepsSlot), so the fixture, not a merge, is why it has none. It waits among the issues
 // whose work came back, oldest first, which is the line's first part, ahead of an issue whose
 // first phase has yet to start, and it takes the next row that frees.
-func TestAnIssueSentBackFromItsMergeStandsAtTheFrontOfTheLine(t *testing.T) {
+func TestAnIssueWhoseWorkCameBackWithNoRowStandsAtTheFrontOfTheLine(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
 	seedSlotted(t, pool, "LEGION-100", "A")

@@ -19,11 +19,12 @@ func lineEntry(part record.LinePart, kind record.LineKind, place int, holds bool
 }
 
 // Every member of the waiting line is given the reason for its place in words
-// (api.WaitingLineView.Reason), and the five sentences below are what the five kind-and-part
-// pairs read, word for word: the three kinds of the returned part and the two of the starting
-// one.
+// (api.WaitingLineView.Reason), and the seven sentences below are what the kind-and-part pairs
+// read, word for word: the four kinds of the returned part, the waiting-on-issue kind once with
+// its wait still open and once with it ended (its entry's Waits empty), and the two kinds of the
+// starting one.
 //
-// The five pairs do not reach five of the rules the sentence keeps, so each has a case of its
+// Those pairs do not reach every rule the sentence keeps, so each other rule has a case of its
 // own: a member holding a slot, which waits for no free slot and is told so whatever its kind;
 // the ordinals 11th and 12th, which take `th` where the digit before them would say `st` and
 // `nd`; a part holding one issue, whose count reads `1 issue` with its verb in the singular; and
