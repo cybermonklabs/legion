@@ -203,7 +203,11 @@ bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> \
 
 It subscribes under the token in the file, writes one JSON line per frame (`at`, `type`, `bytes`,
 and the pull requests, runs, map keys, counts and `set` fields the frame carries), applies each
-frame as the page does, and reconnects and resumes as the page does. When the time is up,
+frame as the page does, and reconnects and resumes as the page does. It writes a line for each
+connection it opens and each one that closes, and a close line carries `wait_ms`: the
+milliseconds the probe will wait before it opens again, or `null` where it answers that close
+with no timer, which is the rotation close it answers at once, the silent socket it replaces at
+once, and a first connection Dispatch refused. When the time is up,
 `--compare` reads the GET routes for the last window it applied and writes, for each, whether the
 pull request ids, run ids and every measure equal what it holds; it exits 1 when one does not.
 `--body-file <file>` writes the body it holds.

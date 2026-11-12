@@ -67,7 +67,9 @@ function pidOf(running: { readonly child: { readonly pid?: number } }): number {
  *  drains, so a test that waits for that report yields one turn rather than a guessed duration. */
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-/** A per-test limit for the two `Supervisor.stop` rows below: a hang guard rather than a bound
+/** A per-test limit for two rows below, `"returns as soon as the leaders exit, not after the
+ *  force-kill delay"` and `"ends a foreground step that a stop interrupts"`, and for no other row
+ *  of this file: a hang guard rather than a bound
  *  sized to what they take. Measured in this pod — 2 CPUs under gVisor, bun 1.4.4, under 6 busy
  *  loops (3 × `nproc`), 12 runs with `--reporter=junit` — their worst readings were 0.147 s and
  *  0.036 s; the slow pod shape is about 2.15 times slower (inferred from dispatch://INFRA-1505's

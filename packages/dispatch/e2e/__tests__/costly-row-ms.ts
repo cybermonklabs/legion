@@ -2,12 +2,16 @@
  *  calibrated load and have no limit of their own file's: the ones a direct `bun test <file>` run
  *  of their file could put near Bun's unwritten 5 s default. `psql-session.test.ts`'s
  *  overlapping-call row is one, and holds `SELECT pg_sleep(3)` open, so it costs at least 3 s by
- *  construction. Paying for a real process is not the criterion: `harness-signin.test.ts` and
+ *  construction. One call site is there for another reason, which the criterion alone would not
+ *  explain: a row well under that second takes this limit where it shares its neighbour's work
+ *  and would otherwise be the one row of a pair deciding on a budget nobody chose for it.
+ *  Paying for a real process is not the criterion: `harness-signin.test.ts` and
  *  `round-robin-proxy.test.ts` spawn processes of their own and carry no limit at all.
  *
  *  Which rows take this limit is what its call sites say, and this comment lists no more of them
- *  than the one example: a list of that shape has been falsified twice in this file and once in
- *  `AGENTS.md`. dispatch://INFRA-3259 is the check that would keep such a list true for this
+ *  than the one example: a list of that shape was falsified twice in this module, while it was
+ *  `spawn-test-ms.ts` and before `e7cb5310` renamed it, and once in `packages/dispatch/AGENTS.md`.
+ *  dispatch://INFRA-3259 is the check that would keep such a list true for this
  *  lane, as `e2e/tools/check-slow-rows.ts` keeps the Playwright suite's row reasons true; it is
  *  filed and cannot start yet.
  *

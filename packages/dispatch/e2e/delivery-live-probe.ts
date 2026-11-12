@@ -242,7 +242,12 @@ function mapValues<V, W>(
  *  so dividing the draw by that window makes the first attempt's spread `spreadMs` without this
  *  file restating the backoff's arithmetic. It is the first attempt's spread alone, as
  *  `--reconnect-spread-ms` says: a later attempt takes the function's own source, so its backoff
- *  and jitter stay the page's whatever the option is set to. */
+ *  and jitter stay the page's whatever the option is set to.
+ *
+ *  It enforces no bound of its own. `parseOptions` is what refuses a `spreadMs` above
+ *  `MAX_TIMER_DELAY_MS`, because a `setTimeout` delay above that is clamped to 1 ms and the probe
+ *  would reopen at once, the option honoured as its opposite; a caller that reaches this function
+ *  another way gets that defect back with nothing between it and the timer. */
 export function reconnectWaitMs(
   attempt: number,
   spreadMs: number,
