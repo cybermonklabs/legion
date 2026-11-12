@@ -143,9 +143,20 @@ func shimRunningACommand(t *testing.T, workspace string, request shimwire.Frame)
 // own put first on PATH: the shim runs PATH's jj, the one the pane's own shell runs. It starts a
 // child of its own, which a command's SIGTERM reaches only because that signal goes to the whole
 // process group (internal/procgroup), and both it and the child say in the record when they were
-// started and what they caught. Each waits in ticks rather than one long sleep, because a shell
-// runs no trap while a foreground command of its own is still going, and each gives up after a
-// minute, so a run whose stop never comes leaves nothing behind for long.
+// started and what they caught, each after its own trap is installed: a stop that landed before
+// that line would find the process under the default disposition and end it with nothing
+// recorded, which is the opposite of what every case here reads.
+//
+// Each spends its life in a loop of short foreground sleeps, and never in a loop of `sleep &
+// wait $!`: the stop's SIGTERM reaches the whole group, so it ends the sleep the shell is
+// waiting for, and the shell then runs its pending trap at the loop's own next command — before
+// it forks anything. A `wait $!` returns on that same signal and the loop forks its next sleep
+// first, which the group's SIGTERM has already passed by, so the trap's exit leaves that sleep
+// behind holding the command's output pipes until it gives up on its own (measured on this
+// machine with the stop these rows send: 3 of 60 stops of this shape left one behind, and 0 of
+// 60 of the loop below). A trap is then acted on within one sleep of its arrival, which is
+// milliseconds against the seconds every bound here allows, and each gives up after a minute, so
+// a run whose stop never comes leaves nothing behind for long.
 func hangingJJ(t *testing.T) (record string) {
 	t.Helper()
 	record = filepath.Join(t.TempDir(), "jj-record")
@@ -161,8 +172,7 @@ else
 fi
 ticks=0
 while [ "$ticks" -lt 1200 ]; do
-  sleep 0.05 &
-  wait $!
+  sleep 0.05
   ticks=$((ticks+1))
 done
 `

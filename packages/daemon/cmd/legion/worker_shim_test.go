@@ -455,15 +455,26 @@ func TestWorkerShimStopsOnSIGHUP(t *testing.T) {
 			record, running := filepath.Join(dir, "agent"), filepath.Join(dir, "running")
 			daemon := acknowledgeHello(ln)
 
-			// The stand-in Oh My Pi: it says it is running once its trap is set and ends 7 on
-			// the shim's SIGTERM, which is then the shim's own status. It waits in ticks,
-			// because a shell runs no trap while a foreground command of its own is still
-			// going, and gives up after a minute, so a run whose stop never arrives leaves
-			// nothing behind for long.
+			// The stand-in Oh My Pi: it says it is running once its trap is set — a stop that
+			// landed before that line would kill it under the default disposition, with nothing
+			// recorded — and ends 7 on the shim's SIGTERM, which is then the shim's own status.
+			//
+			// It waits in a loop of short foreground sleeps, and never in a loop of `sleep &
+			// wait $!`: a shell runs no trap while a foreground command of its own is still
+			// going, so this trap is acted on within one 50 ms tick of the shim's signal, and
+			// nothing is in flight when it runs. A `wait $!` would return on that signal and the
+			// loop would fork its next sleep before the shell ran the pending trap, and the
+			// trap's exit would leave that sleep behind holding the shim's output pipes with no
+			// signal of its own, the shim signalling the process it wrapped and not a group
+			// (measured on this machine: 3 of 60 stops of that shape left one behind, and 0 of
+			// 60 of the loop below). The loop gives up after a minute, so a run whose stop never
+			// arrives leaves nothing behind for long, and ends 9, which the exit status below
+			// reads as the failure it is.
 			agent := `trap 'printf "the agent caught SIGTERM\n" >>"$1"; exit 7' TERM
 : >"$2"
 ticks=0
-while [ "$ticks" -lt 1200 ]; do sleep 0.05 & wait $!; ticks=$((ticks+1)); done
+while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks=$((ticks+1)); done
+exit 9
 `
 			command := exec.Command(os.Args[0], "worker-shim",
 				"--connect", "unix://"+socket, "--boot-token-file", token,

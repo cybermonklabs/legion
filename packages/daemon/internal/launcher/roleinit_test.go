@@ -661,11 +661,25 @@ func TestRoleInitAgentHelper(t *testing.T) {
 			say("write-"+dir, err.Error())
 		}
 	}
-	detached := exec.Command("/bin/sh", "-c", "trap '' TERM; /bin/sleep "+plan.Detached)
+	// The detached process says it is running by writing trapped, which it does once its ignore
+	// of SIGTERM is installed: the agent exits the moment it is told that, role-init then reports
+	// the shim's status and signals the role's whole namespace, and a detached process still
+	// under the default disposition would die of that SIGTERM. The row reads only that nothing of
+	// the role is left, so such a run would pass without the SIGKILL this case is about having
+	// reached anything. The marker is removed again before the agent leaves, so the role's own
+	// /tmp is what it was.
+	trapped := "/tmp/detached-trapped"
+	detached := exec.Command("/bin/sh", "-c", "trap '' TERM; : >"+trapped+"; /bin/sleep "+plan.Detached)
 	detached.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := detached.Start(); err != nil {
 		say("detached-start", err.Error())
+	} else if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+		_, err := os.Stat(trapped)
+		return err == nil
+	}) {
+		say("detached-trap", "the detached process never reported its ignore of SIGTERM")
 	}
+	_ = os.Remove(trapped)
 	say("done", "yes")
 	os.Exit(0)
 }

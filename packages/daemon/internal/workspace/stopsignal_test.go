@@ -13,12 +13,20 @@ import (
 )
 
 // commandLives keeps a test's command running until a signal ends it. A shell runs a trap when the
-// command it is waiting for ends, so the command waits in a loop of short sleeps rather than in
-// one long one: a SIGTERM it handles is then acted on within one sleep of its arrival, well inside
-// the grace. A trap of the empty action on TERM ignores SIGTERM outright, and a process started
-// under that disposition inherits it, so an ignoring command's own sleeps and helpers ignore
-// SIGTERM too.
-const commandLives = `while :; do sleep 0.05; done`
+// command it is waiting for ends, so the command waits in a loop of short foreground sleeps rather
+// than in one long one: a SIGTERM it handles is then acted on within one sleep of its arrival,
+// well inside the grace. The sleeps are foreground, and never a loop of `sleep & wait $!`: a
+// `wait` returns on the group's own SIGTERM and the loop then forks its next sleep, which that
+// signal has already passed by, so a trap that leaves would leave that sleep behind holding the
+// command's output pipes. A trap of the empty action on TERM ignores SIGTERM outright, and a
+// process started under that disposition inherits it, so an ignoring command's own sleeps and
+// helpers ignore SIGTERM too.
+//
+// It gives up after a minute, which no row here reaches: every budget below is a second, so the
+// stop under test is what ends each of these commands. It is what a run whose stop never came
+// leaves behind — a command that ignores SIGTERM, and the helper it forked, stay until something
+// kills them, and a failing row has nothing left to kill them with.
+const commandLives = `ticks=0; while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks=$((ticks+1)); done`
 
 // RunCommand's jj and git are stopped the way execRunner's are: the budget's end sends SIGTERM to
 // the command's own process group, which is the group procgroup.Configure gives it and which
@@ -62,6 +70,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 	t.Run("a helper the command forked is stopped with it", func(t *testing.T) {
 		dir := t.TempDir()
 		ready, marker := filepath.Join(dir, "ready"), filepath.Join(dir, "deaf-helper-of-this-row")
+		trapped := filepath.Join(dir, "helper-trapped")
 		budget := time.Second
 		ctx, cancel := context.WithTimeout(context.Background(), budget)
 		defer cancel()
@@ -73,11 +82,19 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		// fork and exec, and a shell cannot trap a signal that was already ignored when it
 		// started, so a helper forked after that line would ignore SIGTERM whatever its own script
 		// says, and this row would prove nothing about the helper's own disposition.
-		helper := `trap '' TERM; ` + commandLives
-		script := `sh -c "$2" sh "$3" & trap '' TERM; : >"$1"; ` + commandLives
+		//
+		// The fork returns as soon as the helper exists, which is before that helper's own shell
+		// has reached its trap line, so the helper writes a marker of its own once the ignore is
+		// installed and the leader waits for it before it reports that it is running: the budget's
+		// SIGTERM lands after the ready file, so it finds the helper under the disposition its
+		// script asks for. A stop that raced that line would end the helper with the group's
+		// SIGTERM rather than leave it to the SIGKILL, and this row — which reads only that the
+		// helper is gone — would pass on the opposite of what it claims.
+		helper := `trap '' TERM; : >"$2"; ` + commandLives
+		script := `sh -c "$2" sh "$3" "$4" & trap '' TERM; until [ -e "$4" ]; do sleep 0.01; done; : >"$1"; ` + commandLives
 
 		started := time.Now()
-		_, err := RunCommand(ctx, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", ready, helper, marker})
+		_, err := RunCommand(ctx, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", ready, helper, marker, trapped})
 		elapsed := time.Since(started)
 
 		if _, statErr := os.Stat(ready); statErr != nil {
