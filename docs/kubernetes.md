@@ -2909,7 +2909,7 @@ architect, planner, implementer, tester, reviewer, merger):
    a lock it cannot remove, and a clone whose `.git` or `.git/worktrees` is a symlink (git never makes either one, and it would take the removal outside the clone), fail the container naming the path.
    jj's own locks are `flock(2)` locks, which end with their holder, so it leaves them.
    The `roles` container's launcher sweeps the same files for the life of the pod.
-   A lock made while the pod runs is removed there, under rules of its own (item 4 below).
+   A lock made while the pod runs is removed there, under rules of its own (item 5 below).
 
 4. The `roles` container's PID 1 is one `legion launcher` in multi-role mode:
    `/opt/legion/bin/legion launcher --connect tcp://<advertise_host, or bind with none
@@ -2925,8 +2925,13 @@ architect, planner, implementer, tester, reviewer, merger):
    A line the launcher writes for no role (a panic, a failed reap) has no prefix, and when the container ends the daemon's detail for a role quotes that role's last 20 lines, its prefix dropped, then the container's last 20 unprefixed lines under `the container's own last
    lines, no role's:` (`roleLog` in `internal/runtime/sandbox/observe.go`), all read from the log's last 2,000 lines and at most 1 MiB.
    As the container's PID 1 the launcher reaps every orphan its PID namespace adopts (what a `kubectl exec` leaves behind), never a role's own generation, whose exit its role reads.
-   As well as the roles, the launcher sweeps the issue clone's stale git lock files (`<file>.lock`) for the life of the pod (`internal/launcher/gitlocks.go`).
-   The clone it sweeps is derived from the workspace's own path through the layout provisioning laid it out in (`workspace.CloneGitDir`), and never read from the workspace's `.jj/repo` or the repository's `store/git_target`, which every role of the pod can write: the container's restart policy is `Always` and its disk outlives it, so a launcher that read those files after a restart would read what the last container's roles left there and send its first pass, which removes at any age, wherever they point.
+   A generation whose role-init fails before it starts the shim, setting up the role's namespaces, exits 71 (`launcher.RoleInitSetupFailedExit`, a status role-init uses for nothing else) and is reported with the exit code `-2` (`shimwire.LauncherExitSetupFailed`), which no shim exits with, and the daemon's detail for it quotes the role's last lines, role-init's reason among them;
+   a role-init that ends any other way without reporting its shim's status (a panic's
+   2) is reported with that exit as it is.
+
+5. The same launcher sweeps the issue clone's stale git lock files (`<file>.lock`) for the life of the pod (`internal/launcher/gitlocks.go`).
+   The clone it sweeps is derived from the workspace's own path, through the layout provisioning laid that workspace out in (`workspace.CloneGitDir`), and is never read from the workspace's `.jj/repo` or the repository's `store/git_target`, which every role of the pod can write:
+   the container's restart policy is `Always` and its disk outlives it, so a launcher that read those files after a restart would read what the last container's roles left there, and would send its first pass, which removes at any age, wherever they point.
    A workspace that layout does not account for, a derived clone with no git directory, and a derived git directory holding no git worktree entry for the workspace are each a line in the container's log naming the derived path, and no sweep at all.
    The first pass runs when the launcher starts, before it serves any role start and so before the pod's one bundle restore, and no age bound applies to it.
    A pass then runs every minute, whether or not a role process is running.
@@ -2935,9 +2940,6 @@ architect, planner, implementer, tester, reviewer, merger):
    It writes one line for each lock it removes and one for each it keeps, with the path, the size, when the file was last written, and for a kept lock the condition that kept it.
    A role whose git or jj fails on a lock reads a note that says the same and tells the role to run the command again in about 16 minutes (`StaleGitLockNote`, `internal/workspace/jjgit.go`).
    The note's last sentence tells the role to tell the issue's architect if the lock is still there.
-   A generation whose role-init fails before it starts the shim, setting up the role's namespaces, exits 71 (`launcher.RoleInitSetupFailedExit`, a status role-init uses for nothing else) and is reported with the exit code `-2` (`shimwire.LauncherExitSetupFailed`), which no shim exits with, and the daemon's detail for it quotes the role's last lines, role-init's reason among them;
-   a role-init that ends any other way without reporting its shim's status (a panic's
-   2) is reported with that exit as it is.
 
 The pod's disk is declared in the pod template itself, as a generic ephemeral volume (`issuePod.disk`, `podkind.go`):
 `ReadWriteOnce`, of `runtime.kubernetes.issue_volume` (50Gi by default) and `storage_class`.
