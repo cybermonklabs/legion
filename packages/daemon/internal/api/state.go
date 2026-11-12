@@ -430,6 +430,12 @@ type Issue struct {
 	// only for an issue that list names, a slot holder whose work came back among them, and
 	// absent for every other issue.
 	WaitingLine *WaitingLineView `json:"waitingLine,omitempty"`
+	// Why is the one rendered answer for an issue that is not working now (WhyView). It sits
+	// here beside `waitingLine` and never inside it, because an issue whose claim has stopped
+	// is no member of the line and carries no `waitingLine` at all, and it is the same answer
+	// for every such issue. Nothing fills it yet: another pass decides each issue's state and
+	// renders its reason.
+	Why *WhyView `json:"why,omitempty"`
 	// WaitingOn is present only while the root is in awaiting_person: what it waits on from a
 	// person, when the wait began and, once a person answered, when and by what act.
 	WaitingOn *WaitingOnView `json:"waitingOn,omitempty"`
@@ -725,12 +731,61 @@ type SlotView struct {
 const WaitingLineField = "waitingLine"
 
 // WaitingLineView is the issue's place in `admission.waiting`, where 1 is first in the line,
-// and the length of that list at this read. It says where the issue stands, not what holds it:
-// `admission.blocked` names what holds it.
+// and the length of that list at this read, beside the waiting line's own fields for a program
+// that acts on the line rather than reading the sentence Reason renders: which part the issue
+// waits in and why it waits there (record.LinePart and record.LineKind, whose String methods
+// are the words carried here), its place within its own part and that part's length, whether it
+// already holds one of the cap's slots, and what placed it — the moment its work came back for
+// a member of the returned part, the Dispatch ranks and the tree root's key for a member of the
+// starting part. It says where the issue stands, not what holds it: `admission.blocked` names
+// what holds it.
+//
+// Every field beside Place and Length is omitempty, for two readers at once: a member carries
+// the fields of its own part alone, so a returned member's body names no rank and a starting
+// member's no `since`; and the strip that serves a caller below the contract these fields
+// arrive in empties them from a view it still serves Place and Length on, which must leave no
+// field of theirs on the wire.
 type WaitingLineView struct {
-	Place  int `json:"place"`
-	Length int `json:"length"`
+	Place      int    `json:"place"`
+	Length     int    `json:"length"`
+	Part       string `json:"part,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	PartPlace  int    `json:"partPlace,omitempty"`
+	PartLength int    `json:"partLength,omitempty"`
+	// HoldsSlot says the member already holds one of the cap's slots (record.LineEntry.Holds),
+	// so its promotion takes no second one. It is a pointer because `false` is one of the two
+	// values this field carries and the strip above is written over the same omitempty: a plain
+	// bool would be absent for every member that holds no slot, which is a fact the view must
+	// state, and would be written as `false` on the emptied view that strip serves, where no
+	// field of this contract is to appear at all.
+	HoldsSlot *bool      `json:"holdsSlot,omitempty"`
+	Since     *time.Time `json:"since,omitempty"`
+	RootRank  string     `json:"rootRank,omitempty"`
+	OwnRank   string     `json:"ownRank,omitempty"`
+	RootKey   string     `json:"rootKey,omitempty"`
+	// Reason is the rendered sentence of this member's wait, the one answer a person reads. The
+	// projection leaves it unfilled here: the render is INFRA-2554's own next slice, and the
+	// fields above are what a program reads meanwhile.
+	Reason string `json:"reason,omitempty"`
 }
+
+// WhyView is one rendered answer for an issue that is not working now: State, one of the four
+// words below, and Reason, the sentence that says why. Which word an issue carries is decided by
+// another pass, which fills this view; nothing fills it yet.
+type WhyView struct {
+	State  string `json:"state"`
+	Reason string `json:"reason"`
+}
+
+// The four states WhyView.State carries: the issue's claim has stopped (WhyClaimStopped), it
+// waits in the admission line (WhyWaiting), something holds it where it stands (WhyBlocked), or
+// it stands in neither the line nor the work at all (WhyUnlisted).
+const (
+	WhyClaimStopped = "claim_stopped"
+	WhyWaiting      = "waiting"
+	WhyBlocked      = "blocked"
+	WhyUnlisted     = "unlisted"
+)
 
 // CheckView is an issue's open production check as the state shows it: the repository, pull
 // request and merge commit the check looks for in production (MergeCommit is empty for a pull

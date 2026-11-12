@@ -238,11 +238,79 @@ const (
 	LineFirstPhase
 )
 
-// LineEntry is one issue of the waiting line with the reason it waits there and whether it
-// already holds one of the cap's slots.
+// String is the word the wire carries for this kind (api.WaitingLineView.Kind): `returning`,
+// `answered`, `queued_root` and `first_phase`. These four are the line's whole vocabulary on the
+// wire, which a reader of the state branches on, so a kind added to the list above needs its
+// word here; anything else gives the empty string, which is no word at all.
+func (k LineKind) String() string {
+	switch k {
+	case LineReturning:
+		return "returning"
+	case LineAnswered:
+		return "answered"
+	case LineQueuedRoot:
+		return "queued_root"
+	case LineFirstPhase:
+		return "first_phase"
+	}
+	return ""
+}
+
+// LinePart is which of the waiting line's two parts an entry stands in (Waiting): the issues
+// whose work came back, oldest first, and then the issues that have not started, by the board's
+// rank. The kind does not give it — a LineFirstPhase entry falls in the returned part when the
+// issue is its tree's own root and in the starting part when it is a child — so the entry
+// carries the part the line put it in (LineEntry.Part). The zero value is no part.
+type LinePart int
+
+const (
+	// PartReturned is the first part: the issues the daemon has already started whose work has
+	// come back to them, placed by the moment it did (LineEntry.Since).
+	PartReturned LinePart = iota + 1
+	// PartStarting is the second part: the issues whose first phase has never started, placed by
+	// the Dispatch rank of their tree's root and then their own (LineEntry.RootRank, OwnRank).
+	PartStarting
+)
+
+// String is the word the wire carries for this part (api.WaitingLineView.Part): `returned` and
+// `starting`, the line's vocabulary as LineKind.String is for the kinds. The zero value is no
+// part and gives the empty string.
+func (p LinePart) String() string {
+	switch p {
+	case PartReturned:
+		return "returned"
+	case PartStarting:
+		return "starting"
+	}
+	return ""
+}
+
+// LineEntry is one issue of the waiting line with the reason it waits there, the part of the
+// line it waits in and what placed it there, and whether it already holds one of the cap's slots.
 type LineEntry struct {
 	Issue Issue
 	Kind  LineKind
+	// Part is the part of the line the entry stands in and PartPlace its place within that part
+	// alone, counted from 1. Waiting sets the part where it places the entry, because the kind
+	// does not say it (LinePart), and the place once the part is sorted, so the number is the
+	// order the line publishes and not the order the loops found.
+	Part      LinePart
+	PartPlace int
+	// Since is the moment the issue's work came back to it, which is what placed the entry in
+	// the returned part: the owed start row's creation (LineReturning), the person's answer or
+	// the later approval that opened the tree's gate (LineAnswered), or the gate's opening
+	// (LineFirstPhase of a tree's own root). It is the sort key itself rather than a second
+	// reading of those records, and it is zero on an entry of PartStarting, whose work never
+	// started.
+	Since time.Time
+	// RootRank, OwnRank and RootKey are the Dispatch rank of the issue's tree root, the issue's
+	// own rank and that root's key: what the starting part is ordered by (RankLess over the
+	// root's record and then the issue's), so a reader of one entry can say what placed it
+	// without the records the line was built from. They are set on an entry of PartStarting
+	// alone; the returned part is ordered by Since.
+	RootRank string
+	OwnRank  string
+	RootKey  string
 	// Holds says the issue held a slot row when the line was built, which the grant reads
 	// (admit's slotFor): such a candidate is promoted without taking a second row. Three kinds
 	// of entry can hold one: an answered root (LineAnswered); a root that arrived from another
@@ -740,7 +808,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 			// (KeepsSlot), and its place is the moment its work came back, which is its answer
 			// or, when a person's approval opened its gate later than that, the approval.
 			_, holds := slotted[issue.Key]
-			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineAnswered, Holds: holds},
+			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineAnswered, Part: PartReturned, Holds: holds},
 				at: later(*issue.Awaiting.AnsweredAt, facts.Gates[issue.Tree].OpenedAt())})
 			continue
 		}
@@ -772,9 +840,19 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		}
 		// This issue holds no row: the skip above took every holder out of the line, so the
 		// entry says so and its promotion takes one for it.
-		returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineReturning}, at: owed.CreatedAt, id: owed.ID})
+		returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineReturning, Part: PartReturned}, at: owed.CreatedAt, id: owed.ID})
 	}
 
+	// starts is one entry of the second part, which is ordered by the Dispatch rank of the
+	// issue's tree root and then by the issue's own (the sort below): the entry carries both
+	// ranks and the root's key, so a reader of one entry can say what placed it without the
+	// records the line was read from. It is written once here because two loops fill that part,
+	// the queued roots and the children whose first phase can start.
+	starts := func(entry LineEntry) LineEntry {
+		entry.Part, entry.RootRank = PartStarting, byKey[entry.Issue.Tree].Rank
+		entry.OwnRank, entry.RootKey = entry.Issue.Rank, entry.Issue.Tree
+		return entry
+	}
 	var starting []LineEntry
 	for _, issue := range queued {
 		if issue.Answered() {
@@ -805,7 +883,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		}) {
 			continue
 		}
-		starting = append(starting, LineEntry{Issue: issue, Kind: LineQueuedRoot, Holds: holds})
+		starting = append(starting, starts(LineEntry{Issue: issue, Kind: LineQueuedRoot, Holds: holds}))
 	}
 	for _, issue := range issues {
 		if issue.Phase != phase.Admitted || issue.AwaitingPerson() || OutOfWorkflow(issue.Status) {
@@ -857,10 +935,11 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		// root's rank; a child the daemon started and a person set back to todo stands here
 		// holding the row of that run, and its promotion takes no second one either.
 		if claim.IsTreeRoot(issue.Key, issue.Tree) {
+			entry.Part = PartReturned
 			returned = append(returned, timed{entry: entry, at: gate.OpenedAt()})
 			continue
 		}
-		starting = append(starting, entry)
+		starting = append(starting, starts(entry))
 	}
 	sort.Slice(returned, func(i, j int) bool {
 		left, right := returned[i], returned[j]
@@ -882,11 +961,21 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		return RankLess(left, right)
 	})
 
+	// Each entry's place within its own part is the order the part was just sorted into, not the
+	// order the loops above found it, so it is set here; and the moment that placed a returned
+	// entry is the sort key itself, taken from the timed value rather than read a second time
+	// from the records (LineEntry.Since).
 	line := make([]LineEntry, 0, len(returned)+len(starting))
-	for _, waiting := range returned {
-		line = append(line, waiting.entry)
+	for i, waiting := range returned {
+		entry := waiting.entry
+		entry.PartPlace, entry.Since = i+1, waiting.at
+		line = append(line, entry)
 	}
-	return append(line, starting...)
+	for i, entry := range starting {
+		entry.PartPlace = i + 1
+		line = append(line, entry)
+	}
+	return line
 }
 
 // WaitingIssues is the issues of a waiting line, in its order: what a reader of the line that

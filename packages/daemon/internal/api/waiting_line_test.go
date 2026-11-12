@@ -17,10 +17,23 @@ import (
 // waitingLineState is a state whose admission line holds three members — a root a person has
 // answered, a root whose first phase has never started, and a member a Dispatch link blocks,
 // which stands in the line like any other — beside an issue holding a slot and a closed issue
-// the line does not name. Each member carries the place the projection gave it.
+// the line does not name. Each member carries the place the projection gave it and the line's
+// own fields beside it: the answered root stands in the returned part, with the moment its work
+// came back and the row it kept through the wait, and the two roots that have never started
+// stand in the starting part, with the ranks that placed them there and no row at all.
 func waitingLineState() State {
 	admittedAt := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
+	answeredAt := admittedAt.Add(-time.Hour)
+	holds, waits := true, false
 	line := []string{"LEGION-40", "LEGION-20", "LEGION-30"}
+	members := map[string]WaitingLineView{
+		"LEGION-40": {Part: "returned", Kind: "answered", PartPlace: 1, PartLength: 1,
+			HoldsSlot: &holds, Since: &answeredAt},
+		"LEGION-20": {Part: "starting", Kind: "queued_root", PartPlace: 1, PartLength: 2,
+			HoldsSlot: &waits, RootRank: "C", OwnRank: "C", RootKey: "LEGION-20"},
+		"LEGION-30": {Part: "starting", Kind: "queued_root", PartPlace: 2, PartLength: 2,
+			HoldsSlot: &waits, RootRank: "E", OwnRank: "E", RootKey: "LEGION-30"},
+	}
 	issues := map[string]Issue{
 		"LEGION-10": {Key: "LEGION-10", Phase: phase.Implementing, Status: "in_progress",
 			Slot: &SlotView{Index: 0, AdmittedAt: admittedAt}},
@@ -31,8 +44,9 @@ func waitingLineState() State {
 		if key == "LEGION-40" {
 			stands = phase.AwaitingPerson
 		}
-		issues[key] = Issue{Key: key, Phase: stands, Status: "todo",
-			WaitingLine: &WaitingLineView{Place: i + 1, Length: len(line)}}
+		member := members[key]
+		member.Place, member.Length = i+1, len(line)
+		issues[key] = Issue{Key: key, Phase: stands, Status: "todo", WaitingLine: &member}
 	}
 	return State{
 		Admission: Admission{Cap: 2, Active: []string{"LEGION-10"}, Waiting: line,

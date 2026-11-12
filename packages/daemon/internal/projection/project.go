@@ -291,10 +291,39 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// what holds it is `admission.blocked` beside this. Every issue of the line has a view here
 	// already, so the place is set where the key is listed: the line is built from `own`, the
 	// issues of this project among the issues the loop above gave a view to, each of them.
+	//
+	// Beside the place, each member carries the line's own fields for a program to read
+	// (api.WaitingLineView): the part it waits in and why, its place within that part and the
+	// part's length, whether it holds a slot, and what placed it — all of them read from the
+	// entry the line holds beside the issue (record.LineEntry), which `waiting` is the issues
+	// of in the same order, so the entry at an issue's index is that issue's own. The two parts
+	// are counted once over the whole line before the loop, because this pass holds every entry
+	// of it: a member's `partLength` is the count of the entries carrying its part and nothing
+	// else.
+	parts := make(map[record.LinePart]int, 2)
+	for _, entry := range line {
+		parts[entry.Part]++
+	}
 	for i, issue := range waiting {
 		projected.Admission.Waiting[i] = issue.Key
+		entry := line[i]
+		holds := entry.Holds
 		view := projected.Issues[issue.Key]
-		view.WaitingLine = &api.WaitingLineView{Place: i + 1, Length: len(waiting)}
+		view.WaitingLine = &api.WaitingLineView{
+			Place: i + 1, Length: len(waiting),
+			Part: entry.Part.String(), Kind: entry.Kind.String(),
+			PartPlace: entry.PartPlace, PartLength: parts[entry.Part],
+			HoldsSlot: &holds,
+			RootRank:  entry.RootRank, OwnRank: entry.OwnRank, RootKey: entry.RootKey,
+		}
+		// The moment the work came back is on a member of the returned part alone, and even
+		// there the record may not know it — a gate approved by a registration that read no
+		// event carries no moment (record.TreeGate.OpenedAt) — so the wire carries `since`
+		// where the entry has one and nothing where it has none.
+		if !entry.Since.IsZero() {
+			since := entry.Since
+			view.WaitingLine.Since = &since
+		}
 		projected.Issues[issue.Key] = view
 	}
 	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))
