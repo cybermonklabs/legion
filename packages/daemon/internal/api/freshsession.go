@@ -516,10 +516,11 @@ func (s *server) refuseWorkingClaim(w http.ResponseWriter, r *http.Request, m *s
 		return true
 	}
 	// The read is a decision of this claim, as every other request either recovery makes of the
-	// machine is: it may write the claim, and a caller that hangs up mid-request must not cut
-	// that write short or take the claim out of the set the daemon's drain keeps a connection
-	// open for (server.decision, postClaimEvent). Nesting one inside another decision is the
-	// compaction's case, and the set counts them (RouteDecisions.begin).
+	// machine is: it writes nothing of the stored claim (supervise.Machine.ReadProcess), but a
+	// caller that hangs up mid-request must not cut the probe short or take the claim out of the
+	// set the daemon's drain keeps a connection open for while the suspension that follows a
+	// gone read is posted (server.decision, postClaimEvent). Nesting one inside another decision
+	// is the compaction's case, and the set counts them (RouteDecisions.begin).
 	ctx, decided := s.decision(r, token)
 	defer decided()
 	switch read := m.ReadProcess(ctx); read {
