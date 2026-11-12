@@ -15,8 +15,9 @@ import (
 
 // The laterals and resolution rules below freeze main's SQL rather than reading the package's
 // constants: building the oracle from those would make both sides agree however the rule changed.
-// The listing projection independently includes the creator and creation time now required by
-// the summary contract; the inherited joins, filters and ordering stay unchanged.
+// The listing projection independently includes the creator, the creation time and the closing
+// time now required by the summary contract; the inherited joins, filters and ordering stay
+// unchanged.
 // parentDepthCap is written as the 32 main spliced into them for the same reason.
 const mainIssueComponentsLateral = `
 	left join lateral (
@@ -91,7 +92,7 @@ const mainIssueSummaryHead = `
 	       count(a.id) filter (where i.closed_at is null),
 	       i.tasks_done, i.tasks_total, progress.children_done, progress.children_total,
 	       comp.owner_key, comp.mode, comp.reason, comp.ids, comp.unknown,
-	       i.repo, repo.resolved, repo.too_deep
+	       i.repo, repo.resolved, repo.too_deep, i.closed_at
 	from issues i`
 
 const mainIssueSummaryTail = `
@@ -159,7 +160,8 @@ const mainProjectList = `
 // The listing's four statements answer, row for row, what main's one statement answered over the
 // same rows: the unpaged read whole, and the paged read the slice of it the caller asked for,
 // with the count beside it. The paged read carries two columns of its own ahead of the issue's,
-// which is what those rows are compared without.
+// which is what those rows are compared without. Main's statement has no closed window, so the
+// listing's are passed none.
 func TestTheIssueListAnswersWhatMainsStatementDid(t *testing.T) {
 	fixture := newIssueListFixture(t)
 	filters := []any{"LIST", "", "", nil, []string{}, false, []int16{}, false}
@@ -175,11 +177,12 @@ func TestTheIssueListAnswersWhatMainsStatementDid(t *testing.T) {
 		{name: "the pinned listing", oracle: mainListPinnedIssuesQuery, paged: listPinnedIssuesPageQuery, unpaged: listPinnedIssuesQuery, pinnedBy: "alice"},
 	} {
 		t.Run(listing.name, func(t *testing.T) {
-			// Main's statement carries the eight filters it had, where the listing carries the
-			// two the `advances` keys added behind them, named here as the request that asks
-			// for neither: the rows the two read are then the same rows.
+			// Main's statement carries the eight filters it had, where the listing carries four
+			// more behind them — the closed window's two and the `advances` keys' two — named
+			// here as the request that asks for none of them: the rows the two read are then the
+			// same rows.
 			oracleArguments := slices.Clone(filters)
-			arguments := append(slices.Clone(filters), []string{}, false)
+			arguments := append(slices.Clone(filters), nil, nil, []string{}, false)
 			if listing.pinnedBy != "" {
 				oracleArguments = append(oracleArguments, listing.pinnedBy)
 				arguments = append(arguments, listing.pinnedBy)

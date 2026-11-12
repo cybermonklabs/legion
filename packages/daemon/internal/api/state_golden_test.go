@@ -505,8 +505,9 @@ func populatedState(t *testing.T) State {
 			{Issue: "LEGION-212", Role: claim.RoleTester, State: "retired"},
 		},
 		// A wave going out at the pace its operator set, with one wake of each lane still held:
-		// LEGION-207's implementer, working its production check in the pod the daemon keeps, waits
-		// for the update task its plugin round queues it; LEGION-208's architect, already running,
+		// LEGION-207's implementer, working its production check in the pod the daemon keeps,
+		// waits for the relaunch the stale-plugin lane's gate admitted for it, its own kind;
+		// LEGION-208's architect, already running,
 		// waits for the catch-up a child's re-admission wrote it in place of a launch, which waits
 		// on its outbox row rather than in a machine; and LEGION-208's planner, whose pod answered
 		// its update round, waits for the launch that brings it up on the pod's replacement. The
@@ -514,12 +515,17 @@ func populatedState(t *testing.T) State {
 		// other, and the three are one list in claim order whichever lane holds each.
 		WakesWaiting: []WakeWaiting{
 			{Claim: "legion-legion-legion-207-implementer", Issue: "LEGION-207", Role: claim.RoleImplementer,
-				Kind: "plugin-task", DueAt: time.Date(2026, 9, 22, 9, 17, 56, 0, time.UTC)},
+				Kind: supervise.WakePluginRefresh, DueAt: time.Date(2026, 9, 22, 9, 17, 56, 0, time.UTC)},
 			{Claim: "legion-legion-legion-208-architect", Issue: "LEGION-208", Role: claim.RoleArchitect,
 				Kind: "catch-up", DueAt: time.Date(2026, 9, 22, 9, 18, 3, 0, time.UTC)},
 			{Claim: "legion-legion-legion-208-planner", Issue: "LEGION-208", Role: claim.RolePlanner,
 				Kind: "launch", DueAt: time.Date(2026, 9, 22, 9, 18, 11, 0, time.UTC)},
 		},
+		// Four claims are still on an earlier plugin, the one whose refresh wake waits above among
+		// them: the count is everything the lane has left to do and the wakes are the share of it
+		// the pacing is holding now, which is the pair a reader of a running wave needs
+		// (contract 73).
+		ClaimsToRefresh: 4,
 		ControllerLocator: &ControllerLocator{
 			Runtime:      "kubernetes",
 			External:     true,
@@ -950,8 +956,11 @@ func operatorClaim() OperatorClaim {
 			LastSendError:     "prompt the agent: context deadline exceeded",
 		},
 		SuspensionHeld: true,
-		// The claim's own plugin round: its process speaks a plugin contract this daemon does not,
-		// and it is replaced only once its worker has pushed its work and answered, which it has.
+		// A plugin round an earlier daemon opened over this claim, whose process speaks a plugin
+		// contract this daemon does not. This release opens none — the stale-plugin lane asks
+		// its worker nothing and relaunches instead — and a boot takes every claim out of one it
+		// finds (daemon's endPluginRounds), so the shape is still on the wire in the moments
+		// before that pass reaches the claim, which is why the fixture pins it.
 		UpdateRound: "plugin:43",
 		UpdateHead:  "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
 		// What the daemon last saw this agent do: an `eval` call whose start it received and

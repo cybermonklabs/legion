@@ -108,13 +108,13 @@ func TestAPagedListingResolvesItsPageAlone(t *testing.T) {
 		{
 			name:      "the paged listing",
 			statement: listIssuesPageQuery,
-			arguments: []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, []string{}, false, 5, 10},
+			arguments: []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, 5, 10},
 			limit:     5,
 		},
 		{
 			name:      "the paged pinned listing",
 			statement: listPinnedIssuesPageQuery,
-			arguments: []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, []string{}, false, "alice", 2, 1},
+			arguments: []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, "alice", 2, 1},
 			limit:     2,
 		},
 	} {
@@ -161,7 +161,7 @@ func TestAPagedListingResolvesItsPageAlone(t *testing.T) {
 // its joins reach once for all of them rather than once per issue.
 func TestAnUnpagedListingReadsEachResolvedTableOnce(t *testing.T) {
 	fixture := newIssueListFixture(t)
-	plan, text := analyzePlan(t, fixture.database, listIssuesQuery, "LIST", "", "", nil, []string{}, false, []int16{}, false, []string{}, false)
+	plan, text := analyzePlan(t, fixture.database, listIssuesQuery, "LIST", "", "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false)
 	for _, relation := range []string{"issue_links", "issue_components", "repo_projects"} {
 		read := 0
 		for _, node := range plan.everyNode() {
@@ -193,8 +193,8 @@ func TestTheListingReadsOpenAsksThroughTheirIndex(t *testing.T) {
 		statement string
 		arguments []any
 	}{
-		"the listing":       {listIssuesQuery, []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, []string{}, false}},
-		"the paged listing": {listIssuesPageQuery, []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, []string{}, false, 5, 10}},
+		"the listing":       {listIssuesQuery, []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false}},
+		"the paged listing": {listIssuesPageQuery, []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, 5, 10}},
 	} {
 		plan := planWithoutSeqScans(t, fixture.database, read.statement, read.arguments...)
 		if explaintest.SeqScansRelation(t, plan, "asks") {

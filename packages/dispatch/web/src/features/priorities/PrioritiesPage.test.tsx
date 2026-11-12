@@ -85,6 +85,7 @@ function issue(key: string, advances: string[] = []): IssueSummary {
     open_asks: 0,
     progress: { tasks: null, children: null },
     primary_artifact_id: "spec",
+    closed_at: null,
     created_by: { kind: "user", id: "alice" },
     created_at: "2026-11-01T00:00:00Z",
     updated_at: "2026-11-01T00:00:00Z",

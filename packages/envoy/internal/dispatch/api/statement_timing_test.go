@@ -68,15 +68,15 @@ func TestStatementTimings(t *testing.T) {
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	subjects := runner.Subjects()
 
-	// The eight filters main's listing carried, narrowed to the project and nothing else: the
-	// list a dashboard opens. The listing carries two more behind them now, the `advances`
-	// keys', named here as the request that asks for neither, so both sides read the same rows
-	// (listIssues' arguments).
+	// The eight filters main's listing took, narrowed to the project and nothing else: the list a
+	// dashboard opens. listIssues' arguments are those eight, the closed window and the
+	// `advances` keys, named here as the request that asks for none of them, so both sides read
+	// the same rows.
 	filters := []any{subjects.Project, "", "", nil, []string{}, false, []int16{}, false}
-	listFilters := slices.Concat(filters, []any{[]string{}, false})
+	listArguments := slices.Concat(filters, []any{nil, nil, []string{}, false})
 	runner.Pair(t, "the issue list, unpaged",
 		benchtime.Statement{SQL: mainListIssuesQuery, Args: filters},
-		benchtime.Statement{SQL: listIssuesQuery, Args: listFilters})
+		benchtime.Statement{SQL: listIssuesQuery, Args: listArguments})
 	// The paged read's before side is the one text the release before this change had: it
 	// answered a paged request by reading every matching issue, resolving all of them and
 	// cutting the page in Go, so the push-down is measured against the read it replaced rather
@@ -84,7 +84,7 @@ func TestStatementTimings(t *testing.T) {
 	runner.Pair(t, "the issue list, the first page of 20",
 		benchtime.Statement{SQL: mainListIssuesQuery, Args: filters},
 		benchtime.Statement{SQL: listIssuesPageQuery,
-			Args: slices.Concat(listFilters, []any{issueListTimingLimit, issueListTimingOffset})})
+			Args: slices.Concat(listArguments, []any{issueListTimingLimit, issueListTimingOffset})})
 
 	runner.Pair(t, "the project list",
 		benchtime.Statement{SQL: mainProjectList},

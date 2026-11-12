@@ -128,10 +128,10 @@ Draw each page and read the locator that says it is drawn.
   // A plan is approved by its plan review, never by a person, and the tab draws that chip.
   await createPlanReview(plan.artifact.id, 1);
 
-  // No result is recorded against either check: a result's currency is judged against the head
-  // of the pull request Dispatch holds for the issue, which would need a fake-GitHub repository
-  // this corpus has no other use for (`e2e/verification.e2e.ts`). Both checks therefore read
-  // "No result", which is a state the tab draws.
+  // No result is recorded against either check: where a result's commit stands is judged against
+  // the head of the pull request Dispatch holds for the issue, which would need a fake-GitHub
+  // repository this corpus has no other use for (`e2e/verification.e2e.ts`). Both checks
+  // therefore read "No result", which is a state the tab draws.
   await createIssueArtifact(issue, {
     content: `How ${issue} is proved.
 
