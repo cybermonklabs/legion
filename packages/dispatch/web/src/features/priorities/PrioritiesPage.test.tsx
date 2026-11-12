@@ -369,3 +369,48 @@ test("the page carries no estimate, no forecast, no percentage and no written st
   expect(/\d+%/.test(text)).toBe(false);
   expect(/estimate|forecast|on track|at risk/i.test(text)).toBe(false);
 });
+
+test("the priorities table counts its rows as priorities, as the agreed page reads", async () => {
+  page(FIFTEEN);
+  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  // dispatch://INFRA-2947/artifact/priorities-round10-png reads "15 of 15 priorities" under the
+  // table: a priority is no issue, and a reader counting the rows is told what they count.
+  expect(screen.getByText("3 of 3 priorities")).toBeDefined();
+  expect(screen.queryByText("3 of 3 issues")).toBeNull();
+});
+
+test("a fault row tells no reader that an issue nobody claims is claimed", async () => {
+  page(
+    body({
+      ...FIFTEEN,
+      work_under_no_priority: {
+        by_project: { CORE: 2 },
+        count: 2,
+        issues: [
+          faultIssue("CORE-1", { assignee: "alice" }),
+          faultIssue("CORE-2", {
+            assignee: "alice",
+            claim: { actor: { kind: "user", id: "bob" }, at: "2026-11-10T00:00:00Z" },
+          }),
+        ],
+      },
+    })
+  );
+  const faults = await screen.findByRole("table", { name: "In flight under no priority" });
+  const headers = within(faults)
+    .getAllByRole("columnheader")
+    .map((header) => header.textContent ?? "");
+  const claimedBy = headers.findIndex((header) => header.includes("Claimed by"));
+  const cellUnder = (key: string) => {
+    const row = within(faults).getByRole("cell", { name: key }).closest("tr");
+    if (row === null) throw new Error(`no row holds ${key}`);
+    return within(row as HTMLElement).getAllByRole("cell")[claimedBy]?.textContent ?? "";
+  };
+  // The issues table of the same application reads "Claimed by" as the claim alone
+  // (features/project/issues-table-columns.tsx, its ClaimChip). Under that header an unclaimed
+  // issue names nobody, whoever it is assigned to, and a claimed one names its claimant.
+  if (claimedBy !== -1) {
+    expect(cellUnder("CORE-1")).not.toContain("alice");
+    expect(cellUnder("CORE-2")).toContain("bob");
+  }
+});
