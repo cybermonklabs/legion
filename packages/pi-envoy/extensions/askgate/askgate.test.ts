@@ -6986,7 +6986,13 @@ describe("rules check", () => {
     expect(shut.g.entries).toHaveLength(1);
     // The row's own bound is a hang guard, the file's convention: a grace that never fires leaves
     // the handler waiting on two completions that never settle. Its work is at most the 1.5 s
-    // wait, far below this.
+    // wait, far below this. The row's remaining load ceiling is that wait itself, a production
+    // budget, not this guard, and it is the one the row named above carries: at 240 busy loops,
+    // 120 per CPU, the gate's SHUTDOWN_WAIT_MS of 1.5 s does not complete on a host starved that
+    // far, so the handler returns before the grace writes its entry and `shut.g.entries` reaches
+    // the assertion above empty. One run in 20 went that way, charged 21590.58 ms against this
+    // 30_000 guard, so no per-test limit guards it. So this row's acceptance rung is 96 busy
+    // loops, 48 per CPU, as that row's is.
   }, 30_000);
   test("at shutdown a decision record started as the handler returned is cut short, and its follow-up entry lands before the handler returns", async () => {
     // Fake timers, and a clock that moves with them: the shutdown grace and wait run their full
