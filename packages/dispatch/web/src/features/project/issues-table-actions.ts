@@ -292,6 +292,8 @@ export function useIssueTableActions({
     const record = recovery.begin({ kind: "newEpic", keys: open });
     const key = newSendKey();
     recovery.record({ create: key }, record.id);
+    /** The id of the create this press makes, once `run` has joined it. */
+    let epicWrite: number | undefined;
     await perform(
       `Made the epic “${title}” from ${named(open)}.${skipped}`,
       async () => {
@@ -310,6 +312,9 @@ export function useIssueTableActions({
           target: `project:${project}`,
         });
         recovery.watch(key, `Create epic “${title}”`);
+        // The write's id, read as `run` has just left it in the rows: a refusal below takes this
+        // write out by it, whatever the rows hold by the time that refusal is handled.
+        epicWrite = writes.idOf(key);
         const epic = await creation;
         if (!recovery.active(record.id)) return undefined;
         if (epic === null) {
@@ -326,8 +331,9 @@ export function useIssueTableActions({
         return changed;
       },
       (error) => {
-        const refused = writes.rows().find((row) => row.key === key);
-        if (refused) writes.discard(refused.id);
+        // Dispatch's "possible duplicate" refusal of the create, which the reader answers in the
+        // dialog it opens rather than in Pending changes.
+        if (epicWrite !== undefined) writes.discard(epicWrite);
         recovery.dismiss();
         setDuplicateEpic({ keys, title, message: error.message });
       }

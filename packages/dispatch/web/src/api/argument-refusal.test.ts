@@ -25,11 +25,6 @@ const timestamp = "2026-11-09T00:00:00.000Z";
 
 const refusals: readonly Refusal[] = [
   {
-    call: (api) => api.patchIssue("", { status: "done" }, bounds),
-    message: "/api/v1/issues/{key} has no value for {key}",
-    method: "patchIssue",
-  },
-  {
     call: (api) => api.getIssueEvents(""),
     message: "/api/v1/issues/{key}/events has no value for {key}",
     method: "getIssueEvents",
@@ -40,24 +35,9 @@ const refusals: readonly Refusal[] = [
     method: "listIssueAskThreads",
   },
   {
-    call: (api) => api.snoozeAsk("", timestamp, bounds),
-    message: "/api/v1/me/asks/{id}/snooze has no value for {id}",
-    method: "snoozeAsk",
-  },
-  {
-    call: (api) => api.markThreadRead("", timestamp, bounds),
-    message: "/api/v1/me/threads/{id}/read has no value for {id}",
-    method: "markThreadRead",
-  },
-  {
     call: (api) => api.createAgentMessage("", { body: "Ready?", delivery: "btw" }, bounds),
     message: "/api/v1/agents/{session_id}/messages has no value for {session_id}",
     method: "createAgentMessage",
-  },
-  {
-    call: (api) => api.putDocumentRead("", 3, bounds),
-    message: "/api/v1/me/documents/{id}/read has no value for {id}",
-    method: "putDocumentRead",
   },
   {
     call: (api) => api.getArtifactVersion("", 3),

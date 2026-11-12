@@ -19,14 +19,17 @@ import {
   commentResolveRequest,
   decisionKeepRequest,
   deliverySettingsRequest,
+  documentReadRequest,
   goesUnderKey,
   issueClaimReleaseRequest,
   issueCommentRequest,
   issueCreateRequest,
+  issuePatchRequest,
   issueStateRequest,
   issueUnsubscribeRequest,
   repoProjectDeleteRequest,
   repoProjectRequest,
+  threadReadRequest,
   type WriteRequest,
 } from "./client";
 
@@ -174,4 +177,23 @@ test("a repository that is not owner/repo is refused by the builder", () => {
   expect(() => architectureSourceRequest("CORE", "", { branch: "main" })).toThrow(notOwnerRepo);
   expect(() => architectureSourceSyncRequest("CORE", "")).toThrow(notOwnerRepo);
   expect(() => architectureSourceDeleteRequest("CORE", "")).toThrow(notOwnerRepo);
+});
+
+// A path parameter the route pattern has no value for is refused by the builder as it is built,
+// before any write exists to send (`routeUrl`), as a client method that builds its own URL
+// refuses it on its promise (`argument-refusal.test.ts`).
+test("a path parameter with no value is refused by the builder", () => {
+  const timestamp = "2026-11-09T00:00:00.000Z";
+  expect(() => issuePatchRequest("", { status: "done" })).toThrow(
+    "/api/v1/issues/{key} has no value for {key}"
+  );
+  expect(() => askSnoozeRequest("", timestamp)).toThrow(
+    "/api/v1/me/asks/{id}/snooze has no value for {id}"
+  );
+  expect(() => threadReadRequest("", timestamp)).toThrow(
+    "/api/v1/me/threads/{id}/read has no value for {id}"
+  );
+  expect(() => documentReadRequest("", 3)).toThrow(
+    "/api/v1/me/documents/{id}/read has no value for {id}"
+  );
 });

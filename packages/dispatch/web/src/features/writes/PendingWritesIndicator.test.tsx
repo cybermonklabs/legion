@@ -7,9 +7,9 @@ import type { ReactNode } from "react";
 
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { keptTab, keyMinted } from "../../__tests__/kept-sends-harness";
-import { answerSends } from "../../__tests__/send-answers";
+import { answerIssuePatches, answerSends } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, type WriteBounds } from "../../api/client";
+import { ApiError, api, issuePatchRequest, type WriteBounds } from "../../api/client";
 import { expiredRetryNote, FIRST_BACKOFF_MS, SEND_DEADLINE_MS } from "./keyed-write";
 import { PendingWritesIndicator } from "./PendingWritesIndicator";
 import { plainWrite, type Writes, writesOf } from "./write-store";
@@ -71,7 +71,7 @@ test("the indicator counts the writes out, names a late one, and clears when it 
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const tab = keptTab();
-  const patchIssue = spyOn(api, "patchIssue").mockRejectedValue(refusal);
+  const patchIssue = answerIssuePatches().mockRejectedValue(refusal);
   const held = Promise.withResolvers<never>();
   const putIssueState = spyOn(api, "putIssueState").mockReturnValue(held.promise);
   const { client, unmount } = mountIndicator();
@@ -79,7 +79,7 @@ test("the indicator counts the writes out, names a late one, and clears when it 
 
   try {
     indicatorWrite(writes, "CORE-1 set to done", (bounds) =>
-      api.patchIssue("CORE-1", { status: "done" }, bounds)
+      api.send(issuePatchRequest("CORE-1", { status: "done" }), bounds)
     );
     indicatorWrite(writes, "CORE-2 pinned", (bounds) =>
       api.putIssueState("CORE-2", { pinned: true }, bounds)
@@ -145,13 +145,13 @@ test("the indicator counts the writes out, names a late one, and clears when it 
 test("a refused write names Dispatch's reason, and Retry sends it again", async () => {
   const user = userEvent.setup();
   const tab = keptTab();
-  const patchIssue = spyOn(api, "patchIssue").mockRejectedValueOnce(verdict);
+  const patchIssue = answerIssuePatches().mockRejectedValueOnce(verdict);
   const { client, unmount } = mountIndicator();
   const writes = writesOf(client);
 
   try {
     indicatorWrite(writes, "CORE-1 set to done", (bounds) =>
-      api.patchIssue("CORE-1", { status: "done" }, bounds)
+      api.send(issuePatchRequest("CORE-1", { status: "done" }), bounds)
     );
     await settle();
 
@@ -258,8 +258,8 @@ test("an upload in progress reads Uploading… N% until an attempt fails", async
 });
 
 // A write whose key Dispatch has forgotten is never asked again under it. The key matters only
-// once something has gone out under it - this attempt tells its request as `api.patchIssue`
-// does, and then ends without Dispatch's verdict - so the attempt that would follow is the one
+// once something has gone out under it - this attempt tells its request as `api.send` does, and
+// then ends without Dispatch's verdict - so the attempt that would follow is the one
 // the spent key stops. The indicator says the key ran out and what a Retry of it would do -
 // save the change a second time if the first one was saved - and offers Retry and Discard, as
 // it does for any refusal.

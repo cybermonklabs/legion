@@ -441,7 +441,7 @@ function readUrl<P extends PathsOf<"get">>(pattern: P, params: PathParams<Op<P, 
 // out, and nothing of it runs before its turn. A builder that names a client method in brackets
 // is the request that method sends too.
 
-/** `PATCH /api/v1/issues/{key}`: one change of an issue's fields (`patchIssue`). */
+/** `PATCH /api/v1/issues/{key}`: one change of an issue's fields. */
 export function issuePatchRequest(key: string, input: Body<"/api/v1/issues/{key}", "patch">) {
   return writeRequest("patch", "/api/v1/issues/{key}", { key }, input);
 }
@@ -460,7 +460,8 @@ export function agentMessageRequest(
   );
 }
 
-/** `PUT /api/v1/me/asks/{id}/snooze` (`snoozeAsk`). */
+/** `PUT /api/v1/me/asks/{id}/snooze`: fold this inbox row away for the caller until
+ *  `snoozedUntil` (RFC3339). Needs the `person` scope, like the inbox itself. */
 export function askSnoozeRequest(id: string, snoozedUntil: string) {
   return writeRequest(
     "put",
@@ -470,7 +471,9 @@ export function askSnoozeRequest(id: string, snoozedUntil: string) {
   );
 }
 
-/** `PUT /api/v1/me/threads/{id}/read`: a thread's read mark (`markThreadRead`). */
+/** `PUT /api/v1/me/threads/{id}/read`: move the signed-in person's read mark on one thread
+ *  forward to `readThrough` (RFC3339, the newest reply shown). Answers 204 whether or not it
+ *  moved. */
 export function threadReadRequest(threadId: string, readThrough: string) {
   return writeRequest(
     "put",
@@ -495,8 +498,8 @@ export function inboxDismissRequest(body: Body<"/api/v1/me/inbox/dismiss", "post
   return writeRequest("post", "/api/v1/me/inbox/dismiss", {}, body);
 }
 
-/** `PUT /api/v1/me/documents/{id}/read`: the person's last read version of a document
- *  (`putDocumentRead`). */
+/** `PUT /api/v1/me/documents/{id}/read`: the person's last read version of a document, which the
+ *  Spec tab marks each block that changed since. */
 export function documentReadRequest(id: string, version: number) {
   return writeRequest("put", "/api/v1/me/documents/{id}/read", { id }, { version });
 }
@@ -1193,10 +1196,6 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}/summary", { key });
   }
 
-  async patchIssue(key: string, input: Body<"/api/v1/issues/{key}", "patch">, bounds: WriteBounds) {
-    return this.send(issuePatchRequest(key, input), bounds);
-  }
-
   /** `GET /api/v1/issues/{key}/events`: a page of the issue's event log. The document types every
    *  event's `payload` as `unknown`, because Go carries it as the bytes it was written as and no
    *  OpenAPI schema can say which payload belongs to which `type`; `DispatchEvent` is that union
@@ -1225,12 +1224,6 @@ export class DispatchApiClient {
 
   getInbox(project?: string) {
     return this.read("/api/v1/inbox", {}, { project });
-  }
-
-  /** `PUT /api/v1/me/asks/{id}/snooze`: fold this inbox row away for the caller until
-   *  `snoozedUntil` (RFC3339). Needs the `person` scope, like the inbox itself. */
-  async snoozeAsk(id: string, snoozedUntil: string, bounds: WriteBounds) {
-    return this.send(askSnoozeRequest(id, snoozedUntil), bounds);
   }
 
   listAgents() {
@@ -1289,13 +1282,6 @@ export class DispatchApiClient {
     // Spreading `page` keeps the caller's own key order, so the request reads as the route
     // documents it.
     return this.read("/api/v1/me/replies", {}, { ...page, kind: page.kind?.join(",") });
-  }
-
-  /** `PUT /api/v1/me/threads/{id}/read`: move the signed-in person's read mark on one thread
-   *  forward to `readThrough` (RFC3339, the newest reply shown). Answers 204 whether or not it
-   *  moved. */
-  async markThreadRead(threadId: string, readThrough: string, bounds: WriteBounds): Promise<void> {
-    await this.send(threadReadRequest(threadId, readThrough), bounds);
   }
 
   async removeAskFollower(id: string, sessionId: string, bounds: WriteBounds): Promise<void> {
@@ -1477,12 +1463,6 @@ export class DispatchApiClient {
   /** The caller's last read version of a document; its version is null when they have read none. */
   getDocumentRead(id: string) {
     return this.read("/api/v1/me/documents/{id}/read", { id });
-  }
-
-  /** Record the caller's last read version of a document: the Spec tab marks each block that
-   *  changed since it. */
-  async putDocumentRead(id: string, version: number, bounds: WriteBounds) {
-    return this.send(documentReadRequest(id, version), bounds);
   }
 
   /** One version's bytes. A large file on a slow line can take longer than any read deadline, so

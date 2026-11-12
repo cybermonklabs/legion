@@ -5,7 +5,7 @@ import { api } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
 import type { BroadcastCreated } from "../../api/types";
 import { type Shape, shape } from "../writes/write-storage";
-import { defineWriteKind, ofKind, type Write, type Writes } from "../writes/write-store";
+import { defineWriteKind, liveWrite, ofKind, type Write, type Writes } from "../writes/write-store";
 import type { BroadcastRequest } from "./broadcast-plan";
 
 /** What one press of Send handed the queue: the request, the key it goes under, and the selection
@@ -38,7 +38,8 @@ export interface QueuedSend extends BroadcastSend {
  *  discard), on the wire within its deadline (or sent before and waiting to go again), still being
  *  tried under its key past it (`stopping` once the reader pressed Stop trying), sent with the
  *  broadcast it made, or failed with what refused it; one not yet made is held, and says so,
- *  while the sender's sign-out in another tab is out (`signingOutElsewhere`). */
+ *  while the sender's sign-out in another tab is out (`signingOutElsewhere`, set only while the
+ *  write is live, by `liveWrite`). */
 export type BroadcastSendRow = {
   readonly id: number;
   readonly send: QueuedSend;
@@ -109,7 +110,7 @@ export function broadcastRows(rows: readonly Write[]): BroadcastSendRow[] {
     const base = {
       id: write.id,
       send: { input, key: write.key, picked, pressed, selected },
-      signingOutElsewhere: write.signingOutElsewhere,
+      signingOutElsewhere: write.signingOutElsewhere && liveWrite(write),
       submittedAt: write.pressedAt,
     };
     switch (write.status) {

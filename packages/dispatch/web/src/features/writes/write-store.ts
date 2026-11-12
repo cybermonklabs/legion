@@ -372,7 +372,8 @@ function wrote(entry: Entry, query: Query): boolean {
 /** Whether `write` may still reach Dispatch, which is while its change is shown again: waiting
  *  its turn, out, or late - `stopping` among them, since the attempt already out may still land.
  *  A refused write is not, nor a made one, and a discarded write is held no longer. The one rule
- *  every engine that reads the store's rows asks it by. */
+ *  every engine that reads the store's rows asks it by, and a view of a write - a broadcast's
+ *  row in the send strip (`broadcastRows`) - is decided by it where the view is made. */
 export function liveWrite(write: Write): boolean {
   return write.status === "queued" || write.status === "sending" || write.status === "late";
 }

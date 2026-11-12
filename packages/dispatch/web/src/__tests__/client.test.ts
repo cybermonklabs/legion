@@ -23,12 +23,14 @@ import {
   isRetryableQueryError,
   issueClaimReleaseRequest,
   issueCreateRequest,
+  issuePatchRequest,
   isUnauthorized,
   NetworkError,
   REQUEST_DEADLINE_MS,
   RequestTimeoutError,
   repoProjectDeleteRequest,
   repoProjectRequest,
+  threadReadRequest,
   UnreadableAnswerError,
   type UploadImplementation,
 } from "../api/client";
@@ -480,9 +482,9 @@ test("a 2xx whose body read fails is a NetworkError, retried under its key", asy
 test("a write carries the login of the person who pressed it", async () => {
   const stub = stubFetch();
   const api = createApiClient(stub.fetch);
-  await api.patchIssue("CORE-1", { status: "done" }, { key: "k", login: "alice" });
+  await api.send(issuePatchRequest("CORE-1", { status: "done" }), { key: "k", login: "alice" });
   await api.putIssueState("CORE-1", { pinned: true }, { key: "p", login: "alice" });
-  await api.patchIssue("CORE-1", { status: "done" }, { key: "k" });
+  await api.send(issuePatchRequest("CORE-1", { status: "done" }), { key: "k" });
   expect(stub.requests.map(({ init }) => new Headers(init?.headers).get("Dispatch-Login"))).toEqual(
     ["alice", "alice", null]
   );
@@ -619,7 +621,7 @@ test("API client sends the documented method and JSON body for mutations", async
     },
     keyed("write-1")
   );
-  await api.patchIssue("CORE-1", { status: "done" }, keyed("write-2"));
+  await api.send(issuePatchRequest("CORE-1", { status: "done" }), keyed("write-2"));
   await api.send(
     askAnswerRequest("ask-1", {
       selected: ["Ship"],
@@ -1123,7 +1125,7 @@ test("API client reaches every remaining documented endpoint", async () => {
   await api.listMyReplies({ limit: 50 });
   await api.listMyReplies({ issue: "CORE-1", limit: 200 });
   await api.listMyReplies({ artifact: "artifact-1", limit: 200 });
-  await api.markThreadRead("comment-1", "2026-10-12T00:00:00.000Z", keyed("put-1"));
+  await api.send(threadReadRequest("comment-1", "2026-10-12T00:00:00.000Z"), keyed("put-1"));
   await api.createComment("CORE-1", { body: "Looks good" }, keyed("write-3"));
   await api.send(commentResolveRequest("comment-1"), keyed("write-4"));
   await api.send(commentAcceptRequest("comment-1"), keyed("write-5"));

@@ -216,15 +216,21 @@ export function useIssueFieldWrite<Value>(
     });
     const id = writes.idOf(key);
     mine.current = { id, snapshot };
+    /** Where this write joined the store's order, read at the press, while the store holds it:
+     *  every write of the field that joined after it is a newer pick. */
+    const joined = writes.rows().find((row) => row.id === id)?.joined ?? Number.NEGATIVE_INFINITY;
     /** This press has settled here, so the control holds it no longer, and whether a newer write
-     *  of the field is left: the store has let this one go by now, and one write of a target
-     *  goes out at a time, so every write of the field still in the line was pressed after it. */
+     *  of the field is left: one that joined after this one and is still live. Whether the store
+     *  still publishes this write as live when its press settles is the store's to say, so the
+     *  answer reads only the writes that joined after it. */
     const settled = (): boolean => {
       setInHand((count) => count - 1);
       if (mine.current?.id === id) {
         mine.current = undefined;
       }
-      return writes.rows().some((row) => stillInLine(row, issueKey, field.name));
+      return writes
+        .rows()
+        .some((row) => row.joined > joined && stillInLine(row, issueKey, field.name));
     };
     press.then(
       (answer) => {

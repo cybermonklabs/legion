@@ -174,8 +174,7 @@ export function BroadcastSends({
                 className={row.status === "failed" ? dangerText : textSecondaryOnSurface}
                 role="status"
               >
-                {row.signingOutElsewhere &&
-                (row.status === "queued" || row.status === "sending" || row.status === "late") ? (
+                {row.signingOutElsewhere ? (
                   `Waiting for a sign-out in another tab: to ${count}`
                 ) : row.status === "queued" ? (
                   `Queued: to ${count}`

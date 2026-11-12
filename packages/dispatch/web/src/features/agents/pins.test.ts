@@ -1,7 +1,14 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
 
-import type { UserAgentStates } from "../../api/types";
-import { legacyPinnedIds, pinnedAgentSessions } from "./pins";
+import { answerAgentStates } from "../../__tests__/send-answers";
+import { api } from "../../api/client";
+import { userAgentStateQuery } from "../../api/queries";
+import type { UserAgentState, UserAgentStates } from "../../api/types";
+import { writesOf } from "../writes/write-store";
+import { legacyPinnedIds, pinnedAgentSessions, useAgentPinWrite } from "./pins";
 
 // The rail lists the person's pins oldest first (INFRA-812, R1), so the agent they pinned first
 // keeps the top row however their agent state is keyed, and a session they have only read or
@@ -64,4 +71,49 @@ test("an old key holding no list of ids carries no pins", () => {
   expect(legacyPinnedIds(JSON.stringify(["planner-session", 7, null]))).toEqual([
     "planner-session",
   ]);
+});
+
+// R7 of dispatch://INFRA-299: while a pin is live it shows its change again over each answer that
+// lands on the viewer's agent state. The change is that one session's `pinned_at`, over the state
+// as it stands, so a read composed before Dispatch took the pin leaves the pin on screen, and
+// what that read says of every other session arrives whole.
+test("a pin stays shown over an answer to the viewer's agent state that lands while it is out", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const getMyAgentState = spyOn(api, "getMyAgentState").mockResolvedValue({
+    "planner-session": { unread_replies: 0 },
+    "tester-session": { unread_replies: 0 },
+  });
+  // A pin Dispatch never answers, so it stays live for the read below.
+  const put = answerAgentStates().mockImplementation(
+    () => Promise.withResolvers<UserAgentState>().promise
+  );
+  const states = () => queryClient.getQueryData<UserAgentStates>(userAgentStateQuery().queryKey);
+  const hook = renderHook(() => useAgentPinWrite(), {
+    wrapper: ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children),
+  });
+  try {
+    await queryClient.fetchQuery(userAgentStateQuery());
+    await act(async () => {
+      void hook.result.current("planner-session", true);
+    });
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(pinnedAgentSessions(states())).toEqual(["planner-session"]);
+
+    // The page reads the agent state again while the pin is out: Dispatch has not taken it yet,
+    // and a reply from the tester arrived with that answer.
+    getMyAgentState.mockResolvedValue({
+      "planner-session": { unread_replies: 0 },
+      "tester-session": { unread_replies: 3 },
+    });
+    await act(() => queryClient.refetchQueries({ queryKey: userAgentStateQuery().queryKey }));
+
+    expect(pinnedAgentSessions(states())).toEqual(["planner-session"]);
+    expect(states()?.["tester-session"]?.unread_replies).toBe(3);
+  } finally {
+    hook.unmount();
+    writesOf(queryClient).clear();
+    getMyAgentState.mockRestore();
+  }
 });

@@ -94,16 +94,22 @@ export function useAgentPinWrite(): (sessionId: string, pinned: boolean) => Prom
   const reread = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
   }, [queryClient]);
+  // The pin is a change the write shows: the session's `pinned_at` alone, over the viewer's agent
+  // state as it stands (`shows`), so the store shows it again over each answer or event that
+  // lands on that state while the pin is live, and every other session's state that answer
+  // carries arrives whole (R7 of dispatch://INFRA-299).
   const { mutateAsync } = useKeyedWrite<UserAgentState, PinPress>({
     label: ({ pinned, sessionId }) =>
       `${pinned ? "Pin" : "Unpin"} ${text.sessionText(sessionId, undefined)}`,
     onError: reread,
-    onMutate: ({ pinned, sessionId }) => {
+    shows: ({ pinned, sessionId }) => {
       const at = new Date().toISOString();
-      queryClient.setQueryData<UserAgentStates>(userAgentStateQuery().queryKey, (current) => ({
-        ...current,
-        [sessionId]: withPin(current?.[sessionId], pinned, at),
-      }));
+      return (shown) => {
+        shown.on<UserAgentStates>(userAgentStateQuery().queryKey, (current) => ({
+          ...current,
+          [sessionId]: withPin(current[sessionId], pinned, at),
+        }));
+      };
     },
     onSuccess: (next, { sessionId }) => {
       // A write Dispatch made and has no answer to give for is a landing: what it changed is
