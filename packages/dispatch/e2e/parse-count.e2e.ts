@@ -58,6 +58,15 @@ const quotedBlock = "A **quoted** paragraph of its own.";
 /** `quotedBlock` as a reader sees it, which is the citing link's accessible name. */
 const quotedTitle = "A quoted paragraph of its own.";
 
+/** The question of an answered ask the related-item check finds. Its rare words are the ones
+ *  `relatedDraft` is typed with, and the issue the ask sits on carries none of them, so the ask
+ *  itself is what the check offers and the panel draws its answer
+ *  (`e2e/create-issue-decision-claim.e2e.ts` seeds the same shape). */
+const hangarQuestion = "Which zeppelin hangar stores the blimps over winter?";
+
+/** The title typed into the create dialog, which reaches `hangarQuestion` by those rare words. */
+const relatedDraft = "Zeppelin hangar for the blimps over winter";
+
 /** What the pages this spec opens were seeded with. */
 interface Seeded {
   readonly documentSlug: string;
@@ -153,6 +162,26 @@ async function seedStoredTexts(): Promise<Seeded> {
   await createIssueArtifact(issue.key, {
     content: "## Store the notices\n\nA **decided** thing.\n",
     name: "decisions.md",
+  });
+
+  // An answered ask on an issue of its own, which the related-item check behind the create
+  // dialog offers for a title typed with the question's rare words: the panel draws that
+  // answer, and the issue around the ask shares no word with the draft, so the item the check
+  // offers is the ask itself.
+  const mast = await createIssue({
+    project: "CORE",
+    spec: "The mast is repainted each spring, before the sailing season.\n",
+    title: "Mooring mast paint rota",
+  });
+  const hangarAsk = await createAsk(
+    mast.key,
+    { options: [{ label: "North" }, { label: "South" }], question: hangarQuestion },
+    session
+  );
+  await answerAsk(hangarAsk.id, {
+    expected_edited_at: null,
+    selected: ["North"],
+    text: "The **northern** one, which holds them all winter.",
   });
 
   return {
@@ -320,6 +349,29 @@ function surfaces(seeded: Seeded): Surface[] {
         await expect(bold(page, "SPA")).toBeVisible();
       },
     },
+    {
+      name: "the related panel",
+      show: async (page) => {
+        // The create dialog's related-item check, whose answered ask carries the display tree
+        // of its answer: `AskHitStatus` draws that answer under the hit it found.
+        //
+        // The row covers the check's one-project leg, which is the only leg this harness can
+        // drive: the cross-project one is reached from the meaning stage alone
+        // (`relatedMeaningStage`), which needs an embedder, and a run of this suite starts the
+        // server with none (`e2e/harness-embedder.ts`). The dashboard's own read - the GET
+        // form of `/api/v1/projects/{key}/related`, which this dialog makes - runs the
+        // one-project leg whatever the server embeds, so this is the leg the panel draws from
+        // in a browser.
+        await page.goto("/");
+        await expect(page.getByRole("heading", { name: "Inbox" })).toBeVisible();
+        await page.locator("body").focus();
+        await page.keyboard.press("c");
+        const dialog = page.getByRole("dialog", { name: "Create issue" });
+        await expect(dialog).toBeVisible();
+        await dialog.getByRole("textbox", { name: "Title" }).fill(relatedDraft);
+        await expect(bold(page, "northern")).toBeVisible();
+      },
+    },
   ];
 }
 
@@ -333,7 +385,7 @@ interface SurfaceParses extends ParseCounts {
  * Opens a page of `context`, shows `surface` on it and answers what it parsed.
  *
  * The surface names itself in whatever showing it fails with: each walk below is one test over
- * fourteen pages, so the surface that drew nothing has to be in the failure itself and not only
+ * fifteen pages, so the surface that drew nothing has to be in the failure itself and not only
  * in the line number under it. And the stored text has to stand in place of the document rather
  * than beside an apology for it: a view that gave up and drew its error can still leave the word
  * the walk waits for somewhere else on the page. Both readings hold wherever a surface is
@@ -366,7 +418,7 @@ test("no page that draws stored text parses markdown in either browser engine", 
   browser,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "one engine proves what the pages parse");
-  // Fourteen pages, each loaded in a page of its own, on a two-core box: the default deadline
+  // Fifteen pages, each loaded in a page of its own, on a two-core box: the default deadline
   // is one page's.
   test.setTimeout(310_000);
   const seeded = await seedStoredTexts();
@@ -377,10 +429,10 @@ test("no page that draws stored text parses markdown in either browser engine", 
     // Every surface is walked, not merely the ones still in the list: a row that stops reaching
     // its page, or a surface dropped from `surfaces`, leaves the comparison below green over
     // what remains, so the count the claim rests on is pinned here and moves only deliberately.
-    expect(pages).toHaveLength(14);
+    expect(pages).toHaveLength(15);
     const counted = [];
     for (const surface of pages) counted.push(await parsesOf(alice, surface));
-    // One comparison over all fourteen, so a page that parses is named beside the thirteen that
+    // One comparison over all fifteen, so a page that parses is named beside the fourteen that
     // do not rather than stopping the walk at the first.
     expect(counted).toEqual(
       pages.map((surface) => ({ display: 0, editor: 0, surface: surface.name, workerRequests: 0 }))
@@ -397,7 +449,7 @@ test("the counter sees the parse a text served with no reading costs", async ({
   browser,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "the control runs where the rows run");
-  // The same fourteen pages as the row above, each in a page of its own: the deadline is that
+  // The same fifteen pages as the row above, each in a page of its own: the deadline is that
   // walk's, not one page's.
   test.setTimeout(310_000);
   const seeded = await seedStoredTexts();
@@ -411,7 +463,7 @@ test("the counter sees the parse a text served with no reading costs", async ({
     // The same list the row above walks, pinned the same way: the control is what says each of
     // those pages falls back to the markdown, so a surface missing from one list is missing
     // from both.
-    expect(pages).toHaveLength(14);
+    expect(pages).toHaveLength(15);
     const counted = [];
     // The same walk the row above makes, so a view that refuses an answer carrying no tree, or
     // draws nothing from one, fails under its own surface's name here too: the fallback is a
