@@ -14,7 +14,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -172,6 +171,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			worker := api.PhaseView{
 				Claim:         claimView,
 				HandoffCommit: item.HandoffCommit,
+				Pass:          item.Pass,
 				Rounds:        item.Rounds,
 				BackwardMoves: item.BackwardMoves,
 			}
@@ -191,7 +191,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 				Number:         pr.Number,
 				Head:           pr.HeadSHA,
 				State:          string(pr.State),
-				ChecksVerdict:  classify.HeadVerdict(*pr),
+				MergeState:     string(pr.MergeState),
 				ReviewDecision: reviewDecision,
 			}
 		}
@@ -362,17 +362,18 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	//
 	// It is not the daemon's judgement of why it starts no issue (record.StartHold), and the two
 	// are kept apart on purpose: that set answers why the daemon has not started an issue, and
-	// this answers why an issue is not working now. The questions part company over the phases
-	// past the review, which hold no admission slot since dispatch://INFRA-2560 and whose work
-	// runs all the same: such an issue is held by nothing the daemon could start it from
-	// (record.StartHoldNone) and is at work, so it carries no answer here either. Where the two
-	// do meet — an issue the cap, a Dispatch link or an open child holds — they say the same
-	// thing in two registers, the set's one word for the rules that read it and this sentence
-	// for the person reading the state; neither is derived from the other, because one is read
-	// from the walk that builds the waiting line and the other from the state that walk
-	// produced.
-	whyStates(&projected, own, stranded, rows, facts.ChildWaits)
-	// Every issue of a live tree carries that tree's quiet time (contract 86): `treeMovedAt`,
+	// this answers why an issue is not working now. Where the two questions meet, where they
+	// part and why neither answer is derived from the other is written once, with the set
+	// itself.
+	//
+	// The running roots are the term that says an issue past its review is at work: it holds no
+	// slot since dispatch://INFRA-2560, so no list of the three places it and the answer turns
+	// on whether its tree runs at all (whyStates, atWorkPastReview). They are read from the
+	// records and the facts this pass already holds, so the reading costs no query, and they
+	// are the same roots record.LiveRoots is read from above — live is wider than running,
+	// and a parked root's tree is neither.
+	whyStates(&projected, own, record.RunningRoots(own, facts), stranded, rows, facts.ChildWaits)
+	// Every issue of a live tree carries that tree's quiet time (contract 91): `treeMovedAt`,
 	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
 	// it has been still at the instant the rest of this state is measured at. The pair is the
 	// tree's, so every issue of one tree carries the same two values — a child past its own

@@ -40,7 +40,7 @@ func TestApplyFactAdmitsRootAndQueuesWhenFull(t *testing.T) {
 	}
 	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-208", Index: 0, AdmittedAt: fixedNow}})
 	assertEffects(t, pool, []effect{
-		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-208", payload: record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}},
+		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-208", payload: record.OrdinaryStatusWrite("in_progress", "todo", "")},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-208", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-208", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 1}},
 	})
@@ -53,7 +53,7 @@ func TestApplyFactAdmitsRootAndQueuesWhenFull(t *testing.T) {
 	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-208", Index: 0, AdmittedAt: fixedNow}})
 	assertWaiting(t, pool, []string{"LEGION-209"})
 	assertEffects(t, pool, []effect{
-		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-208", payload: record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}},
+		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-208", payload: record.OrdinaryStatusWrite("in_progress", "todo", "")},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-208", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-208", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 1}},
 	})
@@ -174,7 +174,7 @@ func TestApplyFactReleasesSlotWhenEngineCompletesPhaseAndPromotesHead(t *testing
 		t.Fatalf("promoted status = %q, want in_progress", got.Status)
 	}
 	assertEffects(t, pool, []effect{
-		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-NEXT", payload: record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}},
+		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-NEXT", payload: record.OrdinaryStatusWrite("in_progress", "todo", "")},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-NEXT", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-NEXT", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-NEXT", Role: claim.RoleArchitect, Generation: 1}},
 	})
@@ -213,7 +213,7 @@ func TestApplyFactReadmitsLingeringRootAndIgnoresOwnStatusEcho(t *testing.T) {
 	}
 	assertSlots(t, pool, []record.Slot{{Issue: lingering.Key, Index: 0, AdmittedAt: fixedNow}})
 	readmittedEffects := []effect{
-		{kind: record.OutboxKindDispatchStatus, issue: lingering.Key, payload: record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}},
+		{kind: record.OutboxKindDispatchStatus, issue: lingering.Key, payload: record.OrdinaryStatusWrite("in_progress", "todo", "")},
 		{kind: record.OutboxKindIssueBranch, issue: lingering.Key, payload: record.IssueBranch{Generation: 4}},
 		{kind: record.OutboxKindSupervise, issue: lingering.Key, payload: record.SuperviseRequest{Op: "start", Tree: lingering.Key, Role: claim.RoleArchitect, Generation: 4}},
 	}
@@ -265,7 +265,7 @@ func TestReadmissionStartsTheTreesMidPhaseChildren(t *testing.T) {
 	apply(t, pool, admission, "readmit", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: root.Rank, HandedOver: handed}, engine)
 
 	assertEffects(t, pool, []effect{
-		{kind: record.OutboxKindDispatchStatus, issue: root.Key, payload: record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}},
+		{kind: record.OutboxKindDispatchStatus, issue: root.Key, payload: record.OrdinaryStatusWrite("in_progress", "todo", "")},
 		{kind: record.OutboxKindIssueBranch, issue: root.Key, payload: record.IssueBranch{Generation: 2}},
 		{kind: record.OutboxKindSupervise, issue: root.Key, payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleArchitect, Generation: 2}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
@@ -301,7 +301,7 @@ func TestAResumedMergerIsToldNoApprovedHeadAcrossGenerations(t *testing.T) {
 	apply(t, pool, admission, "readmit", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: root.Rank, HandedOver: handed}, engine)
 
 	assertEffects(t, pool, []effect{
-		{kind: record.OutboxKindDispatchStatus, issue: root.Key, payload: record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}},
+		{kind: record.OutboxKindDispatchStatus, issue: root.Key, payload: record.OrdinaryStatusWrite("in_progress", "todo", "")},
 		{kind: record.OutboxKindIssueBranch, issue: root.Key, payload: record.IssueBranch{Generation: 2}},
 		{kind: record.OutboxKindSupervise, issue: root.Key, payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleArchitect, Generation: 2}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
@@ -335,7 +335,7 @@ func TestReadmissionSendsAnAwaitingChildWithNoREADYBackToMerging(t *testing.T) {
 	putIssue(t, pool, root)
 	parentKey := root.Key
 	putIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "awaiting child", Tree: root.Key, Parent: &parentKey,
-		Phase: phase.AwaitingMerge, Generation: 1, Status: "retro", Rank: "B", LastDispatchSeq: 1})
+		Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "B", LastDispatchSeq: 1})
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleMerger, Claim: "merge-claim",
 			HandoffCommit: "ready-head", Summary: "READY #42 at ready-head"}); err != nil {
@@ -346,7 +346,7 @@ func TestReadmissionSendsAnAwaitingChildWithNoREADYBackToMerging(t *testing.T) {
 	apply(t, pool, admission, "readmit", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: root.Rank, HandedOver: handed}, engine)
 
 	assertEffects(t, pool, []effect{
-		{kind: record.OutboxKindDispatchStatus, issue: root.Key, payload: record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}},
+		{kind: record.OutboxKindDispatchStatus, issue: root.Key, payload: record.OrdinaryStatusWrite("in_progress", "todo", "")},
 		{kind: record.OutboxKindIssueBranch, issue: root.Key, payload: record.IssueBranch{Generation: 2}},
 		{kind: record.OutboxKindSupervise, issue: root.Key, payload: record.SuperviseRequest{Op: "start", Tree: root.Key, Role: claim.RoleArchitect, Generation: 2}},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-209", payload: record.IssueBranch{Generation: 1}},
@@ -377,7 +377,7 @@ func TestAMergeWhileTheTreeLingersClosesTheChildAndWakesItsCheck(t *testing.T) {
 	putIssue(t, pool, root)
 	parentKey := root.Key
 	putIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "merged child", Tree: root.Key, Parent: &parentKey,
-		Phase: phase.AwaitingMerge, Generation: 1, Status: "in_progress", Rank: "B", LastDispatchSeq: 1})
+		Phase: phase.Merging, Generation: 1, Status: "in_progress", Rank: "B", LastDispatchSeq: 1})
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := record.NewStore().PutPullRequest(context.Background(), tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "acme/widgets", Number: 42,
 			Branch: "legion/LEGION-209", HeadSHA: "head", Failing: []string{}}); err != nil {
@@ -693,11 +693,10 @@ func TestReadmissionStartsTheNewGenerationWithoutTheOldGenerationsFacts(t *testi
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	const key, artifact = "LEGION-LINGER", "4f2a9c1e-8b3d-4e7f-9a60-2c5d8e1b7f34"
 	until, approved := fixedNow.Add(time.Hour), 1
-	pending := &record.ReadyPending{Step: record.DesignStepSpec, Version: 1}
-	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "lingering", Tree: key, Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LingerUntil: &until, LastDispatchSeq: 1, ReadyPending: pending})
+	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "lingering", Tree: key, Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LingerUntil: &until, LastDispatchSeq: 1})
 	const child = "LEGION-2"
 	parent := key
-	putIssue(t, pool, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "child", Tree: key, Parent: &parent, Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "B", LastDispatchSeq: 1, ReadyPending: pending})
+	putIssue(t, pool, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "child", Tree: key, Parent: &parent, Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "B", LastDispatchSeq: 1})
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
 		ctx := context.Background()
@@ -717,11 +716,8 @@ func TestReadmissionStartsTheNewGenerationWithoutTheOldGenerationsFacts(t *testi
 
 	apply(t, pool, admission, "readmit", intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: "lingering", Rank: "A", HandedOver: handed}, engine)
 	readmitted := issue(t, pool, key)
-	if readmitted.Generation != 2 || readmitted.Phase != phase.Admitted || readmitted.ReadyPending != nil {
-		t.Fatalf("readmitted = %#v, want generation 2, admitted, no READY pending", readmitted)
-	}
-	if got := issue(t, pool, child); got.ReadyPending != nil {
-		t.Fatalf("the child's READY pending after re-admission = %#v, want none", got.ReadyPending)
+	if readmitted.Generation != 2 || readmitted.Phase != phase.Admitted {
+		t.Fatalf("readmitted = %#v, want generation 2, admitted", readmitted)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()

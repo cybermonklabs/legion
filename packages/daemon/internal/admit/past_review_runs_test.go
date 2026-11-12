@@ -156,17 +156,8 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 		t.Fatalf("the merging start of %s = %+v, want the merger's, marked for no row and claimable at once", accepted, start)
 	}
 
-	// The merger's READY takes the issue to its wait for the merge, still on no row.
-	runStart(t, pool, accepted)
-	applyFact(t, pool, admission, "ready", intake.HandoffComplete{Issue: accepted, Role: claim.RoleMerger, Generation: 1,
-		Claim: "claim-" + accepted, Ready: true, Summary: "READY #42 at head for " + accepted})
-
-	if got := issue(t, pool, accepted); got.Phase != phase.AwaitingMerge {
-		t.Fatalf("the accepted issue = %#v, want it awaiting its merge: its READY takes it there", got)
-	}
-	if holdsSlot(t, pool, accepted) {
-		t.Fatalf("rows = %#v, want %s holding none while it waits for its merge", slots(t, pool), accepted)
-	}
+	// Merging is the last phase of the work past the review: its merger merges the head it read
+	// and that merge closes the issue, so there is no further phase for a row to be asked for.
 
 	// An issue whose architect sends the work back from accepting to implementing writes the
 	// change again, so its start waits for a row as any phase worker's start does.

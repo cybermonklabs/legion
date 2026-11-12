@@ -254,13 +254,14 @@ func preReleaseStore(t *testing.T) *store.Store {
 // even where that puts the project above its cap, so no turn is stopped by a deploy.
 //
 // What it must not grant is as much of the rule as what it must: an issue of a tree that
-// lingers has left the workflow and is started by nothing but its re-admission, and an issue
-// waiting for its merge keeps no row. The root that waits in accepting while its children work
-// is granted the row it already held, because that is the rule the migration was written for,
-// and the boot's own first pass takes it back: an issue holds a row until its work is past its
-// review, and accepting is past it (record.KeepsSlot). The cap then does the draining: the
-// surplus is above it, so the root that never ran takes nothing while the count stands at or
-// above the cap, and takes a row at the first pass where the count is under it.
+// lingers has left the workflow and is started by nothing but its re-admission. The root that
+// waits in accepting while its children work, and the two in merging, are each granted a row,
+// because that is the rule the migration was written for — a merger merges the pull request
+// itself, so its phase is work — and the boot's own first pass takes those three rows back: an
+// issue holds a row until its work is past its review, and accepting, retro and merging are
+// past it (record.KeepsSlot). The cap then does the draining: the surplus is above it, so the
+// root that never ran takes nothing while the count stands at or above the cap, and takes a
+// row at the first pass where the count is under it.
 func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 	ctx := context.Background()
 	st := preReleaseStore(t)
@@ -273,7 +274,6 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 	spec, running, lingering, queued := bootProject+"-1", bootProject+"-2", bootProject+"-7", bootProject+"-9"
 	building, testing := bootProject+"-3", bootProject+"-4"
 	heldReady, merging, lingerChild := bootProject+"-5", bootProject+"-6", bootProject+"-8"
-	pendingVersion := 2
 	lingers := time.Now().UTC().Add(time.Hour)
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		// A root whose architect is writing its spec, a running tree whose own root waits in
@@ -284,14 +284,12 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 			bootIssue(running, running, "needs_review", phase.Accepting),
 			bootIssue(building, running, "in_progress", phase.Implementing),
 			bootIssue(testing, running, "testing", phase.Testing),
-			bootIssue(merging, running, "retro", phase.AwaitingMerge),
+			bootIssue(merging, running, "retro", phase.Merging),
 			bootIssue(lingering, lingering, "done", phase.Done),
 			bootIssue(lingerChild, lingering, "in_progress", phase.Implementing),
 			bootIssue(queued, queued, "todo", phase.Admitted),
 		}
-		held := bootIssue(heldReady, running, "retro", phase.Merging)
-		held.ReadyPending = &record.ReadyPending{Step: record.DesignStepSpec, Version: pendingVersion}
-		seeded = append(seeded, held)
+		seeded = append(seeded, bootIssue(heldReady, running, "retro", phase.Merging))
 		for _, issue := range seeded {
 			if err := records.PutIssue(ctx, tx, issue); err != nil {
 				return err
@@ -319,12 +317,14 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 		t.Fatalf("migrate the pre-release store onto the release: %v", err)
 	}
 	granted := slotHolders(t, pool)
-	if want := []string{spec, running, building, testing, lingering}; !reflect.DeepEqual(granted, want) {
+	// Merging is a worker's phase on this release — the merger merges the pull request itself — so
+	// the two issues standing in it are at work and hold slots like the rest.
+	if want := []string{spec, running, building, testing, heldReady, merging, lingering}; !reflect.DeepEqual(granted, want) {
 		t.Fatalf("the slots the migration left = %v, want %v: every issue of a live tree at work, and the roots that already held one",
 			granted, want)
 	}
 
-	// Two slots, which the five the migration left are well above: the boot starts nothing new
+	// Two slots, which the seven the migration left are well above: the boot starts nothing new
 	// and stops nothing that runs.
 	handlers := bootHandlers(t, records, 2)
 	if _, err := intake.ApplyFact(ctx, pool, "daemon", "boot-1", intake.DaemonBooted{Boot: 1}, handlers...); err != nil {
@@ -332,7 +332,7 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 	}
 	working := slotHolders(t, pool)
 	if want := []string{spec, building, testing}; !reflect.DeepEqual(working, want) {
-		t.Fatalf("the slots after the first boot = %v, want %v: the spec's root and the two children at work, above the cap of 2, with the root in accepting holding none",
+		t.Fatalf("the slots after the first boot = %v, want %v: the spec's root and the two children at work, above the cap of 2, with the root in accepting and the two in merging holding none",
 			working, want)
 	}
 	if len(working) <= 2 {
@@ -343,7 +343,11 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 	}
 
 	// The count falls as each issue finishes, and nothing new starts while it stands at the cap:
-	// the loop admits while the holders are under the cap, never at it.
+	// the loop admits while the holders are under the cap, never at it. The two in merging are
+	// finished first, and neither frees a row: their work stands past its review, so the first
+	// pass above took the rows the migration granted them back.
+	finish(t, pool, records, heldReady)
+	finish(t, pool, records, merging)
 	finish(t, pool, records, building)
 	tick(t, pool, handlers, "tick-at-the-cap")
 	if holders := slotHolders(t, pool); !reflect.DeepEqual(holders, []string{spec, testing}) {
@@ -385,8 +389,8 @@ func slotHolders(t *testing.T, pool *pgxpool.Pool) []string {
 	return held
 }
 
-// finish moves key to awaiting_merge, where its worker has nothing left to do, as the completion
-// that ends its phase would: the next admission pass takes its slot back.
+// finish closes key, where its worker has nothing left to do, as the completion that ends its
+// last phase would: the next admission pass takes its slot back.
 func finish(t *testing.T, pool *pgxpool.Pool, records record.Store, key string) {
 	t.Helper()
 	ctx := context.Background()
@@ -395,7 +399,9 @@ func finish(t *testing.T, pool *pgxpool.Pool, records record.Store, key string) 
 		if err != nil {
 			return err
 		}
-		issue.Phase, issue.Status, issue.DispatchStatus = phase.AwaitingMerge, "retro", "retro"
+		// Its work is over, which on this release is the phase the merge leaves: merging is the
+		// merger's own phase and holds a slot until its merge closes the issue.
+		issue.Phase, issue.Status, issue.DispatchStatus = phase.Done, "done", "done"
 		return records.PutIssue(ctx, tx, *issue)
 	}); err != nil {
 		t.Fatalf("finish %s: %v", key, err)

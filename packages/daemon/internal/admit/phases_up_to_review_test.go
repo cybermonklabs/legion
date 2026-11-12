@@ -92,16 +92,12 @@ func TestOnlyPhasesUpToReviewHoldASlot(t *testing.T) {
 		{key: "LEGION-421", stands: phase.Retro, status: "retro", seeded: true,
 			why: "the retro writes no more of the change, so the pass takes the row back"},
 		{key: "LEGION-422", stands: phase.Merging, status: "retro", seeded: true,
-			why: "the merger builds a READY of work already reviewed, so the pass takes the row back"},
-		{key: "LEGION-423", stands: phase.AwaitingMerge, status: "retro", seeded: true,
-			why: "the issue waits on a merge, which writes nothing, so the pass takes the row back"},
+			why: "the merger merges work already reviewed, so the pass takes the row back"},
 		{key: "LEGION-430", stands: phase.Accepting, status: "needs_review",
 			why: "an issue past its review that holds no row is offered none"},
 		{key: "LEGION-431", stands: phase.Retro, status: "retro",
 			why: "an issue past its review that holds no row is offered none"},
 		{key: "LEGION-432", stands: phase.Merging, status: "retro",
-			why: "an issue past its review that holds no row is offered none"},
-		{key: "LEGION-433", stands: phase.AwaitingMerge, status: "retro",
 			why: "an issue past its review that holds no row is offered none"},
 	}
 	var seeded, want []string
@@ -132,8 +128,8 @@ func TestOnlyPhasesUpToReviewHoldASlot(t *testing.T) {
 			deleted = append(deleted, key)
 		}
 	}
-	if gone := []string{"LEGION-420", "LEGION-421", "LEGION-422", "LEGION-423"}; !slices.Equal(deleted, gone) {
-		t.Fatalf("the pass deleted the rows of %v, want %v: the four phases past an issue's review and no others", deleted, gone)
+	if gone := []string{"LEGION-420", "LEGION-421", "LEGION-422"}; !slices.Equal(deleted, gone) {
+		t.Fatalf("the pass deleted the rows of %v, want %v: the three phases past an issue's review and no others", deleted, gone)
 	}
 
 	// The work of two issues comes back to a phase that keeps a row, from accepting and from

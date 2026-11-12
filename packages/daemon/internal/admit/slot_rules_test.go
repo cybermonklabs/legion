@@ -44,16 +44,12 @@ func slotTree(t *testing.T, pool *pgxpool.Pool, approved bool) {
 // slotMember records key in LEGION-1's tree at stands, with the Dispatch status a member in that
 // phase shows, and a working claim of the phase's own role, so a pass that moved a claim or a
 // status would be seen.
-func slotMember(t *testing.T, pool *pgxpool.Pool, key string, stands phase.Phase, status string, ready *int) {
+func slotMember(t *testing.T, pool *pgxpool.Pool, key string, stands phase.Phase, status string) {
 	t.Helper()
 	parent := "LEGION-1"
-	var pending *record.ReadyPending
-	if ready != nil {
-		pending = &record.ReadyPending{Step: record.DesignStepSpec, Version: *ready}
-	}
 	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
 		Title: key, Tree: "LEGION-1", Parent: &parent, Phase: stands, Generation: 1, Status: status, DispatchStatus: status, Rank: "B",
-		ReadyPending: pending, LastDispatchSeq: 3})
+		LastDispatchSeq: 3})
 	role := workflow.RoleFor(stands)
 	if role == "" || role == claim.RoleArchitect {
 		role = claim.RoleImplementer
@@ -194,15 +190,15 @@ func assertRowHolders(t *testing.T, pool *pgxpool.Pool, want ...string) {
 
 // A1. One row rule per phase, read by admission passes over trees that run.
 //
-// The daemon creates a slots row for an issue when it starts it, and deletes that row in four
+// The daemon creates a slots row for an issue when it starts it, and deletes that row in three
 // cases only: the issue's own phase is done; Dispatch shows it in backlog, icebox, triage or
 // done; it belongs to a tree whose root closed or a tree the daemon no longer runs; or its work
-// stands past its review, which is accepting, retro, merging and awaiting_merge. No other
-// phase deletes a row, so an issue keeps its place against the cap while it waits — in
-// awaiting_person, in held, and as a root standing at admitted whose design gate has opened.
+// stands past its review, which is accepting, retro and merging. No other phase deletes a row,
+// so an issue keeps its place against the cap while it waits — in awaiting_person, in held, and
+// as a root standing at admitted whose design gate has opened.
 //
 // The first reading gives one started issue each phase and reads the rows one admission pass
-// leaves: every phase up to the review keeps its row, and the four past it lose theirs on that
+// leaves: every phase up to the review keeps its row, and the three past it lose theirs on that
 // same pass, which is the cutover a deployment taking this change makes. The second reading
 // makes the three deletions that are left — a phase of done while Dispatch still shows the
 // issue at a running status, a Dispatch status of backlog while the phase is still in the
@@ -220,8 +216,8 @@ func TestSlotPerPhase(t *testing.T) {
 	// are held where they stand by a reason of their own.
 	admission := quiet(t, 16)
 
-	// Tree 1: its root at admitted with its design gate opened, one member in each phase that
-	// keeps a row, and one in awaiting_merge.
+	// Tree 1: its root at admitted with its design gate opened, and one member in each phase
+	// that keeps a row.
 	slotTree(t, pool, true)
 	root := issue(t, pool, "LEGION-1")
 	root.Phase, root.Status, root.DispatchStatus = phase.Admitted, "in_progress", "in_progress"
@@ -238,23 +234,21 @@ func TestSlotPerPhase(t *testing.T) {
 		key    string
 		stands phase.Phase
 		status string
-		ready  *int
 	}{
 		{key: "LEGION-2", stands: phase.Planning, status: "in_progress"},
 		{key: "LEGION-3", stands: phase.Implementing, status: "in_progress"},
 		{key: "LEGION-4", stands: phase.Testing, status: "testing"},
 		{key: "LEGION-5", stands: phase.Reviewing, status: "needs_review"},
-		// The four phases past the issue's review: each row here goes on the pass that keeps
+		// The three phases past the issue's review: each row here goes on the pass that keeps
 		// every row above it, which is the cutover a deployment taking this change makes.
 		{key: "LEGION-6", stands: phase.Accepting, status: "needs_review"},
 		{key: "LEGION-7", stands: phase.Retro, status: "retro"},
-		// A merger that has built its merge request and waits for a closed design gate to
-		// release it (record.ReadyPending).
-		{key: "LEGION-8", stands: phase.Merging, status: "retro", ready: new(2)},
-		{key: "LEGION-10", stands: phase.AwaitingMerge, status: "retro"},
+		// A merger at work: its own merge is what ends the phase on this release, and it works
+		// it on no row, since merging stands past the issue's review.
+		{key: "LEGION-8", stands: phase.Merging, status: "retro"},
 		{key: "LEGION-9", stands: phase.Held, status: "in_progress"},
 	} {
-		slotMember(t, pool, member.key, member.stands, member.status, member.ready)
+		slotMember(t, pool, member.key, member.stands, member.status)
 		takeSlot(t, pool, member.key)
 	}
 
@@ -280,7 +274,7 @@ func TestSlotPerPhase(t *testing.T) {
 		Status: "todo", DispatchStatus: "todo", Rank: "D1", LastDispatchSeq: 2})
 	// A child of the same tree the daemon did start, which a person's todo re-entered: a
 	// re-entry writes the phase back to admitted, bumps the generation and leaves the Dispatch
-	// status at todo (workflow.ReenterChild), and none of the four deletions reads any of that,
+	// status at todo (workflow.ReenterChild), and none of the three deletions reads any of that,
 	// so the row its first run took stands (record.KeepsSlot). The unstarted child above is
 	// read beside it in the same assertion, still holding none: the two stand in the same
 	// phase, in the same status, under the same root's wait, so what tells them apart is that
@@ -326,7 +320,7 @@ func TestSlotPerPhase(t *testing.T) {
 	}
 
 	// The three deletions that are left, made together and read by one pass. The phase of done
-	// is written on the reviewing member, which still holds a row: the four past the review
+	// is written on the reviewing member, which still holds a row: the three past the review
 	// gave theirs up on the reading above.
 	finished := issue(t, pool, "LEGION-5")
 	finished.Phase = phase.Done

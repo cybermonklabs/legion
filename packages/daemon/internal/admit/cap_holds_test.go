@@ -203,46 +203,27 @@ func TestAnIssueThatHoldsNoRowWaitsOnceAfterTheChange(t *testing.T) {
 	assertRowHolders(t, pool, "LEGION-100", "LEGION-101")
 }
 
-// An issue in merging whose merge request a closed design gate holds is at work for nothing: a
-// second task would ask its merger for a READY a person has still to approve. So the pass that
-// starts a worker with no task again passes over it (admit's resumeSlottedWorkers,
-// record.AtWork), and starts the same issue's merger where the gate holds no merge request of
-// it. Neither issue holds a row: merging stands past the issue's review, so the repair reaches
-// it on no row at all (record.KeepsSlot).
-func TestAHeldMergeRequestStartsNoMerger(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		// held says a closed design gate holds the merge request the merger already built
-		// (record.ReadyPending), which is the one field between the two rows.
-		held    bool
-		root    string
-		key     string
-		started bool
-	}{
-		{name: "a closed gate holds its merge request", held: true, root: "LEGION-810", key: "LEGION-811"},
-		{name: "no merge request is held", root: "LEGION-820", key: "LEGION-821", started: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := migratedPool(t)
-			seedTreeAndMember(t, pool, tc.root, tc.key, phase.Merging, 1, false)
-			if tc.held {
-				member := issue(t, pool, tc.key)
-				member.ReadyPending = &record.ReadyPending{Step: record.DesignStepSpec, Version: 2}
-				putIssue(t, pool, member)
-			}
-			// A merger whose session the daemon suspended holds no task it still works, which is
-			// the state the repair of a worker with no task exists for.
-			putWorkerClaim(t, pool, tc.root, tc.key, claim.RoleMerger, 1, supervise.StateSuspended, supervise.SuspendedByDaemon)
+// An issue in merging has a worker with work of its own: its merger merges the head it read,
+// which is what ends the phase, so nothing of that phase ever waits on a person. The pass that
+// starts a worker with no task therefore starts its merger, where before this release it passed
+// over a merger whose own READY a closed design gate held (admit's resumeSlottedWorkers,
+// record.AtWork). The merger runs on no row: merging stands past the issue's review, so the
+// repair reaches it holding none (record.KeepsSlot).
+func TestAMergingIssueStartsItsMerger(t *testing.T) {
+	const root, key = "LEGION-820", "LEGION-821"
+	pool := migratedPool(t)
+	seedTreeAndMember(t, pool, root, key, phase.Merging, 1, false)
+	// A merger whose session the daemon suspended holds no task it still works, which is
+	// the state the repair of a worker with no task exists for.
+	putWorkerClaim(t, pool, root, key, claim.RoleMerger, 1, supervise.StateSuspended, supervise.SuspendedByDaemon)
 
-			tick(t, pool, quiet(t, 1), "tick")
+	tick(t, pool, quiet(t, 1), "tick")
 
-			if got := claimableStart(t, pool, tc.key); got != tc.started {
-				t.Fatalf("a merger of %s was started = %t, want %t; starts = %#v", tc.key, got, tc.started, startsOf(t, pool, tc.key))
-			}
-			if holdsSlot(t, pool, tc.key) {
-				t.Fatalf("rows = %#v, want %s holding none: its work stands past its review", slots(t, pool), tc.key)
-			}
-		})
+	if !claimableStart(t, pool, key) {
+		t.Fatalf("no merger of %s was started; starts = %#v", key, startsOf(t, pool, key))
+	}
+	if holdsSlot(t, pool, key) {
+		t.Fatalf("rows = %#v, want %s holding none: its work stands past its review", slots(t, pool), key)
 	}
 }
 

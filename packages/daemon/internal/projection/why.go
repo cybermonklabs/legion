@@ -23,19 +23,23 @@ import (
 // holds the issue. state is the projection so far, whose `admission.active`,
 // `admission.waiting` and `admission.blocked` are all filled and whose members of the line
 // carry the sentence already rendered for them (api.WaitingLineView.Reason); own are this
-// project's own records; stranded are the claims the daemon judges nothing will wake, handed to
-// Project because this package may not read internal/workflow; rows is the Dispatch mirror this
-// pass judged the links from and childWaits the children-first judgement it made
-// (record.ChildWaitsOf).
+// project's own records; running are the roots whose trees run (record.RunningRoots), which is
+// what says the work of an issue past its review is going on; stranded are the claims the
+// daemon judges nothing will wake, handed to Project because this package may not read
+// internal/workflow; rows is the Dispatch mirror this pass judged the links from and
+// childWaits the children-first judgement it made (record.ChildWaitsOf).
 //
 // The four states are read in one order, so no issue carries two answers: claim_stopped, then
 // waiting, then blocked, then unlisted. claim_stopped is first because its fact is about the
 // issue's worker rather than its place in a queue, and an issue at work whose worker stopped is
 // the commonest question a reader brings. An issue that matches none of the four carries no
 // answer at all: an issue of `admission.active` whose worker is running, an issue at
-// phase.Held, which holds a slot and so stands in that same list, and an issue at work past
-// its own review, which holds no slot since dispatch://INFRA-2560 and so stands in no list of
-// the three at all (atWorkPastReview).
+// phase.Held whose hold came from a phase that keeps a slot, which stands in that same list,
+// and an issue whose work is running past its own review, which holds no slot since
+// dispatch://INFRA-2560 and so stands in no list of the three at all (atWorkPastReview). A
+// hold from a phase past the review keeps no slot (record.KeepsSlot, which reads
+// record.StandsAt), and no worker of such an issue runs, so it is in neither of those two and
+// is answered by the last arm.
 //
 // The scope is this project's own records that the record holds in the workflow
 // (record.InWorkflow). An issue the record does not hold there — done, backlog, icebox,
@@ -50,7 +54,9 @@ import (
 // things only it says: which issues something holds, which is the `blocked` state's own
 // membership, and what a member of the line a link holds waits on where the links half names
 // nothing for it, the one fallback in this file (the waiting arm below).
-func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim, rows map[string]blockers.Row, childWaits map[string]record.ChildWait) {
+func whyStates(state *api.State, own []record.Issue, running map[string]struct{}, stranded []supervise.Claim,
+	rows map[string]blockers.Row, childWaits map[string]record.ChildWait,
+) {
 	// The stranded claim each issue's answer names. The set reports two kinds of claim and no
 	// others (workflow.Stranded) — the worker of the issue's phase, and the tree's architect —
 	// so where one issue has both, the worker is the one named: its stop is the one that holds
@@ -142,14 +148,14 @@ func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim,
 		default:
 			// Neither the line nor `blocked` names it, so this arm reads out the two kinds
 			// that are working now before it names the rest unlisted: an issue holding one of
-			// the cap's slots, which `admission.active` names, and an issue at work past its
-			// own review, which holds no slot and so is named by no list at all
-			// (atWorkPastReview). Each carries no answer, because `why` answers for an issue
-			// that is not working now and both of these are.
+			// the cap's slots, which `admission.active` names, and an issue whose work is
+			// running past its own review, which holds no slot and so is named by no list at
+			// all (atWorkPastReview). Each carries no answer, because `why` answers for an
+			// issue that is not working now and both of these are.
 			if _, placed := active[issue.Key]; placed {
 				continue
 			}
-			if atWorkPastReview(issue) {
+			if atWorkPastReview(issue, running) {
 				continue
 			}
 			why = &api.WhyView{State: api.WhyUnlisted, Reason: unlistedReason(issue)}
@@ -233,9 +239,9 @@ func linkReason(waitsOn []string) string {
 	return fmt.Sprintf("It waits on %s, which are not done.", englishIssues(waitsOn))
 }
 
-// atWorkPastReview is an issue whose work is running in a phase past its own review: accepting,
-// where the tree's architect reads the head the issue's worker built, its retro, and its merge.
-// Since dispatch://INFRA-2560 such an issue holds none of the cap's slots
+// atWorkPastReview is an issue whose work is running now in a phase past its own review:
+// accepting, where the tree's architect reads the head the issue's worker built, its retro, and
+// its merge. Since dispatch://INFRA-2560 such an issue holds none of the cap's slots
 // (record.PhaseKeepsSlot), so `admission.active` does not name it and it reaches the last arm of
 // whyStates standing in none of the three lists that place an issue.
 //
@@ -244,39 +250,66 @@ func linkReason(waitsOn []string) string {
 // carries none either. Served `unlisted` instead it would read a sentence written about an issue
 // nothing is working on — that no slot has been offered to it, and that this build records no
 // cause (unlistedReason) — so a reader would be told the work had stopped while its worker ran.
-// The daemon's own reading of the same split says it twice over: nothing of the daemon's stands
-// between such an issue and its worker either, which is StartHoldNone, and that set's own doc
-// names this file as where it is answered.
+// The daemon's own reading of the same split agrees: nothing of the daemon's stands between such
+// an issue and its worker, which is StartHoldNone. Why that set and this answer are two
+// judgements and not one is written once, with the set itself (record.StartHold).
 //
-// awaiting_merge is the fourth phase past the review and is no part of this: no worker of the
-// issue runs there, it waits for its merge and for nothing else, and that is a cause this record
-// can name, which unlistedReason has answered since the answer was written.
+// The phase alone cannot say it, and that is what this reads the work for. The phases past the
+// review are the ones no slot is held through, so an issue standing in one of them is an issue
+// the cap has stopped counting, not an issue a worker is running: a member of a tree that has
+// stopped stands in exactly the same phase as a member of a tree that is working. The two terms
+// of work are the tree and the claim, which is the pair the measure of a stalled tree reads
+// (admit's tellStalledTrees, over record.RunningRoots and record.TreeQuiet.AtWork), and this
+// file reads each of them where it is already answered.
+//
+// The tree is this arm's own term: running is the roots whose trees run (record.RunningRoots,
+// over record.TreeRuns), and nothing of a tree that does not run is being worked on, whatever
+// phase its members stand in. A root a person parked is the shape that proves it: its linger
+// suspends every claim of its members while their Dispatch status stands, so the record holds
+// them in the workflow (record.InWorkflow) and whyStates reads them, and nothing of them runs
+// again until the root is admitted afresh. Such a member is served `unlisted`, which is the
+// answer it carried before the phases past the review stopped holding a slot: the park takes
+// the slot of every member of the tree it stops back whatever the phase (record.NeedsSlot), so
+// such a member stood in none of the three lists then either.
+//
+// The claim is the first arm's and is not read again here. A claim nothing will wake is the
+// daemon's own judgement (workflow.Stranded, which refuses a tree that does not run by this same
+// rule), and whyStates reads it before everything else as claim_stopped, so the claims left for
+// this arm are the live ones: at work, or resting between turns with the daemon to prompt them.
+// A resting claim is no work under way for the stalled-tree measure, but that measure asks it of
+// a whole tree nothing of which has moved for hours; one idle worker of one issue says nothing
+// of the sort, and an issue served `unlisted` between two turns of the worker doing its work
+// would tell a reader the work had stopped.
 //
 // The phase is read as the record writes it and never through record.StandsAt, because a hold is
-// what stops the work: an issue held from its retro has no worker running, so the sentence below
-// is true of it, and the hold is what a reader of it asks about.
-func atWorkPastReview(issue record.Issue) bool {
-	switch issue.Phase {
-	case phase.Accepting, phase.Retro, phase.Merging:
-		return true
-	default:
+// what stops the work: an issue held from its retro stands past its review in every rule the slot
+// is judged by (record.PastReview, which reads the phase the hold came from), and no worker of it
+// runs, so the sentence below is true of it and the hold is what a reader of it asks about.
+func atWorkPastReview(issue record.Issue, running map[string]struct{}) bool {
+	if issue.Phase == phase.Held || !record.PastReview(issue) {
 		return false
 	}
+	_, runs := running[issue.Tree]
+	return runs
 }
 
 // unlistedReason is the sentence of an issue the record holds in the workflow that stands in
 // none of the three lists that place one (api.WhyUnlisted). The word is `unlisted` and not
-// `held`, because `held` is a phase of the workflow, whose issues hold a slot and stand in
-// `admission.active`.
+// `held`, because `held` is a phase of the workflow and this answer is not the hold's: an issue
+// held from a phase short of its review keeps that phase's slot and stands in
+// `admission.active`, which carries no answer at all, and one held from its retro or its merge
+// keeps none (record.KeepsSlot, over record.StandsAt) and is answered here, as every issue past
+// its review that nothing is working on is.
 //
-// Two fills, which are the two this record can answer: an issue waiting for its merge, which
-// waits for that and nothing else, and every other, which this build records no cause for. The
-// approved spec writes a third, for an issue whose recorded cause the record carries, and it
-// follows the field that records one: dispatch://INFRA-2964 writes it, and has not merged.
-func unlistedReason(issue record.Issue) string {
-	if issue.Phase == phase.AwaitingMerge {
-		return "It waits for its merge, and for nothing else."
-	}
+// One fill, which is the one this record can answer. The other this build had, an issue waiting
+// for its merge, went with the phase it read: on this contract the merger merges the head it
+// reads and the daemon closes the issue when it reads that merge, so no issue stands in
+// `awaiting_merge` and a root whose merge the rest of its tree still waits on stands in
+// `merging`, where its work is running on no slot of the cap at all
+// (dispatch://INFRA-714 R2, dispatch://INFRA-2560). The approved spec writes another, for an
+// issue whose recorded cause the record carries, and it follows the field that records one:
+// dispatch://INFRA-2964 writes it, and has not merged.
+func unlistedReason(record.Issue) string {
 	return "The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, " +
 		"so no slot has been offered to it. This build records no cause."
 }

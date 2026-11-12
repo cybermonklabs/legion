@@ -187,14 +187,18 @@ func TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot(t *testing.T) {
 	// still holding a task back.
 	runBranchRows(t, pool, testing_, retro)
 	for child, want := range map[string]struct {
-		role claim.Role
+		role  claim.Role
+		phase phase.Phase
 		// waits says the child's start waits for an admission slot, which the phase it stands
 		// in decides (record.PhaseKeepsSlot, read by workflow.StartOrOwe): the tester's start
 		// waits, and the retro implementer's does not, since an issue past its review holds no
 		// row for that start to wait for.
 		waits bool
-	}{testing_: {role: claim.RoleTester, waits: true}, retro: {role: claim.RoleImplementer}} {
-		if stands := issue(t, pool, child); stands.Phase != workflow.ResumePhase(stands) || stands.Generation != 1 {
+	}{testing_: {role: claim.RoleTester, phase: phase.Testing, waits: true}, retro: {role: claim.RoleImplementer, phase: phase.Retro}} {
+		// The re-admission rewrites no phase: the phase a member's record carries is the phase it
+		// stands in, since the merge is what ends merging and no phase of this workflow waits for
+		// one.
+		if stands := issue(t, pool, child); stands.Phase != want.phase || stands.Generation != 1 {
 			t.Fatalf("%s stands at %s on generation %d, want its own phase on its own generation", child, stands.Phase, stands.Generation)
 		}
 		if got := assignmentOf(t, pool, child, want.role); got != "" {

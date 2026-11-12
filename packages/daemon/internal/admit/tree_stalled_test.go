@@ -301,7 +301,7 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 	// so a late GitHub event on its old pull request moves nothing and the notice never names
 	// it.
 	seedQuietRoot(t, pool, stalledRootA, "A", phase.Implementing)
-	seedQuietChild(t, pool, stalledRootA, stalledChildA, "A1", phase.AwaitingMerge, "in_progress")
+	seedQuietChild(t, pool, stalledRootA, stalledChildA, "A1", phase.Merging, "in_progress")
 	seedQuietChild(t, pool, stalledRootA, stalledDoneA, "A2", phase.Done, record.DoneStatus)
 	seedPullRequest(t, pool, stalledRootA, 41, record.PullRequestOpen)
 	seedPullRequest(t, pool, stalledChildA, 42, record.PullRequestMerged)
@@ -339,7 +339,7 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 	want := []stalledNotice{
 		toldOf(stalledRootA, 7,
 			stalledRootA+" is in implementing. The implementer has the turn. Pull request 41 is open.",
-			stalledChildA+" is in awaiting_merge. No role works this phase. Pull request 42 is merged."),
+			stalledChildA+" is in merging. The merger has the turn. Pull request 42 is merged."),
 		toldOf(stalledRootB, 7, stalledRootB+" is in retro. The implementer has the turn. Pull request 43 is merged."),
 	}
 	if got := stalledNotices(t, pool); !reflect.DeepEqual(got, want) {
@@ -591,10 +591,10 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		seedQuietRoot(t, pool, held, "G", phase.Held)
 		idle(held, held)
 
-		// 9. An issue awaiting its merge. It waits for GitHub, which is nothing the daemon holds it
-		// for, and a merge that never lands is exactly the stall this rule was filed for.
+		// 9. An issue in its merge. Its merger merges the head it read, so a merge that never
+		// lands is exactly the stall this rule was filed for, and it is no wait of the daemon's.
 		const awaitingMerge = "LEGION-570"
-		seedQuietRoot(t, pool, awaitingMerge, "H", phase.AwaitingMerge)
+		seedQuietRoot(t, pool, awaitingMerge, "H", phase.Merging)
 		idle(awaitingMerge, awaitingMerge)
 
 		// 10. A tree holding a notice queued to a role whose claim is suspended. Only a start held

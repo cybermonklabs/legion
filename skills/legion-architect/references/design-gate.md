@@ -1,8 +1,7 @@
 # The root spec and the design gate
 
 Part of `skill://legion-architect`, section 1. Read it before you write the root spec, before any
-edit to an approved root spec, and on `design-approved`, `design-changes-requested` or
-`ready-refused`.
+edit to an approved root spec, and on `design-approved` or `design-changes-requested`.
 
 ## Writing the root spec
 
@@ -264,7 +263,7 @@ Dispatch shows the request back on your turn. While the root waits on a question
 human's approval or changes request of the spec answers that wait too, and the task says how the
 spec stands. Your resume takes no slot, whether or not the gate opened, because the root holds
 one all along: an issue holds one of the cap's slots from the moment the daemon starts it until
-its work is past its review — `accepting`, `retro`, `merging` and `awaiting_merge` hold none — or
+its work is past its review — `accepting`, `retro` and `merging` hold none — or
 until it is done or Dispatch takes it out of the workflow. The answered root stands in
 the admission line until the pass that resumes it, and nothing is sent to you about that wait:
 your record's `waitingLine` gives the live place in the line and the line's length, and beside
@@ -318,8 +317,8 @@ to the version it writes. Once they have answered:
   changed since the earlier approval, then the reviews' sentence (the card shows `Approved at
   version N on <date> by <who>.`, and its `Show diff` control carries the detail). The rewrite
   closes the gate until they approve. Release no further child until the `design-approved` after
-  it; work already in flight, including what the daemon started at the answer, continues. Every
-  merger's `READY` in the tree is refused until a human approves the latest version.
+  it; work already in flight, including what the daemon started at the answer, continues through
+  its merge.
 
 A settled decision is the human's. A plan that would overturn one goes back to the planner with the
 decision kept, unless the planner brings evidence the human did not weigh that would change it

@@ -352,18 +352,13 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 						delete(issue, key)
 					}
 				}
-				// The issues' answer and the line's own fields are one contract and one strip:
-				// below it a member keeps the place and the length waitingLineContract added
-				// and carries no other field, and no issue carries a `why`.
+				// The issues' answer and the line's own fields are one contract and one
+				// strip, which state_caller_test's stripAnswerKeys states and this reads:
+				// below the contract a member keeps the place and the length
+				// waitingLineContract added and carries no other field, and no issue
+				// carries a `why`.
 				if !tc.answers {
-					delete(issue, "why")
-					if line, carried := issue["waitingLine"].(map[string]any); carried {
-						for name := range line {
-							if name != "place" && name != "length" {
-								delete(line, name)
-							}
-						}
-					}
+					stripAnswerKeys(issue)
 				}
 				// The two keys quietTimeContract added, which ride on every issue of a live
 				// tree and leave together (withoutQuietTime).

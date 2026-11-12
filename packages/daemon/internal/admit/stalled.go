@@ -429,10 +429,10 @@ func (a *Admission) lineCanMove(issues []record.Issue, slots []record.Slot,
 // excused. A task, a notice or a message queued for a role is no hold of the daemon's at all: a
 // notice queued to a suspended role waits for a role nothing brings back, so an issue with one
 // in the outbox has stopped like any other, and nothing of the outbox reaches the set. An issue
-// in `held` and an issue in `awaiting_merge` are no wait either — a held issue waits for its
-// architect, which is the tree's own work, and an issue awaiting its merge waits for GitHub,
-// which is nothing the daemon holds it for — and the pass holds neither, so each answers
-// record.StartHoldNone and its tree is told like any other stall.
+// in `held` is no wait either — it waits for its architect, which is the tree's own work — and
+// the pass holds it for nothing, so it answers record.StartHoldNone and its tree is told like
+// any other stall. An issue whose merge is still to land stands in `merging`, where the merger
+// works, so the measure reads it as work rather than as a wait.
 func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds map[string]record.StartHold) bool {
 	for _, issue := range members {
 		if silences(holds[issue.Key]) {

@@ -31,19 +31,21 @@ package record
 // worker starting now.
 //
 // It is not the state's `why` either (api.WhyView, rendered by projection's whyStates), and the
-// two are not one judgement read twice. This set answers why the daemon has not started an
-// issue; `why` answers why an issue is not working now, which is a question about the work and
-// not about the start. The two part company at the phases past the review: since this change
-// such an issue holds no admission slot, and nothing of the daemon's stands between it and a
-// worker, so it is StartHoldNone here while its worker runs — and `why` gives it no answer at
-// all, because it is working. They part the other way at a claim that died under a running
-// phase: `why` names it, and this set still says StartHoldNone, because no start of the
-// daemon's is being held. Where they do meet — the cap, a Dispatch link, an open child — they
-// say one thing in two registers, this word for the rules that read it and that sentence for
-// the person reading the state, and neither is derived from the other: this comes out of the
-// walk that builds the waiting line, and that out of the state the walk produced. A reader
-// that must act on why no worker starts asks this; a reader rendering a sentence for a person
-// asks that.
+// two are not one judgement read twice. This is the one statement of how they differ: the
+// projection's call site and the arm that answers an issue past its review point here rather
+// than arguing it over again. This set answers why the daemon has not started an issue; `why`
+// answers why an issue is not working now, which is a question about the work and not about the
+// start. The two part company at the phases past the review: since this change such an issue
+// holds no admission slot, and while its tree runs nothing of the daemon's stands between it
+// and a worker, so it is StartHoldNone here while that worker runs — and `why` gives it no
+// answer at all, because it is working. They part the other way at a claim that died under a
+// running phase: `why` names it, and this set still says StartHoldNone, because no start of the
+// daemon's is being held. Where they do meet — the cap, a Dispatch link, an open child, a tree
+// the daemon no longer runs — they say one thing in two registers, this word for the rules that
+// read it and that sentence for the person reading the state, and neither is derived from the
+// other: this comes out of the walk that builds the waiting line, and that out of the state the
+// walk produced. A reader that must act on why no worker starts asks this; a reader rendering a
+// sentence for a person asks that.
 type StartHold string
 
 const (

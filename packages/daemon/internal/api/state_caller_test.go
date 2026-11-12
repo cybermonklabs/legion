@@ -198,6 +198,26 @@ func withoutQuietKeys(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// stripAnswerKeys takes the answer keys off one issue of a decoded state body: its `why`, and
+// every field of its waiting-line view beside the `place` and the `length` waitingLineContract
+// added before it. The two go together because they are one contract and one strip on the
+// route itself (api's withoutWhyAndLineFields, whose doc says why they are one): a test that
+// took one and left the other would hold the route to a body no caller is ever served.
+//
+// It is the one statement of that strip over a decoded body, and the two tests that must agree
+// about it read it here: withoutAnswerKeys below, which takes the keys off a whole body, and
+// the contract table of memory_test.go, which takes them off the issues of the body it expects.
+func stripAnswerKeys(issue map[string]any) {
+	delete(issue, "why")
+	if line, carried := issue["waitingLine"].(map[string]any); carried {
+		for name := range line {
+			if name != "place" && name != "length" {
+				delete(line, name)
+			}
+		}
+	}
+}
+
 // withoutAnswerKeys is a state body with no issue carrying `why` and no member of the waiting
 // line carrying a field beside its `place` and its `length`, which is what a caller below
 // whyAndLineFieldsContract is served of a state that carries them (api's
@@ -212,15 +232,7 @@ func withoutAnswerKeys(t *testing.T, body []byte) []byte {
 		t.Fatalf("decode state %s: %v", body, err)
 	}
 	for _, issue := range served["issues"].(map[string]any) {
-		issue := issue.(map[string]any)
-		delete(issue, "why")
-		if line, carried := issue["waitingLine"].(map[string]any); carried {
-			for name := range line {
-				if name != "place" && name != "length" {
-					delete(line, name)
-				}
-			}
-		}
+		stripAnswerKeys(issue.(map[string]any))
 	}
 	encoded, err := json.Marshal(served)
 	if err != nil {
@@ -263,8 +275,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		rounds bool
 		wakes  bool
 		// stall is whether the caller is served the claim views' `step`, the record
-		// stallRecordContract added. That contract is below this daemon's own, so a pod at 57 or
-		// above is served the record and a pod still running an older plugin is not.
+		// stallRecordContract added at 57, so a pod at 57 or above is served the record and a pod
+		// still running an older plugin is not.
 		stall bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count
 		// claimsToRefreshContract added, the contract 73, which is below this daemon's own.

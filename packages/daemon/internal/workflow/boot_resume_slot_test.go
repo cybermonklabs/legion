@@ -41,45 +41,45 @@ func seedRuleSuspendedOwner(t *testing.T, pool *pgxpool.Pool, project string, is
 // full — whose row waits for the slot instead of putting a worker to work on an issue admission
 // has not admitted, and runs when the slot comes.
 //
-// The worker past its review read here is the merger of an issue standing in merging while a
-// closed design gate holds the READY it already built: it comes back to wait on a person rather
-// than to work, and it holds no row of the cap's either way.
+// The worker past its review read here is the merger of an issue standing in merging: its own
+// merge is what ends the phase, and it works it on no row of the cap's, since merging stands
+// past the issue's review.
 //
-// The two issues differ in their phase, that held READY, and the mark their resume carries:
-// each is a root of its own running tree whose phase owner the daemon's rule suspended.
+// The two issues differ in their phase and in the mark their resume carries: each is a root of
+// its own running tree whose phase owner the daemon's rule suspended.
 func TestTheBootsResumeRunsPastAReviewAndWaitsWhereTheIssueHoldsNoRow(t *testing.T) {
 	pool := migratedPool(t)
 	project, err := claim.ProjectToken("LEGION")
 	if err != nil {
 		t.Fatal(err)
 	}
-	const unslotted, heldReady = "LEGION-208", "LEGION-209"
+	const unslotted, merging = "LEGION-208", "LEGION-209"
 	seedIssue(t, pool, record.Issue{Key: unslotted, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: unslotted, Project: "LEGION", Title: "waiting for a slot", Phase: phase.Implementing, Generation: 1,
 		Status: "in_progress", Rank: "U"})
 	seedTreeLifecycle(t, pool, unslotted)
-	seedIssue(t, pool, record.Issue{Key: heldReady, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Tree: heldReady, Project: "LEGION", Title: "a READY the gate holds", Phase: phase.Merging, Generation: 1,
-		Status: "retro", Rank: "V", ReadyPending: &record.ReadyPending{Step: record.DesignStepSpec, Version: 2}})
+	seedIssue(t, pool, record.Issue{Key: merging, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: merging, Project: "LEGION", Title: "merging its reviewed head", Phase: phase.Merging, Generation: 1,
+		Status: "retro", Rank: "V"})
 	seedRuleSuspendedOwner(t, pool, project, unslotted, claim.RoleImplementer)
-	seedRuleSuspendedOwner(t, pool, project, heldReady, claim.RoleMerger)
+	seedRuleSuspendedOwner(t, pool, project, merging, claim.RoleMerger)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	now := engine.now()
 	// The issue in merging holds no row: its work stands past its review (record.KeepsSlot), so
 	// the lifecycle of its tree is opened on its own rather than by a slot of the cap's.
-	seedTreeLifecycle(t, pool, heldReady)
+	seedTreeLifecycle(t, pool, merging)
 
 	if _, err := intake.ApplyFact(t.Context(), pool, "daemon", "boot:LEGION:1", intake.DaemonBooted{Boot: 1}, engine, admissionStub{}); err != nil {
 		t.Fatalf("apply the boot: %v", err)
 	}
 
-	slotted := oneStartRowsOf(t, pool, heldReady, now)
+	slotted := oneStartRowsOf(t, pool, merging, now)
 	if len(slotted) != 1 || slotted[0].role != claim.RoleMerger || slotted[0].task == "" {
-		t.Fatalf("the start rows of %s = %+v, want one row for its merger carrying its resume task", heldReady, slotted)
+		t.Fatalf("the start rows of %s = %+v, want one row for its merger carrying its resume task", merging, slotted)
 	}
 	if slotted[0].needsSlot || !slotted[0].claimable {
 		t.Fatalf("the boot's resume of %s = %+v, want it marked for no admission slot and runnable at once: the issue stands past its review, where it holds no row a marked start could wait on",
-			heldReady, slotted[0])
+			merging, slotted[0])
 	}
 
 	waiting := oneStartRowsOf(t, pool, unslotted, now)

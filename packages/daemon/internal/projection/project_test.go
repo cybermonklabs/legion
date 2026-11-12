@@ -803,14 +803,12 @@ func TestTheWaitingLinePlaceIsOnEachListedIssue(t *testing.T) {
 func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 	waiting := lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.AwaitingPerson, "A")
 	waiting.Awaiting = &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5, At: projectedAt.Add(-time.Hour)}}
-	merging := lineIssue("LEGION-12", "LEGION-10", "retro", phase.Merging, "C")
-	merging.ReadyPending = &record.ReadyPending{Step: record.DesignStepSpec, Version: 2}
 	store := projectionStore{
 		issues: []record.Issue{
 			waiting,
 			lineIssue("LEGION-11", "LEGION-10", "needs_review", phase.Accepting, "B"),
-			merging,
-			lineIssue("LEGION-13", "LEGION-10", "retro", phase.AwaitingMerge, "D"),
+			lineIssue("LEGION-12", "LEGION-10", "retro", phase.Merging, "C"),
+			lineIssue("LEGION-13", "LEGION-10", "done", phase.Done, "D"),
 		},
 		lifecycles: []string{"LEGION-10"},
 		slots: []record.Slot{
@@ -830,7 +828,7 @@ func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 			got.Admission.Active, want)
 	}
 	if len(got.Admission.Waiting) != 0 {
-		t.Fatalf("admission.waiting = %#v, want none: three of the four hold a row already, and the fourth is owed no start",
+		t.Fatalf("admission.waiting = %#v, want none: three of the four hold a row already, and the fourth has left the workflow",
 			got.Admission.Waiting)
 	}
 }
@@ -874,7 +872,7 @@ func TestProjectShowsEachWorkerItsIssuesBackwardMoveCounts(t *testing.T) {
 	}
 }
 
-// Every issue of a live tree is served that tree's quiet time (contract 86): `treeMovedAt`, the
+// Every issue of a live tree is served that tree's quiet time (contract 91): `treeMovedAt`, the
 // newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long the tree
 // has been still at the instant the state is measured at. The pair is the tree's, so the root
 // and a child of it past its own review carry the same two values, though that child holds no

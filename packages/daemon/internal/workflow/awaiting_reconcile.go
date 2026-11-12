@@ -489,9 +489,9 @@ func answerOfAct(ask record.RootAsk, seq int64, otherwise record.Answer) record.
 
 // enterAwaiting moves root into awaiting_person on waiting, which keeps the slot the root holds:
 // an issue holds one of the cap's slots from the moment the daemon starts it until its work is
-// past its review — accepting, retro, merging and awaiting_merge hold none — or until it is done
-// or Dispatch takes it out of the workflow (record.KeepsSlot). The architect stays live to read
-// the person's answer, and the controller is told.
+// past its review — accepting, retro and merging hold none — or until it is done or Dispatch
+// takes it out of the workflow (record.KeepsSlot). The architect stays live to read the
+// person's answer, and the controller is told.
 func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting, reason string) error {
 	root.Phase, root.Awaiting = phase.AwaitingPerson, &waiting
 	if err := e.store.PutIssue(ctx, tx, root); err != nil {

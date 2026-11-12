@@ -101,20 +101,20 @@ func TestAHandedOverRootCarryingAWorkerPhaseWaitsForAFreeRow(t *testing.T) {
 	}
 }
 
-// A handed-over root that carries awaiting_merge takes no row: an issue waiting only for its
-// merge keeps none (record.KeepsSlot), and the grant reads the phase the entry carries
-// (admit's slotFor), which for a root whose tree is opened is the phase its record carries.
-// Holding it back would bound nothing and leave its tree closed, so it opens at once with the
-// cap full, and the pass after it deletes nothing. What its promotion then starts of the run it
-// carries is the opening's own business (admit's startMidPhaseMembers), and takes no row here
-// either.
-func TestAHandedOverRootCarryingAwaitingMergeTakesNoRow(t *testing.T) {
+// A handed-over root that carries a phase whose work is already done takes no row: its own
+// issue has left the workflow (record.KeepsSlot, record.InWorkflow), and the grant reads the
+// phase the entry carries (admit's slotFor), which for a root whose tree is opened is the phase
+// its record carries. Holding it back would bound nothing and leave its tree closed, so it opens
+// at once with the cap full, and the pass after it deletes nothing. What its promotion then
+// starts of the run it carries is the opening's own business (admit's startMidPhaseMembers), and
+// takes no row here either.
+func TestAHandedOverRootCarryingAFinishedPhaseTakesNoRow(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 1)
 
 	// The cap's one row, held by a tree already at work.
 	seedSlotted(t, pool, "LEGION-100", "A")
-	carriedRoot(t, pool, "LEGION-200", phase.AwaitingMerge, "B")
+	carriedRoot(t, pool, "LEGION-200", phase.Done, "B")
 	assertWaiting(t, pool, []string{"LEGION-200"})
 
 	tick(t, pool, admission, "tick")
