@@ -598,12 +598,16 @@ function issueWriteTargets(
   }
 
   // The Priorities page's rows and the rail's two counts (`["priorities"]`, both the full body
-  // and the summary under it). What the work under a priority is moves with the relation itself,
-  // with the status each row counts by, and with the parent, which is what an issue inherits its
-  // priorities down. The relation is no edge of the reference graph (`changesReferenceGraph`
-  // leaves `advances` out), so no backlink panel reads it.
+  // and the summary under it), and the work listed under one priority (`["issues", "advances",
+  // <id>]`, every scoped issues table's read). What the work under a priority is moves with the
+  // relation itself, with the status each row counts by, and with the parent, which is what an
+  // issue inherits its priorities down. The scoped listing is refreshed by its prefix rather
+  // than by the priority the event names: an issue carries its own relations and the ones it
+  // inherits, so a write can move the work under a priority the payload never names. The
+  // relation is no edge of the reference graph (`changesReferenceGraph` leaves `advances` out),
+  // so no backlink panel reads it.
   if (moved("advances") || moved("status") || moved("parent")) {
-    targets.push({ queryKey: ["priorities"] });
+    targets.push({ queryKey: ["priorities"] }, { queryKey: ["issues", "advances"] });
   }
 
   // A `child_of` edge into the parent and a `blocked_by` edge into each blocker are rows of their

@@ -1,6 +1,6 @@
 import { type ReactNode, useMemo, useState } from "react";
-import { DataTable, useDataTable } from "../../components/DataTable";
 import type { PriorityRow } from "../../api/types";
+import { DataTable, useDataTable } from "../../components/DataTable";
 import {
   borderDefault,
   focusVisibleRing,
@@ -22,9 +22,9 @@ import {
   type PriorityItem,
   rankMove,
 } from "./priorities-model";
-import { TableBodyRow } from "./priority-table-rows";
 import { GroupHeadingRow, TableToolbar } from "./priority-table-controls";
 import { compareHeadings, facetCounts, headingOf } from "./priority-table-model";
+import { TableBodyRow } from "./priority-table-rows";
 import { useTableView } from "./priority-table-view";
 import { usePriorityWrites } from "./priority-writes";
 
@@ -46,7 +46,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
   const { params, setParams, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
     useTableView(VIEW_PREFIX, PRIORITY_COLUMNS, PRIORITY_SORTING);
   const layout = useTableLayout(LAYOUT_KEY, PRIORITY_LAYOUT);
-  const { attachAbove, boxWidth } = layout;
+  const { attachAbove } = layout;
   const [openId, setOpenId] = useState<string>();
   const [dragging, setDragging] = useState<string>();
   const [adding, setAdding] = useState(false);
@@ -136,7 +136,10 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
     onGlobalFilterChange: setSearch,
     onPaginationChange: setPagination,
     viewKey: params.toString(),
-    search: { column: "title", filterFn: (row, _id, search: string) => matchesPrioritySearch(row.original, search) },
+    search: {
+      column: "title",
+      filterFn: (row, _id, search: string) => matchesPrioritySearch(row.original, search),
+    },
     groupOrder: {
       compare: (id, a, b) => compareHeadings(PRIORITY_COLUMNS_BY_ID, id, a, b),
       heading: (id, item) => headingOf(PRIORITY_COLUMNS_BY_ID, id, item),

@@ -72,28 +72,41 @@ const SHARED: readonly TableColumn<PriorityIssue>[] = [
 ];
 
 /** The parked list says which priorities the work advances and when it was moved out of the
- *  way; the in-flight list says neither, because its rows advance none and nothing moved them. */
-const PARKED: readonly TableColumn<PriorityIssue>[] = [
-  {
-    id: "priorities",
-    header: "Advances",
-    size: 200,
-    min: 160,
-    values: (issue) => issue.priorities ?? [],
-  },
-  {
-    id: "moved",
-    header: "Moved there",
-    size: 200,
-    min: 160,
-    values: (issue) => [bucket(issue.moved_at)],
-    group: (issue) => bucket(issue.moved_at),
-    order: [...AGES, NOT_RECORDED],
-  },
-];
+ *  way; the in-flight list says neither, because its rows advance none and nothing moved them.
+ *  `titleOf` turns a priority's id into the title a person wrote, because a column of a page a
+ *  person reads names the priority rather than its slug; a row naming a priority the read has
+ *  not answered falls back to the id, which is the only name there is for it. */
+function parked(titleOf: (id: string) => string): readonly TableColumn<PriorityIssue>[] {
+  return [
+    {
+      id: "priorities",
+      header: "Advances",
+      size: 200,
+      min: 160,
+      values: (issue) => (issue.priorities ?? []).map(titleOf),
+    },
+    {
+      id: "moved",
+      header: "Moved there",
+      size: 200,
+      min: 160,
+      values: (issue) => [bucket(issue.moved_at)],
+      group: (issue) => bucket(issue.moved_at),
+      order: [...AGES, NOT_RECORDED],
+    },
+  ];
+}
+
+/** The parked columns over one page's own titles; the constant below builds them over the ids
+ *  alone, which is all the layout and the column index read. */
+export function parkedColumns(
+  titleOf: (id: string) => string
+): readonly TableColumn<PriorityIssue>[] {
+  return [...SHARED, ...parked(titleOf)];
+}
 
 export const NO_PRIORITY_COLUMNS = SHARED;
-export const PARKED_COLUMNS: readonly TableColumn<PriorityIssue>[] = [...SHARED, ...PARKED];
+export const PARKED_COLUMNS: readonly TableColumn<PriorityIssue>[] = parkedColumns((id) => id);
 export const NO_PRIORITY_COLUMNS_BY_ID = columnsById(NO_PRIORITY_COLUMNS);
 export const PARKED_COLUMNS_BY_ID = columnsById(PARKED_COLUMNS);
 export const NO_PRIORITY_LAYOUT = tableLayout(NO_PRIORITY_COLUMNS, "title");

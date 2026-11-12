@@ -1,11 +1,16 @@
 import type { ColumnDef } from "@tanstack/react-table";
 import { type ReactNode, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import type { PriorityIssue } from "../../api/types";
 import { DataTable, useDataTable } from "../../components/DataTable";
 import { StatusPill } from "../../components/Pill";
-import type { PriorityIssue } from "../../api/types";
+import {
+  linkHoverText,
+  linkText,
+  textMutedOnCanvas,
+  textSecondaryOnCanvas,
+} from "../../theme/classes";
 import { statusText } from "../project/board-model";
-import { linkHoverText, linkText, textMutedOnCanvas, textSecondaryOnCanvas } from "../../theme/classes";
 import { useTableLayout } from "../project/issues-table-layout";
 import { AgentName } from "../refs/AgentName";
 import { buildIssuePath } from "../refs/routes";
@@ -17,15 +22,15 @@ import {
   NO_PRIORITY_COLUMNS_BY_ID,
   NO_PRIORITY_LAYOUT,
   NOT_RECORDED,
-  PARKED_COLUMNS,
   PARKED_COLUMNS_BY_ID,
   PARKED_LAYOUT,
+  parkedColumns,
 } from "./fault-model";
+import { priorityPath } from "./priority-routes";
 import { GroupHeadingRow, TableToolbar } from "./priority-table-controls";
 import { columnDefs, compareHeadings, facetCounts, headingOf } from "./priority-table-model";
 import { TableBodyRow } from "./priority-table-rows";
 import { useTableView } from "./priority-table-view";
-import { priorityPath } from "./priority-routes";
 
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
 
@@ -35,20 +40,22 @@ export type FaultKind = "no-priority" | "parked";
 
 const SHAPE = {
   "no-priority": {
-    columns: NO_PRIORITY_COLUMNS,
+    columns: () => NO_PRIORITY_COLUMNS,
     byId: NO_PRIORITY_COLUMNS_BY_ID,
     layout: NO_PRIORITY_LAYOUT,
     layoutKey: "priorities-no-priority",
   },
   parked: {
-    columns: PARKED_COLUMNS,
+    columns: parkedColumns,
     byId: PARKED_COLUMNS_BY_ID,
     layout: PARKED_LAYOUT,
     layoutKey: "priorities-parked",
   },
 } as const;
 
-function renderings(): Record<string, Partial<ColumnDef<PriorityIssue>>> {
+function renderings(
+  titleOf: (id: string) => string
+): Record<string, Partial<ColumnDef<PriorityIssue>>> {
   return {
     key: {
       accessorFn: (issue) => issue.key,
@@ -84,12 +91,12 @@ function renderings(): Record<string, Partial<ColumnDef<PriorityIssue>>> {
       ),
     },
     priorities: {
-      accessorFn: (issue) => (issue.priorities ?? []).join(" "),
+      accessorFn: (issue) => (issue.priorities ?? []).map(titleOf).join(" "),
       cell: ({ row }) => (
         <span className="flex flex-wrap gap-x-2">
           {(row.original.priorities ?? []).map((id) => (
             <Link className={`${linkText} ${linkHoverText}`} key={id} to={priorityPath(id)}>
-              {id}
+              {titleOf(id)}
             </Link>
           ))}
         </span>
@@ -121,6 +128,7 @@ export function FaultList({
   kind,
   label,
   prefix,
+  titles,
 }: {
   issues: readonly PriorityIssue[];
   kind: FaultKind;
@@ -128,16 +136,22 @@ export function FaultList({
   label: string;
   /** This table's prefix in the address. */
   prefix: string;
+  /** Each priority's title by its id, so the Advances column names the priority a person
+   *  wrote rather than the slug its id is. A priority this read does not hold is drawn by
+   *  its id, which is the only name there is for it. */
+  titles: ReadonlyMap<string, string>;
 }): ReactNode {
   const shape = SHAPE[kind];
+  const titleOf = useMemo(() => (id: string) => titles.get(id) ?? id, [titles]);
+  const tableColumns = useMemo(() => shape.columns(titleOf), [shape, titleOf]);
   const { params, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
-    useTableView(prefix, shape.columns, FAULT_SORTING);
+    useTableView(prefix, tableColumns, FAULT_SORTING);
   const layout = useTableLayout(shape.layoutKey, shape.layout);
   const [openFilter, setOpenFilter] = useState<string>();
   const rows = useMemo(() => [...issues], [issues]);
   const columns = useMemo(
-    () => columnDefs<PriorityIssue>(shape.columns, renderings(), shape.byId),
-    [shape]
+    () => columnDefs<PriorityIssue>(tableColumns, renderings(titleOf), shape.byId),
+    [shape, tableColumns, titleOf]
   );
   const model = useDataTable<PriorityIssue>({
     rows,

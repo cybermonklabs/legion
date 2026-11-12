@@ -1158,6 +1158,14 @@ export class DispatchApiClient {
     await this.remove("/api/v1/priorities/{id}", { id }, bounds);
   }
 
+  /** `GET /api/v1/priorities/{id}/history`: the priority's own history, newest first - each
+   *  write of its title, description, owner, order, state and visibility, and each `advances`
+   *  relation an issue asserted or retracted on it, with the actor who stated it and when. A
+   *  priority that was deleted still answers its history, the delete its newest act. */
+  getPriorityHistory(id: string) {
+    return this.read("/api/v1/priorities/{id}/history", { id });
+  }
+
   getInbox(project?: string) {
     return this.read("/api/v1/inbox", {}, { project });
   }

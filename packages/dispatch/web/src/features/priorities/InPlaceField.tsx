@@ -1,5 +1,10 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { borderDefault, focusVisibleRing, surfaceBg, textPrimaryOnCanvas } from "../../theme/classes";
+import {
+  borderDefault,
+  focusVisibleRing,
+  surfaceBg,
+  textPrimaryOnCanvas,
+} from "../../theme/classes";
 
 /** How long the reader may stop typing before what they wrote is saved. Nothing else in
  *  Dispatch asks a person to press Save, so a priority's title and description are saved as
@@ -13,6 +18,7 @@ export const SAVE_AFTER_MS = 500;
  * refresh of the row underneath never pulls a half-typed word out from under them.
  */
 export function InPlaceField({
+  id,
   label,
   multiline = false,
   onSave,
@@ -21,6 +27,8 @@ export function InPlaceField({
   rows = 8,
   value,
 }: {
+  /** The field's own id, where a visible label points at it rather than wrapping it. */
+  id?: string;
   label: string;
   multiline?: boolean;
   onSave: (next: string) => void;
@@ -52,10 +60,18 @@ export function InPlaceField({
     const { draft: typed, value: saved, onSave: write } = latest.current;
     if (typed !== saved) write(typed);
   };
-  useEffect(() => () => stop(), []);
+  // The timer is cleared through the ref the render that set it wrote to, so the unmount takes
+  // no dependency on this render's own `stop`.
+  useEffect(
+    () => () => {
+      if (timer.current !== undefined) window.clearTimeout(timer.current);
+    },
+    []
+  );
 
   const common = {
     "aria-label": label,
+    id,
     onBlur: () => {
       setEditing(false);
       save();

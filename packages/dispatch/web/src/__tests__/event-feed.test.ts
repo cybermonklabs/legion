@@ -11,6 +11,7 @@ import {
 } from "../api/event-feed";
 import { askThreadsIssue, eventRefreshTargets } from "../api/event-refresh";
 import {
+  advancesIssuesQuery,
   architectureSourcesQuery,
   inboxQuery,
   inboxThreadsQuery,
@@ -41,6 +42,9 @@ import {
 // key its own reader builds, for issue CORE-1 (child of CORE-0, grandchild of CORE-00) and for
 // what sits beside it. A rule is what an event marks stale here, through the real scheduler.
 const READS = {
+  // The work under one priority, as a scoped issues table reads it: the Priorities page's open
+  // row and the priority's own page.
+  advancesWork: { key: advancesIssuesQuery("linkage-closure", true).queryKey },
   agentsPicker: { key: ["agents", "issue-picker"] },
   answers: { key: ["me", "answers"] },
   architecture: { key: ["architecture", "CORE"] },
@@ -357,6 +361,7 @@ const rules: Record<string, Rule> = {
         "agentsPicker",
         "priorities",
         "prioritySummary",
+        "advancesWork",
       ],
       spares: [
         "inbox",
@@ -443,6 +448,7 @@ const rules: Record<string, Rule> = {
       "referencesTab",
       "priorities",
       "prioritySummary",
+      "advancesWork",
     ],
     spares: ["unrelatedPanel", "issuePanel", "summary", "projects", "inbox", "pinned"],
   },
@@ -520,10 +526,16 @@ const rules: Record<string, Rule> = {
       refreshes: ["detail", "unrelatedDetail"],
       spares: ["parent", "grandparent", "summary"],
     },
-  "an advances change refreshes the priorities body and the summary, and no backlink panel": {
-    event: event("issue.updated", issue({ ancestors: [], changed: ["advances"] })),
-    refreshes: ["detail", "priorities", "prioritySummary"],
-    spares: ["issuePanel", "parentPanel", "referencesTab", "summary", "components"],
+  "an advances change refreshes the priorities body, the summary and the work under a priority, and no backlink panel":
+    {
+      event: event("issue.updated", issue({ ancestors: [], changed: ["advances"] })),
+      refreshes: ["detail", "priorities", "prioritySummary", "advancesWork"],
+      spares: ["issuePanel", "parentPanel", "referencesTab", "summary", "components"],
+    },
+  "an assignee move leaves the work under a priority where it is": {
+    event: event("issue.updated", issue({ ancestors: [], changed: ["assignee"] })),
+    refreshes: ["detail"],
+    spares: ["advancesWork", "priorities", "prioritySummary"],
   },
   "a new issue refreshes its ancestors' rollups and the pickers, not every detail or the project counts":
     {

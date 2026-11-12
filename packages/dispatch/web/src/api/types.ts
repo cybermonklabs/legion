@@ -213,6 +213,7 @@ export type {
   PersonSignInsResponse,
   Priorities,
   Priority,
+  PriorityAct,
   PriorityIssue,
   PriorityRow,
   PriorityWork,

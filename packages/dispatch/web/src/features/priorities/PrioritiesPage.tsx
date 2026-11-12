@@ -4,8 +4,8 @@ import { prioritiesQuery } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import { textPrimaryOnCanvas, textSecondaryOnCanvas } from "../../theme/classes";
-import { countsLine } from "./fault-model";
 import { FaultList } from "./FaultList";
+import { countsLine } from "./fault-model";
 import { PrioritiesTable } from "./PrioritiesTable";
 
 /** What each fault is, in the words a reader judges it by. Neither is a judgement: both are
@@ -44,6 +44,12 @@ export function PrioritiesPage(): ReactNode {
   const parked = body.priority_work_parked;
   const unprioritedRows = unpriorited.issues ?? [];
   const parkedRows = parked.issues ?? [];
+  // Every column and every count line of this page names a priority by the title a person
+  // wrote, never by the id, which is a slug of that title and no name at all to a reader.
+  const titles = new Map(rows.map((row) => [row.id, row.title]));
+  const parkedByPriority = Object.fromEntries(
+    Object.entries(parked.by_priority ?? {}).map(([id, count]) => [titles.get(id) ?? id, count])
+  );
   return (
     <div className="space-y-8">
       <header className="space-y-1">
@@ -54,9 +60,7 @@ export function PrioritiesPage(): ReactNode {
       </header>
 
       {rows.length === 0 ? (
-        <p className={textSecondaryOnCanvas}>
-          {body.empty ?? "No priority has been written yet."}
-        </p>
+        <p className={textSecondaryOnCanvas}>{body.empty ?? "No priority has been written yet."}</p>
       ) : (
         <PrioritiesTable rows={rows} />
       )}
@@ -80,6 +84,7 @@ export function PrioritiesPage(): ReactNode {
           kind="no-priority"
           label="In flight under no priority"
           prefix="n"
+          titles={titles}
         />
       </section>
 
@@ -90,7 +95,7 @@ export function PrioritiesPage(): ReactNode {
         <p className={textSecondaryOnCanvas}>{PARKED_RULE}</p>
         <p className={textSecondaryOnCanvas}>
           {parked.count} {parked.count === 1 ? "issue" : "issues"}
-          {countsLine(parked.by_priority) === "" ? "" : ` · ${countsLine(parked.by_priority)}`}
+          {countsLine(parkedByPriority) === "" ? "" : ` · ${countsLine(parkedByPriority)}`}
           {showing(parked.count, parkedRows.length) === ""
             ? ""
             : ` · ${showing(parked.count, parkedRows.length)}`}
@@ -100,6 +105,7 @@ export function PrioritiesPage(): ReactNode {
           kind="parked"
           label="Priority work in backlog or icebox"
           prefix="k"
+          titles={titles}
         />
       </section>
     </div>

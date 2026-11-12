@@ -12,9 +12,14 @@ import {
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { InPlaceField } from "./InPlaceField";
-import { NEVER_MOVED, PRIORITY_COLUMNS, PRIORITY_COLUMNS_BY_ID, type PriorityItem } from "./priorities-model";
-import { columnDefs } from "./priority-table-model";
+import {
+  NEVER_MOVED,
+  PRIORITY_COLUMNS,
+  PRIORITY_COLUMNS_BY_ID,
+  type PriorityItem,
+} from "./priorities-model";
 import { priorityPath } from "./priority-routes";
+import { columnDefs } from "./priority-table-model";
 
 /** Everything a row of the priorities table can do, which the page holds and the cells call. */
 export interface PriorityRowActions {

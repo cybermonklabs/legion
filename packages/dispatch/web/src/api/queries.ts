@@ -364,6 +364,17 @@ export const prioritySummaryQuery = (projects: readonly string[] = []) =>
       api.listPriorities({ summary: true, ...(projects.length ? { project: [...projects] } : {}) }),
   });
 
+/** One priority's own history, newest first (`GET /api/v1/priorities/{id}/history`): each write
+ *  of its title, description, owner and order, and each `advances` relation an issue asserted or
+ *  retracted on it, which the priority page's margin lists. Its key sits under the same
+ *  `priorities` prefix as the rows, so the one refresh rule for `advances`, `status` and `parent`
+ *  reads it again with them (`api/event-refresh.ts`). */
+export const priorityHistoryQuery = (id: string) =>
+  queryOptions({
+    queryKey: ["priorities", "history", id],
+    queryFn: () => api.getPriorityHistory(id),
+  });
+
 /** What every live-owned delivery query shares (LEGION-690): its first load subscribes its view
  *  over the page's one live socket (`api/live-socket.ts`), which writes the snapshot and every
  *  later change into the cache, so nothing here reads again. `meta.live` keeps the event feed's

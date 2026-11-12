@@ -31,7 +31,12 @@ export interface PriorityItem {
 /** The first line a reader sees of a description of any length; the empty text for one that is
  *  blank or holds only blank lines. */
 export function firstLine(description: string): string {
-  return description.split("\n").find((line) => line.trim() !== "")?.trim() ?? "";
+  return (
+    description
+      .split("\n")
+      .find((line) => line.trim() !== "")
+      ?.trim() ?? ""
+  );
 }
 
 const countOf = (by: PriorityRow["work"]["by_status"], statuses: readonly string[]): number =>
