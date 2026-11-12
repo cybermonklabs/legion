@@ -502,9 +502,22 @@ func requireNoStoredFunctionWritesAProjection(t *testing.T, ctx context.Context,
 	t.Logf("%d stored functions read, none writing a projected table; the triggers on them are %v", read, triggers)
 }
 
+// deferredCountersOfAProjection is the deferred work a projected table may carry: work that
+// checks nothing about the projection, so running it at COMMIT takes no check away from the
+// writer. comments_watermark raises the comment list's ETag counter for every write of a
+// comment row (migration 20261106020619). It is deferred because an immediate trigger takes
+// the counter row where the write happens and holds it to commit, which serialises every
+// comment write of one issue behind the longest transaction touching it. A constraint trigger
+// stands in pg_constraint as well as pg_trigger, so both of its spellings are named.
+var deferredCountersOfAProjection = []string{
+	"comments constraint comments_watermark",
+	"comments trigger comments_watermark",
+}
+
 // requireNoDeferredCheckOnAProjection proves the foreign key is checked where the row is
 // written: no constraint and no trigger of a projected table is deferrable, so nothing queues
-// the check for COMMIT, where a writer could no longer be named.
+// the check for COMMIT, where a writer could no longer be named. The counters named above are
+// the exception, each one work the writer is not waiting on an answer from.
 func requireNoDeferredCheckOnAProjection(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()
 	deferred, err := readStrings(ctx, run.database.Pool, `
@@ -520,6 +533,9 @@ func requireNoDeferredCheckOnAProjection(t *testing.T, ctx context.Context, run 
 	if err != nil {
 		t.Fatalf("read the deferred checks of the projected tables: %v", err)
 	}
+	deferred = slices.DeleteFunc(deferred, func(found string) bool {
+		return slices.Contains(deferredCountersOfAProjection, found)
+	})
 	if len(deferred) != 0 {
 		t.Errorf("the projected tables carry deferred checks %v, and a deferred check runs at COMMIT, away from the writer", deferred)
 	}

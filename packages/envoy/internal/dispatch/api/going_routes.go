@@ -227,6 +227,9 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 // credential may read and no more.
 func (s *server) goingSearch(project string, author model.Actor) func(context.Context, string) ([]going.Hit, error) {
 	return func(ctx context.Context, q string) ([]going.Hit, error) {
+		// No display tree: the answerer reads a hit's title and its href, never its markdown, so
+		// reading each hit for display would be work no reader of this answer ever sees, which is
+		// what these parameters leaving trees unset says.
 		parameters := searchParameters{text: q, project: project, limit: searchDefaultLimit, offset: 0, who: author}
 		found, err := s.runSearch(ctx, parameters)
 		if err != nil {

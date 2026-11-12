@@ -342,11 +342,16 @@ var indexPasses = map[string]string{
 	// the operator named and what the store itself holds about it, which is neither side of a
 	// projection read to mend the other: it deletes both sides together rather than bringing
 	// one into line with the other, so it is no repair.
-	"graphcensus/erase.go#apply":     "the node the operator named",
-	"graphstore/arms.go#nodeArm":     "the nodes its caller states",
-	"graphstore/arms.go#claimArms":   "the claims its caller states",
-	"graphstore/arms.go#tupleInsert": "the tuples its caller states",
-	"graphstore/write.go#writeNodes": "the nodes its caller states",
+	"graphcensus/erase.go#apply": "the node the operator named",
+	// The same erase's rewrite of the rows it may take no row out of, which is the other half
+	// of that one input: the text of the node the operator named, read before any delete
+	// (erasedTexts). It rewrites the block text and the excerpt cut from it together, in one
+	// statement, so it never reads either to decide what the other should say.
+	"graphcensus/erase.go#redactBlocks": "the text of the node the operator named",
+	"graphstore/arms.go#nodeArm":        "the nodes its caller states",
+	"graphstore/arms.go#claimArms":      "the claims its caller states",
+	"graphstore/arms.go#tupleInsert":    "the tuples its caller states",
+	"graphstore/write.go#writeNodes":    "the nodes its caller states",
 	// Caused is the second half of one write rather than a second look at it: the nodes its
 	// caller has just written take the id of the event that recorded them, which is known only
 	// once that event is appended. It reads no projection and mends nothing.

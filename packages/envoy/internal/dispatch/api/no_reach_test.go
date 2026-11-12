@@ -230,6 +230,7 @@ func declaredShapesUnchanged(t *testing.T) {
 	}
 	generated := readRepositoryFile(t, root, contractsGenerated)
 	declared := schemasOfGeneratedModule(t, generated)
+	owned := splitOwnedSchemas(generated)
 
 	for _, route := range routesBeforeThisChild(t, true) {
 		operations, held := document.Paths[route.Pattern]
@@ -256,8 +257,9 @@ func declaredShapesUnchanged(t *testing.T) {
 		if !slices.Equal(fields, want) {
 			t.Errorf("%s declares %s as %v, and the route table answers %v", contractsGenerated, name, fields, want)
 		}
-		if !generatedAlias(name).MatchString(generated) {
-			t.Errorf("%s declares %s and exports no alias for it, so no consumer imports it", contractsGenerated, name)
+		if !owned[name] && !generatedAlias(name).MatchString(generated) {
+			t.Errorf("%s declares %s, exports no alias for it and does not name it as the split's, so no consumer imports it",
+				contractsGenerated, name)
 		}
 	}
 }
@@ -307,6 +309,36 @@ func committedDocument(t *testing.T, root string) committedOpenAPIShapes {
 func generatedAlias(name string) *regexp.Regexp {
 	return regexp.MustCompile(`export type ` + regexp.QuoteMeta(name) + ` =\s+` +
 		regexp.QuoteMeta(`components["schemas"]["`+name+`"];`))
+}
+
+// splitOwnedSchema matches one name of the generated module's SplitOwnedSchemaName union.
+var splitOwnedSchema = regexp.MustCompile(`"([A-Za-z_][A-Za-z0-9_]*)"`)
+
+// splitOwnedSchemas is the schema names the generated module says the hand-written split owns.
+// The generator exports no alias for those: dispatch-api.ts re-exports the generated module and
+// the split together, and one name cannot come from both, so the split's own export is what a
+// consumer imports (packages/contracts/scripts/gen-api.ts). The generator renders the list into
+// the module as that union, and dispatch-api-owned.ts holds the split's reading of each name to
+// the document's reading at compile time, so a Go change that moves one of these shapes reds the
+// typecheck by the name it moved.
+//
+// The list is read out of the module rather than written here, so a name the generator hands
+// back goes straight back to needing an alias of its own, and a module that renders no union at
+// all leaves every name needing one.
+func splitOwnedSchemas(generated string) map[string]bool {
+	owned := map[string]bool{}
+	start := strings.Index(generated, "export type SplitOwnedSchemaName =")
+	if start < 0 {
+		return owned
+	}
+	union := generated[start:]
+	if end := strings.Index(union, ";"); end >= 0 {
+		union = union[:end]
+	}
+	for _, match := range splitOwnedSchema.FindAllStringSubmatch(union, -1) {
+		owned[match[1]] = true
+	}
+	return owned
 }
 
 // generatedSchemaName matches a schema's own line in the generated module: the names sit at one

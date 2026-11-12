@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -31,6 +34,51 @@ const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.p
 	left join issues i on i.key = e.issue_key
 	left join artifacts ar on ar.id = e.artifact_id`
 
+// listIssueEvents answers an issue's activity feed under an ETag of metadata alone: every append
+// to this feed advances the issue's last_seq in the append's own transaction (events.Broker), so
+// the issue row this is the feed of, that column, the paging query that chooses the page and the
+// variant lines both lists' ETags carry are the whole of what decides the page. The feed's
+// validator is therefore read before the page is: a reader holding the ETag is answered 304 for
+// one short statement, and one that is not is answered from the kept bytes when the cache holds
+// them, having built, encoded and compressed nothing (list_answers.go).
+//
+// What the validator does not cover is the handful of fields an ask event's payload is given at
+// read time from rows elsewhere (attachAskEventFields). The validator decides both answers this
+// route gives: the 304 a reader holding the ETag is answered, and the kept bytes
+// (listAnswers.answer) a reader who sends no validator at all is written, which is a fresh page
+// load. So what follows is what either reader can be shown after it moved, and before this
+// change a fresh load always read all of it current.
+//
+// Each field, and what moves it:
+//
+//   - referenced_by_count, the edges that point at the ask. An inbound backlink is counted on
+//     the write that makes it, which is another issue's comment, message or document, and that
+//     write moves that issue's sequence and no sequence of this one. It can be stale. The count
+//     is also read as the acting person (refs.QueueBacklinkCounts, which drops an edge whose
+//     source that person may not see), while this key names no person, so the kept bytes carry
+//     the count the reader that filled them was given. Every node Dispatch writes today is
+//     visible to everyone who may read its project (refs/visibility.go), so the two readings
+//     are one; a node kind reserved for its author would have to be named in this key.
+//   - The part ids of the options and the answer, and the ask's part revision, from ask_blocks.
+//     Every write of an ask indexes its parts in the transaction that appends the ask's event
+//     (refs.IndexAskPartsCounted, in asks.go, ask_transitions.go, issue_ask_lifecycle.go and
+//     reviews.go), so an ask's own writes move these and last_seq together. The one write that
+//     does not is the indexing of an ask the index owes - one written before its parts were
+//     indexed at all - which the block index pass makes on no event (refs.IndexOwedItemBlocks,
+//     docs/block_index.go): until that pass runs, a payload carries no part ids and no
+//     revision, and the page that was kept after it goes on carrying none.
+//   - anchor_artifact and approval_artifact: the project, slug, name and is_primary of the
+//     document an ask anchors or asks approval of (attachAskDocumentArtifacts). A document's
+//     rename, re-slug or primary flag moves the sequence of the issue that document belongs to,
+//     which is this issue only when the ask names a document of its own. An ask that anchors a
+//     document on another issue can be stale.
+//   - opened_event_id is the id of the ask.opened event itself, written once and never moved.
+//
+// Each of those lasts exactly as long as the validator does, for the 304 and the kept bytes
+// alike: the next event of this issue moves last_seq, which is a new ETag and so a new kept
+// entry, and the read behind it attaches all of them again. An entry the cache evicts and a
+// restart end it sooner. Those fields are an ask's own facts rather than the feed's, and the
+// Inbox, the ask read and the issue read answer them fresh, from no kept list.
 func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.actingReader(w, r)
 	if !ok {
@@ -41,12 +89,85 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	lastSeq, createdAt, issueHeld, err := s.issueEventSequence(r.Context(), r.PathValue("key"))
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	trees := wantsDisplayTrees(r)
+	etag := s.eventFeedETag(lastSeq, createdAt, options, trees)
+	if answerNotModified(w, r, etag) {
+		return
+	}
+	key := listAnswerKeyFor(r, eventFeedRoute, r.PathValue("key"), etag)
+	if s.listAnswers.answer(w, key) {
+		return
+	}
 	events, err := s.readEvents(r.Context(), who, issueOwner(r.PathValue("key")), options)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, events)
+	// One pass over the page: the reader takes each payload's texts as the shaping registers
+	// them, reads their stored trees in one query and fills what the table did not hold.
+	reader := s.readDisplayTrees(r.Context(), trees)
+	attachEventTrees(events, reader)
+	reader.resolve()
+	encoded, err := encodeListAnswer(events)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.writeListAnswer(w, key, encoded, issueHeld)
+}
+
+// eventFeedETag hashes what one page of an issue's activity feed is made of: the issue whose feed
+// it is, that issue's newest event sequence and the query that pages it, closed with the lines
+// both lists' ETags carry (listETag). It is referencesETag's shape - one line per part, then the
+// hash of them - and it names no issue key: a validator is compared against the one URL that gave
+// it.
+//
+// The issue is named by its created_at rather than its key, because the key is the one part of it
+// that comes back. last_seq is a counter of the row, so a key taken by a new issue stands at
+// sequences the issue before it stood at, and nothing else in the hash would tell the two feeds
+// apart: a reader of the new issue would be answered 304, or written the bytes this server kept
+// for the old one. That is what the browser harness does between scenarios - it empties `issues`
+// and restarts each project's numbering, so every scenario's issues take the keys of the last
+// one's (packages/dispatch/e2e/seed.ts) - and it is the reading a restored database gives a
+// process that outlived the restore. The comment list is held to the same rule by a counter that
+// never comes back with the key (migration 20261106020619); the feed's column does come back, so
+// the row's birth stamp is hashed in beside it. It is the same fact, read the same way, that
+// tells the event relay an event log that was reset under its cursor from one that merely went
+// quiet (eventLogWasReset).
+func (s *server) eventFeedETag(lastSeq int, createdAt time.Time, options eventListOptions, trees bool) string {
+	hash := sha256.New()
+	_, _ = fmt.Fprintf(hash, "created=%d\nlast_seq=%d\nafter=%d\nbefore=%d\nhas_before=%t\ndescending=%t\nlimit=%d\n",
+		createdAt.UnixMicro(), lastSeq, options.after, options.before, options.hasBefore, options.descending, options.limit)
+	for _, id := range options.ids {
+		_, _ = fmt.Fprintf(hash, "id=%d\n", id)
+	}
+	return s.listETag(hash, trees)
+}
+
+// issueEventSequence is the newest event sequence of the issue key names and the created_at that
+// tells that issue from the next one to take its key, with whether any issue holds that key at
+// all. A key no issue holds reads zero for both, and its feed is the empty page readEvents
+// answers rather than a refusal; the server keeps that page under no key, since the key is the
+// path the caller spelled (writeListAnswer). Every append to the issue advances the column in
+// the append's own transaction (events/broker.go), and nothing moves the stamp, so this one
+// statement is the whole of what the feed's validator reads.
+func (s *server) issueEventSequence(ctx context.Context, key string) (int, time.Time, bool, error) {
+	var lastSeq int
+	var createdAt time.Time
+	err := s.deps.Store.Pool.QueryRow(ctx,
+		`select last_seq, created_at from issues where key = $1`, key).Scan(&lastSeq, &createdAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, time.Time{}, false, nil
+	}
+	if err != nil {
+		return 0, time.Time{}, false, fmt.Errorf("read the issue's event sequence: %w", err)
+	}
+	return lastSeq, createdAt, true, nil
 }
 
 // listEventLog pages the whole event log by id, whatever owns each event: an issue, a document,

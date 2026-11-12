@@ -416,5 +416,18 @@ func liveEventFrame(sub string, event relayedEvent) LiveEventFrame {
 	}
 }
 
-// encodeLiveEvent is one event's own JSON encoding, which a frame carries whole.
-func encodeLiveEvent(event model.Event) ([]byte, error) { return json.Marshal(event) }
+// encodeLiveEvent is one event's own JSON encoding, which a frame carries whole. Its trees ride
+// in the envelope's own `trees` map, always: a browser cannot set Dispatch-Trees on a socket, and
+// a page reads every event it is handed the same way whether it arrived here or through a REST
+// read.
+//
+// An encoding builds its trees and copies none: it is one event on its way to the sockets
+// watching now, with no request behind it to take a connection from, and the text it carries was
+// written a moment ago, so the table is the slower of the two ways to the same bytes. The build
+// leaves them in this process's cache for the reads that follow. It runs here, where the event is
+// encoded, rather than in the frame: the relay encodes a live event once for every subscriber, so
+// the trees of one event are built once however many sockets are watching.
+func encodeLiveEvent(event model.Event) ([]byte, error) {
+	event.Trees = eventDisplayTrees(event)
+	return json.Marshal(event)
+}
