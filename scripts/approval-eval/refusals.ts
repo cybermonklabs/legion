@@ -8,9 +8,11 @@ import {
   listOf,
   OutputPathError,
   outDirectory,
+  pool,
   readCorpus,
   recordOf,
   stringOf,
+  table,
   UsageError,
 } from "./corpus-io";
 import {
@@ -31,7 +33,7 @@ import {
   neverDecide,
   neverDecideDefinition,
 } from "./never-decide";
-import { RecipeError, renderPrompt } from "./recipes";
+import { RecipeError, readDistillation, renderPrompt } from "./recipes";
 import { renderCase } from "./render";
 import type { ReplayedDocument } from "./replay";
 
@@ -515,10 +517,13 @@ const WRITTEN_ROOT_FACTS: IssueFacts = {
   primaryArtifactId: artifactOf(WRITTEN_ROOT),
 };
 
-/** The root case written here, as the run drives it. */
+/**
+ * The root case written here, as the run drives it. The source names the fixture by its own id,
+ * so a reader of the record sees which case ran rather than which case the code meant to run.
+ */
 function writtenRoot(why: string): RootCase {
   return {
-    source: `written in refusals.ts, because ${why}`,
+    source: `the fixture ${WRITTEN_ROOT.id}, written in refusals.ts, because ${why}`,
     issueKey: null,
     caseId: WRITTEN_ROOT.id,
     text: evidenceOf(WRITTEN_ROOT),
@@ -546,41 +551,52 @@ function issueFactsOf(value: unknown): { key: string; facts: IssueFacts } | null
   };
 }
 
+/** The key a draw writes its roots under, which is the key this reading looks for. */
+const ROOTS_KEY = "backlogLegionRoots";
+
 /** The issue facts a draw beside the corpus recorded, by issue key, and empty where it wrote none. */
 async function factsOfDraw(
   corpus: string
-): Promise<{ facts: Map<string, IssueFacts>; at: string }> {
+): Promise<{ facts: Map<string, IssueFacts>; at: string; looked: string[] }> {
   const facts = new Map<string, IssueFacts>();
-  for (const path of [join(corpus, "slices", "draw.json"), join(corpus, "draw.json")]) {
+  const looked = [join(corpus, "slices", "draw.json"), join(corpus, "draw.json")];
+  for (const path of looked) {
     let parsed: unknown;
     try {
       parsed = JSON.parse(await readFile(path, "utf8"));
     } catch {
       continue;
     }
-    const roots = recordOf(recordOf(parsed)?.parkedLegionRoots);
+    const roots = recordOf(recordOf(parsed)?.[ROOTS_KEY]);
     for (const value of listOf(roots?.issues)) {
       const read = issueFactsOf(value);
       if (read !== null) facts.set(read.key, read.facts);
     }
-    return { facts, at: path };
+    return { facts, at: path, looked };
   }
-  return { facts, at: "" };
+  return { facts, at: "", looked };
 }
 
 /**
  * The root case this run drives: the first case of the corpus that approves the primary document
  * of a root carrying the `legion` label and standing on the backlog or in icebox, and the case
- * written here where the corpus holds none. The corpus carries no document text, so the case's
+ * written here where no corpus was named. The corpus carries no document text, so the case's
  * evidence is its question and its options; the rule reads the issue's facts for this kind, not
  * the text.
+ *
+ * A corpus whose draw records no root's facts is a failure and not a fallback: the run stops
+ * there, naming the key it looked for, rather than standing the written fixture in silently
+ * behind a record that reads as though the corpus had been read.
  */
 export async function rootCaseOf(corpus: string | null): Promise<RootCase> {
   if (corpus === null) return writtenRoot("no --corpus was named");
   const read = await readCorpus(corpus);
-  const { facts, at } = await factsOfDraw(read.directory);
+  const { facts, at, looked } = await factsOfDraw(read.directory);
   if (facts.size === 0) {
-    return writtenRoot(`no draw beside the corpus at ${read.directory} records a root's facts`);
+    throw new CorpusError(
+      `no draw beside the corpus at ${read.directory} records a root's facts under ` +
+        `\`${ROOTS_KEY}\`: looked in ${looked.join(" and ")}`
+    );
   }
   for (const row of read.rows) {
     if (row.kind !== "approval" || row.issueKey === null) continue;
@@ -605,25 +621,6 @@ export async function rootCaseOf(corpus: string | null): Promise<RootCase> {
   return writtenRoot(
     `the corpus at ${read.directory} holds no approval of the primary document of such a root`
   );
-}
-
-/** Runs `run` over `items`, `concurrency` of them at once. */
-async function pool<T>(
-  items: readonly T[],
-  concurrency: number,
-  run: (item: T) => Promise<void>
-): Promise<void> {
-  let next = 0;
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    for (;;) {
-      const at = next;
-      next += 1;
-      const item = items[at];
-      if (item === undefined) return;
-      await run(item);
-    }
-  });
-  await Promise.all(workers);
 }
 
 /** One fixture put to the agent, on the recipe and the distillation a scored arm uses. */
@@ -850,20 +847,6 @@ export async function refusalRun(plan: RefusalPlan, deps: RefusalDeps): Promise<
   return { ...body, failures, pass: failures.length === 0 };
 }
 
-/** One markdown table, its columns padded so the text reads as a table too. */
-function table(headers: readonly string[], rows: readonly (readonly string[])[]): string[] {
-  const widths = headers.map((header, at) =>
-    Math.max(header.length, ...rows.map((row) => (row[at] ?? "").length))
-  );
-  const line = (cells: readonly string[]): string =>
-    `| ${cells.map((cell, at) => cell.padEnd(widths[at] ?? 0)).join(" | ")} |`;
-  return [
-    line(headers),
-    `| ${widths.map((width) => "-".repeat(width)).join(" | ")} |`,
-    ...rows.map((row) => line(row)),
-  ];
-}
-
 /** What the agent answered on one fixture, on one line. */
 function agentLine(agent: AgentVerdict | null): string {
   if (agent === null) return "the agent half was skipped";
@@ -1061,9 +1044,10 @@ async function refusals(flags: Flags): Promise<number> {
   const fixtures = await readFixtures(flags.fixtures);
   if (flags.distillation !== null) {
     // Read now rather than at the first call: a path that has moved is worth a refusal before
-    // the fixtures are driven over it.
+    // the fixtures are driven over it. The text read here is the text the prompts use, so the
+    // check costs nothing and the file cannot move between it and the first use.
     try {
-      await readFile(flags.distillation, "utf8");
+      await readDistillation(flags.distillation);
     } catch {
       throw new UsageError(`--distillation ${flags.distillation} could not be read`);
     }

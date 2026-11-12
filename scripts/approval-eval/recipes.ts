@@ -162,6 +162,36 @@ async function neighboursFor(
 }
 
 /**
+ * The distillations read from disk, by path. One round renders a prompt once per judgement, and
+ * every one of them carries the same file: without this the file is read about fourteen thousand
+ * times for one round. Only a read that returned is kept, so a path that has moved raises on
+ * every call and an empty file raises its `RecipeError` on every call, as before.
+ */
+const distillations = new Map<string, string>();
+
+/** The distillation at `path`, read once per process. */
+async function distillationAt(path: string): Promise<string> {
+  const held = distillations.get(path);
+  if (held !== undefined) return held;
+  const text = (await readFile(path, "utf8")).trim();
+  if (text === "") throw new RecipeError(`the distillation at ${path} is empty`);
+  distillations.set(path, text);
+  return text;
+}
+
+/**
+ * The read a command makes before it drives anything, so a path that has moved is refused
+ * before the work starts. The text it read is kept, so the first prompt costs no second read
+ * and nothing can move the file between the check and that prompt. An empty file is not kept:
+ * it is `renderPrompt` that refuses one, and it still does.
+ */
+export async function readDistillation(path: string): Promise<string> {
+  const text = (await readFile(path, "utf8")).trim();
+  if (text !== "") distillations.set(path, text);
+  return text;
+}
+
+/**
  * One arm's prompt over one case: the system text that says what the judge does and in what
  * shape it answers, and the user text carrying the distillation, the examples and the evidence.
  */
@@ -181,10 +211,7 @@ export async function renderPrompt(
           "`distillationPath` was named: a recipe never quietly becomes `bare`"
       );
     }
-    distillation = (await readFile(path, "utf8")).trim();
-    if (distillation === "") {
-      throw new RecipeError(`the distillation at ${path} is empty`);
-    }
+    distillation = await distillationAt(path);
   }
   const nearest = await neighboursFor(named, caseRow, options);
   const system = `${TASK}\n\n${ANSWER_SHAPE}`;

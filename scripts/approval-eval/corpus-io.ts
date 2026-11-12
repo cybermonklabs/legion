@@ -1,6 +1,7 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import type { AskOption, CaseRow, CaseVerdict } from "./build-corpus";
+import type { JudgementRow } from "./run-round";
 
 /**
  * What the approval-eval commands share: a built corpus read back, the rule that reads a verdict
@@ -132,7 +133,7 @@ export async function readCorpus(corpus: string): Promise<Corpus> {
   const byCaseId = new Map<string, CaseRow>();
   for (const [index, line] of lines.entries()) {
     if (line.trim() === "") continue;
-    const row = rowOf(directory, index + 1, line);
+    const row = caseRowOf(directory, index + 1, line);
     rows.push(row);
     byCaseId.set(row.caseId, row);
   }
@@ -147,17 +148,77 @@ export function newSeed(): number {
   return Math.trunc(Math.random() * 0x1_0000_0000);
 }
 
+/** mulberry32: the seeded stream a draw, an order and a pick are all drawn from. */
+export function randomStream(seed: number): () => number {
+  let state = Math.trunc(seed) >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let drawn = state;
+    drawn = Math.imul(drawn ^ (drawn >>> 15), 1 | drawn);
+    drawn = (drawn + Math.imul(drawn ^ (drawn >>> 7), 61 | drawn)) ^ drawn;
+    return ((drawn ^ (drawn >>> 14)) >>> 0) / 0x1_0000_0000;
+  };
+}
+
 /**
  * One item of `items`, drawn by one step of mulberry32 from `seed`: the same seed and the same
  * list draw the same item, which is what makes a printed seed worth printing.
  */
 export function pickAtRandom<T>(items: readonly T[], seed: number): T | undefined {
   if (items.length === 0) return undefined;
-  let state = (Math.trunc(seed) + 0x6d2b79f5) | 0;
-  state = Math.imul(state ^ (state >>> 15), 1 | state);
-  state = (state + Math.imul(state ^ (state >>> 7), 61 | state)) ^ state;
-  const unit = ((state ^ (state >>> 14)) >>> 0) / 0x1_0000_0000;
+  const unit = randomStream(seed)();
   return items[Math.min(items.length - 1, Math.floor(unit * items.length))];
+}
+
+/** Runs `run` over `items`, `concurrency` of them at once, stopping when `stop` says to. */
+export async function pool<T>(
+  items: readonly T[],
+  concurrency: number,
+  run: (item: T) => Promise<void>,
+  stop?: () => boolean
+): Promise<void> {
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, () =>
+    (async () => {
+      while (next < items.length) {
+        if (stop?.() === true) return;
+        const at = next;
+        next = at + 1;
+        await run(items[at] as T);
+      }
+    })()
+  );
+  await Promise.all(workers);
+}
+
+/** One markdown table, its columns padded so the text reads as a table too. */
+export function table(headers: readonly string[], rows: readonly (readonly string[])[]): string[] {
+  const widths = headers.map((header, at) =>
+    Math.max(header.length, ...rows.map((row) => (row[at] ?? "").length))
+  );
+  const line = (cells: readonly string[]): string =>
+    `| ${cells.map((cell, at) => cell.padEnd(widths[at] ?? 0)).join(" | ")} |`;
+  return [
+    line(headers),
+    `| ${widths.map((width) => "-".repeat(width)).join(" | ")} |`,
+    ...rows.map((row) => line(row)),
+  ];
+}
+
+/** One line of a round's `rows.jsonl` read back, or null where it is no row the runner wrote. */
+export function rowOf(line: string): JudgementRow | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  const record = recordOf(parsed);
+  if (record === null) return null;
+  if (typeof record.arm !== "string" || typeof record.caseId !== "string") return null;
+  if (typeof record.judgement !== "number" || !Array.isArray(record.verdict)) return null;
+  // The rest of the line is what the runner wrote, whose shape is `JudgementRow`.
+  return record as unknown as JudgementRow;
 }
 
 async function textOf(directory: string, name: string): Promise<string> {
@@ -193,7 +254,8 @@ function snapshotOf(directory: string, text: string): CorpusSnapshot {
   };
 }
 
-function rowOf(directory: string, line: number, text: string): CaseRow {
+/** One line of a corpus's `corpus.jsonl` read back, which a build wrote. */
+function caseRowOf(directory: string, line: number, text: string): CaseRow {
   const where = `${join(directory, "corpus.jsonl")} line ${line}`;
   let parsed: unknown;
   try {

@@ -58,8 +58,18 @@ export interface RenderOptions {
   issueTitle?: string | null;
 }
 
-/** The attributes of an ask block Dispatch writes when it is answered, and never a person. */
-const ANSWER_ATTRIBUTES: readonly string[] = ["answered_by", "answered_at", "selected", "answer"];
+/**
+ * The attributes of an ask block Dispatch writes when it is answered, and never a person. One
+ * pattern over the four of them, compiled once: a fence is rewritten for every document of
+ * every judgement, and a pattern built inside that call is built again for each one.
+ */
+const ANSWER_ATTRIBUTES = /\s*(?:answered_by|answered_at|selected|answer)="[^"]*"/g;
+
+/** The `answered_at` attribute of one fence, read on its own. */
+const ANSWERED_AT_ATTRIBUTE = /answered_at="([^"]*)"/;
+
+/** The `state` attribute of one fence, which a stripped answer is reopened by. */
+const STATE_ATTRIBUTE = /\sstate="[^"]*"/;
 
 /** A line opening an ask block: `:::ask{` its attributes `}`. */
 const ASK_FENCE = /^:::ask\{(.*)\}[ \t]*$/;
@@ -86,17 +96,14 @@ function timeOf(at: string | null | undefined): number | null {
  * that cannot be read cannot be shown to be earlier.
  */
 function fenceWithoutLaterAnswer(attributes: string, answeredBefore: number): string {
-  const answeredAt = timeOf(/answered_at="([^"]*)"/.exec(attributes)?.[1]);
+  const answeredAt = timeOf(ANSWERED_AT_ATTRIBUTE.exec(attributes)?.[1]);
   if (answeredAt !== null && answeredAt < answeredBefore) return attributes;
-  let kept = attributes;
-  for (const name of ANSWER_ATTRIBUTES) {
-    kept = kept.replace(new RegExp(`\\s*${name}="[^"]*"`, "g"), "");
-  }
-  if (/\sstate="[^"]*"/.test(kept)) {
-    kept = kept.replace(/\sstate="[^"]*"/, ' state="open"');
-  } else {
-    kept = `${kept.trimEnd()} state="open"`;
-  }
+  let hadState = false;
+  let kept = attributes.replace(ANSWER_ATTRIBUTES, "").replace(STATE_ATTRIBUTE, () => {
+    hadState = true;
+    return ' state="open"';
+  });
+  if (!hadState) kept = `${kept.trimEnd()} state="open"`;
   return kept;
 }
 

@@ -12,6 +12,8 @@ import {
   pickAtRandom,
   readCorpus,
   recordOf,
+  rowOf,
+  table,
   UsageError,
   verdictOf,
 } from "./corpus-io";
@@ -1299,10 +1301,9 @@ function kindAnalysisOf(
         : (missing ??
           `no bound at this count (${decided.length} decided, and a bound needs ` +
             `${MINIMUM_DECIDED})`),
-      adjustedBound:
-        bounded && decided.length > 0
-          ? clopperPearsonUpper(disagreements, decided.length, ADJUSTED_CONFIDENCE)
-          : null,
+      adjustedBound: bounded
+        ? clopperPearsonUpper(disagreements, decided.length, ADJUSTED_CONFIDENCE)
+        : null,
     },
     zeroBand:
       band === null
@@ -1494,7 +1495,7 @@ export function confidenceTableOf(
       const values = new Set(
         arm.cases.filter((one) => one.verdict !== null).map((one) => one.confidence)
       );
-      return arm.cases.length > 0 && values.size <= 1;
+      return arm.cases.length > 0 && values.size === 1;
     })
     .map((arm) => arm.name);
   const armChoice = named === null ? "best" : "named";
@@ -1761,20 +1762,6 @@ function cells(reading: Reading): [string, string] {
   return [
     `${num(reading.share)} (${count(reading.count)} of ${count(reading.total)})`,
     reading.bound === null ? (reading.noBound ?? "no bound") : `at most ${num(reading.bound)}`,
-  ];
-}
-
-/** One markdown table, its columns padded so the text reads as a table too. */
-function table(headers: readonly string[], rows: readonly (readonly string[])[]): string[] {
-  const widths = headers.map((header, index) =>
-    Math.max(header.length, ...rows.map((row) => (row[index] ?? "").length))
-  );
-  const line = (row: readonly string[]): string =>
-    `| ${widths.map((width, index) => (row[index] ?? "").padEnd(width)).join(" | ")} |`;
-  return [
-    line(headers),
-    `| ${widths.map((width) => "-".repeat(width)).join(" | ")} |`,
-    ...rows.map(line),
   ];
 }
 
@@ -2295,7 +2282,7 @@ function decisionLines(analysis: Analysis): string[] {
   lines.push("");
   for (const line of analysis.decision.approval.lines) lines.push(`- ${line}`);
   const flat = analysis.arms.filter(
-    (arm) => arm.confidenceValues.length <= 1 && arm.approval.cases + arm.question.cases > 0
+    (arm) => arm.confidenceValues.length === 1 && arm.approval.cases + arm.question.cases > 0
   );
   lines.push(
     flat.length === 0
@@ -2574,22 +2561,6 @@ export function renderReport(analysis: Analysis): string[] {
   ];
 }
 
-/** One line of `rows.jsonl` read back, or null where it is not a row the runner wrote. */
-function rowOf(line: string): JudgementRow | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  const record = recordOf(parsed);
-  if (record === null) return null;
-  if (typeof record.arm !== "string" || typeof record.caseId !== "string") return null;
-  if (typeof record.judgement !== "number" || !Array.isArray(record.verdict)) return null;
-  // The rest of the line is what the runner wrote, whose shape is `JudgementRow`.
-  return record as unknown as JudgementRow;
-}
-
 /** The rows of a round, read as far as they go: a round still running has written part of them. */
 async function readRows(
   round: string
@@ -2636,13 +2607,20 @@ async function readSummary(round: string): Promise<RoundSummary | null> {
 
 /** The case ids of each slice, from the draw the corpus directory carries, where it does. */
 async function readSlices(corpus: string): Promise<Record<string, string[]> | null> {
+  const path = join(corpus, "slices", "slices.json");
   let text: string;
   try {
-    text = await readFile(join(corpus, "slices", "slices.json"), "utf8");
+    text = await readFile(path, "utf8");
   } catch {
     return null;
   }
-  const record = recordOf(JSON.parse(text));
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new CorpusError(`${path} is not JSON`);
+  }
+  const record = recordOf(parsed);
   if (record === null) return null;
   const slices: Record<string, string[]> = {};
   for (const [slice, ids] of Object.entries(record)) {
@@ -2659,13 +2637,20 @@ async function readSlices(corpus: string): Promise<Record<string, string[]> | nu
 async function readDrawFacts(
   corpus: string
 ): Promise<{ cut: string | null; groupKey: string | null }> {
+  const path = join(corpus, "slices", "draw.json");
   let text: string;
   try {
-    text = await readFile(join(corpus, "slices", "draw.json"), "utf8");
+    text = await readFile(path, "utf8");
   } catch {
     return { cut: null, groupKey: null };
   }
-  const record = recordOf(JSON.parse(text));
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new CorpusError(`${path} is not JSON`);
+  }
+  const record = recordOf(parsed);
   const cut = record?.cut;
   const groupKey = record?.groupKey;
   return {
@@ -2721,7 +2706,12 @@ async function readCases(path: string): Promise<string[]> {
   }
   const trimmed = text.trim();
   if (trimmed.startsWith("[")) {
-    const parsed: unknown = JSON.parse(trimmed);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      throw new UsageError(`--cases names ${path}, which is not JSON`);
+    }
     if (!Array.isArray(parsed)) throw new UsageError(`${path} is not a list of case ids`);
     return parsed.filter((one): one is string => typeof one === "string");
   }
@@ -2775,13 +2765,20 @@ function readFlags(argv: readonly string[]): Flags {
         `asked for\n\n${USAGE}`
     );
   }
+  const cases = values.cases?.trim();
+  if (cases !== undefined && !confidenceTable) {
+    throw new UsageError(
+      "--cases names the cases --confidence-table is read over, and that table was not " +
+        `asked for\n\n${USAGE}`
+    );
+  }
   return {
     corpus,
     round,
     out: values.out?.trim(),
     confidenceTable,
     confidenceArm: confidenceArm === undefined || confidenceArm === "" ? null : confidenceArm,
-    cases: values.cases?.trim(),
+    cases,
     format,
   };
 }
@@ -2832,7 +2829,8 @@ async function analyze(flags: Flags): Promise<number> {
   return 0;
 }
 
-async function main(argv: readonly string[]): Promise<number> {
+/** The command: the flags, the report, and the exit status it takes. */
+export async function main(argv: readonly string[]): Promise<number> {
   let flags: Flags;
   try {
     flags = readFlags(argv);

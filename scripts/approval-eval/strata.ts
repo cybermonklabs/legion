@@ -10,6 +10,7 @@ import {
   readCorpus,
   recordOf,
   stringOf,
+  table,
   UsageError,
 } from "./corpus-io";
 import { clopperPearsonUpper, DEFAULT_CONFIDENCE, MINIMUM_DECIDED } from "./stats";
@@ -467,20 +468,6 @@ export function approvalCases(rows: readonly CaseRow[]): CaseRow[] {
     (row) =>
       row.kind === "approval" && (row.verdict === "approve" || row.verdict === "request_changes")
   );
-}
-
-/** One markdown table, its columns padded so the text reads as a table too. */
-function table(headers: readonly string[], rows: readonly (readonly string[])[]): string[] {
-  const widths = headers.map((header, at) =>
-    Math.max(header.length, ...rows.map((row) => (row[at] ?? "").length))
-  );
-  const line = (cells: readonly string[]): string =>
-    `| ${cells.map((cell, at) => cell.padEnd(widths[at] ?? 0)).join(" | ")} |`;
-  return [
-    line(headers),
-    `| ${widths.map((width) => "-".repeat(width)).join(" | ")} |`,
-    ...rows.map((row) => line(row)),
-  ];
 }
 
 /** One table of one reading, with the question it answers printed over its answer. */

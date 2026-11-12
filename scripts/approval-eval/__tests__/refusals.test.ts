@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ClaudeAsk, labelsOf, type ModelAnswer } from "../models";
@@ -17,11 +17,15 @@ import {
 
 /**
  * The refusal run over hand-written documents and a fake endpoint: nothing here reads the
- * committed fixtures, the corpus or a distillation, and nothing makes a call. What it holds the
- * run to is the five things its verdict turns on - a kind held ten in ten passes, a kind held
- * nine in ten fails the plan's bar and is named, an ordinary document the rule holds fails the
- * run and is named with the model's reason, an answer that could not be read fails it as a
- * fault, and a run that holds everything fails in those words.
+ * committed fixtures, the real corpus or a distillation, and nothing makes a call. What it
+ * holds the run to is the five things its verdict turns on - a kind held ten in ten passes, a
+ * kind held nine in ten fails the plan's bar and is named, an ordinary document the rule holds
+ * fails the run and is named with the model's reason, an answer that could not be read fails it
+ * as a fault, and a run that holds everything fails in those words.
+ *
+ * The last block holds the root case the run drives, over a corpus written into a scratch
+ * directory: it comes from the corpus under the key a draw writes its roots under, and a draw
+ * recording none stops the run rather than standing the written fixture in silently.
  */
 
 /** The directories this file made, each removed by its own exact path. */
@@ -303,5 +307,102 @@ describe("the refusal run", () => {
     }
     expect(exitCode).toBe(2);
     expect(lines.join("\n")).toContain("--no-agent skips the agent half");
+  });
+});
+
+/** One approval case of a corpus, with the fields the root reading and the render name. */
+function approvalCase(
+  caseId: string,
+  issueKey: string,
+  artifactId: string
+): Record<string, unknown> {
+  return {
+    caseId,
+    eventId: 1,
+    askId: `ask-${caseId}`,
+    issueKey,
+    project: "INFRA",
+    kind: "approval",
+    urgency: "med",
+    multiple: false,
+    question: "Approve spec.md (version 1)?",
+    options: [
+      { id: "o1", label: "Approve", description: "it is ready" },
+      { id: "o2", label: "Request changes", description: "it is not" },
+    ],
+    selected: ["Approve"],
+    words: null,
+    hasWords: false,
+    askCreatedAt: "2026-11-05T09:00:00Z",
+    answeredAt: "2026-11-05T12:00:00Z",
+    eventCreatedAt: "2026-11-05T12:00:00Z",
+    approval: {
+      documents: [{ artifactId, name: "spec.md", version: 1, requestedVersion: 1 }],
+      artifactSlug: "spec",
+      artifactPrimary: true,
+    },
+    verdict: "approve",
+    confounds: null,
+  };
+}
+
+/** A corpus directory holding one approval case, with `draw` written beside it as its draw. */
+async function corpusWithDraw(draw: unknown): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "refusals-corpus-"));
+  made.push(directory);
+  await mkdir(join(directory, "slices"), { recursive: true });
+  await writeFile(
+    join(directory, "snapshot.json"),
+    `${JSON.stringify({ person: "someone", throughEventId: 1 })}\n`,
+    "utf8"
+  );
+  await writeFile(
+    join(directory, "corpus.jsonl"),
+    `${JSON.stringify(approvalCase("case-1", "INFRA-7", "artifact-1"))}\n`,
+    "utf8"
+  );
+  await writeFile(join(directory, "slices", "draw.json"), `${JSON.stringify(draw)}\n`, "utf8");
+  return directory;
+}
+
+/** One root of a draw's own list, as `draw.ts` writes one. */
+const ROOT_ISSUE = {
+  key: "INFRA-7",
+  parent: null,
+  labels: ["legion"],
+  status: "backlog",
+  primary_artifact_id: "artifact-1",
+};
+
+describe("the root case the run drives", () => {
+  test("is the corpus case, read under the key the draw writes its roots under", async () => {
+    const directory = await corpusWithDraw({ backlogLegionRoots: { issues: [ROOT_ISSUE] } });
+    const root = await rootCaseOf(directory);
+    expect(root.caseId).toBe("case-1");
+    expect(root.issueKey).toBe("INFRA-7");
+    expect(root.source).toContain(`the corpus at ${directory}`);
+    expect(root.source).toContain("case case-1 of issue INFRA-7");
+    expect(root.issue).toEqual({
+      parent: null,
+      labels: ["legion"],
+      status: "backlog",
+      primaryArtifactId: "artifact-1",
+    });
+  });
+
+  test("a draw that records no root's facts stops the run and names the key looked for", async () => {
+    const directory = await corpusWithDraw({ parkedLegionRoots: { issues: [ROOT_ISSUE] } });
+    await expect(rootCaseOf(directory)).rejects.toThrow(/`backlogLegionRoots`/);
+    await expect(rootCaseOf(directory)).rejects.toThrow(/records a root's facts/);
+  });
+
+  test("with no corpus the written fixture stands, and the record names it", async () => {
+    const root = await rootCaseOf(null);
+    expect(root.caseId).toBe("written-root-on-the-backlog");
+    expect(root.issueKey).toBeNull();
+    expect(root.source).toBe(
+      "the fixture written-root-on-the-backlog, written in refusals.ts, because no --corpus " +
+        "was named"
+    );
   });
 });

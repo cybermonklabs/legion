@@ -1,5 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type Analysis,
   type ArmCoverage,
@@ -8,6 +11,7 @@ import {
   chooseWinner,
   classTable,
   confidenceTableOf,
+  main,
   manifestHash,
   modeOf,
   readCase,
@@ -22,12 +26,15 @@ import type { Endpoint, JudgementRow } from "../run-round";
 import { MINIMUM_DECIDED, mcnemarExact } from "../stats";
 
 /**
- * The report over hand-written rows: nothing here reads a corpus directory, a round directory or
- * Dispatch, and nothing makes a call. What it holds the reading to is the rules the plan names -
- * the mode and its tie, the floor of three judgements that returned, the paired comparison with
- * the baseline, a threshold fitted on the fit slice and applied to the report slice, the winner
- * rule with its cost tie-break and its usefulness floor, the class table the corpus alone
- * answers, and the arm too short of judgements to carry a bound.
+ * The report over hand-written rows: nothing of it reads a corpus directory, a round directory
+ * or Dispatch, and nothing makes a call. What it holds the reading to is the rules the plan
+ * names - the mode and its tie, the floor of three judgements that returned, the paired
+ * comparison with the baseline, a threshold fitted on the fit slice and applied to the report
+ * slice, the winner rule with its cost tie-break and its usefulness floor, the class table the
+ * corpus alone answers, and the arm too short of judgements to carry a bound.
+ *
+ * The last block is the command rather than the reading, and writes a corpus into a scratch
+ * directory: a file it cannot read is a refusal that returns 2, never an error thrown past it.
  */
 
 /** The two labels every case of this file offers, which is what a verdict is one of. */
@@ -380,6 +387,15 @@ describe("the threshold, fitted on the fit slice and applied to the report slice
     expect(arm?.approval.paired.otherOnly).toBe(0);
   });
 
+  test("the adjusted bound is read wherever the bound is, on that same decided count", () => {
+    // The count a bound needs is the only thing either of them turns on: an arm whose bound is
+    // read always has one of those too, and an arm whose bound is not read has neither.
+    const at = arm?.approval.atThreshold;
+    expect(at?.decided).toBeGreaterThanOrEqual(MINIMUM_DECIDED);
+    expect(at?.bound).not.toBeNull();
+    expect(at?.adjustedBound).not.toBeNull();
+  });
+
   test("the question cases are reported apart and are empty here", () => {
     expect(arm?.question.cases).toBe(0);
     expect(arm?.question.agreement.bound).toBeNull();
@@ -425,6 +441,7 @@ describe("an arm missing more than 5 percent of its judgements", () => {
     expect(arm?.approval.atThreshold.bound).toBeNull();
     expect(arm?.approval.atThreshold.noBound).toContain("missing");
     expect(arm?.approval.anchor.bound).toBeNull();
+    expect(arm?.approval.atThreshold.adjustedBound).toBeNull();
     expect(arm?.approval.cutFree.agreement.bound).toBeNull();
   });
 });
@@ -860,5 +877,86 @@ describe("the arm the confidence table is read on", () => {
     ).join("\n");
     expect(named).toContain("The generative arm is bare-opus-5-5, of the bare recipe, named by");
     expect(named).toContain("The arm is bare-jev, the Jev arm of the bare recipe");
+  });
+});
+
+describe("an arm that decided nothing", () => {
+  const cases = [caseRow("a1"), caseRow("a2")];
+  const rows = [
+    ...fiveRows("silent-opus-5-5", "a1", 0, { faulted: 5 }),
+    ...fiveRows("silent-opus-5-5", "a2", 0, { faulted: 5 }),
+    ...fiveRows("steady-opus-5-5", "a1", 5),
+    ...fiveRows("steady-opus-5-5", "a2", 5),
+  ];
+
+  test("is no arm whose judgements are identical, since it judged none of them", () => {
+    const { arms } = readRound(rows, corpusOf(cases).byCaseId);
+    expect(arms.find((arm) => arm.name === "silent-opus-5-5")?.cases).toHaveLength(2);
+    expect(confidenceTableOf(arms, null, null, null).identicalArms).toEqual(["steady-opus-5-5"]);
+  });
+
+  test("is not named by the report among the arms whose confidence takes one value", () => {
+    const text = renderReport(analysisOf({ cases, rows })).join("\n");
+    const line = text
+      .split("\n")
+      .find((one) => one.includes("judgements are identical on every case they decided"));
+    expect(line).toContain("steady-opus-5-5");
+    expect(line).not.toContain("silent-opus-5-5");
+  });
+});
+
+/** The directories this file's last block made, each removed by its own exact path. */
+const made: string[] = [];
+
+afterEach(async () => {
+  for (const directory of made.splice(0)) await rm(directory, { recursive: true, force: true });
+});
+
+/** One scratch directory under the scratch volume, never under the workspace. */
+async function scratch(): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "analyze-"));
+  made.push(directory);
+  return directory;
+}
+
+/** What one run of the command printed on stderr, with the status it returned. */
+async function run(argv: readonly string[]): Promise<{ printed: string; exitCode: number }> {
+  const lines: string[] = [];
+  const error = spyOn(console, "error").mockImplementation((line?: unknown) => {
+    lines.push(String(line));
+  });
+  const log = spyOn(console, "log").mockImplementation(() => {});
+  let exitCode: number;
+  try {
+    exitCode = await main(argv);
+  } finally {
+    error.mockRestore();
+    log.mockRestore();
+  }
+  return { printed: lines.join("\n"), exitCode };
+}
+
+describe("the command over files it cannot read", () => {
+  test("a slices file that is not JSON is a refusal and not a thrown error", async () => {
+    const corpus = await scratch();
+    await mkdir(join(corpus, "slices"), { recursive: true });
+    await writeFile(
+      join(corpus, "snapshot.json"),
+      `${JSON.stringify({ person: "someone", throughEventId: 1 })}\n`,
+      "utf8"
+    );
+    await writeFile(join(corpus, "corpus.jsonl"), `${JSON.stringify(caseRow("case-1"))}\n`, "utf8");
+    await writeFile(join(corpus, "slices", "slices.json"), "{not json at all\n", "utf8");
+    const { printed, exitCode } = await run(["--corpus", corpus, "--round", await scratch()]);
+    expect(exitCode).toBe(2);
+    expect(printed).toContain("slices.json is not JSON");
+  });
+
+  test("--cases without the table it names the cases of is refused, as its sibling is", async () => {
+    const argv = ["--corpus", "/nowhere", "--round", "/nowhere", "--cases", "/nowhere/cases.txt"];
+    const { printed, exitCode } = await run(argv);
+    expect(exitCode).toBe(2);
+    expect(printed).toContain("--cases names the cases --confidence-table is read over");
+    expect(printed).toContain("that table was not asked for");
   });
 });

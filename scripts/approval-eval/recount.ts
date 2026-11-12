@@ -6,6 +6,7 @@ import {
   listOf,
   numberOf,
   optionsOf,
+  pool,
   readCorpus,
   recordOf,
   stringOf,
@@ -149,20 +150,6 @@ function readFlags(argv: readonly string[]): Flags {
   return { corpus };
 }
 
-/** Run `work` over `items`, at most `READ_CONCURRENCY` of them at once. */
-async function inParallel<T>(items: readonly T[], work: (item: T) => Promise<void>): Promise<void> {
-  let next = 0;
-  const worker = async (): Promise<void> => {
-    for (let index = next++; index < items.length; index = next++) {
-      const item = items[index];
-      if (item === undefined) return;
-      await work(item);
-    }
-  };
-  const workers = Math.min(READ_CONCURRENCY, items.length);
-  await Promise.all(Array.from({ length: workers }, worker));
-}
-
 function answersOf(value: unknown): AskAnswer[] {
   return listOf(value).map((entry) => {
     const answer = recordOf(entry);
@@ -196,7 +183,7 @@ async function readAsks(
 ): Promise<{ asks: Map<string, AskRead>; refused: Map<string, number> }> {
   const asks = new Map<string, AskRead>();
   const refused = new Map<string, number>();
-  await inParallel(askIds, async (askId) => {
+  await pool(askIds, READ_CONCURRENCY, async (askId) => {
     try {
       const body = await readJson<unknown>(`/api/v1/asks/${encodeURIComponent(askId)}`, config);
       asks.set(askId, askOf(askId, body));
@@ -239,7 +226,7 @@ async function readAnsweredEvents(
   const eventIds = new Map<string, number>();
   const refused = new Map<string, number>();
   let pages = 0;
-  await inParallel(owners, async (owner) => {
+  await pool(owners, READ_CONCURRENCY, async (owner) => {
     let after = 0;
     for (;;) {
       const path = `${ownerPath(owner)}?after=${after}&limit=${EVENT_PAGE_SIZE}`;

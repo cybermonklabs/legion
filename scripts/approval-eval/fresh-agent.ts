@@ -10,13 +10,14 @@ import {
   listOf,
   OutputPathError,
   outDirectory,
+  pool,
   readCorpus,
   recordOf,
   stringOf,
   UsageError,
   verdictOf,
 } from "./corpus-io";
-import { labelsOf } from "./models";
+import { labelsOf, scrubSecrets } from "./models";
 import { renderPrompt } from "./recipes";
 import { assertNoLeak, LeakError, renderCase } from "./render";
 import type { ReplayedDocument } from "./replay";
@@ -312,9 +313,13 @@ function rowKey(arm: ArmName, caseId: string): string {
   return `${arm}\u0000${caseId}`;
 }
 
-/** One detail on one line, bounded, as a row and a printed line carry it. */
+/**
+ * One detail on one line, scrubbed and bounded, as a row and a printed line carry it. The detail
+ * carries the child's own output, and the child is started with a model key in its environment,
+ * so it is scrubbed before it reaches a row on disk.
+ */
 function oneLine(detail: string): string {
-  const line = detail.replace(/\s+/g, " ").trim();
+  const line = scrubSecrets(detail).replace(/\s+/g, " ").trim();
   return line.length > DETAIL_CHARS ? `${line.slice(0, DETAIL_CHARS)}…` : line;
 }
 
@@ -552,25 +557,6 @@ async function heldAnswers(path: string): Promise<Map<string, AnswerRow>> {
     }
   }
   return held;
-}
-
-/** Runs `run` over `items`, `concurrency` of them at once. */
-async function pool<T>(
-  items: readonly T[],
-  concurrency: number,
-  run: (item: T) => Promise<void>
-): Promise<void> {
-  let next = 0;
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    for (;;) {
-      const at = next;
-      next += 1;
-      const item = items[at];
-      if (item === undefined) return;
-      await run(item);
-    }
-  });
-  await Promise.all(workers);
 }
 
 /** One arm's judgement of one case: one run of the agent, read as a verdict. */

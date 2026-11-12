@@ -9,6 +9,8 @@ import {
   newSeed,
   OutputPathError,
   outDirectory,
+  pool,
+  randomStream,
   readCorpus,
   recordOf,
   stringOf,
@@ -231,18 +233,6 @@ interface Group {
   /** How many cases of each kind the group holds, which is what a slice must have room for. */
   counts: Record<CaseKind, number>;
   cases: DrawCase[];
-}
-
-/** mulberry32: the seeded stream the shuffle draws from, so a seed reproduces a draw. */
-function randomStream(seed: number): () => number {
-  let state = Math.trunc(seed) >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let drawn = state;
-    drawn = Math.imul(drawn ^ (drawn >>> 15), 1 | drawn);
-    drawn = (drawn + Math.imul(drawn ^ (drawn >>> 7), 61 | drawn)) ^ drawn;
-    return ((drawn ^ (drawn >>> 14)) >>> 0) / 0x1_0000_0000;
-  };
 }
 
 /** `items` in a random order under `seed`, by a Fisher-Yates walk of that one stream. */
@@ -598,19 +588,14 @@ async function drawCasesOf(
 ): Promise<{ cases: DrawCase[]; unread: number }> {
   const cases = new Array<DrawCase>(rows.length);
   let unread = 0;
-  let next = 0;
-  const worker = async (): Promise<void> => {
-    for (let index = next++; index < rows.length; index = next++) {
-      const row = rows[index];
-      if (row === undefined) return;
-      const one = await drawCaseOf(row, issues, config, options);
-      cases[index] = one.drawCase;
-      unread += one.unread;
-    }
-  };
-  await Promise.all(
-    Array.from({ length: Math.min(RENDER_CONCURRENCY, Math.max(1, rows.length)) }, worker)
-  );
+  // Over the indices, so each case is written back where it was read from and the order of
+  // `cases` is the order of `rows`, whichever worker got there first.
+  await pool([...rows.keys()], RENDER_CONCURRENCY, async (index) => {
+    const row = rows[index] as CaseRow;
+    const one = await drawCaseOf(row, issues, config, options);
+    cases[index] = one.drawCase;
+    unread += one.unread;
+  });
   return { cases, unread };
 }
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CaseRow, CaseVerdict } from "../build-corpus";
@@ -9,6 +9,7 @@ import {
   type AnswerRow,
   type ArmName,
   answerOf,
+  answersPath,
   type FreshCase,
   type FreshDeps,
   pairedOf,
@@ -345,5 +346,47 @@ describe("the agent's own stream", () => {
 
   test("a stream the agent printed no answer into reads as no text", () => {
     expect(answerOf('{"type":"agent_start"}\n')).toEqual({ text: "", model: null });
+  });
+});
+
+describe("a fault detail written to disk", () => {
+  /** The variable the scrub reads a credential out of, which the agent's child carries too. */
+  const KEY_VARIABLE = "TYPESAFE_API_KEY";
+
+  test("carries no credential, since the detail is the child's own output", async () => {
+    const secret = "sk-stand-in-0123456789abcdef";
+    const held = process.env[KEY_VARIABLE];
+    process.env[KEY_VARIABLE] = secret;
+    try {
+      const out = await scratch();
+      const deps: FreshDeps = {
+        ask: () =>
+          Promise.resolve({
+            text: "",
+            model: "fake-opus",
+            latencyMs: 7,
+            failure: `the child exited 1: GET /v1/messages\nauthorization: Bearer ${secret}`,
+          }),
+        now: () => Date.parse("2026-11-12T09:00:00Z"),
+        log: () => {},
+      };
+      await runFresh(
+        {
+          neighbours: "with",
+          cases: [freshCase("case-0")],
+          out,
+          homes: { "with-skill": "/home-with", "no-skill": "/home-no" },
+          concurrency: 2,
+        },
+        deps
+      );
+      const written = await readFile(answersPath(out, "with"), "utf8");
+      expect(written).toContain("the child exited 1");
+      expect(written).toContain("<redacted>");
+      expect(written).not.toContain(secret);
+    } finally {
+      if (held === undefined) delete process.env[KEY_VARIABLE];
+      else process.env[KEY_VARIABLE] = held;
+    }
   });
 });

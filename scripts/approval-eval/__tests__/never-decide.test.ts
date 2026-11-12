@@ -274,6 +274,34 @@ describe("neverDecide", () => {
     expect(await readdir(directory)).toHaveLength(3);
   });
 
+  test("asks again when the issue's facts change, since the prompt carries them", async () => {
+    const directory = await scratch();
+    const asked = fake("credential\nThe change list asks for a deploy token to be minted.");
+    const input = { text: DOCUMENT, documentId: "artifact-1", documentVersion: 3 };
+    const options = { ask: asked.ask, definition: DEFINITION, cacheDirectory: directory };
+    // A child issue, so the root rule never holds it and every one of these is a real call.
+    const facts = (over: Partial<IssueFacts>): IssueFacts => ({
+      parent: "PROJ-1",
+      labels: ["infra"],
+      status: "doing",
+      primaryArtifactId: null,
+      ...over,
+    });
+    await neverDecide({ ...input, issue: facts({}) }, options);
+    await neverDecide({ ...input, issue: facts({ status: "review" }) }, options);
+    await neverDecide({ ...input, issue: facts({ parent: "PROJ-2" }) }, options);
+    await neverDecide({ ...input, issue: facts({ labels: ["infra", "legion"] }) }, options);
+    expect(asked.asks).toHaveLength(4);
+    expect(await readdir(directory)).toHaveLength(4);
+    // The same labels in another order are the same facts, so that one is read from the cache.
+    const again = await neverDecide(
+      { ...input, issue: facts({ labels: ["legion", "infra"] }) },
+      options
+    );
+    expect(again.source).toBe("cache");
+    expect(asked.asks).toHaveLength(4);
+  });
+
   test("names every kind it can hold, the waiting root among them", () => {
     expect([...NEVER_DECIDE_KINDS].sort()).toEqual([
       "changes-these-skills",

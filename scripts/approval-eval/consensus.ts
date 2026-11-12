@@ -8,7 +8,8 @@ import {
   OutputPathError,
   outDirectory,
   readCorpus,
-  recordOf,
+  rowOf,
+  table,
   UsageError,
 } from "./corpus-io";
 import type { SliceName } from "./draw";
@@ -427,20 +428,6 @@ export function consensusLines(
     .sort((one, two) => two.coverage - one.coverage || one.name.localeCompare(two.name));
 }
 
-/** One markdown table, its columns padded so the text reads as a table too. */
-function table(headers: readonly string[], rows: readonly (readonly string[])[]): string[] {
-  const widths = headers.map((header, at) =>
-    Math.max(header.length, ...rows.map((row) => (row[at] ?? "").length))
-  );
-  const line = (cells: readonly string[]): string =>
-    `| ${cells.map((cell, at) => cell.padEnd(widths[at] ?? 0)).join(" | ")} |`;
-  return [
-    line(headers),
-    `| ${widths.map((width) => "-".repeat(width)).join(" | ")} |`,
-    ...rows.map((row) => line(row)),
-  ];
-}
-
 /** The whole record, in the order it is printed and written. */
 export function renderConsensus(record: ConsensusRecord): string[] {
   return [
@@ -528,22 +515,6 @@ function readFlags(argv: readonly string[]): Flags {
   const round = values.round?.trim();
   if (!corpus || !round) throw new UsageError(USAGE);
   return { corpus, round, out: values.out?.trim() || null };
-}
-
-/** One line of `rows.jsonl` read back, or null where it is not a row the runner wrote. */
-function rowOf(line: string): JudgementRow | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    return null;
-  }
-  const record = recordOf(parsed);
-  if (record === null) return null;
-  if (typeof record.arm !== "string" || typeof record.caseId !== "string") return null;
-  if (typeof record.judgement !== "number" || !Array.isArray(record.verdict)) return null;
-  // The rest of the line is what the runner wrote, whose shape is `JudgementRow`.
-  return record as unknown as JudgementRow;
 }
 
 /** The rows of a round, read as far as they go. */

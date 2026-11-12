@@ -10,6 +10,8 @@ import {
   numberOf,
   OutputPathError,
   outDirectory,
+  pool,
+  randomStream,
   readCorpus,
   recordOf,
   stringOf,
@@ -36,7 +38,14 @@ import {
   type ModelAnswer,
   scrubSecrets,
 } from "./models";
-import { type Prompt, RECIPES, RecipeError, type RecipeName, renderPrompt } from "./recipes";
+import {
+  type Prompt,
+  RECIPES,
+  RecipeError,
+  type RecipeName,
+  readDistillation,
+  renderPrompt,
+} from "./recipes";
 import { assertNoLeak, issueTitleOf, LeakError, renderCase } from "./render";
 import { type ReplayedDocument, replayCase } from "./replay";
 import { type NearestAnswer, nearestCases, type RetrievalRoute } from "./retrieval";
@@ -362,18 +371,6 @@ export function seedOf(caseId: string, arm: string, judgement: number): number {
     .readUInt32BE(0);
 }
 
-/** mulberry32: the seeded stream an order is drawn from, as `draw.ts` draws its slices. */
-function randomStream(seed: number): () => number {
-  let state = Math.trunc(seed) >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let drawn = state;
-    drawn = Math.imul(drawn ^ (drawn >>> 15), 1 | drawn);
-    drawn = (drawn + Math.imul(drawn ^ (drawn >>> 7), 61 | drawn)) ^ drawn;
-    return ((drawn ^ (drawn >>> 14)) >>> 0) / 0x1_0000_0000;
-  };
-}
-
 /** `items` in the order `seed` decides, by a Fisher-Yates walk of that one stream. */
 export function inSeedOrder<T>(items: readonly T[], seed: number): T[] {
   const ordered = [...items];
@@ -418,6 +415,8 @@ export class RowStore {
   private readonly path: string;
   private readonly rows = new Map<string, JudgementRow>();
   private writing: Promise<void> = Promise.resolve();
+  /** Whether a rewrite is queued and has not started, so another would write the same bytes. */
+  private rewriteQueued = false;
 
   private constructor(path: string) {
     this.path = path;
@@ -464,11 +463,21 @@ export class RowStore {
     const key = rowKey(row.arm, row.caseId, row.judgement);
     const replaces = this.rows.has(key);
     this.rows.set(key, row);
-    this.writing = this.writing.then(async () => {
-      if (replaces) {
-        await this.rewrite();
-        return;
+    if (replaces) {
+      // A rewrite already queued and not yet started serializes the map as it stands when it
+      // runs, and this row is in that map already, so queuing a second one would write the very
+      // same bytes twice. The flag is cleared as the queued one starts, before it reads the map.
+      if (!this.rewriteQueued) {
+        this.rewriteQueued = true;
+        this.writing = this.writing.then(async () => {
+          this.rewriteQueued = false;
+          await this.rewrite();
+        });
       }
+      await this.writing;
+      return;
+    }
+    this.writing = this.writing.then(async () => {
       await appendFile(this.path, `${JSON.stringify(row)}\n`, "utf8");
     });
     await this.writing;
@@ -726,27 +735,6 @@ class Faults {
   }
 }
 
-/** Runs `run` over `items`, `concurrency` of them at once, stopping when `stop` says to. */
-async function pool<T>(
-  items: readonly T[],
-  concurrency: number,
-  run: (item: T) => Promise<void>,
-  stop?: () => boolean
-): Promise<void> {
-  let next = 0;
-  const workers = Array.from({ length: Math.max(1, Math.min(concurrency, items.length)) }, () =>
-    (async () => {
-      while (next < items.length) {
-        if (stop?.() === true) return;
-        const at = next;
-        next = at + 1;
-        await run(items[at] as T);
-      }
-    })()
-  );
-  await Promise.all(workers);
-}
-
 /** A line every `PROGRESS_MS`, and the call that stops it. */
 function everyProgress(deps: RoundDeps, line: () => string): () => void {
   const timer = setInterval(() => {
@@ -836,9 +824,18 @@ async function probeEndpoints(
   // Among the cases whose evidence this run holds, not among every case of the plan: a resume
   // builds evidence only for the cases it still has work for, so the plan's own largest case is
   // usually not one of them, and looking the probe up there refuses a resume that has work to do.
-  const largest = [...plan.cases]
-    .filter((scored) => evidence.has(scored.row.caseId))
-    .sort((one, other) => sizeOf(other, evidence) - sizeOf(one, evidence))[0];
+  // Each case's size is read once and the first of any tie is kept, which is what the sort this
+  // replaced did: it compared every pair and so sized each case many times over.
+  let largest: ScoredCase | undefined;
+  let largestBytes = -1;
+  for (const scored of plan.cases) {
+    if (!evidence.has(scored.row.caseId)) continue;
+    const bytes = sizeOf(scored, evidence);
+    if (bytes > largestBytes) {
+      largestBytes = bytes;
+      largest = scored;
+    }
+  }
   const held = largest === undefined ? undefined : evidence.get(largest.row.caseId);
   if (largest === undefined || held === undefined) {
     throw new ProbeError("no case of the scored set had its evidence built, so none can be probed");
@@ -1405,9 +1402,10 @@ async function round(flags: Flags): Promise<number> {
   }
   if (flags.distillation !== undefined) {
     // Read now rather than at the first judgement: a path that has moved is worth a refusal
-    // before hours of evidence are built over it.
+    // before hours of evidence are built over it. The text read here is the text the prompts
+    // use, so the check costs nothing and the file cannot move between it and the first use.
     try {
-      await readFile(flags.distillation, "utf8");
+      await readDistillation(flags.distillation);
     } catch {
       throw new UsageError(`--distillation ${flags.distillation} could not be read`);
     }

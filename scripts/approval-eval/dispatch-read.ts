@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
+import { pool } from "./corpus-io";
 
 /**
  * The read-only Dispatch client the approval-eval scripts share.
@@ -167,16 +168,10 @@ export async function readMany<T>(
   if (paths.length === 0) return [];
   const config = await dispatchConfig();
   const answers = new Array<T>(paths.length);
-  const bound = Math.min(Math.max(1, Math.trunc(concurrency)), paths.length);
-  let next = 0;
-  const worker = async (): Promise<void> => {
-    for (let index = next++; index < paths.length; index = next++) {
-      const path = paths[index];
-      if (path === undefined) return;
-      answers[index] = await readJson<T>(path, config);
-    }
-  };
-  await Promise.all(Array.from({ length: bound }, worker));
+  // Over the indices, so each answer is written back where its own path was read from.
+  await pool([...paths.keys()], Math.max(1, Math.trunc(concurrency)), async (index) => {
+    answers[index] = await readJson<T>(paths[index] as string, config);
+  });
   return answers;
 }
 

@@ -223,8 +223,15 @@ function userOf(input: NeverDecideInput): string {
   return [...head, "The document, whole:", "", input.text].join("\n");
 }
 
-/** The key one answer is kept under, which a change of one byte of the prose changes. */
+/**
+ * The key one answer is kept under, which a change of one byte of the prose changes. The issue's
+ * facts are in the key because `factsOf` puts them in the prompt: two askings of one document
+ * under different facts are different questions and must not collide. Adding them invalidates
+ * every entry written before, by construction, which is correct and cheap: the entries that
+ * matter are asked again once.
+ */
 function cacheKey(definition: string, model: string, input: NeverDecideInput): string {
+  const issue = input.issue;
   const parts = [
     definition,
     model,
@@ -232,6 +239,9 @@ function cacheKey(definition: string, model: string, input: NeverDecideInput): s
     input.documentVersion === null || input.documentVersion === undefined
       ? ""
       : String(input.documentVersion),
+    issue?.parent ?? "",
+    issue?.status ?? "",
+    [...(issue?.labels ?? [])].sort().join("\u001f"),
     input.text,
   ];
   return createHash("sha256").update(parts.join("\u0000"), "utf8").digest("hex");
@@ -362,7 +372,8 @@ export async function neverDecide(
   const definition = options.definition ?? (await neverDecideDefinition());
   const model = options.model ?? DEFAULT_NEVER_DECIDE_MODEL;
   const directory = options.cacheDirectory ?? null;
-  const key = cacheKey(definition, model, input);
+  // The key is a hash over the whole document, so it is worth nothing where nothing is kept.
+  const key = directory === null ? "" : cacheKey(definition, model, input);
   if (directory !== null) {
     const kept = await readCache(directory, key);
     if (kept !== null) {

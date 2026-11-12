@@ -1,10 +1,15 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { CaseRow } from "../build-corpus";
-import { evidenceFor } from "../split";
+import { evidenceFor, main } from "../split";
 
 /**
- * The dating rule over a hand-written corpus, which is the whole of this test: nothing here
- * reads a corpus from disk and nothing here reads Dispatch.
+ * The dating rule over a hand-written corpus, and the command over a corpus written into a
+ * scratch directory: nothing here reads the real corpus and nothing here reads Dispatch. What
+ * the command's own test holds is the negative control itself - `--no-dating-rule` has to move
+ * a number of the readout, since a flag that reaches only a printed line controls nothing.
  */
 
 const CUT = "2026-11-05T00:00:00Z";
@@ -103,5 +108,106 @@ describe("evidenceFor", () => {
 
   test("refuses a cut that is no time", () => {
     expect(() => evidenceFor(corpus, judged, { cut: "whenever" })).toThrow(/ISO 8601/);
+  });
+});
+
+/** The directories this file made, each removed by its own exact path. */
+const made: string[] = [];
+
+afterEach(async () => {
+  for (const directory of made.splice(0)) await rm(directory, { recursive: true, force: true });
+});
+
+/** One scratch directory under the scratch volume, never under the workspace. */
+async function scratch(): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "split-"));
+  made.push(directory);
+  return directory;
+}
+
+/** The five cases of this file, written where `--corpus` reads a corpus back from. */
+async function corpusOnDisk(): Promise<string> {
+  const directory = await scratch();
+  await writeFile(
+    join(directory, "snapshot.json"),
+    `${JSON.stringify({ person: "someone", throughEventId: 1 })}\n`,
+    "utf8"
+  );
+  await writeFile(
+    join(directory, "corpus.jsonl"),
+    `${corpus.map((row) => JSON.stringify(row)).join("\n")}\n`,
+    "utf8"
+  );
+  return directory;
+}
+
+/** What one run of the command printed, with the status it returned. */
+async function run(argv: readonly string[]): Promise<{ printed: string; exitCode: number }> {
+  const lines: string[] = [];
+  const log = spyOn(console, "log").mockImplementation((line?: unknown) => {
+    lines.push(String(line));
+  });
+  let exitCode: number;
+  try {
+    exitCode = await main(argv);
+  } finally {
+    log.mockRestore();
+  }
+  return { printed: lines.join("\n"), exitCode };
+}
+
+/** The count one line of the readout carries, which is what the two runs are compared on. */
+function allowed(printed: string, label: string): number {
+  const read = new RegExp(`${label}\\s+(\\d+)`).exec(printed);
+  if (read === null) throw new Error(`the readout carries no ${label} line:\n${printed}`);
+  return Number(read[1]);
+}
+
+describe("the command's own negative control", () => {
+  test("--no-dating-rule moves the evidence count, and not only a printed line", async () => {
+    const directory = await corpusOnDisk();
+    const argv = [
+      "--corpus",
+      directory,
+      "--cut",
+      CUT,
+      "--out",
+      await scratch(),
+      "--case",
+      "judged",
+    ];
+    const ruled = await run(argv);
+    const control = await run([...argv, "--no-dating-rule"]);
+    expect(ruled.exitCode).toBe(0);
+    expect(control.exitCode).toBe(0);
+    // One case is answered earlier than the judged one; two more are on the training side but
+    // answered at that same moment or later, which only the control lets through.
+    expect(allowed(ruled.printed, "this run allows")).toBe(1);
+    expect(allowed(control.printed, "this run allows")).toBe(3);
+    expect(ruled.printed).toContain("this run allows          1 (the dating rule)");
+    expect(control.printed).toContain("this run allows          3 (no dating rule)");
+  });
+
+  test("both runs read the same case and state the same two sides of the comparison", async () => {
+    const directory = await corpusOnDisk();
+    const argv = [
+      "--corpus",
+      directory,
+      "--cut",
+      CUT,
+      "--out",
+      await scratch(),
+      "--case",
+      "judged",
+    ];
+    const ruled = await run(argv);
+    const control = await run([...argv, "--no-dating-rule"]);
+    for (const printed of [ruled.printed, control.printed]) {
+      expect(printed).toContain("evidence for      judged");
+      expect(allowed(printed, "the dating rule allows")).toBe(1);
+      expect(allowed(printed, "the control allows")).toBe(3);
+    }
+    expect(ruled.printed).toContain("rule in force     the dating rule");
+    expect(control.printed).toContain("rule in force     no dating rule");
   });
 });

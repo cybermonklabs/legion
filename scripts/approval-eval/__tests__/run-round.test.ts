@@ -17,6 +17,7 @@ import {
   type RoundDeps,
   type RoundPlan,
   type RoundSummary,
+  RowStore,
   runRound,
   type ScoredCase,
   seedOf,
@@ -442,5 +443,70 @@ describe("the round refuses a case whose rendering keeps the answer", () => {
       runRound(planOf(out, { arms: [ARMS_UNDER_TEST[0] as Arm], cases: cases(1) }), leaking)
     ).rejects.toThrow(/case-0/);
     expect(deps.asks).toHaveLength(0);
+  });
+});
+
+describe("the rows file", () => {
+  /** One row of a judgement, with only the fields the store keys and reads named. */
+  function judgementRow(caseId: string, judgement: number, fault: string | null): JudgementRow {
+    return {
+      arm: "bare-opus",
+      recipe: "bare",
+      model: "a-model",
+      endpoint: "claude",
+      caseId,
+      slice: "report",
+      kind: "approval",
+      judgement,
+      seed: 1,
+      verdict: fault === null ? ["Approve"] : [],
+      probabilities: null,
+      confidence: null,
+      inputTokens: 1,
+      outputTokens: 1,
+      latencyMs: 1,
+      attempts: 1,
+      stateCut: false,
+      retrievalRoute: null,
+      examples: 0,
+      excluded: null,
+      promptBytes: 1,
+      fault: fault as JudgementRow["fault"],
+      faultDetail: fault === null ? null : "the endpoint closed the connection",
+      at: "2026-11-12T00:00:00Z",
+    };
+  }
+
+  test("holds one row per key, however many rewrites are queued at one moment", async () => {
+    const path = join(await scratch(), "rows.jsonl");
+    const store = await RowStore.open(path);
+    for (let judgement = 0; judgement < 3; judgement += 1) {
+      await store.put(judgementRow("case-0", judgement, "transport"));
+    }
+    // Three replacements asked for together: the rewrite queued for the first serializes the
+    // map the other two are already in, and a second rewrite would write the same bytes again.
+    await Promise.all([
+      store.put(judgementRow("case-0", 0, null)),
+      store.put(judgementRow("case-0", 1, null)),
+      store.put(judgementRow("case-0", 2, null)),
+    ]);
+    const written = (await readFile(path, "utf8")).trim().split("\n");
+    expect(written).toHaveLength(3);
+    const rows = written.map((line) => JSON.parse(line) as JudgementRow);
+    expect(rows.map((row) => row.judgement)).toEqual([0, 1, 2]);
+    expect(rows.every((row) => row.fault === null)).toBe(true);
+    const again = await RowStore.open(path);
+    expect(again.all()).toHaveLength(3);
+  });
+
+  test("a replacement arriving on its own rewrites the file at once", async () => {
+    const path = join(await scratch(), "rows.jsonl");
+    const store = await RowStore.open(path);
+    await store.put(judgementRow("case-0", 0, "transport"));
+    await store.put(judgementRow("case-0", 0, null));
+    const written = (await readFile(path, "utf8")).trim().split("\n");
+    expect(written).toHaveLength(1);
+    expect((JSON.parse(written[0] as string) as JudgementRow).fault).toBeNull();
+    expect(store.answered("bare-opus\u0000case-0\u00000")).toBe(true);
   });
 });

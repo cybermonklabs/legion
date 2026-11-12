@@ -223,8 +223,14 @@ async function split(flags: Flags): Promise<number> {
   console.log(`written           ${join(directory, "before.json")}`);
   console.log(`                  ${join(directory, "after.json")}`);
   const shown = caseToShow(corpus, sides, flags);
-  const options: EvidenceOptions = { cut: flags.cut };
-  const byRule = evidenceFor(corpus.rows, shown, options);
+  const options: EvidenceOptions = { cut: flags.cut, datingRule: flags.datingRule };
+  // Three readings of the one case: the two sides of the comparison, and the set this run's own
+  // flags ask for. The third is read through the options `--no-dating-rule` is written into, so
+  // its count moves when the flag does and the two runs differ in a number of the readout and
+  // not only in the line that names the rule. A flag that reached no number is a control that
+  // proves nothing.
+  const inForce = evidenceFor(corpus.rows, shown, options);
+  const byRule = evidenceFor(corpus.rows, shown, { ...options, datingRule: true });
   const byControl = evidenceFor(corpus.rows, shown, { ...options, datingRule: false });
   const ruled = new Set(byRule.map((row) => row.caseId));
   const letThrough = byControl.filter((row) => !ruled.has(row.caseId));
@@ -234,6 +240,10 @@ async function split(flags: Flags): Promise<number> {
   console.log(`  side of the cut ${timeOf(shown) < cut ? "training" : "judged"}`);
   console.log(`  the dating rule allows   ${byRule.length}`);
   console.log(`  the control allows       ${byControl.length}`);
+  console.log(
+    `  this run allows          ${inForce.length} ` +
+      `(${flags.datingRule ? "the dating rule" : "no dating rule"})`
+  );
   console.log(`  the control lets through ${letThrough.length} the rule does not:`);
   for (const row of letThrough.slice(0, LET_THROUGH_SHOWN)) {
     console.log(`    ${row.caseId}  answered ${row.answeredAt}`);
@@ -244,7 +254,8 @@ async function split(flags: Flags): Promise<number> {
   return 0;
 }
 
-async function main(argv: readonly string[]): Promise<number> {
+/** The command: the flags, the split, and the exit status it takes. */
+export async function main(argv: readonly string[]): Promise<number> {
   let flags: Flags;
   try {
     flags = readFlags(argv);
