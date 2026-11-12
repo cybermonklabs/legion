@@ -36,6 +36,7 @@ export function TableHeaderCell<TData>({
   setDragColumn,
   setOpenFilter,
   setOrder,
+  unloaded,
 }: {
   /** A phone, where the title's header stacks its controls. */
   compact: boolean;
@@ -48,6 +49,8 @@ export function TableHeaderCell<TData>({
   setDragColumn: (id: string | undefined) => void;
   setOpenFilter: (id: string | undefined) => void;
   setOrder: (next: string[]) => void;
+  /** This column's filter values whose rows are not loaded yet. */
+  unloaded: readonly string[];
 }): ReactNode {
   const column = header.column;
   const pinned = column.getIsPinned() === "left";
@@ -105,6 +108,7 @@ export function TableHeaderCell<TData>({
             counts={counts}
             onOpenChange={(open) => setOpenFilter(open ? column.id : undefined)}
             open={openFilter === column.id}
+            unloaded={unloaded}
           />
         ) : null}
       </span>

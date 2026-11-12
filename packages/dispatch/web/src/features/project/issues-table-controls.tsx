@@ -48,11 +48,15 @@ export function ColumnFilter<TData>({
   counts,
   open,
   onOpenChange,
+  unloaded,
 }: {
   column: Column<TData, unknown>;
   counts: ReadonlyMap<string, number>;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** The values whose rows are not loaded yet: each says `load` rather than count them as
+   *  none, as Status does for Done before the closed issues are read. */
+  unloaded: readonly string[];
 }): ReactNode {
   const meta = column.columnDef.meta;
   const name = String(column.columnDef.header);
@@ -90,10 +94,6 @@ export function ColumnFilter<TData>({
         : order.indexOf(a) - order.indexOf(b)
   );
   const show = meta?.show ?? ((value: string) => value);
-  // The one option whose detail is not a count: Done is offered before the closed issues it
-  // would count have been read, and says so rather than claiming zero.
-  const unloadedDone = (value: string) =>
-    column.id === "status" && value === "done" && meta?.doneLoaded === false;
   return (
     <MultiSelect
       emptyMessage="No matching value."
@@ -101,9 +101,10 @@ export function ColumnFilter<TData>({
       onChange={(next) => column.setFilterValue(next.length === 0 ? undefined : next)}
       onOpenChange={onOpenChange}
       open={open}
-      optionDetail={(value) => (unloadedDone(value) ? "load" : String(counts.get(value) ?? 0))}
+      // An option whose rows are not read yet says so rather than claim a count of zero.
+      optionDetail={(value) => (unloaded.includes(value) ? "load" : String(counts.get(value) ?? 0))}
       optionDetailLabel={(value) =>
-        unloadedDone(value)
+        unloaded.includes(value)
           ? "not loaded"
           : `${counts.get(value) ?? 0} ${(counts.get(value) ?? 0) === 1 ? "issue" : "issues"}`
       }
@@ -385,11 +386,9 @@ export function IssueTableToolbar({
 
 export function IssueTablePager<TData>({
   table,
-  items,
   pagerRef,
 }: {
   table: Table<TData>;
-  items: readonly TData[];
   pagerRef: RefObject<HTMLDivElement | null>;
 }): ReactNode {
   const { pageIndex, pageSize } = table.getState().pagination;
@@ -397,6 +396,7 @@ export function IssueTablePager<TData>({
   const rowsOnPages = table.getPrePaginationRowModel().rows.length;
   const leafCount = table.getFilteredRowModel().rows.length;
   const groupCount = table.getGroupedRowModel().rows.length;
+  const total = table.options.data.length;
   return (
     <div
       ref={pagerRef}
@@ -404,7 +404,7 @@ export function IssueTablePager<TData>({
       className={`flex shrink-0 flex-wrap items-center gap-3 text-sm ${textSecondaryOnCanvas}`}
     >
       <span>
-        {leafCount} of {items.length} {items.length === 1 ? "issue" : "issues"}
+        {leafCount} of {total} {total === 1 ? "issue" : "issues"}
         {grouping.length > 0 ? ` in ${groupCount} ${groupCount === 1 ? "group" : "groups"}` : ""}
       </span>
       <span className="ml-auto">

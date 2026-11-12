@@ -10,15 +10,39 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  COLUMN_MIN,
-  COLUMN_SIZES,
-  COMPACT_COLUMN_MIN,
-  PHONE_PINNED_SHARE,
-  PINNED,
-  PINNED_SHARE,
-} from "./issues-table-model";
-import { type LayoutColumns, readLayout, writeLayout } from "./issues-table-storage";
+import { readLayout, type StoredColumns, writeLayout } from "./issues-table-storage";
+
+/** The columns a table pins at its left edge while it scrolls sideways, and how they fit the
+ *  box it is drawn in. */
+export interface LayoutPins {
+  /** In a box 640 px wide or wider: these columns, left to right, within `share` of the box.
+   *  Where they would cover more, `flexible` narrows first, down to its minimum, and then the
+   *  rightmost unpin one at a time. Their visibility is not the reader's, so none is stored. */
+  readonly wide: { readonly columns: readonly string[]; readonly share: number };
+  /** In a narrower box, a phone's: these columns, left to right, within `share` of it. Each
+   *  column of `widths` is drawn at that width whatever the reader dragged, and `flexible` takes
+   *  what the others leave, between `flexibleMin` and its own width. */
+  readonly phone: {
+    readonly columns: readonly string[];
+    readonly share: number;
+    readonly widths: Readonly<Record<string, number>>;
+    readonly flexibleMin: number;
+  };
+  /** The pinned column that gives up width so the others fit. */
+  readonly flexible: string;
+}
+
+/** Every rule a table's layout follows, from its caller: `useTableLayout` reads no other.
+ *  Held in a module constant, since the stored layout is read again whenever it changes. */
+export interface LayoutColumns extends StoredColumns {
+  /** Each column's width before the reader drags it. A column it does not name is drawn at its
+   *  definition's `size`, and counts as no width where the pins are fitted. */
+  readonly sizes?: Readonly<Partial<Record<string, number>>>;
+  /** The narrowest each column is drawn at, whatever width the reader stored or dragged. */
+  readonly minimums?: Readonly<Partial<Record<string, number>>>;
+  /** The columns pinned at the left. A table without it pins nothing. */
+  readonly pins?: LayoutPins;
+}
 
 /** A table's layout as `useTableLayout` keeps it: the reader's widths, order and visibility,
  *  what the box measures, and the refs and setters the table and its box are wired with. */
@@ -44,8 +68,8 @@ export interface TableLayoutModel {
 /**
  * How wide the table's columns are, in what order, which are shown, and how big a box it gets
  * in the window. The widths, order and visibility are the reader's, saved under `layoutKey` for
- * the `columns` the table has; the box and the pinned columns follow the window, so a phone keeps
- * the key and the title readable.
+ * the `columns` the table has; the box and the pinned columns follow the window, by the rules
+ * `columns` gives.
  *
  * Measuring reads layout, so it happens only when something that changes the answer happens: a
  * `ResizeObserver` over the box and over everything drawn above it — which covers the rows the
@@ -80,35 +104,43 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
   }, [layoutKey, sizing, order, visibility]);
 
   const responsive = useMemo(() => {
-    // Each column at the reader's width, else the issue registry's for a column it names, never
-    // below that registry's minimum; any other column keeps the width its definition gives it.
-    const widths = Object.fromEntries(
-      columns.ids.flatMap((id): [string, number][] => {
-        const width = sizing[id] ?? COLUMN_SIZES[id];
-        return width === undefined ? [] : [[id, Math.max(COLUMN_MIN[id] ?? 0, width)]];
+    const { ids, minimums = {}, pins, sizes = {} } = columns;
+    // Each column at the reader's width, else its starting width, never below its minimum; a
+    // column with neither keeps the width its definition gives it.
+    const widths: ColumnSizingState = Object.fromEntries(
+      ids.flatMap((id): [string, number][] => {
+        const width = sizing[id] ?? sizes[id];
+        return width === undefined ? [] : [[id, Math.max(minimums[id] ?? 0, width)]];
       })
     );
-    // On a phone the key and title are the row, so they take most of the box, leaving an edge of
-    // the next column to show the table scrolls sideways; wider boxes keep room for the rest.
-    const budget = boxWidth * (boxWidth < 640 ? PHONE_PINNED_SHARE : PINNED_SHARE);
+    if (pins === undefined) return { sizing: widths, pinned: [] };
+    const { flexible, phone, wide } = pins;
+    const covered = (pinned: readonly string[]) =>
+      pinned.reduce((sum, id) => sum + (widths[id] ?? 0), 0);
+    const flexibleWidth = widths[flexible];
     if (boxWidth < 640) {
-      widths.key = COMPACT_COLUMN_MIN.key ?? widths.key ?? 88;
-      widths.title = Math.max(
-        COMPACT_COLUMN_MIN.title ?? 120,
-        Math.min(widths.title ?? 380, budget - (widths.select ?? 44) - (widths.key ?? 88))
-      );
-      return { sizing: widths, pinned: ["select", "key", "title"] };
+      Object.assign(widths, phone.widths);
+      if (flexibleWidth !== undefined)
+        widths[flexible] = Math.max(
+          phone.flexibleMin,
+          Math.min(
+            flexibleWidth,
+            boxWidth * phone.share - covered(phone.columns.filter((id) => id !== flexible))
+          )
+        );
+      return { sizing: widths, pinned: [...phone.columns] };
     }
-    const pinned = [...PINNED];
-    const width = () => pinned.reduce((sum, id) => sum + (widths[id] ?? 0), 0);
-    widths.title = Math.max(
-      COLUMN_MIN.title ?? 116,
-      (widths.title ?? 380) - Math.max(0, width() - budget)
-    );
+    const budget = boxWidth * wide.share;
+    const pinned = [...wide.columns];
+    if (flexibleWidth !== undefined)
+      widths[flexible] = Math.max(
+        minimums[flexible] ?? 0,
+        flexibleWidth - Math.max(0, covered(pinned) - budget)
+      );
     // At readable minimums, unpin from the right rather than cover the viewport.
-    while (pinned.length > 1 && width() > budget) pinned.pop();
+    while (pinned.length > 1 && covered(pinned) > budget) pinned.pop();
     return { sizing: widths, pinned };
-  }, [boxWidth, columns.ids, sizing]);
+  }, [boxWidth, columns, sizing]);
 
   const measure = useCallback(() => {
     const box = scrollRef.current;

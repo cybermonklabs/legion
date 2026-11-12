@@ -1,5 +1,4 @@
 import type { ColumnOrderState, ColumnSizingState, VisibilityState } from "@tanstack/react-table";
-import { COLUMN_SIZES, PINNED } from "./issues-table-model";
 
 /**
  * The one owner of what the table keeps in the browser for a project: the layout the reader
@@ -41,21 +40,17 @@ export interface TableAction {
  *  discarded in Pending changes. */
 export const ACTION_LIFETIME_MS = 24 * 60 * 60 * 1000;
 
-/** The columns a table keeps a layout for. */
-export interface LayoutColumns {
-  /** Every column the table has: a stored width, place or visibility of any other is dropped.
-   *  Read once per key, so it is a list that does not change, such as a module constant. */
+/** What a table's stored layout is read for: the columns it has, the ones it opens hidden, and
+ *  the ones it keeps pinned in a wide box, whose visibility is not the reader's. */
+export interface StoredColumns {
+  /** Every column the table has: a stored width, place or visibility of any other is dropped. */
   readonly ids: readonly string[];
   /** The columns the table opens with hidden, until the reader shows them. */
   readonly hiddenByDefault?: Readonly<VisibilityState>;
+  /** The columns the table keeps pinned in a wide box: a pinned column is not the reader's to
+   *  hide, so its stored visibility is dropped. */
+  readonly pins?: { readonly wide: { readonly columns: readonly string[] } };
 }
-
-/** The issue table's columns, with Updated hidden until a reader shows it: the layout every
- *  saved `dispatch.project-table.<project>` record was written for. */
-export const ISSUE_TABLE_COLUMNS: LayoutColumns = {
-  ids: Object.keys(COLUMN_SIZES),
-  hiddenByDefault: { updated: false },
-};
 
 function readStore(project: string): Record<string, unknown> {
   try {
@@ -78,39 +73,43 @@ function writeStore(project: string, fields: Record<string, unknown>): void {
   }
 }
 
-export function readLayout(project: string, { ids, hiddenByDefault }: LayoutColumns): TableLayout {
+export function readLayout(
+  project: string,
+  { hiddenByDefault, ids, pins }: StoredColumns
+): TableLayout {
   const saved = readStore(project);
   const asRecord = (value: unknown): Record<string, unknown> =>
     value !== null && typeof value === "object" && !Array.isArray(value)
       ? (value as Record<string, unknown>)
       : {};
-  const sizing = Object.fromEntries(
-    Object.entries(asRecord(saved.sizing)).filter(
-      ([id, size]) =>
-        ids.includes(id) &&
-        typeof size === "number" &&
-        Number.isFinite(size) &&
-        size >= 36 &&
-        size <= 2000
+  const sizing: ColumnSizingState = Object.fromEntries(
+    Object.entries(asRecord(saved.sizing)).flatMap(([id, size]): [string, number][] =>
+      ids.includes(id) &&
+      typeof size === "number" &&
+      Number.isFinite(size) &&
+      size >= 36 &&
+      size <= 2000
+        ? [[id, size]]
+        : []
     )
   );
   const order = Array.isArray(saved.order)
     ? [
-        ...new Set<string>(
-          saved.order.filter((id: unknown) => typeof id === "string" && ids.includes(id))
+        ...new Set(
+          saved.order.filter(
+            (id: unknown): id is string => typeof id === "string" && ids.includes(id)
+          )
         ),
       ]
     : [];
-  const visibility = Object.fromEntries(
-    Object.entries(asRecord(saved.visibility)).filter(
-      ([id, visible]) => ids.includes(id) && !PINNED.includes(id) && typeof visible === "boolean"
+  const visibility: VisibilityState = Object.fromEntries(
+    Object.entries(asRecord(saved.visibility)).flatMap(([id, visible]): [string, boolean][] =>
+      ids.includes(id) && !pins?.wide.columns.includes(id) && typeof visible === "boolean"
+        ? [[id, visible]]
+        : []
     )
   );
-  return {
-    sizing: sizing as ColumnSizingState,
-    order,
-    visibility: { ...hiddenByDefault, ...visibility } as VisibilityState,
-  };
+  return { sizing, order, visibility: { ...hiddenByDefault, ...visibility } };
 }
 
 export function writeLayout(project: string, { sizing, order, visibility }: TableLayout): void {

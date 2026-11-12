@@ -13,6 +13,8 @@ import { useKeymapScope } from "../shell/keymap";
 import { SendStoppedError } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
+import { ISSUE_TABLE_COLUMNS } from "./issues-table-model";
+import { readLayout } from "./issues-table-storage";
 
 function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
@@ -503,6 +505,19 @@ test("loading closed issues retains the open rows and controls, including after 
   await screen.findByRole("alert");
   expect(screen.getByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
   expect(screen.getByRole("button", { name: "Retry loading closed issues" })).toBeDefined();
+});
+
+// The rows' cells are drawn by the column definitions, and a new definition is a new component
+// to React: whether the closed issues are loaded is the table's, not a column's, so their arrival
+// keeps every cell already drawn, and with it whatever a reader left focused there.
+test("the closed issues arriving keeps the cells already drawn", async () => {
+  const user = userEvent.setup();
+  table([issue("CORE-1"), issue("CORE-2", { status: "done" })]);
+  const select = await screen.findByRole("checkbox", { name: "Select CORE-1" });
+  await user.click(screen.getByRole("button", { name: /^Filter Status/ }));
+  await user.click(screen.getByRole("option", { name: /^Done/ }));
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  expect(screen.getByRole("checkbox", { name: "Select CORE-1" })).toBe(select);
 });
 
 test("an epic's Start all includes queued siblings hidden by a priority filter", async () => {
@@ -1271,6 +1286,108 @@ test("the List stores a reader's first layout with Updated hidden", async () => 
   expect(localStorage.getItem("dispatch.project-table.CORE")).toBe(
     '{"sizing":{},"order":[],"visibility":{"updated":false}}'
   );
+});
+
+// What `in` read on main as a column: a name every object inherits. No app path writes one, so
+// only a corrupt record holds it, and it is dropped like any other name the table has no column for.
+test("a stored width under an inherited name such as toString is dropped", () => {
+  localStorage.setItem("dispatch.project-table.CORE", '{"sizing":{"toString":200,"title":360}}');
+  expect(readLayout("CORE", ISSUE_TABLE_COLUMNS).sizing).toEqual({ title: 360 });
+});
+
+/** Each header cell of the List, left to right, as `<its column's words> <width> <the offset a
+ *  pinned cell is held at, or ->`, drawn with the scroll box `width` pixels wide. */
+async function headerLayout(width: number): Promise<string[]> {
+  const rect = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return new DOMRect(0, 0, this.dataset.testid === "issues-table-scroll" ? width : 100, 40);
+  });
+  restores.push(() => rect.mockRestore());
+  table([issue("CORE-1")]);
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  const head = screen.getByRole("table", { name: "Project issues table" }).querySelector("thead");
+  return [...(head?.querySelectorAll("th") ?? [])].map((cell) =>
+    [
+      (cell.textContent ?? "").replace(/[▲▼]|Filter$/g, "") || "-",
+      cell.style.width,
+      cell.style.left || "-",
+    ].join(" ")
+  );
+}
+
+/** The columns after the pinned ones, at the registry's widths, then the Start next column. */
+const UNPINNED_REST = [
+  "Status 132px -",
+  "Epic 220px -",
+  "Assignee 180px -",
+  "Created by 200px -",
+  "Labels 200px -",
+  "Claimed by 220px -",
+  "Open asks 148px -",
+  "Created 148px -",
+  "- 104px -",
+];
+
+// The List's widths and pins at a desktop box, a box too narrow for every pin, and a phone: the
+// registry's starting widths and minimums, Select, Priority, Key and Title pinned within 60% of a
+// wide box with Title narrowing first and the rightmost unpinning, and Select, Key and Title
+// within 85% of a phone's, Key at its phone width and Title taking what is left.
+test("the List draws its columns at the registry's widths and pins at 1400 px", async () => {
+  expect(await headerLayout(1400)).toEqual([
+    "- 44px 0px",
+    "Priority 140px 44px",
+    "Key 108px 184px",
+    "Title 380px 292px",
+    "Queue 124px -",
+    ...UNPINNED_REST,
+  ]);
+});
+
+test("the List narrows Title and unpins from the right in a 700 px box", async () => {
+  localStorage.setItem(
+    "dispatch.project-table.CORE",
+    JSON.stringify({ sizing: { key: 200, title: 500 } })
+  );
+  expect(await headerLayout(700)).toEqual([
+    "- 44px 0px",
+    "Priority 140px 44px",
+    "Key 200px 184px",
+    "Queue 124px -",
+    "Title 116px -",
+    ...UNPINNED_REST,
+  ]);
+});
+
+test("the List pins Select, Key and Title on a 390 px phone", async () => {
+  expect(await headerLayout(390)).toEqual([
+    "- 44px 0px",
+    "Key 88px 44px",
+    "Title 199.5px 132px",
+    "Priority 140px -",
+    "Queue 124px -",
+    ...UNPINNED_REST,
+  ]);
+});
+
+// A width the reader dragged on a desktop is the width the header is drawn at, and a stored one
+// below a column's minimum is drawn at the minimum.
+test("a stored desktop width reaches the List's header", async () => {
+  localStorage.setItem(
+    "dispatch.project-table.CORE",
+    JSON.stringify({ sizing: { epic: 300, status: 50 } })
+  );
+  const cells = await headerLayout(1400);
+  expect(cells).toContain("Epic 300px -");
+  expect(cells).toContain("Status 132px -");
+});
+
+test("the Status filter counts Done once the closed issues are loaded", async () => {
+  const user = userEvent.setup();
+  table([issue("CORE-1"), issue("CORE-2", { status: "done" })], "?status=done");
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  await user.click(screen.getByRole("button", { name: /^Filter Status/ }));
+  expect(screen.getByRole("option", { name: "Done, 1 issue" })).toBeDefined();
 });
 
 // A Move is nobody's interrupted action. Retried beside one, it reports like any other change

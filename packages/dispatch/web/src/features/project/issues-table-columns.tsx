@@ -43,9 +43,6 @@ declare module "@tanstack/react-table" {
     always?: readonly string[];
     /** Filter by typed text instead of picking values: for a column of free text. */
     text?: boolean;
-    /** Whether the rows a Done pick would count are loaded: `false` has the Status filter offer
-     *  Done as `load` rather than count it as none. */
-    doneLoaded?: boolean;
     /** The types for the declaration's own parameters, which it does not otherwise use. */
     value?: [TData, TValue];
   }
@@ -250,8 +247,7 @@ const renderings = (
 
 export function useIssueTableColumns(
   userState: UserState | undefined,
-  compact: boolean,
-  doneLoaded: boolean
+  compact: boolean
 ): ColumnDef<Item>[] {
   return useMemo<ColumnDef<Item>[]>(() => {
     const rendering = renderings(userState);
@@ -273,9 +269,8 @@ export function useIssueTableColumns(
           ...(picks?.order === undefined ? {} : { order: picks.order }),
           ...(picks?.show === undefined ? {} : { show: picks.show }),
           ...(picks?.always === undefined ? {} : { always: picks.always }),
-          ...(column.id === "status" ? { doneLoaded } : {}),
         },
       };
     });
-  }, [userState, compact, doneLoaded]);
+  }, [userState, compact]);
 }

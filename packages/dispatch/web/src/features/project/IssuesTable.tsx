@@ -26,6 +26,7 @@ import {
   compareGroups,
   facetCounts,
   groupValue,
+  ISSUE_TABLE_COLUMNS,
   type Item,
   isEpic,
   matchesFilters,
@@ -33,11 +34,12 @@ import {
   UNCLAIMED_FACET,
 } from "./issues-table-model";
 import { GroupRow, IssueRow } from "./issues-table-rows";
-import { ISSUE_TABLE_COLUMNS } from "./issues-table-storage";
 import { useTableView } from "./issues-table-view";
 import { issueIsUnread } from "./UnreadDot";
 
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
+/** Status offers Done before the closed issues it would count are read. */
+const DONE_UNLOADED: ReadonlyMap<string, readonly string[]> = new Map([["status", ["done"]]]);
 
 const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.original, query);
 
@@ -95,7 +97,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     return shown.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
   }, [allItems, filters, flags.needsYou, flags.unread, grouping, search, userState.data]);
 
-  const columns = useIssueTableColumns(userState.data, boxWidth < 640, doneLoaded);
+  const columns = useIssueTableColumns(userState.data, boxWidth < 640);
 
   const model = useDataTable<Item>({
     rows: items,
@@ -321,6 +323,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
       <DataTable
         empty="No issues match these filters."
         filterCounts={openFacets}
+        filterUnloaded={doneLoaded ? undefined : DONE_UNLOADED}
         label="Project issues table"
         model={model}
         onOpenFilterChange={setOpenFilter}

@@ -3,6 +3,7 @@ import {
   type ColumnFiltersState,
   type ExpandedState,
   type FilterFn,
+  functionalUpdate,
   type GroupingState,
   getCoreRowModel,
   getExpandedRowModel,
@@ -29,6 +30,8 @@ import { ViewportAnchor } from "../features/shell/ViewportAnchor";
 import { borderDefault, surfaceBg, textMutedOnCanvas } from "../theme/classes";
 
 const EMPTY_COUNTS: ReadonlyMap<string, number> = new Map();
+const NO_SELECTION: RowSelectionState = {};
+const NONE_UNLOADED: readonly string[] = [];
 
 /** How a grouped table orders its group headings. */
 export interface GroupOrder<Row> {
@@ -134,38 +137,51 @@ function sortedByGroup<Row>({ compare, heading }: GroupOrder<Row>) {
  * the keys that walk them. The caller keeps the view and the layout and draws each row; the
  * core keeps which groups are open.
  */
-export function useDataTable<Row>(options: DataTableOptions<Row>): DataTableModel<Row> {
-  const { layout, search, selection, state, viewKey } = options;
+export function useDataTable<Row>({
+  columns,
+  getRowId,
+  groupOrder,
+  layout,
+  onColumnFiltersChange,
+  onGlobalFilterChange,
+  onGroupingChange,
+  onPaginationChange,
+  onSortingChange,
+  rows,
+  search,
+  selection,
+  state,
+  viewKey,
+}: DataTableOptions<Row>): DataTableModel<Row> {
   const [expanded, setExpanded] = useState<ExpandedState>(true);
   const [sortedRowModel] = useState(() =>
-    options.groupOrder === undefined ? getSortedRowModel<Row>() : sortedByGroup(options.groupOrder)
+    groupOrder === undefined ? getSortedRowModel<Row>() : sortedByGroup(groupOrder)
   );
   const table = useReactTable({
-    data: options.rows,
-    columns: options.columns,
+    data: rows,
+    columns,
     state: {
-      sorting: state.sorting,
-      grouping: state.grouping,
-      columnFilters: state.columnFilters,
+      ...state,
       columnVisibility: layout.visibility,
-      pagination: state.pagination,
-      globalFilter: state.globalFilter,
       expanded,
-      ...(selection === undefined ? {} : { rowSelection: selection.state }),
+      rowSelection: selection?.state ?? NO_SELECTION,
       columnSizing: layout.responsive.sizing,
       columnOrder: layout.order,
       columnPinning: { left: layout.responsive.pinned },
     },
-    getRowId: options.getRowId,
+    getRowId,
     onColumnSizingChange: layout.setSizing,
     onColumnOrderChange: layout.setOrder,
     columnResizeMode: "onChange",
-    onSortingChange: options.onSortingChange,
-    onGroupingChange: options.onGroupingChange,
-    onColumnFiltersChange: options.onColumnFiltersChange,
+    onSortingChange,
+    onGroupingChange,
+    onColumnFiltersChange,
     onColumnVisibilityChange: layout.setVisibility,
-    onPaginationChange: options.onPaginationChange,
-    onGlobalFilterChange: options.onGlobalFilterChange,
+    onPaginationChange,
+    // TanStack types this handler `OnChangeFn<any>` and may hand it an updater function, so the
+    // caller's string setter gets the resolved search, never an updater it cannot read.
+    onGlobalFilterChange: (updater) =>
+      onGlobalFilterChange(functionalUpdate<string>(updater, state.globalFilter)),
     onExpandedChange: setExpanded,
     onRowSelectionChange: selection?.onChange,
     globalFilterFn: search?.filterFn,
@@ -244,7 +260,7 @@ export function useDataTable<Row>(options: DataTableOptions<Row>): DataTableMode
 }
 
 /** What a drawn line is handed: where it sits, and the ref that measures its height. */
-interface LineProps {
+export interface LineProps {
   readonly index: number;
   readonly measure: (element: Element | null) => void;
 }
@@ -263,6 +279,10 @@ export interface DataTableProps<Row> {
   readonly onOpenFilterChange: (id: string | undefined) => void;
   /** How many rows each value of the open filter's column would list. */
   readonly filterCounts: ReadonlyMap<string, number>;
+  /** By column id, the filter values whose rows are not loaded yet, which say `load` rather
+   *  than a count. Kept apart from the column definitions: a new definition is a new component
+   *  to React, so a change there would draw every cell anew. */
+  readonly filterUnloaded?: ReadonlyMap<string, readonly string[]>;
   /** Draws one row: a `<tr>` carrying `data-issue-row`, which the keys and the box's height
    *  read, `data-index` and `ref={measure}`. */
   readonly renderRow: (props: LineProps & { readonly row: TableRow<Row> }) => ReactNode;
@@ -279,6 +299,7 @@ export interface DataTableProps<Row> {
 export function DataTable<Row>({
   empty,
   filterCounts,
+  filterUnloaded,
   label,
   model,
   onOpenFilterChange,
@@ -293,6 +314,9 @@ export function DataTable<Row>({
   // The order a drop rewrites, read once rather than per header cell.
   const columnOrder = table.getAllLeafColumns().map((column) => column.id);
   const virtualRows = virtualizer.getVirtualItems();
+  // The space the rows above and below the drawn window would take.
+  const first = virtualRows[0];
+  const last = virtualRows.at(-1);
 
   return (
     <>
@@ -333,6 +357,7 @@ export function DataTable<Row>({
                       setDragColumn={setDragColumn}
                       setOpenFilter={onOpenFilterChange}
                       setOrder={layout.setOrder}
+                      unloaded={filterUnloaded?.get(header.column.id) ?? NONE_UNLOADED}
                     />
                   ))}
                   {trailingWidth === 0 ? null : (
@@ -345,9 +370,7 @@ export function DataTable<Row>({
               ))}
             </thead>
             <tbody>
-              {virtualRows[0] ? (
-                <tr aria-hidden style={{ height: virtualRows[0]?.start ?? 0 }} />
-              ) : null}
+              {first ? <tr aria-hidden style={{ height: first.start }} /> : null}
               {virtualRows.map((virtual) => {
                 const entry = displayRows[virtual.index];
                 if (entry === undefined) return null;
@@ -360,11 +383,8 @@ export function DataTable<Row>({
                   </Fragment>
                 );
               })}
-              {virtualRows.length > 0 ? (
-                <tr
-                  aria-hidden
-                  style={{ height: virtualizer.getTotalSize() - (virtualRows.at(-1)?.end ?? 0) }}
-                />
+              {last ? (
+                <tr aria-hidden style={{ height: virtualizer.getTotalSize() - last.end }} />
               ) : null}
             </tbody>
           </table>
@@ -374,7 +394,7 @@ export function DataTable<Row>({
         ) : null}
       </div>
 
-      <IssueTablePager table={table} items={table.options.data} pagerRef={layout.pagerRef} />
+      <IssueTablePager table={table} pagerRef={layout.pagerRef} />
     </>
   );
 }
