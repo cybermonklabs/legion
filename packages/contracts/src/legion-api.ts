@@ -679,14 +679,26 @@ const legionIssue = z.object({
    * given a task of (contract 93). The daemon sends the entry's own work to a role whose given
    * number is below the entry its row names, on every admission pass and on a sweep of its own
    * each minute, so the two are equal for a role holding its work and differ for one the daemon
-   * has still to reach. Both are absent together for an issue whose current phase names no phase
-   * worker role — a root writing its design — and each is absent where it is 0, which is a role
-   * no entry has been raised for and one the daemon holds no claim row of; a daemon before
-   * contract 93 writes neither, and a caller in a pod whose plugin declares a contract below 93
-   * is served the state with neither (the daemon's `withoutPhaseEntries`), which is why a reader
-   * takes both as optional. */
+   * has still to reach. A root carries them as a child does, since the architect is the role
+   * that works `admitted` (contract 94); both are absent together for a phase no role works —
+   * `awaiting_person`, `done` and `held` — and each is absent where it is 0, which is a role no
+   * entry has been raised for and one the daemon holds no claim row of; a daemon before contract
+   * 93 writes neither, and a caller in a pod whose plugin declares a contract below 93 is served
+   * the state with neither (the daemon's `withoutPhaseEntries`), which is why a reader takes both
+   * as optional. */
   phaseEntry: z.number().int().nonnegative().optional(),
   givenEntry: z.number().int().nonnegative().optional(),
+  /** The two times of the task that entry was queued as (contract 94): when the role's claim was
+   * first queued it, and when a turn of that claim's worker confirmed it. Both are read from the
+   * task the claim holds of the entry it was given, so both are absent for a claim holding none
+   * — one the daemon holds no row of, one whose turn retired the task, and a root of the release
+   * before contract 94, which carries the two numbers and no task — and `entryConfirmedAt` alone
+   * is absent while the task stands queued and no turn has confirmed it. A daemon before contract
+   * 94 writes neither, and a caller in a pod whose plugin declares a contract below 94 is served
+   * the state with neither (the daemon's `withoutEntryTimes`), which is why a reader takes both
+   * as optional. */
+  entryQueuedAt: timestamp.optional(),
+  entryConfirmedAt: timestamp.optional(),
 });
 
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history. */

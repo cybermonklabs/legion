@@ -31,6 +31,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 const (
@@ -632,7 +634,7 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fmt.Fprintln(stdout, checksSummary(openChecks(state.Issues)))
 	fmt.Fprintln(stdout, roundsSummary(state.Issues))
 	fmt.Fprintln(stdout, openCallsSummary(state.Issues))
-	fmt.Fprintln(stdout, entrySummary(state.Issues))
+	fmt.Fprintln(stdout, entrySummary(state.Issues, time.Now().UTC()))
 	fmt.Fprintln(stdout, pendingSummary(state.PendingStatusWrites))
 	fmt.Fprintln(stdout, heldSummary(state.HeldOutboxRows))
 	fmt.Fprintln(stdout, strandedSummary(state.StrandedClaims, strandedSuspenders(ctx, op, state.StrandedClaims)))
@@ -1058,36 +1060,102 @@ func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) str
 	return fmt.Sprintf("claims nothing will wake: %d — %s", len(stranded), strings.Join(groups, "; "))
 }
 
-// entryBehind is one issue whose role has not been given the work its phase entry names: the
-// issue, the role of its current phase (phase.RoleFor, the role the state's two numbers are
-// of), the entry that role's phases row stands on and the entry it was given.
+// entryBehind is one issue the plain state names for its phase entry: the issue, the role of its
+// current phase (phase.RoleFor, the role the state's two numbers are of), the entry that role's
+// phases row stands on, the entry it was given, and, for a root, the wake arm that names it.
 type entryBehind struct {
 	issue string
 	role  legionclaim.Role
 	entry int64
 	given int64
+	// arm is why a wake of the daemon names this root, and "" for an issue a phase worker works,
+	// which the difference between the two numbers names instead (rootWakeArm).
+	arm string
 }
 
-// entriesBehind is every issue of the state whose two entry numbers differ
-// (api.Issue.PhaseEntry and GivenEntry), by issue key. An issue whose current phase names no
-// phase worker role carries neither number, so it is never named here: the projection writes
-// them only where phase.RoleFor names a role, and that is the role this reads back for the
-// line.
-func entriesBehind(issues map[string]api.Issue) []entryBehind {
+// slowBeforeGate is how long a root may stand at admitted with no registered design gate before
+// a wake names it: 90 minutes, which is above the longest healthy time measured, 77 minutes
+// (dispatch://INFRA-2614, R7's third arm). The clock runs from the later of the root's admission
+// and the queueing of its architect's task, so a root whose architect was given work later is
+// given its own 90 minutes from that moment.
+const slowBeforeGate = 90 * time.Minute
+
+// rootWakeArm is why a wake of the daemon names this root, and "" for a root no arm holds for.
+// The arms are R7's of dispatch://INFRA-2614, read here from the state alone, as the daemon's own
+// pass reads them from its records:
+//
+//   - the architect took nothing: the task of the root's entry was first queued more than
+//     workflow.StrandedReleaseWake ago and no turn of its claim's worker confirmed it
+//     (api.Issue.EntryQueuedAt and EntryConfirmedAt);
+//   - the claim cannot be reached: the architect's claim is failed or retired, which no further
+//     send cures;
+//   - the root is slow before its gate: it stands at admitted with no registered design gate
+//     slowBeforeGate after the later of its admission and the queueing of its architect's task,
+//     which names a root holding a slot and leaves what that means to the controller.
+//
+// A root whose two entry numbers merely differ is named by none of them: every root reads that
+// way for the moments between a transition and its delivery, so the difference alone would name
+// a healthy root at every read.
+func rootWakeArm(issue api.Issue, now time.Time) string {
+	if issue.EntryQueuedAt != nil && issue.EntryConfirmedAt == nil &&
+		now.Sub(*issue.EntryQueuedAt) > workflow.StrandedReleaseWake {
+		return "its architect took nothing"
+	}
+	if issue.Architect != nil {
+		switch supervise.ClaimState(issue.Architect.State) {
+		case supervise.StateFailed, supervise.StateRetired:
+			return "its claim is " + issue.Architect.State
+		}
+	}
+	// The gate is registered once the root's spec step holds a document, which is what
+	// `designGate` carries (api.Issue.DesignGate); a root that has registered none has stood
+	// here since the later of the two moments below, and a root of a deployment that gates no
+	// step registers none at all.
+	if issue.Phase == phase.Admitted && issue.DesignGate == nil {
+		since := time.Time{}
+		if issue.Slot != nil {
+			since = issue.Slot.AdmittedAt
+		}
+		if issue.EntryQueuedAt != nil && issue.EntryQueuedAt.After(since) {
+			since = *issue.EntryQueuedAt
+		}
+		if !since.IsZero() && now.Sub(since) > slowBeforeGate {
+			return "slow before its gate"
+		}
+	}
+	return ""
+}
+
+// entriesBehind is every issue of the state the plain line names, by issue key: one whose role
+// has not been given the work its phase entry names (api.Issue.PhaseEntry and GivenEntry), and
+// one whose architect works its phase — a root at admitted or accepting — for which a wake arm
+// holds (rootWakeArm). An issue whose current phase names no role at all carries neither number
+// and is never named: the projection writes them only where phase.RoleFor names a role, and
+// that is the role this reads back for the line.
+func entriesBehind(issues map[string]api.Issue, now time.Time) []entryBehind {
 	var behind []entryBehind
 	for _, key := range slices.Sorted(maps.Keys(issues)) {
 		issue := issues[key]
-		if issue.PhaseEntry == issue.GivenEntry {
+		role := phase.RoleFor(issue.Phase)
+		row := entryBehind{issue: key, role: role, entry: issue.PhaseEntry, given: issue.GivenEntry}
+		if role == legionclaim.RoleArchitect {
+			if row.arm = rootWakeArm(issue, now); row.arm == "" {
+				continue
+			}
+			behind = append(behind, row)
 			continue
 		}
-		behind = append(behind, entryBehind{issue: key, role: phase.RoleFor(issue.Phase),
-			entry: issue.PhaseEntry, given: issue.GivenEntry})
+		if role == "" || issue.PhaseEntry == issue.GivenEntry {
+			continue
+		}
+		behind = append(behind, row)
 	}
 	return behind
 }
 
 // entrySummary is the one line an operator reads for the roles that have not been given the work
-// their phase entry names: how many, and each by issue and role with the two numbers. A
+// their phase entry names and for the roots a wake names: how many, and each by issue and role
+// with the two numbers, a root with the arm that names it. For a role a phase worker works, a
 // difference here is one of four things. An entry raised seconds ago, which the next pass
 // closes: the daemon sends that entry's work on every admission pass and on a sweep of its own
 // each minute (admit's resumeSlottedWorkers). An issue waiting for its admission slot, whose
@@ -1102,17 +1170,23 @@ func entriesBehind(issues map[string]api.Issue) []entryBehind {
 //
 // The daemon's own "a role was behind the entry its phases row names" log line names the roles
 // that pass sends the work to and no others, so a difference of that last kind is read here and
-// nowhere else.
-func entrySummary(issues map[string]api.Issue) string {
-	behind := entriesBehind(issues)
+// nowhere else. A root is held to the wake arms instead (rootWakeArm), because it reads as
+// behind for the moments between a transition and its delivery and an operator would then read
+// a healthy root here at every call.
+func entrySummary(issues map[string]api.Issue, now time.Time) string {
+	behind := entriesBehind(issues, now)
 	if len(behind) == 0 {
-		return "roles not given their phase entry: none"
+		return "roles not given their phase entry, and roots a wake names: none"
 	}
 	named := make([]string, len(behind))
 	for i, row := range behind {
 		named[i] = fmt.Sprintf("%s %s: entry %d, given %d", row.issue, row.role, row.entry, row.given)
+		if row.arm != "" {
+			named[i] += ", " + row.arm
+		}
 	}
-	return fmt.Sprintf("roles not given their phase entry: %d — %s", len(behind), strings.Join(named, "; "))
+	return fmt.Sprintf("roles not given their phase entry, and roots a wake names: %d — %s",
+		len(behind), strings.Join(named, "; "))
 }
 
 // wakesWaitingSummary is the line an operator reads for the wakes the daemon's pacing is holding
