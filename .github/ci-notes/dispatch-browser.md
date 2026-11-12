@@ -271,10 +271,15 @@ that budget plus the maxima above of every step without one, which sum to 219 s:
 540 + 219 = 759 s, 12 min 39 s, rounded up to the 13 minutes below. That is a backstop
 above the sum of the step budgets, as this file's head says a job budget is.
 
-The rows behind those seconds were the suite of the head those runs measured. Listed again
-after the forward merges of main, the suite holds 1,200 rows: 1,145 in the eight projects
-the full lane's four shards run, of which 1,058 are in the two the pull-request lane
-runs. The remaining 55 are the three `-alone` projects', which the alone job runs.
+The rows behind those seconds were the suite of the head those runs measured. Listed
+again at this change's head, the suite holds 1,427 rows in 194 files, which is two
+listings rather than one: the three `-alone` projects are out of the default selection
+since dispatch://INFRA-1280, so a command that names no project lists 1,373 rows in 191
+files and one that names those three lists the other 54, in 3 files. The ten projects
+this job's shard command names below hold 1,353 rows in 190 files; the four of those the
+pull-request lane names hold 1,252, of which that lane's `@pr` grep selects 282. The two
+`visual` projects hold 20, which the visual job runs one row at a time, and the 54
+wall-clock rows are the alone job's.
 
 ## Why the leg count stands in two places
 
@@ -459,10 +464,11 @@ attempt failed. A green run's upload is small.
 
 ## The alone job, and what it keeps the same as the shard job
 
-The three projects whose rows are read from the wall clock, one machine each. Each runs with
-one worker and `--no-deps`, so nothing else is on the machine while it measures. The full
-lane alone: a pull request runs no clock row, since a shard job's machine cannot hold one
-still enough to measure.
+The three projects whose rows are read from the wall clock, one machine each. Each leg runs
+one worker and names one project, and a wall-clock project takes nothing else with it - it
+names no `dependencies` since dispatch://INFRA-1280 - so nothing else is on the machine
+while it measures. The full lane alone: a pull request runs no clock row, since a shard
+job's machine cannot hold one still enough to measure.
 
 Its steps are the shard job's, with three differences - one worker rather than four, the
 Playwright command below, and no file store on the machine - and their commands are kept
@@ -580,9 +586,10 @@ writes them into the environment every worker inherits, and `globalTeardown` sto
 (e2e/global-setup.ts, e2e/harness-pool.ts). The contracts step above is what
 Playwright's own Node runner needs, for the reason that step gives.
 
-One stack here, not four: it is one per Playwright worker, and one worker is the
-configuration's own default (`workers: 1`, e2e/playwright.config.ts), so this step
-passes no `--workers` at all. These projects' rows are read from the wall clock, and
+One stack here, not four: it is one per Playwright worker, and this leg runs one
+worker, which the command below says in `--workers=1` rather than leaning on the
+configuration's own default of the same number (`workers: 1`,
+e2e/playwright.config.ts). These projects' rows are read from the wall clock, and
 three other stacks on the machine would be in the reading. That stack is a harness and
 a Postgres of its own, that last one an initdb and a pg_ctl out of
 DISPATCH_E2E_PG_BIN (e2e/harness-postgres.ts), this image's PostgreSQL 18 with
@@ -591,13 +598,14 @@ pgvector; the binaries directory is set on the command line, not in this step's
 
 No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: every spec these
 legs run is a clock spec, and no clock spec uploads or downloads anything.
-chromium-alone runs both (`clockSpecs`: heavy-bodies and nested-directive, named at
-e2e/playwright.config.ts:200 and taken by that project at :389), firefox-alone and
-webkit-alone run heavy-bodies alone (:397, :409). And e2e/harness-pool.ts's
-`stackBucket` makes no bucket at one stack (:97). A store serving nothing would be
-charged to the very reading these rows exist for, which is why the `weed` the image
-carries is started on the shard job's machines and not on these. A clock spec that
-later uploads fails here by name rather than quietly.
+chromium-alone runs both wall-clock specs (`clockSpecNames` in e2e/configurations.ts:
+heavy-bodies and nested-directive, the list `clockSpecPattern` is built from, which is
+that project's `testMatch`), firefox-alone and webkit-alone run heavy-bodies alone.
+And e2e/harness-pool.ts's `stackBucket` (:183) makes no bucket at one stack: it
+answers `undefined` on `count === 1` (:190). A store serving nothing would be charged
+to the very reading these rows exist for, which is why the `weed` the image carries is
+started on the shard job's machines and not on these. A clock spec that later uploads
+fails here by name rather than quietly.
 
 The memory and CPU sampler both this job and the shard job run is
 .github/scripts/dispatch-browser-samples.sh: MemAvailable and where the CPU goes,
@@ -706,11 +714,11 @@ apt source, which it carried only because that source's index intermittently fai
 `apt-get update`.
 
 The fonts are not needed: this job's specs are every *.multiprocess.e2e.ts there is --
-coedit, signin and two-builds today (e2e/playwright.config.ts:50 matches them by that
-suffix, so a new one joins without an edit here) -- and they run headless Chromium and
-compare no screenshot (none holds `toHaveScreenshot` or `toMatchSnapshot`), and
-fonts-liberation and fonts-noto-color-emoji are on the image already. A row that later
-needs CJK or Thai glyphs would fail visibly.
+coedit, signin and two-builds today (`multiprocessSpecs` in e2e/playwright.config.ts
+matches them by that suffix, so a new one joins without an edit here) -- and they run
+headless Chromium and compare no screenshot (none holds `toHaveScreenshot` or
+`toMatchSnapshot`), and fonts-liberation and fonts-noto-color-emoji are on the image
+already. A row that later needs CJK or Thai glyphs would fail visibly.
 
 The 4-minute budget: this step downloads browsers only, and Playwright makes up to
 five attempts, across its download hosts, inside it. Of the 339 s maximum above,

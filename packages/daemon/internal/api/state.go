@@ -67,7 +67,7 @@ type State struct {
 	// Capabilities is the deployment's capability report (capabilities.Deployment.Report), one row
 	// per capability in the table's order: what the worker image was probed for, what the live
 	// sessions' reports prove (present), fail (open) or have not reported yet (unchecked), what a
-	// ruling withholds, and what the deployment's own configuration closes, decides or leaves open
+	// cited issue withholds, and what the deployment's own configuration closes, decides or leaves open
 	// — each open deployment row with the legion.yaml line that records a decision. Never null; a
 	// gap is reported here, never refused (contract 16).
 	Capabilities []CapabilityState `json:"capabilities"`
@@ -455,7 +455,9 @@ type Issue struct {
 // reviewed. Since is Dispatch's time of the hand-back the wait began at,
 // absent when unknown. AnsweredAt and AnsweredBy are absent until a person's act answers the
 // wait; the answered root then stands in admission's waiting line as well, among the issues
-// whose work came back, oldest first, until the pass that resumes it.
+// whose work came back, oldest first, until the pass that resumes it. AnsweredBy is every value
+// of record.Answer, `declined` — a person who closed an ask of the root rather than answer it
+// (contract 68) — among them, and it names how the wait was answered, not always by a person.
 type WaitingOnView struct {
 	Kind        string        `json:"kind"`
 	Ask         string        `json:"ask,omitempty"`

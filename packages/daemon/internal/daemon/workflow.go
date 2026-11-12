@@ -108,13 +108,14 @@ type workflowRuntime struct {
 	// idlePeriod is how long an issue pod must have had no turn in progress and no turn due
 	// before the daemon releases it (runtime.kubernetes.idle_release.idle_minutes); zero turns
 	// release off, as `idle_minutes: 0` and every runtime but Kubernetes do. idleStore is the
-	// daemon's store, which holds the idle view and the release's mark, and idleImages the
-	// runtime's reading of an issue pod's image; both nil when release is off. idleTick is the
-	// tick's period, zero being idleTickInterval; a test shortens it.
-	idlePeriod time.Duration
-	idleStore  *store.Store
-	idleImages issuePodImages
-	idleTick   time.Duration
+	// daemon's store, which holds the idle view and the release's mark, and idleRuntime the
+	// runtime the pass asks about the pod itself — its image, its Sandbox (issuePods); both nil
+	// when release is off. idleTick is the tick's period, zero being idleTickInterval; a test
+	// shortens it.
+	idlePeriod  time.Duration
+	idleStore   *store.Store
+	idleRuntime issuePods
+	idleTick    time.Duration
 	// holdWarnAfter and holdWarnEvery bound the watchdog log a hold that never releases gets: zero
 	// means the production defaults. A test shortens both to bound how long the warning takes to
 	// observe.
@@ -302,7 +303,10 @@ func mintAtBoot(ctx context.Context, tokens appauth.Tokens, repo ghrepo.Reposito
 // checked for both GitHub Apps) into repos, the served repositories every role's gh bundle reads
 // its directories from, the Apps' logins, the App tokens minted for every served repository, the
 // fill of any record written before the record carried its repository, then the deployment's
-// design-gate steps queued for the project's Dispatch row (queueGatedStepsPublish).
+// design-gate steps queued for the project's Dispatch row (queueGatedStepsPublish) and the
+// recorded gate of every issue Dispatch has not closed queued for its own
+// (queueRecordedGatesPublish).
+//
 // hookPrompts are the words boot read for every hook whose `prompt_file` names a file, by hook
 // name (readBoot): the engine is given each hook's words, never a path.
 //
@@ -409,6 +413,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if err := w.queueGatedStepsPublish(ctx); err != nil {
 		return nil, err
 	}
+	if err := w.queueRecordedGatesPublish(ctx); err != nil {
+		return nil, err
+	}
 	return w, nil
 }
 
@@ -429,6 +436,56 @@ func (w *workflowRuntime) queueGatedStepsPublish(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("queue the gated-steps publish of %s: %w", w.dispatchProject, err)
 	}
+	return nil
+}
+
+// queueRecordedGatesPublish queues one design-gates publication for each recorded issue that
+// holds a gate and that Dispatch does not show as done. Every gate of this deployment was written
+// before the kind existed, so nothing has published any of them: without this pass Dispatch would
+// learn an issue's documents only once something moved that set again, which for a tree already
+// waiting on its approval is never. A boot that cannot write the rows fails the boot, as the
+// project's gated-steps publication does.
+//
+// A done issue is left out, by the read itself (record.GatedIssues), and that is a publish-cost
+// filter and not the liveness rule: Dispatch decides liveness at the read, where a gate counts
+// only while its issue is in the workflow there, which leaves out `triage`, `icebox` and
+// `backlog` as well (api.supersededApprovalGates, model.IssueStatusesOutOfWorkflow). A closed
+// issue is the one of those four that never comes back, so its set is the one nobody need
+// publish; a parked issue's is published, and its tree answers for it the moment a person brings
+// it back. The status read is dispatch_status, what Dispatch last showed, rather than status,
+// which is what the daemon means by the issue.
+//
+// It queues at every boot, as the project's list does, because the daemon keeps no record of what
+// it last published, so each boot does cost Dispatch one write for every live gated issue: the
+// enqueue's payload comparison (EnqueueDesignGates) matches only a row still waiting in the
+// outbox, and a row the lane has delivered is gone. What it buys is a restart loop, where the
+// rows of the boot before are still pending and a second boot queues no row beside them. A boot
+// costs the record two queries — the issues to publish, then their gates — and one enqueue each.
+// The lane is woken on commit (projectRecords), which before attach reaches nothing: the outbox's
+// first sweep runs whatever this pass left.
+func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
+	now := time.Now().UTC()
+	scoped, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+		live, err := w.records.GatedIssues(scoped, tx, w.dispatchProject)
+		if err != nil {
+			return err
+		}
+		gates, err := w.records.Gates(scoped, tx, live)
+		if err != nil {
+			return err
+		}
+		for _, issue := range live {
+			publish := record.DesignGatesPublish{Issue: issue, Gates: record.GateDocuments(gates[issue])}
+			if err := w.records.EnqueueDesignGates(scoped, tx, publish, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("queue the recorded design-gates publications of %s: %w", w.dispatchProject, err)
+	}
+	committed()
 	return nil
 }
 
@@ -909,18 +966,19 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 
 // attachIdleRelease wires the idle tick, and leaves it off unless the deployment releases pods:
 // `runtime: kubernetes` with a non-zero idle_minutes, over a runtime that can say whether an
-// issue's pod runs the image the configuration names.
+// issue's pod runs the image the configuration names and whether it still holds the issue's
+// Sandbox (issuePods).
 func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 	k := supervision.cfg.Runtime.Kubernetes
 	if supervision.cfg.Runtime.Name != "kubernetes" || k == nil || !k.IdleRelease.Releases() {
 		return
 	}
-	images, ok := supervision.supervisor.deps.Runtime.(issuePodImages)
+	podRuntime, ok := supervision.supervisor.deps.Runtime.(issuePods)
 	if !ok {
-		w.log.Warn("idle release: the runtime reads no pod image, so no pod is released")
+		w.log.Warn("idle release: the runtime reads no issue pod, so no pod is released")
 		return
 	}
-	w.idlePeriod, w.idleStore, w.idleImages = k.IdleRelease.Idle(), supervision.supervisor.store, images
+	w.idlePeriod, w.idleStore, w.idleRuntime = k.IdleRelease.Idle(), supervision.supervisor.store, podRuntime
 	w.outbox.backstop = k.IdleRelease.Backstop()
 }
 

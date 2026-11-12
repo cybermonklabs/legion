@@ -84,9 +84,12 @@ export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-shard-$shard.zip"
 # pull request is answered by: every stubbed row carries the tag, and so do the
 # real-stack rows of the journeys that must be seen on a pull request. Playwright
 # applies a command-line grep **on top of** a project's own, never in place of it -
-# measured at this branch's base, where `--grep '@pr'` left `iphone` all 99 of its
-# `@phone` rows and `webkit` 1 of its 40 - so the two tagged projects keep their own
-# axis. Every row without the tag runs on the full lane, which `ci.yaml` runs for every
+# measured at this branch's base, 475d7609, where `iphone` listed 109 rows and 4 of
+# them under `--grep '@pr'`, and `webkit` 40 rows and 7 of them, and again at this
+# head, 23f2d137, where `iphone` listed 119 and the same 4, and `webkit` 40 and the
+# same 7 - so the two tagged projects keep their own axis and the command's grep
+# selects the rows that carry both tags.
+# Every row without the tag runs on the full lane, which `ci.yaml` runs for every
 # merge group and the nightly runs daily, so `main` is gated exactly as it was and what
 # a displaced row loses is feedback on the pull request itself
 # (dispatch://INFRA-1407, departure 1). `e2e/__tests__/pull-request-lane.test.ts` holds
@@ -111,12 +114,20 @@ case "$lane" in
     exit 1
     ;;
 esac
-# Why the projects are named at all: Playwright shards top-level projects only, and the
-# three `-alone` projects name every other project in their `dependencies`
-# (e2e/playwright.config.ts), so a shard over the whole list would shard `webkit-alone`
-# alone and run every other project whole in all four shards. Naming the eight parallel
-# projects with `--project` leaves the `-alone` ones out of the run, so every project
-# left is top-level and every one of them shards. The alone job runs those three.
+# Why the projects are named at all: a shard splits the rows of every project the run
+# selects, so a project this leg does not name is a project it would spread over these
+# four machines. `visual` and `visual-phone` are in the default selection, and their
+# image comparisons belong to the `visual` job, which runs them one row at a time, so
+# naming the projects above is what keeps them off these machines. The three `-alone`
+# projects stay out because this list does not name them, and for no other reason:
+# `filterProjects` reads `default` only where the command line named no project
+# (`projects.filter((project) => includeNonDefault || project.default)` at
+# node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2136,
+# under the `if (!projectNames)` at :2135), and both lanes above name theirs: four in
+# the pull-request lane and ten in the full one. The `default: false` each `-alone`
+# project carries (the three entries of `aloneProjects` in e2e/playwright.config.ts) is
+# what keeps them out of a run that names no project, which this is not. The alone job
+# names them, one machine each.
 #
 # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
 # read from the list reporter's `Running N tests using M workers` line, which the merge
