@@ -105,6 +105,7 @@ import {
   type DispatchWriteRetry,
   type GraphReferencesQuery,
   type IssueReadOptions,
+  isNoRoute,
 } from "./dispatch-http";
 import {
   dispatchChildRef,
@@ -4491,6 +4492,36 @@ function dispatchAnswered(error: unknown, status: number): error is DispatchServ
 }
 
 /**
+ * The answer of `call`, with an older Dispatch's refusal of a post correction replaced by the one
+ * sentence that names the real cause. The plugins release from main as this merges while
+ * Dispatch's own server is deployed by hand (dispatch://INFRA-1464), so for a while these
+ * commands run against a server that has none of their routes: its router answers
+ * `404 NOT_FOUND` "no route for …" (`isNoRoute`) to the edit, the delete and the history read,
+ * and its comment edit, the one route that was there before, answers an agent's token
+ * `403 OAUTH_SCOPE_REQUIRED` because that build required the person scope. The route at this head
+ * names no scope, so only an older build answers that code there, and only the comment edit reads
+ * it as the server's age; a person's own token gets `403 NOT_AUTHOR` there, which is the same
+ * refusal this release gives and is passed through. Without this, an agent is told its credential
+ * lacks a scope and goes asking a person for one.
+ */
+async function throughPostCorrections<T>(tool: string, url: string, call: Promise<T>): Promise<T> {
+  try {
+    return await call;
+  } catch (error) {
+    const scopeIsAge =
+      tool === "dispatch_edit_comment" &&
+      dispatchAnswered(error, 403) &&
+      error.code === "OAUTH_SCOPE_REQUIRED";
+    if (!isNoRoute(error) && !scopeIsAge) throw error;
+    throw new Error(
+      `This Dispatch (${url}) predates post corrections: it has no route that edits a post, ` +
+        "deletes one or reads the bodies one replaced. Until it is deployed with this release's " +
+        "server, a correction is one more post saying what changed."
+    );
+  }
+}
+
+/**
  * The sentence a refusal of a deleted post's block carries, for a message written in this
  * command's own words to end with: ` This comment is deleted.`, ` This message is deleted.`, or
  * nothing where the server said no such thing. The server writes it as the tail of its 404
@@ -5420,7 +5451,11 @@ export async function executeDispatchTool(
     case "dispatch_edit_comment": {
       const reference = stringArg(args, "comment");
       const { id, document } = await resolveCommentArgument(input.tool, reference, client);
-      const comment = await client.editComment(id, { body: stringArg(args, "body"), actor });
+      const comment = await throughPostCorrections(
+        input.tool,
+        configUrl,
+        client.editComment(id, { body: stringArg(args, "body"), actor })
+      );
       const { label, details } = await commentOwnerResult(client, comment, document);
       return {
         text: `Edited comment ${comment.id} on ${label}. Dispatch keeps the body it replaced.`,
@@ -5430,7 +5465,11 @@ export async function executeDispatchTool(
     case "dispatch_delete_comment": {
       const reference = stringArg(args, "comment");
       const { id, document } = await resolveCommentArgument(input.tool, reference, client);
-      const comment = await client.deleteComment(id, actor);
+      const comment = await throughPostCorrections(
+        input.tool,
+        configUrl,
+        client.deleteComment(id, actor)
+      );
       const { label, details } = await commentOwnerResult(client, comment, document);
       return {
         text: `Deleted comment ${comment.id} on ${label}. No read gives its body again.`,
@@ -5445,7 +5484,11 @@ export async function executeDispatchTool(
         client,
         hostSession
       );
-      const message = await client.editMessage(id, { body: stringArg(args, "body"), actor });
+      const message = await throughPostCorrections(
+        input.tool,
+        configUrl,
+        client.editMessage(id, { body: stringArg(args, "body"), actor })
+      );
       const issue = messageIssueKey(message);
       return {
         text: `Edited message ${message.id} on ${issue}. Dispatch keeps the body it replaced.`,
@@ -5460,7 +5503,11 @@ export async function executeDispatchTool(
         client,
         hostSession
       );
-      const message = await client.deleteMessage(id, actor);
+      const message = await throughPostCorrections(
+        input.tool,
+        configUrl,
+        client.deleteMessage(id, actor)
+      );
       const issue = messageIssueKey(message);
       return {
         text: `Deleted message ${message.id} on ${issue}. No read gives its body again.`,
@@ -6434,7 +6481,7 @@ export async function executeDispatchTool(
             text: postHistorySummary(
               "Comment",
               refTarget(ref, "comment", id),
-              await client.commentHistory(id)
+              await throughPostCorrections(input.tool, configUrl, client.commentHistory(id))
             ),
             details:
               ref.owner.kind === "project"
@@ -6476,7 +6523,11 @@ export async function executeDispatchTool(
             text: postHistorySummary(
               "Message",
               dispatchChildRef(dispatchIssueRef(messageIssue), "message", id),
-              await client.messageHistory(id, hostSession === "" ? undefined : hostSession)
+              await throughPostCorrections(
+                input.tool,
+                configUrl,
+                client.messageHistory(id, hostSession === "" ? undefined : hostSession)
+              )
             ),
             details: { issue: messageIssue, message: id },
           };

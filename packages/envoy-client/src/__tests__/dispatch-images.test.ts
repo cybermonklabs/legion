@@ -787,6 +787,68 @@ describe("reading pictures", () => {
     expect(requests).toContain("/api/v1/artifacts/chart-1/versions/2");
   });
 
+  // A read shows the body an edit wrote, so a picture that body carries is as new as the edit:
+  // `datedBodies` dates a post at its `edited_at`. Dated at the send instead, the corrected
+  // comment's picture would be the oldest of the nine and the only one past this read's eight.
+  test("dispatch_read of a comment thread dates an edited body's picture at the edit", async () => {
+    const id = (n: number) => `0b6e0f4e-4e2c-4d55-9a7e-0e9b3a4c1d2${n}`;
+    const address = (n: number) => `dispatch://DSP-42/artifact/c${n}-png@v1`;
+    const post = (n: number, fields: Record<string, unknown> = {}) => ({
+      id: id(n),
+      issue_key: "DSP-42",
+      author: { kind: "user", id: "sami" },
+      body: `Note ${n}.\n\n![c${n}.png](${address(n)})`,
+      anchor: null,
+      created_at: `2026-10-04T10:0${n}:00Z`,
+      ...fields,
+    });
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === `/api/v1/comments/${id(0)}`) {
+        return json({
+          // The oldest comment of the thread, corrected after the last reply was written.
+          comment: post(0, { edited_at: "2026-10-04T10:09:00Z" }),
+          replies: [1, 2, 3, 4, 5, 6, 7, 8].map((n) => post(n)),
+        });
+      }
+      const named = /^\/api\/v1\/issues\/DSP-42\/artifacts\/c(\d)-png$/.exec(pathname);
+      if (named !== null) {
+        return json({
+          id: `pic-${named[1]}`,
+          issue_key: "DSP-42",
+          project: "DSP",
+          slug: `c${named[1]}-png`,
+          name: `c${named[1]}.png`,
+          kind: "image",
+          versions: [{ number: 1, mime: "image/png", size: 16 }],
+        });
+      }
+      if (/^\/api\/v1\/artifacts\/pic-\d\/versions\/1$/.test(pathname)) {
+        return new Response(png(16), { headers: { "Content-Type": "image/png" } });
+      }
+      if (pathname === "/api/v1/references") return json({ code: "NOT_FOUND", error: "no" }, 404);
+      throw new Error(`unexpected request: ${pathname}`);
+    };
+
+    const result = await run(
+      "dispatch_read",
+      { ref: `dispatch://DSP-42/comment/${id(0)}` },
+      fetchImpl as typeof fetch,
+      randomUUID()
+    );
+
+    const pictureLines = result.text
+      .split("\n")
+      .filter((line) => line.startsWith("- image ") || line.startsWith("- not shown:"));
+    expect(pictureLines).toEqual([
+      `- image 1: ${address(0)} (c0.png, image/png, 16 bytes)`,
+      ...[8, 7, 6, 5, 4, 3, 2].map(
+        (n, index) => `- image ${index + 2}: ${address(n)} (c${n}.png, image/png, 16 bytes)`
+      ),
+      `- not shown: ${address(1)} (past this read's 8 pictures; dispatch doc-read shows it)`,
+    ]);
+  });
+
   test("dispatch_read of an issue's log shows the pictures every kind of text in it embeds, newest first", async () => {
     const address = (n: number) => `dispatch://DSP-41/artifact/p${n}-png@v1`;
     const shows = (n: number) => `Number ${n}:\n\n![p${n}.png](${address(n)})`;

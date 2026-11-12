@@ -14990,6 +14990,144 @@ test("a post nobody edited lists no earlier body, and --history is refused off o
   expect(requests).toBe(0);
 });
 
+// The plugins release from main as this merges, while Dispatch's own server is deployed by hand
+// (dispatch://INFRA-1464), so each of these commands runs for a while against a server that has
+// none of its routes. Each says that itself, as `dispatch answers` says a build is older than
+// the answers route, rather than handing on a refusal that sends an agent asking for a scope.
+const OLDER_DISPATCH =
+  "This Dispatch (http://dispatch.test) predates post corrections: it has no route that edits a " +
+  "post, deletes one or reads the bodies one replaced. Until it is deployed with this release's " +
+  "server, a correction is one more post saying what changed.";
+
+/** One call against a Dispatch older than the post corrections: the routes that build has answer
+ *  through `answer`, and every other request gets its router's no-route 404. */
+function olderDispatch(
+  tool: string,
+  args: Record<string, unknown>,
+  answer: (pathname: string) => unknown = () => undefined
+): Promise<DispatchToolResult> {
+  const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const pathname = new URL(String(url)).pathname;
+    const known = answer(pathname);
+    if (known !== undefined) return response(known);
+    return response(
+      { code: "NOT_FOUND", error: `no route for ${init?.method ?? "GET"} ${pathname}` },
+      404
+    );
+  };
+  return executeDispatchTool({
+    tool,
+    args,
+    cwd: "/workspace",
+    host: "omp",
+    sessionId: "session-42",
+    config,
+    env: {},
+    exec: repoExec("owner/repo"),
+    fetchImpl: fetchImpl as typeof fetch,
+  });
+}
+
+test("dispatch edit-comment against a Dispatch without the route says that server predates corrections", async () => {
+  await expect(
+    olderDispatch("dispatch_edit_comment", { comment: correctedComment, body: "corrected text" })
+  ).rejects.toThrow(OLDER_DISPATCH);
+});
+
+// That build's comment edit is the one route of the five that was already there, and it required
+// the person scope: an agent's token is refused 403 OAUTH_SCOPE_REQUIRED by it alone. The route
+// at this head names no scope, so that code there is the server's age and nothing else.
+test("dispatch edit-comment told its credential lacks the person scope reads the server's age instead", async () => {
+  const scopeRefused = async (): Promise<Response> =>
+    response(
+      {
+        code: "OAUTH_SCOPE_REQUIRED",
+        error:
+          "this request's credential does not hold the person scope, which this route requires",
+      },
+      403
+    );
+
+  await expect(
+    executeDispatchTool({
+      tool: "dispatch_edit_comment",
+      args: { comment: correctedComment, body: "corrected text" },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: scopeRefused as unknown as typeof fetch,
+    })
+  ).rejects.toThrow(OLDER_DISPATCH);
+});
+
+// A person's own token is refused NOT_AUTHOR by that build and by this one alike, so it says
+// what it always said: only the age of the server is reworded.
+test("a comment edit refused NOT_AUTHOR keeps that refusal, whatever the server's age", async () => {
+  const notAuthor = async (): Promise<Response> =>
+    response({ code: "NOT_AUTHOR", error: "only the author may edit this comment" }, 403);
+
+  const error: unknown = await executeDispatchTool({
+    tool: "dispatch_edit_comment",
+    args: { comment: correctedComment, body: "corrected text" },
+    cwd: "/workspace",
+    host: "omp",
+    sessionId: "session-42",
+    config,
+    env: {},
+    exec: repoExec("owner/repo"),
+    fetchImpl: notAuthor as unknown as typeof fetch,
+  }).catch((thrown: unknown) => thrown);
+  expect((error as Error).message).toContain("only the author may edit this comment");
+  expect((error as Error).message).not.toContain("predates post corrections");
+});
+
+test("dispatch delete-comment against a Dispatch without the route says that server predates corrections", async () => {
+  await expect(
+    olderDispatch("dispatch_delete_comment", { comment: correctedComment })
+  ).rejects.toThrow(OLDER_DISPATCH);
+});
+
+test("dispatch edit-message against a Dispatch without the route says that server predates corrections", async () => {
+  await expect(
+    olderDispatch("dispatch_edit_message", { message: correctedMessage, body: "corrected text" })
+  ).rejects.toThrow(OLDER_DISPATCH);
+});
+
+test("dispatch delete-message against a Dispatch without the route says that server predates corrections", async () => {
+  await expect(
+    olderDispatch("dispatch_delete_message", { message: correctedMessage })
+  ).rejects.toThrow(OLDER_DISPATCH);
+});
+
+// The post itself reads from that server, which has had those routes all along; only its
+// /history is missing, and the read says so of the comment and of the message alike.
+test("dispatch read --history against a Dispatch without the route says that server predates corrections", async () => {
+  await expect(
+    olderDispatch(
+      "dispatch_read",
+      { ref: `dispatch://DSP-42/comment/${correctedComment}`, history: true },
+      (pathname) =>
+        pathname === `/api/v1/comments/${correctedComment}`
+          ? { comment: commentRow(), replies: [] }
+          : undefined
+    )
+  ).rejects.toThrow(OLDER_DISPATCH);
+
+  await expect(
+    olderDispatch(
+      "dispatch_read",
+      { ref: `dispatch://DSP-42/message/${correctedMessage}`, history: true },
+      (pathname) =>
+        pathname === `/api/v1/messages/${correctedMessage}`
+          ? { message: messageRow(), replies: [] }
+          : undefined
+    )
+  ).rejects.toThrow(OLDER_DISPATCH);
+});
+
 test("a comment read prints the time of an edit above the body it now holds", async () => {
   const { result } = await runCorrection(
     "dispatch_read",

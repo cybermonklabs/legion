@@ -604,6 +604,25 @@ describe("AskGate at the dispatch CLI", () => {
     expect(posts).toHaveLength(0);
   });
 
+  // A correction writes or takes down the text of a post the gate reviewed when it was posted,
+  // so the CLI asks for a marker for each of the four, as it does for a comment or a message.
+  test("the four post corrections are gated, each refused before any request", async () => {
+    writeRecord();
+    const comment = "cccccccc-0000-4000-8000-000000000050";
+    const message = "dddddddd-0000-4000-8000-000000000050";
+    for (const [argv, command] of [
+      [["edit-comment", "--comment", comment, "--body", "Corrected: 72 hours."], "edit-comment"],
+      [["delete-comment", "--comment", comment], "delete-comment"],
+      [["edit-message", "--message", message, "--body", "Corrected: 02:00 UTC."], "edit-message"],
+      [["delete-message", "--message", message], "delete-message"],
+    ] as const) {
+      const { code, stdout } = await run(argv);
+      expect(code).toBe(1);
+      expect(stdout).toStartWith(`dispatch ${command} was not called: AskGate is on`);
+    }
+    expect(posts).toHaveLength(0);
+  });
+
   test("a record that cannot be read, or that names a missing store, is a refusal naming the cause", async () => {
     const self = { pid: process.pid, start: startOf(process.pid) };
     const file = ownerFile("ses-1", self);

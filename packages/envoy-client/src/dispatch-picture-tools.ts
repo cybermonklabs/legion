@@ -175,11 +175,21 @@ export function parseAgentArtifactRef(ref: string): AgentArtifactRef | null {
   return { session, slug, ...(version === undefined ? {} : { version: Number(version) }) };
 }
 
-/** The bodies of a thread's messages or comments, each dated, for the pictures a read shows. */
+/** The bodies of a thread's messages or comments, each dated, for the pictures a read shows. An
+ *  edited post is dated at its edit: the body a read shows is the one the edit wrote, so a
+ *  picture the edit added is as new as that write, and dating it at the send would rank it below
+ *  pictures written before it and leave it unshown in a thread past the cap. */
 export function datedBodies(
-  records: readonly { readonly body: string; readonly created_at: string }[]
+  records: readonly {
+    readonly body: string;
+    readonly created_at: string;
+    readonly edited_at?: string | null;
+  }[]
 ): DatedText[] {
-  return records.map((record) => ({ text: record.body, at: record.created_at }));
+  return records.map((record) => ({
+    text: record.body,
+    at: record.edited_at ?? record.created_at,
+  }));
 }
 
 /** The texts an ask read shows, dated: its question, typed answer, resolution reason and replies. */
