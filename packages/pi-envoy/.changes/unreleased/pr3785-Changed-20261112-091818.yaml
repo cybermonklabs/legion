@@ -1,5 +1,5 @@
 kind: Changed
-body: 'The Dispatch skill''s "Choosing what to work on" no longer sends a waiting issue, or every issue past the third, to `backlog`. It states one rule instead: move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. It also states what a session does when it stops work: release the claim, say why in a comment, record the wait as a `blocked_by` link or a `dispatch ask`, and leave the status, the priority and the board rank as it found them.'
+body: 'The Dispatch skill''s "Choosing what to work on" no longer sends a waiting issue, or every issue past the third, to `backlog`. It states one rule instead: move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. It also states what a session does when it stops work: release the claim, say why in a comment, record the wait as a `blocked_by` link or a `dispatch ask`, set the status back to the one it had when the session took the issue up (`todo` for an issue from the queue), and change no priority or board rank.'
 time: 2026-11-12T09:18:18.572673832Z
 custom:
     Issue: pr3785

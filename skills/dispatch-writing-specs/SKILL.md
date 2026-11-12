@@ -37,8 +37,8 @@ For each spec, ask, comment and message:
 - Write in `skill://asd-ste100`'s strict mode.
 - Write about the current design, never the person or how people reached it, and never quote or upload their words.
 - Link each source where the person wrote it. With no link, state the design.
-- Treat a person's stated preference or past answer as evidence of their taste, never as a decision that settles the question: an answer given once is not a standing rule. A commit attributed to a person is not their decision, because agents commit the work.
-- In a spec, cite code by file and symbol, never a line number: it goes stale at the next edit.
+- Treat a person's stated preference or past answer as evidence of their taste, never as a decision that settles the question. A commit attributed to a person is not their decision.
+- In a spec, cite code by file and symbol, never a line number.
 - A sentence citing a gate passing (test, review, check) also says what the pass does not show: "Tests pass: a wrong verdict, not a missing one."
 - Keep only text a reader needs to understand, decide, build or check, and say what each issue you name does for them (`skill://plain-words`).
 - In an ask, ask block, comment or message, name a requirement or check by what it is, never its number.
@@ -48,13 +48,13 @@ For each spec, ask, comment and message:
 - Name the concrete case and its numbers, then the choice in those terms, never "Which option?".
 - A choice inside what the person asked for, one their messages favour, routine cleanup, sequencing, naming, a choice between equivalent options, and a fix you can make are yours.
 - Ask with an [ask block](skill://dispatch/SKILL.md#asks-and-ask-blocks): 2 to 4 options, answerable on a phone, and name nothing the reader cannot see from it ("the message above").
-- For each technical term you coined in this session, count by exact match the files holding it, in the repositories the work touches and in Dispatch; a single-digit count means expand the term or drop it, because a coinage reads as familiar to you. A count misses a coinage of common words, so read the draft for those too.
+- For each technical term you coined in this session, count by exact match the files holding it, in the repositories the work touches and in Dispatch. Expand or drop a term with a single-digit count. Read the draft for a coinage of common words too.
 - Measure each claim the ask rests on, its premise and each option's precondition. Where you cannot, mark the claim unverified and name the missing measurement; call an option unavailable only where a precondition demonstrably fails. A premise can go stale within the hour; no unmeasured number goes in one.
-- Before you pass a question on as one only an attended or privileged act answers, name the source that answers it and try it, then the other records holding it, because a 403 or an unfamiliar surface does not make a fact unknowable. Keep a privileged read for what only the live system knows.
+- Before you pass a question on as one only an attended or privileged act answers, try the source that answers it, then the other records holding it. Keep a privileged read for what only the live system knows.
 
 ## Each version
 
-1. After a person's answer, comment or edit, reread the problem and rewrite what the answer touches, deleting what it contradicts: an answer is integrated, never appended. Answer each comment in its thread. Never narrate an edit: versions and comments hold the history.
+1. After a person's answer, comment or edit, reread the problem and rewrite what the answer touches, deleting what it contradicts. Answer each comment in its thread. Never narrate an edit.
 2. Before each spec write, paste the whole spec, never a path, into a fresh subagent to list gaps, conflicts, uncheckable requirements, unclear text and needless questions. Fix or record each.
 3. Before each approval request, `wait` for a read-only fact check: `task(agent="scout")`.
 4. Name each version with `dispatch doc-edit --summary`.
@@ -79,4 +79,4 @@ Rewrite a spec outside the outline whole in one version, its ask blocks moved wi
 
 ## The plan
 
-Write the plan with `writing-plans` as the issue's `plan.md`, not a repository file. Each task is a `:::plan_task` block with `serves` and `needs`.
+The plan is the issue's `plan.md`, never a repository file. Each task is a `:::plan_task` block with `serves` and `needs`.
