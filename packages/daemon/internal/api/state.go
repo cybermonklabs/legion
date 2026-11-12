@@ -547,6 +547,10 @@ type Issue struct {
 	// Check is the issue's open production check, the work after its close (record.ProductionCheck):
 	// present only while the check is open, and absent once it closed or while none was opened.
 	Check *CheckView `json:"check,omitempty"`
+	// MergeWait is what the issue's review round waits on from GitHub, present only while it
+	// waits on GitHub's merge state for the pull request's head and absent for every other
+	// round (MergeWaitView).
+	MergeWait *MergeWaitView `json:"mergeWait,omitempty"`
 	// MemoryGroup is the memory group of the issue's tree (memorygroup.Group): `memory` for a
 	// tree whose roles run with the project's memory overlays and instructions, `none` for one
 	// that runs without them, and absent while nothing has drawn for the tree — a tree first
@@ -1112,6 +1116,53 @@ type CheckWakeView struct {
 	Kind   string    `json:"kind"`
 	Detail string    `json:"detail"`
 	At     time.Time `json:"at"`
+}
+
+// MergeWaitView is what an issue's review round waits on from GitHub. It is present only while
+// the round waits on GitHub's merge state for the pull request's head, which is one rule the
+// daemon reads everywhere (classify.RoundWaitsOnMergeState, over the issue, its reviewer's row
+// and its open pull request): a reviewer's approval stands on the head the pull request is at,
+// and the merge state the record holds for that head is not one the issue may advance on. The
+// engine reads that same rule to decide whether to read GitHub for the round, so the object is
+// on the view exactly for the rounds the daemon is reading for.
+//
+// It stands for the round waiting for a first answer and for the stuck round alike — both wait
+// on GitHub's next answer about the same head — and ToldHead with ToldState is what tells the
+// two apart to a reader: a stuck round is one the architect and the reviewer have been told of.
+// The reading it is here for is the approval that stands for days while GitHub holds the head on
+// a state the issue may not advance on: the merge state alone is on the pull request's view, but
+// not when it was read, nor what the round's own wait is.
+type MergeWaitView struct {
+	// WaitsOn is the head the round waits on, the pull request's current head: the head the
+	// approval stands on, and the head GitHub's answer is about.
+	WaitsOn string `json:"waitsOn"`
+	// MergeState is the merge state the record holds for that head
+	// (record.PullRequest.MergeState), in GitHub's own spelling — `blocked`, `behind`, `draft`,
+	// `dirty`, `unknown`. It is absent while the state is unread, which is a round GitHub has
+	// given no answer for yet, and StateReadAt's absence says the same of it.
+	MergeState string `json:"mergeState,omitempty"`
+	// StateReadAt is record.PullRequest.StateReadAt, the moment of the daemon's last read of the
+	// pull request that answered — a read that only confirmed the state already recorded
+	// included, since this is the age of the knowledge and not the age of the answer. The zero
+	// time is a read that never ran, which is why the field is a pointer and absent rather than
+	// zero: a reader must never take "never read" for a read at the zero instant.
+	StateReadAt *time.Time `json:"stateReadAt,omitempty"`
+	// HeadUpdatedAt is the record's HeadUpdatedAt, the newest `updated_at` GitHub gave among the
+	// pull request's lifecycle observations: a reopen at the same head moves it, and a push whose
+	// event carried no clock does not raise it. Absent when it is zero.
+	HeadUpdatedAt *time.Time `json:"headUpdatedAt,omitempty"`
+	// CheckRuns counts the fence's runs stamped with the current head
+	// (record.PullRequest.CheckRuns, record.AttemptRun.Head), so zero after a push is a fact —
+	// GitHub has reported no check run on this head yet — rather than a gap in the view. It is
+	// written whatever its value.
+	CheckRuns int `json:"checkRuns"`
+	// ToldHead and ToldState are the reviewer's record.ReviewDecision.ToldStuckHead and
+	// ToldStuckState, the marks workflow's tellStuckMergeState leaves once the architect and the
+	// reviewer have been told of this round. They are empty while the round is still waiting for
+	// a first answer, and they name the head and state told of, which a later answer may have
+	// moved past.
+	ToldHead  string `json:"toldHead,omitempty"`
+	ToldState string `json:"toldState,omitempty"`
 }
 
 // PendingStatusWrite is a Dispatch-status effect the outbox has not finished, due now or backing off

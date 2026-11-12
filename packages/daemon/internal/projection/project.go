@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -152,10 +153,13 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		if err != nil {
 			return api.State{}, err
 		}
-		reviewDecision := ""
+		// The reviewer's own row, the single row of its role (the phases table is keyed by issue
+		// and role): the round's decision is read from it, and so is what the round waits on from
+		// GitHub (mergeWaitView). The zero row is an issue whose reviewer has never had one.
+		var reviewer record.PhaseRow
 		for _, item := range phases {
-			if item.Role == claim.RoleReviewer && item.Decision != nil {
-				reviewDecision = item.Decision.State
+			if item.Role == claim.RoleReviewer {
+				reviewer = item
 			}
 			claimView, live := claimViews[item.Claim]
 			if !live {
@@ -186,6 +190,10 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			return api.State{}, err
 		}
 		if pr != nil {
+			reviewDecision := ""
+			if reviewer.Decision != nil {
+				reviewDecision = reviewer.Decision.State
+			}
 			view.PullRequest = &api.PullRequestView{
 				Repo:           pr.Repo,
 				Number:         pr.Number,
@@ -195,6 +203,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 				ReviewDecision: reviewDecision,
 			}
 		}
+		view.MergeWait = mergeWaitView(issue, reviewer, pr)
 
 		gates, err := s.GatesOf(ctx, tx, issue.Key)
 		if err != nil {
@@ -411,6 +420,43 @@ func checkView(check record.ProductionCheck) *api.CheckView {
 	}
 	if check.LastWakeAt != nil {
 		view.LastWake = &api.CheckWakeView{Kind: check.LastWakeKind, Detail: check.LastWakeDetail, At: *check.LastWakeAt}
+	}
+	return view
+}
+
+// mergeWaitView is what an issue's review round waits on from GitHub (api.MergeWaitView), and nil
+// for a round that waits on nothing there. The rule is classify.RoundWaitsOnMergeState, the one
+// the engine reads to decide whether to read GitHub for this round (workflow's reviewRound), so
+// the view carries the object for exactly the rounds the daemon is reading for; the open pull
+// request is this caller's own test, since that rule makes none (the engine's read has one of its
+// own) and a record of a closed or merged pull request says nothing about a wait.
+//
+// It reads the record alone: the head the round waits on, the state the record holds for it, when
+// that state was last read and when GitHub last moved the pull request, the fence's runs stamped
+// with that head - the same test the daemon's own readers make of a run's head
+// (classify.ChecksConcludedOnHead, workflow's headChecks), so a run stored before the fence
+// carried its head counts for no head - and the marks the reviewer's decision carries once the
+// architect and the reviewer have been told of a stuck round. The two times are absent when they
+// are zero: a read that never ran and a lifecycle observation that carried no clock are each a
+// fact of their own, which a zero instant on the wire would read as a moment in 1 CE.
+func mergeWaitView(issue record.Issue, reviewer record.PhaseRow, pr *record.PullRequest) *api.MergeWaitView {
+	if pr == nil || pr.State != record.PullRequestOpen || !classify.RoundWaitsOnMergeState(issue, reviewer, pr) {
+		return nil
+	}
+	view := &api.MergeWaitView{WaitsOn: pr.HeadSHA, MergeState: string(pr.MergeState)}
+	if read := pr.StateReadAt; !read.IsZero() {
+		view.StateReadAt = &read
+	}
+	if updated := pr.HeadUpdatedAt; !updated.IsZero() {
+		view.HeadUpdatedAt = &updated
+	}
+	for _, run := range pr.CheckRuns {
+		if run.Head != "" && run.Head == pr.HeadSHA {
+			view.CheckRuns++
+		}
+	}
+	if reviewer.Decision != nil {
+		view.ToldHead, view.ToldState = reviewer.Decision.ToldStuckHead, string(reviewer.Decision.ToldStuckState)
 	}
 	return view
 }

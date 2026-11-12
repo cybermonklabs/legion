@@ -955,3 +955,95 @@ func TestProjectShowsTheFailureRecordAndTheHeldPhase(t *testing.T) {
 			view, api.FailureViewOf(retired))
 	}
 }
+
+// An issue's view carries a mergeWait object for exactly the review rounds that wait on GitHub's
+// answer about merging the head (classify.RoundWaitsOnMergeState over a pull request the record
+// holds open), and for no other: an approval standing on a head GitHub has answered nothing for
+// yet (LEGION-208) and one standing on a head GitHub will not merge from, whose architect and
+// reviewer have been told (LEGION-209, which carries the told marks the first does not). A round
+// whose issue is not reviewing (LEGION-210), one no approval decided (LEGION-211), one whose
+// head GitHub reports mergeable (LEGION-212) and one whose pull request the record no longer
+// holds open (LEGION-213) carry none.
+//
+// checkRuns counts the fence's runs stamped with the current head alone: LEGION-209 counts the
+// two reported on its own head and not the third, of a name reported on the head before it, and
+// LEGION-208 counts none at all, which is the true account of a head whose push started CI that
+// has reported nothing yet. stateReadAt is absent for LEGION-208, whose pull request no read has
+// ever answered for: the zero instant is no time a read happened at.
+func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
+	read := projectedAt.Add(-20 * time.Minute)
+	updated := projectedAt.Add(-3 * time.Hour)
+	issue := func(key string, at phase.Phase) record.Issue {
+		return record.Issue{Key: key, Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main",
+			GitHubRepo: "acme/widgets", Tree: key, Status: "needs_review", Phase: at}
+	}
+	reviewer := func(key string, decision *record.ReviewDecision) []record.PhaseRow {
+		return []record.PhaseRow{{Issue: key, Role: claim.RoleReviewer, Claim: "gone-reviewer", Decision: decision}}
+	}
+	approved := func() *record.ReviewDecision {
+		return &record.ReviewDecision{State: "approved", Body: "ship it", Head: "h2"}
+	}
+	blocked := func(key string, number int) *record.PullRequest {
+		return &record.PullRequest{Issue: key, Repo: "acme/widgets", Number: number, HeadSHA: "h2",
+			State: record.PullRequestOpen, MergeState: record.MergeStateBlocked, StateReadAt: read, HeadUpdatedAt: updated,
+			CheckRuns: []record.AttemptRun{{Name: "unit", ID: 11, Head: "h2"}, {Name: "lint", ID: 12, Head: "h2"},
+				{Name: "e2e", ID: 13, Head: "h1"}}}
+	}
+	told := approved()
+	told.ToldStuckHead, told.ToldStuckState = "h2", record.MergeStateBlocked
+	merged := blocked("LEGION-213", 47)
+	merged.State = record.PullRequestMerged
+	mergeable := blocked("LEGION-212", 46)
+	mergeable.MergeState = record.MergeStateClean
+	store := projectionStore{
+		issues: []record.Issue{
+			issue("LEGION-208", phase.Reviewing), issue("LEGION-209", phase.Reviewing), issue("LEGION-210", phase.Testing),
+			issue("LEGION-211", phase.Reviewing), issue("LEGION-212", phase.Reviewing), issue("LEGION-213", phase.Reviewing),
+		},
+		phases: map[string][]record.PhaseRow{
+			"LEGION-208": reviewer("LEGION-208", approved()),
+			"LEGION-209": reviewer("LEGION-209", told),
+			"LEGION-210": reviewer("LEGION-210", approved()),
+			"LEGION-211": reviewer("LEGION-211", &record.ReviewDecision{State: "changes_requested", Body: "rename it", Head: "h2"}),
+			"LEGION-212": reviewer("LEGION-212", approved()),
+			"LEGION-213": reviewer("LEGION-213", approved()),
+		},
+		pullRequests: map[string]*record.PullRequest{
+			// The head a push has just moved to: GitHub has answered nothing for it, and the
+			// fence still holds the run of the head before it.
+			"LEGION-208": {Issue: "LEGION-208", Repo: "acme/widgets", Number: 42, HeadSHA: "h2",
+				State: record.PullRequestOpen, MergeState: record.MergeStateUnread, HeadUpdatedAt: updated,
+				CheckRuns: []record.AttemptRun{{Name: "unit", ID: 9, Head: "h1"}}},
+			"LEGION-209": blocked("LEGION-209", 43),
+			"LEGION-210": blocked("LEGION-210", 44),
+			"LEGION-211": blocked("LEGION-211", 45),
+			"LEGION-212": mergeable,
+			"LEGION-213": merged,
+		},
+	}
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, []supervise.Claim{}, nil, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	waiting := &api.MergeWaitView{WaitsOn: "h2", HeadUpdatedAt: &updated}
+	if wait := got.Issues["LEGION-208"].MergeWait; !reflect.DeepEqual(wait, waiting) {
+		t.Fatalf("LEGION-208's mergeWait = %+v, want %+v: the round waits for GitHub's first answer about the head, which no read has given and no check run has been reported on",
+			wait, waiting)
+	}
+	stuck := &api.MergeWaitView{WaitsOn: "h2", MergeState: "blocked", StateReadAt: &read, HeadUpdatedAt: &updated,
+		CheckRuns: 2, ToldHead: "h2", ToldState: "blocked"}
+	if wait := got.Issues["LEGION-209"].MergeWait; !reflect.DeepEqual(wait, stuck) {
+		t.Fatalf("LEGION-209's mergeWait = %+v, want %+v: the stuck round carries the state read, when it was read, the head's own two check runs and the marks it was told by",
+			wait, stuck)
+	}
+	for _, tc := range []struct{ key, why string }{
+		{"LEGION-210", "the issue is not reviewing"},
+		{"LEGION-211", "no approval decided the round"},
+		{"LEGION-212", "GitHub reports the head one the issue may advance on"},
+		{"LEGION-213", "the record no longer holds the pull request open"},
+	} {
+		if wait := got.Issues[tc.key].MergeWait; wait != nil {
+			t.Fatalf("%s's mergeWait = %+v, want none: %s", tc.key, wait, tc.why)
+		}
+	}
+}
