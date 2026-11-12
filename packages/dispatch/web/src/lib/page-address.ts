@@ -29,7 +29,8 @@ import {
  * do not reach for the address themselves. In the six features
  * `components/one-definition.test.ts` names in `ADDRESS_FEATURES` - `agents`, `artifacts`,
  * `delivery`, `inbox`, `project` and `search` - that test refuses `useSearchParams`,
- * `useLocation` and a hand-built `URLSearchParams`, so for those pages the address is read and
+ * `useLocation`, a hand-built `URLSearchParams`, `window.location` and `history.pushState` or
+ * `history.replaceState`, so for those pages the address is read and
  * written here alone and there is one rule for how a parameter is read, how it is written, and
  * what happens to the browser's history when it changes. `features/architecture/` is outside
  * that list and still reads the router itself (`ArchitecturePage.tsx`'s own `useSearchParams`);

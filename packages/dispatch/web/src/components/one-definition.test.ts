@@ -84,6 +84,14 @@ const ADDRESS_MARKS: readonly Mark[] = [
     what: "navigates with a query of its own — `lib/page-address.ts`'s `useAddressNavigate`",
     pattern: /navigate\(\s*(?:["'`][^"'`]*\?|\{[^}]*\bsearch\s*:)/,
   },
+  {
+    what: "reads or writes the address through the browser's own location (`window.location`) — `lib/page-address.ts`'s `usePageAddress` to read it, `useAddressUpdate` or `useAddressNavigate` to write it",
+    pattern: /\b(?:window|document|globalThis)\.location\b/,
+  },
+  {
+    what: "writes the address through the browser's own history (`history.pushState` / `history.replaceState`), behind the router's back — `lib/page-address.ts`'s `useAddressUpdate` or `useAddressNavigate`",
+    pattern: /\bhistory\.(?:pushState|replaceState)\b/,
+  },
 ];
 
 /** The table library's module specifier, as every one of its statements ends. */
