@@ -6667,3 +6667,5 @@ A second user on the box runs a helper of their own, as their own user, and read
 Dropping those two variables is not enough on its own, because the controller keeps the operator's HOME and the envoy.json there is a person's own: that file's `dispatch.token` would resolve first and the controller would write Dispatch as the operator.
 So the controller's environment also carries `DISPATCH_TOKEN_BROKER=1`, the session's word that its Dispatch credential is this machine's own identity and nothing else: under it the client reads no bearer from any source — variable, chosen file or checkout — and a session that can trade none turns Dispatch off with an error naming the broker variable that is missing, rather than falling back to whatever bearer the box holds (`packages/envoy-client/src/dispatch-config.ts`, `dispatchTarget`).
 Any other value of that variable is a mistake in the deployment, refused by name rather than read as on or as off.
+
+<!-- INFRA-1413 selection probe, never merged. -->
