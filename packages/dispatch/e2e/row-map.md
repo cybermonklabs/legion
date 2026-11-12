@@ -224,6 +224,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/coverage.e2e.ts` | coverage flags are the server's computation, cleared by a write |
 | `e2e/create-document-refusals.e2e.ts` | every row reads a refusal: the taken title the control checks against the owner's own list, the role slug and the duplicate the server refuses in its own words, and the closed issue's one sentence; each then reads the issue's documents again to prove nothing was written |
 | `e2e/create-document.e2e.ts` | makes a document and then reads its own write - the versions it holds, the list it is listed in and the line typed into its live editor after a reload; the double press is answered by the server's idempotency key |
+| `e2e/create-issue-decision-claim.e2e.ts` | the server's search answers the typed title, and the answered ask it lists is its ranking |
 | `e2e/create-issue-related.e2e.ts` | the server's similar-issue search answers the typed title |
 | `e2e/decision-records.e2e.ts` | Keep and Change are writes, and "out of date" is the server's judgement |
 | `e2e/deep-links.e2e.ts` | document landings need the live room and server-settled anchored marks |

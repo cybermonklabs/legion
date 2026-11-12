@@ -1,0 +1,5 @@
+kind: Changed
+body: 'Daemon API contract 75: every field of the daemon''s claim record and issue record is now served or withheld by a decision a test holds. A claim view carries `failure` once the daemon holds a cause and a sentence for the claim (`cause`, one of seven words, `detail`, the sentence beside it, `at` and `attempts`, the four counts), and with it `pendingCause`, `providerErrorRun`, `servingGeneration`, `updateReasons` and `pendingTask`, which names the held task''s phase, when it was queued, how many sends failed and the last send error and never its text. An issue carries `heldFrom`, the phase its hold took it out of, `lingerUntil` on a lingering root and `ancestry` on a root the record holds a Dispatch chain for. The operator claim carries `failure` too, with `suspensionHeldBy`, `compacting` and `processGone`. A state body carries `contract`, the contract the daemon declares and the one the caller''s pod records, and a body narrowed to an older contract carries none of these keys and no `contract` either. `LegionPhaseRetryRequest` takes an optional `reason`.'
+time: 2026-11-12T03:01:19.850637774Z
+custom:
+    Issue: pr3662

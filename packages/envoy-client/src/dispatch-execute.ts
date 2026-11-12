@@ -271,6 +271,63 @@ export function adviceMemory(): Set<string> {
   return triageAdviceShown;
 }
 
+/** The call that hands a moved approval request back to the person, built in one place for the
+ *  two lines that print it - a document write's advice and a reply on such a request - so the
+ *  two can never drift. `artifactID` and `primary` describe the request's FIRST document, the
+ *  one whose approval route the call reopens, and `summaryVersion` is the version the request
+ *  asks about, which is what the `--summary` placeholder names as the floor of what changed. */
+function handBackApprovalCommand(request: {
+  owner: { kind: "issue" | "project"; key: string };
+  artifactID: string;
+  primary: boolean;
+  verification: boolean;
+  summaryVersion: number;
+}): string {
+  const owner =
+    request.owner.kind === "project"
+      ? `--project ${request.owner.key} --artifact ${request.artifactID}`
+      : request.primary
+        ? `--issue ${request.owner.key}`
+        : `--issue ${request.owner.key} --artifact ${request.artifactID}`;
+  // `--include-verification` asks for the issue's spec and its Verification document in one
+  // card, and `requestArtifactApproval` (packages/envoy/internal/dispatch/api/reviews.go)
+  // refuses it with 409 NOT_SPEC_DOCUMENT on every other document, a project document included.
+  // So the flag rides only a request whose first document is its issue's primary one.
+  const verification =
+    request.owner.kind === "issue" && request.primary && request.verification
+      ? " --include-verification"
+      : "";
+  return (
+    `dispatch request-approval ${owner}${verification} ` +
+    `--summary '<what changed since version ${request.summaryVersion}>'`
+  );
+}
+
+/** Each document that stands above the version its approval request asks about, in the order the
+ *  request names them: `spec.md asked about version 9 and is now version 10`, joined with `; `
+ *  so the clauses stay one sentence. */
+function movedApprovalClauses(
+  documents: readonly { name: string; requested_version: number; version: number }[]
+): string {
+  return documents
+    .map(
+      (document) =>
+        `${document.name} asked about version ${document.requested_version} and is now version ${document.version}`
+    )
+    .join("; ");
+}
+
+/** The documents of an approval request a version has moved: the ones standing above the version
+ *  the request asks about. It is this side's one spelling of `requested_version < version`, the
+ *  rule the server spells as `docs.ApprovalAwaitsHandBack` and the SQL `approvalMoved`, read by
+ *  the two lines that name a moved request - a document write's advice and a reply on such a
+ *  request - so the two can never drift. */
+function movedApprovalDocuments<Document extends { requested_version: number; version: number }>(
+  documents: readonly Document[]
+): Document[] {
+  return documents.filter((document) => document.requested_version < document.version);
+}
+
 function renderAdvice(
   tool: string,
   key: string,
@@ -350,6 +407,62 @@ function renderAdvice(
       if (ask === undefined) break;
       lines.push(
         `You still have an open ask on ${key}: "${ask.question.slice(0, 80)}" (${ask.id}). Still needed? See the \`dispatch\` skill, "Close what you opened".`
+      );
+    }
+  }
+
+  // The version this write stored took an open approval request of the document back from the
+  // person it was asked of: it waits on this agent now and nothing tells that person, so the
+  // write that moved it is where the request and the call that hands it back are named. The
+  // report carries everything the line says, so this reads no ask and makes no request, which is
+  // what keeps `renderAdvice` synchronous. It comes before the superseded-approval block so that
+  // block's line stays the last advice line a document write prints.
+  const movedApproval = advice.moved_approval_request;
+  if (
+    movedApproval !== undefined &&
+    (tool === "dispatch_doc_edit" || tool === "dispatch_artifact")
+  ) {
+    // No line when no document of the report moved, since a document still at the version the
+    // request asks about is one this write left alone. A report holding no document at all
+    // (`documents` is null on a request this client cannot describe) moved none of them either.
+    const documents = movedApproval.documents ?? [];
+    const moved = movedApprovalDocuments(documents);
+    // The owner part of the call comes from the request's own place. A report naming neither an
+    // issue nor a project could name no owner, and an invalid command is worse than no line.
+    const movedOwner =
+      movedApproval.issue !== undefined && movedApproval.issue !== ""
+        ? ({ kind: "issue", key: movedApproval.issue } as const)
+        : movedApproval.project !== undefined && movedApproval.project !== ""
+          ? ({ kind: "project", key: movedApproval.project } as const)
+          : undefined;
+    // The call reopens the request's first document, and the `--summary` floor is the version
+    // the first document that moved was handed over at. `--include-verification` is what asked
+    // for a second document, so it is read from the documents beside the first.
+    const first = documents[0];
+    const firstMoved = moved[0];
+    // Both reads are guarded because the strictest tsconfig of this repository,
+    // packages/claude-envoy's, compiles these sources under `noUncheckedIndexedAccess`, which
+    // types an indexed read as possibly `undefined`. The `undefined` arm cannot be reached:
+    // `moved` is `documents` filtered, so a `moved` that is not empty leaves both arrays holding
+    // a first element. A first element missing all the same is one more reason to print no line.
+    if (
+      moved.length > 0 &&
+      movedOwner !== undefined &&
+      first !== undefined &&
+      firstMoved !== undefined
+    ) {
+      const command = handBackApprovalCommand({
+        owner: movedOwner,
+        artifactID: first.artifact_id,
+        primary: first.primary,
+        verification: documents.slice(1).some((document) => document.role === "verification"),
+        summaryVersion: firstMoved.requested_version,
+      });
+      lines.push(
+        `This write moved the open approval request (ask ${movedApproval.ask_id}): it waits on ` +
+          "an agent now, not on the person, and nothing tells the person. " +
+          `${movedApprovalClauses(moved)}. Once the human has agreed to every point in it, hand ` +
+          `the same request back: ${command}. Not yours to hand back? Tell the issue's architect.`
       );
     }
   }
@@ -2033,19 +2146,50 @@ async function movedApprovalLine(
   const ask = (await client.getAsk(askID).catch(() => undefined))?.ask;
   const approval = ask?.approval;
   if (ask?.kind !== "approval" || approval === undefined) return undefined;
-  if (approval.requested_version >= approval.version) return undefined;
-  const owner =
-    ask.issue_key === null
-      ? `--project ${ask.approval_artifact?.project ?? "<project>"} --artifact ${approval.artifact_id}`
-      : ask.approval_artifact?.primary === true
-        ? `--issue ${ask.issue_key}`
-        : `--issue ${ask.issue_key} --artifact ${approval.artifact_id}`;
+  // Every document the request names is read, not its lead pair alone: a request over a spec and
+  // its issue's Verification document moves when either of the two does, and a write of the
+  // Verification document moves the second one while the lead pair stands still. A Dispatch older
+  // than this client sends no list at all, and for it the lead pair is the whole request.
+  const listed = approval.documents ?? [];
+  const documents =
+    listed.length > 0
+      ? listed
+      : [
+          {
+            name: approval.name,
+            requested_version: approval.requested_version,
+            version: approval.version,
+          },
+        ];
+  const moved = movedApprovalDocuments(documents);
+  if (moved.length === 0) return undefined;
+  // The first document that moved carries the `--summary` floor. The read is guarded because the
+  // strictest tsconfig of this repository, packages/claude-envoy's, compiles these sources under
+  // `noUncheckedIndexedAccess`, which types an indexed read as possibly `undefined`. The
+  // `undefined` arm cannot be reached: `moved` is `documents` filtered and is not empty here, so
+  // it holds a first element. A first element missing all the same is one more reason to answer
+  // `undefined`.
+  const firstMoved = moved[0];
+  if (firstMoved === undefined) return undefined;
+  const command = handBackApprovalCommand({
+    owner:
+      ask.issue_key === null
+        ? { kind: "project", key: ask.approval_artifact?.project ?? "<project>" }
+        : { kind: "issue", key: ask.issue_key },
+    artifactID: approval.artifact_id,
+    primary: ask.approval_artifact?.primary === true,
+    // An ask carries no role for the documents of its request, so the flag is read from the
+    // request's own shape: the only request that names two documents is an issue's spec with
+    // that issue's Verification document, because `requestArtifactApproval`
+    // (packages/envoy/internal/dispatch/api/reviews.go) appends a second document only under
+    // `include_verification`, which it refuses on any document that is not the issue's spec.
+    verification: documents.length > 1 && ask.approval_artifact?.primary === true,
+    summaryVersion: firstMoved.requested_version,
+  });
   return (
-    `The reply did not hand the ask to the human: it is the approval request for ${approval.name} ` +
-    `at version ${approval.requested_version}, and ${approval.name} is now version ${approval.version}. ` +
-    "No reply hands a moved approval request back. Once the human has agreed to every point in " +
-    `version ${approval.version}, run: dispatch request-approval ${owner} --summary ` +
-    `'<what changed since version ${approval.requested_version}>'`
+    "The reply did not hand the ask to the human: it is an open approval request, and " +
+    `${movedApprovalClauses(moved)}. No reply hands a moved approval request back. Once the ` +
+    `human has agreed to every point in it, run: ${command}`
   );
 }
 
