@@ -178,14 +178,18 @@ const tupleWriteColumns = `from_kind, from_id, kind, to_kind, to_id, at, who, so
 
 // The two repeat keys, named by their exact column list and predicate: a partial index is no
 // constraint, so `on conflict on constraint` cannot name either of them. Both are partial on
-// source_event <> 0, so a tuple at the sentinel is appended unconditionally.
+// source_event <> 0, so a tuple at the sentinel is appended unconditionally. Both carry the far
+// end, so one event may state two far ends under one kind: the value key carries md5(to_id)
+// rather than the value itself, which has no length bound a btree key would take
+// (20261109013400_graph_store.up.sql), and an inference clause names that expression as the
+// index declares it.
 const (
 	relationRepeatKey = `
 	on conflict (from_kind, from_id, kind, to_kind, to_id, source_event, asserted)
 		where to_kind <> '` + KindValue + `' and source_event <> 0
 	do nothing`
 	valueRepeatKey = `
-	on conflict (from_kind, from_id, kind, source_event, asserted)
+	on conflict (from_kind, from_id, kind, md5(to_id), source_event, asserted)
 		where to_kind = '` + KindValue + `' and source_event <> 0
 	do nothing`
 )

@@ -66,8 +66,11 @@ type BlockTuple struct {
 // node_address) is checked inside each statement that writes a projection row and there is no
 // node to name otherwise; the tuples are not, because on the request path no event exists while
 // the pass runs. The caller appends them once it holds the event that caused the write
-// (Caused), in the same transaction, where refs.Stamp already runs. A pass that lost the
-// revision fence states nothing and leaves an empty write, which Caused writes nothing for.
+// (Caused), in the same transaction, where refs.Stamp already runs. The base attributes of the
+// nodes the pass wrote are tuples of that same write and ride with them: the pass takes them
+// back from graphstore.WriteStating rather than letting the store append them, so a block
+// stated gone by a version carries the event that deleted it. A pass that lost the revision
+// fence states nothing and leaves an empty write, which Caused writes nothing for.
 type BlockIndexWrite struct {
 	Nodes  []graphstore.Node
 	Tuples []BlockTuple
@@ -293,9 +296,9 @@ func IndexBlocks(
 		write.Nodes = append(write.Nodes, blockNode(blockNodeAddress(refKey, id), writer, versionAt, graphstore.StateLive))
 	}
 	// A block the version no longer holds has its node stated gone. The tuple that says so is
-	// not written here: graphstore.Write states a base attribute it moved, with this write's
-	// own time, writer and cause, so a block restored by a later version is stated live by the
-	// same rule and no writer of this store states a base attribute of its own.
+	// not built here: the node write states a base attribute it moved, with this write's own
+	// time and writer, so a block restored by a later version is stated live by the same rule
+	// and no writer of this store states a base attribute of its own.
 	for _, id := range deleted {
 		if !blockIDFits(refKey, id) {
 			continue
@@ -304,8 +307,16 @@ func IndexBlocks(
 	}
 	// The nodes go in before any projection row that names one: the foreign key is checked
 	// inside the statement writing that row, so a node written afterwards would be too late.
-	if err := graphstore.Write(ctx, tx, write.Nodes, nil); err != nil {
+	// The base attributes that write states come back here rather than being appended with it,
+	// because this pass runs before its caller's event exists, and they are appended with the
+	// pass's own tuples under that event (Caused). They carry no legacy_source_seq: no legacy
+	// row states a node's visibility or its state.
+	base, err := graphstore.WriteStating(ctx, tx, write.Nodes, nil)
+	if err != nil {
 		return nil, false, BlockIndexWrite{}, fmt.Errorf("write the block nodes of version %d of %s: %w", version, artifactID, err)
+	}
+	for _, tuple := range base {
+		write.Tuples = append(write.Tuples, BlockTuple{Tuple: tuple})
 	}
 
 	if len(deleted) > 0 {

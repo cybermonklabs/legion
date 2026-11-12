@@ -1065,19 +1065,21 @@ const (
 // foreign key on (node_kind, node_address) is checked inside the statement that writes the row
 // and there is no node to name otherwise. The facts are not: on the request path no event
 // exists while the row is written, so they wait for the event that caused the write (caused),
-// in the same transaction, where refs.Stamp already runs. The block index states its own nodes
-// the same way (refs.BlockIndexWrite).
+// in the same transaction, where refs.Stamp already runs. The node's two base attributes wait
+// with them: writeNode takes them back from the store rather than letting it append them, so
+// that they carry the event that stored the comment like every other fact of this write. The
+// block index states its own nodes the same way (refs.BlockIndexWrite).
 type commentStoreWrite struct {
 	node   graphstore.Node
 	tuples []graphstore.Tuple
 }
 
 // commentStored is what the comment rowID states: its node, project-visible and live, made by
-// its author at the row's own created_at, whose two base attributes graphstore.Write states
-// for it; and the artifact it is anchored to and the artifact that owns it, each stated only
-// where the comment has one. Both relations name the artifact by its address, which is its
-// ref_key, so the two artifacts' addresses are read here, in the caller's transaction, in one
-// statement.
+// its author at the row's own created_at, whose two base attributes writeNode takes back from
+// graphstore.WriteStating; and the artifact it is anchored to and the artifact that owns it,
+// each stated only where the comment has one. Both relations name the artifact by its address,
+// which is its ref_key, so the two artifacts' addresses are read here, in the caller's
+// transaction, in one statement.
 func commentStored(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1126,22 +1128,24 @@ func (w *commentStoreWrite) states(kind, toKind, toID string) {
 	})
 }
 
-// writeNode writes the comment's node, which the row that projects it names. It states no
-// relation of its own: a relation of this store carries the event that caused it, and on the
-// request path that event is appended after the row. The node's two base attributes are the
-// one exception, and they are not this writer's to state: graphstore.Write states them for
-// every node its insert makes, under the sentinel that node carries.
-func (w commentStoreWrite) writeNode(ctx context.Context, tx pgx.Tx) error {
-	if err := graphstore.Write(ctx, tx, []graphstore.Node{w.node}, nil); err != nil {
+// writeNode writes the comment's node, which the row that projects it names, and keeps the two
+// base attributes that write states with the facts this writer already holds. It appends
+// nothing: every fact of this write carries the event that caused it, and on the request path
+// that event is appended after the row, so all of them are appended by caused.
+func (w *commentStoreWrite) writeNode(ctx context.Context, tx pgx.Tx) error {
+	base, err := graphstore.WriteStating(ctx, tx, []graphstore.Node{w.node}, w.tuples)
+	if err != nil {
 		return fmt.Errorf("write the node of comment %s: %w", w.node.ID, err)
 	}
+	w.tuples = append(w.tuples, base...)
 	return nil
 }
 
-// caused appends what the comment states under the event that stored it, and moves its node
-// onto that event: a node row is the projection of its own tuples and may be written again,
-// while a tuple may not be updated. event is graphstore.NoEvent where no event recorded the
-// write, which is what the seed states.
+// caused appends what the comment states under the event that stored it, its node's two base
+// attributes among them, and moves its node row onto that event: a node row is the projection
+// of its own tuples and may be written again, while a tuple may not be updated. event is
+// graphstore.NoEvent where no event recorded the write, which is what the seed states, and the
+// tuples then carry the sentinel.
 //
 // The node is not written again: graphstore.Caused moves the event onto the row writeNode
 // already wrote, as refs.BlockIndexWrite.Caused does for a version's blocks. A second

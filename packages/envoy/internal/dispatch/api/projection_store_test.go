@@ -91,8 +91,13 @@ var rowWrite = regexp.MustCompile(`(?is)\b(?:insert\s+into|delete\s+from)\s+(blo
 var nodeColumnWrite = regexp.MustCompile(`(?is)\bupdate\s+(block_refs|comments|document_blocks)\b[^;]*?\bset\b[^;]*?\bnode_(?:kind|address)\b`)
 
 // The store's own writers, as a call names them. Everything that writes graph_nodes and
-// graph_tuples goes through one of the three (internal/dispatch/graphstore).
-var storeWriters = []string{"func:graphstore.Write", "func:graphstore.WriteArms", "func:graphstore.Authored"}
+// graph_tuples goes through one of the four (internal/dispatch/graphstore). WriteStating is
+// Write split at the seam between writing the node row and appending the facts under it, for a
+// writer whose event is appended after the row it writes; it writes the same node rows.
+var storeWriters = []string{
+	"func:graphstore.Write", "func:graphstore.WriteStating",
+	"func:graphstore.WriteArms", "func:graphstore.Authored",
+}
 
 // projectionWrite is one statement of the sources that writes a projected table.
 type projectionWrite struct {

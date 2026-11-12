@@ -58,9 +58,20 @@ create table graph_tuples (
 -- row again and `on conflict do nothing` drops it. Both are partial on `source_event <> 0`: at
 -- the sentinel there is no event to state a fact twice, and a document re-indexed again and
 -- again would otherwise lose the second retraction of one `part_of`.
+--
+-- Both keys carry the far end, because the far end is part of the fact the tuple states: for a
+-- relation it is the address the tuple points at, and for an attribute it is the value itself.
+-- A key that left the value out would hold one event to one value of one attribute of one node,
+-- and a transaction that stated an attribute and then moved it under the same event would have
+-- its second value dropped by `do nothing` and never know - the row would hold the last value
+-- and the log the first, which is the divergence these tables exist to rule out. The value key
+-- carries `md5(to_id)` rather than `to_id` because a value has no length bound and a btree key
+-- is bounded at about 2,704 bytes on an 8 KiB page: the digest is the same width for a value of
+-- any size, so a three-kilobyte block of text is still writable, while two different values
+-- under one event stop colliding. A relation's `to_id` is an address and goes in whole.
 create unique index graph_tuples_once on graph_tuples (from_kind, from_id, kind, to_kind, to_id, source_event, asserted)
   where to_kind <> 'value' and source_event <> 0;
-create unique index graph_tuples_value_once on graph_tuples (from_kind, from_id, kind, source_event, asserted)
+create unique index graph_tuples_value_once on graph_tuples (from_kind, from_id, kind, md5(to_id), source_event, asserted)
   where to_kind = 'value' and source_event <> 0;
 
 -- The read indexes.

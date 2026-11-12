@@ -19,8 +19,14 @@ import (
 // node written through any writer of this store carries them: the block index, the comment
 // path, the backfill and the seed all reach the store through this call. writeNodes says which
 // nodes they are stated for, and the tuples it answers are appended with the caller's own.
+//
+// This is the whole of the write for a caller that has its cause in hand, or none at all: a
+// backfill, a seed, a publisher. A caller whose event is appended after the node row - the
+// comment path and the block index, whose projection rows carry a foreign key into graph_nodes
+// and must therefore follow the node - takes WriteStating instead, so that the base attributes
+// are appended under that event rather than under the sentinel.
 func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
-	base, err := writeNodes(ctx, tx, nodes, tuples)
+	base, err := WriteStating(ctx, tx, nodes, tuples)
 	if err != nil {
 		return err
 	}
@@ -28,6 +34,23 @@ func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 		return appendTuples(ctx, tx, tuples)
 	}
 	return appendTuples(ctx, tx, append(base, tuples...))
+}
+
+// WriteStating writes every node and answers the base attributes the write states, appending
+// none of them: Write split at the one seam a caller needs, which is between writing the row and
+// appending the facts under it.
+//
+// It exists for the writer whose event does not exist while it runs. Such a writer orders itself
+// node row, projection row, event, tuples: the node first because the projection row's foreign
+// key names it, the event after both because it records what the request did, and the tuples
+// last because each one holds the event that caused it and no tuple may be updated to learn it
+// afterwards. The base attributes are facts of that same write, so they go in that last step
+// with the caller's own tuples, under the same event, in one Write(ctx, tx, nil, tuples).
+//
+// stated is what the caller states itself, read for the one thing writeNodes needs it for: a
+// base attribute the caller states is not stated twice.
+func WriteStating(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([]Tuple, error) {
+	return writeNodes(ctx, tx, nodes, stated)
 }
 
 // The two base attributes, as the kind of the tuple that states each spells it. graph_nodes
@@ -45,18 +68,23 @@ const (
 // is the projection of its tuples and may be written again, and a later write that learns the
 // event id has to be able to move source_event.
 //
-// It answers the base attributes this write states as tuples. A node the insert made (xmax = 0)
-// is stated `visibility` and `state`, which is the node carrying both from its first write. A
-// node whose stored state this write moved is stated the new `state`, which is the delete
-// (live -> gone) and the restore (gone -> live) alike. A node written again with nothing
-// changed is stated neither, so a re-index of a document nothing moved appends nothing. Each
-// tuple carries the time, the writer and the cause of the node write that states it.
+// It answers the base attributes this write states as tuples, one attribute at a time. A node
+// the insert made (xmax = 0) is stated `visibility` and `state`, which is the node carrying both
+// from its first write. A node that was already there is stated `visibility` where this write
+// moved its stored visibility, and `state` where this write moved its stored state, each on its
+// own: a write that moves one of the two states that one, and a node written again with neither
+// moved is stated neither, so a re-index of a document nothing moved appends nothing. The two
+// are read and compared separately because they move separately - a node hidden from a project
+// keeps its state, and a deleted block keeps its visibility - and a row whose column moved while
+// the log said nothing would be a row no appended fact explains, which nothing may mend later,
+// since no tuple is ever updated. Each tuple carries the time, the writer and the cause of the
+// node write that states it.
 //
-// The stored state is read in the same statement, so the comparison is of one snapshot: two
-// writes racing over one node can state one value twice, which this store takes by design (a
-// second backfill run does the same). They cannot lose one, because the two writers of a node
-// queue on its row here, and the pass that writes a block's node holds its document's owner row
-// before it reaches this.
+// Both stored values are read in the same statement as the write, so the comparison is of one
+// snapshot: two writes racing over one node can state one value twice, which this store takes by
+// design (a second backfill run does the same). They cannot lose one, because the two writers of
+// a node queue on its row here, and the pass that writes a block's node holds its document's
+// owner row before it reaches this.
 func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([]Tuple, error) {
 	if len(nodes) == 0 {
 		return nil, nil
@@ -82,7 +110,7 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 				with ordinality as node(`+nodeColumns+`, ordinality)
 		),
 		stored as (
-			select held.kind, held.id, held.state
+			select held.kind, held.id, held.visibility, held.state
 			from graph_nodes held
 			join incoming on incoming.kind = held.kind and incoming.id = held.id
 		),
@@ -99,9 +127,11 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 			   or graph_nodes.visibility is distinct from excluded.visibility
 			   or graph_nodes.state is distinct from excluded.state
 			   or graph_nodes.attributes is distinct from excluded.attributes
-			returning kind, id, state, xmax = 0 as made
+			returning kind, id, visibility, state, xmax = 0 as made
 		)
-		select incoming.ordinality, written.made, stored.state is distinct from written.state
+		select incoming.ordinality, written.made,
+			stored.visibility is distinct from written.visibility,
+			stored.state is distinct from written.state
 		from written
 		join incoming on incoming.kind = written.kind and incoming.id = written.id
 		left join stored on stored.kind = written.kind and stored.id = written.id
@@ -115,11 +145,11 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 	var own map[baseAttribute]struct{}
 	for rows.Next() {
 		var position int64
-		var made, moved bool
-		if err := rows.Scan(&position, &made, &moved); err != nil {
+		var made, movedVisibility, movedState bool
+		if err := rows.Scan(&position, &made, &movedVisibility, &movedState); err != nil {
 			return nil, fmt.Errorf("write graph nodes: %w", err)
 		}
-		if !made && !moved {
+		if !made && !movedVisibility && !movedState {
 			continue
 		}
 		if own == nil {
@@ -131,10 +161,12 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 			base = make([]Tuple, 0, 2*len(nodes))
 		}
 		node := nodes[position-1]
-		if made {
+		if made || movedVisibility {
 			base = statesAttribute(base, own, node, attributeVisibility, node.Visibility)
 		}
-		base = statesAttribute(base, own, node, attributeState, node.State)
+		if made || movedState {
+			base = statesAttribute(base, own, node, attributeState, node.State)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("write graph nodes: %w", err)

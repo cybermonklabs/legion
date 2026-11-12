@@ -1082,8 +1082,12 @@ var requiredGraphIndexes = []requiredGraphIndex{
 		predicate: "to_kind <> 'value' and source_event <> 0",
 	},
 	{
+		// The value key carries the value through md5, because a value has no length bound and
+		// a btree key is bounded at about 2,704 bytes: the digest keeps one event from stating
+		// two values of one attribute of one node as one fact, which `do nothing` would drop,
+		// without refusing the three-kilobyte value this test writes and reads back.
 		name: "graph_tuples_value_once", table: "graph_tuples", unique: true,
-		keys:      "from_kind, from_id, kind, source_event, asserted",
+		keys:      "from_kind, from_id, kind, md5(to_id), source_event, asserted",
 		predicate: "to_kind = 'value' and source_event <> 0",
 	},
 	{
