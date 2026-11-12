@@ -545,7 +545,7 @@ RACE_DOCS_STEP = "Race-test the document service"
 RACE_DOCS_SCRIPT = ('mkdir -p "$RUNNER_TEMP/go-test-json"\n'
                     'RACE_MEM_LIMIT_KB=8388608 RACE_MEM_JSON_PATH="$RUNNER_TEMP/go-test-json/race-docs.json" '
                     "../../.github/scripts/race_memory.py "
-                    "go test -json -race -count=1 -parallel 2 -timeout 55m ./internal/dispatch/docs/")
+                    "go test -json -race -count=1 -parallel 2 -timeout 56m ./internal/dispatch/docs/")
 # The same package under Go's cleanup detector. GODEBUG is a GO* name, which is outside
 # ENV_ALLOWED wherever it is set, so this step too is pinned whole rather than reduced.
 FINALIZERS_STEP = "Test the document service under the cleanup detector"
@@ -606,7 +606,7 @@ class RaceJob(NamedTuple):
 # higher than every pair before it. Each -timeout is the smallest whole minute at which that
 # call's slowest package takes at most half of it: internal/bus 446.9 s -> 15m,
 # internal/dispatch/api 793.0 s -> 27m (run 43129905604, attempt 1), and
-# internal/dispatch/docs 1634.3 s -> 55m. Each figure is read from that job's own
+# internal/dispatch/docs 1651.0 s -> 56m. Each figure is read from that job's own
 # `go test -json` artifact (dispatch://INFRA-1075, check 6224bb0e).
 ENVOY_RACE_LANE = (
     RaceJob("envoy-go-race",
@@ -615,7 +615,7 @@ ENVOY_RACE_LANE = (
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True))),
     RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "27m", (RacePackage("internal/dispatch/api"),)),
-    RaceJob("envoy-go-race-docs", "Race-test the document service", "55m", (RacePackage("internal/dispatch/docs"),)),
+    RaceJob("envoy-go-race-docs", "Race-test the document service", "56m", (RacePackage("internal/dispatch/docs"),)),
 )
 RACE_JOBS = {job.job: job for job in ENVOY_RACE_LANE}
 
@@ -1641,7 +1641,7 @@ GATES = [
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [
-            (ENVOY, ["./internal/dispatch/docs/"], "go test -race -count=1 -timeout 55m ./internal/dispatch/docs/", {"race": True}),
+            (ENVOY, ["./internal/dispatch/docs/"], "go test -race -count=1 -timeout 56m ./internal/dispatch/docs/", {"race": True}),
         ]),
     ], reads=reads(
         (".github/scripts/race_memory.py", f"{at('envoy-go-race-docs', RACE_DOCS_STEP)} runs the package under it"),

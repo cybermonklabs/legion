@@ -5744,12 +5744,12 @@ jobs:
     # Both numbers take the largest reading this branch has of them (dispatch://INFRA-1075,
     # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
     # package takes at most half of it: internal/dispatch/docs, this job's one package,
-    # 1634.3 s, 1634.3 / 30 = 54.48, so 55m, which it fills to 49.5 per cent (54m it would
-    # fill to 50.4). The job's own bound follows its largest measured time, 1724 s (run
-    # 43015711475, job 130506232865), 28.73 minutes, plus that largest -timeout plus 6:
-    # 28.73 + 55 + 6 = 89.73, so 90. The limit must fire before the runner cancels the job, so a hung
-    # test prints the dump that names it.
-    timeout-minutes: 90
+    # 1651.0 s (run 43174763194, job 131036282782), 1651.0 / 30 = 55.03, so 56m, which it
+    # fills to 49.1 per cent, where 55m it would fill to 50.0. The job's own bound follows its
+    # largest measured time, 1755 s in that same run, 29.25 minutes, plus that largest -timeout
+    # plus 6: 29.25 + 56 + 6 = 91.25, so 92. The limit must fire before the runner cancels the
+    # job, so a hung test prints the dump that names it.
+    timeout-minutes: 92
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5834,7 +5834,7 @@ jobs:
       # this sampler at -parallel 2 peaked at 1,534,288 kB, and the rest of the package at
       # -parallel 2 reached 6,240,116 kB, so even added as though nothing were reused they stay
       # under 8388608 kB. What it costs is this step's own time, about twice the 965 s the run
-      # above spent at four slots, which the -timeout 55m below and the job's 90 minutes hold.
+      # above spent at four slots, which the -timeout 56m below and the job's 92 minutes hold.
       # No -p beside it: one package is one build lane, so go test's package parallelism has
       # nothing to divide. No GOMEMLIMIT either: two slots leave the heap it would bound below
       # the 2 GiB this step once set, so it would only make the detector's work slower.
@@ -5848,7 +5848,7 @@ jobs:
       - name: Race-test the document service
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"
-          RACE_MEM_LIMIT_KB=8388608 RACE_MEM_JSON_PATH="$RUNNER_TEMP/go-test-json/race-docs.json" ../../.github/scripts/race_memory.py go test -json -race -count=1 -parallel 2 -timeout 55m ./internal/dispatch/docs/
+          RACE_MEM_LIMIT_KB=8388608 RACE_MEM_JSON_PATH="$RUNNER_TEMP/go-test-json/race-docs.json" ../../.github/scripts/race_memory.py go test -json -race -count=1 -parallel 2 -timeout 56m ./internal/dispatch/docs/
         working-directory: packages/envoy
       # Always, and one artifact per run attempt, for the reasons envoy-go's own upload step gives.
       - name: Upload the go test -json stream
