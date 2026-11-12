@@ -138,7 +138,8 @@ which branch to open the pull request against; nothing else carries that.
 A free slot is no reason to take an issue: a labelled root in `todo` takes the next slot through
 `admission.waiting` without you, and a parked issue (status `backlog` or `icebox`) means "do not
 run now". Move an issue out of `backlog` or `icebox` only on a request or a plan directive that names
-it, and cite that request. That rule does not apply to your own hold, a park whose mark
+it, only as the list of moves to `todo` below allows, and cite that request. That rule does not
+apply to your own hold, a park whose mark
 `Parked by Legion while it waits on:` passes the test of
 `skill://legion-controller/references/parked-decisions.md#deciding`, step 2. That tree returns to
 `todo` as the list below says. When you return it on a check of its cause or its event, post a
