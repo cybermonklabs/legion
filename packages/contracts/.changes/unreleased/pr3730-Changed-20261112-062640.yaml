@@ -1,0 +1,5 @@
+kind: Changed
+body: The Legion daemon's state shape carries, for every repository the daemon serves, whether each role GitHub App is installed on it, and the daemon API contract moves to 80.
+time: 2026-11-12T06:26:40.703621813Z
+custom:
+    Issue: pr3730

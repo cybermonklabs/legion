@@ -1,0 +1,5 @@
+kind: Changed
+body: Dispatch's repair of lost CI records covers every repository an issue names as its own, beside the repositories its projects map, so a head in a repository no project maps settles.
+time: 2026-11-12T06:26:27.309359692Z
+custom:
+    Issue: pr3730

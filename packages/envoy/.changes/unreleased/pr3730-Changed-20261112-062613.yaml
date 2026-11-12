@@ -1,0 +1,5 @@
+kind: Changed
+body: 'An issue''s own repository is any `owner/name`: one its project maps, one another project maps, and one no project maps. Issue creation and issue update no longer refuse a repository the issue''s project does not map, and a mapping an issue names is deleted and moved to another project like any other. Migration `20261112004945` drops the foreign key `issues_repo_mapped_to_project`, which held that rule in the schema, and the unique constraint on `repo_projects (repo, project)`, which backed only that key. A value that is not `owner/name` is still refused (`400 INVALID_ISSUE`), and the repository an issue targets is resolved as before: its own, else its nearest ancestor''s, else its project''s default mapping.'
+time: 2026-11-12T06:26:13.351871464Z
+custom:
+    Issue: pr3730

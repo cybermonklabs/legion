@@ -1,0 +1,5 @@
+kind: Changed
+body: The plugin declares daemon API contract 80, which carries each App's installation in the daemon's state shape.
+time: 2026-11-12T06:26:48.546579097Z
+custom:
+    Issue: pr3730
