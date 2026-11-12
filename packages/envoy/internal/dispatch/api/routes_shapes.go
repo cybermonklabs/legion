@@ -145,6 +145,14 @@ type deliveryWindowQuery struct {
 	Deployed []string `query:"deployed"`
 }
 
+// issueResultsQuery is GET /api/v1/issues/{key}/results's query.
+type issueResultsQuery struct {
+	// At replaces what every check of the issue is compared with by this one commit, 40
+	// lowercase hex characters, and makes no read of GitHub. Any other value is 400
+	// INVALID_QUERY.
+	At string `query:"at"`
+}
+
 // deliveryPipelineQuery is GET /api/v1/delivery/pipeline's query, which takes one of two forms
 // (parsePipelineWindow): `at` alone, or `from` and `to` as every other delivery route reads them.
 // Naming `at` beside either is 400 INVALID_QUERY.
@@ -187,6 +195,10 @@ type issueListQuery struct {
 	Label []string `query:"label"`
 	// UpdatedSince lists issues updated at or after this RFC3339 time.
 	UpdatedSince string `query:"updated_since"`
+	// ClosedSince lists issues closed at or after this RFC3339 time.
+	ClosedSince string `query:"closed_since"`
+	// ClosedBefore lists issues closed before this RFC3339 time.
+	ClosedBefore string `query:"closed_before"`
 	// Priority lists issues at these priorities, 0-3, or `none` for unset.
 	Priority []string `query:"priority"`
 	// RouteStatus lists open issues whose route is live, no_holder or unknown.
@@ -405,6 +417,16 @@ type artifactAsksQuery struct {
 	State string `query:"state"`
 }
 
+// artifactTextQuery is the query the three document text reads share: GET
+// /api/v1/artifacts/{id}/text, GET /api/v1/issues/{key}/artifacts/{slug}/text and
+// GET /api/v1/projects/{key}/artifacts/{slug}/text.
+type artifactTextQuery struct {
+	// Blocks, `true`, carries the document's blocks beside the markdown, the token and the
+	// version, every one of them rendered from the one tree, so no write by another session
+	// splits a listing. Any other value carries no blocks.
+	Blocks bool `query:"blocks"`
+}
+
 // openAsksQuery is GET /api/v1/asks/open's query: exactly one of the two scopes is required.
 type openAsksQuery struct {
 	// AuthorSession lists the open asks one session authored.
@@ -460,7 +482,10 @@ var routeShapes = map[string]routeShape{
 		Opaque:            "the block schema is pre-rendered JSON bytes (pmdoc.SchemaJSON), written as they stand",
 		OpaqueContentType: "application/json",
 	},
-	"GET /api/v1/limits":    {Status: http.StatusOK, Response: model.DispatchLimits{}},
+	"GET /api/v1/limits": {Status: http.StatusOK, Response: model.DispatchLimits{}},
+	"POST /api/v1/markdown/round-trip": {
+		Status: http.StatusOK, Response: markdownRoundTripResponse{}, Request: markdownRoundTripInput{},
+	},
 	"GET /api/v1/projects":  {Status: http.StatusOK, Response: []model.Project{}},
 	"POST /api/v1/projects": {Status: http.StatusCreated, Response: model.Project{}, Request: createProjectInput{}},
 	"GET /api/v1/projects/{key}/artifacts": {
@@ -619,9 +644,15 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusCreated, Response: artifactUploadResponse{},
 		Request: jsonArtifactUpload{}, Multipart: true, Advice: writeAdvice{},
 	},
-	"GET /api/v1/issues/{key}/results": {Status: http.StatusOK, Response: issueCheckResults{}},
+	"GET /api/v1/issues/{key}/results": {
+		Status: http.StatusOK, Response: issueCheckResults{}, Params: issueResultsQuery{},
+	},
 	"POST /api/v1/issues/{key}/results": {
 		Status: http.StatusCreated, Response: checkResultRecorded{}, Request: checkResultInput{},
+	},
+	"POST /api/v1/results/{id}/retract": {
+		Status: http.StatusCreated, Response: model.CheckResultRetraction{},
+		Request: checkResultRetractionInput{},
 	},
 	"GET /api/v1/issues/{key}/coverage": {Status: http.StatusOK, Response: model.IssueCoverage{}},
 	"POST /api/v1/issues/{key}/messages": {
@@ -783,7 +814,9 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep": {
 		Status: http.StatusOK, Response: model.DecisionKeep{}, Request: keepDecisionInput{},
 	},
-	"GET /api/v1/artifacts/{id}/text": {Status: http.StatusOK, Response: artifactText{}},
+	"GET /api/v1/artifacts/{id}/text": {
+		Status: http.StatusOK, Response: artifactText{}, Params: artifactTextQuery{},
+	},
 	"GET /api/v1/artifacts/{id}/versions/{number}": {
 		Status: http.StatusOK, Response: artifactVersionText{},
 		Opaque:            "a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above",
@@ -800,8 +833,10 @@ var routeShapes = map[string]routeShape{
 			{Status: http.StatusConflict, Body: ambiguousTargetError{}},
 		},
 	},
-	"GET /api/v1/issues/{key}/artifacts/{slug}":        {Status: http.StatusOK, Response: model.Artifact{}},
-	"GET /api/v1/issues/{key}/artifacts/{slug}/text":   {Status: http.StatusOK, Response: artifactText{}},
+	"GET /api/v1/issues/{key}/artifacts/{slug}": {Status: http.StatusOK, Response: model.Artifact{}},
+	"GET /api/v1/issues/{key}/artifacts/{slug}/text": {
+		Status: http.StatusOK, Response: artifactText{}, Params: artifactTextQuery{},
+	},
 	"GET /api/v1/issues/{key}/artifacts/{slug}/blocks": {Status: http.StatusOK, Response: []model.ArtifactBlock{}},
 	"GET /api/v1/issues/{key}/artifacts/{slug}/versions/{number}": {
 		Status: http.StatusOK, Response: artifactVersionText{},
@@ -821,7 +856,9 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/projects/{key}/artifacts/{slug}":         {Status: http.StatusOK, Response: model.Artifact{}},
 	"GET /api/v1/projects/{key}/artifacts/{slug}/summary": {Status: http.StatusOK, Response: documentSummary{}},
-	"GET /api/v1/projects/{key}/artifacts/{slug}/text":    {Status: http.StatusOK, Response: artifactText{}},
+	"GET /api/v1/projects/{key}/artifacts/{slug}/text": {
+		Status: http.StatusOK, Response: artifactText{}, Params: artifactTextQuery{},
+	},
 	"GET /api/v1/projects/{key}/artifacts/{slug}/versions/{number}": {
 		Status: http.StatusOK, Response: artifactVersionText{},
 		Opaque:            "a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above",

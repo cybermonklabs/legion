@@ -638,23 +638,26 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 // that let a stranded claim's state be `retired`, is served the report of claims nothing will
 // wake without its retired entries (withoutRetiredStranded); a caller below stallRecordContract,
 // the contract that added the claim views' step record, is served it without `step`
-// (withoutStallRecord); a caller below waitingLineContract, the contract that added each waiting
-// issue's place in the line, is served it without `waitingLine` (withoutWaitingLine); a caller
-// below backwardMovesContract, the contract that added each worker's counts of the moves back
-// its issue has made, is served it without `backwardMoves` (withoutBackwardMoves); and a caller
-// below settingSourcesContract is served it without the three that contract added
-// (withoutSettingSources). The ten compose: each is applied when the state carries something of
-// its own, so a caller below all of them — a pod below supervise.PodUpdateContract — is served a
-// body carrying none of the fifteen keys, each of them absent rather than empty, since a strict
-// reader before the contract that added a key refuses it whether or not it names anything, and
-// with no retired entry under `strandedClaims`. Every later reader takes the twelve keys the
-// first nine strip as optional and all three states — `packages/contracts/src/legion-api.ts`
-// marks `admission.trees`, `wakesWaiting`, the issues' `gatedSteps` and `waitingLine`, the
-// workers' counts of the moves back and the claim views' `step` optional for exactly these
-// bodies — while the three withoutSettingSources strips are required of the reader this contract
-// ships, which is why only a caller below settingSourcesContract is served a body without them.
-// Any other caller — a pod at this contract, the operator's `legion state`, a tmux pane — is
-// served the state as this contract writes it.
+// (withoutStallRecord); a caller below waitingLineContract, the contract that added each
+// waiting issue's place in the line, is served it without `waitingLine` (withoutWaitingLine); a
+// caller below backwardMovesContract, the contract that added each worker's counts of the moves
+// back its issue has made, is served it without `backwardMoves` (withoutBackwardMoves); a
+// caller below claimsToRefreshContract, the contract that added the count of claims the
+// stale-plugin lane still has to refresh, is served it without `claimsToRefresh`
+// (withoutClaimsToRefresh); and a caller below settingSourcesContract is served it without the
+// three that contract added (withoutSettingSources).
+// The eleven compose: each is applied when the state carries something of its own, so a caller
+// below all of them — a pod below supervise.PodUpdateContract — is served a body carrying none
+// of the sixteen keys, each of them absent rather than empty, since a strict reader before the
+// contract that added a key refuses it whether or not it names anything, and with no retired
+// entry under `strandedClaims`. Every later reader takes the thirteen keys the first ten strip
+// as optional and all three states — `packages/contracts/src/legion-api.ts` marks
+// `admission.trees`, `wakesWaiting`, `claimsToRefresh`, the issues' `gatedSteps` and
+// `waitingLine`, the workers' counts of the moves back and the claim views' `step` optional for
+// exactly these bodies — while the three withoutSettingSources strips are required of the
+// reader this contract ships, which is why only a caller below settingSourcesContract is served
+// a body without them. Any other caller — a pod at this contract, the operator's `legion state`,
+// a tmux pane — is served the state as this contract writes it.
 //
 // The claims are the snapshot's own because the body is: a claim and the state it was projected
 // into cannot come from two moments (store.ClaimsTx). A state whose claims the source could not
@@ -714,6 +717,9 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 	if contract < backwardMovesContract && carriesBackwardMoves(state) {
 		state = withoutBackwardMoves(state)
 	}
+	if contract < claimsToRefreshContract && carriesClaimsToRefresh(state) {
+		state = withoutClaimsToRefresh(state)
+	}
 	if contract < settingSourcesContract {
 		state = withoutSettingSources(state)
 	}
@@ -758,10 +764,12 @@ const retiredStrandedContract = 56
 // daemon's own contract is never below it — DaemonAPIVersion (version.go) declares what this
 // binary serves, and that number only rises — so a pod at either is served the record and only a
 // pod still running an older plugin is not. INFRA-1100's waiting line took 58 above it,
-// INFRA-956's end of fix-attempt counting took 59, INFRA-2551's counts of the moves back took 62,
-// and the forward merge that brought INFRA-1077's setting provenance in took 65, so a pod at 57
-// is served the step record and is served the state without the field 58 added, the field 62
-// added and the three fields 65 added.
+// INFRA-956's end of fix-attempt counting took 59, INFRA-2551's counts of the moves back took
+// 62, INFRA-2712's count of the claims the stale-plugin lane has left took 73, and the forward
+// merge that brought INFRA-1077's setting provenance in took the number settingSourcesContract
+// holds, so a pod at 57 is served the step record and is served the state without the field 58
+// added, the field 62 added, the key 73 added and the three fields settingSourcesContract
+// gates.
 const stallRecordContract = 57
 
 // waitingLineContract is the daemon contract that added each waiting issue's place in the line
@@ -780,12 +788,23 @@ const waitingLineContract = 58
 // than what keeps such a caller reading at all.
 const backwardMovesContract = 62
 
+// claimsToRefreshContract is the daemon contract that added `claimsToRefresh`, how many claims
+// the stale-plugin lane still has to relaunch onto this daemon's plugin (version.go's 73). A
+// plugin before it is served the state without the key: one built before sjawhar/legion#2788
+// reads it with a strict schema and would refuse the whole body for a key it does not name, and
+// one built after strips the key instead, so the strip is what keeps the count from a caller
+// that did not ask for it rather than what keeps such a caller reading at all. It was the
+// highest of the bands when it landed; settingSourcesContract is above it now, so a pod at
+// either number is served the count and only a pod still running a plugin below 73 is not.
+const claimsToRefreshContract = 73
+
 // settingSourcesContract is the daemon contract that added `settingSources`, the `daemon` block's
 // `commit` and each pull request's `requiresChecks` to the state, the entry of that number in
 // version.go: a plugin before it reads the state with a strict schema that knows none of the
 // three — every schema of `packages/contracts/src/legion-api.ts` was strict until INFRA-1048 —
-// and refuses the whole body for one of them.
-const settingSourcesContract = 69
+// and refuses the whole body for one of them. It is the highest of the eleven bands, this
+// daemon's own contract, so the only caller served the three is one at it.
+const settingSourcesContract = 74
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -819,9 +838,9 @@ func carriesMemory(state State) bool {
 // strict reader before the contract refuses the empty key as surely as one naming a tree. So this
 // is true of every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
 // carriesWakesWaiting, carriesGatedSteps, carriesRetiredStranded, carriesStallRecord,
-// carriesWaitingLine and carriesBackwardMoves all the same, because stateFor puts the same
-// question to the nine and because a later contract that stops writing `trees` on every body
-// answers it here.
+// carriesWaitingLine, carriesBackwardMoves and carriesClaimsToRefresh all the same, because
+// stateFor puts the same question to the ten and because a later contract that stops writing
+// `trees` on every body answers it here.
 func carriesTrees(State) bool { return true }
 
 // carriesWakesWaiting is whether state carries the key wakesWaitingContract added: `wakesWaiting`,
@@ -830,10 +849,20 @@ func carriesTrees(State) bool { return true }
 // before the contract refuses the empty key as surely as one naming a wake. So this is true of
 // every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
 // carriesTrees, carriesGatedSteps, carriesRetiredStranded, carriesStallRecord,
-// carriesWaitingLine and carriesBackwardMoves all the same, because stateFor puts the same
-// question to the nine and because a later contract that stops writing `wakesWaiting` on every
-// body answers it here.
+// carriesWaitingLine, carriesBackwardMoves and carriesClaimsToRefresh all the same, because
+// stateFor puts the same question to the ten and because a later contract that stops writing
+// `wakesWaiting` on every body answers it here.
 func carriesWakesWaiting(State) bool { return true }
+
+// carriesClaimsToRefresh is whether state carries the key claimsToRefreshContract added:
+// `claimsToRefresh`, how many claims the stale-plugin lane still has left. It carries that key
+// whatever the daemon holds, since the state writes the number on every body, 0 rather than
+// absent (State.MarshalJSON), and the strict reader before the contract refuses the key when it
+// is 0 as surely as when it names a number. So this is true of every state the route writes, as
+// carriesWakesWaiting is; it is asked beside the other nine all the same, because stateFor puts
+// the same question to the ten and because a later contract that stops writing
+// `claimsToRefresh` on every body answers it here.
+func carriesClaimsToRefresh(State) bool { return true }
 
 // carriesGatedSteps is whether any issue of state carries the deployment's gated steps.
 func carriesGatedSteps(state State) bool {
@@ -1038,6 +1067,22 @@ func withoutTrees(state State) State {
 // state's own, so the state the source answered is left as it was.
 func withoutWakesWaiting(state State) State {
 	state.WakesWaiting, state.wakesWaitingHidden = nil, true
+	return state
+}
+
+// withoutClaimsToRefresh is state with no `claimsToRefresh`, the one key claimsToRefreshContract
+// added to this route; nothing else of that contract is on it, the new wake kind riding under
+// `wakesWaiting[].kind`, which the schema leaves an unconstrained string. The key is left off
+// rather than zeroed, because the strict reader before the contract refuses it when it is 0 as
+// surely as when it names a number, which is why State.MarshalJSON writes the count on every
+// body but this one (State.claimsToRefreshHidden), as withoutWakesWaiting leaves off
+// `wakesWaiting`. The count is zeroed with the flag so the hidden body holds no number a later
+// reader of the value could take for one it was served; the flag is set on a value of the
+// state's own, so the state the source answered is left as it was. A caller below
+// wakesWaitingContract is below this contract too, so both strips run on one body and it
+// carries neither key.
+func withoutClaimsToRefresh(state State) State {
+	state.ClaimsToRefresh, state.claimsToRefreshHidden = 0, true
 	return state
 }
 

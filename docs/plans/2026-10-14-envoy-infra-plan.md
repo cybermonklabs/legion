@@ -79,7 +79,7 @@ Rejected, with the reason:
 - Pulumi's `github://` download scheme: it looks only for bare `v<version>` tags.
 - `compute.PerInstanceConfig` for the hub's disk: its create path raises the group's target size.
 
-## Rulings made while planning
+## Decisions made while planning
 
 - **R1. The module is not in the root `go.work`.** In workspace mode every build selects the
   highest version of each shared dependency across the workspace, so listing the module there
@@ -1719,7 +1719,7 @@ Items to verify, each with the row that settles it and where its result goes:
   verify until the first run of `release-envoy-infra.yaml` on `main` that carries the command
   (Task 1.6, then the first release after #1951 merges).
 
-Hardening considered and not taken (the coordinator's ruling, recorded with #1951's final audit):
+Hardening considered and not taken (the coordinator's decision, recorded with #1951's final audit):
 
 - Requiring `--expect-account` for `generate`. It stays optional, as for `check` and `verify`
   (`packages/envoy/infra/seed/awsstore.go:82-90`): requiring it would change the CLI contract its

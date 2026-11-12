@@ -108,13 +108,53 @@ type ConsumerSpec struct {
 	// so intake stops reporting the message in progress at the limit. The handler returns once
 	// its running step honours the cancelled context, which every step today, a pgx call or a
 	// bounded HTTP read, does at once. Only then does consumeMessage write the cut warning and
-	// nak the message with NakDelay. This consumer asks for one message at a time and has none
-	// outstanding while the handler runs, so JetStream sends the message again, and its
-	// delivered count rises, no sooner than that return: one NakDelay after the nak, or at the
-	// consumer's next pull where the step held the handler past about one AckWait after the
-	// limit, whichever the server takes first. A step that ignored its context would hold the
-	// message, and the warning, for the whole of its own run. This comment is where that
-	// mechanism is written, and the rows that exercise it point here for it.
+	// nak the message with NakDelay. Nothing reaches this consumer while the handler runs,
+	// because the fetch batch is one (the first bullet below), so JetStream sends the message
+	// again, and its delivered count rises, no sooner than that return: one NakDelay after the
+	// nak, or at the consumer's next pull where the step held the handler past about one AckWait
+	// after the limit, whichever the server takes first. A step that ignored its context would
+	// hold the message, and the warning, for the whole of its own run.
+	//
+	// This comment is where the delivery mechanism is written whole, in the four parts
+	// measured for dispatch://INFRA-1113. Every other site in this package that states the
+	// mechanism points here and states none of its own: each keeps its own window, its own
+	// measurement and its own point, and nothing more. Two sites are the exception, because
+	// they are where the mechanism was measured: the file comment of ackprogress_test.go and
+	// the second-delivery comment of cutcontext_test.go.
+	//
+	//   - The fetch batch of one defers a second delivery while the handler runs. This consumer
+	//     asks for one message at a time (consumerFetchBatch as jetstream.PullMaxMessages in
+	//     consumeConsumer), and nats.go v1.53.1 calls the consume callback and only then
+	//     checkPending, which sends the next pull (jetstream/pull.go:287), so no pull is
+	//     outstanding while a handler runs and nothing reaches this consumer. A reconnect, which
+	//     pulls again, is the one exception.
+	//   - The keeper prevents a second delivery while its reports reach the server before the
+	//     window lapses. keepInProgress (ackprogress.go) reports the message in progress every
+	//     third of AckWait, and each report the server gets inside the window starts that window
+	//     again, so a handling whose every report and whose acknowledgement arrive in time is
+	//     never made due again. Measured at a 200 ms window: 21 messages whose handler ran past
+	//     the window were never delivered again (ackprogress.go, the comment on what the
+	//     progress signal makes silent), and
+	//     TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce asserts that
+	//     prevention against a control that is delivered twice. The keeper promises nothing when
+	//     one report is late.
+	//   - A late signal lets the message fall due again. A late report lets it fall due while
+	//     the handler still runs; a late acknowledgement, which goes out only after the
+	//     handler's return and stop(), lets it fall due after that return.
+	//   - A message that fell due is delivered again, and that redelivery races the
+	//     acknowledgement or nak that the same return sends, which the server works on separate
+	//     queues, o.ackMsgs and o.nextMsgReqs. Either side can win that race. Each measurement
+	//     is of one condition: with the keeper removed, the redelivery reached the consumer in
+	//     12 runs of 20 (the file comment of ackprogress_test.go); with a step that ignored its
+	//     cancelled context and held the message past the window, it won all 15 runs on an idle
+	//     machine and lost to the nak only under load (the second-delivery comment of
+	//     cutcontext_test.go). Neither is the rate under a keeper whose reports arrive in time,
+	//     nor under a cut whose step honours its cancelled context while its reports and its nak
+	//     all reach the server inside the window: the message then never falls due, and the nak
+	//     alone decides when it comes back. An acknowledgement the server works first takes the
+	//     message out of its redelivery queue; a nak worked first takes it out and resets its
+	//     timer, so the redelivery comes one nak delay later instead (nats-server 2.10.29
+	//     server/consumer.go).
 	HandlerLimit time.Duration
 	Logger       *slog.Logger
 	// Now is the clock Consumers reads when it records a consumer opened or a message handled,
@@ -125,10 +165,10 @@ type ConsumerSpec struct {
 	// (PullRequestReview.AuthorCanWrite). The workflow decides inside a transaction and performs no
 	// I/O, so the answer is read here, before the fact is applied, only for a review that decides
 	// (PullRequestReview.Decides) and has an author, and within AckWait, which bounds this one read
-	// and not the delivery: intake reports the message in progress for as long as the handler runs
-	// (keepInProgress), so the delivery is held and only HandlerLimit ends it, and the bound here
-	// is what keeps one slow GitHub answer from holding the fact. An author GitHub gives no write
-	// access is false; a lookup that fails is an error, and the message is retried, after NakDelay
+	// and not the delivery (the delivery mechanism: HandlerLimit's comment above), and
+	// HandlerLimit is what ends a handling that never returns. The bound here is what keeps one
+	// slow GitHub answer from holding the fact. An author GitHub gives no write access is false;
+	// a lookup that fails is an error, and the message is retried, after NakDelay
 	// or the longer wait a RetryLater names, rather than applied with a permission nobody read. No
 	// resolver (a test, or a daemon without one) leaves every review's AuthorCanWrite false, so
 	// only the review App's own reviews decide.
@@ -651,10 +691,10 @@ func (l *lagWatch) observe(message jetstream.Msg) {
 // The order the work is done in is the point. A poison message is decoded and terminated before
 // anything else starts, so it pays for neither a goroutine nor a ticker. Everything after it runs
 // under work, a context of spec.HandlerLimit, with keepInProgress reporting the message in
-// progress every third of AckWait for as long as that work runs, so JetStream does not deliver the
-// message again and have it prepared a second time. The work ends the message in no way: it
-// returns a messageOutcome, stop() ends the keeper, and only then does the one acknowledgement or
-// nak that outcome asks for follow.
+// progress every third of AckWait for as long as that work runs (the delivery mechanism:
+// ConsumerSpec.HandlerLimit's comment). The work ends the message in no way: it returns a
+// messageOutcome, stop() ends the keeper, and only then does the one acknowledgement or nak that
+// outcome asks for follow.
 //
 // The keeper has to stop before that one call rather than in a defer after it. A progress signal
 // that reached the server after a nak would stretch the retry the nak asked for: nats-server's
@@ -665,9 +705,10 @@ func (l *lagWatch) observe(message jetstream.Msg) {
 // guard is the client library's, and what keeps the window between the work and the terminal call
 // free of signals is this order.
 //
-// HandlerLimit is what the held delivery costs: a message reported in progress for ever is a
-// message nothing redelivers, so a handler that hangs is cut at that limit, its message naked and
-// delivered again rather than held for good.
+// HandlerLimit is what the held delivery costs: a handler that hangs holds its message for as
+// long as it hangs (the delivery mechanism: ConsumerSpec.HandlerLimit's comment). The handler is
+// cut at that limit instead, its message naked and delivered again rather than held for the
+// length of the hang.
 func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, repositories []ghrepo.Repository, pool *pgxpool.Pool, handlers []Handler) bool {
 	decoded, err := decodeMessage(message.Subject(), spec.Project, repositories, message.Data())
 	if err != nil {
@@ -700,15 +741,17 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpe
 	took := time.Since(started)
 	stop()
 
-	// A fact outliving its acknowledgement window is what the progress signal makes harmless, so
-	// the daemon says when one did: this is the only line that reports how long a fact took,
-	// nothing else times one, and the consumer-lag warning (lagWatch) speaks only five minutes
-	// late.
+	// A fact outliving its acknowledgement window is what the progress signal makes harmless,
+	// while its signals reach the server in time (the delivery mechanism: HandlerLimit's comment
+	// above). So the daemon says when one did: this is the only line that reports how long a fact
+	// took, nothing else times one, and the consumer-lag warning (lagWatch) speaks only five
+	// minutes late.
 	outlived := !outcome.nak && took > spec.AckWait
-	// A handler the limit cut is otherwise hard to see: held in progress, it shows neither as
-	// repeated preparation work nor as a rising delivery count, and the nak warning nakResolve
-	// writes after it names the step and `context deadline exceeded`, which a single read cut at
-	// its own AckWait bound also says. This line is the one that names the cut.
+	// A handler the limit cut is otherwise hard to see while it still holds the message: for as
+	// long as it holds, the cut shows neither as repeated preparation work nor as a rising
+	// delivery count (the delivery mechanism: HandlerLimit's comment above), and the nak warning
+	// nakResolve writes after it names the step and `context deadline exceeded`, which a single
+	// read cut at its own AckWait bound also says. This line is the one that names the cut.
 	// A live parent context is what tells the limit from the daemon shutting its consumers down.
 	// The outcome belongs in the test because the line claims the message was naked and will be
 	// delivered again: a deadline can pass after the work committed its fact, or on a read that
@@ -808,6 +851,46 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 	result, err := ApplyFact(withStreamPosition(work, message), pool, decoded.Source, decoded.EventID, decoded.Fact, handlers...)
 	if err != nil {
 		return nakOutcome("retryable intake processing failure", "nak intake processing failure", err)
+	}
+	// Nothing records how often this consumer is handed a fact it has already applied: a
+	// duplicate is dropped with no trace, since ApplyFact answers Result{Duplicate: true} before
+	// any handler runs (facts.go) and the message is acknowledged like an applied one. This line
+	// records every copy dropped here, and the lines whose `delivered` is above 1 are the rate
+	// at which JetStream delivers again a fact this consumer had already applied. It comes
+	// before the refusal branch and returns the acknowledgement on its own, because a duplicate
+	// carries no refusal: no handler ran to make one.
+	//
+	// The line counts every copy this consumer drops, and a JetStream redelivery is one of five
+	// readings of it. A `delivered` above 1 is that redelivery. A `delivered` of 1 is a second
+	// reading of one fact, in one of four ways: the listener's mention fan-out, which publishes
+	// a review or a comment that mentions the trigger on each of its mention topics beside its
+	// own as one fact under one dedupe key (decode.go, factID); a durable consumer created
+	// again at the last message it applied, which is delivered that message once more
+	// (openConsumer); a GitHub delivery the listener publishes again, which reaches the stream
+	// only where its own duplicate window did not refuse it; and, under a configured rename,
+	// the copy published under the repository's other name, which carries the same fact on a
+	// subject of its own. A `delivered` of 0 is the metadata read below failing, and no reading
+	// of a drop. So the subject and the delivery count are what tell them apart, and the total
+	// of these lines is this consumer's share of what ApplyFact's lock-before-dedupe costs.
+	if result.Duplicate {
+		// The metadata is read here, inside the branch, as consumeMessage reads it for its
+		// outlived and cut lines: the read tokenizes the acknowledgement subject and allocates,
+		// and this line is not the ordinary message's, so the applied fact's path pays nothing
+		// for it. A read that fails leaves the consumer empty and the count zero, and the line is
+		// written all the same, since the duplicate happened and a line without its metadata is
+		// better evidence than no line.
+		var consumer string
+		var delivered uint64
+		if metadata, metadataErr := message.Metadata(); metadataErr == nil {
+			consumer, delivered = metadata.Consumer, metadata.NumDelivered
+		}
+		logMessage(spec.Logger, slog.LevelInfo, "an intake fact was delivered again and dropped as already applied", message,
+			"consumer", consumer,
+			"source", decoded.Source,
+			"event_id", decoded.EventID,
+			"delivered", delivered,
+		)
+		return ackOutcome()
 	}
 	if result.Refusal != nil {
 		logMessage(spec.Logger, slog.LevelWarn, "committed refusal", message,

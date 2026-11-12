@@ -596,6 +596,10 @@ func newBareHarness(t *testing.T) *harness {
 		// helper below records for every claim it brings up: a test exercising plugin staleness
 		// overrides it (or posts a RequestRegister naming a different one) itself.
 		PluginContract: 24,
+		// The gate of a daemon that paces nothing, which grants every refresh: every Deps carries
+		// one and none is nil, and a test that wants the lane bounded builds its own
+		// (NewRefreshGate, gatedHarness).
+		RefreshGate: NewRefreshGate(0),
 	}
 	return h
 }

@@ -3,6 +3,7 @@ package settings
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -89,6 +90,17 @@ func (k *Keeper) Route(ctx context.Context, caller config.Caller, by string, cha
 	}
 	applied, refused, err := k.applyRoute(caller, by, changes)
 	if err != nil {
+		var other *config.OtherRuntime
+		if errors.As(err, &other) {
+			// The file under this daemon now reads as another runtime's, so the holder settled
+			// nothing of this change and the overlay stands as it was (config.Live.Apply). A row
+			// written for it would be laid back over the file at the next boot, as a change the
+			// daemon never ran on. It is logged once per call, since the caller is answered one
+			// key's verdict at a time and nothing else records what the daemon refused.
+			k.log.Warn("legion settings: a settings change settled nothing: the configuration file under the daemon names another runtime",
+				"caller", string(caller), "by", by, "paths", requested,
+				"file_runtime", other.File, "booted_runtime", other.Booted)
+		}
 		return nil, refused, err
 	}
 	at := k.now()
@@ -161,6 +173,15 @@ func (k *Keeper) remember(rows []Change) {
 // memory (unstored): the overlay the daemon is running on is the same overlay whether or not a
 // row backs it, so the file's own value takes the key back either way.
 //
+// A key the file edited that is fixed for the process is applied nowhere: the holder pins it
+// back to the value boot settled and names it (config.Live.Apply, pinFixed), and this settle
+// logs those paths once, since no caller asked for the edit and nothing else would say the
+// daemon is still running on its boot value. Where the file names another runtime the holder
+// settles nothing at all and answers *config.OtherRuntime, which this settle hands its caller
+// as the error it is: this keeper's own record then stands exactly as it was, since the keys it
+// was about are still the route's, and dropping their rows would leave the store saying the
+// file's own value stands while the daemon runs on the route's.
+//
 // Nothing this settle reads is forgotten until the holder has settled: an apply runs the whole
 // loader, App key commands included, and the one that fails changes nothing, so the overlay it
 // left standing keeps both the stored row that backs it and the mark that backs an unstored one
@@ -177,9 +198,21 @@ func (k *Keeper) File(ctx context.Context) ([]config.Change, error) {
 	for _, path := range taken {
 		withdraw[path] = nil
 	}
-	applied, _, err := k.live.Apply(config.SourceFile, "", withdraw)
+	applied, pinned, err := k.live.Apply(config.SourceFile, "", withdraw)
 	if err != nil {
 		return nil, err
+	}
+	if len(pinned) > 0 {
+		// The file edited a key fixed for the process, and the holder pinned it back to the
+		// value boot settled (config's pinFixed). Nothing else reports such an edit: the route
+		// is where a refusal reaches a caller, and this edit asked nobody. So it is named here,
+		// once per settle, with the reason each path's row gives.
+		paths := make([]string, 0, len(pinned))
+		for _, refusal := range pinned {
+			paths = append(paths, refusal.Path)
+		}
+		k.log.Warn("legion settings: the file changed keys this daemon fixed at boot; it goes on running the values it booted on, and the change reaches its next restart",
+			"paths", paths, "refusals", pinned)
 	}
 	for _, path := range unstored {
 		delete(k.unstored, path)
@@ -202,7 +235,18 @@ func (k *Keeper) File(ctx context.Context) ([]config.Change, error) {
 // boot then builds is built from what the daemon is actually running on.
 //
 // A row the file has taken back since — its own value for that path has moved — is applied to
-// nothing and deleted: a route change survives a restart until the file changes that key.
+// nothing and deleted: a route change survives a restart until the file changes that key. The
+// deletion is made after the apply has succeeded, so a boot that fails leaves the store exactly
+// as it found it.
+//
+// A file that names a runtime other than the one this boot read settles nothing, and the error
+// the holder answers with (*config.OtherRuntime) is the one this call fails on: a boot that
+// went on would run every holder it builds off a file whose keys were checked by the other
+// runtime's rules, while the store credited the route with an overlay the daemon never took.
+// The error names both runtimes, so the operator reads which file the daemon was handed. Every
+// stored row stands after such a boot, the rows that file's own edits would have taken back
+// included: the operator's cure is to put the file back and boot again, and that boot is the
+// one that reads which keys the file has taken back.
 func (k *Keeper) Restore(ctx context.Context) ([]Change, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -224,18 +268,10 @@ func (k *Keeper) Restore(ctx context.Context) ([]Change, error) {
 		}
 		overlay[row.Path] = value
 	}
-	if err := k.store.Write(ctx, nil, taken); err != nil {
-		return nil, err
-	}
-	if len(taken) > 0 {
-		k.log.Info("legion settings: the file changed keys a route change held while the daemon was down; the file's own values stand",
-			"paths", taken)
-	}
-	if len(overlay) == 0 {
-		return nil, nil
-	}
 	// One apply for every kept row: the boot reads the file once more, not once per row, since
-	// each read runs the App private key commands the file names.
+	// each read runs the App private key commands the file names. An overlay with no row in it
+	// — every stored row taken back by the file — is answered before the holder and reads
+	// nothing (applyRoute).
 	if _, refused, err := k.applyRoute(config.CallerOperator, "", overlay); err != nil {
 		return nil, err
 	} else if len(refused) > 0 {
@@ -251,6 +287,21 @@ func (k *Keeper) Restore(ctx context.Context) ([]Change, error) {
 		if err := k.store.Write(ctx, nil, paths); err != nil {
 			return nil, err
 		}
+	}
+	// The rows the file took back are deleted once the apply has succeeded, and never before
+	// it: a boot that fails here — the file has become the other runtime's — is a boot whose
+	// cure is to put the file back and start again, and a deletion made first would have thrown
+	// away the route changes that second boot is there to lay back. The running daemon's arm
+	// orders the two the same way (File, whose write comes after Apply).
+	if err := k.store.Write(ctx, nil, taken); err != nil {
+		return nil, err
+	}
+	if len(taken) > 0 {
+		k.log.Info("legion settings: the file changed keys a route change held while the daemon was down; the file's own values stand",
+			"paths", taken)
+	}
+	if len(overlay) == 0 {
+		return nil, nil
 	}
 	for _, row := range kept {
 		k.log.Info("legion settings: a stored route change is laid over the file again",

@@ -1,11 +1,13 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
@@ -35,6 +37,57 @@ func rewrite(t *testing.T, path, body string) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("rewrite the config file: %v", err)
 	}
+}
+
+// kubernetesLiveFile is kubernetesFile with App keys this holder can resolve: NewLive runs the
+// loader whole, every `private_key_command` with it, and that fixture's commands are written to
+// fail.
+var kubernetesLiveFile = strings.ReplaceAll(kubernetesFile, `private_key_command: "exit 1"`, "private_key: app-test-key")
+
+// tmuxLiveFile is that same file with its one `runtime` key written as the other runtime's,
+// which is the swap docs/deployment.md has an operator make before a restart. Everything else
+// is one deployment's, so a rewrite from either file to the other changes that key alone, and
+// the tmux side carries a block of its own: a settle must keep the whole of whichever block
+// the daemon booted on.
+var tmuxLiveFile = runtimeSwapped(kubernetesLiveFile, "runtime:\n  tmux:\n    pi_config_files: [overlay.json]\n")
+
+// runtimeSwapped is file with its `runtime` key, the last key kubernetesFile holds, replaced by
+// block. It panics on a file carrying no such key, so a fixture that stops holding one cannot
+// pass by swapping nothing.
+func runtimeSwapped(file, block string) string {
+	head, _, found := strings.Cut(file, "runtime:\n")
+	if !found {
+		panic("the fixture carries no runtime key to swap")
+	}
+	return head + block
+}
+
+// bootDaemonURL is the `daemon_url` kubernetesFile boots on, which a pod's launch is recorded
+// with (sandbox.LaunchSettings).
+const bootDaemonURL = "daemon_url: http://10.0.0.5:13370"
+
+// foreignRuntimeFile is that same deployment's file rewritten as the other runtime's — the edit
+// docs/deployment.md has an operator make before a restart — with two keys the loader checks
+// under `kubernetes` alone edited by the same hand: `daemon_url`, required there and optional
+// here, dropped, and `worker_stop_timeout_seconds` put under the floor a pod's lease release
+// needs (shim.MinStopGrace, config.go's resolve). It loads, because it names the runtime whose
+// rules it keeps.
+var foreignRuntimeFile = runtimeSwapped("worker_stop_timeout_seconds: 3\n"+edited(kubernetesLiveFile, bootDaemonURL+"\n", ""), "runtime: tmux\n")
+
+// sameRuntimeFile is that same pair of keys edited under the runtime the daemon booted on: the
+// address a pane is launched with moved, and a stop timeout well over the floor. Both settle,
+// which is what makes the refusal of the reading above a refusal of the reading and not a
+// guard over those two keys.
+var sameRuntimeFile = "worker_stop_timeout_seconds: 20\n" + edited(kubernetesLiveFile, bootDaemonURL, "daemon_url: http://10.0.0.6:13370")
+
+// edited is body with the one occurrence of old written as next. It panics on a body that does
+// not hold old, as runtimeSwapped does, so a fixture that stops holding a key cannot pass by
+// editing nothing.
+func edited(body, old, next string) string {
+	if !strings.Contains(body, old) {
+		panic("the fixture carries no " + old)
+	}
+	return strings.Replace(body, old, next, 1)
 }
 
 func TestNewLiveResolvesTheFileUnderItsStoredOverlay(t *testing.T) {
@@ -179,6 +232,79 @@ func TestTheFileArmReadsAgainAndTheRouteOverlayStillWins(t *testing.T) {
 	}
 }
 
+// A fixed path is fixed of the snapshot, and not of the route alone. Every settle reads the
+// whole file again, so an operator who edits `project` in `legion.yaml` ahead of a planned
+// restart would otherwise move the value every reader takes from Snapshot — the workflow
+// engine's project, the subject filter and durable names a NATS rebuild opens its consumers on
+// — while admission, intake and the claim tokens stayed on the one the daemon booted on. The
+// settle pins it back and names the path with the reason the route refuses it by, and the
+// daemon runs on the value it booted on until it is restarted.
+//
+// The pin is narrow: `review_round_cap`, a decision key the same edit changed, is applied.
+func TestTheFileArmPinsAFixedPathToTheValueBootSettled(t *testing.T) {
+	// Both projects are in the file from the start, so the one key this edit changes is the
+	// fixed `project` itself and not the `projects` block beside it.
+	body := strings.Replace(minimalFile, "  DEMO: {}", "  DEMO: {}\n  OTHER: {}", 1)
+	live, path := newLive(t, body, nil)
+	if project := live.Snapshot().Project; project != "DEMO" {
+		t.Fatalf("the boot settled project %q, want the file's DEMO", project)
+	}
+
+	rewrite(t, path, strings.Replace(body, "project: DEMO", "project: OTHER", 1)+"review_round_cap: 7\n")
+	applied, refused, err := live.Apply(SourceFile, "", nil)
+
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if project := live.Snapshot().Project; project != "DEMO" {
+		t.Errorf("the settled project after the file edit = %q, want the boot's DEMO: every claim, every record and the registry entry are named by it", project)
+	}
+	if len(refused) != 1 || refused[0].Path != "project" || refused[0].Reason != whyProject {
+		t.Fatalf("the settle refused %+v, want the one pinned path named with its own reason", refused)
+	}
+	if rounds := live.Snapshot().ReviewRoundCap; rounds != 7 {
+		t.Errorf("ReviewRoundCap = %d, want the file's 7: the pin is of the fixed path alone", rounds)
+	}
+	want := Change{
+		Path: "review_round_cap", Old: "3", New: "7", Class: ClassDecision, Outcome: OutcomeAtOnce,
+		Source: SourceFile,
+	}
+	if len(applied) != 1 || applied[0] != want {
+		t.Errorf("applied %+v, want exactly %+v: a pinned path is no change of the daemon's", applied, want)
+	}
+}
+
+// The pin is of every resolution and not of the file arm alone: the route reads the file again
+// too, so a route change of some other key would otherwise settle the file's edited `project`
+// as a side effect of the key its caller asked about. The caller is answered for the paths it
+// named and no others — the file's edit is the file arm's to report, at the settle the watcher
+// makes of it.
+func TestARouteChangeSettlesNoFixedPathTheFileEditedMeanwhile(t *testing.T) {
+	body := strings.Replace(minimalFile, "  DEMO: {}", "  DEMO: {}\n  OTHER: {}", 1)
+	live, path := newLive(t, body, nil)
+
+	rewrite(t, path, strings.Replace(body, "project: DEMO", "project: OTHER", 1))
+	applied, refused, err := live.Apply(SourceRoute, "sami@theorem.dev", map[string]any{"admission_cap": 11})
+
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(refused) != 0 {
+		t.Fatalf("the route refused %+v, want nothing: its caller named one decision path", refused)
+	}
+	if project := live.Snapshot().Project; project != "DEMO" {
+		t.Errorf("the settled project after a route change of another key = %q, want the boot's DEMO", project)
+	}
+	if cap := live.Snapshot().AdmissionCap; cap != 11 {
+		t.Errorf("AdmissionCap = %d, want the route's 11", cap)
+	}
+	for _, change := range applied {
+		if change.Path == "project" {
+			t.Errorf("the route reported %+v, want no change of a path fixed for the process", change)
+		}
+	}
+}
+
 // The file arm carries no overlay of its own: that is the route's arm, and a caller that mixed
 // the two would write a route change nobody recorded.
 func TestTheFileArmRefusesAnOverlayArgument(t *testing.T) {
@@ -245,25 +371,442 @@ func TestASecretsChangeIsSeenAndNotShown(t *testing.T) {
 
 // A block the file names under one runtime and not the other reads as unset on the side that has
 // none, so the paths it holds are changes rather than silence.
+//
+// The second row is the same drop under a boot whose block held a fixed value: the pin carries
+// that value over in a block of this reading's own (pinBlock), and every other member of that
+// carrier is a zero value the pin wrote rather than anything the file says. Read as the value
+// it holds, one file dropping `runtime.tmux` reported `pi_config_files` two ways for the same
+// configured value — "(unset)" under a boot that took over on nothing, "null" under a boot that
+// took over on kubernetes.
 func TestABlockTheFileDropsReadsAsUnset(t *testing.T) {
-	live, path := newLive(t, minimalFile+"runtime:\n  tmux:\n    pi_config_files: [overlay.json]\n", nil)
-	if live.Snapshot().Runtime.Tmux == nil {
-		t.Fatal("the tmux block was not read")
-	}
+	for _, tc := range []struct{ name, booted, carries string }{
+		{name: "a boot that took over on nothing", booted: ""},
+		{name: "a boot whose block held a fixed value", booted: "    take_over: kubernetes\n", carries: TakeOverKubernetes},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			live, path := newLive(t, minimalFile+"runtime:\n  tmux:\n    pi_config_files: [overlay.json]\n"+tc.booted, nil)
+			if live.Snapshot().Runtime.Tmux == nil {
+				t.Fatal("the tmux block was not read")
+			}
 
-	rewrite(t, path, minimalFile)
-	applied, _, err := live.Apply(SourceFile, "", nil)
+			rewrite(t, path, minimalFile)
+			applied, _, err := live.Apply(SourceFile, "", nil)
 
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			index := slices.IndexFunc(applied, func(c Change) bool { return c.Path == "runtime.tmux.pi_config_files" })
+			if index < 0 {
+				t.Fatalf("applied %+v, want the dropped tmux overlay among them", applied)
+			}
+			if !strings.Contains(applied[index].Old, "overlay.json") || applied[index].New != UnsetValue {
+				t.Errorf("the dropped path reads %q → %q, want the file's own overlay → %q",
+					applied[index].Old, applied[index].New, UnsetValue)
+			}
+			block := live.Snapshot().Runtime.Tmux
+			switch {
+			case tc.carries == "" && block != nil:
+				t.Errorf("the settled block is %+v, want none: the reading dropped it and no fixed value held it", block)
+			case tc.carries != "" && (block == nil || block.TakeOver != tc.carries):
+				t.Errorf("the settled block is %+v, want the take_over boot settled carried over", block)
+			}
+		})
 	}
-	index := slices.IndexFunc(applied, func(c Change) bool { return c.Path == "runtime.tmux.pi_config_files" })
-	if index < 0 {
-		t.Fatalf("applied %+v, want the dropped tmux overlay among them", applied)
+}
+
+// A file that swaps the whole `runtime` key settles nothing: the daemon keeps the runtime it
+// booted on with every member of its block, and the settle answers *OtherRuntime, naming the
+// key, the runtime the file now names and the one the daemon booted on.
+//
+// The selector alone would be worse than nothing. `runtime` is one key carrying the selector
+// and the block it names (readRuntime), so a settle that pinned the name and took the file's
+// block would hold a configuration no loader produces: `kubernetes` beside no
+// `runtime.kubernetes`, whose every member every reader of the block then reads as unset — and
+// whose nil block the Sandbox build dereferences (internal/daemon's readSandbox), inside this
+// apply, under the holder's lock, in a daemon supervising pods. The whole reading is refused
+// instead, which is what keeps the keys beside that one from settling too
+// (TestAReadingThatNamesAnotherRuntimeSettlesNothing).
+func TestAFileThatSwapsTheRuntimeKeyKeepsTheWholeBlockBootSettled(t *testing.T) {
+	for _, tc := range []struct{ name, booted, swapped, names string }{
+		{"kubernetes to tmux", kubernetesLiveFile, tmuxLiveFile, "tmux"},
+		{"tmux to kubernetes", tmuxLiveFile, kubernetesLiveFile, "kubernetes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			live, path := newLive(t, tc.booted, nil)
+			booted := live.Snapshot().Runtime
+
+			rewrite(t, path, tc.swapped)
+			applied, refused, err := live.Apply(SourceFile, "", nil)
+
+			var other *OtherRuntime
+			if !errors.As(err, &other) {
+				t.Fatalf("the settle answered %v, want the reading refused whole", err)
+			}
+			if want := (&OtherRuntime{Path: "runtime", File: tc.names, Booted: booted.Name}); *other != *want {
+				t.Fatalf("the settle answered %+v, want %+v: the key the file swapped, with both runtimes", other, want)
+			}
+			if len(refused) != 0 {
+				t.Fatalf("the settle refused %+v, want nothing beside the reading itself: no path of it was refused on its own account", refused)
+			}
+			if settled := live.Snapshot().Runtime; !reflect.DeepEqual(settled, booted) {
+				t.Fatalf("the settled runtime = %+v, want the whole of the boot's %+v: the daemon supervises that runtime's processes", settled, booted)
+			}
+			if len(applied) != 0 {
+				t.Errorf("applied %+v, want nothing at all: a reading of the other runtime settles no key", applied)
+			}
+		})
 	}
-	if applied[index].New != UnsetValue {
-		t.Errorf("the dropped path reads %q, want %q", applied[index].New, UnsetValue)
+}
+
+// A reading that names a runtime other than the one the daemon booted on settles nothing at
+// all — not one of the keys it shares with the booted deployment — and the daemon answers
+// *OtherRuntime, naming both runtimes.
+//
+// The loader's cross-key checks are the checks of the runtime the reading names:
+// `checkPodReachable` and the `worker_stop_timeout_seconds` floor at shim.MinStopGrace run
+// under `kubernetes` alone, and `daemon_url` is required there and optional under tmux
+// (config.go's resolve). So every other key of such a reading was checked by rules this daemon
+// does not run, and a key of it settled under the runtime the daemon booted on reaches the
+// pods it is supervising: this reading's three-second stop timeout is every Sandbox's
+// TerminationGrace, a third of what a shim's lease release alone needs, and the `daemon_url`
+// it drops is a launch key recorded in sandbox.LaunchSettings. Pinning `runtime` alone settled
+// both.
+//
+// The second row is the control: that same pair of keys, edited in the booted runtime's own
+// reading, settles. So the first row is a reading refused and not two keys guarded.
+func TestAReadingThatNamesAnotherRuntimeSettlesNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name, reading string
+		other         bool
+		applied       []string
+		url           string
+		stop          time.Duration
+	}{
+		{
+			name:    "the other runtime's reading",
+			reading: foreignRuntimeFile,
+			other:   true,
+			url:     "http://10.0.0.5:13370",
+			stop:    10 * time.Second,
+		},
+		{
+			name:    "the booted runtime's own reading",
+			reading: sameRuntimeFile,
+			applied: []string{"daemon_url", "worker_stop_timeout_seconds"},
+			url:     "http://10.0.0.6:13370",
+			stop:    20 * time.Second,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			live, path := newLive(t, kubernetesLiveFile, nil)
+			booted := live.Snapshot()
+
+			rewrite(t, path, tc.reading)
+			applied, refused, err := live.Apply(SourceFile, "", nil)
+
+			var other *OtherRuntime
+			switch {
+			case tc.other && !errors.As(err, &other):
+				t.Fatalf("the settle answered %v, want the reading refused whole", err)
+			case tc.other && *other != (OtherRuntime{Path: "runtime", File: "tmux", Booted: "kubernetes"}):
+				t.Fatalf("the settle answered %+v, want the key and both runtimes", other)
+			case !tc.other && err != nil:
+				t.Fatalf("Apply: %v", err)
+			}
+			if len(refused) != 0 {
+				t.Fatalf("the settle refused %+v, want nothing: no path of this reading was refused on its own account", refused)
+			}
+			if paths := appliedPaths(applied); !slices.Equal(paths, tc.applied) {
+				t.Fatalf("the settle applied %v, want %v", paths, tc.applied)
+			}
+			settled := live.Snapshot()
+			if tc.other && settled != booted {
+				t.Fatalf("the settle swapped the snapshot for %+v: a reading of another runtime settles nothing, so the daemon keeps the very configuration it had", settled)
+			}
+			if settled.Runtime.Name != "kubernetes" || settled.Runtime.Kubernetes == nil {
+				t.Fatalf("the settled runtime = %+v, want the kubernetes deployment the daemon booted on", settled.Runtime)
+			}
+			if settled.DaemonURL != tc.url {
+				t.Errorf("daemon_url = %q, want %q: it is a launch key every pod's record carries", settled.DaemonURL, tc.url)
+			}
+			if settled.WorkerStopTimeout != tc.stop {
+				t.Errorf("worker_stop_timeout_seconds = %s, want %s: it is every Sandbox's TerminationGrace", settled.WorkerStopTimeout, tc.stop)
+			}
+		})
 	}
+}
+
+// The route arm answers such a reading the same way. An operator's change of some other key is
+// resolved over the file as it now reads (resolve), so a file naming the other runtime settles
+// nothing of that change either: the snapshot stands, the overlay stands — the next settle of
+// a file this daemon can read runs on the file's own value, not on the change — and the caller
+// is answered *OtherRuntime.
+//
+// The typo beside it is the path refused on its own account: that refusal is answered beside
+// the error on either row, since what is wrong with it is wrong whatever runtime the file
+// names, and a caller told only about the runtime would never learn of it.
+//
+// The second row is the control: the same call over the booted runtime's own file applies and
+// is kept in the overlay, which is what the first row would look like if the route arm had
+// been left settling what the file arm refuses.
+func TestARouteChangeSettlesNothingWhileTheFileNamesAnotherRuntime(t *testing.T) {
+	for _, tc := range []struct {
+		name, reading string
+		other         bool
+		cap           int
+	}{
+		{
+			name:    "the other runtime's reading",
+			reading: foreignRuntimeFile,
+			other:   true,
+			cap:     defaultAdmissionCap,
+		},
+		{
+			name:    "the booted runtime's own reading",
+			reading: sameRuntimeFile,
+			cap:     12,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			live, path := newLive(t, kubernetesLiveFile, nil)
+			booted := live.Snapshot()
+			rewrite(t, path, tc.reading)
+
+			applied, refused, err := live.Apply(SourceRoute, "sami@theorem.dev", map[string]any{
+				"admission_cap": 12, "admision_cap": 3,
+			})
+
+			var other *OtherRuntime
+			switch {
+			case tc.other && !errors.As(err, &other):
+				t.Fatalf("the route change answered %v, want the reading refused whole", err)
+			case tc.other && *other != (OtherRuntime{Path: "runtime", File: "tmux", Booted: "kubernetes"}):
+				t.Fatalf("the route change answered %+v, want the key and both runtimes", other)
+			case !tc.other && err != nil:
+				t.Fatalf("Apply: %v", err)
+			}
+			want := []Refusal{{Path: "admision_cap", Reason: "unknown setting"}}
+			if !slices.Equal(refused, want) {
+				t.Fatalf("the route change was refused %+v, want exactly %+v: a path refused on its own account is answered whatever the file names", refused, want)
+			}
+			if tc.other {
+				if len(applied) > 0 {
+					t.Fatalf("the route change applied %+v, want nothing: the file it would have been resolved over is another runtime's", applied)
+				}
+				if settled := live.Snapshot(); settled != booted {
+					t.Fatalf("the route change swapped the snapshot for %+v, want the very configuration the daemon had", settled)
+				}
+			}
+			if cap := live.Snapshot().AdmissionCap; cap != tc.cap {
+				t.Fatalf("admission_cap = %d, want %d", cap, tc.cap)
+			}
+
+			// And the overlay: the file reads as this daemon's deployment again, and what
+			// stands over it is what the route settled and nothing else.
+			rewrite(t, path, kubernetesLiveFile)
+			if _, _, err := live.Apply(SourceFile, "", nil); err != nil {
+				t.Fatalf("settle the file the daemon booted on: %v", err)
+			}
+			if cap := live.Snapshot().AdmissionCap; cap != tc.cap {
+				t.Fatalf("admission_cap once the file reads as this daemon's again = %d, want %d: the overlay keeps what settled and no more", cap, tc.cap)
+			}
+		})
+	}
+}
+
+// The reason a person meets carries the whole of what one needs: the key that named the
+// runtime, the runtime the file names, the runtime this daemon booted on, and the two ways
+// out. The Dispatch panel shows the verdict of the key the person edited and nothing beside
+// it, so someone changing `admission_cap` reads this sentence alone — a reason naming one
+// runtime leaves them unable to tell which deployment the file has become, and one naming no
+// way out leaves them with a daemon that refuses every change and no act that ends it.
+//
+// The second row is the control: the booted runtime's own reading answers no error at all, so
+// the sentence is the refusal's and not a line every settle writes.
+func TestTheRefusalOfAnotherRuntimesReadingNamesBothRuntimesAndTheWayOut(t *testing.T) {
+	for _, tc := range []struct {
+		name, reading string
+		other         bool
+	}{
+		{name: "the other runtime's reading", reading: foreignRuntimeFile, other: true},
+		{name: "the booted runtime's own reading", reading: sameRuntimeFile},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			live, path := newLive(t, kubernetesLiveFile, nil)
+			rewrite(t, path, tc.reading)
+
+			_, _, err := live.Apply(SourceFile, "", nil)
+
+			var other *OtherRuntime
+			if !tc.other {
+				if err != nil {
+					t.Fatalf("Apply: %v", err)
+				}
+				return
+			}
+			if !errors.As(err, &other) {
+				t.Fatalf("the settle answered %v, want the reading refused whole", err)
+			}
+			const want = `the configuration file under the daemon names runtime "tmux", not the "kubernetes" it booted on: ` +
+				`no setting changes until the file names "kubernetes" again or the daemon restarts`
+			if reason := other.Error(); reason != want {
+				t.Fatalf("the reason reads\n\t%s\nwant\n\t%s", reason, want)
+			}
+		})
+	}
+}
+
+// A fixed member is no change of the daemon's, whatever the reading carries, so `applied`
+// never names one.
+//
+// A deployment writing `runtime: tmux` with no block of its own, whose file or route then adds
+// one key of that block, carries a `runtime.tmux.take_over` the boot read as unset and this
+// reading reads as "": the pin leaves it where it is, both readings holding the zero value, so
+// a filter over the paths the pin moved drops nothing and the diff reports
+// `runtime.tmux.take_over "(unset)" -> ""` — a key fixed for the process, reported changed, to
+// a caller that named no such key. The class decides instead, so no reading can report one.
+//
+// Both arms are here because either can bring the block: the file arm reads the whole file
+// again at every settle, and the route arm lays its caller's key over it.
+func TestAFixedMemberNeverAppearsInApplied(t *testing.T) {
+	const block = "runtime:\n  tmux:\n    pi_config_files: [overlay.json]\n"
+	for _, tc := range []struct {
+		name  string
+		apply func(t *testing.T, live *Live, path string) []Change
+	}{
+		{
+			name: "the file arm brings the block",
+			apply: func(t *testing.T, live *Live, path string) []Change {
+				t.Helper()
+				rewrite(t, path, minimalFile+block)
+				applied, refused, err := live.Apply(SourceFile, "", nil)
+				if err != nil || len(refused) != 0 {
+					t.Fatalf("Apply: %v, refused %+v", err, refused)
+				}
+				return applied
+			},
+		},
+		{
+			name: "the route arm brings the block",
+			apply: func(t *testing.T, live *Live, _ string) []Change {
+				t.Helper()
+				applied, refused, err := live.Apply(SourceRoute, "sami@theorem.dev",
+					map[string]any{"runtime.tmux.pi_config_files": []any{"overlay.json"}})
+				if err != nil || len(refused) != 0 {
+					t.Fatalf("Apply: %v, refused %+v", err, refused)
+				}
+				return applied
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			live, path := newLive(t, minimalFile, nil)
+			if live.Snapshot().Runtime.Tmux != nil {
+				t.Fatal("the boot carries a tmux block: this case is the deployment that writes none")
+			}
+
+			applied := tc.apply(t, live, path)
+
+			// The launch keys of the block the reading brought are changes an operator asked
+			// for and reads: `pane_env` arrives unset beside the one this reading names.
+			if paths := appliedPaths(applied); !slices.Equal(paths, []string{"runtime.tmux.pane_env", "runtime.tmux.pi_config_files"}) {
+				t.Fatalf("the settle applied %v, want the block's launch keys and no fixed member: a fixed member is no change of the daemon's", paths)
+			}
+			if block := live.Snapshot().Runtime.Tmux; block == nil || block.TakeOver != "" {
+				t.Fatalf("the settled tmux block = %+v, want the launch key with no take-over: the daemon adopted nothing at boot", block)
+			}
+		})
+	}
+}
+
+// A fixed member keeps the value boot settled whether or not either reading carries its block.
+//
+// `runtime: tmux` with no `runtime.tmux` block is what most deployments write, and
+// `runtime.tmux.take_over` is fixed because it is read once at boot, as the daemon adopts the
+// claims of the server it takes over (whyTakeOve). A pin that descends only into the blocks
+// both readings carry pins nothing there: the file that adds the block to such a deployment
+// settles a take-over the tmux runtime those launch keys rebuild then runs on for the whole of
+// its life (internal/daemon's tmuxOptions), and the file that drops a block the boot took over
+// on settles the take-over away. An absent block reads as its members' zero values on either
+// side, so the member is pinned both ways: back to "" where the boot carried no block, and
+// into a block of the new reading's own carrying that member and nothing else where the new
+// reading carries none.
+//
+// The third row is the control: a reading that carries the block and leaves `take_over` as
+// boot read it settles both launch keys and is refused nothing. So the two rows above are a
+// member pinned inside a block that applied, and not a block refused.
+func TestAFixedMemberIsPinnedWhenOnlyOneReadingCarriesItsBlock(t *testing.T) {
+	const tookOver = "runtime:\n  tmux:\n    take_over: kubernetes\n    pane_env: {TOOLS_HOME: /opt/tools}\n    pi_config_files: [overlay.json]\n"
+	for _, tc := range []struct {
+		name, booted, reading string
+		refused               []Refusal
+		applied               []string
+		takeOver              string
+		paneEnv               map[string]string
+	}{
+		{
+			name:    "the reading brings a block the boot had none of",
+			booted:  minimalFile,
+			reading: minimalFile + tookOver,
+			refused: []Refusal{{Path: "runtime.tmux.take_over", Reason: whyTakeOve}},
+			applied: []string{"runtime.tmux.pane_env", "runtime.tmux.pi_config_files"},
+			paneEnv: map[string]string{"TOOLS_HOME": "/opt/tools"},
+		},
+		{
+			name:     "the reading drops the block the boot took over on",
+			booted:   minimalFile + tookOver,
+			reading:  minimalFile,
+			refused:  []Refusal{{Path: "runtime.tmux.take_over", Reason: whyTakeOve}},
+			applied:  []string{"runtime.tmux.pane_env", "runtime.tmux.pi_config_files"},
+			takeOver: TakeOverKubernetes,
+		},
+		{
+			name:     "the reading carries the block and leaves take_over as boot read it",
+			booted:   minimalFile + tookOver,
+			reading:  minimalFile + "runtime:\n  tmux:\n    take_over: kubernetes\n    pane_env: {TOOLS_HOME: /opt/other}\n    pi_config_files: [other.json]\n",
+			applied:  []string{"runtime.tmux.pane_env", "runtime.tmux.pi_config_files"},
+			takeOver: TakeOverKubernetes,
+			paneEnv:  map[string]string{"TOOLS_HOME": "/opt/other"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			live, path := newLive(t, tc.booted, nil)
+
+			rewrite(t, path, tc.reading)
+			applied, refused, err := live.Apply(SourceFile, "", nil)
+
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			if !slices.Equal(refused, tc.refused) {
+				t.Fatalf("the settle refused %+v, want exactly %+v", refused, tc.refused)
+			}
+			if paths := appliedPaths(applied); !slices.Equal(paths, tc.applied) {
+				t.Fatalf("the settle applied %v, want %v: a pinned path is no change of the daemon's", paths, tc.applied)
+			}
+			block := live.Snapshot().Runtime.Tmux
+			if block == nil {
+				t.Fatalf("the settled runtime carries no tmux block: a reading that drops one whose fixed member boot set carries that member alone")
+			}
+			if block.TakeOver != tc.takeOver {
+				t.Errorf("runtime.tmux.take_over = %q, want %q: the runtime a rebuild takes over on is the one boot read", block.TakeOver, tc.takeOver)
+			}
+			if !reflect.DeepEqual(block.PaneEnv, tc.paneEnv) {
+				t.Errorf("runtime.tmux.pane_env = %v, want %v: the launch keys beside a pinned member are the reading's own", block.PaneEnv, tc.paneEnv)
+			}
+		})
+	}
+}
+
+// appliedPaths is the paths one settle applied, sorted, which is what a test compares against
+// the paths it names.
+func appliedPaths(applied []Change) []string {
+	paths := make([]string, 0, len(applied))
+	for _, change := range applied {
+		paths = append(paths, change.Path)
+	}
+	slices.Sort(paths)
+	return paths
 }
 
 // Observers see the configuration the pointer now holds and the changes that got it there, in the

@@ -107,8 +107,8 @@ func TestTheStateServedToAPodBeforeTheStallRecordContractLeavesTheNextCallersSta
 // pod is ever served; one above the contract that added the record would keep it from pods whose
 // plugin parses it. INFRA-1100's waiting line took 58 above it, INFRA-956's end of fix-attempt
 // counting took 59, INFRA-2551's counts of the moves back took 62, and the forward merge that
-// brought INFRA-1077's setting provenance in took 63, so the two are no longer equal, as
-// retiredStrandedContract fell below DaemonAPIVersion before it.
+// brought INFRA-1077's setting provenance in took the number settingSourcesContract holds, so
+// the two are no longer equal, as retiredStrandedContract fell below DaemonAPIVersion before it.
 func TestTheStallRecordContractIsTheNumberTheBumpTakes(t *testing.T) {
 	const addedStallRecord = 57
 	if stallRecordContract != addedStallRecord {

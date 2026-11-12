@@ -1199,7 +1199,7 @@ test("the state golden carries each issue's repository and the project's mapping
 // discovery on; claude-code too, since one worker image carries the claude-envoy plugin and the
 // pin a pod installs Claude Code from for a role whose worker_backends names it) and withheld
 // rows, and the six live rows unchecked — no session has reported, so
-// the deployment renders each as `unchecked` with its ruling (contract 21) — and the report is
+// the deployment renders each as `unchecked` with its citation (contract 21) — and the report is
 // never absent from a state. `installed` left the status set at contract 25: it was codegraph's
 // until LEGION-629, and no row has carried it since. Each deployment row carries `source`
 // (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured);
@@ -1684,7 +1684,7 @@ test("the state golden names the wakes the pacing holds, and the key may be abse
       claim: "legion-legion-legion-207-implementer",
       issue: "LEGION-207",
       role: "implementer",
-      kind: "plugin-task",
+      kind: "plugin-refresh",
       dueAt: "2026-09-22T09:17:56Z",
     },
     {
@@ -1721,6 +1721,31 @@ test("the state golden names the wakes the pacing holds, and the key may be abse
     },
   ];
   expect(LegionStateResponse.safeParse(unnamed).success).toBeFalse();
+});
+
+// The count of claims the stale-plugin lane has left (contract 73): the golden names everything
+// that lane has left to do, the claim whose wake it already holds among them, and a
+// state whose lane has nothing left carries 0 rather than no key. The key is not required for
+// the same reason `wakesWaiting` is not: a daemon at this contract leaves it off the state it
+// serves a caller whose pod's plugin is older than 73, and the one it serves a caller whose
+// pod's claims it cannot read at all (`api.stateFor`, `withoutClaimsToRefresh`). So a body
+// without the key parses and a reader of it learns nothing about what the lane has left, rather
+// than losing the whole state; what is refused is a count that is not a whole number of claims.
+test("the state golden counts the claims the stale-plugin lane has left, and the key may be absent", () => {
+  const state = fixture("state.json") as Record<string, unknown>;
+  expect(LegionStateResponse.parse(state).claimsToRefresh).toBe(4);
+  expect(LegionStateResponse.parse(fixture("state-stage3.json")).claimsToRefresh).toBe(0);
+
+  const { claimsToRefresh: _withoutTheCount, ...stripped } = state;
+  const served = LegionStateResponse.safeParse(stripped);
+  expect(served.success).toBeTrue();
+  expect(served.data?.claimsToRefresh).toBeUndefined();
+
+  for (const refused of [-1, 1.5, "4", null]) {
+    expect(
+      LegionStateResponse.safeParse({ ...state, claimsToRefresh: refused }).success
+    ).toBeFalse();
+  }
 });
 
 // The daemon's resolved legion.yaml (contract 35): the golden carries the file's

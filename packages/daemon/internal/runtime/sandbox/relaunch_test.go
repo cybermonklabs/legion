@@ -1895,6 +1895,7 @@ func loggedSandboxMachine(
 				Boot: time.Hour, RegistrationIntervals: 1, RPC: time.Hour, Probe: time.Hour, Stop: time.Hour, LaunchBackoff: time.Millisecond,
 			}),
 		PluginContract: 24,
+		RefreshGate:    supervise.NewRefreshGate(0),
 	}, c)
 	if err != nil {
 		t.Fatalf("new Machine: %v", err)

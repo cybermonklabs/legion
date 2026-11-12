@@ -313,7 +313,7 @@ func mintAtBoot(ctx context.Context, tokens appauth.Tokens, repo ghrepo.Reposito
 //
 // hookPrompts are the words boot read for every hook whose `prompt_file` names a file, by hook
 // name (readBoot): the engine is given each hook's words, never a path, and the list it runs is
-// built from them once, here, since `hooks` is fixed for the process (engineHooks, engineConfig).
+// built from them once, here, since `hooks` is fixed for the process (engineHooks).
 //
 // reserve is the daemon's one wake limiter as the engine reaches it (run builds it, before this
 // and before supervision, which reserves its launches from the same one): the moment the one
@@ -423,9 +423,15 @@ func openWorkflow(ctx context.Context, cfg config.Config, live *config.Live, reb
 	// the one limiter run built for both lanes, before this, so the engine is handed it as it
 	// is.
 	w.engine = workflow.NewReading(w.records, func() workflow.Config {
-		settings := engineConfig(live.Snapshot(), reviewAppLogin, hooks)
+		settings := engineConfig(live.Snapshot(), reviewAppLogin)
 		settings.Repositories, settings.NoteUnread = w, w.noteUnread
 		settings.Pods = pods
+		// The list is the one built above and never the snapshot's: the words of a hook that
+		// names a `prompt_file` live in no configuration at all — boot read them into a map of
+		// its own — so a list composed here from the settings holder would hand the engine such
+		// a hook with no words at all. The settle pins `hooks` back to the list boot read
+		// (config's pinFixed), which makes this line a second defence rather than the only one.
+		settings.Hooks = hooks
 		// The one wake the engine causes is the catch-up a start writes in place of a launch
 		// (workflow's claimReady), and it is paced with the launches it stands among. A
 		// deployment that paces nothing passes no reserve at all, which is the pacing off: the
@@ -556,19 +562,20 @@ func (w *workflowRuntime) wakeOutbox(issue string, kind record.OutboxKind) {
 // holder's configuration as it stands then, so a live change of any key it reads here reaches
 // the next decision.
 //
-// hooks is the exception, and it is the caller's rather than cfg's: `hooks` is fixed for the
-// process, and the words of a hook that names a `prompt_file` live only in the map boot read them
-// into, so the list the engine runs is built once, from the configuration the daemon booted on
-// (openWorkflow, engineHooks). Reading it from cfg here would hand a daemon whose file was
-// reloaded a hook with no words at all.
-func engineConfig(cfg *config.Config, reviewAppLogin string, hooks []workflow.Hook) workflow.Config {
+// `project` is the one key here no change reaches: it is fixed for the process — every claim,
+// every record and the daemon's own registry entry are named by it — and the snapshot carries
+// the value boot settled whatever the file says now, since every resolution pins the fixed
+// paths back to it (config's pinFixed). So the project this configuration filters every resume
+// and every status repair by is the project the rest of the daemon is admitting, intaking and
+// minting claim tokens for, and the consumer spec a NATS rebuild opens on is that same one.
+func engineConfig(cfg *config.Config, reviewAppLogin string) workflow.Config {
 	project := cfg.Projects[cfg.Project]
 	return workflow.Config{
 		Project: cfg.Project, Steps: cfg.Gates.Steps(), ReviewRoundCap: cfg.ReviewRoundCap,
 		Linger: cfg.Linger, ProductionCheckBound: cfg.ProductionCheckBound,
 		ProductionCheckRole: project.ProductionCheck,
 		ReviewAppLogin:      reviewAppLogin, MergeQueueRole: project.MergeQueueRole,
-		RepositoryRenames: cfg.RepositoryRenames, Hooks: hooks,
+		RepositoryRenames: cfg.RepositoryRenames,
 	}
 }
 

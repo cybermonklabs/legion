@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -104,16 +105,34 @@ func (w *Watcher) Run(ctx context.Context) {
 }
 
 // apply settles the configuration file as it now reads and reports what changed. A failure is
-// logged and nothing moves: the daemon keeps running on the configuration it has, and the next
-// change of the file is read again from scratch.
+// logged and no setting moves: the daemon keeps running on the configuration it has, and the
+// next change of the file is read again from scratch.
+//
+// The reread of the credential files runs either way (Settled), because nothing about it needs
+// the settle to have succeeded: it reads the paths the daemon is already running on, which a
+// failed settle left exactly as they were. Returning before it was how a file this daemon
+// cannot settle — one that has become the other runtime's, one with a typo in it — left a
+// rotated operator bearer, NATS seed, Dispatch or Envoy bearer, provider key or kubeconfig
+// unread until the file was fixed or the daemon restarted, with the bearer an operator rotated
+// to revoke a leaked one still accepted all that while. No later tick cures it either: the
+// watcher takes the file's new state as read before it applies (Run), so this call is the only
+// one that change gets.
 func (w *Watcher) apply(ctx context.Context) {
 	applied, err := w.keeper.File(ctx)
 	if err != nil {
-		w.log.Error("legion settings: the configuration file changed and could not be settled; the daemon keeps the settings it has",
-			"path", w.keeper.live.Path(), "error", err)
-		return
+		var other *config.OtherRuntime
+		if errors.As(err, &other) {
+			w.log.Warn("legion settings: the configuration file under the daemon names another runtime; nothing of it is settled and the daemon keeps the settings it has",
+				"path", w.keeper.live.Path(), "file_runtime", other.File, "booted_runtime", other.Booted)
+		} else {
+			w.log.Error("legion settings: the configuration file changed and could not be settled; the daemon keeps the settings it has",
+				"path", w.keeper.live.Path(), "error", err)
+		}
 	}
 	if w.Settled != nil {
+		// The snapshot the daemon runs on, which a refused reading left untouched: the reread
+		// reads the credential paths the daemon holds, not the ones a file it refused names.
+		// applied is what the settle applied, which a refused reading makes none.
 		w.Settled(w.keeper.live.Snapshot(), applied)
 	}
 }
@@ -186,7 +205,13 @@ func WatchedFiles(cfg *config.Config) []string {
 		files = append(files, block.PiConfigFiles...)
 	}
 	if block := cfg.Runtime.Kubernetes; block != nil {
-		files = append(files, block.Kubeconfig, block.AgentSecrets.TokenFile)
+		files = append(files, block.Kubeconfig)
+		// The broker block is nil whenever the file names no `runtime.kubernetes.agent_secrets`
+		// (config's readAgentSecrets), which is every Kubernetes deployment that enrols its pods
+		// with no secrets broker.
+		if block.AgentSecrets != nil {
+			files = append(files, block.AgentSecrets.TokenFile)
+		}
 	}
 	named := make([]string, 0, len(files))
 	for _, file := range files {

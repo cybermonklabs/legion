@@ -106,7 +106,9 @@ const keptTables: readonly { table: string; why: string }[] = [
 // duty_holds, which is kept above for what one row of it would mean rather than for the rows it
 // holds here.
 
-function sqlLiteral(value: string): string {
+/** `value` as a SQL string literal, with every quote of its own doubled. psql interpolates no
+ *  variable inside a quoted literal, so text reaches Postgres as written. */
+export function sqlLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 

@@ -7,6 +7,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -25,6 +28,50 @@ const minimalFile = `project: DEMO
 state_dir: /var/lib/legion
 postgres_dsn: postgres://legion@127.0.0.1:5432/legion
 `
+
+// kubernetesFile is the smallest file `runtime: kubernetes` loads, as internal/config's own
+// tests write one: every address a pod dials written as a host a pod can reach, and the
+// required members of the block, which the block being last lets a test append to.
+const kubernetesFile = `project: DEMO
+state_dir: /var/lib/legion
+postgres_dsn: postgres://legion@127.0.0.1:5432/legion
+bind: 10.0.0.5
+daemon_url: http://10.0.0.5:13370
+envoy_url: http://envoy-listener.internal.example:9020
+nats_urls: [nats://nats.internal.example:4222]
+envoy_token_file: /var/run/legion/ENVOY_TOKEN
+operator_token_file: /var/run/legion/OPERATOR_TOKEN
+dispatch_url: https://dispatch.internal.example
+dispatch_token_file: /var/run/legion/DISPATCH_TOKEN
+projects:
+  DEMO: {}
+github_apps:
+  implement: { app_id: "1", private_key: implement-test-key }
+  review: { app_id: "2", private_key: review-test-key }
+runtime:
+  kubernetes:
+    namespace: legion
+    image: ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    storage_class: gp2
+    session_store: postgres
+    session_dsn_secret: SESSION_DSN
+`
+
+// tmuxReading is that same deployment's file rewritten as the other runtime's, the edit
+// docs/deployment.md has an operator make before a restart. It loads, and this daemon settles
+// nothing of it (config.Live.Apply).
+var tmuxReading = runtimeSwapped(kubernetesFile, "runtime: tmux\n")
+
+// runtimeSwapped is file with its `runtime` key, the last key kubernetesFile holds, replaced by
+// block. It panics on a file carrying no such key, so a fixture that stops holding one cannot
+// pass by swapping nothing.
+func runtimeSwapped(file, block string) string {
+	head, _, found := strings.Cut(file, "runtime:\n")
+	if !found {
+		panic("the fixture carries no runtime key to swap")
+	}
+	return head + block
+}
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
@@ -61,11 +108,58 @@ func testStore(t *testing.T) *Store {
 // keeperOn is a keeper over path with its own holder, as a boot builds one.
 func keeperOn(t *testing.T, path string, store *Store) *Keeper {
 	t.Helper()
+	return keeperLogging(t, path, store, quiet())
+}
+
+// keeperLogging is that keeper with a logger of the test's own, so a test reads the lines an
+// operator would.
+func keeperLogging(t *testing.T, path string, store *Store, log *slog.Logger) *Keeper {
+	t.Helper()
 	live, err := config.NewLive(path, func(string) string { return "" }, nil)
 	if err != nil {
 		t.Fatalf("resolve %s: %v", path, err)
 	}
-	return New(live, store, quiet())
+	return New(live, store, log)
+}
+
+// logRecorder keeps every line the keeper logs, message and attributes, so a test can count
+// the lines one call wrote and read the words in them.
+type logRecorder struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (r *logRecorder) Enabled(context.Context, slog.Level) bool { return true }
+
+func (r *logRecorder) Handle(_ context.Context, record slog.Record) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.records = append(r.records, record)
+	return nil
+}
+
+// The keeper logs through the logger it is given and never derives one; a handler that dropped
+// attributes here would hide them from the assertions, so it refuses to be derived.
+func (r *logRecorder) WithAttrs([]slog.Attr) slog.Handler { panic("the keeper derived a logger") }
+func (r *logRecorder) WithGroup(string) slog.Handler      { panic("the keeper derived a logger") }
+
+// warnings is every line the keeper wrote at Warn, message and attributes in one string.
+func (r *logRecorder) warnings() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var lines []string
+	for _, record := range r.records {
+		if record.Level != slog.LevelWarn {
+			continue
+		}
+		line := record.Message
+		record.Attrs(func(attr slog.Attr) bool {
+			line += " " + attr.String()
+			return true
+		})
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 // A route change is stored, and the next boot lays it back over the file: the daemon a restart
@@ -429,6 +523,291 @@ func TestAFixedPathIsRefusedAndStoredNowhere(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].Path != "admission_cap" {
 		t.Fatalf("the store holds %+v, want the applied path alone", rows)
+	}
+}
+
+// The file names another runtime, and this keeper's own record stands with the holder's
+// overlay: that reading settled nothing (config.Live.Apply), so the key the file would have
+// taken back is still the route's, in the store as well as over the file, and the settle made
+// of a file this daemon can read takes it back exactly as this one would have.
+//
+// The second row is the control: that same edit of that same key, in the booted runtime's own
+// reading, takes the key back and drops its row — which is what a settle that recorded a
+// reading it never ran on would have done here.
+func TestAFileNamingAnotherRuntimeTakesBackNoKeyTheRouteHolds(t *testing.T) {
+	for _, tc := range []struct {
+		name, reading string
+		other         bool
+		cap           int
+		rows          int
+	}{
+		{name: "the other runtime's reading", reading: tmuxReading + "admission_cap: 5\n", other: true, cap: 7, rows: 1},
+		{name: "the booted runtime's own reading", reading: kubernetesFile + "admission_cap: 5\n", cap: 5, rows: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := testStore(t)
+			path := configFile(t, kubernetesFile)
+			keeper := keeperOn(t, path, store)
+			if _, refused, err := keeper.Route(ctx, config.CallerOperator, "ana@example.com", map[string]any{"admission_cap": 7}); err != nil || len(refused) != 0 {
+				t.Fatalf("Route: %v, refused %+v", err, refused)
+			}
+
+			rewrite(t, path, tc.reading)
+			_, err := keeper.File(ctx)
+
+			var other *config.OtherRuntime
+			switch {
+			case tc.other && !errors.As(err, &other):
+				t.Fatalf("File: %v, want the reading refused whole", err)
+			case tc.other && (other.File != "tmux" || other.Booted != "kubernetes"):
+				t.Fatalf("File answered %+v, want both runtimes named", other)
+			case !tc.other && err != nil:
+				t.Fatalf("File: %v", err)
+			}
+
+			if cap := keeper.Live().Snapshot().AdmissionCap; cap != tc.cap {
+				t.Fatalf("admission_cap after the settle = %d, want %d", cap, tc.cap)
+			}
+			if name := keeper.Live().Snapshot().Runtime.Name; name != "kubernetes" {
+				t.Fatalf("the settled runtime is %q, want the kubernetes deployment the daemon booted on", name)
+			}
+			rows, err := store.Rows(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != tc.rows {
+				t.Fatalf("the store holds %+v, want %d row(s): what it keeps is what the daemon is running on", rows, tc.rows)
+			}
+		})
+	}
+}
+
+// A route change made while the file names another runtime is stored nowhere: the holder
+// settled nothing of it, so a row written for it would be laid back over the file at the next
+// boot as a change this daemon never ran on (config.Live.Apply).
+//
+// The second row is the control: the same call over the booted runtime's own file applies and
+// is stored.
+func TestARouteChangeMadeWhileTheFileNamesAnotherRuntimeIsStoredNowhere(t *testing.T) {
+	for _, tc := range []struct {
+		name, reading string
+		cap           int
+		rows          int
+	}{
+		{name: "the other runtime's reading", reading: tmuxReading, cap: 4, rows: 0},
+		{name: "the booted runtime's own reading", reading: kubernetesFile, cap: 7, rows: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := testStore(t)
+			path := configFile(t, kubernetesFile)
+			keeper := keeperOn(t, path, store)
+			rewrite(t, path, tc.reading)
+
+			applied, refused, err := keeper.Route(ctx, config.CallerOperator, "ana@example.com", map[string]any{"admission_cap": 7})
+
+			var other *config.OtherRuntime
+			switch {
+			case tc.rows == 0 && !errors.As(err, &other):
+				t.Fatalf("Route: %v, want the reading refused whole", err)
+			case tc.rows == 0 && (len(applied) != 0 || len(refused) != 0):
+				t.Fatalf("Route applied %+v and refused %+v, want neither: the reading itself is the refusal", applied, refused)
+			case tc.rows == 0 && (other.File != "tmux" || other.Booted != "kubernetes"):
+				t.Fatalf("Route answered %+v, want both runtimes named", other)
+			case tc.rows > 0 && err != nil:
+				t.Fatalf("Route: %v", err)
+			}
+			if cap := keeper.Live().Snapshot().AdmissionCap; cap != tc.cap {
+				t.Fatalf("admission_cap after the route change = %d, want %d", cap, tc.cap)
+			}
+			rows, err := store.Rows(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != tc.rows {
+				t.Fatalf("the store holds %+v, want %d row(s): what it keeps is what the daemon is running on", rows, tc.rows)
+			}
+		})
+	}
+}
+
+// The route arm logs a reading of another runtime once per call, naming the caller, every path
+// the call asked for and both runtimes. Nothing else records it: the route answers the caller
+// alone, and a daemon whose file has become another deployment's refuses every change until
+// somebody reads the log and sees why.
+//
+// Once per call, and not once per key: a call naming three paths writes one line, so the
+// operator reads one event rather than one line per key of a change that did nothing.
+//
+// The second row is the control: the same call over the booted runtime's own file writes no
+// such line at all.
+func TestTheRouteLogsAReadingOfAnotherRuntimeOncePerCall(t *testing.T) {
+	for _, tc := range []struct {
+		name, reading string
+		lines         int
+	}{
+		{name: "the other runtime's reading", reading: tmuxReading, lines: 1},
+		{name: "the booted runtime's own reading", reading: kubernetesFile, lines: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			path := configFile(t, kubernetesFile)
+			recorder := &logRecorder{}
+			keeper := keeperLogging(t, path, testStore(t), slog.New(recorder))
+			rewrite(t, path, tc.reading)
+
+			_, _, err := keeper.Route(ctx, config.CallerOperator, "ana@example.com", map[string]any{
+				"admission_cap": 7, "review_round_cap": 5, "linger_hours": 3,
+			})
+
+			var other *config.OtherRuntime
+			if tc.lines > 0 != errors.As(err, &other) {
+				t.Fatalf("Route: %v", err)
+			}
+			warnings := recorder.warnings()
+			if len(warnings) != tc.lines {
+				t.Fatalf("the route wrote %d warning(s), want %d: one line per call, not one per key\n%s",
+					len(warnings), tc.lines, strings.Join(warnings, "\n"))
+			}
+			if tc.lines == 0 {
+				return
+			}
+			for _, want := range []string{
+				"another runtime", "operator", "ana@example.com",
+				"admission_cap", "linger_hours", "review_round_cap", "tmux", "kubernetes",
+			} {
+				if !strings.Contains(warnings[0], want) {
+					t.Errorf("the line names no %q:\n\t%s", want, warnings[0])
+				}
+			}
+		})
+	}
+}
+
+// A boot whose file has become another runtime's does not come up: the restore lays the stored
+// route changes back over the file through the holder's route arm, which settles nothing of
+// such a reading (config.OtherRuntime), and the boot fails with the reason naming both
+// runtimes. A boot that went on would build every holder from a file this daemon never
+// settled, while the store credited the route with an overlay the daemon is not running on.
+//
+// The second row is the control: the same stored row, over a file that names the runtime this
+// boot read, is laid back and the boot proceeds.
+func TestABootWhoseFileNamesAnotherRuntimeFailsNamingBoth(t *testing.T) {
+	for _, tc := range []struct {
+		name, reading string
+		other         bool
+		cap           int
+	}{
+		{name: "the file names the other runtime", reading: tmuxReading, other: true, cap: 4},
+		{name: "the file names the runtime the boot read", reading: kubernetesFile, cap: 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := testStore(t)
+			path := configFile(t, kubernetesFile)
+			keeper := keeperOn(t, path, store)
+			if _, refused, err := keeper.Route(ctx, config.CallerOperator, "ana@example.com", map[string]any{"admission_cap": 7}); err != nil || len(refused) != 0 {
+				t.Fatalf("Route: %v, refused %+v", err, refused)
+			}
+
+			// The restart: a keeper of its own reads the file as it stands, and the file is
+			// rewritten under it before the restore lays the stored row back — the operator's
+			// edit ahead of a planned restart, or a ConfigMap swapped as the daemon came up.
+			restarted := keeperOn(t, path, store)
+			rewrite(t, path, tc.reading)
+			kept, err := restarted.Restore(ctx)
+
+			var other *config.OtherRuntime
+			switch {
+			case tc.other && !errors.As(err, &other):
+				t.Fatalf("Restore: %v, want the boot to fail on the reading", err)
+			case tc.other && (other.File != "tmux" || other.Booted != "kubernetes"):
+				t.Fatalf("Restore answered %+v, want both runtimes named", other)
+			case !tc.other && err != nil:
+				t.Fatalf("Restore: %v", err)
+			}
+			if tc.other && len(kept) != 0 {
+				t.Fatalf("Restore kept %+v, want nothing: a boot that failed credits the route with no path", kept)
+			}
+			if cap := restarted.Live().Snapshot().AdmissionCap; cap != tc.cap {
+				t.Fatalf("admission_cap after the restore = %d, want %d", cap, tc.cap)
+			}
+		})
+	}
+}
+
+// A boot that fails deletes nothing either: the rows the file's own edits would have taken back
+// are still there, so the operator who puts the file back and boots again gets the route
+// changes the first boot would otherwise have thrown away. Restore deletes them after its apply
+// has succeeded, which is the order the running daemon's arm already had (Keeper.File, whose
+// write comes after Apply).
+//
+// The second row is the control: that same edit of that same key, in the booted runtime's own
+// reading, is applied, and the key the file took back loses its row.
+func TestABootThatFailsDeletesNoRowTheFileTookBack(t *testing.T) {
+	for _, tc := range []struct {
+		name, reading string
+		other         bool
+		rows          []string
+	}{
+		{
+			name: "the file names the other runtime", reading: tmuxReading + "admission_cap: 9\n",
+			other: true, rows: []string{"admission_cap", "review_round_cap"},
+		},
+		{
+			name: "the file names the runtime the boot read", reading: kubernetesFile + "admission_cap: 9\n",
+			rows: []string{"review_round_cap"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := testStore(t)
+			path := configFile(t, kubernetesFile)
+			keeper := keeperOn(t, path, store)
+			// Two paths: the one the reading edits, which the file is taking back, and one it
+			// leaves alone, which is what the boot has to lay back over the file and so what
+			// makes it apply at all.
+			changes := map[string]any{"admission_cap": 7, "review_round_cap": 5}
+			if _, refused, err := keeper.Route(ctx, config.CallerOperator, "ana@example.com", changes); err != nil || len(refused) != 0 {
+				t.Fatalf("Route: %v, refused %+v", err, refused)
+			}
+
+			restarted := keeperOn(t, path, store)
+			rewrite(t, path, tc.reading)
+			_, err := restarted.Restore(ctx)
+
+			var other *config.OtherRuntime
+			if errors.As(err, &other) != tc.other {
+				t.Fatalf("Restore: %v, want the boot to fail on the reading: %v", err, tc.other)
+			}
+			rows, err := store.Rows(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := pathsOf(rows); !slices.Equal(got, tc.rows) {
+				t.Fatalf("the store holds %v, want %v", got, tc.rows)
+			}
+			if !tc.other {
+				return
+			}
+
+			// The operator puts the file back and boots again, which is the one cure for a boot
+			// the reading refused: both route changes are laid back over it.
+			rewrite(t, path, kubernetesFile)
+			recovered := keeperOn(t, path, store)
+			kept, err := recovered.Restore(ctx)
+			if err != nil {
+				t.Fatalf("Restore once the file was put back: %v", err)
+			}
+			if got := pathsOf(kept); !slices.Equal(got, tc.rows) {
+				t.Fatalf("the boot laid %v back over the file, want %v", got, tc.rows)
+			}
+			if cfg := recovered.Live().Snapshot(); cfg.AdmissionCap != 7 || cfg.ReviewRoundCap != 5 {
+				t.Fatalf("admission_cap %d and review_round_cap %d after that boot, want the route's 7 and 5",
+					cfg.AdmissionCap, cfg.ReviewRoundCap)
+			}
+		})
 	}
 }
 

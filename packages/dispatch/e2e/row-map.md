@@ -174,13 +174,23 @@ such a row loses is feedback on the pull request itself.
 | `e2e/accessibility.e2e.ts` | three of its scanned routes wait on the live document's connected status, which the Yjs socket alone gives |
 | `e2e/activity.e2e.ts` | pins/unpins and asserts the refetched margin; pins first, then asserts on the server's stored body |
 | `e2e/address-links.e2e.ts` | asserts in the live spec editor (`/ws/doc`) as well as the Conversation |
+| `e2e/agent-context-ring.e2e.ts` | the ring is drawn from the context frames a session publishes, which the live relay carries, and a frame published after load must reach the open page |
 | `e2e/agent-list-refilling.e2e.ts` | drives the fake Envoy listener's refusal states and asserts the page's reading of them |
+| `e2e/agent-live-layout.e2e.ts` | the header's pin is written to Dispatch and read back from its stored state, and every row opens on a view the relay builds from the session's replay |
+| `e2e/agent-live-views.e2e.ts` | a view that sleeps and comes back is answered with the session's replay, which the live relay alone gives; a reply seeded through Dispatch after load changes the unread count the rail reads, and the view in front writes the read mark that clears it |
 | `e2e/agent-name-band.e2e.ts` | writes the session's two replies, one carrying a title and one carrying none, and then reads the name the server resolves from them (`delivery.ResolveSessionTitles`); the fake registry must drop the session before the page loads, or the roster names it and the read proves nothing |
 | `e2e/agent-name.e2e.ts` | margin comment on the live document, plus the fake registry; lands on the live view, whose frames come from the relay; a registry change after load must reach the open page |
+| `e2e/agent-rail.e2e.ts` | a pin is the viewer's per-agent state written to the server and read back - from the rail row, the Agents row and the live view header, in a second browser context that reloaded nothing, and out of this browser's own old list into what Dispatch stores |
+| `e2e/agent-shell-command.e2e.ts` | the view is built from the session's replay over the relay, and each turn is drawn under the id Dispatch minted for the message it answers, folded with the reply the server stored |
+| `e2e/agent-skill-completion.e2e.ts` | completion reads the session's commands from the replay the live relay carries, and what Send hands over is read back from the fake Envoy |
 | `e2e/agent-tokens.e2e.ts` | token mint, attribution, privacy between two contexts, revoke |
+| `e2e/agent-view-cost.e2e.ts` | every view opens on a transcript at the stream's limit the relay replays, and the gap row turns on the relay itself: a frame published while a viewer is subscribed reaches the page, and one published to a sleeping view reaches nobody and is kept nowhere |
 | `e2e/agent-view-settings.e2e.ts` | live session settings frames, switch round trips through fake Envoy, `page.reload()` after writes |
 | `e2e/agent-view.e2e.ts` | every row replays or streams session frames over the live relay |
+| `e2e/agent-workspace-timing.e2e.ts` | times the page against six hundred sessions of the fake registry and a limit-sized transcript the relay replays, both of which a recording would freeze |
+| `e2e/agents-groups.e2e.ts` | the page groups on what the server answers: the asks it holds open for the reader, the event it stamps a session's activity with, and last_seen against the wall clock, which a recording freezes; a row's pin is written and read back in the rail |
 | `e2e/agents-search.e2e.ts` | every row reads the Agents list, which folds a session unseen for ten minutes against the clock, and a recording freezes last_seen |
+| `e2e/agents-window.e2e.ts` | six hundred sessions come from the fake registry, and the one group the page counts all six hundred under, Idle, is their last_seen against the wall clock, which a recording freezes |
 | `e2e/agents.e2e.ts` | sends a BTW message and asserts the exchange; Clear is a write re-read after a reload; needs a session reply delivered live |
 | `e2e/anchors.e2e.ts` | live document edits with the server's anchor state read back |
 | `e2e/answers.e2e.ts` | answers and answer changes written, then re-read on other surfaces |
@@ -322,7 +332,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/threads.e2e.ts` | replies, resolve and reopen, edits, retractions and suggestion accepts, all server writes |
 | `e2e/typed-block-content-rule.e2e.ts` | pastes into the live document editor |
 | `e2e/typed-blocks.e2e.ts` | asserts inside the live project-document editor |
-| `e2e/verification.e2e.ts` | opens the document's live room; currency is the server's comparison with the PR head |
+| `e2e/verification.e2e.ts` | opens the document's live room; where a result's commit stands is the server's comparison with the PR head |
 | `e2e/visual.e2e.ts` | it compares a page against a committed baseline inside the pinned Playwright image, which is its own pair of projects |
 | `e2e/workspace.e2e.ts` | it asserts the counts and the titles the server groups a workspace into |
 | `e2e/writer-spelling.e2e.ts` | asserts the readings inside the live document editor |

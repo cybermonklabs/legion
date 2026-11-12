@@ -46,6 +46,7 @@
   "heldOutboxRows": [],
   "strandedClaims": [],
   "wakesWaiting": [],
+  "claimsToRefresh": 0,
   "capabilities": [],
   "repositories": {
     "owners": [],

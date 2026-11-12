@@ -72,7 +72,14 @@ type sandboxReads struct {
 // My Pi invocation or plugin gate (the image probe proves the image's), no Dispatch token file (a
 // pod reads its bearer from its claim's Secret), no secretsd provider keys (a pod mounts its keys
 // from the providers Secret), and no host gh, git, or jj (a pod runs the image's).
+//
+// A configuration that is not this runtime's is refused rather than read (ownRuntime): the
+// block every value below comes out of is dereferenced on the next line, and this read is
+// where boot and every rebuild of the Sandbox runtime pass (prepareSandbox's runtimeFor).
 func readSandbox(cfg config.Config, project, dispatchToken, paneNatsUser string, lookup func(string) (string, bool), log *slog.Logger) (sandboxReads, error) {
+	if err := ownRuntime("kubernetes", cfg); err != nil {
+		return sandboxReads{}, err
+	}
 	k := *cfg.Runtime.Kubernetes
 	rc, err := kubeClient(k)
 	if err != nil {
