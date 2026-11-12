@@ -34,6 +34,7 @@ import {
   textSecondaryOnSurface,
   textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
+import { placeInView } from "../doc/readers-place";
 import { statusText } from "../project/board-model";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { searchSnippetMarkdown } from "../refs/markdown-fragment";
@@ -635,7 +636,8 @@ function PaletteDialog({
       return;
     }
     const keepInView = () => {
-      document.getElementById(shownId)?.scrollIntoView({ block: "nearest" });
+      const highlighted = document.getElementById(shownId);
+      if (highlighted !== null) placeInView(highlighted, { block: "nearest" });
     };
     keepInView();
     const list = listRef.current;

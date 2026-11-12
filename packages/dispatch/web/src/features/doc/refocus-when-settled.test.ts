@@ -6,7 +6,7 @@ import { waitFor } from "@testing-library/react";
 // is a `setTimeout` it arms itself, with nothing of either exposed for a row to drive
 // (`CORRECTION_SCROLL_MS`, `refocus-when-settled.ts`). So the rows below wait those windows out
 // rather than moving a fake clock across them.
-import { moveTheScroll } from "./readers-place";
+import { moveTheScroll, placeInView, putTheBoxAt } from "./readers-place";
 import { refocusWhenSettled } from "./refocus-when-settled";
 import { scrollElementToTop } from "./scroll-block";
 
@@ -384,6 +384,50 @@ test("the reading column's own placement leaves the watch watching", async () =>
     expect(column.scrollTop).toBe(HEADING_BELOW_PX);
     // The browser tells the listeners after the write, so the event reaches the watch with no
     // correction of its own pending: the record the placement left is all that saves it.
+    await Bun.sleep(0);
+    drawn.grow(300);
+    await waitFor(() => expect(focused).toBe(1));
+  } finally {
+    stop();
+    column.remove();
+  }
+});
+
+test("a block the page placed in view leaves the watch watching", async () => {
+  const { column, drawn, heading } = readingColumn();
+  let focused = 0;
+  const stop = refocusWhenSettled(() => (focused += 1), drawn.element);
+
+  try {
+    await Bun.sleep(AFTER_THE_CORRECTION);
+    // Every page that brought an element into view by the browser's own `scrollIntoView` now
+    // goes through the wrapper that measures that move and writes it through the recorded call
+    // (`placeInView`, `readers-place.ts`) - a thread opened at its first unread message, a
+    // highlighted row the arrows reached, the card a comment link names. The browser's call
+    // tells nobody, and this watch would read it as the reader taking the column over.
+    placeInView(heading, { block: "start" });
+    expect(column.scrollTop).toBe(HEADING_BELOW_PX);
+    await Bun.sleep(0);
+    drawn.grow(300);
+    await waitFor(() => expect(focused).toBe(1));
+  } finally {
+    stop();
+    column.remove();
+  }
+});
+
+test("a box the page put at a place of its own leaves the watch watching", async () => {
+  const { column, drawn } = readingColumn();
+  let focused = 0;
+  const stop = refocusWhenSettled(() => (focused += 1), drawn.element);
+
+  try {
+    await Bun.sleep(AFTER_THE_CORRECTION);
+    // The caller that knows where the box is to stand rather than how far to move it: a list
+    // put back at its own start, a transcript written to its end, a panel put back where the
+    // reader left it (`putTheBoxAt`, `readers-place.ts`).
+    putTheBoxAt(column, HEADING_BELOW_PX);
+    expect(column.scrollTop).toBe(HEADING_BELOW_PX);
     await Bun.sleep(0);
     drawn.grow(300);
     await waitFor(() => expect(focused).toBe(1));

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { putTheBoxAt } from "../doc/readers-place";
 import { onMarkdownLatePaint } from "../refs/useRenderedMarkdown";
 
 const FOLLOW_POSITION_TOLERANCE_PX = 1;
@@ -55,14 +56,14 @@ export function useFollowLatest({
   const jumpToLatest = useCallback(() => {
     const newest = document.querySelector<HTMLElement>(NEWEST_TURN_SELECTOR);
     if (newest === null) {
-      window.scrollTo({ top: 0 });
+      putTheBoxAt(null, 0);
     } else {
       const composerHeight =
         document
           .querySelector<HTMLElement>('[aria-label="Comment composer"]')
           ?.getBoundingClientRect().height ?? 0;
       const target = window.scrollY + newest.getBoundingClientRect().top - composerHeight;
-      window.scrollTo({ top: Math.max(target, 0) });
+      putTheBoxAt(null, Math.max(target, 0));
     }
     followScrollY.current = window.scrollY;
   }, []);

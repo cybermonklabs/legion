@@ -99,19 +99,23 @@ export function whatScrolls(element: HTMLElement): HTMLElement | null {
   return null;
 }
 
+/** How far down `scroller` - the page itself where null - it is scrolled to. */
+function offsetOf(scroller: HTMLElement | null): number {
+  return scroller === null ? window.scrollY : scroller.scrollTop;
+}
+
 /** How far down whatever carries `within` the reader is. */
 function scrollOffset(within: HTMLElement): number {
-  const scroller = whatScrolls(within);
-  return scroller === null ? window.scrollY : scroller.scrollTop;
+  return offsetOf(whatScrolls(within));
 }
 
 /** Where the page's own place-keeping last left each box it scrolled, and where it last left
  *  the page itself. A keeper's correction is the page moving what it draws to hold the reader
  *  still, never the reader moving themselves, and the watch that reads a scroll as the reader
  *  taking the page over (`refocus-when-settled.ts`) has to tell the two apart. It is recorded
- *  in the one call both keepers scroll through rather than by a flag each raises around its
- *  own write: a caller that moves the page through `moveTheScroll` cannot forget to say that
- *  it did, and a caller that moves it any other way is not the page's place-keeping. */
+ *  in the calls the page scrolls through rather than by a flag each caller raises around its
+ *  own write: a caller that moves a box through this module cannot forget to say that it did,
+ *  and a caller that moves one any other way is not the page's place-keeping. */
 const thePageLeftBoxesAt = new WeakMap<HTMLElement, number>();
 let thePageLeftTheWindowAt: number | undefined;
 
@@ -120,39 +124,147 @@ let thePageLeftTheWindowAt: number | undefined;
  *  somewhere else, and reads false. */
 export function thePageLeftItThere(scroller: HTMLElement | null): boolean {
   const left = scroller === null ? thePageLeftTheWindowAt : thePageLeftBoxesAt.get(scroller);
-  return left !== undefined && left === (scroller === null ? window.scrollY : scroller.scrollTop);
+  return left !== undefined && left === offsetOf(scroller);
 }
 
-/** Scrolls `scroller` itself by `moved` pixels, recording where that left it as the page's own
- *  doing (above). It is `moveTheScroll` for a caller that names the box rather than what it is
- *  holding still in it: the Inbox's reading column is one box drawn in one place, and its
- *  placement writes it while the document in it is still drawing - the section it was opened
- *  at put back at the top on every pass, and the start of the column written for an approval
- *  request - so that writing is the page holding the reader's place, and every landing
- *  correction watching the same column reads it as such rather than as the reader taking the
- *  column over (`refocus-when-settled.ts`). */
-export function moveTheBox(scroller: HTMLElement, moved: number): void {
+/** Records that the page's own place-keeping has just left `scroller` - the page itself where
+ *  null - standing where it stands now. The one place either record is written: every call
+ *  below writes its scroll and then says so here, after the write, so what a box clamped the
+ *  write to is what is recorded. */
+function thePageLeftIt(scroller: HTMLElement | null): void {
+  if (scroller === null) {
+    thePageLeftTheWindowAt = window.scrollY;
+    return;
+  }
+  thePageLeftBoxesAt.set(scroller, scroller.scrollTop);
+}
+
+/** Scrolls `scroller` itself - the page where null - by `moved` pixels, recording where that
+ *  left it as the page's own doing (above). It is `moveTheScroll` for a caller that names the
+ *  box rather than what it is holding still in it: the Inbox's reading column is one box drawn
+ *  in one place, and its placement writes it while the document in it is still drawing - the
+ *  section it was opened at put back at the top on every pass, and the start of the column
+ *  written for an approval request - so that writing is the page holding the reader's place,
+ *  and every landing correction watching the same column reads it as such rather than as the
+ *  reader taking the column over (`refocus-when-settled.ts`). */
+export function moveTheBox(scroller: HTMLElement | null, moved: number): void {
   if (moved === 0) {
     return;
   }
-  scroller.scrollTop += moved;
-  thePageLeftBoxesAt.set(scroller, scroller.scrollTop);
+  if (scroller === null) {
+    window.scrollBy(0, moved);
+  } else {
+    scroller.scrollTop += moved;
+  }
+  thePageLeftIt(scroller);
 }
 
 /** Scrolls whatever carries `within` by `moved` pixels, so what the reader is looking at stays
  *  on the same line of their screen while the page changes above it. Where it leaves that box
  *  is recorded as the page's own doing (above). */
 export function moveTheScroll(within: HTMLElement, moved: number): void {
-  if (moved === 0) {
+  moveTheBox(whatScrolls(within), moved);
+}
+
+/** Puts `scroller` - the page itself where null - at `top`, recorded as the page's own doing
+ *  (above). It is `moveTheBox` for the caller that knows where the box is to stand rather than
+ *  how far it is to move: a list put back at its own start when its controls change, a live
+ *  transcript written to its end, a panel put back where the reader left it. A `top` outside
+ *  the box is the write the browser clamps - asking for `scrollHeight` is how a transcript
+ *  asks for its own end - and what the box clamps it to is what is recorded. */
+export function putTheBoxAt(scroller: HTMLElement | null, top: number): void {
+  if (top === offsetOf(scroller)) {
     return;
   }
-  const scroller = whatScrolls(within);
   if (scroller === null) {
-    window.scrollBy(0, moved);
-    thePageLeftTheWindowAt = window.scrollY;
-    return;
+    window.scrollTo({ top });
+  } else {
+    scroller.scrollTo({ top });
   }
-  moveTheBox(scroller, moved);
+  thePageLeftIt(scroller);
+}
+
+/** The band of the page's own coordinates `scroller` - the page where null - places an element
+ *  in: its own edges less its `scroll-padding`, which is the part of the box a scroll is
+ *  allowed to land content in (`html { scroll-padding-bottom: 5rem }` under 1280px,
+ *  `styles.css`, which holds the fixed review sheet's height clear of whatever the page
+ *  scrolls to). */
+function placingPort(scroller: HTMLElement | null): { bottom: number; top: number } {
+  const style = window.getComputedStyle(scroller ?? document.documentElement);
+  const top = scroller === null ? 0 : scroller.getBoundingClientRect().top;
+  const height = scroller === null ? window.innerHeight : scroller.clientHeight;
+  return {
+    bottom: top + height - (Number.parseFloat(style.scrollPaddingBottom) || 0),
+    top: top + (Number.parseFloat(style.scrollPaddingTop) || 0),
+  };
+}
+
+/** Where `element` asks to be placed: its own box grown by its `scroll-margin`, which is what
+ *  the browser aligns rather than the drawn box itself. */
+function placingBox(element: HTMLElement): { bottom: number; top: number } {
+  const style = window.getComputedStyle(element);
+  const box = element.getBoundingClientRect();
+  return {
+    bottom: box.bottom + (Number.parseFloat(style.scrollMarginBottom) || 0),
+    top: box.top - (Number.parseFloat(style.scrollMarginTop) || 0),
+  };
+}
+
+/** How far the box that scrolls `element` must move to place it where `block` asks, by the rule
+ *  the browser's own `scrollIntoView` follows (CSSOM View, "scroll a target into view"). */
+function howFarIntoView(
+  element: HTMLElement,
+  scroller: HTMLElement | null,
+  block: ScrollLogicalPosition
+): number {
+  const port = placingPort(scroller);
+  const box = placingBox(element);
+  const above = box.top < port.top;
+  const below = box.bottom > port.bottom;
+  switch (block) {
+    case "start":
+      return box.top - port.top;
+    case "end":
+      return box.bottom - port.bottom;
+    case "center":
+      return (box.top + box.bottom) / 2 - (port.top + port.bottom) / 2;
+    default:
+      // `nearest`: an element already in the port, and one so tall that it covers the port, are
+      // left where they are; one off the top is aligned to the top and one off the bottom to the
+      // bottom - except that one taller than the port is aligned to the top either way, since
+      // bringing its end up would carry its first line out of sight.
+      if (above === below) {
+        return 0;
+      }
+      if (above || box.bottom - box.top > port.bottom - port.top) {
+        return box.top - port.top;
+      }
+      return box.bottom - port.bottom;
+  }
+}
+
+/** Puts `element` in view of the box that scrolls it - the page where no box does - where
+ *  `block` asks it to stand, as `Element.scrollIntoView` would, recording where that left the
+ *  box as the page's own doing (above). The browser's own call writes the scroll itself and
+ *  tells nobody, so a page that moves itself through it is read as the reader taking the page
+ *  over by every landing correction watching the same box (`refocus-when-settled.ts`); this one
+ *  measures what that call would do and then writes it through `moveTheBox`, which says who
+ *  did it.
+ *
+ *  It measures by the browser's own rule, `scroll-padding` and `scroll-margin` included, so
+ *  `nearest` still moves nothing for an element already in the port and still brings the near
+ *  edge to the near edge for one that is not - rather than a delta of this module's own
+ *  invention. Two things the browser's call does it does not: it moves the one box that
+ *  scrolls `element`, where the browser walks every scrolling ancestor up to the page, and it
+ *  leaves the inline axis alone. Every caller of it names a block alignment only, of an element
+ *  drawn in the box the reader is already looking at. A scroll it writes is instant, as the
+ *  browser's is: nothing in this app asks for `scroll-behavior: smooth`. */
+export function placeInView(
+  element: HTMLElement,
+  options?: { readonly block?: ScrollLogicalPosition }
+): void {
+  const scroller = whatScrolls(element);
+  moveTheBox(scroller, howFarIntoView(element, scroller, options?.block ?? "start"));
 }
 
 /** Puts the reader back where `place` left them, in a document `drawn` draws the same blocks of

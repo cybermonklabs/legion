@@ -26,6 +26,7 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { putTheBoxAt } from "../doc/readers-place";
 import { useAgentRegistry } from "../refs/agent-registry";
 import { setSelectedIssues } from "../search/bar-scope";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
@@ -315,7 +316,8 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
   const controlSignature = params.toString();
   const previousControls = useRef(controlSignature);
   useLayoutEffect(() => {
-    if (previousControls.current !== controlSignature) scrollRef.current?.scrollTo({ top: 0 });
+    const rows = scrollRef.current;
+    if (previousControls.current !== controlSignature && rows !== null) putTheBoxAt(rows, 0);
     previousControls.current = controlSignature;
   }, [controlSignature, scrollRef]);
   const pageCount = table.getPageCount();

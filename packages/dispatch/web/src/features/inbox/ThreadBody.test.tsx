@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
+import { issueQuery } from "../../api/queries";
 import type {
   Agent,
   Comment,
@@ -14,7 +15,9 @@ import type {
   MyReplyRow,
   MyReplyThreadRow,
 } from "../../api/types";
+import { thePageLeftItThere } from "../doc/readers-place";
 import { plannerAgentRow } from "../threads/replies-fixture";
+import { ThreadBody } from "./ThreadBody";
 import { ThreadRowCard } from "./ThreadRowCard";
 
 /** Every API mock a test installed, restored after it. */
@@ -121,6 +124,107 @@ function renderCard(thread: MyReplyRow): void {
   );
   render(tree);
 }
+
+/** The reading column a thread is drawn in, and where its first unread message is drawn down
+ *  it: happy-dom lays nothing out, computes no overflow and scrolls nothing, so what
+ *  `whatScrolls` reads to find the box and the rectangles the placement measures are stated
+ *  here (`features/doc/readers-place.ts`). */
+const COLUMN_TOP = 40;
+const COLUMN_HEIGHT = 600;
+const UNREAD_BELOW = 500;
+
+function readingColumn(): HTMLElement {
+  let scrolled = 0;
+  const column = document.createElement("div");
+  column.style.overflowY = "auto";
+  Object.defineProperty(column, "clientHeight", { configurable: true, get: () => COLUMN_HEIGHT });
+  Object.defineProperty(column, "scrollHeight", { configurable: true, get: () => 4_000 });
+  Object.defineProperty(column, "scrollTop", {
+    configurable: true,
+    get: () => scrolled,
+    set: (next: number) => {
+      scrolled = next;
+    },
+  });
+  document.body.append(column);
+  return column;
+}
+
+test("a thread opened at its first unread message is the page's own move", async () => {
+  spy("getIssue", { closed_at: null } as unknown as IssueDetails);
+  spy("listComments", [
+    comment("comment-1", "The retry budget is too small."),
+    comment("comment-2", "Agreed.", {
+      author: { id: "bob", kind: "user" },
+      created_at: "2026-10-12T01:00:00Z",
+      reply_to: "comment-1",
+    }),
+  ]);
+  const column = readingColumn();
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this === column) {
+      return {
+        bottom: COLUMN_TOP + COLUMN_HEIGHT,
+        height: COLUMN_HEIGHT,
+        top: COLUMN_TOP,
+      } as DOMRect;
+    }
+    // The first unread message is drawn `UNREAD_BELOW` down the column, and so is each wrapper
+    // the thread draws around it - one of which is what the placement measures.
+    const holdsUnread = this.querySelector("[data-inbox-thread-first-unread]") !== null;
+    const top = COLUMN_TOP + (holdsUnread ? UNREAD_BELOW : 0) - column.scrollTop;
+    return { bottom: top + 100, height: 100, top } as DOMRect;
+  });
+  restores.push(rect);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  // The reads the Inbox already holds when it opens a thread in the reading pane: the body
+  // draws its messages in the commit it mounts in, which is the commit whose effect places the
+  // reader at the first unread one.
+  client.setQueryData(issueQuery("CORE-1").queryKey, {
+    closed_at: null,
+  } as unknown as IssueDetails);
+  client.setQueryData(
+    ["comments", "CORE-1"],
+    [
+      comment("comment-1", "The retry budget is too small."),
+      comment("comment-2", "Agreed.", {
+        author: { id: "bob", kind: "user" },
+        created_at: "2026-10-12T01:00:00Z",
+        reply_to: "comment-1",
+      }),
+    ]
+  );
+
+  try {
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <ThreadBody openAtFirstUnread thread={commentRow()} />
+        </QueryClientProvider>
+      </MemoryRouter>,
+      { container: column }
+    );
+    await screen.findByTestId("inbox-thread-comment");
+
+    // The thread opening where the reader left off is the page placing what it draws, written
+    // through the one call that records it (`placeInView`, `features/doc/readers-place.ts`): it
+    // measures what the browser's own `scrollIntoView({ block: "start" })` would do and then
+    // writes it through the recorded call, so a landing correction watching the same column
+    // goes on watching (`refocus-when-settled.ts`).
+    await waitFor(() => expect(column.scrollTop).toBe(UNREAD_BELOW));
+    expect(thePageLeftItThere(column)).toBe(true);
+
+    // The reader scrolls the column themselves, and the correction stops.
+    column.scrollTop = 120;
+    expect(thePageLeftItThere(column)).toBe(false);
+  } finally {
+    cleanup();
+    column.remove();
+  }
+});
 
 test("an Agent row's card draws the message, the session's reply and the composer", async () => {
   spy("listAgents", [session]);

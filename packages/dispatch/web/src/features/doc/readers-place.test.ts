@@ -1,6 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 
-import { keepTheReadersPlace, readersBlock } from "./readers-place";
+import {
+  keepTheReadersPlace,
+  placeInView,
+  putTheBoxAt,
+  readersBlock,
+  thePageLeftItThere,
+} from "./readers-place";
 
 // happy-dom lays nothing out and has no ResizeObserver, so the geometry is this harness: a run
 // of blocks `BLOCK_HEIGHT` tall whose first block starts `documentTop` under the top of the
@@ -329,4 +335,205 @@ test("a reader still above a reading column's first block has no place to keep",
   const column = columnOf(40, 80);
 
   expect(readersBlock(column.drawn)).toBeUndefined();
+});
+
+/** Where a list that scrolls in a box of its own stands, and how tall it is. */
+const LIST_TOP = 100;
+const LIST_HEIGHT = 300;
+
+/** That list, with one row drawn `rowTop` down its content and `rowHeight` tall: happy-dom lays
+ *  nothing out, computes no overflow and clamps no scroll, so what `whatScrolls` reads to find
+ *  the box, the rectangles `placeInView` measures, and how far the box may scroll are all
+ *  stated here. The box clamps as a browser does, which is what a row written past its end
+ *  reads back. */
+function listOf(
+  rowTop: number,
+  rowHeight: number
+): { box: HTMLElement; content: number; row: HTMLElement } {
+  const content = 4_000;
+  let scrolled = 0;
+  const box = document.createElement("div");
+  box.style.overflowY = "auto";
+  Object.defineProperty(box, "clientHeight", { configurable: true, get: () => LIST_HEIGHT });
+  Object.defineProperty(box, "scrollHeight", { configurable: true, get: () => content });
+  Object.defineProperty(box, "scrollTop", {
+    configurable: true,
+    get: () => scrolled,
+    set: (next: number) => {
+      scrolled = Math.max(0, Math.min(next, content - LIST_HEIGHT));
+    },
+  });
+  box.getBoundingClientRect = () =>
+    ({ bottom: LIST_TOP + LIST_HEIGHT, height: LIST_HEIGHT, top: LIST_TOP }) as DOMRect;
+  const row = document.createElement("div");
+  row.getBoundingClientRect = () =>
+    ({
+      bottom: LIST_TOP + rowTop + rowHeight - scrolled,
+      height: rowHeight,
+      top: LIST_TOP + rowTop - scrolled,
+    }) as DOMRect;
+  box.append(row);
+  document.body.append(box);
+  return { box, content, row };
+}
+
+test("a row below the fold is brought to the bottom edge, and the page says it moved it", () => {
+  const { box, row } = listOf(500, 40);
+
+  try {
+    // `nearest`, the browser's own rule for a highlighted row the arrows have reached: the row
+    // is below the box, so its bottom edge comes to the box's bottom edge and no further.
+    placeInView(row, { block: "nearest" });
+
+    expect(box.scrollTop).toBe(240);
+    expect(row.getBoundingClientRect().bottom).toBe(LIST_TOP + LIST_HEIGHT);
+    // Which is the whole point of the wrapper: the stop rule that tells the page's own move
+    // from the reader's reads this (`thePageLeftItThere`, `refocus-when-settled.ts`), and the
+    // browser's own `scrollIntoView` leaves it saying nothing.
+    expect(thePageLeftItThere(box)).toBe(true);
+  } finally {
+    box.remove();
+  }
+});
+
+test("a row above the fold is brought to the top edge", () => {
+  const { box, row } = listOf(500, 40);
+
+  try {
+    box.scrollTop = 600;
+
+    placeInView(row, { block: "nearest" });
+
+    expect(box.scrollTop).toBe(500);
+    expect(row.getBoundingClientRect().top).toBe(LIST_TOP);
+  } finally {
+    box.remove();
+  }
+});
+
+test("a row already in view is left where it is, and nothing is recorded", () => {
+  const { box, row } = listOf(500, 40);
+
+  try {
+    box.scrollTop = 450;
+
+    placeInView(row, { block: "nearest" });
+
+    expect(box.scrollTop).toBe(450);
+    // The reader put it here, so the page must not claim it: a box the page is standing by is
+    // one the stop rule would go on watching through a move the reader made next.
+    expect(thePageLeftItThere(box)).toBe(false);
+  } finally {
+    box.remove();
+  }
+});
+
+test("a row taller than the box is brought to the top edge rather than its own end", () => {
+  const { box, row } = listOf(500, 500);
+
+  try {
+    // The browser's `nearest` aligns the far edge of a row that is off the far edge - except
+    // where the row is taller than the box, when bringing its end up would carry its first
+    // line out of sight.
+    placeInView(row, { block: "nearest" });
+
+    expect(box.scrollTop).toBe(500);
+    expect(row.getBoundingClientRect().top).toBe(LIST_TOP);
+  } finally {
+    box.remove();
+  }
+});
+
+test("a card asked for the middle of the box lands in the middle of it", () => {
+  const { box, row } = listOf(500, 40);
+
+  try {
+    placeInView(row, { block: "center" });
+
+    const card = row.getBoundingClientRect();
+    expect((card.top + card.bottom) / 2).toBe(LIST_TOP + LIST_HEIGHT / 2);
+    expect(thePageLeftItThere(box)).toBe(true);
+  } finally {
+    box.remove();
+  }
+});
+
+test("a message asked for the start of the box lands on its top edge", () => {
+  const { box, row } = listOf(500, 40);
+
+  try {
+    placeInView(row, { block: "start" });
+
+    expect(row.getBoundingClientRect().top).toBe(LIST_TOP);
+    expect(thePageLeftItThere(box)).toBe(true);
+  } finally {
+    box.remove();
+  }
+});
+
+test("a reader who scrolls after a placement leaves the box standing somewhere else", () => {
+  const { box, row } = listOf(500, 40);
+
+  try {
+    placeInView(row, { block: "nearest" });
+    expect(thePageLeftItThere(box)).toBe(true);
+
+    // A scrollbar drag, a find-in-page jump, an assistive tool: the box stands where none of
+    // this module's calls left it, and the landing correction watching it stops.
+    box.scrollTop = 900;
+
+    expect(thePageLeftItThere(box)).toBe(false);
+  } finally {
+    box.remove();
+  }
+});
+
+test("a list put back at its own start says the page put it there", () => {
+  const { box, row } = listOf(500, 40);
+
+  try {
+    placeInView(row, { block: "nearest" });
+
+    putTheBoxAt(box, 0);
+
+    expect(box.scrollTop).toBe(0);
+    expect(thePageLeftItThere(box)).toBe(true);
+  } finally {
+    box.remove();
+  }
+});
+
+test("a transcript written to its end is recorded where the box clamped it", () => {
+  const { box, content } = listOf(500, 40);
+
+  try {
+    // How the live view asks for its own end: a write past the end of the box, which the
+    // browser clamps. The record is taken after the write, so it is the place the box clamped
+    // the write to rather than the number that was asked for.
+    putTheBoxAt(box, content);
+
+    expect(box.scrollTop).toBe(content - LIST_HEIGHT);
+    expect(thePageLeftItThere(box)).toBe(true);
+  } finally {
+    box.remove();
+  }
+});
+
+test("a card the page itself scrolls is placed by moving the page, which says it moved", () => {
+  const page = pageOf(1, 0);
+  const card = document.createElement("div");
+  card.getBoundingClientRect = () =>
+    ({ bottom: 1_050 - page.scrollY(), height: 50, top: 1_000 - page.scrollY() }) as DOMRect;
+  document.body.append(card);
+
+  try {
+    // A comment a link names on an issue page: no column carries it, so the box is the page
+    // itself and `window.innerHeight` is the port.
+    placeInView(card, { block: "nearest" });
+
+    expect(page.scrollY()).toBe(1_050 - window.innerHeight);
+    expect(thePageLeftItThere(null)).toBe(true);
+  } finally {
+    card.remove();
+  }
 });

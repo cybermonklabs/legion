@@ -37,6 +37,7 @@ import type {
   UserState,
 } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
+import { thePageLeftItThere } from "../doc/readers-place";
 import { stubMatchMedia } from "../margin/margin-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { userPreferenceStorageKey } from "../shell/userPreference";
@@ -2448,5 +2449,80 @@ test("a Conversation turn links the `#q2` the question map of its message names"
     stub.restore();
     getAsk.mockRestore();
     getReferenceQuestions.mockRestore();
+  }
+});
+
+/** Where the card a link names is drawn in the page, how tall it is, and how tall the window
+ *  is: happy-dom lays nothing out and scrolls nothing, so the rectangle the landing measures
+ *  and the page's own scroll are stated here (`features/doc/readers-place.ts`). */
+const CARD_TOP = 1_200;
+const CARD_HEIGHT = 100;
+const WINDOW_HEIGHT = 800;
+
+test("landing on the card a link names is the page's own move, and the reader's scroll is not", async () => {
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  const innerHeight = window.innerHeight;
+  const scrollBy = window.scrollBy;
+  const scrollTo = window.scrollTo;
+  let scrolled = 0;
+  Object.defineProperty(window, "scrollY", { configurable: true, get: () => scrolled });
+  Object.defineProperty(window, "innerHeight", {
+    configurable: true,
+    value: WINDOW_HEIGHT,
+    writable: true,
+  });
+  window.scrollBy = ((_x: number, y: number) => {
+    scrolled += y;
+  }) as typeof window.scrollBy;
+  window.scrollTo = ((options?: ScrollToOptions | number, y?: number) => {
+    const top = typeof options === "number" ? y : options?.top;
+    if (top !== undefined) scrolled = top;
+  }) as typeof window.scrollTo;
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const card = this.hasAttribute("data-turn");
+    const top = (card ? CARD_TOP : 0) - scrolled;
+    const height = card ? CARD_HEIGHT : 0;
+    return { bottom: top + height, height, top } as DOMRect;
+  });
+  const stub = stubLists({
+    comments: [comment("comment-1", { body: "An open thread" })],
+    handoffs: [handoffRecord("handoff-1", 1, "{}", "2026-09-10T09:00:00Z")],
+  });
+  const queryClient = newQueryClient();
+  const view = render(
+    tab({ "CORE-1": issueState() }, true, queryClient, false, new Map(), "handoff-1")
+  );
+
+  try {
+    await screen.findByText("implement handoff, version 1");
+
+    // The card a comment link names is brought to the middle of the window. That is the page
+    // moving what it draws, written through the one call that records it (`placeInView`,
+    // `features/doc/readers-place.ts`), which measures what the browser's own
+    // `scrollIntoView({ block: "center" })` would do, so a landing correction watching the page
+    // goes on watching rather than reading the landing as the reader taking the page over
+    // (`refocus-when-settled.ts`).
+    await waitFor(() =>
+      expect(window.scrollY).toBe(CARD_TOP + CARD_HEIGHT / 2 - WINDOW_HEIGHT / 2)
+    );
+    expect(thePageLeftItThere(null)).toBe(true);
+
+    // The reader scrolls on, and the correction stops.
+    scrolled = 120;
+    expect(thePageLeftItThere(null)).toBe(false);
+  } finally {
+    view.unmount();
+    rect.mockRestore();
+    stub.restore();
+    window.scrollBy = scrollBy;
+    window.scrollTo = scrollTo;
+    window.innerHeight = innerHeight;
+    if (scrollY === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollY);
+    }
   }
 });

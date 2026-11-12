@@ -7,6 +7,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { ApiError, api } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { thePageLeftItThere } from "../doc/readers-place";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -1682,4 +1683,28 @@ test("a collapsed group keeps its heading and reopens", async () => {
   expect(collapsed.textContent).not.toContain("0 of");
   await user.click(collapsed);
   expect(await screen.findByRole("row", { name: "CORE-2 Bravo" })).toBeDefined();
+});
+
+test("the list put back at its own start when the controls change is the page's own move", async () => {
+  const user = userEvent.setup();
+  table([issue("CORE-1", { open_asks: 2 })], "?needs-you=1&unread=1&unclaimed=1");
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  const box = screen.getByTestId("issues-table-scroll");
+  // Where the reader has scrolled to: nothing of the page's own left the box here.
+  box.scrollTop = 400;
+  expect(thePageLeftItThere(box)).toBe(false);
+
+  // Clearing the filters lists different issues, so the list starts again at its own top. That
+  // is the page moving what it draws, written through the one call that records it
+  // (`putTheBoxAt`, `features/doc/readers-place.ts`), so a landing correction watching the same
+  // box goes on watching rather than reading the list's own scroll as the reader taking it over
+  // (`refocus-when-settled.ts`).
+  await user.click(screen.getByRole("button", { name: "Clear filters" }));
+
+  await waitFor(() => expect(box.scrollTop).toBe(0));
+  expect(thePageLeftItThere(box)).toBe(true);
+
+  // The reader scrolls the list themselves, and the box stands where the page did not leave it.
+  box.scrollTop = 250;
+  expect(thePageLeftItThere(box)).toBe(false);
 });

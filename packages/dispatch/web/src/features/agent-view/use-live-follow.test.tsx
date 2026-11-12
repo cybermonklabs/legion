@@ -3,6 +3,7 @@ import { act, render } from "@testing-library/react";
 import { type ReactNode, useCallback, useState } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { thePageLeftItThere } from "../doc/readers-place";
 import { type LiveFollowControl, useLiveFollow } from "./use-live-follow";
 
 // happy-dom has no layout engine, no ResizeObserver and no hit testing, so the harness is the
@@ -193,6 +194,9 @@ interface LiveFollowHarness {
   readonly update: (next: Partial<Props>) => void;
   /** The commit that brings a rebuild's turns to the DOM, and the watcher's answer to it. */
   readonly updateRendered: (ids: string[]) => Promise<void>;
+  /** The box the transcript scrolls in, which is what the page's own moves are recorded
+   *  against (`thePageLeftItThere`, `features/doc/readers-place.ts`). */
+  readonly viewport: () => HTMLElement;
 }
 
 function startHarness(contentIds: string[]): LiveFollowHarness {
@@ -259,6 +263,7 @@ function startHarness(contentIds: string[]): LiveFollowHarness {
       // The watcher answers the turns changing a task later, as a browser's does.
       await tick(0);
     },
+    viewport: () => element(),
   };
 }
 
@@ -582,6 +587,48 @@ test("a rebuild whose turns reach the DOM a commit later still finds the reader'
     expect(live.count()).toBe(0);
   } finally {
     realClock();
+    live.stop();
+  }
+});
+
+test("the jump to the live end is the page's own move, and the reader's scroll is not", () => {
+  const live = startHarness([...SIX]);
+
+  try {
+    // The mount's own landing at the live end, written through the one call that records it
+    // (`putTheBoxAt`, `features/doc/readers-place.ts`): the transcript moving itself to follow
+    // what the session is writing is the page moving what it draws, so a landing correction
+    // watching this box goes on watching (`refocus-when-settled.ts`).
+    expect(live.position()).toBe(300);
+    expect(thePageLeftItThere(live.viewport())).toBe(true);
+
+    // The reader scrolls back: the box stands where none of the page's own calls left it.
+    live.scroll({ scrollTop: 100 });
+    expect(thePageLeftItThere(live.viewport())).toBe(false);
+
+    // Jump to latest is the page's own move again.
+    live.jumpToEnd();
+    expect(thePageLeftItThere(live.viewport())).toBe(true);
+  } finally {
+    live.stop();
+  }
+});
+
+test("a rebuild putting the remembered turn back is the page's own move", () => {
+  const live = startHarness([...SIX]);
+
+  try {
+    live.scroll({ scrollTop: 150 });
+    expect(thePageLeftItThere(live.viewport())).toBe(false);
+
+    // The compensation that holds the reader's turn where they had it across a replay goes
+    // through the recorded call too (`moveTheBox`), so no landing correction watching this box
+    // reads it as the reader taking the transcript over.
+    live.update({ contentIds: ["b", "c", "d", "e", "f", "g"], replayCount: 1 });
+
+    expect(live.position()).toBe(50);
+    expect(thePageLeftItThere(live.viewport())).toBe(true);
+  } finally {
     live.stop();
   }
 });

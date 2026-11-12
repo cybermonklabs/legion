@@ -34,6 +34,7 @@ import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
 import { afterTheFirstBatch } from "../doc/first-batch";
 import type { DocumentToolbar } from "../doc/ProofDocument";
+import { putTheBoxAt } from "../doc/readers-place";
 import { outsideAskCard } from "../inbox/ask-card";
 import { statusText } from "../project/board-model";
 import {
@@ -501,7 +502,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   useLayoutEffect(() => {
     const top = panelScroll.current[activeTab];
     if (top !== undefined) {
-      window.scrollTo({ top });
+      putTheBoxAt(null, top);
     }
   }, [activeTab]);
 

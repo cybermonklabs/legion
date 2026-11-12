@@ -38,6 +38,7 @@ import { AGENT_LIST_REFILLING, ApiError, api, NetworkError } from "../../api/cli
 import { liveSocketFor } from "../../api/live-socket";
 import type { Agent, Message, MessageRead, UserAgentStates } from "../../api/types";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
+import { thePageLeftItThere } from "../doc/readers-place";
 import { Sidebar } from "../sidebar/Sidebar";
 import {
   KEYED_SEND_ATTEMPT_MS,
@@ -2312,4 +2313,64 @@ test("a session advertising no delivery mode still takes a mid-turn send as an a
     )
   );
   expect(screen.getByTestId("agent-takes-no-messages")).toBeTruthy();
+});
+
+/** The slash list's own box and the rows in it: happy-dom lays nothing out, computes no
+ *  overflow and scrolls nothing, so what `whatScrolls` reads to find the box and the
+ *  rectangles the placement measures are stated here (`features/doc/readers-place.ts`). */
+const COMMAND_LIST_TOP = 100;
+const COMMAND_LIST_HEIGHT = 120;
+const COMMAND_ROW_HEIGHT = 40;
+
+test("the list keeping its highlighted command in view is the page's own move", async () => {
+  const user = userEvent.setup();
+  const input = await renderWithCommands(COMMANDS);
+  await type(user, input, "/");
+  await waitFor(() => expect(commandOptions()).toHaveLength(MODE_OPTIONS.length + 4));
+  const list = screen.getByRole("listbox", { name: "Slash commands" });
+  let scrolled = 0;
+  list.style.overflowY = "auto";
+  Object.defineProperty(list, "clientHeight", {
+    configurable: true,
+    get: () => COMMAND_LIST_HEIGHT,
+  });
+  Object.defineProperty(list, "scrollHeight", { configurable: true, get: () => 1_000 });
+  Object.defineProperty(list, "scrollTop", {
+    configurable: true,
+    get: () => scrolled,
+    set: (next: number) => {
+      scrolled = next;
+    },
+  });
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this === list) {
+      return {
+        bottom: COMMAND_LIST_TOP + COMMAND_LIST_HEIGHT,
+        height: COMMAND_LIST_HEIGHT,
+        top: COMMAND_LIST_TOP,
+      } as DOMRect;
+    }
+    const index = [...list.querySelectorAll('[role="option"]')].indexOf(this);
+    const top = COMMAND_LIST_TOP + index * COMMAND_ROW_HEIGHT - scrolled;
+    return index === -1
+      ? ({ bottom: 0, height: 0, top: 0 } as DOMRect)
+      : ({ bottom: top + COMMAND_ROW_HEIGHT, height: COMMAND_ROW_HEIGHT, top } as DOMRect);
+  });
+  spies.push(rect);
+
+  // The arrows move the highlight through a list taller than the popover, so each highlighted
+  // row is kept in view. That is the page moving what it draws, written through the one call
+  // that records it (`placeInView`, `features/doc/readers-place.ts`), which measures what the
+  // browser's own `scrollIntoView({ block: "nearest" })` would do: the fifth row is below the
+  // fold, so its bottom edge comes to the list's bottom edge and no further.
+  await user.keyboard("{ArrowDown}".repeat(4));
+
+  await waitFor(() => expect(list.scrollTop).toBe(COMMAND_ROW_HEIGHT * 5 - COMMAND_LIST_HEIGHT));
+  expect(thePageLeftItThere(list)).toBe(true);
+
+  // A scrollbar drag of the reader's own leaves the list standing where the page did not.
+  list.scrollTop = 20;
+  expect(thePageLeftItThere(list)).toBe(false);
 });

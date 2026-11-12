@@ -1,5 +1,6 @@
 import { Component, type ReactNode, type RefObject } from "react";
 
+import { moveTheBox } from "../doc/readers-place";
 import { refPreviewCardContains, refPreviewOpenedIn } from "../refs/ref-preview-card";
 
 export interface AnchorRow {
@@ -219,18 +220,18 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     return at === null || at.x !== event.clientX || at.y !== event.clientY;
   }
 
-  /** Moves the box this anchor owns and remembers that it did. */
+  /** Moves the box this anchor owns - the page itself where the host names none - and remembers
+   *  that it did. The move goes through the one call that records it as the page's own
+   *  place-keeping (`moveTheBox`, `features/doc/readers-place.ts`): a row put back under the
+   *  reader's hand is the page moving what it draws, so a landing correction watching the same
+   *  box reads it as such rather than as the reader taking the list over
+   *  (`refocus-when-settled.ts`). The flag stays this component's own: it tells the anchor's own
+   *  scroll listener, which hears the page's every box. */
   private scrollBy(delta: number): void {
     const scroller = this.scrollerElement();
-    if (scroller === null) {
-      const before = window.scrollY;
-      window.scrollBy(0, delta);
-      this.selfScrolled = window.scrollY !== before;
-      return;
-    }
-    const before = scroller.scrollTop;
-    scroller.scrollTop += delta;
-    this.selfScrolled = scroller.scrollTop !== before;
+    const before = scroller === null ? window.scrollY : scroller.scrollTop;
+    moveTheBox(scroller, delta);
+    this.selfScrolled = before !== (scroller === null ? window.scrollY : scroller.scrollTop);
   }
 
   private readonly viewScrolled = (event: Event): void => {

@@ -23,6 +23,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { placeInView } from "../doc/readers-place";
 import { GitHubLink } from "../issue/GitHubLink";
 import { statusText } from "../project/board-model";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -67,7 +68,8 @@ export function ComponentDetails({
   const [showDone, setShowDone] = useState(false);
   const section = useRef<HTMLElement>(null);
   useEffect(() => {
-    section.current?.scrollIntoView({ block: "nearest" });
+    const drawn = section.current;
+    if (drawn !== null) placeInView(drawn, { block: "nearest" });
   }, []);
   const toggleExpanded = (key: string) => {
     setExpanded((current) => {

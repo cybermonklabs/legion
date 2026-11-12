@@ -16,6 +16,7 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
+import { thePageLeftItThere } from "../doc/readers-place";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
@@ -1323,6 +1324,64 @@ test("the page's project is the search's context, not a chip narrowing it", asyn
   } finally {
     search.mockRestore();
     getIssue.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+/** The list's own box, and the row the arrows reach below its fold: happy-dom lays nothing
+ *  out, computes no overflow and scrolls nothing, so what `whatScrolls` reads to find the box
+ *  and the rectangles the placement measures are stated here
+ *  (`features/doc/readers-place.ts`). */
+const LIST_TOP = 100;
+const LIST_HEIGHT = 300;
+const ROW_BELOW = 400;
+
+test("the palette keeping its highlighted row in view is the page's own move", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    const list = screen.getByRole("listbox");
+    let scrolled = 0;
+    list.style.overflowY = "auto";
+    Object.defineProperty(list, "clientHeight", { configurable: true, get: () => LIST_HEIGHT });
+    Object.defineProperty(list, "scrollHeight", { configurable: true, get: () => 2_000 });
+    Object.defineProperty(list, "scrollTop", {
+      configurable: true,
+      get: () => scrolled,
+      set: (next: number) => {
+        scrolled = next;
+      },
+    });
+    list.getBoundingClientRect = () =>
+      ({ bottom: LIST_TOP + LIST_HEIGHT, height: LIST_HEIGHT, top: LIST_TOP }) as DOMRect;
+    const [, second] = screen.getAllByRole("option");
+    if (second === undefined) throw new Error("the palette listed fewer than two options");
+    second.getBoundingClientRect = () =>
+      ({
+        bottom: LIST_TOP + ROW_BELOW + 40 - scrolled,
+        height: 40,
+        top: LIST_TOP + ROW_BELOW - scrolled,
+      }) as DOMRect;
+
+    // The arrows move the highlight while the focus stays in the input, so the list scrolls the
+    // highlighted row into its own view. That is the page moving what it draws, written through
+    // the one call that records it (`placeInView`, `features/doc/readers-place.ts`), which
+    // measures what the browser's own `scrollIntoView({ block: "nearest" })` would do: the row
+    // is below the fold, so its bottom edge comes to the list's bottom edge and no further.
+    await user.keyboard("{ArrowDown}");
+
+    expect(list.scrollTop).toBe(ROW_BELOW + 40 - LIST_HEIGHT);
+    expect(thePageLeftItThere(list)).toBe(true);
+
+    // A scrollbar drag of the reader's own leaves the list standing where the page did not.
+    list.scrollTop = 20;
+    expect(thePageLeftItThere(list)).toBe(false);
+  } finally {
+    search.mockRestore();
     view.unmount();
     view.queryClient.clear();
   }

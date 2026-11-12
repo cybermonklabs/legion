@@ -13,6 +13,7 @@ import type {
   ArchitectureTreeIssue,
   ArchitectureTreeSource,
 } from "../../api/types";
+import { thePageLeftItThere } from "../doc/readers-place";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { writesOf } from "../writes/write-store";
 import { ArchitecturePage } from "./ArchitecturePage";
@@ -819,5 +820,64 @@ test("the no-tracked-work link filters the tree to those components, wherever th
     expect(rowFor("Legion")).toBeTruthy();
   } finally {
     pane.restore();
+  }
+});
+
+/** Where the opened component's details stand on the page, how tall they are, and how tall the
+ *  window is: happy-dom lays nothing out and scrolls nothing, so the rectangle the placement
+ *  measures and the page's own scroll are stated here (`features/doc/readers-place.ts`). */
+const DETAILS_TOP = 900;
+const DETAILS_HEIGHT = 200;
+const WINDOW_HEIGHT = 800;
+
+test("the opened component's details being brought into view is the page's own move", async () => {
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  const innerHeight = window.innerHeight;
+  const scrollBy = window.scrollBy;
+  let scrolled = 0;
+  Object.defineProperty(window, "scrollY", { configurable: true, get: () => scrolled });
+  Object.defineProperty(window, "innerHeight", {
+    configurable: true,
+    value: WINDOW_HEIGHT,
+    writable: true,
+  });
+  window.scrollBy = ((_x: number, y: number) => {
+    scrolled += y;
+  }) as typeof window.scrollBy;
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const details = this.getAttribute("data-testid") === "component-details";
+    const top = details ? DETAILS_TOP - scrolled : 0;
+    const height = details ? DETAILS_HEIGHT : 0;
+    return { bottom: top + height, height, top } as DOMRect;
+  });
+  const pane = renderPane(fixture(), "?component=web");
+
+  try {
+    await screen.findByTestId("component-details");
+
+    // The details of the component the address names open below the fold, and the page brings
+    // them into view. That is the page moving what it draws, written through the one call that
+    // records it (`placeInView`, `features/doc/readers-place.ts`), which measures what the
+    // browser's own `scrollIntoView({ block: "nearest" })` would do - the panel is shorter than
+    // the window, so its bottom edge comes to the bottom of the window and no further - so a
+    // landing correction watching the page goes on watching (`refocus-when-settled.ts`).
+    await waitFor(() => expect(window.scrollY).toBe(DETAILS_TOP + DETAILS_HEIGHT - WINDOW_HEIGHT));
+    expect(thePageLeftItThere(null)).toBe(true);
+
+    // The reader scrolls the page themselves, and the correction stops.
+    scrolled = 80;
+    expect(thePageLeftItThere(null)).toBe(false);
+  } finally {
+    pane.restore();
+    rect.mockRestore();
+    window.scrollBy = scrollBy;
+    window.innerHeight = innerHeight;
+    if (scrollY === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollY);
+    }
   }
 });

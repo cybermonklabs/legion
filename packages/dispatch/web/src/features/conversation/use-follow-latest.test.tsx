@@ -2,6 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { act, render } from "@testing-library/react";
 import type { ReactNode } from "react";
 
+import { thePageLeftItThere } from "../doc/readers-place";
 import { useFollowLatest } from "./use-follow-latest";
 
 // The composer sits at document top 0; the newest card (topmost `[data-turn]`) sits below it.
@@ -313,6 +314,38 @@ test("tells the caller once, after the first placement, and not on later follows
     });
 
     expect(placedAt).toEqual([RESTING_SCROLL_Y]);
+  } finally {
+    unmount?.();
+    layout.restore();
+    if (scrollY === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollY);
+    }
+  }
+});
+
+test("the jump to the newest turn is the page's own move, and the reader's scroll is not", () => {
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  const layout = installScrollLayoutMocks();
+  let unmount: (() => void) | undefined;
+
+  try {
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 4_500, writable: true });
+    unmount = render(<Harness itemSeqs={[1]} ownSendCount={0} />).unmount;
+
+    // Pinning the newest turn under the composer is the page moving what it draws, and it goes
+    // through the one call that records it (`putTheBoxAt`, `features/doc/readers-place.ts`): a
+    // landing correction watching the same page reads the placement as the page's own and goes
+    // on watching, rather than as the reader taking the page over (`refocus-when-settled.ts`).
+    expect(window.scrollY).toBe(RESTING_SCROLL_Y);
+    expect(thePageLeftItThere(null)).toBe(true);
+
+    // The reader scrolls: the page stands where nothing of the page's own left it, and the
+    // correction stops.
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 900, writable: true });
+
+    expect(thePageLeftItThere(null)).toBe(false);
   } finally {
     unmount?.();
     layout.restore();

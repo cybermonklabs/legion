@@ -33,6 +33,7 @@ import type {
   UserIssueState,
 } from "../../api/types";
 import { theFirstBatchIsAwaited } from "../doc/first-batch";
+import { thePageLeftItThere } from "../doc/readers-place";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -2749,5 +2750,51 @@ test("IssuePage answers a press from the chrome's own commit, however late the c
     theFirstBatchIsAwaited(false);
     view.unmount();
     restore();
+  }
+});
+
+// A reader returning to a tab lands where they left it, which is the page moving what it draws
+// rather than the reader moving themselves: it goes through the one call that records the write
+// (`putTheBoxAt`, `features/doc/readers-place.ts`), so a landing correction armed on this page
+// goes on watching (`refocus-when-settled.ts`).
+test("a tab put back where the reader left it is the page's own move", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  const scrollTo = window.scrollTo;
+  let scrolled = 0;
+  Object.defineProperty(window, "scrollY", { configurable: true, get: () => scrolled });
+  window.scrollTo = ((options?: ScrollToOptions | number, y?: number) => {
+    const top = typeof options === "number" ? y : options?.top;
+    if (top !== undefined) scrolled = top;
+  }) as typeof window.scrollTo;
+  const view = renderIssuePage("/issues/CORE-1/activity");
+
+  try {
+    await screen.findByRole("tab", { name: "Activity", selected: true });
+    // The reader reads down the activity list, then opens another tab, which starts at its own
+    // top.
+    scrolled = 700;
+    await user.click(screen.getByRole("tab", { name: "Children" }));
+    await screen.findByRole("tab", { name: "Children", selected: true });
+    scrolled = 0;
+
+    await user.click(screen.getByRole("tab", { name: "Activity" }));
+
+    await waitFor(() => expect(window.scrollY).toBe(700));
+    expect(thePageLeftItThere(null)).toBe(true);
+
+    // The reader scrolls on from there, and the correction stops.
+    scrolled = 240;
+    expect(thePageLeftItThere(null)).toBe(false);
+  } finally {
+    view.unmount();
+    restore();
+    window.scrollTo = scrollTo;
+    if (scrollY === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollY);
+    }
   }
 });

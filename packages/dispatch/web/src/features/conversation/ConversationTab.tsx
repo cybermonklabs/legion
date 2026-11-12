@@ -36,6 +36,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { deliveryAttempts } from "../agents/attempts";
+import { placeInView } from "../doc/readers-place";
 import { AskCard } from "../inbox/AskCard";
 import { writePin } from "../issue/pin-write";
 import { conversationItemId, isPinnedConversation, stateForIssue } from "../issue/pins";
@@ -1116,7 +1117,7 @@ export function ConversationTab({
         : document.querySelector<HTMLElement>(`[data-reply][aria-current="true"]`);
     const anchor = reply ?? document.querySelector<HTMLElement>(`[data-turn="${focus.id}"]`);
     if (anchor !== null) {
-      anchor.scrollIntoView({ block: "center" });
+      placeInView(anchor, { block: "center" });
       if (focus.replyId === undefined || reply !== null) {
         scrolledToFocus.current = focus.id;
       }

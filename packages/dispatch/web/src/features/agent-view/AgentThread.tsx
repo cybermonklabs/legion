@@ -47,6 +47,7 @@ import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/A
 import { MODE_LABELS } from "../conversation/delivery";
 import { PendingSendTurn } from "../conversation/PendingSendTurn";
 import type { SessionSends } from "../conversation/useSessionSends";
+import { placeInView } from "../doc/readers-place";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { readDispatchMarks, turnKey } from "./dispatch-marks";
@@ -357,7 +358,8 @@ function CommandItem({ index, item }: { index: number; item: Unstable_TriggerIte
   const highlighted = unstable_useTriggerPopoverScopeContext().highlightedIndex === index;
   const row = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    if (highlighted) row.current?.scrollIntoView({ block: "nearest" });
+    const highlightedRow = row.current;
+    if (highlighted && highlightedRow !== null) placeInView(highlightedRow, { block: "nearest" });
   }, [highlighted]);
   return (
     // Below `xl` every button is `inline-flex` with centred items (styles.css's touch rule), so
