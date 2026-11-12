@@ -2338,7 +2338,7 @@ the same clone, the same caches, the same size, and a single pod's life is long 
 A cache trimmer in the pod's launcher process holds four of those directories under a mark, and leaves everything else on the volume alone.
 Every minute it reads the volume with one `statfs` and compares the used bytes over the used plus the available bytes, which is the fraction `df` prints, against two marks.
 At or above `high_percent`, 85 by default, it sweeps: it lists every eligible entry of the four roots with its time and deletes them oldest first, and it stops at the first fresh reading at or below `low_percent`, 70 by default, when three readings in a row show no decrease, when no entry is left eligible, when its own five-minute budget runs out, or on a `/proc` read the kernel refused or a stop from the daemon or the container.
-It deletes no entry any process of the pod has open, none whose newest modification time is inside `min_age_minutes`, 15 by default, and none whose kind is not the kind its row names below; it follows no symbolic link, and it never unlinks a root itself.
+It deletes no entry any process of the pod has open, none whose newest modification time is inside `min_age_minutes`, 15 by default — an hour more than that for an entry of the Go build cache, below — and none whose kind is not the kind its row names below; it follows no symbolic link, and it never unlinks a root itself.
 `runtime.kubernetes.volume_trim` sets all five values, and `enabled: false` runs no trimmer at all.
 A change to them reaches a running pod at its next connection to the daemon, which every daemon restart gives it, and no pod is replaced for it: a pod told `enabled: false` stops sweeping and keeps its trimmer, which starts again within ten seconds of an answer that carries settings — the same for a daemon rolled back to a release that does not know this work and the roll-forward after it.
 
@@ -2347,8 +2347,9 @@ What it may delete, and what one entry is in each:
 - `/legion/scratch/tmp` — one `go-build*` directory, removed whole, and nothing else of the temporary directory:
   a role's clones, toolchains and databases live there too, under names the role chose, and no program can tell a role's cache from a role's work.
 
-- `/legion/go/build` — one name ending `-a` or `-d` inside a shard directory, judged by its own modification time, the directory form removed whole.
-  That is what Go's own trim deletes (`trimSubdir`, `cmd/go/internal/cache/cache.go`), and the cache root's own `trim.txt` and `README` are in no shard, so they are never entries.
+- `/legion/go/build` — one name ending `-a` or `-d` inside a shard directory, judged by its own modification time taken an hour further back than `min_age_minutes`, the directory form removed whole.
+  That is what Go's own trim deletes (`trimSubdir`, `cmd/go/internal/cache/cache.go`), and the hour is the allowance that trim makes too: Go moves an entry's time on use at most once an hour, so one a build used a minute ago can read fifty-nine minutes old.
+  The cache root's own `trim.txt` and `README` are in no shard, so they are never entries.
 
 - `/legion/scratch/cache` — one immediate child, each a whole tool's cache the next run rebuilds, except `ms-playwright` and `legion-claude-code`.
   The loss of those two is a browser install that blocks every other role behind a ten-minute lock and a Claude launch that fails, rather than a rebuild.

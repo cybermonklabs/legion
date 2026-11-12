@@ -860,10 +860,11 @@ type sweepOutcome struct {
 type sweepEntry struct {
 	path string
 	rule EntryRule
-	// root is the reclaimable root the entry was listed under. The delete loop asks the
-	// used-path set as each refresh leaves it about this path and not about the entry
-	// (usedPaths.Holds): a root nothing held when the listing passed it may be locked by the
-	// time the loop reaches its entries.
+	// root is the reclaimable root the entry was listed under. After each refresh of the
+	// used-path set the delete loop asks whether this root is held (usedPaths.Holds) as well as
+	// whether the entry is (usedPaths.Covers), because Covers does not count a process holding
+	// an ancestor of the entry: a root nothing held when the listing passed it may be locked by
+	// the time the loop reaches its entries.
 	root string
 	// at is the newest modification time anywhere in the entry when it was listed, which is
 	// both what the entries are ordered by and what the pre-delete re-read compares against.
@@ -1099,7 +1100,7 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 			eligible = cutoff.Add(-goCacheMtimeSlack)
 		}
 		if at.After(eligible) {
-			return true // inside the minimum age: something wrote in it too recently
+			return true // inside the minimum age, or for the Go cache that and Go's hour: too recent
 		}
 		entries = append(entries, sweepEntry{path: path, rule: root.Entry, root: root.Path, at: at, dir: dir})
 		return true
