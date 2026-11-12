@@ -167,6 +167,9 @@ type issueListQuery struct {
 	UpdatedSince string `query:"updated_since"`
 	// Priority lists issues at these priorities, 0-3, or `none` for unset.
 	Priority []string `query:"priority"`
+	// Advances lists issues that advance these priorities, by their own relation or by one an
+	// issue above them states, over every project; `none` lists those that advance none.
+	Advances []string `query:"advances"`
 	// RouteStatus lists open issues whose route is live, no_holder or unknown.
 	RouteStatus string `query:"route_status"`
 	// Open, `true`, lists open issues alone.

@@ -175,15 +175,20 @@ func TestTheIssueListAnswersWhatMainsStatementDid(t *testing.T) {
 		{name: "the pinned listing", oracle: mainListPinnedIssuesQuery, paged: listPinnedIssuesPageQuery, unpaged: listPinnedIssuesQuery, pinnedBy: "alice"},
 	} {
 		t.Run(listing.name, func(t *testing.T) {
-			arguments := slices.Clone(filters)
+			// Main's statement carries the eight filters it had, where the listing carries the
+			// two the `advances` keys added behind them, named here as the request that asks
+			// for neither: the rows the two read are then the same rows.
+			oracleArguments := slices.Clone(filters)
+			arguments := append(slices.Clone(filters), []string{}, false)
 			if listing.pinnedBy != "" {
+				oracleArguments = append(oracleArguments, listing.pinnedBy)
 				arguments = append(arguments, listing.pinnedBy)
 			}
-			want := issueListRows(t, fixture.database, listing.oracle, arguments)
+			want := issueListRows(t, fixture.database, listing.oracle, oracleArguments, false)
 			if len(want) < 4 {
 				t.Fatalf("%s answered %d rows, too few for the comparison to decide anything", listing.name, len(want))
 			}
-			if got := issueListRows(t, fixture.database, listing.unpaged, arguments); !slices.Equal(got, want) {
+			if got := issueListRows(t, fixture.database, listing.unpaged, arguments, true); !slices.Equal(got, want) {
 				t.Fatalf("%s unpaged answered\n%v\nwant main's rows\n%v", listing.name, got, want)
 			}
 			for _, page := range []struct{ limit, offset int }{{2, 0}, {2, 2}, {3, 1}, {len(want), 0}, {2, len(want)}, {2, len(want) + 40}} {
@@ -452,8 +457,10 @@ func issueFactText(t *testing.T, value any) string {
 }
 
 // issueListRows runs one unpaged listing statement and returns its rows as text, one string per
-// row, which is how two statements' answers are compared here.
-func issueListRows(t *testing.T, database *store.Store, statement string, arguments []any) []string {
+// row, which is how two statements' answers are compared here. `advances` says whether the
+// statement carries this change's three `advances` columns, which main's does not: the listing's
+// are dropped so that the comparison runs over the columns both statements answer.
+func issueListRows(t *testing.T, database *store.Store, statement string, arguments []any, advances bool) []string {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), statement, arguments...)
 	if err != nil {
@@ -466,12 +473,35 @@ func issueListRows(t *testing.T, database *store.Store, statement string, argume
 		if err != nil {
 			t.Fatalf("read a listed row: %v", err)
 		}
+		if advances {
+			values = issueRowWithoutAdvances(t, values)
+		}
 		read = append(read, fmt.Sprint(values...))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the listing: %v", err)
 	}
 	return read
+}
+
+// advancesColumnsAt is where the three `advances` columns stand in a listing row
+// (issueSummaryColumns): behind the seven the issue's own table answers and the blockers, and
+// ahead of the assignee.
+const advancesColumnsAt = 8
+
+// issueRowWithoutAdvances is a listing row as main's statement answered it: main carried no
+// `advances`, so the three columns this change added are not its to answer and the comparison
+// runs over the columns both statements carry. They are read instead by TestAdvancesInheritance,
+// which this comparison's fixture cannot reach: no issue of it states a relation, which this
+// function requires, so a row carrying one would be a fixture that outgrew the oracle rather
+// than a silent pass.
+func issueRowWithoutAdvances(t *testing.T, values []any) []any {
+	t.Helper()
+	own, revision, inherited := values[advancesColumnsAt], values[advancesColumnsAt+1], values[advancesColumnsAt+2]
+	if empty := fmt.Sprint(own, " ", revision, " ", inherited); empty != "[] 0 []" {
+		t.Fatalf("a listed row of this fixture answered the advances columns %s, want the empty relation", empty)
+	}
+	return slices.Concat(values[:advancesColumnsAt], values[advancesColumnsAt+3:])
 }
 
 // issueListPage runs a paged listing statement and returns the rows of its page and the count it
@@ -495,7 +525,7 @@ func issueListPage(t *testing.T, database *store.Store, statement string, argume
 		if !values[1].(bool) {
 			continue
 		}
-		read = append(read, fmt.Sprint(values[2:]...))
+		read = append(read, fmt.Sprint(issueRowWithoutAdvances(t, values[2:])...))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the paged listing: %v", err)

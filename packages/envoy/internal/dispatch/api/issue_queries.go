@@ -38,10 +38,10 @@ var issueStatusCase = issueStatusOrderSQL()
 // after the Envoy roster enrichment and total must count what is left after it. pgx caches a
 // plan for each text, so neither shape replans the other's.
 var (
-	listIssuesQuery           = issueSummaryQuery(false, false)
-	listPinnedIssuesQuery     = issueSummaryQuery(true, false)
-	listIssuesPageQuery       = issueSummaryQuery(false, true)
-	listPinnedIssuesPageQuery = issueSummaryQuery(true, true)
+	listIssuesQuery           = issueSummaryQuery(false, false, true)
+	listPinnedIssuesQuery     = issueSummaryQuery(true, false, true)
+	listIssuesPageQuery       = issueSummaryQuery(false, true, true)
+	listPinnedIssuesPageQuery = issueSummaryQuery(true, true, true)
 )
 
 // issueSummaryQuery writes one listing statement. `filtered` applies every filter to `issues i`
@@ -59,19 +59,35 @@ var (
 // (issuePage.of says what a change does). Without the key they could: ranks repeat across
 // projects (every project's first issue is "U"), nothing makes one unique within a project, and
 // created_at is the creating transaction's start.
-func issueSummaryQuery(pinned, paged bool) string {
-	parameter := 9
+// readAdvances false is the one listing text that answers no `advances` relation: it leaves out
+// the relation read, the inheritance walk it climbs and the columns' join, and answers the three
+// columns as the constants an issue with no relation reads as, so one scan and one argument list
+// serve both texts. Its one caller is the speed test that holds the relation read to twice the
+// time of the same page without it; every text the server runs passes true. The `advances`
+// filter term stays in both, because it is a filter rather than a read: a request that names no
+// `advances` key leaves its seed gated off (issueAdvancesFilterTerms), so the text without the
+// read measures the read alone.
+func issueSummaryQuery(pinned, paged, readAdvances bool) string {
+	parameter := 11
 	pinnedJoin := ""
 	if pinned {
 		pinnedJoin = fmt.Sprintf("\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $%d and s.pinned", parameter)
 		parameter++
 	}
-	query := `with recursive filtered as (
+	query := `with recursive ` + issueAdvancesFilterTerms + `, filtered as (
 		select i.key, i.status, i.rank, i.created_at
 		from issues i` + pinnedJoin + `
+		left join advancing on advancing.key = i.key
 		` + issueListFilters + `
 	)`
-	rows, columns := "filtered", issueSummaryColumns
+	advancesColumns := issueAdvancesColumns
+	terms := issueComponentsTerms + `, ` + refs.IssueRepoTerms
+	if readAdvances {
+		terms = issueAdvancesTerms + `, ` + terms
+	} else {
+		advancesColumns = issueAdvancesColumnsUnread
+	}
+	rows, columns := "filtered", issueSummaryColumns(advancesColumns)
 	if paged {
 		query += fmt.Sprintf(`, page as (
 		select i.key from filtered i
@@ -83,20 +99,23 @@ func issueSummaryQuery(pinned, paged bool) string {
 		select (select f.key from filtered f limit 1), false where not exists (select 1 from page)
 	)`, issueListOrder, parameter, parameter+1)
 		rows = "listed"
-		columns = "(select count(*) from filtered) as total, listed.in_page,\n\t       " + issueSummaryColumns
+		columns = "(select count(*) from filtered) as total, listed.in_page,\n\t       " + columns
 	}
 	return query + `, subjects as (
 		select key from ` + rows + `
-	), ` + issueComponentsTerms + `, ` + refs.IssueRepoTerms + `
+	), ` + terms + `
 	select ` + columns + `
 	from ` + rows + ` join issues i on i.key = ` + rows + `.key
-	` + issueSummaryJoins + `
+	` + issueSummaryJoins(readAdvances) + `
 	order by ` + issueListOrder + `
 `
 }
 
-// issueListFilters are the eight filters a listing request carries, written against `issues i`
-// alone so the filtered term joins nothing: the page and the count both read it.
+// issueListFilters are the nine filters a listing request carries, every one but the last
+// written against `issues i` alone. The last is the `advances` filter, which no column of an
+// issue holds and whose answer a relation of an issue above it can decide: it reads one term
+// computed once per request (issueAdvancesFilterTerms), joined to the issue by its key, so the
+// filtered term still resolves nothing per row and the page and the count both read it.
 const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and ($2 = '' or i.status = $2)
 		  and ($3 = '' or i.parent_key = $3)
@@ -105,7 +124,10 @@ const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and (not $6::boolean or i.closed_at is null)
 		  and ((cardinality($7::smallint[]) = 0 and not $8::boolean)
 		       or i.priority = any($7::smallint[])
-		       or ($8::boolean and i.priority is null))`
+		       or ($8::boolean and i.priority is null))
+		  and ((cardinality($9::text[]) = 0 and not $10::boolean)
+		       or coalesce(advancing.named, false)
+		       or ($10::boolean and advancing.key is null))`
 
 // issueListOrder is the listing's order, over the issue aliased `i`: the lifecycle status, the
 // rank, the creation time, then the key. The paged text orders the filtered keys by it and the
@@ -131,39 +153,125 @@ const issueProgressLateral = `
 		from issues c where c.parent_key = i.key
 	) progress on true`
 
-// issueAdvancesColumns are the two values every issue read answers for its `advances` relations,
-// in advancesScan's order: the priority ids the issue states now, and the revision a whole-set
-// write of them carries. An issue that states none reads as the empty list and revision 0.
-const issueAdvancesColumns = `coalesce(advances.ids, '{}'), coalesce(advances.revision, 0)`
+// issueAdvancesColumns are the three values every issue read answers for its `advances`
+// relations, in advancesScan's order: the priority ids the issue's own row states now, the
+// revision a whole-set write of them carries, and the ids it inherits from the issues above it.
+// An issue that states none and inherits none reads as two empty lists and revision 0. The
+// revision is the issue's own relations alone, inheritance counted in neither: it is what a
+// write of this issue's own set is held against, and no write of this issue states or retracts
+// an inherited relation.
+const issueAdvancesColumns = `coalesce(advances.ids, '{}'), coalesce(advances.revision, 0), coalesce(advances.inherited, '{}')`
 
-// issueAdvancesTerm is the current `advances` relations of every issue of `subjects`, keyed on
-// the issue, which both the listing and the single-issue read join to. The inner `distinct on`
-// is prioritystore.CurrentOut's reading of the log for many issues at once, over the same
-// priority_tuples_current index: the newest tuple per (issue, priority), asserted or not. The
-// ids are the asserted ones alone, since a relation whose last word is a retraction is no
-// relation now; the revision is the greatest seq of the whole set, retractions counted, because
-// it is what the store holds for the issue rather than what it answers, and a retraction a
-// writer did not see must move it too. A tuple that is the greatest of the issue is the newest
-// of its own pair as well, so the max over these rows is the max over every tuple.
-const issueAdvancesTerm = `left join (
-		select newest.from_id as issue_key,
-		       coalesce(array_agg(newest.to_id order by newest.to_id) filter (where newest.asserted), '{}') as ids,
-		       max(newest.seq) as revision
+// issueAdvancesColumnsUnread answers those three columns as the constants an issue with no
+// relation reads as, for the one listing text that leaves the relation read out
+// (issueSummaryQuery's readAdvances): the row keeps its shape, so one scan serves both texts.
+const issueAdvancesColumnsUnread = `'{}'::text[], 0::bigint, '{}'::text[]`
+
+// issueAdvancesTerms are the `advances` relations of every issue of `subjects` — its own and
+// the ones it inherits — which both the listing and the single-issue read splice into their
+// `with recursive` list and join to (issueAdvancesJoin). An issue advances a priority when its
+// own row names it or when any issue on its parent chain does, so the answer is read every time
+// and stored nowhere; a relation on a child places no issue above it, which is why the walk
+// climbs and never descends.
+//
+// `advances_chain` is that climb, one row per (subject, issue whose relations the subject
+// reads): the subject itself at depth 0 and each issue above it one deeper, bounded by
+// parentDepthCap like legionManagedStatusSQL's walk of the same chain for the `legion` label,
+// so it terminates even if a raced reparent ever commits a cycle. One walk climbs every
+// subject's chain together, as refs.IssueRepoTerms' does, so a page of issues pays one walk
+// rather than one per row.
+//
+// `advances_current` is prioritystore.CurrentOut's reading of the log for every issue those
+// chains name at once, over the same priority_tuples_current index: the newest tuple per
+// (issue, priority), asserted or not, read once however many subjects inherit from that issue.
+//
+// `advances` groups the two back onto the subject. The ids are the asserted ones alone, since a
+// relation whose last word is a retraction is no relation now; depth 0 answers the issue's own
+// ids and the revision, and every greater depth answers what it inherits. The revision is the
+// greatest seq of the issue's own set, retractions counted, because it is what the store holds
+// for the issue rather than what it answers, and a retraction a writer did not see must move it
+// too. A tuple that is the greatest of the issue is the newest of its own pair as well, so the
+// max over these rows is the max over every tuple. Both lists come back in id order, which is
+// the order advancesScan merges them in.
+var issueAdvancesTerms = `advances_chain as (
+		select s.key as start, s.key as issue_key, 0 as depth
+		from subjects s
+		union all
+		select c.start, p.parent_key, c.depth + 1
+		from advances_chain c join issues p on p.key = c.issue_key
+		where p.parent_key is not null and c.depth < ` + parentDepthCapSQL + `
+	), advances_current as (
+		select distinct on (t.from_id, t.to_id) t.from_id, t.to_id, t.seq, t.asserted
+		from priority_tuples t
+		where t.from_kind = '` + prioritystore.KindIssue + `' and t.kind = '` + prioritystore.RelationAdvances + `'
+			and t.to_kind <> '` + prioritystore.KindValue + `'
+			and t.from_id in (select issue_key from advances_chain)
+		order by t.from_id, t.to_id, t.seq desc
+	), advances as (
+		select c.start as issue_key,
+		       coalesce(array_agg(distinct cu.to_id order by cu.to_id)
+		                filter (where cu.asserted and c.depth = 0), '{}') as ids,
+		       coalesce(max(cu.seq) filter (where c.depth = 0), 0) as revision,
+		       coalesce(array_agg(distinct cu.to_id order by cu.to_id)
+		                filter (where cu.asserted and c.depth > 0), '{}') as inherited
+		from advances_chain c
+		left join advances_current cu on cu.from_id = c.issue_key
+		group by c.start
+	)`
+
+// issueAdvancesJoin attaches issueAdvancesTerms' answer to the issue aliased `i`, one row per
+// subject.
+const issueAdvancesJoin = `left join advances on advances.issue_key = i.key`
+
+// issueAdvancesFilterTerms answer the listing's `advances` query keys, as one term computed once
+// per request rather than a read per row: $9 is the priority ids the request named and $10 is
+// whether it asked for the work that advances none. `advancing` holds one row per issue that
+// advances a live priority by either route, `named` saying whether one of them is an id the
+// request asked for, so `filtered` decides both keys by one join on the issue's key
+// (issueListFilters) and still resolves nothing per row.
+//
+// `advances_stated` is the issues whose own rows state an asserted relation now, by the reading
+// of the log issueAdvancesTerms makes for a page. A priority whose state is `gone` is no
+// priority, so the join to priority_nodes drops it and the work under it advances none. The seed
+// is gated on the request naming an `advances` key at all: the clause holds no column, so the
+// planner makes it a one-time filter and a listing that asks for no priority reads no tuple.
+//
+// `advances_spread` carries each seed down to the issues below it, which is the same
+// inheritance the read climbs, written as one descent per request instead of one climb per row;
+// it is bounded by parentDepthCap, which no chain passes (refuseParentTooDeep), so a descendant
+// the cap cuts off is one no chain could have reached anyway.
+var issueAdvancesFilterTerms = `advances_stated as (
+		select newest.from_id as key, bool_or(newest.to_id = any($9::text[])) as named
 		from (
-			select distinct on (t.from_id, t.to_id) t.from_id, t.to_id, t.seq, t.asserted
+			select distinct on (t.from_id, t.to_id) t.from_id, t.to_id, t.asserted
 			from priority_tuples t
 			where t.from_kind = '` + prioritystore.KindIssue + `' and t.kind = '` + prioritystore.RelationAdvances + `'
 				and t.to_kind <> '` + prioritystore.KindValue + `'
-				and t.from_id in (select key from subjects)
+				and (cardinality($9::text[]) > 0 or $10::boolean)
 			order by t.from_id, t.to_id, t.seq desc
 		) newest
+		join priority_nodes n on n.kind = '` + prioritystore.KindPriority + `' and n.id = newest.to_id
+			and n.state = '` + prioritystore.StateLive + `'
+		where newest.asserted
 		group by newest.from_id
-	) advances on advances.issue_key = i.key`
+	), advances_spread as (
+		select s.key, s.named, 0 as depth from advances_stated s
+		union all
+		select c.key, a.named, a.depth + 1
+		from advances_spread a join issues c on c.parent_key = a.key
+		where a.depth < ` + parentDepthCapSQL + `
+	), advancing as (
+		select key, bool_or(named) as named from advances_spread group by key
+	)`
 
-// issueSummaryColumns are the columns a listing row scans, in issueSummaryRow's order.
-const issueSummaryColumns = `i.key, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
+// issueSummaryColumns are the columns a listing row scans, in issueSummaryRow's order, around
+// the three `advances` columns the text was built with: either the relation read's
+// (issueAdvancesColumns) or the constants of the text that leaves it out
+// (issueAdvancesColumnsUnread), which is why they are a parameter rather than spliced in here.
+func issueSummaryColumns(advances string) string {
+	return `i.key, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
 	       coalesce(blockers.keys, '{}'),
-	       ` + issueAdvancesColumns + `,
+	       ` + advances + `,
 	       i.assignee, i.route, i.updated_at, i.last_seq, i.created_by, i.created_at,
 	       coalesce(spec.id, ''),
 	       ` + issueClaimColumns + `,
@@ -171,13 +279,17 @@ const issueSummaryColumns = `i.key, i.title, i.status, i.priority, i.rank, i.lab
 	       ` + issueProgressColumns + `,
 	       ` + issueComponentsColumns + `,
 	       ` + refs.IssueRepoColumns
+}
 
 // issueSummaryJoins resolve the seven values a listing row carries beside the issue's own
 // columns, each for every issue of `subjects` at once rather than for one row at a time. The
 // open-ask read keeps the state filter in its own where clause, so it matches the partial
 // asks_open(issue_key) where state = 'open' index instead of scanning asks, and the closed-issue
-// rule stays in the select list: a closed issue reports 0 open asks however many it has.
-var issueSummaryJoins = `left join (
+// rule stays in the select list: a closed issue reports 0 open asks however many it has. The
+// `advances` join is the one a text may leave out (issueSummaryQuery's readAdvances), since
+// nothing else reads its terms.
+func issueSummaryJoins(readAdvances bool) string {
+	joins := `left join (
 		select l.issue_key, array_agg(l.target_key order by l.target_key) as keys
 		from issue_links l
 		where l.kind = 'blocked_by' and l.issue_key in (select key from subjects)
@@ -200,15 +312,23 @@ var issueSummaryJoins = `left join (
 		where c.parent_key in (select key from subjects)
 		group by c.parent_key
 	) progress on progress.parent_key = i.key
-	` + issueAdvancesTerm + `
-	` + issueComponentsJoin + `
+	`
+	if readAdvances {
+		joins += issueAdvancesJoin + `
+	`
+	}
+	return joins + issueComponentsJoin + `
 	` + refs.IssueRepoJoin
+}
 
 const (
 	maxIssueLabels  = 20
 	maxIssueLabel16 = 40
 	// unsetPriorityFilter is the `priority` query value that matches an issue with no priority.
 	unsetPriorityFilter = "none"
+	// noAdvancesFilter is the `advances` query value that matches an issue advancing no live
+	// priority, by its own row or by an issue above it.
+	noAdvancesFilter = "none"
 )
 
 // parsePriorityFilter reads the repeated `priority` query parameter: each value is 0..3, or
@@ -229,6 +349,30 @@ func parsePriorityFilter(values []string) (priorities []int16, unset bool, err e
 		}
 	}
 	return priorities, unset, nil
+}
+
+// parseAdvancesFilter reads the repeated `advances` query parameter: each value is a priority
+// id, or "none" for an issue that advances none. No values means no advances filter, and the
+// two together are a union, as the `priority` filter's two halves are. An id no priority
+// carries, and one of a priority that is gone, matches no issue rather than refusing: the
+// listing answers what the store holds now. A blank value is refused, since it names neither a
+// priority nor "none".
+func parseAdvancesFilter(values []string) (ids []string, none bool, err error) {
+	ids = []string{}
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		switch value {
+		case noAdvancesFilter:
+			none = true
+		case "":
+			return nil, false, errorf(http.StatusBadRequest, "INVALID_ADVANCES",
+				"advances filter values must be a priority id or %s, got %q", noAdvancesFilter, raw)
+		default:
+			ids = append(ids, value)
+		}
+	}
+	slices.Sort(ids)
+	return slices.Compact(ids), none, nil
 }
 
 // claimScan reads an issue's two claim columns as one nullable claim. A row has both or
@@ -276,20 +420,34 @@ func (p *progressScan) resolve() model.IssueProgress {
 }
 
 // advancesScan reads issueAdvancesColumns for one issue: the priority ids of its own current
-// `advances` relations, and the revision the store holds for them. Every entry it resolves is
-// the issue's own, so none is inherited; the inheritance walk, which answers an entry the issue
-// does not state itself, is the slice after this one.
+// `advances` relations, the revision the store holds for them, and the ids it inherits from the
+// issues above it.
 type advancesScan struct {
-	ids      []string
-	revision int64
+	ids       []string
+	revision  int64
+	inherited []string
 }
 
-func (a *advancesScan) targets() []any { return []any{&a.ids, &a.revision} }
+func (a *advancesScan) targets() []any { return []any{&a.ids, &a.revision, &a.inherited} }
 
+// resolve answers one entry per priority the issue advances, in id order: the issue's own
+// marked Inherited false, the rest true. An id the issue holds both ways is one entry marked
+// own, since a write of this issue's set states and retracts that one. Both lists arrive in id
+// order (issueAdvancesTerms), so this is one merge rather than a sort.
 func (a *advancesScan) resolve() []model.IssueAdvance {
-	entries := make([]model.IssueAdvance, 0, len(a.ids))
-	for _, id := range a.ids {
-		entries = append(entries, model.IssueAdvance{ID: id, Inherited: false})
+	entries := make([]model.IssueAdvance, 0, len(a.ids)+len(a.inherited))
+	own, inherited := a.ids, a.inherited
+	for len(own) > 0 || len(inherited) > 0 {
+		if len(own) > 0 && (len(inherited) == 0 || own[0] <= inherited[0]) {
+			if len(inherited) > 0 && inherited[0] == own[0] {
+				inherited = inherited[1:]
+			}
+			entries = append(entries, model.IssueAdvance{ID: own[0], Inherited: false})
+			own = own[1:]
+			continue
+		}
+		entries = append(entries, model.IssueAdvance{ID: inherited[0], Inherited: true})
+		inherited = inherited[1:]
 	}
 	return entries
 }
@@ -353,6 +511,11 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	advances, noAdvances, err := parseAdvancesFilter(query["advances"])
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	routeStatus, err := parseRouteStatusFilter(query.Get("route_status"))
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -366,7 +529,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	// A route matters only while there is work to reach, so the route_status filter reads open
 	// issues alone: the owner audit is every open issue whose route reaches nobody.
 	open := query.Get("open") == "true" || routeStatus != ""
-	arguments := []any{project, status, parent, updatedSince, labels, open, priorities, unsetPriority}
+	arguments := []any{project, status, parent, updatedSince, labels, open, priorities, unsetPriority, advances, noAdvances}
 	if pinned {
 		arguments = append(arguments, login)
 	}
@@ -733,6 +896,7 @@ func (s *server) loadIssue(ctx context.Context, q queryer, key string) (model.Is
 // for a statement that never differs, and pgx caches a prepared plan per statement text.
 var issueRowStatement = `
 		with recursive subjects as (select $1::text as key),
+		` + issueAdvancesTerms + `,
 		` + issueComponentsTerms + `,
 		` + refs.IssueRepoTerms + `
 		select i.key, i.project_key, i.number, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
@@ -749,7 +913,7 @@ var issueRowStatement = `
 		       ` + refs.IssueRepoColumns + `
 		from issues i
 		` + issueProgressLateral + `
-		` + issueAdvancesTerm + `
+		` + issueAdvancesJoin + `
 		` + issueComponentsJoin + `
 		` + refs.IssueRepoJoin + `
 		where i.key = $1

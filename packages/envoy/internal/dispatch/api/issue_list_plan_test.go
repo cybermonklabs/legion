@@ -108,13 +108,13 @@ func TestAPagedListingResolvesItsPageAlone(t *testing.T) {
 		{
 			name:      "the paged listing",
 			statement: listIssuesPageQuery,
-			arguments: []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, 5, 10},
+			arguments: []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, []string{}, false, 5, 10},
 			limit:     5,
 		},
 		{
 			name:      "the paged pinned listing",
 			statement: listPinnedIssuesPageQuery,
-			arguments: []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, "alice", 2, 1},
+			arguments: []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, []string{}, false, "alice", 2, 1},
 			limit:     2,
 		},
 	} {
@@ -140,13 +140,18 @@ func TestAPagedListingResolvesItsPageAlone(t *testing.T) {
 				if len(node.Plans) == 0 {
 					t.Fatalf("%s has a parent walk with no base term:\n%s", name, text)
 				}
-				if base := node.Plans[0]; base.Rows > float64(limit) || base.Loops != 1 {
+				// A base term reported with no loop at all never ran, which is the advances
+				// filter's walk on a request that names no priority: its seed is gated off
+				// (issueAdvancesFilterTerms), so it starts from no key rather than from many.
+				if base := node.Plans[0]; base.Rows > float64(limit) || base.Loops > 1 {
 					t.Errorf("%s starts a parent walk from %.0f keys over %.0f loops, want at most the page's %d over one loop:\n%s",
 						name, base.Rows, base.Loops, limit, text)
 				}
 			}
-			if walks != 2 {
-				t.Errorf("%s runs %d parent walks, want the components walk and the repository walk:\n%s", name, walks, text)
+			if walks != 4 {
+				t.Errorf("%s runs %d parent walks, want the components walk, the repository walk, the walk up every"+
+					" page row's chain for its advances relations and the walk down from the advances filter's own"+
+					" relations:\n%s", name, walks, text)
 			}
 		})
 	}
@@ -156,7 +161,7 @@ func TestAPagedListingResolvesItsPageAlone(t *testing.T) {
 // its joins reach once for all of them rather than once per issue.
 func TestAnUnpagedListingReadsEachResolvedTableOnce(t *testing.T) {
 	fixture := newIssueListFixture(t)
-	plan, text := analyzePlan(t, fixture.database, listIssuesQuery, "LIST", "", "", nil, []string{}, false, []int16{}, false)
+	plan, text := analyzePlan(t, fixture.database, listIssuesQuery, "LIST", "", "", nil, []string{}, false, []int16{}, false, []string{}, false)
 	for _, relation := range []string{"issue_links", "issue_components", "repo_projects"} {
 		read := 0
 		for _, node := range plan.everyNode() {
@@ -188,8 +193,8 @@ func TestTheListingReadsOpenAsksThroughTheirIndex(t *testing.T) {
 		statement string
 		arguments []any
 	}{
-		"the listing":       {listIssuesQuery, []any{"LIST", "", "", nil, []string{}, false, []int16{}, false}},
-		"the paged listing": {listIssuesPageQuery, []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, 5, 10}},
+		"the listing":       {listIssuesQuery, []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, []string{}, false}},
+		"the paged listing": {listIssuesPageQuery, []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, []string{}, false, 5, 10}},
 	} {
 		plan := planWithoutSeqScans(t, fixture.database, read.statement, read.arguments...)
 		if explaintest.SeqScansRelation(t, plan, "asks") {
