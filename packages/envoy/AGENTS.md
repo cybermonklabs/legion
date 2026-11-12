@@ -1144,7 +1144,9 @@ an update that changed the fragment itself, one that touched more than 64 blocks
 a document of one block or whose first block is a rule, a changed block that held or holds a footnote definition, one whose list kind or empty-paragraph status changed, which moves the list markers after it, one whose tables charged the render's span budget or would exhaust it, a document or changed block that writes a blank empty code block, and a block that does not read, validate or render alone.
 The replica learns which blocks an update touched from the transactions of its own document:
 `renderedReplica.start` subscribes `noteChangedTypes` to them as it makes the document, and after each transaction that applies an update to the replica it reads the shared types ygo says the transaction changed (`crdt.Transaction.ChangedTypes`) and walks each up its `Parent` chain to the top-level block it sits in, marking the update for a whole render when one is the fragment itself or sits deeper than any document in the schema nests.
-Both accessors are the sjawhar/ygo fork's (reearth/ygo#336), whose v1.54 line also logs what each commit parked.
+Both accessors are the fork's (reearth/ygo#336), which since its v1.54 line has also logged what each commit parked.
+The fork's releases are cut with knives (registry entry `[repos.ygo-fork]`) on `theorem-labs/ygo` and on no personal account, and `packages/envoy/go.mod` pins one from there;
+the work branches of its upstream pull requests stay on `sjawhar/ygo`, so an upstream maintainer can push to a pull request's head.
 The markdown the replica keeps and that markdown's `pmdoc.Layout`, 5 bytes per top-level block (each block's end offset and flags), are one value (`replicaRendering`), so a replica holding a rendering holds that rendering's layout;
 a published live write's rendering is one value too (`publishedRendering`), which the replica takes whole when it takes it.
 The ask blocks an update left are walked only when its classification asks for them, and on the incremental path only in the blocks the layout says hold one.
@@ -2514,7 +2516,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A paged request therefore answers 500 for a parent chain that is too deep or loops only when the bad issue is on the page it asked for, where the unpaged listing answers 500 for any issue it matches.
   The order ends on the key, the one column no two issues share:
   nothing makes a rank unique (`issues_project_rank` is a plain index, and every project's first issue is `U`), and `created_at` is the creating transaction's start, so without the key consecutive offsets could show a row twice or never even over a listing that holds still.
-  A walk of the pages is exact only on an unchanged listing:
+
+- A walk of the pages is exact only on an unchanged listing:
   an issue that enters or leaves what the filters match (a `route_status` filter's by a refreshed listener answer too), or whose status or rank changes, between two reads shifts rows across a page boundary, and one issue is served twice and another never.
   The unpaged array is the only exact set one read gives.
   The `dispatch issues` command always sends `limit` and `offset` (`DispatchClient.listIssuePage`, `packages/envoy-client`) and refuses an array answered to that paged request, which means a Dispatch older than #1612 or a regression of the page.

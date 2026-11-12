@@ -161,8 +161,11 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
-// The sjawhar/ygo fork keeps the upstream module path; consume its published tag through a
-// remote versioned replacement. The fork is upstream ygo v1.55.0, through upstream main
+// The fork of ygo keeps the upstream module path; consume its published tag through a remote
+// versioned replacement. Releases are cut on theorem-labs/ygo with knives (its registry entry
+// is [repos.ygo-fork]: upstream reearth/ygo, work branches on the personal fork, releases on
+// theorem-labs), and no release is cut on a personal account. The fork is upstream ygo v1.55.0,
+// through upstream main
 // 510c2cf5, plus fixes, each carried until upstream ships it; RELEASE_NOTES.md in the tagged
 // fork lists every member with its upstream pull request. Thirteen wait in open upstream pull
 // requests: pre-integration refusals change nothing,
@@ -236,4 +239,4 @@ require (
 // its tombstone structs by Structs. The release owner's own probes measured a 2^40 tombstone at
 // about 48 objects and a 2^30 park growth at about 32, both independent of the span, and a flood
 // of 10,000 ranges still refused by Decoded, so the loosening opens no memory attack.
-replace github.com/reearth/ygo => github.com/sjawhar/ygo v1.55.1-sami.10
+replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.1
