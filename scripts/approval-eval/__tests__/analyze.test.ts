@@ -19,7 +19,8 @@ import {
 } from "../analyze";
 import type { CaseKind, CaseRow, CaseVerdict } from "../build-corpus";
 import type { Corpus } from "../corpus-io";
-import { type SliceName, TARGETS } from "../draw";
+import { TARGETS } from "../draw";
+import type { SliceName } from "../draw-io";
 import type { RecipeName } from "../recipes";
 import type { CaseNeighbours, Endpoint, JudgementRow } from "../round-io";
 import { MINIMUM_DECIDED, mcnemarExact } from "../stats";

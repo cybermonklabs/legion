@@ -3,7 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CaseKind } from "./build-corpus";
 import { numberOf, recordOf, stringOf } from "./corpus-io";
-import type { SliceName } from "./draw";
+import type { SliceName } from "./draw-io";
 import type { FaultKind } from "./models";
 import type { RecipeName } from "./recipes";
 import type { ReplayedDocument } from "./replay";

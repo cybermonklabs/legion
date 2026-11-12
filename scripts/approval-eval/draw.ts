@@ -18,7 +18,17 @@ import {
   UsageError,
 } from "./corpus-io";
 import { type DispatchConfig, dispatchConfig, readJson } from "./dispatch-read";
-import { type BacklogRoots, type DrawRecord, issueFactsOf, rootFactsOf } from "./draw-io";
+import {
+  type BacklogRoots,
+  type DrawnSlices,
+  type DrawRecord,
+  drawPath,
+  issueFactsOf,
+  rootFactsOf,
+  SLICES,
+  type SliceName,
+  slicesPath,
+} from "./draw-io";
 import {
   DEFAULT_NEVER_DECIDE_MODEL,
   type IssueFacts,
@@ -110,12 +120,6 @@ export const TARGETS: Readonly<Record<CaseKind, SliceTargets>> = {
   approval: { fit: 80, report: 250, anchor: 48 },
   question: { fit: 20, report: 50, anchor: 12 },
 };
-
-/** The four slices, in the order a group is offered to them. */
-export const SLICES: readonly SliceName[] = ["fit", "report", "anchor", "reserve"];
-
-/** One slice of the draw. */
-export type SliceName = "fit" | "report" | "anchor" | "reserve";
 
 /** The three slices every number of a round is read over, in the order they are printed. */
 export const SCORED_SLICES = ["fit", "report", "anchor"] as const;
@@ -213,7 +217,7 @@ export interface ExcludedCase {
 export interface Draw {
   seed: number;
   targets: Readonly<Record<CaseKind, SliceTargets>>;
-  slices: Record<SliceName, string[]>;
+  slices: DrawnSlices;
   counts: Record<SliceName, Record<CaseKind, number>>;
   /** What the cases were grouped by, a whole group going into one slice. */
   groupKey: string;
@@ -265,7 +269,7 @@ function groupKeyOf(drawCase: DrawCase): string {
 /** The slices and the counts each starts at. */
 function emptyDraw(seed: number): Draw {
   const counts = {} as Record<SliceName, Record<CaseKind, number>>;
-  const slices = {} as Record<SliceName, string[]>;
+  const slices = {} as DrawnSlices;
   for (const slice of SLICES) {
     counts[slice] = { approval: 0, question: 0 };
     slices[slice] = [];
@@ -438,6 +442,12 @@ async function backlogLegionRoots(config: DispatchConfig): Promise<BacklogRoots>
  * The same list, pinned: read from a file in the shape `draw.json` writes, which is either that
  * whole file or the `backlogLegionRoots` object inside it. The reading time the file carries is
  * kept, because it is when the list was true; the source becomes the file.
+ *
+ * This reads a draw-shaped file itself rather than through `draw-io.ts`, and stays that way.
+ * What it reads is not a corpus's own draw but a file a person named on the command line, so
+ * every way it can fail is a usage error about `--backlog-roots` and says what that flag takes.
+ * Reading it through the owner of `draw.json` would answer a corpus error over a flag, and a
+ * refusal that names the wrong thing is a refusal that has lost its words.
  */
 async function pinnedBacklogRoots(path: string): Promise<BacklogRoots> {
   let parsed: unknown;
@@ -658,11 +668,12 @@ async function draw(flags: Flags): Promise<number> {
     for (const id of ids) console.log(`  ${id}`);
   }
   await mkdir(directory, { recursive: true });
-  const write = async (name: string, value: unknown): Promise<void> => {
-    await writeFile(join(directory, name), `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  const write = async (path: string, value: unknown): Promise<void> => {
+    await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   };
-  await write("slices.json", drawn.slices);
-  await write("anchor-descriptors.json", drawn.anchors);
+  const anchors = join(directory, "anchor-descriptors.json");
+  await write(slicesPath(directory), drawn.slices);
+  await write(anchors, drawn.anchors);
   const record: DrawRecord = {
     corpus: corpus.directory,
     cut: new Date(cut).toISOString(),
@@ -701,11 +712,11 @@ async function draw(flags: Flags): Promise<number> {
       },
     },
   };
-  await write("draw.json", record);
+  await write(drawPath(directory), record);
   console.log("");
-  console.log(`written           ${join(directory, "slices.json")}`);
-  console.log(`                  ${join(directory, "anchor-descriptors.json")}`);
-  console.log(`                  ${join(directory, "draw.json")}`);
+  console.log(`written           ${slicesPath(directory)}`);
+  console.log(`                  ${anchors}`);
+  console.log(`                  ${drawPath(directory)}`);
   return 0;
 }
 

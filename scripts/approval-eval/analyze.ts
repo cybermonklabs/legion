@@ -20,8 +20,16 @@ import {
   UsageError,
   verdictOf,
 } from "./corpus-io";
-import { KINDS, SCORED_SLICES, type ScoredSlice, type SliceName, TARGETS } from "./draw";
-import { corpusDrawPath, cutOf, groupKeyOf, readDraw } from "./draw-io";
+import { KINDS, SCORED_SLICES, type ScoredSlice, TARGETS } from "./draw";
+import {
+  corpusDrawPath,
+  corpusSlicesPath,
+  cutOf,
+  groupKeyOf,
+  readDraw,
+  readSlices,
+  type SliceName,
+} from "./draw-io";
 import {
   type CaseNeighbours,
   type JudgementRow,
@@ -2834,31 +2842,6 @@ async function readSummary(round: string): Promise<RoundSummary | null> {
   return record as unknown as RoundSummary;
 }
 
-/** The case ids of each slice, from the draw the corpus directory carries, where it does. */
-async function readSlices(corpus: string): Promise<Record<string, string[]> | null> {
-  const path = join(corpus, "slices", "slices.json");
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch {
-    return null;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new CorpusError(`${path} is not JSON`);
-  }
-  const record = recordOf(parsed);
-  if (record === null) return null;
-  const slices: Record<string, string[]> = {};
-  for (const [slice, ids] of Object.entries(record)) {
-    if (Array.isArray(ids))
-      slices[slice] = ids.filter((one): one is string => typeof one === "string");
-  }
-  return slices;
-}
-
 /**
  * The draw's own facts the report reads: the cut the post-cut class table is read over, and the
  * key the cases were grouped by, which a draw made before that key was recorded does not carry.
@@ -3002,7 +2985,7 @@ async function analyze(flags: Flags): Promise<number> {
   const out = flags.out === undefined ? null : await outDirectory(flags.out);
   const { rows, read, unreadable } = await readRows(flags.round);
   const summary = await readSummary(flags.round);
-  const slices = await readSlices(corpus.directory);
+  const slices = await readSlices(corpusSlicesPath(corpus.directory));
   const { cut, groupKey } = await readDrawFacts(corpus.directory);
   const evidence = await readEvidenceNeighbours(flags.round);
   const wantedCases = flags.cases === undefined ? null : await readCases(flags.cases);

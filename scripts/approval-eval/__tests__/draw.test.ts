@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { CaseKind, CaseRow } from "../build-corpus";
-import { type Draw, type DrawCase, DrawError, drawSlices, SLICES, TARGETS } from "../draw";
+import { type Draw, type DrawCase, DrawError, drawSlices, TARGETS } from "../draw";
+import { SLICES } from "../draw-io";
 import type { NeverDecideAnswer } from "../never-decide";
 
 /**

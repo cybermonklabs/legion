@@ -185,4 +185,38 @@ describe("readEvidenceNeighbours", () => {
       { caseId: "case-a", neighbours: ["case-b"], excluded: 3 },
     ]);
   });
+
+  /**
+   * The scan the retrieval proof is read over checks the version and the fields of every entry
+   * it walks, which the reading it replaced did not: that one took any JSON object naming a
+   * case and counted it, with whatever fields it had. Over the recorded round nothing moved,
+   * every entry of it being of this version and whole, so this is where the direction that did
+   * move is held: an entry of an older version and an entry whose writing never reached the
+   * documents are each one case and its neighbours left out of the proof's counts.
+   */
+  test("leaves out an entry of an older version and one the writing never finished", async () => {
+    const round = await scratch();
+    await mkdir(evidenceDirectory(round), { recursive: true });
+    await writeFile(cachePath(round, "case-a"), `${JSON.stringify(cachedEvidence())}\n`, "utf8");
+    await writeFile(
+      cachePath(round, "case-b"),
+      `${JSON.stringify(cachedEvidence({ caseId: "case-b", version: CACHE_VERSION - 1 }))}\n`,
+      "utf8"
+    );
+    const whole = cachedEvidence({ caseId: "case-c" });
+    await writeFile(
+      cachePath(round, "case-c"),
+      `${JSON.stringify({
+        version: whole.version,
+        caseId: whole.caseId,
+        builtAt: whole.builtAt,
+        issueTitle: whole.issueTitle,
+        nearest: whole.nearest,
+      })}\n`,
+      "utf8"
+    );
+    expect(await readEvidenceNeighbours(round)).toEqual([
+      { caseId: "case-a", neighbours: ["case-b"], excluded: 3 },
+    ]);
+  });
 });

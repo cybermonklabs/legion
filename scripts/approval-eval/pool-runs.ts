@@ -19,7 +19,9 @@ import {
   type AnswerRow,
   type ArmName,
   answersPath,
+  finishedAtOf,
   readAnswerRows,
+  readShapes,
   type Shape,
   shapeOf,
 } from "./fresh-agent";
@@ -373,26 +375,6 @@ function outcomesOf(rows: readonly AnswerRow[]): Map<string, Partial<Record<ArmN
   return held;
 }
 
-/** When one run finished, from the `fresh-agent.json` it wrote, where it holds that shape. */
-async function finishedAtOf(directory: string, shape: Shape): Promise<string | null> {
-  let text: string;
-  try {
-    text = await readFile(join(directory, "fresh-agent.json"), "utf8");
-  } catch {
-    return null;
-  }
-  let parsed: unknown;
-  try {
-    // The file is `fresh-agent.ts`'s own, so what it holds is what that command wrote.
-    parsed = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  const shapes = parsed as Record<string, { finishedAt?: unknown } | undefined>;
-  const finishedAt = shapes[shape]?.finishedAt;
-  return typeof finishedAt === "string" ? finishedAt : null;
-}
-
 /**
  * One run read back: one outcome per case and arm, the last row of each winning, as the run's
  * own resume reads them. A case only one arm answered is refused rather than dropped: a run
@@ -425,7 +407,7 @@ export async function readRun(directory: string, shape: Shape): Promise<RunOutco
   return {
     directory,
     cases,
-    finishedAt: await finishedAtOf(directory, shape),
+    finishedAt: finishedAtOf(await readShapes(directory), shape),
     skillSha: await sha256Of(join(directory, SKILL_IN_RUN)),
   };
 }

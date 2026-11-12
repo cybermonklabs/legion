@@ -16,7 +16,7 @@ import {
   shortModel,
   sliceCaseIds,
 } from "../consensus";
-import type { SliceName } from "../draw";
+import type { SliceName } from "../draw-io";
 import type { RecipeName } from "../recipes";
 import type { Endpoint, JudgementRow } from "../round-io";
 import { MINIMUM_DECIDED } from "../stats";

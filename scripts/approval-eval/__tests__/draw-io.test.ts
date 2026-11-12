@@ -5,22 +5,26 @@ import { join } from "node:path";
 import { CorpusError } from "../corpus-io";
 import {
   corpusDrawPath,
+  corpusSlicesPath,
   cutOf,
   type DrawRecord,
   drawPath,
   groupKeyOf,
   issueFactsOf,
   readDraw,
+  readSlices,
   rootFactsOf,
+  slicesPath,
 } from "../draw-io";
 
 /**
- * The owner of `draw.json`, read as the four commands that read it do.
+ * The owner of the two files one draw writes, read as the four commands that read them do.
  *
- * What it holds the module to is the one policy it chose: a directory with no draw carries
- * none, and a `draw.json` that is not JSON stops the reading rather than being read as a corpus
- * that was never drawn. The facts are read one by one, because a draw made before a field was
- * recorded carries no such field and is still a draw.
+ * What it holds the module to is the one policy it chose for both: a directory with no draw
+ * carries none, and a file that is there and is not what a draw writes stops the reading
+ * rather than being read as a corpus that was never drawn. The facts of a draw are read one by
+ * one, because a draw made before a field was recorded carries no such field and is still a
+ * draw.
  */
 
 /** The directories this file made, each removed by its own exact path. */
@@ -113,6 +117,45 @@ describe("readDraw", () => {
     await writeFile(drawPath(corpus), `${JSON.stringify(draw())}\n`, "utf8");
     expect(corpusDrawPath(corpus)).toBe(join(corpus, "slices", "draw.json"));
     expect((await readDraw(drawPath(corpus)))?.seed).toBe(7);
+  });
+});
+
+describe("readSlices", () => {
+  test("reads a directory holding no slices as none", async () => {
+    expect(await readSlices(slicesPath(await scratch()))).toBeNull();
+  });
+
+  test("stops the reading where the file is not the case ids a draw writes", async () => {
+    const directory = await scratch();
+    const path = slicesPath(directory);
+    await writeFile(path, "{not json", "utf8");
+    expect(readSlices(path)).rejects.toThrow(CorpusError);
+    expect(readSlices(path)).rejects.toThrow(`${path} is not JSON`);
+    await writeFile(path, "[]", "utf8");
+    expect(readSlices(path)).rejects.toThrow(`${path} is not a draw's slices`);
+    await writeFile(path, JSON.stringify({ fit: 3 }), "utf8");
+    expect(readSlices(path)).rejects.toThrow(`${path} holds no list of case ids in the fit slice`);
+    await writeFile(path, JSON.stringify({ fit: ["case-a", 3] }), "utf8");
+    expect(readSlices(path)).rejects.toThrow(
+      `${path} names a case that is no string in the fit slice`
+    );
+  });
+
+  test("reads the ids of every slice, under the corpus's own slices directory", async () => {
+    const corpus = await scratch();
+    await writeFile(
+      slicesPath(corpus),
+      `${JSON.stringify({ fit: ["case-a"], report: ["case-b", "case-c"], anchor: [] })}\n`,
+      "utf8"
+    );
+    expect(corpusSlicesPath(corpus)).toBe(join(corpus, "slices", "slices.json"));
+    expect(await readSlices(slicesPath(corpus))).toEqual({
+      fit: ["case-a"],
+      report: ["case-b", "case-c"],
+      anchor: [],
+      // A slice the file names no case under holds none, as a slice named empty does.
+      reserve: [],
+    });
   });
 });
 

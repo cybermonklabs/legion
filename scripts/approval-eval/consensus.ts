@@ -13,7 +13,7 @@ import {
   table,
   UsageError,
 } from "./corpus-io";
-import type { SliceName } from "./draw";
+import type { SliceName } from "./draw-io";
 import { RECIPES, type RecipeName } from "./recipes";
 import { type JudgementRow, readRows, rowsPath } from "./round-io";
 import {

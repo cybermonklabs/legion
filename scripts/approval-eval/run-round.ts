@@ -18,8 +18,15 @@ import {
   whole,
 } from "./corpus-io";
 import { type DispatchConfig, dispatchConfig } from "./dispatch-read";
-import { SCORED_SLICES, type ScoredSlice, type SliceName } from "./draw";
-import { cutOf as cutOfDraw, drawPath, readDraw } from "./draw-io";
+import { SCORED_SLICES, type ScoredSlice } from "./draw";
+import {
+  cutOf as cutOfDraw,
+  drawPath,
+  readDraw,
+  readSlices,
+  type SliceName,
+  slicesPath,
+} from "./draw-io";
 import {
   askClaude,
   askJev,
@@ -1174,17 +1181,14 @@ async function cachedEvidenceOf(
 
 /** The scored cases of a draw: the fit, report and anchor slices, in the order they were drawn. */
 async function scoredCasesOf(slices: string, corpus: Corpus): Promise<ScoredCase[]> {
-  const path = join(slices, "slices.json");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(await readFile(path, "utf8"));
-  } catch {
+  const path = slicesPath(slices);
+  const drawn = await readSlices(path);
+  if (drawn === null) {
     throw new RoundError(`${path} could not be read: --slices takes a directory draw.ts wrote`);
   }
-  const record = recordOf(parsed);
   const cases: ScoredCase[] = [];
   for (const slice of SCORED_SLICES) {
-    const ids = listOf(record?.[slice]).map((id) => stringOf(id) ?? "");
+    const ids = drawn[slice];
     if (ids.length === 0) throw new RoundError(`${path} names no case in the ${slice} slice`);
     for (const caseId of ids) {
       const row = corpus.byCaseId.get(caseId);

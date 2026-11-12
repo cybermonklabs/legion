@@ -2,25 +2,35 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CaseKind } from "./build-corpus";
 import { CorpusError, listOf, recordOf, stringOf } from "./corpus-io";
-import type { ExcludedCase, SliceName, SliceTargets, UndrawableKind } from "./draw";
+import type { ExcludedCase, SliceTargets, UndrawableKind } from "./draw";
 import type { IssueFacts } from "./never-decide";
 
 /**
- * `draw.json`, the record one draw writes of itself, with one owner.
+ * The two files one draw writes that are read back, each with one owner: `draw.json`, the
+ * record the draw writes of itself, and `slices.json`, the case ids it drew into each slice.
  *
- * `draw.ts` writes it beside the slices it drew, and four commands read it back: `run-round.ts`
- * for the cut its dating rule applies, `analyze.ts` for that cut and the key the cases were
- * grouped by, `strata.ts` for the cut, and `refusals.ts` for the issue facts the never-decide
- * rule needs. So the shape of the file, where it sits and the rule that reads each fact out of
- * it live here, and the writer and every reader import them.
+ * `draw.ts` writes both into the directory holding the slices, and four commands read them
+ * back: `run-round.ts` for the cases of the scored slices and the cut its dating rule applies,
+ * `analyze.ts` for those cases, that cut and the key the cases were grouped by, `strata.ts`
+ * for the cut, and `refusals.ts` for the issue facts the never-decide rule needs. So the shape
+ * of each file, where it sits and the rule that reads each fact out of it live here, and the
+ * writer and every reader import them.
  *
  * A draw written before a field was recorded does not carry it, which is why every reading of
  * a field goes through one of the readers below rather than through the type: the type says
  * what a draw writes now, and the readers say what a draw of any age answers.
  *
- * The types the record is built from come from `draw.ts`, which makes those values, and that
- * import is type-only: it is erased, so importing this module runs none of the draw.
+ * The types the records are built from come from `draw.ts`, which makes those values, and that
+ * import is type-only: it is erased, so importing this module runs none of the draw. The names
+ * of the slices are the other way about, and live here: they are what `slices.json` holds, and
+ * a module reading that file may not import the draw itself to learn them.
  */
+
+/** One slice of the draw. */
+export type SliceName = "fit" | "report" | "anchor" | "reserve";
+
+/** The four slices, in the order a group is offered to them. */
+export const SLICES: readonly SliceName[] = ["fit", "report", "anchor", "reserve"];
 
 /**
  * The roots carrying the `legion` label that stand on the backlog or in icebox, as `draw.json`
@@ -80,6 +90,14 @@ export interface DrawRecord {
   excluded: DrawExcluded;
 }
 
+/**
+ * The case ids one draw drew into each slice, which is what `slices.json` holds. A slice the
+ * file names no case under holds none: a draw puts a case in exactly one slice, so a slice
+ * standing empty and a slice a draw of an earlier shape never wrote are the same thing to
+ * every reader of them.
+ */
+export type DrawnSlices = Record<SliceName, string[]>;
+
 /** Where a draw writes its record, in the directory holding the slices it drew. */
 export function drawPath(slices: string): string {
   return join(slices, "draw.json");
@@ -88,6 +106,16 @@ export function drawPath(slices: string): string {
 /** Where a corpus carries the draw made over it, which is the `slices` directory beside it. */
 export function corpusDrawPath(corpus: string): string {
   return drawPath(join(corpus, "slices"));
+}
+
+/** Where a draw writes the case ids it drew, in the directory holding the slices. */
+export function slicesPath(slices: string): string {
+  return join(slices, "slices.json");
+}
+
+/** Where a corpus carries the slices drawn over it, which is that same directory beside it. */
+export function corpusSlicesPath(corpus: string): string {
+  return slicesPath(join(corpus, "slices"));
 }
 
 /**
@@ -115,6 +143,53 @@ export async function readDraw(path: string): Promise<DrawRecord | null> {
   if (record === null) throw new CorpusError(`${path} is not a draw`);
   // The rest of the file is what the draw wrote, whose shape is `DrawRecord`.
   return record as unknown as DrawRecord;
+}
+
+/**
+ * The slices at `path`, and null where there is none there.
+ *
+ * One policy for both readers, and the same one the draw's own record is read under: a
+ * directory holding no `slices.json` carries no slices, and a `slices.json` that is not the
+ * case ids a draw writes stops the reading. A case id that is no string is that second thing:
+ * one reader dropped it and the other took it as the empty id and then refused the corpus for
+ * not holding a case of that name, and both read a corrupt file as a shorter draw.
+ */
+export async function readSlices(path: string): Promise<DrawnSlices | null> {
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new CorpusError(`${path} is not JSON`);
+  }
+  const record = recordOf(parsed);
+  if (record === null) throw new CorpusError(`${path} is not a draw's slices`);
+  const slices = {} as DrawnSlices;
+  for (const slice of SLICES) {
+    const held = record[slice];
+    if (held === undefined) {
+      slices[slice] = [];
+      continue;
+    }
+    if (!Array.isArray(held)) {
+      throw new CorpusError(`${path} holds no list of case ids in the ${slice} slice`);
+    }
+    const ids: string[] = [];
+    for (const one of held) {
+      const caseId = stringOf(one);
+      if (caseId === null) {
+        throw new CorpusError(`${path} names a case that is no string in the ${slice} slice`);
+      }
+      ids.push(caseId);
+    }
+    slices[slice] = ids;
+  }
+  return slices;
 }
 
 /** The cut a draw was made at, and null where it records none or records no time. */

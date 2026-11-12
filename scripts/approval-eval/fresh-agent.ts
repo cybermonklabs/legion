@@ -311,6 +311,52 @@ export interface RoundNumbers {
 /** Both shapes as `fresh-agent.json` holds them, each written by the run that made it. */
 export type FreshShapes = { [shape in Shape]?: FreshReport };
 
+/**
+ * `fresh-agent.json`, the record a run writes of itself, with one owner. This command writes
+ * it, one shape at a time, and reads it back for the shape this run did not make; `pool-runs.ts`
+ * reads it for the time a run finished. So where the file sits, what it holds and the rule that
+ * reads a fact out of it live here, and the writer and both readers use them.
+ */
+
+/** Where both shapes' reports are written, which is the file a reader of a run reads alone. */
+export function reportPath(out: string): string {
+  return join(out, "fresh-agent.json");
+}
+
+/**
+ * The shapes a run directory's `fresh-agent.json` holds, and none where the directory holds no
+ * such file, no JSON or no object. One policy for both readers: a file that is not the record
+ * this command writes holds no shape, rather than being handed on as one and read as a run
+ * measured. A value under a shape's name that is no object is left out for that reason too, so
+ * every report handed back is one a reader can take a field off.
+ */
+export async function readShapes(out: string): Promise<FreshShapes> {
+  let text: string;
+  try {
+    text = await readFile(reportPath(out), "utf8");
+  } catch {
+    return {};
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return {};
+  }
+  const held: FreshShapes = {};
+  for (const shape of SHAPES) {
+    const report = recordOf(recordOf(parsed)?.[shape]);
+    // What a shape holds is what this command wrote for it, whose shape is `FreshReport`.
+    if (report !== null) held[shape] = report as unknown as FreshReport;
+  }
+  return held;
+}
+
+/** When the run of one shape finished, and null where the file records no time for it. */
+export function finishedAtOf(shapes: FreshShapes, shape: Shape): string | null {
+  return stringOf(shapes[shape]?.finishedAt ?? null);
+}
+
 /** What one run is asked to score. */
 export interface FreshPlan {
   neighbours: Shape;
@@ -1134,32 +1180,10 @@ async function casesOf(
   return cases;
 }
 
-/** The shapes `fresh-agent.json` already holds, so a new shape is added and never replaces one. */
-async function heldShapes(path: string): Promise<FreshShapes> {
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch {
-    return {};
-  }
-  try {
-    // The file is this command's own, so what it holds is what it wrote.
-    return JSON.parse(text) as FreshShapes;
-  } catch {
-    return {};
-  }
-}
-
-/** Where both shapes' reports are written, which is the file a reader of a run reads alone. */
-function reportPath(out: string): string {
-  return join(out, "fresh-agent.json");
-}
-
 /** One shape's report added to the shapes the file holds, replacing that shape's and no other. */
 async function writeReport(out: string, report: FreshReport): Promise<void> {
-  const path = reportPath(out);
-  const shapes: FreshShapes = { ...(await heldShapes(path)), [report.neighbours]: report };
-  await writeFile(path, `${JSON.stringify(shapes, null, 2)}\n`, "utf8");
+  const shapes: FreshShapes = { ...(await readShapes(out)), [report.neighbours]: report };
+  await writeFile(reportPath(out), `${JSON.stringify(shapes, null, 2)}\n`, "utf8");
 }
 
 /** The run as the command makes it: the real corpus, the real round and the real agent. */
@@ -1203,7 +1227,7 @@ async function fresh(flags: Flags): Promise<number> {
     }
   );
   // The run wrote the file as it ended; this reads it back for the shape it did not make.
-  console.log(reportLines(report, await heldShapes(reportPath(out))).join("\n"));
+  console.log(reportLines(report, await readShapes(out)).join("\n"));
   return report.verdict.passes ? EXIT_PASSES : EXIT_FAILS;
 }
 
