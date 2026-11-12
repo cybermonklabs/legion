@@ -2013,6 +2013,14 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		// memory the start handler already writes on this same listener.
 		WorkerRPCTimeout: cfg.WorkerRPCTimeout,
 		Refusals:         answering,
+		// The registration deadline a claim in shim_connected is refused with is this
+		// deployment's own two settings multiplied, the same product the supervisor arms for a
+		// claim past its hello (dispatch://INFRA-2883 R8, supervise's armRegistration). It is
+		// taken through runtime.RegistrationDeadline, the one computation that owns the
+		// deadline, so the sentence follows it if it ever stops being a plain product. The zero
+		// grace is no dropped argument: the runtime's provision bound belongs to a claim still
+		// launching, and the sentence is written for one that has said hello.
+		RegistrationDeadline: runtime.RegistrationDeadline(cfg.WorkerBootTimeout, cfg.WorkerBootRegistrationDeadlineIntervals, 0),
 	}))
 
 	group, serving := errgroup.WithContext(ctx)

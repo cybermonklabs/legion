@@ -328,10 +328,8 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 		ctx: ctx,
 		deps: supervise.Deps{
 			Runtime: rt, Conns: conns, Store: tokens.Recording(st), Specs: fixedSpecs{}, Clock: clock, Log: quiet,
-			Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2},
-			Timeouts: supervise.Timeouts{
-				Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
-			},
+			Limits:             supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2},
+			Timeouts:           testTimeouts,
 			PluginContract:     DaemonAPIVersion,
 			PluginRelaunchable: relaunchable,
 			// The daemon's own wiring: a tree a workflow issue backs does not close here.
@@ -378,11 +376,15 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 		Pool: st.Pool(), Record: record.NewStore(), Releaser: rt, Trees: st, ReleaseRecords: st, ClaimActivity: st,
 		PluginRelaunchable: relaunchable,
 		WorkerRPCTimeout:   bound,
-		Refusals:           h.refusals,
-		Decisions:          h.decisions,
-		ClaimReady:         func(c supervise.Claim) { *readied = append(*readied, c) },
-		PromptAgents:       testPromptAgents,
-		PodUpdateRounds:    func() PodUpdateRounds { return *rounds },
+		// The deployment's two settings multiplied, as daemon.go's serve multiplies them: the
+		// supervision above and the server are wired from the one set of timeouts, so the
+		// length a refusal names is the deadline that supervision arms (Options.RegistrationDeadline).
+		RegistrationDeadline: testRegistrationDeadline,
+		Refusals:             h.refusals,
+		Decisions:            h.decisions,
+		ClaimReady:           func(c supervise.Claim) { *readied = append(*readied, c) },
+		PromptAgents:         testPromptAgents,
+		PodUpdateRounds:      func() PodUpdateRounds { return *rounds },
 		CapabilityReported: func(ctx context.Context, _ supervise.Claim, report capabilities.Report) {
 			*reported = append(*reported, report)
 			*reportedContextErr = append(*reportedContextErr, ctx.Err())
@@ -396,6 +398,19 @@ func newHarnessWith(t *testing.T, opts harnessOptions) *harness {
 // unless a test asks for another (harnessOptions.bound): long enough that a route whose decision
 // writes to the test's own Postgres never meets it, so only a test about the bound meets it.
 const testWorkerRPCTimeout = 20 * time.Second
+
+// testTimeouts are the supervise bounds every harness runs on, and the two the registration
+// deadline is drawn from (testRegistrationDeadline).
+var testTimeouts = supervise.Timeouts{
+	Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second,
+	Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
+}
+
+// testRegistrationDeadline is the registration deadline every harness's server names in the
+// refusal of a shim_connected claim (Options.RegistrationDeadline): this harness's own two
+// timeouts multiplied, through the computation that owns the deadline, with the zero grace a
+// claim past its hello gets (runtime.RegistrationDeadline, supervise's armRegistration).
+var testRegistrationDeadline = runtime.RegistrationDeadline(testTimeouts.Boot, testTimeouts.RegistrationIntervals, 0)
 
 // testAnswering is an Answering of this test's own, on a listener of its own, for the one thing a
 // route reads it for: the memory of the launches it refused without answering (Options.Refusals).

@@ -27,6 +27,7 @@ func compactHarness(t *testing.T, backend func(claim.Role) runtime.Backend) *har
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
 		Handlers: []intake.Handler{&phaseRestarter{}}, RoleFor: workflow.RoleFor, Backend: backend,
+		RegistrationDeadline: testRegistrationDeadline,
 	})
 	return h
 }

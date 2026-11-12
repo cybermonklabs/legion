@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -318,9 +319,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 			return 0, "", false
 		}
 	default:
-		writeFailure(w, http.StatusConflict, claimUnsettled, fmt.Sprintf(
-			"%s is %s. %s. %s", token, c.State, freshSessionOp.reaches, askAgainLater))
-		return 0, "", false
+		return 0, "", refuseUnsettled(w, token, c.State, freshSessionOp, s.registrationDeadline)
 	}
 	if session := m.Claim().Session; session != "" && !s.forgetRecordedSession(w, r, m, token, session) {
 		return 0, "", false
@@ -352,6 +351,47 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	}
 	s.log.Info("api: a fresh session was started for a claim that was suspended", "claim", token)
 	return status, notRestarted, true
+}
+
+// refuseUnsettled is the refusal of a claim between states that no window of its own answers,
+// which both recoveries write from their own door (freshSession, refuseState): the claim's
+// state, the registration deadline where the state is shim_connected, the states the operation
+// reaches, and the list (controllerOp, askAgainLater). deadline is the deployment's own
+// registration deadline (Options.RegistrationDeadline), zero where the server carries none, and
+// the sentence it writes is the one state's alone (registrationDeadlineSentence). It always
+// reports false, so a caller returns it as its own answer.
+func refuseUnsettled(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, op controllerOp,
+	deadline time.Duration) bool {
+	sentences := []string{fmt.Sprintf("%s is %s", token, state)}
+	if registration := registrationDeadlineSentence(state, deadline); registration != "" {
+		sentences = append(sentences, registration)
+	}
+	sentences = append(sentences, op.reaches, askAgainLater)
+	writeFailure(w, http.StatusConflict, claimUnsettled, strings.Join(sentences, ". "))
+	return false
+}
+
+// registrationDeadlineSentence is the one sentence the refusal of a shim_connected claim
+// carries and no other refusal does: the registration deadline as a length, counted from the
+// hello that put the claim in that state (supervise's helloed). For that state alone the
+// deadline is the deployment's two settings multiplied and nothing else — armRegistration adds
+// the runtime's provision bound only while the claim is still launching — so the length is
+// exact here and is written for no other state, whose waits are not this deadline.
+//
+// A length is a fact of the deployment, which is what a controller reading shim_connected has
+// nowhere else: the state is published and the settings are not. It is no time from now and no
+// outcome. The deadline is armed again whole by a daemon restart, and by the watch that finds
+// it unarmed after one (supervise's NewMachine, watchAgain), so what is left of it is not a
+// thing any refusal holds; and what the next hold or relaunch makes of the claim is the
+// machine's to decide when it comes, which is the rule every refusal here is written to
+// (askAgainLater). A deadline of zero is a server built without one, which writes nothing
+// (Options.RegistrationDeadline).
+func registrationDeadlineSentence(state supervise.ClaimState, deadline time.Duration) string {
+	if state != supervise.StateShimConnected || deadline <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("Its registration deadline is %s (`worker_boot_timeout_seconds` × "+
+		"`worker_boot_registration_deadline_intervals`), counted from the shim's hello", deadline)
 }
 
 // refuseInATurn is the refusal of a claim stored working that neither window read before it

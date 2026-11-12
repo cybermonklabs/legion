@@ -44,7 +44,8 @@ func freshSessionHarnessStopping(t *testing.T, handler intake.Handler, stopping 
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
 		Handlers: []intake.Handler{handler}, RoleFor: workflow.RoleFor,
-		Stopping: stopping, Decisions: decisions,
+		RegistrationDeadline: testRegistrationDeadline,
+		Stopping:             stopping, Decisions: decisions,
 	})
 	return h
 }

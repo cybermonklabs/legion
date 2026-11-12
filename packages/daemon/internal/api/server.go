@@ -261,6 +261,19 @@ type Options struct {
 	// refusal from a status, so a route that writes nothing here is a route whose refusal the
 	// daemon answers for itself (the stopping refusal, server.stopped).
 	Refusals *Answering
+	// RegistrationDeadline is how long a claim whose shim has said hello has to register and
+	// say it is ready: `worker_boot_timeout_seconds` ×
+	// `worker_boot_registration_deadline_intervals`, this deployment's own two settings
+	// multiplied, which is the whole of the deadline the supervisor arms for a claim past its
+	// hello — the runtime's provision bound is added only while the claim is still launching
+	// (supervise's armRegistration, runtime.RegistrationDeadline). The daemon computes it where
+	// it builds this server, from the configuration those two keys are read into
+	// (daemon.go's serve). The refusal of a claim in shim_connected names it as a length, which
+	// is the fact of the deployment a refused controller has nowhere else to read
+	// (refuseUnsettled, R8 of dispatch://INFRA-2883). Zero names no length at all: that refusal
+	// keeps the words every other unsettled state takes, which is what a server built by a test
+	// that does not read the sentence passes.
+	RegistrationDeadline time.Duration
 }
 
 // TreeLifecycles is the store's durable tree barrier (store.Store) as the operator routes use it:
@@ -293,14 +306,17 @@ type ClaimActivityStore interface {
 type server struct {
 	// workerRPC is Options.WorkerRPCTimeout, resolved: the bound the registration and the ready
 	// answer within, never zero here. refusals is Options.Refusals, nil for a server whose
-	// refused launches nothing reads.
-	workerRPC         time.Duration
-	refusals          *Answering
-	state             StateSource
-	stateTransactions StateTransactions
-	consumerLag       func(ctx context.Context) []intake.ConsumerLag
-	callerPod         func(addr netip.Addr) (string, bool)
-	supervisor        Supervisor
+	// refused launches nothing reads. registrationDeadline is Options.RegistrationDeadline as
+	// its caller gave it, zero included: zero is a server that names no such length, and the
+	// refusal of a shim_connected claim is written for either (refuseUnsettled).
+	workerRPC            time.Duration
+	registrationDeadline time.Duration
+	refusals             *Answering
+	state                StateSource
+	stateTransactions    StateTransactions
+	consumerLag          func(ctx context.Context) []intake.ConsumerLag
+	callerPod            func(addr netip.Addr) (string, bool)
+	supervisor           Supervisor
 	// podUpdateRounds is Options.PodUpdateRounds.
 	podUpdateRounds func() PodUpdateRounds
 	bootTokens      *BootTokens
@@ -383,53 +399,54 @@ func NewServer(opts Options) http.Handler {
 		serving = func(recorded ghrepo.Repository) ghrepo.Repository { return recorded }
 	}
 	s := &server{
-		workerRPC:          opts.WorkerRPCTimeout,
-		refusals:           opts.Refusals,
-		controllerMu:       newGate(),
-		state:              opts.State,
-		stateTransactions:  opts.StateTransactions,
-		consumerLag:        opts.ConsumerLag,
-		callerPod:          opts.CallerPod,
-		supervisor:         opts.Supervisor,
-		podUpdateRounds:    opts.PodUpdateRounds,
-		bootTokens:         opts.BootTokens,
-		project:            opts.Project,
-		dispatchProject:    opts.DispatchProject,
-		controller:         opts.Controller,
-		steps:              opts.Steps,
-		controllerLaunched: opts.ControllerLaunched,
-		pluginRelaunchable: opts.PluginRelaunchable,
-		noPluginInstall:    opts.NoPluginInstall,
-		backend:            opts.Backend,
-		tokens:             opts.Tokens,
-		githubRepositories: opts.GitHubRepositories,
-		renames:            opts.RepositoryRenames,
-		serving:            serving,
-		githubAPI:          opts.GitHubAPI,
-		mergeRules:         opts.MergeRules,
-		releaser:           opts.Releaser,
-		trees:              opts.Trees,
-		memory:             opts.Memory,
-		coin:               opts.MemoryCoin,
-		now:                opts.Now,
-		grants:             opts.Grants,
-		pool:               opts.Pool,
-		handlers:           opts.Handlers,
-		prepare:            opts.PrepareRepository,
-		unread:             opts.RepositoryUnread,
-		await:              opts.AwaitRecovery,
-		roleFor:            opts.RoleFor,
-		records:            opts.Record,
-		dispatch:           opts.Dispatch,
-		claimReady:         opts.ClaimReady,
-		promptAgents:       opts.PromptAgents,
-		capabilityReported: opts.CapabilityReported,
-		releaseRecordStore: opts.ReleaseRecords,
-		claimActivity:      opts.ClaimActivity,
-		log:                opts.Log,
-		stopping:           opts.Stopping,
-		drained:            opts.Drained,
-		decisions:          opts.Decisions,
+		workerRPC:            opts.WorkerRPCTimeout,
+		registrationDeadline: opts.RegistrationDeadline,
+		refusals:             opts.Refusals,
+		controllerMu:         newGate(),
+		state:                opts.State,
+		stateTransactions:    opts.StateTransactions,
+		consumerLag:          opts.ConsumerLag,
+		callerPod:            opts.CallerPod,
+		supervisor:           opts.Supervisor,
+		podUpdateRounds:      opts.PodUpdateRounds,
+		bootTokens:           opts.BootTokens,
+		project:              opts.Project,
+		dispatchProject:      opts.DispatchProject,
+		controller:           opts.Controller,
+		steps:                opts.Steps,
+		controllerLaunched:   opts.ControllerLaunched,
+		pluginRelaunchable:   opts.PluginRelaunchable,
+		noPluginInstall:      opts.NoPluginInstall,
+		backend:              opts.Backend,
+		tokens:               opts.Tokens,
+		githubRepositories:   opts.GitHubRepositories,
+		renames:              opts.RepositoryRenames,
+		serving:              serving,
+		githubAPI:            opts.GitHubAPI,
+		mergeRules:           opts.MergeRules,
+		releaser:             opts.Releaser,
+		trees:                opts.Trees,
+		memory:               opts.Memory,
+		coin:                 opts.MemoryCoin,
+		now:                  opts.Now,
+		grants:               opts.Grants,
+		pool:                 opts.Pool,
+		handlers:             opts.Handlers,
+		prepare:              opts.PrepareRepository,
+		unread:               opts.RepositoryUnread,
+		await:                opts.AwaitRecovery,
+		roleFor:              opts.RoleFor,
+		records:              opts.Record,
+		dispatch:             opts.Dispatch,
+		claimReady:           opts.ClaimReady,
+		promptAgents:         opts.PromptAgents,
+		capabilityReported:   opts.CapabilityReported,
+		releaseRecordStore:   opts.ReleaseRecords,
+		claimActivity:        opts.ClaimActivity,
+		log:                  opts.Log,
+		stopping:             opts.Stopping,
+		drained:              opts.Drained,
+		decisions:            opts.Decisions,
 	}
 	if opts.OperatorToken != "" {
 		s.operatorSet, s.operatorHash = true, sha256.Sum256([]byte(opts.OperatorToken))

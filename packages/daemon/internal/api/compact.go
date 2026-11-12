@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -273,7 +274,7 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 			// suspension is held over whatever it is working under (refuseHeldSuspension),
 			// one whose agent is not running, one between states. The answer is written from
 			// that state and the published view (refuseState).
-			return CompactResponse{}, refuseState(w, token, refused.State, m.View())
+			return CompactResponse{}, refuseState(w, token, refused.State, m.View(), s.registrationDeadline)
 		}
 		// Oh My Pi refused or skipped the compaction, the wait for it ran out, or the transport
 		// failed. The claim is back and whatever task it owes has gone again, so the caller is
@@ -312,9 +313,11 @@ func boundReason(text string) string {
 // The hold is read first and without the state, because a hold outlives the state it arrived
 // in: it is held over a launch that has not registered and still stands when that launch
 // reaches shim_connected and registered (supervise's holdSuspendUntilReady), and what such a
-// claim waits for is the hold's end rather than the launch's. It always reports false, so a
-// caller returns it as its own answer.
-func refuseState(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, view supervise.ClaimView) bool {
+// claim waits for is the hold's end rather than the launch's. registrationDeadline is the
+// deployment's own (Options.RegistrationDeadline), for the one state whose refusal names it
+// (refuseUnsettled). It always reports false, so a caller returns it as its own answer.
+func refuseState(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, view supervise.ClaimView,
+	registrationDeadline time.Duration) bool {
 	switch {
 	case view.SuspensionHeld:
 		return refuseHeldSuspension(w, token, state, view.Role, compactOp)
@@ -328,8 +331,7 @@ func refuseState(w http.ResponseWriter, token claim.Token, state supervise.Claim
 			"%s is %s, so it runs no Oh My Pi session to compact; %s starts it again instead",
 			token, state, startsAgainName(view.Role)))
 	default:
-		writeFailure(w, http.StatusConflict, claimUnsettled, fmt.Sprintf(
-			"%s is %s. %s. %s", token, state, compactOp.reaches, askAgainLater))
+		return refuseUnsettled(w, token, state, compactOp, registrationDeadline)
 	}
 	return false
 }
