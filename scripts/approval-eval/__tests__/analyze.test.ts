@@ -125,6 +125,8 @@ function judgementRow(
     endpoint?: Endpoint;
     /** The endpoint's own stated probability of what it chose, which only Jev states. */
     confidence?: number;
+    /** The model the arm is on, which is the endpoint's own where the caller names none. */
+    model?: string;
   } = {}
 ): JudgementRow {
   const faulted = options.fault === true;
@@ -132,7 +134,7 @@ function judgementRow(
   return {
     arm,
     recipe: options.recipe ?? "bare",
-    model: endpoint === "jev" ? "jev-latest" : "anthropic/claude-opus-5-5",
+    model: options.model ?? (endpoint === "jev" ? "jev-latest" : "anthropic/claude-opus-5-5"),
     endpoint,
     caseId,
     slice: options.slice ?? "report",
@@ -955,8 +957,11 @@ async function runReading(argv: readonly string[]): Promise<{ printed: string; e
 
 /**
  * A corpus and a round the confidence table can be read over: forty approval cases of the
- * report slice, twenty the person approved and twenty he asked for changes on, each judged five
- * times by one generative arm and by the Jev arm of the same recipe.
+ * report slice, twenty the person approved and twenty he asked for changes on, each judged
+ * five times by one generative arm, by the Jev arm of the same recipe, and by two generative
+ * arms of another recipe that always approve. Four arms over three models is the floor the
+ * report is read at, and the three, four or five judgements of the forty that chose the
+ * person's own answer give the first arm's counted confidence three values to take.
  */
 async function tableFixture(): Promise<{ corpus: string; round: string }> {
   const corpus = await scratch();
@@ -967,14 +972,20 @@ async function tableFixture(): Promise<{ corpus: string; round: string }> {
     const caseId = `case-${String(at).padStart(2, "0")}`;
     const approved = at % 2 === 0;
     rows.push(caseRow(caseId, { selected: approved ? [APPROVE] : [CHANGES] }));
+    const agreeing = 3 + (at % 3);
     for (let judgement = 0; judgement < 5; judgement += 1) {
-      const chose = judgement < 3 === approved ? [APPROVE] : [CHANGES];
+      const chose = judgement < agreeing === approved ? [APPROVE] : [CHANGES];
       judged.push(
         judgementRow("many-shot-one", caseId, judgement, chose, { recipe: "many-shot" }),
         judgementRow("many-shot-jev", caseId, judgement, chose, {
           recipe: "many-shot",
           endpoint: "jev",
           confidence: 0.7,
+        }),
+        judgementRow("bare-one", caseId, judgement, [APPROVE], { recipe: "bare" }),
+        judgementRow("bare-fable", caseId, judgement, [APPROVE], {
+          recipe: "bare",
+          model: "anthropic/claude-fable-5-1",
         })
       );
     }
@@ -1012,6 +1023,81 @@ describe("the confidence table is the same on two runs of one command", () => {
     // over one round must show it over the same cases: a set drawn afresh each run makes the
     // check's verdict a draw rather than a reading of the round.
     expect(second?.caseIds).toEqual(first?.caseIds as string[]);
+  });
+
+  test("the seed it printed draws those same cases again, and another seed others", async () => {
+    const { corpus, round } = await tableFixture();
+    const argv = ["--corpus", corpus, "--round", round, "--confidence-table", "--format", "json"];
+    const drawn = (JSON.parse((await runReading(argv)).printed) as Analysis).confidenceTable;
+    const seed = drawn?.seed as number;
+    expect(Number.isInteger(seed)).toBe(true);
+    expect(drawn?.seedChoice).toBe("derived");
+    const again = await runReading([...argv, "--confidence-seed", String(seed)]);
+    const read = (JSON.parse(again.printed) as Analysis).confidenceTable;
+    expect(read?.seedChoice).toBe("named");
+    expect(read?.caseIds).toEqual(drawn?.caseIds as string[]);
+    const other = await runReading([...argv, "--confidence-seed", String(seed + 1)]);
+    const others = (JSON.parse(other.printed) as Analysis).confidenceTable;
+    expect(others?.seed).toBe(seed + 1);
+    expect(others?.caseIds).not.toEqual(drawn?.caseIds as string[]);
+  });
+
+  test("the report names the seed and reads the thirty against the whole slice", async () => {
+    const { corpus, round } = await tableFixture();
+    const argv = ["--corpus", corpus, "--round", round, "--confidence-table", "--confidence-seed"];
+    const { printed, exitCode } = await runReading([...argv, "77"]);
+    expect(exitCode).toBe(0);
+    expect(printed).toContain("drawn under seed 77");
+    expect(printed).toContain("--confidence-seed 77 to read the same cases");
+    const table = (
+      JSON.parse((await runReading([...argv, "77", "--format", "json"])).printed) as Analysis
+    ).confidenceTable;
+    // The thirty are a sample of the forty approval cases of the report slice, and the whole
+    // slice is printed beside them so a sample taking one value is read against the slice.
+    expect(table?.sliceDecided).toBe(40);
+    expect(table?.sliceLines.reduce((total, line) => total + line.decided, 0)).toBe(40);
+    expect(table?.sliceLines.map((line) => line.name)).toEqual(["0.60", "0.80", "1.00"]);
+    expect(table?.lines.reduce((total, line) => total + line.decided, 0)).toBe(30);
+  });
+});
+
+describe("the report refuses a round it cannot be read over", () => {
+  test("fewer than four arms is a non-zero status naming the arms and the models", async () => {
+    const corpus = await scratch();
+    const round = await scratch();
+    const rows = [caseRow("case-1"), caseRow("case-2")];
+    const judged = rows.flatMap((row) => [
+      ...fiveRows("bare-one", row.caseId, 5),
+      ...fiveRows("bare-jev", row.caseId, 5, { endpoint: "jev", confidence: 0.7 }),
+    ]);
+    await writeFile(
+      join(corpus, "snapshot.json"),
+      `${JSON.stringify({ person: "someone", throughEventId: 1 })}\n`,
+      "utf8"
+    );
+    await writeFile(
+      join(corpus, "corpus.jsonl"),
+      `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
+      "utf8"
+    );
+    await writeFile(
+      join(round, "rows.jsonl"),
+      `${judged.map((row) => JSON.stringify(row)).join("\n")}\n`,
+      "utf8"
+    );
+    const { printed, exitCode } = await run(["--corpus", corpus, "--round", round]);
+    // The report compares arms and chooses a winner among them, so a round of two arms on two
+    // models answers none of it: the status says so, and the words say what the round held.
+    expect(exitCode).toBe(1);
+    expect(printed).toContain("at least 4 arms and 3 models");
+    expect(printed).toContain("2 arms (bare-jev, bare-one)");
+    expect(printed).toContain("2 models (anthropic/claude-opus-5-5, jev-latest)");
+  });
+
+  test("the floor is met by the four arms and three models of the table fixture", async () => {
+    const { corpus, round } = await tableFixture();
+    const { exitCode } = await run(["--corpus", corpus, "--round", round]);
+    expect(exitCode).toBe(0);
   });
 });
 

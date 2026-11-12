@@ -106,7 +106,7 @@ const PROGRESS_MS = 30_000;
 /** The slices every arm scores, which are the three the plan's table reports from. */
 export const SCORED_SLICES: readonly SliceName[] = ["fit", "report", "anchor"];
 
-/** The round finished: every judgement of every arm has an answered row. */
+/** Every judgement this invocation planned, over the arms it named, has an answered row. */
 const EXIT_FINISHED = 0;
 
 /** The probe failed, so no arm was asked. */
@@ -145,8 +145,9 @@ const USAGE = `usage: bun scripts/approval-eval/run-round.ts --corpus <dir> --sl
   --max-cases         score the first n cases only. It exists for a smoke run of the whole path
                       and is never used for a scored round.
 
-Exit status: 0 when the round finished, 1 when the probe failed, 2 when it could not run, and 10
-when the deadline stopped it with judgements left, which means run it again.`;
+Exit status: 0 when every judgement this invocation planned was answered, 1 when the probe
+failed, 2 when it could not run, and 10 when judgements it planned are left, which means run it
+again.`;
 
 /** Which endpoint an arm's model is called on. */
 export type Endpoint = "claude" | "jev";
@@ -284,7 +285,7 @@ export interface RoundSummary {
   startedAt: string;
   finishedAt: string;
   wallMs: number;
-  /** False when the deadline stopped the run with judgements left. */
+  /** False when judgements this invocation planned have no answered row, which a rerun asks. */
   finished: boolean;
   cases: {
     total: number;
@@ -294,11 +295,11 @@ export interface RoundSummary {
   arms: string[];
   models: string[];
   judgements: {
-    /** Arms times cases times `--k`. */
+    /** This invocation's arms, times their cases, times `--k`. */
     planned: number;
     /** How many calls this run made. */
     asked: number;
-    /** How many planned judgements hold an answered row, this run's and every earlier run's. */
+    /** How many of those planned judgements hold an answered row, this run's or an earlier. */
     answered: number;
     left: number;
   };
@@ -914,7 +915,19 @@ function progressLine(
   );
 }
 
-/** The summary of one round, over every row the file holds and not this run's alone. */
+/**
+ * The summary of one round: what this invocation planned, and what the store answers of it.
+ *
+ * Planned and answered are both read over the judgements this invocation planned, which is its
+ * own arms over their own cases at its own `--k`, and each of those counts as answered when
+ * the store holds an answered row for it, whether this run wrote it or an earlier one did. A
+ * round is run one arms file at a time, so the store a later invocation opens holds every
+ * earlier invocation's rows: counting answered over all of them against a planned read over
+ * this invocation's arms alone reports more answered than planned and calls a complete round
+ * unfinished, which is what the exit status and `finished` below follow from. The per-arm
+ * records beside them, the tokens, the retrieval routes and the faults, stay over every row
+ * the store holds, so the last summary of a round still says what the whole round spent.
+ */
 function summaryOf(
   plan: RoundPlan,
   store: RowStore,
@@ -939,7 +952,9 @@ function summaryOf(
   const retrieval: Record<string, { routes: Record<string, number>; excluded: number }> = {};
   const byKindFaults = new Map<string, FaultCount>();
   const byArmFaults = new Map<string, FaultCount>();
-  let answered = 0;
+  // Every judgement this invocation planned that the store does not answer, by arm.
+  const left = leftByArm(plan, store);
+  const answered = planned - [...left.values()].reduce((total, count) => total + count, 0);
   for (const row of store.all()) {
     tokens[row.arm] ??= { calls: 0, input: 0, output: 0 };
     const held = tokens[row.arm] as { calls: number; input: number; output: number };
@@ -951,10 +966,7 @@ function summaryOf(
     const name = row.retrievalRoute ?? "none";
     route.routes[name] = (route.routes[name] ?? 0) + 1;
     route.excluded += row.excluded ?? 0;
-    if (row.fault === null) {
-      answered += 1;
-      continue;
-    }
+    if (row.fault === null) continue;
     const detail = row.faultDetail === null ? null : scrubSecrets(row.faultDetail);
     countFault(byKindFaults, row.fault, detail);
     countFault(byArmFaults, row.arm, detail);
@@ -967,7 +979,7 @@ function summaryOf(
     cases: { total: plan.cases.length, bySlice, byKind },
     arms: plan.arms.map((arm) => arm.name),
     models: [...new Set(plan.arms.map((arm) => arm.model))],
-    judgements: { planned, asked, answered, left: Math.max(0, planned - answered) },
+    judgements: { planned, asked, answered, left: planned - answered },
     faults: {
       byKind: Object.fromEntries(byKindFaults),
       byArm: Object.fromEntries(byArmFaults),

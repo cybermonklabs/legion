@@ -6,10 +6,9 @@ import type { CaseKind, CaseRow } from "./build-corpus";
 import {
   type Corpus,
   CorpusError,
-  newSeed,
   OutputPathError,
   outDirectory,
-  pickAtRandom,
+  randomStream,
   readCorpus,
   recordOf,
   rowOf,
@@ -88,31 +87,54 @@ import {
  * apart and never pooled. The winner's bound is printed twice: pointwise, and adjusted for the
  * choice among twelve arms.
  *
+ * **The floor, and the status that holds it.** The report is read across arms and models: every
+ * number of it is a comparison, and the winner is chosen among the arms. Under four arms or
+ * under three models it is printed and written as ever and the command exits 1, naming the arms
+ * and the models the round held.
+ *
+ * **The confidence table.** `--confidence-table` draws 30 report-slice cases the person decided
+ * both ways under a seed, which `--confidence-seed` names or the round itself gives, and prints
+ * the seed in the table and in `report.json` so the same 30 can be drawn again. Beside those 30
+ * it prints the same arm's counted confidence over the whole report slice, since 30 cases can
+ * take one value where the slice they were drawn from takes several.
+ *
  * **What comes from the corpus and not from the round.** The class table is a pass over the
  * corpus's own rows: it reads no judgement, and says which classes of case the person answered
  * the same way every time. An arm's number says how well a model predicts the person's answer;
  * that table says where there was anything to predict.
  */
 
+/** The report is read across arms and models, and refuses a round holding too few of either. */
+const LEAST_ARMS = 4;
+const LEAST_MODELS = 3;
+
+/** The round holds fewer arms or models than the report can be read over. */
+const EXIT_UNDER_FLOOR = 1;
+
 const USAGE = `usage: bun scripts/approval-eval/analyze.ts --corpus <dir> --round <dir> \\
   [--out <dir>] [--confidence-table] [--confidence-arm <name>] [--cases <file>] \\
-  [--format text|json]
+  [--confidence-seed <n>] [--format text|json]
 
   --corpus            the corpus directory a build wrote, which the round scored
   --round             the round directory, holding rows.jsonl, round.json and the evidence cache
   --out               where report.md, report.json and one manifest per slice are written,
                       which must be an absolute path outside this repository's workspace
   --confidence-table  print the counted confidence of one generative arm over 30 report-slice
-                      cases the person decided both ways, beside the probability the Jev arm of
-                      the same recipe stated on them
+                      cases the person decided both ways, beside that arm's counted confidence
+                      over the whole report slice and the probability the Jev arm of the same
+                      recipe stated on the 30
   --confidence-arm    which generative arm that table is read on; with none, the generative arm
                       that agrees most over the approval cases of the report slice
   --cases <file>      the 30 case ids that table reads, one per line or as a JSON list; with
-                      none, they are picked from the report slice under a printed seed and
+                      none, they are drawn from the report slice under the seed below and
                       written to --out, so a later run reads the same 30
+  --confidence-seed   the seed those 30 are drawn under; with none, the seed is derived from
+                      the round itself, and either way it is printed in the table and in
+                      report.json, so the same 30 can be drawn again
   --format            text, the report as it prints, or json, the same numbers as one object
 
-Exit status: 0 when the report was printed, 2 when it could not run.`;
+Exit status: 0 when the report was printed, 1 when the round is under the floor the report
+needs, which is ${LEAST_ARMS} arms and ${LEAST_MODELS} models, and 2 when it could not run.`;
 
 /** The disagreement rate the round is held to, which is the person's own 1 in 20. */
 const RATE = 0.05;
@@ -203,6 +225,8 @@ interface Flags {
   /** Which generative arm that table is read on, and null where the caller named none. */
   confidenceArm: string | null;
   cases?: string;
+  /** The seed the 30 cases are drawn under, and null where the round itself gives one. */
+  confidenceSeed: number | null;
   format: "text" | "json";
 }
 
@@ -513,11 +537,21 @@ export interface ConfidenceTable {
   /** Why there is no table, where there is none. */
   reason: string | null;
   caseIds: string[];
-  /** The seed the cases were picked under, and null where a file named them. */
+  /** The seed the cases were drawn under, and null where a file named them. */
   seed: number | null;
+  /** Whether the caller named that seed, or it was derived from the round itself. */
+  seedChoice: "named" | "derived" | null;
   approved: number;
   requestedChanges: number;
   lines: BinLine[];
+  /**
+   * The same arm's counted confidence over every approval case of the report slice it decided,
+   * which is the slice the cases above were drawn from and the distribution they are read
+   * against: 30 cases can show one value where the slice they came from shows several.
+   */
+  sliceLines: BinLine[];
+  /** How many approval cases of the report slice that arm decided, which `sliceLines` counts. */
+  sliceDecided: number;
   jevArm: string | null;
   jevLines: BinLine[];
   /** Arms whose counted confidence took one value, so no threshold selects anything in them. */
@@ -544,6 +578,20 @@ export interface Analysis {
       asked: number;
       answered: number;
       left: number;
+      /** The arms that invocation named, which are the arms its planned count is read over. */
+      arms: string[];
+    } | null;
+    /**
+     * What the rows say about the invocation `round.json` records: a round run one arms file at
+     * a time writes one summary per invocation, and the last one names that invocation's arms
+     * alone while the directory holds every invocation's rows.
+     */
+    invocation: {
+      /** Judgements the rows answer for the arms that summary names. */
+      answered: number;
+      left: number;
+      /** Arms with rows that the last invocation did not name, which earlier ones wrote. */
+      armsNotNamed: string[];
     } | null;
     rowsRead: number;
     rowsUnreadable: number;
@@ -1421,15 +1469,42 @@ function faultsOf(rows: readonly JudgementRow[]): {
   return { byKind, byArm };
 }
 
-/** `wanted` of `items`, drawn one at a time under `seed` and never one of them twice. */
-function pickSome<T>(items: readonly T[], wanted: number, seed: number): T[] {
+/**
+ * What the rows say about the invocation `round.json` records: how many of the judgements it
+ * planned the rows answer, how many are left of them, and the arms it did not name whose rows
+ * the directory holds anyway. A round is run one arms file at a time, and each invocation
+ * writes the summary over its own arms, so the last summary of a round names the last arms
+ * file alone while `rows.jsonl` holds every invocation's rows: a report that read the two
+ * against each other would count rows of arms that summary never planned.
+ */
+function invocationOf(
+  summary: RoundSummary | null,
+  rows: readonly JudgementRow[]
+): { answered: number; left: number; armsNotNamed: string[] } | null {
+  if (summary === null) return null;
+  const named = new Set(summary.arms);
+  const answered = rows.filter((row) => named.has(row.arm) && row.fault === null).length;
+  return {
+    answered,
+    left: Math.max(0, summary.judgements.planned - answered),
+    armsNotNamed: [
+      ...new Set(rows.filter((row) => !named.has(row.arm)).map((row) => row.arm)),
+    ].sort(),
+  };
+}
+
+/**
+ * `wanted` of `items`, drawn one at a time from `next` and never one of them twice. The stream
+ * is the caller's, so two draws in a row take the one seeded walk forward rather than restart
+ * it, and the same seed over the same lists draws the same items every time.
+ */
+function pickSome<T>(items: readonly T[], wanted: number, next: () => number): T[] {
   const left = [...items];
   const picked: T[] = [];
   for (let index = 0; index < wanted && left.length > 0; index += 1) {
-    const one = pickAtRandom(left, seed + index);
-    if (one === undefined) break;
-    picked.push(one);
-    left.splice(left.indexOf(one), 1);
+    const at = Math.min(left.length - 1, Math.floor(next() * left.length));
+    picked.push(left[at] as T);
+    left.splice(at, 1);
   }
   return picked;
 }
@@ -1479,10 +1554,44 @@ function probabilityBin(value: number): string {
 }
 
 /**
- * The confidence table: one generative arm's counted confidence over cases the person decided
- * both ways, against the cases at each value and the disagreements at it, and beside it the
- * probability the Jev arm of the same recipe stated over the same cases, read as its own arm
- * and never mixed in. The arm is the one `named`, or the best-agreeing one where that is null.
+ * The seed the 30 cases are drawn under where the caller named none: the first four bytes of
+ * the SHA-256 of the arm's name and the case ids of the slice they are drawn from, in the
+ * order the arm judged them. It is a seed of the round and not of the clock, so every run over
+ * one round and one arm draws the one set of 30, and a reader who re-drives the table under
+ * the printed seed is given that same set back.
+ */
+function seedOfSlice(arm: string, cases: readonly CaseReading[]): number {
+  return createHash("sha256")
+    .update(`${arm}\n${cases.map((one) => one.caseId).join("\n")}`, "utf8")
+    .digest()
+    .readUInt32BE(0);
+}
+
+/**
+ * One line per counted-confidence value these cases took, lowest first, each line under
+ * `binReport`'s floor rule: a value too few cases took carries its count and no bound.
+ */
+function confidenceBins(cases: readonly CaseReading[]): BinLine[] {
+  const decided = cases.filter((one) => one.verdict !== null);
+  return binReport(
+    [...new Set(decided.map((one) => one.confidence))]
+      .sort((one, two) => one - two)
+      .map((value) => ({
+        name: value.toFixed(2),
+        cases: judgementsOf(decided.filter((one) => one.confidence === value)),
+      }))
+  );
+}
+
+/**
+ * The confidence table: one generative arm's counted confidence over 30 cases the person
+ * decided both ways, against the cases at each value and the disagreements at it; the same
+ * arm's counted confidence over the whole report slice those 30 were drawn from, so a sample
+ * showing one value is read against the slice rather than taken for the arm's behaviour; and
+ * beside them the probability the Jev arm of the same recipe stated over the 30, read as its
+ * own arm and never mixed in. The arm is the one `named`, or the best-agreeing one where that
+ * is null. The 30 are drawn under `seed`, or under a seed of the round where that is null, and
+ * the table carries whichever seed drew them.
  */
 export function confidenceTableOf(
   arms: readonly ArmReading[],
@@ -1509,15 +1618,21 @@ export function confidenceTableOf(
       reason: "no generative arm has written a row yet, so no counted confidence can be read",
       caseIds: [],
       seed,
+      seedChoice: seed === null ? null : "named",
       approved: 0,
       requestedChanges: 0,
       lines: [],
+      sliceLines: [],
+      sliceDecided: 0,
       jevArm: null,
       jevLines: [],
       identicalArms,
     };
   }
   const report = sliceCases(arm.cases, "report", "approval");
+  // No --confidence-seed names one, so the round names it: the same round draws the same 30
+  // every run, and a reader re-drives the table from the seed the table prints.
+  const drawnUnder = seed ?? seedOfSlice(arm.name, report);
   let chosen: CaseReading[];
   if (wanted !== null) {
     const byId = new Map(report.map((one) => [one.caseId, one]));
@@ -1530,10 +1645,9 @@ export function confidenceTableOf(
     const changes = report
       .filter((one) => one.row.verdict === "request_changes")
       .map((one) => one.caseId);
-    const picked = new Set([
-      ...pickSome(approve, half, seed ?? 0),
-      ...pickSome(changes, half, (seed ?? 0) + half),
-    ]);
+    // Both halves are drawn from the one stream of that seed, in this order.
+    const next = randomStream(drawnUnder);
+    const picked = new Set([...pickSome(approve, half, next), ...pickSome(changes, half, next)]);
     chosen = report.filter((one) => picked.has(one.caseId));
   }
   // The Jev half is read on the Jev arm of the same recipe, so that the two halves differ in
@@ -1560,17 +1674,13 @@ export function confidenceTableOf(
           `scored by ${arm.name} so far, so the table is read over those`
         : null,
     caseIds: chosen.map((one) => one.caseId),
-    seed: wanted === null ? seed : null,
+    seed: wanted === null ? drawnUnder : null,
+    seedChoice: wanted !== null ? null : seed === null ? "derived" : "named",
     approved: chosen.filter((one) => one.row.verdict === "approve").length,
     requestedChanges: chosen.filter((one) => one.row.verdict === "request_changes").length,
-    lines: binReport(
-      [...new Set(chosen.filter((one) => one.verdict !== null).map((one) => one.confidence))]
-        .sort((one, two) => one - two)
-        .map((value) => ({
-          name: value.toFixed(2),
-          cases: judgementsOf(chosen.filter((one) => one.confidence === value)),
-        }))
-    ),
+    lines: confidenceBins(chosen),
+    sliceLines: confidenceBins(report),
+    sliceDecided: report.filter((one) => one.verdict !== null).length,
     jevArm: jev?.name ?? null,
     jevLines: binReport(
       jevBins.map((bin) => ({
@@ -1602,7 +1712,9 @@ export interface AnalysisInput {
   confidenceTable: boolean;
   /** Which generative arm that table is read on, and null for the best-agreeing one. */
   confidenceArm: string | null;
+  /** The case ids the confidence table reads, where a file named them. */
   wantedCases: readonly string[] | null;
+  /** The seed those 30 are drawn under, and null to draw them under a seed of the round. */
   seed: number | null;
 }
 
@@ -1694,7 +1806,9 @@ export function analyseRound(input: AnalysisInput): Analysis {
               asked: input.summary.judgements.asked,
               answered: input.summary.judgements.answered,
               left: input.summary.judgements.left,
+              arms: [...input.summary.arms],
             },
+      invocation: invocationOf(input.summary, input.rows),
       rowsRead: input.rowsRead,
       rowsUnreadable: input.rowsUnreadable,
       rowsOfUnknownCase: unknownCases,
@@ -1790,13 +1904,39 @@ function headLines(analysis: Analysis): string[] {
         "bound, which each of its numbers says in place of one."
     );
   } else {
+    const summary = round.summary;
+    const seen = round.invocation ?? { answered: 0, left: 0, armsNotNamed: [] };
     lines.push(
-      `The round ran from ${round.summary.startedAt} to ${round.summary.finishedAt} and ` +
-        `${round.summary.finished ? "finished" : "did not finish"}: ` +
-        `${count(round.summary.answered)} of ${count(round.summary.planned)} judgements were ` +
-        `answered and ${count(round.summary.left)} were left when it last wrote round.json, ` +
-        "which a running round writes at its probe and again when it stops."
+      `The round's last invocation ran from ${summary.startedAt} to ${summary.finishedAt} over ` +
+        `the ${count(summary.arms.length)} arms it named, and ` +
+        (seen.left === 0
+          ? `every one of the ${count(summary.planned)} judgements it planned is answered in ` +
+            "the rows."
+          : `${count(seen.answered)} of the ${count(summary.planned)} judgements it planned ` +
+            `are answered in the rows and ${count(seen.left)} are left.`)
     );
+    if (seen.armsNotNamed.length > 0) {
+      lines.push("");
+      lines.push(
+        `The directory holds rows of ${count(seen.armsNotNamed.length)} further arms that ` +
+          `invocation did not name: ${seen.armsNotNamed.join(", ")}. A round run one arms file ` +
+          "at a time writes one round.json per invocation, over the arms that invocation named, " +
+          "so the file left behind is the last one's and the rows are every one's. The two " +
+          "counts above are read over the arms that file names, and every count below is read " +
+          "over all the rows."
+      );
+    }
+    if (summary.finished !== (seen.left === 0)) {
+      lines.push("");
+      lines.push(
+        "`round.json` says of itself that the round " +
+          `${summary.finished ? "finished" : "did not finish"}, with ` +
+          `${count(summary.answered)} answered against ${count(summary.planned)} planned: a ` +
+          "summary written before those two were counted over one set read every row of the " +
+          "directory against the arms of its own invocation, which is why the counts above are " +
+          "read from the rows instead."
+      );
+    }
   }
   lines.push("");
   lines.push("## The round's counts");
@@ -2445,6 +2585,22 @@ function classLines(analysis: Analysis): string[] {
   return lines;
 }
 
+/** One binned readout as a table, under the name its first column takes. */
+function binTable(first: string, lines: readonly BinLine[]): string[] {
+  return table(
+    [first, "cases", "disagreements", "agreement", "bound"],
+    lines.map((line) => [
+      line.name,
+      count(line.decided),
+      count(line.disagreements),
+      num(line.observedAgreement),
+      line.upperBound === null
+        ? `no bound at this count (${line.decided} decided, ${MINIMUM_DECIDED} needed)`
+        : `at most ${num(line.upperBound)}`,
+    ])
+  );
+}
+
 /** The confidence table, where it was asked for. */
 function confidenceLines(analysis: Analysis): string[] {
   const held = analysis.confidenceTable;
@@ -2481,27 +2637,33 @@ function confidenceLines(analysis: Analysis): string[] {
     `The table is read over ${count(held.caseIds.length)} report-slice cases: ` +
       `${count(held.approved)} the person approved and ${count(held.requestedChanges)} the ` +
       "person asked for changes on." +
-      (held.seed === null ? " The cases were named by --cases." : ` Seed ${held.seed}.`)
+      (held.seed === null
+        ? " The cases were named by --cases."
+        : ` They were drawn under seed ${held.seed}, ` +
+          (held.seedChoice === "named"
+            ? "which --confidence-seed named."
+            : "which no --confidence-seed named and which is derived from the arm and the " +
+              "case ids of the slice they were drawn from.") +
+          ` Run this command again over this round with --confidence-seed ${held.seed} to ` +
+          "read the same cases.")
   );
   if (held.reason !== null) {
     lines.push("");
     lines.push(held.reason);
   }
   lines.push("");
+  lines.push(...binTable("counted confidence", held.lines));
+  lines.push("");
   lines.push(
-    ...table(
-      ["counted confidence", "cases", "disagreements", "agreement", "bound"],
-      held.lines.map((line) => [
-        line.name,
-        count(line.decided),
-        count(line.disagreements),
-        num(line.observedAgreement),
-        line.upperBound === null
-          ? `no bound at this count (${line.decided} decided, ${MINIMUM_DECIDED} needed)`
-          : `at most ${num(line.upperBound)}`,
-      ])
-    )
+    `The same arm over the whole slice those ${count(held.caseIds.length)} cases were drawn ` +
+      `from: each counted-confidence value the ${count(held.sliceDecided)} approval cases of ` +
+      "the report slice this arm decided took, with the cases and the disagreements at it. " +
+      "That is the distribution the cases above are a sample of: a sample of 30 can take one " +
+      "value where the slice it came from takes several, and the slice is what the arm's " +
+      "counted confidence does."
   );
+  lines.push("");
+  lines.push(...binTable("counted confidence", held.sliceLines));
   lines.push("");
   if (held.jevArm === null) {
     lines.push(
@@ -2518,20 +2680,7 @@ function confidenceLines(analysis: Analysis): string[] {
         "nearest tenth."
     );
     lines.push("");
-    lines.push(
-      ...table(
-        ["Jev's own probability", "cases", "disagreements", "agreement", "bound"],
-        held.jevLines.map((line) => [
-          line.name,
-          count(line.decided),
-          count(line.disagreements),
-          num(line.observedAgreement),
-          line.upperBound === null
-            ? `no bound at this count (${line.decided} decided, ${MINIMUM_DECIDED} needed)`
-            : `at most ${num(line.upperBound)}`,
-        ])
-      )
-    );
+    lines.push(...binTable("Jev's own probability", held.jevLines));
   }
   lines.push("");
   lines.push("The cases this table was read over:");
@@ -2729,6 +2878,7 @@ function readFlags(argv: readonly string[]): Flags {
     "confidence-table"?: boolean;
     "confidence-arm"?: string;
     cases?: string;
+    "confidence-seed"?: string;
     format?: string;
   };
   try {
@@ -2741,6 +2891,7 @@ function readFlags(argv: readonly string[]): Flags {
         "confidence-table": { type: "boolean" },
         "confidence-arm": { type: "string" },
         cases: { type: "string" },
+        "confidence-seed": { type: "string" },
         format: { type: "string" },
       },
       strict: true,
@@ -2772,6 +2923,23 @@ function readFlags(argv: readonly string[]): Flags {
         `asked for\n\n${USAGE}`
     );
   }
+  const named = values["confidence-seed"]?.trim();
+  if (named !== undefined && !confidenceTable) {
+    throw new UsageError(
+      "--confidence-seed names the seed --confidence-table draws its cases under, and that " +
+        `table was not asked for\n\n${USAGE}`
+    );
+  }
+  if (named !== undefined && cases !== undefined) {
+    throw new UsageError(
+      "--confidence-seed draws the cases of the confidence table and --cases names them, so " +
+        `only one of the two can be given\n\n${USAGE}`
+    );
+  }
+  const confidenceSeed = named === undefined ? null : Number(named);
+  if (confidenceSeed !== null && !Number.isInteger(confidenceSeed)) {
+    throw new UsageError(`--confidence-seed takes a whole number, not ${named}\n\n${USAGE}`);
+  }
   return {
     corpus,
     round,
@@ -2779,8 +2947,29 @@ function readFlags(argv: readonly string[]): Flags {
     confidenceTable,
     confidenceArm: confidenceArm === undefined || confidenceArm === "" ? null : confidenceArm,
     cases,
+    confidenceSeed,
     format,
   };
+}
+
+/**
+ * The floor the report is read at: every number of it is a comparison across arms, and the
+ * winner is chosen among them, so a round holding fewer than four arms or fewer than three
+ * models answers none of the questions the report is written to answer. The report is printed
+ * and written either way, since a reader of a short round still wants to see what it holds,
+ * and the status says it is no report of a round: it names the arms and the models it had.
+ */
+function underFloor(analysis: Analysis): number {
+  const { arms, models } = analysis.round;
+  if (arms.length >= LEAST_ARMS && models.length >= LEAST_MODELS) return 0;
+  console.error(
+    `The report is read over at least ${LEAST_ARMS} arms and ${LEAST_MODELS} models, and this ` +
+      `round has ${arms.length} ${arms.length === 1 ? "arm" : "arms"} ` +
+      `(${arms.length === 0 ? "none" : arms.join(", ")}) and ${models.length} ` +
+      `${models.length === 1 ? "model" : "models"} ` +
+      `(${models.length === 0 ? "none" : models.join(", ")}).`
+  );
+  return EXIT_UNDER_FLOOR;
 }
 
 async function analyze(flags: Flags): Promise<number> {
@@ -2792,7 +2981,7 @@ async function analyze(flags: Flags): Promise<number> {
   const { cut, groupKey } = await readDrawFacts(corpus.directory);
   const evidence = await readEvidence(flags.round);
   const wantedCases = flags.cases === undefined ? null : await readCases(flags.cases);
-  const seed = wantedCases === null && flags.confidenceTable ? newSeed() : null;
+  const seed = wantedCases === null ? flags.confidenceSeed : null;
   const analysis = analyseRound({
     corpus,
     roundDirectory: flags.round,
@@ -2811,22 +3000,23 @@ async function analyze(flags: Flags): Promise<number> {
   });
   const text = renderReport(analysis).join("\n");
   console.log(flags.format === "json" ? JSON.stringify(analysis, null, 2) : text);
-  if (out === null) return 0;
-  await mkdir(out, { recursive: true });
-  await writeFile(join(out, "report.md"), `${text}\n`, "utf8");
-  await writeFile(join(out, "report.json"), `${JSON.stringify(analysis, null, 2)}\n`, "utf8");
-  const ids = analysis.confidenceTable?.caseIds ?? [];
-  if (analysis.confidenceTable !== null && analysis.confidenceTable.seed !== null) {
-    await writeFile(join(out, "confidence-cases.txt"), `${ids.join("\n")}\n`, "utf8");
+  if (out !== null) {
+    await mkdir(out, { recursive: true });
+    await writeFile(join(out, "report.md"), `${text}\n`, "utf8");
+    await writeFile(join(out, "report.json"), `${JSON.stringify(analysis, null, 2)}\n`, "utf8");
+    const ids = analysis.confidenceTable?.caseIds ?? [];
+    if (analysis.confidenceTable !== null && analysis.confidenceTable.seed !== null) {
+      await writeFile(join(out, "confidence-cases.txt"), `${ids.join("\n")}\n`, "utf8");
+    }
+    console.error(`written           ${join(out, "report.md")}`);
+    console.error(`                  ${join(out, "report.json")}`);
+    for (const manifest of analysis.manifests) {
+      const path = join(out, `manifest-${manifest.slice}.json`);
+      await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+      console.error(`                  ${path}`);
+    }
   }
-  console.error(`written           ${join(out, "report.md")}`);
-  console.error(`                  ${join(out, "report.json")}`);
-  for (const manifest of analysis.manifests) {
-    const path = join(out, `manifest-${manifest.slice}.json`);
-    await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-    console.error(`                  ${path}`);
-  }
-  return 0;
+  return underFloor(analysis);
 }
 
 /** The command: the flags, the report, and the exit status it takes. */
