@@ -378,10 +378,10 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 		}
 	})
 
-	// No read holds a copy of the rule: each of the five names the one constant, and the SQL it
+	// No read holds a copy of the rule: each of the six names the one constant, and the SQL it
 	// holds - the expression and the three joins it reads over - is spelled once in the module.
 	// The precedent for reading the source rather than the behaviour is api/lock_level_test.go.
-	t.Run("the five reads share one expression", func(t *testing.T) {
+	t.Run("the six reads share one expression", func(t *testing.T) {
 		sources := moduleSources(t, "../../..")
 		declarations := map[string]ast.Node{}
 		for _, source := range sources {
@@ -407,7 +407,7 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 		}
 		for _, read := range []string{
 			"askReadColumns", "listInbox's query", "listOpenAsks's query", "myRepliesOwner",
-			"putAskAskedOf's query",
+			"putAskAskedOf's query", "askWaitingOnPerson's query",
 		} {
 			node, declared := declarations[read]
 			if !declared {
