@@ -151,7 +151,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		moves bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count of claims the
 		// stale-plugin lane has left (claimsToRefreshContract), the contract five below this
-		// daemon's own, so a pod at 73 or 74 is served the count and every older pod is not.
+		// daemon's own, so a pod at 73 or above is served the count and every older pod is not.
 		refresh bool
 		// failure is whether the caller is served the nine keys recordFieldsContract added
 		// together: a claim view's `servingGeneration`, `updateReasons`, `providerErrorRun`,

@@ -1232,7 +1232,7 @@ func stripRecordFields(view ClaimView) ClaimView {
 
 // withoutRecordFields is state with no `contract` mark, no claim view carrying any of the keys
 // stripRecordFields takes off, and no issue carrying `heldFrom`, `lingerUntil` or `ancestry`,
-// which is everything recordFieldsContract added to this route (stateNarrowings' last row names
+// which is everything recordFieldsContract added to this route (its row of stateNarrowings names
 // them); nothing else of that contract is on it. The record's keys are stripped in this one copy
 // of the issue map, because they arrive and leave together and a pass for each would copy that
 // map once for each. The maps are copied, so the state the source answered is left as it was, as
