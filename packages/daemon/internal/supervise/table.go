@@ -2015,8 +2015,13 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 // ready will ever come for, and from here that looks exactly like an agent slow to boot. A
 // registration whose plugin still differs from the daemon's is relaunched at once and refused
 // (staleRegistration): the agent that just registered is not the one that relaunch starts.
+//
+// A registration whose claim write fails is put back (foundRegistration): every field it set is
+// as the registration found it, and the timers are moved only once the write has landed, so a
+// failed one moves none.
 func register(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
+	found := m.foundRegistration()
 	m.claim.Session, m.claim.SessionFile = r.Session, r.SessionFile
 	m.claim.CapabilityHash = bytes.Clone(r.CapabilityHash)
 	// The contract and the generation whose registration declared it are written together: a
@@ -2027,11 +2032,12 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 		m.claim.PluginRelaunchFor = 0
 	}
 	m.claim.State = StateRegistered
-	m.disarm(TimerBoot)
-	m.armRegistration()
 	if err := m.persist(ctx); err != nil {
+		found.putBack(m)
 		return err
 	}
+	m.disarm(TimerBoot)
+	m.armRegistration()
 	// A stale registration's process is let go by its relaunch, so it is never enrolled: the
 	// refusal returns before the enrollment a current registration gets.
 	if err := m.staleRegistration(ctx, r.PluginContract); err != nil {
@@ -2043,9 +2049,12 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 // reregister is the recorded session registering again: it is issued a new secret, and the
 // deadline stays where the first registration set it, so an agent that keeps registering and never
 // says it is ready is still relaunched. A registration whose plugin still differs from the
-// daemon's is relaunched at once and refused the same way register's is (staleRegistration).
+// daemon's is relaunched at once and refused the same way register's is (staleRegistration). A
+// registration whose claim write fails is put back, as register's is: the claim keeps the hash of
+// the secret its earlier registration recorded, and the contract that registration declared.
 func reregister(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
+	found := m.foundRegistration()
 	m.claim.SessionFile = r.SessionFile
 	m.claim.CapabilityHash = bytes.Clone(r.CapabilityHash)
 	m.claim.PluginContract, m.claim.PluginContractGeneration = r.PluginContract, m.claim.Generation
@@ -2053,9 +2062,48 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 		m.claim.PluginRelaunchFor = 0
 	}
 	if err := m.persist(ctx); err != nil {
+		found.putBack(m)
 		return err
 	}
 	return m.staleRegistration(ctx, r.PluginContract)
+}
+
+// foundRegistration is every field of the claim a registration writes, as the registration found
+// it (register, reregister). A registration whose claim write fails puts them back, because the
+// route answers that failure with a refusal that says nothing was recorded: R4 of
+// dispatch://INFRA-2883 gives the retryable refusal "having recorded nothing", and a machine that
+// kept the registration would show every reader a registered claim with its plugin contract, and
+// hold the hash of a secret no caller was given.
+type foundRegistration struct {
+	state                    ClaimState
+	session, sessionFile     string
+	capabilityHash           []byte
+	pluginContract           int
+	pluginContractGeneration uint64
+	pluginRelaunchFor        int
+}
+
+// foundRegistration is the claim's registration fields as they stand now, before a registration
+// writes them. The caller holds mu.
+func (m *Machine) foundRegistration() foundRegistration {
+	c := &m.claim
+	return foundRegistration{
+		state: c.State, session: c.Session, sessionFile: c.SessionFile, capabilityHash: c.CapabilityHash,
+		pluginContract: c.PluginContract, pluginContractGeneration: c.PluginContractGeneration,
+		pluginRelaunchFor: c.PluginRelaunchFor,
+	}
+}
+
+// putBack restores the claim's registration fields to found, after the registration's claim write
+// failed. It leaves the write's mark where persist put it: a write the rule owes (writeOwed) is one
+// the store may have taken — a write the route's deadline cut short can land all the same — so the
+// claim's next decision writes the claim as it stands then, which is the claim this registration
+// found, and so undoes a registration that landed (repair). The caller holds mu.
+func (found foundRegistration) putBack(m *Machine) {
+	c := &m.claim
+	c.State, c.Session, c.SessionFile, c.CapabilityHash = found.state, found.session, found.sessionFile, found.capabilityHash
+	c.PluginContract, c.PluginContractGeneration = found.pluginContract, found.pluginContractGeneration
+	c.PluginRelaunchFor = found.pluginRelaunchFor
 }
 
 func ready(m *Machine, ctx context.Context, _ Event) error {
