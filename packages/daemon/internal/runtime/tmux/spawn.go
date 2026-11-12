@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
@@ -54,12 +55,14 @@ func windowKey(spec runtime.SpawnSpec) string {
 	return spec.Issue
 }
 
-// runtimeOwned are the variables every pane gets from the runtime itself: exactly the names
-// panePairs sets for a tree pane (TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime), which the
-// shared validator refuses in a spec's Env and as a secret's pointer. A controller pane is told
-// controllerOwned in place of the tree, issue and workspace.
+// runtimeOwned are the variables every pane gets from the runtime itself, the whole of each
+// value: with the composed names (composed), whose value the operator begins and the runtime
+// finishes, it is exactly what panePairs sets for a tree pane
+// (TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime), which the shared validator refuses in a
+// spec's Env and as a secret's pointer. A controller pane is told controllerOwned in place of the
+// tree, the issue, the issue key it stamps and the workspace.
 var runtimeOwned = map[string]bool{
-	"LEGION_TREE": true, "LEGION_ISSUE": true, "LEGION_ROLE": true,
+	"LEGION_TREE": true, "LEGION_ISSUE": true, "LEGION_ISSUE_TRAILER": true, "LEGION_ROLE": true,
 	"LEGION_GENERATION": true, "LEGION_PROJECT": true, "LEGION_DAEMON_URL": true,
 	"LEGION_STATE_DIR": true, "LEGION_WORKSPACE": true, "ENVOY_NATS_URL": true, "ENVOY_URL": true,
 	"GIT_TERMINAL_PROMPT": true, "XDG_CONFIG_HOME": true, "XDG_CACHE_HOME": true, "XDG_DATA_HOME": true,
@@ -70,16 +73,31 @@ var runtimeOwned = map[string]bool{
 }
 
 // controllerOwned are the variables a controller pane is told in place of a tree pane's
-// LEGION_TREE, LEGION_ISSUE and LEGION_WORKSPACE: the controller marker the plugin classifies the
-// session by, and LEGION_SLACK_CHANNELS, which the plugin requires of the controller the daemon
-// launches — always empty here, since only a controller enrolled with the secrets broker
-// (runtime.kubernetes.agent_secrets) may have Slack channels (config.checkSlackChannels).
+// LEGION_TREE, LEGION_ISSUE, LEGION_ISSUE_TRAILER and LEGION_WORKSPACE: the controller marker the
+// plugin classifies the session by, and LEGION_SLACK_CHANNELS, which the plugin requires of the
+// controller the daemon launches — always empty here, since only a controller enrolled with the
+// secrets broker (runtime.kubernetes.agent_secrets) may have Slack channels
+// (config.checkSlackChannels).
 var controllerOwned = map[string]bool{"LEGION_CONTROLLER": true, "LEGION_SLACK_CHANNELS": true}
 
-// ownedNames is every variable the runtime sets on some pane itself: a spec may set none of them.
+// composed are the pane variables neither side sets alone: the operator's own pane variables
+// (Options.PaneEnv, `runtime.tmux.pane_env`) may set one, the runtime writes this launch's share
+// into the value the operator wrote (panePairs), and a launch spec may not set one (ownedNames).
+// That is why checkPaneEnv reads runtimeOwned and controllerOwned alone and lets a composed name
+// through: it is the operator's to set, since composing is what the runtime does with it.
+//
+// A pane is told one pair of such a name and never two: a second pair of one name in a process's
+// environment leaves the value the child reads to the C library's lookup, which answers with the
+// first, so the composed value could go unread — and for the spend attributes the runtime's own
+// pairs are written last on purpose (runtime.SpendAttributesVariable).
+var composed = map[string]bool{runtime.SpendAttributesVariable: true}
+
+// ownedNames is every variable a launch spec may not set: the ones the runtime sets on some pane
+// itself and the composed ones, whose value is the operator's to begin and the runtime's to
+// finish, since the shared refusal reads one set (runtime.ValidateSpawnSpec).
 var ownedNames = func() map[string]bool {
 	owned := map[string]bool{}
-	for _, set := range []map[string]bool{runtimeOwned, controllerOwned} {
+	for _, set := range []map[string]bool{runtimeOwned, controllerOwned, composed} {
 		for name := range set {
 			owned[name] = true
 		}
@@ -205,28 +223,54 @@ type PaneInputs struct {
 	// nil.
 	GHOwnersDir, GHDefault, GH string
 	// OperatorEnv is the operator's pane variables (runtime.tmux.pane_env), PiConfigFiles the
-	// operator's Oh My Pi overlays every pane names (runtime.tmux.pi_config_files), and
-	// RoleConfigFiles the ones this pane's role alone names (role_config_files); nil for none.
-	OperatorEnv     map[string]string
-	PiConfigFiles   []string
-	RoleConfigFiles []string
+	// operator's Oh My Pi overlays every pane names (runtime.tmux.pi_config_files),
+	// RoleConfigFiles the ones this pane's role alone names (role_config_files), and
+	// MemoryConfigFiles the project's own (memory.config_files), which only a pane whose tree is
+	// in the memory group is given (runtime.SpawnSpec.Memory); nil for none.
+	OperatorEnv       map[string]string
+	PiConfigFiles     []string
+	RoleConfigFiles   []string
+	MemoryConfigFiles []string
+	// LeakCheck is the shared public leak check the daemon resolved on its own machine
+	// (resolveLeakCheck), the pane's PUBLIC_LEAK_CHECK; "" where the machine carries none, and
+	// the pane is then told no such variable and refuses every public write with the setup error
+	// naming the check.
+	LeakCheck string
 }
 
 // panePairs are a pane's -e pairs, in one order: the variables every Legion pane is told (the
-// identity — a tree pane's tree and issue, or the controller's marker LEGION_CONTROLLER=1 — the
-// daemon, state and, for a tree pane, workspace variables; for the controller, its empty
-// LEGION_SLACK_CHANNELS; the Envoy and Dispatch variables; for a pane with a GHOwnersDir,
-// GH_CONFIG_DIR, its default owner's directory of gh files, with GH_TOKEN, GITHUB_TOKEN and GH_HOST
-// set to the empty string, which gh ignores, so no token in the daemon's environment outranks the
-// file — a non-empty GH_TOKEN would — then LEGION_GH_OWNERS_DIR, the bundle's root, and
+// identity — a tree pane's tree and issue, and, where the project names its repository, the issue
+// key it stamps into its commits (LEGION_ISSUE_TRAILER, left out of a pane that stamps none), or
+// the controller's marker LEGION_CONTROLLER=1 — the daemon, state and, for a tree pane, workspace
+// variables; for the controller, its empty LEGION_SLACK_CHANNELS; the Envoy and Dispatch
+// variables; for a pane with a GHOwnersDir, GH_CONFIG_DIR, its default owner's directory of gh
+// files, with GH_TOKEN, GITHUB_TOKEN and GH_HOST set to the empty string, which gh ignores, so no
+// token in the daemon's environment outranks the file — a non-empty GH_TOKEN would — then
+// LEGION_GH_OWNERS_DIR, the bundle's root, and
 // LEGION_GH_PATH, the real gh the `legion gh` wrapper first on the pane's PATH runs;
 // PI_SHELL_PREFIX, which keeps this daemon's launcher directory (its legion and gh) first in the
-// agent's bash tool; PI_CONFIG_FILES, the operator's overlays, then the role's own, and nothing of
-// Legion's own, which names no settings overlay at all — empty where neither names one), the
-// four XDG base directories under `<state_dir>/home`, the operator's pane variables sorted, the
+// agent's bash tool; PI_CONFIG_FILES, the operator's overlays, then the role's own, then the
+// project's memory overlays for a memory-group pane, and nothing of Legion's own, which names no
+// settings overlay at all — empty where none of the three names one), the
+// four XDG base directories under `<state_dir>/home`, PUBLIC_LEAK_CHECK where the daemon
+// resolved a shared public leak check on its own machine (LeakCheck) and nothing where it
+// resolved none, the operator's pane variables sorted, less the composed one (composed), then
+// OTEL_RESOURCE_ATTRIBUTES itself, the operator's own spend attributes with this launch's issue
+// and role written after them (runtime.SpendResourceAttributes), so a pane's attributes name the
+// issue it serves, then the
 // spec's own variables sorted, then a `<NAME>_FILE` pointer per secret file. PATH is never among
 // them — tmux would replace it (LEGION-91) — and neither is any secret's value. No other tool path
 // is told: a pane's git and jj are whatever its PATH, the daemon's, gives.
+//
+// A composed name is told once, which is why the operator's loop leaves it out: a second pair of
+// one name leaves the value the pane's process reads to the C library's lookup, which answers
+// with the first, and the composition's whole point is that the daemon's attributes are written
+// after the operator's, where the detector's last-wins assignment gives them the key.
+//
+// PUBLIC_LEAK_CHECK is no runtime-owned name (runtimeOwned), which is why it sits where it does:
+// an operator's pane variable and a spec's own Env are told after it and so outrank it, since an
+// operator may point a pane at another copy of the check, and a name the runtime owned could be
+// set by neither.
 func panePairs(spec runtime.SpawnSpec, in PaneInputs, files []runtime.SecretFile) []string {
 	var pairs []string
 	add := func(name, value string) { pairs = append(pairs, "-e", name+"="+value) }
@@ -236,6 +280,9 @@ func panePairs(spec runtime.SpawnSpec, in PaneInputs, files []runtime.SecretFile
 	} else {
 		add("LEGION_TREE", spec.Tree)
 		add("LEGION_ISSUE", spec.Issue)
+		if spec.IssueTrailer != "" {
+			add("LEGION_ISSUE_TRAILER", spec.IssueTrailer)
+		}
 	}
 	add("LEGION_ROLE", string(spec.Role))
 	add("LEGION_GENERATION", strconv.FormatUint(spec.Generation, 10))
@@ -256,7 +303,7 @@ func panePairs(spec runtime.SpawnSpec, in PaneInputs, files []runtime.SecretFile
 		add("DISPATCH_TOKEN_FILE", in.DispatchTokenFile)
 	}
 	if in.GHOwnersDir != "" {
-		add("GH_CONFIG_DIR", ghconfig.OwnerDir(in.GHOwnersDir, in.GHDefault))
+		add("GH_CONFIG_DIR", ghconfig.Dir(in.GHOwnersDir, in.GHDefault))
 		add("GH_TOKEN", "")
 		add("GITHUB_TOKEN", "")
 		add("GH_HOST", "")
@@ -264,14 +311,25 @@ func panePairs(spec runtime.SpawnSpec, in PaneInputs, files []runtime.SecretFile
 		add("LEGION_GH_PATH", in.GH)
 	}
 	add("PI_SHELL_PREFIX", shellprefix.For(workerbin.LauncherDir(in.StateDir)))
-	add("PI_CONFIG_FILES", strings.Join(slices.Concat(in.PiConfigFiles, in.RoleConfigFiles), ":"))
+	add("PI_CONFIG_FILES", strings.Join(slices.Concat(in.PiConfigFiles, in.RoleConfigFiles, in.MemoryConfigFiles), ":"))
 	add("GIT_TERMINAL_PROMPT", "0")
 	for _, dir := range xdgDirectories(in.StateDir) {
 		add(dir[0], dir[1])
 	}
-	for _, name := range sortedKeys(in.OperatorEnv) {
-		add(name, in.OperatorEnv[name])
+	if in.LeakCheck != "" {
+		add(leakguard.CheckVar, in.LeakCheck)
 	}
+	for _, name := range sortedKeys(in.OperatorEnv) {
+		if !composed[name] {
+			add(name, in.OperatorEnv[name])
+		}
+	}
+	// The pair is added whatever the composition answers, where the composer's two other callers
+	// skip an empty one (sandbox.composeEntry, daemon.gateEnvironment): every pane carries a role
+	// (runtime.ValidateSpawnSpec refuses a spec without one, and no backend runs the empty role),
+	// so the composition always holds legion.role at least and is never empty. The difference is
+	// deliberate, and a reader need not prove it here.
+	add(runtime.SpendAttributesVariable, runtime.SpendResourceAttributes(in.OperatorEnv[runtime.SpendAttributesVariable], spec))
 	for _, name := range sortedKeys(spec.Env) {
 		if name != "PATH" {
 			add(name, spec.Env[name])
@@ -428,7 +486,8 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 	if err := validateSpawnSpec(spec, r.providerKeys, r.operatorEnv); err != nil {
 		return runtime.Locator{}, err
 	}
-	for _, path := range append(append([]string{}, spec.Prompt.RolePromptPaths...), spec.Prompt.DeploymentInstructionsPath) {
+	for _, path := range slices.Concat(spec.Prompt.RolePromptPaths,
+		[]string{spec.Prompt.DeploymentInstructionsPath, spec.Prompt.MemoryInstructionsPath}) {
 		if path == "" {
 			continue
 		}
@@ -482,8 +541,7 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 	}
 	// The credential is minted before the launch lock, since a mint is a network call every other
 	// launch would wait out; only the writes into the claim's directories wait for the refusal.
-	ghWriter := strings.ToLower(spec.Repository.Owner())
-	credential, err := r.mintGitHubCredential(ctx, spec, ghWriter)
+	credential, err := r.mintGitHubCredential(ctx, spec)
 	if err != nil {
 		return runtime.Locator{}, err
 	}
@@ -510,12 +568,29 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		return runtime.Locator{}, err
 	}
 	command := shimShellCommand(r.socket, path, workDir, r.legion, r.streamAddress, files[0].Path, r.providerEnvDir, inner)
+	// Only a pane whose tree was drawn into the memory group names the project's memory overlays;
+	// every other pane's PI_CONFIG_FILES is the one it had before the block existed.
+	var memoryOverlays []string
+	if spec.Memory {
+		memoryOverlays = r.memoryConfigFiles
+	}
+	// The check is resolved here, once per launch, in the daemon's own environment, because a
+	// pane can resolve none of the three places itself (resolveLeakCheck). A machine that carries
+	// none is no launch failure: the pane is told no PUBLIC_LEAK_CHECK and every public write
+	// from it is refused, naming the missing check, which is the honest answer on a machine that
+	// writes to public repositories with no check.
+	leakCheck, err := resolveLeakCheck(r.ownEnviron)
+	if err != nil {
+		r.log.Warn("tmux runtime: no shared public leak check on this machine, so every write this pane makes to a public GitHub repository will be refused; install it with the check's own installer (docs/deployment.md, \"What a pane's gh, git and jj are\")",
+			"claim", spec.Claim, "why", err)
+	}
 	pairs := panePairs(spec, PaneInputs{
 		StateDir: r.stateDir, Workspace: workDir, DaemonURL: r.daemonURL, EnvoyURL: r.envoyURL, NATSURLs: r.natsURLs,
 		DispatchURL: r.dispatchURL, DispatchTokenFile: r.dispatchToken, GHOwnersDir: credential.root, GHDefault: ghDefault, GH: r.gh,
 		OperatorEnv: r.operatorEnv, PiConfigFiles: r.piConfigFiles, RoleConfigFiles: r.roleConfigFiles[spec.Role],
+		MemoryConfigFiles: memoryOverlays, LeakCheck: leakCheck,
 	}, files)
-	return r.openPane(ctx, spec, ghWriter, paneCommand(append(pairs, backendPairs...), command))
+	return r.openPane(ctx, spec, ghDefault, paneCommand(append(pairs, backendPairs...), command))
 }
 
 // launchGitHubCredential is the GitHub credential a launch mints for its claim before the launch
@@ -531,14 +606,28 @@ type launchGitHubCredential struct {
 	noOwner bool
 }
 
-// mintGitHubCredential mints spec's role its GitHub credential with writer as the owner of its
-// write token. It writes nothing: a mint is a network call, made before the launch lock, and the
-// claim's directories are written only after the refusal (writeGitHubCredential).
-func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSpec, writer string) (launchGitHubCredential, error) {
+// mintGitHubCredential mints spec's role its GitHub credential for the repository spec names,
+// the one its write token reaches. The controller's is asked for by owner instead
+// (Options.ControllerCredential), the one function a controller's bundle is made from here, by
+// this launch and by the refresh of the pane it opens (refreshGitHubCredentials): it works no
+// repository, and the launch asks for no owner, which takes the first owner the project serves,
+// sorted, and is the default the tracked pane then records. A tree pane whose claim the daemon
+// records no repository for names none either, and gets a bundle that is read-only throughout,
+// its default the first owner (runtime.GitHubCredential).
+//
+// It writes nothing: a mint is a network call, made before the launch lock, and the claim's
+// directories are written only after the refusal (writeGitHubCredential).
+func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSpec) (launchGitHubCredential, error) {
 	if r.gitHubCredential == nil {
 		return launchGitHubCredential{}, nil
 	}
-	bundle, err := r.gitHubCredential(ctx, spec.Role, writer)
+	var bundle ghconfig.Bundle
+	var err error
+	if spec.Role == claim.RoleController {
+		bundle, err = r.controllerCredential(ctx, "")
+	} else {
+		bundle, err = r.gitHubCredential(ctx, spec.Role, spec.Repository)
+	}
 	noOwner := spec.Role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner)
 	if err != nil && !noOwner {
 		return launchGitHubCredential{}, fmt.Errorf("spawn %s: write the github credential: %w", spec.Claim, err)
@@ -568,19 +657,21 @@ func (r *Runtime) writeGitHubCredential(spec runtime.SpawnSpec, credential launc
 	if _, err := ghconfig.WriteBundle(credential.root, bundle); err != nil {
 		return "", fmt.Errorf("spawn %s: write the github credential: %w", spec.Claim, err)
 	}
-	written := bundle.Owners[bundle.Default]
+	written := bundle.Dirs[bundle.Default]
 	r.log.Info("tmux runtime: github credential written", "claim", spec.Claim, "role", spec.Role, "app", written.App,
-		"expiresAt", written.ExpiresAt, "owners", bundle.OwnerNames())
+		"expiresAt", written.ExpiresAt, "dirs", bundle.DirNames())
 	return bundle.Default, nil
 }
 
 // openPane puts the pane on the server, its caller holding the launch lock: into the window of a
 // pane of the same issue — or, for the controller, of the controller's own window — that still
 // verifies as its recorded process, else into a new window named for it (windowKey). The pane is
-// recorded — its incarnation read, the process watched with ghWriter, the owner its launch minted
-// the gh bundle's write token for ("" for none) — before the lock is released, so the next spawn
-// on the issue can share its window and no orphan sweep mistakes it for one.
-func (r *Runtime) openPane(ctx context.Context, spec runtime.SpawnSpec, ghWriter string, pane []string) (runtime.Locator, error) {
+// recorded — its incarnation read, the process watched with the repository its launch minted the
+// gh bundle's write token for (the zero Repository for none) and ghDefault, the bundle's default
+// owner, whose directory is the pane's GH_CONFIG_DIR ("" for a pane holding no gh files) — before
+// the lock is released, so the next spawn on the issue can share its window and no orphan sweep
+// mistakes it for one.
+func (r *Runtime) openPane(ctx context.Context, spec runtime.SpawnSpec, ghDefault string, pane []string) (runtime.Locator, error) {
 	key := windowKey(spec)
 	window, err := r.issueWindow(ctx, key)
 	if err != nil {
@@ -613,7 +704,7 @@ func (r *Runtime) openPane(ctx context.Context, spec runtime.SpawnSpec, ghWriter
 		Incarnation: incarnation{pid: report.pid, ticks: ticks}.String(),
 		Tmux:        &runtime.TmuxLocator{Window: report.window, Pane: report.pane},
 	}
-	r.track(loc, key, ghWriter)
+	r.track(loc, key, spec.Repository, ghDefault)
 	return loc, nil
 }
 

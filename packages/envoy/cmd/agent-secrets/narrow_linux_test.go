@@ -30,8 +30,10 @@ import (
 // repository, read-only, the command gets ada's token alone, minted with that access_tokens body;
 // with no flag, the same grant gives every listed owner's owner-wide token, each minted with no
 // body; narrowed to an account github-owners does not list, nothing runs, the broker answers
-// NARROWING_OWNER_NOT_LISTED and GitHub is asked for no token; and narrowed to a repository
-// GitHub refuses with 422, nothing runs and the broker answers NARROWING_REFUSED naming it.
+// NARROWING_OWNER_NOT_LISTED and GitHub is asked for no token; narrowed to a repository GitHub
+// refuses with 422, nothing runs and the broker answers NARROWING_REFUSED naming it; and with
+// --github-token beside a narrowing, the child's own NAME holds that installation's token alone,
+// not the JSON object of installations, minted with the access_tokens body of that narrowing.
 func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 	type tokenRequest struct{ installation, body string }
 	var mu sync.Mutex
@@ -150,7 +152,7 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 	if err := json.Unmarshal([]byte(tokens[0].body), &body); err != nil {
 		t.Fatalf("the access_tokens body %q: %v", tokens[0].body, err)
 	}
-	if want := map[string]any{"repositories": []any{"proofs"}, "permissions": map[string]any{"contents": "read", "metadata": "read"}}; !reflect.DeepEqual(body, want) {
+	if want := map[string]any{"repositories": []any{"proofs"}, "permissions": map[string]any{"actions": "read", "contents": "read", "metadata": "read", "pull_requests": "read"}}; !reflect.DeepEqual(body, want) {
 		t.Fatalf("the access_tokens body = %v, want %v", body, want)
 	}
 
@@ -176,6 +178,29 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 	}
 	if tokens := take(); len(tokens) != 1 || tokens[0].installation != "8" {
 		t.Fatalf("GitHub was asked for tokens %+v, want installation 8's alone", tokens)
+	}
+
+	// --github-token is no narrowing: the broker releases the same one installation, and the exec
+	// form hands the child ada's token alone, the string a command puts in an Authorization
+	// header, in place of the JSON object of installations. The narrowing still reaches GitHub,
+	// whose access_tokens body names the one repository and no permissions, since this release
+	// is not read-only.
+	stdout, stderr, exit := runAgentSecrets(t, binary, rig.URL, keyDir, nil,
+		"APP_KEY", "--reason", "narrowing end to end", "--github-owner", "Ada", "--github-repo", "proofs", "--github-token",
+		"--", "sh", "-c", `printf %s "$APP_KEY"`)
+	if exit != 0 || stdout != "ghs-8-narrowed" {
+		t.Fatalf("--github-token release: exit %d, stdout %q, stderr %q; want ada's minted token alone, not the JSON object of installations", exit, stdout, stderr)
+	}
+	tokens = take()
+	if len(tokens) != 1 || tokens[0].installation != "8" {
+		t.Fatalf("GitHub was asked for tokens %+v, want installation 8's alone", tokens)
+	}
+	var tokenBody map[string]any
+	if err := json.Unmarshal([]byte(tokens[0].body), &tokenBody); err != nil {
+		t.Fatalf("the access_tokens body %q: %v", tokens[0].body, err)
+	}
+	if want := map[string]any{"repositories": []any{"proofs"}}; !reflect.DeepEqual(tokenBody, want) {
+		t.Fatalf("the access_tokens body = %v, want %v", tokenBody, want)
 	}
 }
 

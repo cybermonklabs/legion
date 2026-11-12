@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import {
   createComment,
   createIssue,
@@ -9,7 +7,7 @@ import {
   putIssueState,
 } from "./api";
 import { barAction, selectEditorText } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -17,11 +15,8 @@ const session = {
   as: "agent" as const,
 };
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("a failed pin shows a retryable error, never lies to the sidebar, and recovers on retry @phone", async ({
+// @pr: A write the server refuses: a failed pin offers a Retry, tells the sidebar nothing untrue, and recovers on that Retry.
+test("a failed pin shows a retryable error, never lies to the sidebar, and recovers on retry @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "WR", name: "Writes" });
@@ -62,13 +57,7 @@ test("a failed pin shows a retryable error, never lies to the sidebar, and recov
   await page.screenshot({ path: testInfo.outputPath("pin-error-retry.png"), fullPage: true });
   // The failed write must never be reflected anywhere: still "Pin issue", still no Pinned group.
   await expect(header.getByRole("button", { name: "Pin issue" })).toBeVisible();
-  if (testInfo.project.name === "iphone") {
-    await page.getByRole("button", { name: "Open navigation" }).click();
-  }
   await expect(page.getByRole("heading", { name: "Pinned" })).toHaveCount(0);
-  if (testInfo.project.name === "iphone") {
-    await page.getByRole("button", { name: "Close navigation" }).click();
-  }
 
   // Two synthetic clicks in the same task exercise the retry guard before React can render
   // the button disabled.
@@ -89,19 +78,14 @@ test("a failed pin shows a retryable error, never lies to the sidebar, and recov
 
   await page.goto("/");
   await page.goto(`/issues/${issue.key}`);
-  if (testInfo.project.name === "iphone") {
-    await page.getByRole("button", { name: "Open navigation" }).click();
-  }
   await expect(page.getByRole("heading", { name: "Pinned" })).toBeVisible();
-  if (testInfo.project.name === "iphone") {
-    await page.getByRole("button", { name: "Close navigation" }).click();
-  }
   await expect(page.getByRole("button", { name: "Unpin issue" })).toBeVisible();
 
   await context.close();
 });
 
-test("double-clicking Submit posts exactly one comment", async ({ browser }) => {
+// @pr: An idempotent repeat: a double-clicked Submit posts exactly one comment.
+test("double-clicking Submit posts exactly one comment @pr", async ({ browser }) => {
   await createProject({ key: "WR", name: "Writes" });
   const issue = await createIssue({
     project: "WR",
@@ -132,9 +116,7 @@ test("double-clicking Submit posts exactly one comment", async ({ browser }) => 
   await context.close();
 });
 
-test("a pre-fold comment lifecycle pin remains removable from Pinned @phone", async ({
-  browser,
-}, testInfo) => {
+test("a pre-fold comment lifecycle pin remains removable from Pinned", async ({ browser }) => {
   await createProject({ key: "WR", name: "Writes" });
   const issue = await createIssue({
     project: "WR",
@@ -154,13 +136,9 @@ test("a pre-fold comment lifecycle pin remains removable from Pinned @phone", as
     .locator(`[data-turn="comment:${comment.id}"]`)
     .getByRole("button", { name: "Expand thread" })
     .click();
-  const phoneThread = page.getByRole("dialog", { name: "Thread" });
-  const thread =
-    (await phoneThread.count()) === 0
-      ? page
-          .locator(`[data-turn="comment:${comment.id}"]`)
-          .getByTestId(`margin-comment-${comment.id}`)
-      : phoneThread;
+  const thread = page
+    .locator(`[data-turn="comment:${comment.id}"]`)
+    .getByTestId(`margin-comment-${comment.id}`);
   await thread.getByRole("button", { name: "Resolve" }).click();
   await expect
     .poll(async () =>
@@ -178,9 +156,6 @@ test("a pre-fold comment lifecycle pin remains removable from Pinned @phone", as
   await putIssueState(issue.key, { dismissed: [`pinned_items:event:${lifecycle.id}`] });
 
   await page.goto(`/issues/${issue.key}`);
-  if (testInfo.project.name === "iphone") {
-    await page.getByRole("button", { name: /Open review panel/ }).click();
-  }
   await page.getByRole("tab", { name: "Pinned" }).click();
   const pinnedEvent = page.getByText("Comment resolved");
   await expect(pinnedEvent).toBeVisible();

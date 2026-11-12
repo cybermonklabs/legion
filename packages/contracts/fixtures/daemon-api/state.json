@@ -13,7 +13,14 @@
       "LEGION-210"
     ],
     "waiting": [
-      "LEGION-211"
+      "LEGION-211",
+      "LEGION-212"
+    ],
+    "trees": [
+      "LEGION-208",
+      "LEGION-210",
+      "LEGION-211",
+      "LEGION-212"
     ],
     "blocked": [
       {
@@ -37,6 +44,7 @@
       "generation": 2,
       "phase": "done",
       "status": "done",
+      "tree": "LEGION-207",
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "workers": {
@@ -55,14 +63,23 @@
         "number": 1239,
         "head": "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40",
         "state": "merged",
-        "reviewDecision": "approved",
-        "fixAttempts": 0
+        "reviewDecision": "approved"
       },
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
+          "currentVersion": 4,
+          "approvedVersion": 4,
+          "status": "approved"
+        }
+      ],
       "check": {
         "repo": "acme/widgets",
         "pullRequest": 1239,
         "mergeCommit": "3e9c0a7b5d2f4e8a1c6b9d0f2a4e7c5b8d1f3a60",
         "openedAt": "2026-09-22T08:40:12Z",
+        "role": "implementer",
         "looks": 2,
         "lookOpen": true,
         "lastWake": {
@@ -79,6 +96,7 @@
       "generation": 3,
       "phase": "implementing",
       "status": "in_progress",
+      "tree": "LEGION-208",
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "architect": {
@@ -93,7 +111,17 @@
             "pane": "%12"
           }
         },
-        "pluginContract": 0
+        "pluginContract": 0,
+        "step": {
+          "at": "2026-09-22T09:16:58Z",
+          "turnStartedAt": "2026-09-22T09:16:40Z",
+          "tool": "read",
+          "callId": "toolu_arch_3",
+          "argsBytes": 74,
+          "argsHash": "3f7c1a9d62b40e58",
+          "startedAt": "2026-09-22T09:16:55Z",
+          "endedAt": "2026-09-22T09:16:58Z"
+        }
       },
       "workers": {
         "implementer": {
@@ -127,9 +155,22 @@
               ]
             },
             "pluginContract": 0,
-            "updateRound": "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11"
+            "updateRound": "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+            "step": {
+              "at": "2026-09-22T09:17:12Z",
+              "turnStartedAt": "2026-09-22T09:16:30Z",
+              "tool": "bash",
+              "callId": "toolu_impl_11",
+              "argsBytes": 128,
+              "argsHash": "9b2e45c0d1f8a673",
+              "startedAt": "2026-09-22T09:17:12Z"
+            }
           },
-          "rounds": 2
+          "rounds": 2,
+          "backwardMoves": {
+            "reviewing-implementing": 1,
+            "testing-implementing": 1
+          }
         },
         "planner": {
           "claim": {
@@ -164,24 +205,48 @@
         "head": "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
         "state": "open",
         "checksVerdict": "pending",
-        "reviewDecision": "changes_requested",
-        "fixAttempts": 1
+        "reviewDecision": "changes_requested"
       },
       "designGate": {
         "artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
         "currentVersion": 7,
         "approvedVersion": 6
       },
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+          "currentVersion": 7,
+          "approvedVersion": 6,
+          "status": "waiting"
+        }
+      ],
       "slot": {
         "index": 0,
         "admittedAt": "2026-09-21T18:42:11Z"
-      }
+      },
+      "memoryGroup": "memory",
+      "memoryDrawMode": "random",
+      "memoryDrawnAt": "2026-09-20T11:04:05Z"
+    },
+    "LEGION-209": {
+      "key": "LEGION-209",
+      "generation": 1,
+      "phase": "admitted",
+      "status": "in_progress",
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "workers": {},
+      "memoryGroup": "memory",
+      "memoryDrawMode": "random",
+      "memoryDrawnAt": "2026-09-20T11:04:05Z"
     },
     "LEGION-210": {
       "key": "LEGION-210",
       "generation": 1,
       "phase": "held",
       "status": "in_progress",
+      "tree": "LEGION-210",
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
       "holdReason": "escalated",
@@ -194,6 +259,45 @@
           },
           "rounds": 1
         }
+      },
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "approvedVersion": null,
+          "status": "unregistered"
+        }
+      ]
+    },
+    "LEGION-211": {
+      "key": "LEGION-211",
+      "generation": 2,
+      "phase": "implementing",
+      "status": "in_progress",
+      "tree": "LEGION-211",
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "workers": {
+        "implementer": {
+          "claim": {
+            "session": "ses_implementer_211",
+            "state": "suspended",
+            "pluginContract": 0
+          },
+          "rounds": 1
+        }
+      },
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "e5a2c1d7-3b46-4f82-9e07-2d4a6c8b1f53",
+          "currentVersion": 3,
+          "approvedVersion": 3,
+          "status": "approved"
+        }
+      ],
+      "waitingLine": {
+        "place": 1,
+        "length": 2
       }
     },
     "LEGION-212": {
@@ -201,9 +305,24 @@
       "generation": 1,
       "phase": "awaiting_person",
       "status": "in_progress",
+      "tree": "LEGION-212",
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "workers": {},
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "b71f0a94-6c3e-4d28-85af-19c7d0e3b462",
+          "currentVersion": 2,
+          "approvedVersion": null,
+          "status": "changes_requested",
+          "changesReason": "name the rollback path for the schema change"
+        }
+      ],
+      "waitingLine": {
+        "place": 2,
+        "length": 2
+      },
       "waitingOn": {
         "kind": "ask",
         "ask": "9a8fd348-55d5-4d72-a793-3cd037f75f13",
@@ -228,6 +347,39 @@
       "issue": "LEGION-210",
       "role": "implementer",
       "state": "failed"
+    },
+    {
+      "issue": "LEGION-211",
+      "role": "implementer",
+      "state": "suspended"
+    },
+    {
+      "issue": "LEGION-212",
+      "role": "tester",
+      "state": "retired"
+    }
+  ],
+  "wakesWaiting": [
+    {
+      "claim": "legion-legion-legion-207-implementer",
+      "issue": "LEGION-207",
+      "role": "implementer",
+      "kind": "plugin-task",
+      "dueAt": "2026-09-22T09:17:56Z"
+    },
+    {
+      "claim": "legion-legion-legion-208-architect",
+      "issue": "LEGION-208",
+      "role": "architect",
+      "kind": "catch-up",
+      "dueAt": "2026-09-22T09:18:03Z"
+    },
+    {
+      "claim": "legion-legion-legion-208-planner",
+      "issue": "LEGION-208",
+      "role": "planner",
+      "kind": "launch",
+      "dueAt": "2026-09-22T09:18:11Z"
     }
   ],
   "controllerLocator": {
@@ -417,7 +569,7 @@
       "name": "kubernetes",
       "kubernetes": {
         "namespace": "legion",
-        "image": "ghcr.io/sjawhar/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "image": "ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "storage_class": "gp3",
         "issue_volume": "30Gi",
         "scheduling": {
@@ -472,6 +624,7 @@
           "-c",
           "echo fixture-setup"
         ],
+        "skills_repository": "acme/agent-skills",
         "test_postgres": false,
         "repository_cache": {
           "volume": "40Gi",
@@ -485,6 +638,10 @@
             "ephemeral_storage": "2Gi",
             "ephemeral_storage_request": "1Gi"
           }
+        },
+        "idle_release": {
+          "idle_minutes": 10,
+          "backstop_minutes": 60
         }
       }
     },
@@ -508,6 +665,8 @@
     "launch_failure_limit": 4,
     "prompt_failure_limit": 5,
     "prompt_retire_limit": 3,
+    "worker_wakes_per_minute": 12,
+    "worker_wake_burst": 2,
     "envoy_url": "http://xxxxx@envoy-listener.internal.example:9020",
     "nats_urls": [
       "nats://xxxxx@nats.internal.example:4222",
@@ -523,13 +682,11 @@
           "C0123ABCD",
           "C0123ABCE"
         ],
-        "deploys": [
-          {
-            "repo": "sjawhar/legion",
-            "workflow": ".github/workflows/release.yaml",
-            "step": "Apply"
-          }
-        ]
+        "memory": {
+          "config_files": []
+        },
+        "production_check": "tester",
+        "deploys": []
       },
       "WIDGETS": {
         "merge_queue_role": "merge-queue",
@@ -540,11 +697,17 @@
           ]
         },
         "slack_channels": [],
+        "memory": {
+          "config_files": []
+        },
+        "production_check": "off",
         "deploys": []
       }
     },
     "gates": {
-      "design": "root-issues"
+      "design": [
+        "spec"
+      ]
     },
     "github_apps": {
       "implement": {
@@ -565,8 +728,9 @@
     "production_check_hours": 240,
     "pod_update_retask_hours": 1,
     "pod_update_notice_hours": 4,
+    "pod_update_max_open_rounds": 6,
+    "pod_update_rounds_per_minute": 2,
     "review_round_cap": 4,
-    "max_fix_attempts": 5,
     "controller": "daemon",
     "capabilities": {
       "decided": {
@@ -582,6 +746,21 @@
         "from": "acme/widgets-legacy",
         "to": "acme/widgets"
       }
+    ],
+    "hooks": [
+      {
+        "name": "back-to-implementing",
+        "on": "work_back",
+        "moves": [
+          "reviewing-implementing",
+          "testing-implementing"
+        ],
+        "every": 2,
+        "roles": [
+          "implementer"
+        ],
+        "prompt_file": "/etc/legion/hooks/back-to-implementing.md"
+      }
     ]
   },
   "consumers": [
@@ -594,21 +773,21 @@
       "stalled": false
     },
     {
-      "name": "legion-go-LEGION-dispatch-server",
-      "waiting": 0,
-      "oldestAt": null,
-      "oldestAgeSeconds": null,
-      "lastHandledAt": null,
-      "stalled": false,
-      "unavailable": "read the consumer's info: context deadline exceeded"
-    },
-    {
       "name": "legion-go-LEGION-github",
       "waiting": 412,
       "oldestAt": "2026-09-22T09:05:34Z",
       "oldestAgeSeconds": 754,
       "lastHandledAt": "2026-09-22T09:16:41Z",
       "stalled": true
+    },
+    {
+      "name": "legion-go-LEGION-wake",
+      "waiting": 0,
+      "oldestAt": null,
+      "oldestAgeSeconds": null,
+      "lastHandledAt": null,
+      "stalled": false,
+      "unavailable": "read the consumer's info: context deadline exceeded"
     }
   ]
 }

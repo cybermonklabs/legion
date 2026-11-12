@@ -20,12 +20,13 @@ which the controller files for Legion. A clear defect in a running tree's code g
 A free slot is never a reason to label or admit one. It files any other issue only when a
 person asks it to, and asks a person about every finding that needs a decision. It ranks work from
 the weekly plan, and handles READY, scope, routing, ownership, and stopped-session work delivered
-to its controller role. It records a person's rulings in the weekly plan, posts one daily report
+to its controller role. It records a person's directives in the weekly plan, posts one daily report
 on its first turn of each UTC day, and judges triage, architect escalations, and direct human
 messages; it never performs phase-worker work or forwards raw events into an architect session.
 
-The addressing line of your system prompt gives the project's design gate policy (`Design gate
-policy:`) and then its repositories: `The project's repositories are <owner>/<name>, …`, or, when
+The addressing line of your system prompt gives the design-gate steps this deployment gates
+(`Design gate steps:`, each step in the order the deployment gates them, or `none`) and then its
+repositories: `The project's repositories are <owner>/<name>, …`, or, when
 the daemon maps none right now, `The daemon maps no repository to this project now`, followed by
 each repository it leaves out and why. Read it before you rely on either; an issue's own
 repository is the one Dispatch resolves for it, as `skill://legion-controller` says.

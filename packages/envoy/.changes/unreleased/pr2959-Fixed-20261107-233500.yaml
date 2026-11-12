@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The Dispatch server writes no `expects_reply: false`. An answered ask, an approved artifact and a comment mention whose comment joins no ask thread and answers no comment leave the field out again, as every other event and delivery does; a `btw` still carries `required`, and a reply in a thread or a comment under an ask still `optional`. A listener built before #2903 reads the field only as a string: it answers 400 to a targeted send carrying the literal `false`, and a bus envelope carrying it fails its decode and is acknowledged and dropped, so a Dispatch server rolled ahead of the listeners of its deployment delivered no plain mention and lost every answered ask and approved artifact. With this the Dispatch Deployment rolls on its own, in any order. What removes the workaround: every listener of a deployment at or after #2903, after which the two receipts and the plain mention say "nothing wanted back" out loud again.'
+time: 2026-11-07T23:35:00.000000000Z
+custom:
+    Issue: pr2959

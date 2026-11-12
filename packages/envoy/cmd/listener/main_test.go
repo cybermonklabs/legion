@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -25,9 +26,11 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestStartingGate_Closed_Returns503(t *testing.T) {
@@ -205,13 +208,34 @@ func TestFullMux_StartingState(t *testing.T) {
 		}
 	})
 
-	t.Run("v1 sessions returns 503", func(t *testing.T) {
-		rr := httptest.NewRecorder()
-		mux.ServeHTTP(rr, httptest.NewRequest("GET", "/v1/sessions", nil))
-		if rr.Code != http.StatusServiceUnavailable {
-			t.Fatalf("expected 503, got %d", rr.Code)
-		}
-	})
+	// The two list reads get the refilling answer the routes give while their copies cannot be
+	// served: before /v1 opens no copy has been read.
+	for _, path := range []string{"/v1/sessions", "/v1/interests/"} {
+		t.Run("GET "+path+" answers refilling", func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+			assertListRefilling(t, rr.Result())
+		})
+	}
+
+	// Every other request keeps "service starting", a write or a single read on a list path too.
+	for _, request := range []struct{ method, path string }{
+		{http.MethodPost, "/v1/sessions"},
+		{http.MethodDelete, "/v1/sessions/ses_x"},
+		{http.MethodGet, "/v1/interests/ses_x"},
+		{http.MethodPost, "/v1/interests/subscribe"},
+	} {
+		t.Run(request.method+" "+request.path+" answers service starting", func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, httptest.NewRequest(request.method, request.path, nil))
+			if body := rr.Body.String(); rr.Code != http.StatusServiceUnavailable || body != "{\"error\":\"service starting\"}\n" {
+				t.Fatalf("status %d body %q, want 503 service starting", rr.Code, body)
+			}
+			if retryAfter := rr.Header().Get("Retry-After"); retryAfter != "" {
+				t.Fatalf("Retry-After = %q, want none", retryAfter)
+			}
+		})
+	}
 }
 
 func TestPublishHandler_RejectsAgentTopics(t *testing.T) {
@@ -562,7 +586,7 @@ func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *
 	// Set B as the KV value that the route must resolve. This models a
 	// publish that races the handover: the single listener chooses one current
 	// owner, rather than relying on two holders to observe the change first.
-	claimDeps := &listenerDeps{registry: harness.registry, sessions: harness.sessions}
+	claimDeps := &listenerDeps{registry: harness.registry, sessions: harness.sessions, delivery: &harness.config}
 	if err := harness.sessions.Put("ses_role_b", session.SessionEntry{
 		MachineID:      "test-machine",
 		SelfSubscribed: true,
@@ -701,7 +725,7 @@ func TestPublishHandler_RoleFreshDeafHolderAnswersReceiptTimeout(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	role := "fresh-deaf-holder"
 	roleTopic := contracts.RoleTopicPrefix + role
-	claimState := &listenerDeps{registry: harness.registry, sessions: harness.sessions}
+	claimState := &listenerDeps{registry: harness.registry, sessions: harness.sessions, delivery: &harness.config}
 	if err := harness.sessions.Put("ses_deaf", session.SessionEntry{
 		MachineID:      "test-machine",
 		SelfSubscribed: true,
@@ -923,8 +947,9 @@ func TestSendHandler_RejectsUnknownTarget(t *testing.T) {
 	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
 		t.Fatalf("decode error response: %v", err)
 	}
-	if response.Error != "no live session ses_missing" {
-		t.Fatalf("error = %q, want %q", response.Error, "no live session ses_missing")
+	const want = "no live session ses_missing; this listener does not know when it last registered"
+	if response.Error != want {
+		t.Fatalf("error = %q, want %q", response.Error, want)
 	}
 }
 
@@ -1010,11 +1035,20 @@ func TestSendHandler_AcceptsHumanSource(t *testing.T) {
 	}
 }
 
+// deregisterHandler is DELETE /v1/sessions/<session_id> over sessions alone. These rows
+// deregister sessions that were never in consumer delivery, so the deps carry no session
+// delivery and the route deletes no consumer: a nil sessionDelivery answers nothing
+// (sessionDelivery.deleteConsumer), as it does on a listener whose session-consumer connection
+// never opened.
+func deregisterHandler(sessions *session.SessionRegistry) http.HandlerFunc {
+	return deleteSessionHandler(&listenerDeps{sessions: sessions}, logging.New("test"))
+}
+
 // A deregistration that names no client instance deletes the registration whoever wrote it, and
 // answers 200 with no body at all, as this route always has.
 func TestDeleteSessionHandler_IsIdempotent(t *testing.T) {
 	_, sessions := setupSessionsTest(t, nil, []string{"ses_closed"})
-	handler := deleteSessionHandler(sessions)
+	handler := deregisterHandler(sessions)
 
 	for i := range 2 {
 		rr := httptest.NewRecorder()
@@ -1028,7 +1062,7 @@ func TestDeleteSessionHandler_IsIdempotent(t *testing.T) {
 			t.Fatalf("delete %d: answered with a body: %s", i+1, rr.Body.String())
 		}
 	}
-	if isSessionLive(sessions, "ses_closed") {
+	if _, err := sessions.Get("ses_closed"); err == nil {
 		t.Fatal("deleted session remains live")
 	}
 }
@@ -1045,7 +1079,7 @@ func TestDeleteSessionHandler_DeletesTheSameClientInstancesRegistration(t *testi
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+sessionID+"?client_instance_id="+instanceID, nil)
-	deleteSessionHandler(sessions).ServeHTTP(rr, req)
+	deregisterHandler(sessions).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
@@ -1053,8 +1087,8 @@ func TestDeleteSessionHandler_DeletesTheSameClientInstancesRegistration(t *testi
 	if got := strings.TrimSpace(rr.Body.String()); got != `{"deleted":true}` {
 		t.Fatalf("body = %s, want {\"deleted\":true}", got)
 	}
-	if isSessionLive(sessions, sessionID) {
-		t.Fatal("deleted session remains live")
+	if _, state := sessions.Lookup(sessionID); state != session.Gone {
+		t.Fatalf("the deleted session reads %s, want gone", state)
 	}
 }
 
@@ -1072,7 +1106,7 @@ func TestDeleteSessionHandler_KeepsAnotherClientInstancesRegistration(t *testing
 		"/v1/sessions/"+sessionID+"?client_instance_id=4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a",
 		nil,
 	)
-	deleteSessionHandler(sessions).ServeHTTP(rr, req)
+	deregisterHandler(sessions).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
@@ -1096,6 +1130,116 @@ func TestDeleteSessionHandler_KeepsAnotherClientInstancesRegistration(t *testing
 	}
 }
 
+// The finding this condition exists for (dispatch://INFRA-392): the daemon's clean stop of a dead
+// role's session can still be in flight when the very decision that asked for it has relaunched
+// the claim and the new process has registered the same session id again. The stop names the
+// moment its probe judged the process gone, and a registration written after that moment is the
+// relaunch's: it stays, and the route says so rather than taking a live session's registration.
+func TestDeleteSessionHandler_KeepsARegistrationWrittenAfterTheStopsMoment(t *testing.T) {
+	const sessionID = "ses_relaunched_under_the_stop"
+	_, sessions := setupSessionsTest(t, nil, nil)
+	putSessionForInstance(t, sessions, sessionID, "")
+	dead, err := sessions.Get(sessionID)
+	if err != nil {
+		t.Fatalf("read the dead launch's registration: %v", err)
+	}
+	// The moment the probe judged the process gone, which the stop carries, and the relaunch's
+	// own registration after it: the clock is waited past that moment so the second write is
+	// strictly newer, as a relaunch seconds later is.
+	stop := dead.UpdatedAt
+	for time.Now().UnixMilli() <= stop {
+		time.Sleep(time.Millisecond)
+	}
+	putSessionForInstance(t, sessions, sessionID, "")
+	relaunched, err := sessions.Get(sessionID)
+	if err != nil {
+		t.Fatalf("read the relaunch's registration: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete,
+		fmt.Sprintf("/v1/sessions/%s?if_not_registered_after=%d", sessionID, stop), nil)
+	deregisterHandler(sessions).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	var answer struct {
+		Deleted bool   `json:"deleted"`
+		Reason  string `json:"reason"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&answer); err != nil {
+		t.Fatalf("decode the answer: %v", err)
+	}
+	if answer.Deleted || answer.Reason != "the registration was written after the moment the delete belongs to" {
+		t.Fatalf("answer = %+v, want the relaunch's registration kept with its reason", answer)
+	}
+	entry, err := sessions.Get(sessionID)
+	if err != nil {
+		t.Fatalf("the relaunch's registration is gone: %v", err)
+	}
+	if entry.UpdatedAt != relaunched.UpdatedAt {
+		t.Fatalf("the stored registration was written at %d, want the relaunch's %d", entry.UpdatedAt, relaunched.UpdatedAt)
+	}
+	if _, state := sessions.Lookup(sessionID); state != session.Live {
+		t.Fatalf("the relaunched session reads %s, want live", state)
+	}
+}
+
+// The stop that is still the stored registration's: nothing has registered that session id since
+// the probe judged its process gone, so the record goes and the session is gone at once.
+func TestDeleteSessionHandler_DeletesTheRegistrationTheStopsMomentCovers(t *testing.T) {
+	const sessionID = "ses_dead_launch"
+	_, sessions := setupSessionsTest(t, nil, nil)
+	putSessionForInstance(t, sessions, sessionID, "")
+	dead, err := sessions.Get(sessionID)
+	if err != nil {
+		t.Fatalf("read the dead launch's registration: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete,
+		fmt.Sprintf("/v1/sessions/%s?if_not_registered_after=%d", sessionID, dead.UpdatedAt), nil)
+	deregisterHandler(sessions).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	if got := strings.TrimSpace(rr.Body.String()); got != `{"deleted":true}` {
+		t.Fatalf("body = %s, want {\"deleted\":true}", got)
+	}
+	if _, state := sessions.Lookup(sessionID); state != session.Gone {
+		t.Fatalf("the deleted session reads %s, want gone", state)
+	}
+}
+
+// A moment this route cannot read is a refusal, not a delete: a caller whose condition was
+// silently dropped would remove exactly the registration it asked to keep.
+func TestDeleteSessionHandler_RefusesAMomentThatIsNotMilliseconds(t *testing.T) {
+	const sessionID = "ses_bad_moment"
+	_, sessions := setupSessionsTest(t, nil, nil)
+	putSessionForInstance(t, sessions, sessionID, "")
+
+	for _, asked := range []string{"just now", "0", "-1", "1762000000.5"} {
+		t.Run(asked, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodDelete,
+				"/v1/sessions/"+sessionID+"?if_not_registered_after="+url.QueryEscape(asked), nil)
+			deregisterHandler(sessions).ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d (body: %s)", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), "if_not_registered_after") {
+				t.Fatalf("body = %s, want a refusal naming the parameter", rr.Body.String())
+			}
+			if _, err := sessions.Get(sessionID); err != nil {
+				t.Fatalf("the refused request deleted the registration: %v", err)
+			}
+		})
+	}
+}
+
 // putSessionForInstance registers sessionID as the client instance instanceID, which
 // setupSessionsTest's own seeding cannot name.
 func putSessionForInstance(t *testing.T, sessions *session.SessionRegistry, sessionID, instanceID string) {
@@ -1115,7 +1259,7 @@ func TestDeleteSessionHandler_RejectsOtherMethods(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/ses_closed", nil)
-	deleteSessionHandler(sessions).ServeHTTP(rr, req)
+	deregisterHandler(sessions).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", rr.Code)
@@ -1125,14 +1269,14 @@ func TestDeleteSessionHandler_RejectsOtherMethods(t *testing.T) {
 func TestIsValidRole(t *testing.T) {
 	valid := []string{"legion-controller", "pi_dev", "r2d2", "a"}
 	for _, role := range valid {
-		if !isValidRole(role) {
+		if !roles.Valid(role) {
 			t.Fatalf("expected role %q to be valid", role)
 		}
 	}
 
 	invalid := []string{"", "Legion", "-bad", "bad.role", "bad role"}
 	for _, role := range invalid {
-		if isValidRole(role) {
+		if roles.Valid(role) {
 			t.Fatalf("expected role %q to be invalid", role)
 		}
 	}
@@ -1215,7 +1359,7 @@ func TestRoleSetHandler_Validation(t *testing.T) {
 
 func TestRoleSetHandler_SetsRole(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	state := &listenerDeps{registry: registry, sessions: sessions}
+	state := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions})
 	handler := roleSetHandler(state, "test-machine", logging.New("test"))
 	if err := sessions.Put("ses_role", session.SessionEntry{MachineID: "test-machine"}); err != nil {
 		t.Fatalf("register role session: %v", err)
@@ -1306,7 +1450,7 @@ func TestAdminInterestsHandler_ListAll(t *testing.T) {
 		"ses_list_b": {"notifications.test.>"},
 		"ses_list_a": {"notifications.github.>"},
 	}, nil)
-	handler := adminInterestsHandler(registry, sessions, nil)
+	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/interests/", nil)
 	rec := httptest.NewRecorder()
@@ -1331,7 +1475,7 @@ func TestAdminInterestsHandler_GetBySession(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_get_test": {"notifications.test.>"},
 	}, nil)
-	handler := adminInterestsHandler(registry, sessions, nil)
+	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/interests/ses_get_test", nil)
 	rec := httptest.NewRecorder()
@@ -1370,7 +1514,7 @@ func TestAdminInterestsHandler_GetAnswers404OnlyForAnUnknownSession(t *testing.T
 	if err != nil {
 		t.Fatalf("failed to create session registry: %v", err)
 	}
-	handler := adminInterestsHandler(registry, sessions, nil)
+	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
 	get := func(sessionID string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/interests/"+sessionID, nil))
@@ -1399,7 +1543,7 @@ func TestAdminInterestsHandler_DeleteBySession(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_delete_target": {"notifications.test.>"},
 	}, nil)
-	handler := adminInterestsHandler(registry, sessions, nil)
+	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/interests/ses_delete_target", nil)
 	rec := httptest.NewRecorder()
@@ -1418,7 +1562,7 @@ func TestAdminInterestsHandler_DeleteBySession(t *testing.T) {
 
 func TestAdminInterestsHandler_DeleteIdempotent(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	handler := adminInterestsHandler(registry, sessions, nil)
+	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/interests/ses_nonexistent", nil)
 	rec := httptest.NewRecorder()
@@ -1431,7 +1575,7 @@ func TestAdminInterestsHandler_DeleteIdempotent(t *testing.T) {
 
 func TestAdminInterestsHandler_MethodNotAllowed(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	handler := adminInterestsHandler(registry, sessions, nil)
+	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/interests/", nil)
 	rec := httptest.NewRecorder()
@@ -1479,7 +1623,8 @@ func setupInterestLastSeenTest(t *testing.T, interests []string, options ...sess
 		}
 	}
 	waitFor(t, 5*time.Second, "the interest cache to hold every row", func() bool {
-		return len(registry.List()) == len(interests)
+		listed, err := registry.List()
+		return err == nil && len(listed) == len(interests)
 	})
 	return registry, sessions
 }
@@ -1545,7 +1690,7 @@ func TestAdminInterestsHandler_RowsCarryALiveSessionsHeartbeat(t *testing.T) {
 	registry, sessions := setupInterestLastSeenTest(t, []string{live, unknown})
 	beat := heartbeat(t, sessions, live)
 
-	list, single := listedInterestRows(t, adminInterestsHandler(registry, sessions, nil))
+	list, single := listedInterestRows(t, adminInterestsHandler(registry, sessions, nil, logging.New("test")))
 	wantLastSeen(t, "GET /v1/interests/", list[live], beat)
 	wantLastSeen(t, "GET /v1/interests/"+live, single[live], beat)
 	for route, row := range map[string]interestRowLastSeen{"GET /v1/interests/": list[unknown], "GET /v1/interests/" + unknown: single[unknown]} {
@@ -1573,7 +1718,7 @@ func TestAdminInterestsHandler_RowsCarryAnExpiredSessionsLastHeartbeat(t *testin
 	})
 	time.Sleep(sessionTTL + 200*time.Millisecond)
 
-	list, single := listedInterestRows(t, adminInterestsHandler(registry, sessions, nil))
+	list, single := listedInterestRows(t, adminInterestsHandler(registry, sessions, nil, logging.New("test")))
 	wantLastSeen(t, "GET /v1/interests/", list[expired], beat)
 	wantLastSeen(t, "GET /v1/interests/"+expired, single[expired], beat)
 }
@@ -1594,6 +1739,7 @@ func setupSessionsTest(t *testing.T, interests map[string][]string, live []strin
 	if err != nil {
 		t.Fatalf("failed to create session registry: %v", err)
 	}
+	waitForSessions(t, sessions)
 	// Each session's row is written to the interest bucket as stored, not through Upsert, which
 	// drops a topic reaching a private stream subject: a test seeding one models a row an earlier
 	// build stored.
@@ -1660,6 +1806,19 @@ func waitForRegistry(t *testing.T, registry *store.Registry) {
 	defer cancel()
 	if err := registry.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("wait for the registry's caches: %v", err)
+	}
+}
+
+// waitForSessions is waitForRegistry for the session registry: GET /v1/sessions answers the
+// refilling 503 until the session copy has completed a read of its bucket, so a test that seeds
+// rows with Put and then lists them waits here first. A test that asserts the refusal itself puts
+// the copy where it cannot answer after this wait, never before it.
+func waitForSessions(t *testing.T, sessions *session.SessionRegistry) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := sessions.WaitForCacheReady(ctx); err != nil {
+		t.Fatalf("wait for the session registry's cache: %v", err)
 	}
 }
 
@@ -1740,6 +1899,7 @@ func TestSessionsHandler_IncludesTitle(t *testing.T) {
 		t.Fatalf("failed to put session entry: %v", err)
 	}
 	waitForRegistry(t, registry)
+	waitForSessions(t, sessions)
 
 	handler := sessionsHandler(registry, sessions)
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
@@ -2487,12 +2647,7 @@ func durableHeldElsewhere(t *testing.T, uri, consumer string) (*bus.Client, *nat
 // timeout passes.
 func waitFor(t *testing.T, timeout time.Duration, desc string, cond func() bool) {
 	t.Helper()
-	for deadline := time.Now().Add(timeout); !cond(); {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", desc)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	testwait.WithinPolling(t, timeout, 50*time.Millisecond, desc, cond)
 }
 
 // bindOutcome is what a bindListenerDurable run in a goroutine returned, and when.
@@ -2730,6 +2885,25 @@ func TestStartListenerSubscriptionMigratesLegacyDurableConsumer(t *testing.T) {
 		t.Fatalf("boot migrated listener bus: %v", err)
 	}
 	t.Cleanup(client.Close)
+	// nats-server releases a push binding on the consumer's own goroutine, after the client's
+	// Close is answered, so only the consumer's own report tells this row that the legacy
+	// durable may be bound again: startListenerSubscription binds once and does not retry a
+	// "consumer is already bound" refusal, which is what took pull request #2817 out of the
+	// merge queue (run 42117898395). Production never binds through that primitive; its boot
+	// calls bindListenerDurable, which retries the bind every durableBindInterval up to
+	// durableBindDeadline. internal/bus/stream_config_test.go waits the same way.
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		info, err := client.JS().ConsumerInfo(bus.Stream, consumer)
+		if err != nil {
+			t.Fatalf("read the legacy durable consumer: %v", err)
+		}
+		if !info.PushBound {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the server still reports the legacy durable consumer push-bound 30s after the legacy connection closed")
+		}
+	}
 	durableReceived := make(chan struct{}, 1)
 	durableSub, err := startListenerSubscription(client, consumer, func(msg *natsgo.Msg) {
 		durableReceived <- struct{}{}
@@ -2743,7 +2917,7 @@ func TestStartListenerSubscriptionMigratesLegacyDurableConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read migrated consumer: %v", err)
 	}
-	if consumerInfo.Config.FilterSubject != "" || len(consumerInfo.Config.FilterSubjects) != len(bus.StreamSubjects()) {
+	if consumerInfo.Config.FilterSubject != "" || !slices.Equal(consumerInfo.Config.FilterSubjects, bus.StreamSubjects()) {
 		t.Fatalf("migrated consumer filters = %#v", consumerInfo.Config)
 	}
 	if consumerInfo.Config.InactiveThreshold != consumerInactiveThreshold {
@@ -2815,7 +2989,9 @@ func TestIsControlTopic(t *testing.T) {
 	}
 }
 
-func TestListenerDeliveryHandler_RoleReleasedByReplacementHasNoHolder(t *testing.T) {
+// A role whose claim its replacement released has no holder, so the lane keeps the message for
+// the role's next holder and publishes no delivery exception.
+func TestListenerDeliveryHandler_RoleReleasedByReplacementIsKeptForItsNextHolder(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const controller = "legion-controller"
 	if _, err := harness.registry.SetRole("ses_role", "test-machine", controller, false); err != nil {
@@ -2825,7 +3001,9 @@ func TestListenerDeliveryHandler_RoleReleasedByReplacementHasNoHolder(t *testing
 		t.Fatalf("claim reviewer role: %v", err)
 	}
 	controllerTopic := contracts.RoleTopicPrefix + controller
-	if err := harness.registry.Remove(context.Background(), "ses_role", []string{controllerTopic}); err != nil {
+	// The claims above name no process, so the release that frees one is the forced one DELETE
+	// /v1/interests/<session_id> makes (store.RoleReleaseAuthority.Force).
+	if _, err := harness.registry.Remove(context.Background(), "ses_role", []string{controllerTopic}, store.RoleReleaseAuthority{Force: true}); err != nil {
 		t.Fatalf("release controller role: %v", err)
 	}
 
@@ -2847,9 +3025,20 @@ func TestListenerDeliveryHandler_RoleReleasedByReplacementHasNoHolder(t *testing
 	if err := harness.client.PublishCore(item); err != nil {
 		t.Fatalf("publish released controller role: %v", err)
 	}
-	assertDeliveryException(t, probe, item, "no_holder")
+	kept := waitForKeptRoleMessage(t, harness.client, controller, item.EventID)
+	if kept.Topic != controllerTopic {
+		t.Fatalf("the kept copy's topic is %q, want the role topic %s it was published on", kept.Topic, controllerTopic)
+	}
+	noException(t, probe)
 }
-func TestListenerDeliveryHandler_ExpiredRoleDropsClaimAfterException(t *testing.T) {
+
+// A role-lane delivery whose holder is not answering reports the delivery failed and leaves the
+// claim exactly as it is: the role lane is one more reader of a session's state, and the one
+// caller that ends a claim is the role reaper, once the holder is gone. Dropping it here took the
+// role away from a holder stalled for a minute, and every message for that role then reached
+// nobody until it claimed again. Nothing is kept for it either: a claim that stands is a claim no
+// next holder will make, so a kept copy would wait for a claim that never comes (roleKeepable).
+func TestListenerDeliveryHandler_ExpiredRoleKeepsTheClaimAfterItsException(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const role = "expired-holder"
 	if _, err := harness.registry.SetRole("ses_expired", "test-machine", role, false); err != nil {
@@ -2874,8 +3063,8 @@ func TestListenerDeliveryHandler_ExpiredRoleDropsClaimAfterException(t *testing.
 		t.Fatalf("publish role delivery: %v", err)
 	}
 	assertDeliveryException(t, probe, item, "delivery_failed")
-	if holder, err := harness.registry.RoleHolder(role); err != nil || holder != "" {
-		t.Fatalf("expired role claim = %q, %v; want removed", holder, err)
+	if holder, err := harness.registry.RoleHolder(role); err != nil || holder != "ses_expired" {
+		t.Fatalf("the claim after the failed delivery = %q, %v; want ses_expired's, left for the reaper", holder, err)
 	}
 }
 
@@ -3179,12 +3368,17 @@ func TestListenerDeliveryHandler_RoleForwardErrorSelectsTheReason(t *testing.T) 
 	}
 }
 
-func TestListenerDeliveryHandler_EmitsExceptionForControlTopicWithNoHolder(t *testing.T) {
+// A control topic with no holder: an agent subject nobody has is still the no_holder exception,
+// while a role nobody holds is kept for the role's next holder and raises none.
+func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.T) {
 	cases := []struct {
 		name  string
 		topic string
+		// role is the role a kept copy is read back under; empty for the agent subject, which
+		// keeps nothing.
+		role string
 	}{
-		{name: "role", topic: contracts.RoleTopicPrefix + "unheld"},
+		{name: "role", topic: contracts.RoleTopicPrefix + "unheld", role: "unheld"},
 		{name: "agent", topic: contracts.AgentSubject("ses_unheld")},
 	}
 
@@ -3222,7 +3416,15 @@ func TestListenerDeliveryHandler_EmitsExceptionForControlTopicWithNoHolder(t *te
 			}
 
 			// Then
-			assertDeliveryException(t, probe, item, "no_holder")
+			if tc.role == "" {
+				assertDeliveryException(t, probe, item, "no_holder")
+				return
+			}
+			kept := waitForKeptRoleMessage(t, harness.client, tc.role, item.EventID)
+			if kept.Topic != tc.topic {
+				t.Fatalf("the kept copy's topic is %q, want the role topic %s it was published on", kept.Topic, tc.topic)
+			}
+			noException(t, probe)
 		})
 	}
 }
@@ -3319,6 +3521,16 @@ func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode(t *testin
 // a redelivery with the same key cannot emit another refusal.
 func TestListenerDeliveryHandler_FanoutRefusalDedupesAfterExceptionDelivery(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
+	// Both copies refill from their buckets on a goroutine the harness's registries start
+	// (kvwatch.Watcher.Start), and a write that lands while that first read runs carries no mark
+	// of it, so the sweep ending the read takes it back out of the copy
+	// (kvwatch.Copy.CompleteRead) until the watcher delivers the write's own record. The fan-out
+	// reads both copies for the message below, and a session whose record it cannot read is one
+	// it reports dead and sends no exception for ("listener delivery failed ... no session record
+	// for session ses_incapable", merge-queue job 127694167470), so both reads are waited out
+	// here, before registerFanoutTarget's two writes.
+	waitForRegistry(t, harness.registry)
+	waitForSessions(t, harness.sessions)
 	const (
 		topic     = "notifications.github.owner.repo.issue.4"
 		incapable = "ses_incapable"
@@ -3362,8 +3574,30 @@ func TestListenerDeliveryHandler_FanoutAllowsUntaggedPayload(t *testing.T) {
 		firstTarget = "ses_first"
 		nextTarget  = "ses_next"
 	)
+	// Both copies the fan-out reads refill on the goroutine the watcher starts, and a write that
+	// lands while that first read runs is taken back out of the copy until the watcher delivers
+	// its own record, so a target registered before the reads end is one the fan-out cannot see
+	// ("the untagged message was not given to ses_first", envoy-go-race job 128250468046). Both
+	// reads are waited out here, before registerFanoutTarget's writes, as the rows above do.
+	waitForRegistry(t, harness.registry)
+	waitForSessions(t, harness.sessions)
 	harness.registerFanoutTarget(t, firstTarget, topic, nil)
 	harness.registerFanoutTarget(t, nextTarget, topic, nil)
+	// The fan-out reaches only what these two registries answer for, so they are read here: a
+	// registration either cache lost would otherwise show up below as a missing dedupe entry,
+	// which says nothing about where it went.
+	var matched []string
+	for _, interest := range harness.registry.Match("test-machine", topic) {
+		matched = append(matched, interest.SessionID)
+	}
+	for _, target := range []string{firstTarget, nextTarget} {
+		if !slices.Contains(matched, target) {
+			t.Fatalf("the registry matches %q on %s, want %s among them", matched, topic, target)
+		}
+		if _, state := harness.sessions.Lookup(target); state != session.Live {
+			t.Fatalf("session %s reads %s before the delivery, want live", target, state)
+		}
+	}
 	item := listenerTestEnvelope(topic, "fanout-untagged")
 	item.Payload = `{"event":{"id":0,"issue_key":"CORE-1"}}`
 
@@ -3570,17 +3804,25 @@ func newListenerDeliveryHarness(t *testing.T) listenerDeliveryHarness {
 }
 
 // newListenerDeliveryHarnessOn is newListenerDeliveryHarness over client, a listener's connection
-// to a server the test chose (one whose grant it sets, say).
-func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client) listenerDeliveryHarness {
+// to a server the test chose (one whose grant it sets, say), with sessionOptions on the session
+// registry it opens: a test that must cross a session window without waiting it out passes its
+// own clock and windows (session.WithSessionClock, session.WithSessionLiveWindow).
+func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptions ...session.SessionRegistryOption) listenerDeliveryHarness {
 	t.Helper()
 	registry, err := store.Open(client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	// Both caches are waited for here, as the listener's own start waits for them: a Put that
+	// lands after a watch fixed its initial snapshot and before the read that turns its marks on
+	// is unmarked, and the sweep that completes the read drops it, so an interest or a session
+	// registered in that window would be missing from what Match and Lookup answer.
+	waitForRegistry(t, registry)
+	sessions, err := session.OpenSessionRegistry(client.Conn, append([]session.SessionRegistryOption{session.WithSessionReplicas(1)}, sessionOptions...)...)
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
+	waitForSessions(t, sessions)
 	dedupeCache := dedupe.New(10 * time.Minute)
 	attemptCache := dedupe.New(5 * time.Minute)
 	t.Cleanup(dedupeCache.Stop)
@@ -3605,9 +3847,11 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client) listenerDeli
 		messagesDelivered: met.NewCounter("test_messages_delivered", "test"),
 		messagesNAKed:     met.NewCounter("test_messages_naked", "test"),
 		deliveryDuration:  met.NewHistogram("test_delivery_duration", "test", metrics.DefaultBuckets),
-		// The handler refuses a config without its deferral set, as main.go's always has one;
-		// the harness's two handlers share this one as main.go's do.
+		roleKeptExpired:   met.NewCounter("test_role_kept_expired", "test"),
+		// The handler refuses a config without its deferral set or its kept-lane drain guards, as
+		// main.go's always has both; the harness's two handlers share these as main.go's do.
 		deferredUnplaceable: newUnplaceableDeferrals(),
+		roleKeepDrains:      newRoleKeepGuards(),
 	}
 	// The role lane's forwards run on the role forwarder, as main.go wires them: it is the one
 	// path those messages take. It is wired last, from the configuration above, so a test that
@@ -3699,8 +3943,8 @@ func (h listenerDeliveryHarness) registerFanoutTarget(t *testing.T, sessionID, t
 
 // inlineForward is a role forward seam (listenerDeliveryHandlerConfig.forwardRole) whose publish
 // always succeeds and whose wait is forward: a test that stands in for the holder's answer.
-func inlineForward(forward func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) error) func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
-	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+func inlineForward(forward func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) error) func(string, contracts.Envelope, string, time.Duration, bool) (func() error, error) {
+	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration, _ bool) (func() error, error) {
 		return func() error { return forward(subject, item, msgID, timeout) }, nil
 	}
 }
@@ -4307,7 +4551,11 @@ func TestRunSelfHealthMonitor_MovesADeadInterestRegistryToTheLiveConnection(t *t
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		found := false
-		for _, interest := range registry.List() {
+		interests, err := registry.List()
+		if err != nil {
+			t.Fatalf("list interests: %v", err)
+		}
+		for _, interest := range interests {
 			found = found || interest.SessionID == "ses_after_move"
 		}
 		if found {
@@ -4904,4 +5152,55 @@ func TestTheDriftCorrectionWritesADurableOnlyWhenThePolicyChangesIt(t *testing.T
 	}
 	bind(drifted)
 	settle(creates, 0, "second start on the corrected durable")
+}
+
+// The default session reap interval is short enough for the adoption this change is accepted on:
+// the bucket's maximum age is read, and a record past the gone horizon deleted, only on a reaper
+// pass (session.ReapSessions), so an age another process set reaches a running listener within
+// two whole passes. A1 and A7 give that two minutes, and the setting's documentation
+// (packages/envoy/docs/architecture.md and the docs site's settings table) states one minute.
+func TestTheDefaultSessionReapIntervalMeetsTheTwoMinuteAdoption(t *testing.T) {
+	if got := 2 * defaultSessionReapInterval; got > 2*time.Minute {
+		t.Fatalf("two passes at the default session reap interval take %s, want them inside the two minutes a maximum-age change is given to reach a running listener", got)
+	}
+}
+
+// The role claim reaper runs on a period of its own, and its default is the five minutes the
+// fixed pass this change replaces ran at, which is also the age the session bucket ships with
+// (session.BucketMaxAge): a stalled session's key is expired by that age, and a holder whose
+// key is gone reads gone, so a pass more often than that frees a stalled holder's role sooner
+// than the fixed pass did - the harm this whole change exists to end. Two passes still fit well
+// inside the gone horizon, so a holder that really is gone loses its role promptly.
+//
+// The floor the bucket's age sets holds only while that age is below the gone horizon, as the
+// shipping age is: once dispatch://INFRA-887 raises it past the horizon, the session reaper
+// deletes a record at the horizon and the bucket expires none before it, so the floor is the
+// horizon's and a period as long as the raised age would keep a gone holder's role for hours.
+func TestTheDefaultRoleClaimReapIntervalIsFiveMinutesAndOutlastsTheSessionBucketsShippingAge(t *testing.T) {
+	if defaultRoleClaimReapInterval != 5*time.Minute {
+		t.Fatalf("the default role claim reap interval is %s, want the 5m fixed pass this change replaced: the deployment keeps that period, and a change to it is a change to how long a gone holder keeps its role", defaultRoleClaimReapInterval)
+	}
+	if session.BucketMaxAge < session.GoneHorizon && defaultRoleClaimReapInterval < session.BucketMaxAge {
+		t.Fatalf("the default role claim reap interval is %s, want at least the %s the session bucket keeps a record for: a stalled holder reads gone when its key expires, and a shorter pass takes its role sooner than the five-minute pass this change replaced", defaultRoleClaimReapInterval, session.BucketMaxAge)
+	}
+	if got := 2 * defaultRoleClaimReapInterval; got > session.GoneHorizon {
+		t.Fatalf("two passes at the default role claim reap interval take %s, want them inside the %s gone horizon, so a gone holder's role is free well before an operator waits out another horizon", got, session.GoneHorizon)
+	}
+}
+
+// The listener keeps no last-seen memory of its own: it opens the session registry on
+// session.LastSeenMemory, the package's own value, which must outlast both deadlines the
+// listener reads a departed session's last heartbeat for. The interest reaper can hold a dead
+// session's row until store.InterestReapAllowance after its last write, and /v1/interests/ gives
+// that row's session its real last heartbeat; and a refusal for a session past the gone horizon
+// says when it last registered. A retention shorter than either - the fifteen minutes the
+// listener used to set - leaves a row listed with no heartbeat to give and a gone session's
+// refusal unable to say when it was last seen.
+func TestTheRegistrysLastSeenMemoryOutlastsWhatTheListenerReadsItFor(t *testing.T) {
+	if allowance := store.InterestReapAllowance(store.InterestReapGrace); session.LastSeenMemory <= allowance {
+		t.Fatalf("session.LastSeenMemory is %s and the interest reaper holds a dead session's row for %s, so a row it still lists can have no last heartbeat", session.LastSeenMemory, allowance)
+	}
+	if session.LastSeenMemory <= session.GoneHorizon {
+		t.Fatalf("session.LastSeenMemory is %s and the gone horizon is %s, so a refusal for a session that has just gone cannot say when it was last seen", session.LastSeenMemory, session.GoneHorizon)
+	}
 }

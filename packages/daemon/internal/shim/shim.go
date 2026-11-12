@@ -14,6 +14,7 @@ package shim
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,16 +24,16 @@ import (
 	"os"
 	"os/exec"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 const (
@@ -68,9 +69,6 @@ const (
 	// `worker_stop_timeout_seconds` under `runtime: kubernetes` at configuration load
 	// (internal/config).
 	MinStopGrace = DefaultGrace + DrainTimeout + MinWarmUpDrain
-	// adoptionWaitDelay bounds the wait for jj's output once jj has exited or been killed at its
-	// budget, for a child of jj's still holding the pipes.
-	adoptionWaitDelay = time.Second
 )
 
 // warmUpDrain is how long Run waits for an in-flight CodeGraph warm-up once the shim's loop has
@@ -125,6 +123,20 @@ type Config struct {
 	// line reports its build against. Nil on a tmux pane, whose workspace the daemon warms itself,
 	// and on the controller, which has no workspace: nothing runs.
 	WarmCodegraph func(ctx context.Context, dir string, launched time.Time)
+	// InstallLeakCheck, when set, is run once before the wrapped process is started (spawnOnce)
+	// and must answer the installed check's path and an error the launch should fail on: the
+	// pod's one install of the pinned shared public leak check (leakguard.Install). It installs
+	// nothing and answers "" where the environment carries no pin, which is every tmux pane, so
+	// `legion worker-shim` sets it in every runtime and the pin decides
+	// (cmd/legion/worker_shim.go). ctx is the shim's own termination, so a stop that arrives
+	// mid-install ends it rather than holding the launch.
+	//
+	// The path it answers is what the shim then names in PUBLIC_LEAK_CHECK for everything it
+	// starts, where the environment names none of its own (spawnOnce): the runtime's own value
+	// wins where there is one, and this fills the gap where there is not — a pod whose image
+	// carries the install but whose daemon predates it, which would otherwise run an agent whose
+	// every write to a public repository is refused for a check that is in fact installed.
+	InstallLeakCheck func(ctx context.Context, env []string) (string, error)
 	// Log receives the shim's own lines and its one-line frame summaries: what the pane shows.
 	Log io.Writer
 	// Grace is how long a SIGTERMed child has before it is killed; zero is DefaultGrace.
@@ -144,7 +156,7 @@ type Config struct {
 // the shim exits 143 as that signal would have. The error is the shim's own failure to start
 // the child, never the child's.
 func Run(ctx context.Context, cfg Config) (int, error) {
-	s := &shim{cfg: cfg, clock: cfg.Clock, grace: cfg.Grace, stopGrace: cfg.StopGrace, childExited: make(chan struct{}), started: time.Now()}
+	s := &shim{cfg: cfg, clock: cfg.Clock, grace: cfg.Grace, stopGrace: cfg.StopGrace, ending: ctx, childExited: make(chan struct{}), started: time.Now()}
 	if s.clock == nil {
 		s.clock = realClock{}
 	}
@@ -197,6 +209,11 @@ type shim struct {
 	// started is when Run began: the launch the warm-up's success line reports its build against
 	// (Config.WarmCodegraph's launched).
 	started time.Time
+	// ending is Run's own context: the signal that stops a pane or a pod, which watch turns into
+	// the child's end. It also bounds the one piece of work spawnOnce does before the child is
+	// started, the shared leak check's install (Config.InstallLeakCheck), so a stop that arrives
+	// mid-install ends its fetch instead of holding s.mu — and so the shim — past the stop grace.
+	ending context.Context
 
 	mu          sync.Mutex
 	child       *exec.Cmd
@@ -312,7 +329,7 @@ func (s *shim) fromDaemon(line []byte) {
 	frame, err := shimwire.Decode(line)
 	if err != nil {
 		switch typ := frameType(line); typ {
-		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeRescueUnpushed, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
+		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeBundleWorkspace, shimwire.TypeRescueUnpushed, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
 			// The daemon is its only sender, and it is never OMP's to read.
 			s.log.Printf("[worker-shim] refusing a malformed %s frame: %v", typ, err)
 			return
@@ -326,6 +343,9 @@ func (s *shim) fromDaemon(line []byte) {
 		return
 	case shimwire.AdoptWorkingCopy:
 		go s.adopt(f)
+		return
+	case shimwire.BundleWorkspace:
+		go s.bundleWorkspace(f)
 		return
 	case shimwire.RescueUnpushed:
 		go s.rescue(f)
@@ -371,8 +391,26 @@ func (s *shim) toDaemon(frame shimwire.Frame) {
 	s.out.send(line)
 }
 
-// spawnOnce starts the wrapped process unless it already runs or the shim is ending. A process
-// that cannot be started ends the shim with that failure.
+// spawnOnce installs the pod's shared public leak check, names it where its environment names
+// none, then starts the wrapped process, unless that process already runs or the shim is ending.
+// An install that fails and a process that cannot be started each end the shim with that
+// failure.
+//
+// The install is here, and before the start, for two orderings this placement guarantees. The
+// harness is started after it, so no turn of the agent reaches a write path before the check its
+// environment names is in place. And connect calls spawnOnce on the daemon's hello ack and reads
+// the next frame only once it has returned, so nothing the daemon asks of this shim — the rescue
+// helper that pushes a dying pod's work among them (fromDaemon's rescue-unpushed) — runs before
+// the install either. A pod whose check could not be installed runs no agent at all: every write
+// path would refuse anyway, and a rescue refused at the end of a dying pod would lose that pod's
+// work for a reason nobody would see.
+//
+// PUBLIC_LEAK_CHECK is set from what the install answered only where the environment names none
+// of its own, and the name is added to the shim's own environment, which is what the wrapped
+// process, the rescue helper and everything else this shim runs start from. A runtime that names
+// the check (sandbox's mainEnvironment) therefore decides, as it always has; a pod whose image
+// carries this install under a daemon that predates it names none, and this is where that pod's
+// writes find the check the image installed rather than refusing every one of them.
 func (s *shim) spawnOnce() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -381,6 +419,18 @@ func (s *shim) spawnOnce() bool {
 	}
 	if s.exiting {
 		return false
+	}
+	if s.cfg.InstallLeakCheck != nil {
+		check, err := s.cfg.InstallLeakCheck(s.ending, s.cfg.Env)
+		if err != nil {
+			s.exiting = true
+			s.finish(1, err)
+			return false
+		}
+		if check != "" && envValue(s.cfg.Env, leakguard.CheckVar) == "" {
+			s.log.Printf("[worker-shim] %s is unset, so the installed check %s is what this role's writes are checked against", leakguard.CheckVar, check)
+			s.cfg.Env = append(slices.Clone(s.cfg.Env), leakguard.CheckVar+"="+check)
+		}
 	}
 	cmd := exec.Command(s.cfg.Argv[0], s.cfg.Argv[1:]...)
 	cmd.Env = append(slices.Clone(s.cfg.Env), s.cfg.ProviderEnv...)
@@ -652,13 +702,16 @@ func describedArgs(jj, dir string) []string {
 // described (its pushed commit) is kept as it is, and the incoming role starts on a fresh one of
 // its own (`jj new`): otherwise its work would land in the previous role's commit, authored by the
 // previous role's App. One read decides which of the two changes the working copy needs, and only
-// that one runs. A failure is reported the way the shipped runner does (commandFailure,
-// packages/workspace/src/workspace.ts): the daemon decides what a failed adoption means. A shim
-// without LEGION_WORKSPACE was not started by a runtime, and refuses (runWorkingCopyAdoption,
-// worker-shim.ts); a PATH without jj refuses naming jj and the PATH searched.
+// that one runs. Both commands run in the workspace itself, never in the shim's own directory: jj
+// reads the repository of the directory it runs in, whatever -R names, and migrates that
+// repository's legacy configuration (workspace.RunCommand). A failure is reported the way the
+// shipped runner does (commandFailure, packages/workspace/src/workspace.ts): the daemon decides
+// what a failed adoption means. A shim without LEGION_WORKSPACE was not started by a runtime, and
+// refuses (runWorkingCopyAdoption, worker-shim.ts); a PATH without jj refuses naming jj and the
+// PATH searched.
 func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
-	workspace := envValue(s.cfg.Env, "LEGION_WORKSPACE")
-	if workspace == "" {
+	dir := envValue(s.cfg.Env, "LEGION_WORKSPACE")
+	if dir == "" {
 		return errors.New("worker-shim: LEGION_WORKSPACE is not set; no workspace to adopt")
 	}
 	jj, err := exec.LookPath("jj")
@@ -670,56 +723,44 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 	defer cancel()
 	env := append(slices.Clone(s.cfg.Env), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
 	started := time.Now()
-	described, err := runAdoptionCommand(ctx, budget, started, workspace, env, describedArgs(jj, workspace))
+	described, err := workspace.RunCommand(ctx, budget, started, env, dir, nil, describedArgs(jj, dir))
 	if err != nil {
 		return err
 	}
-	change := adoptionArgs(jj, workspace)
+	change := adoptionArgs(jj, dir)
 	if described != "" {
-		change = []string{jj, "new", "-R", workspace}
+		change = []string{jj, "new", "-R", dir}
 	}
-	_, err = runAdoptionCommand(ctx, budget, started, workspace, env, change)
+	_, err = workspace.RunCommand(ctx, budget, started, env, dir, nil, change)
 	return err
 }
 
-// runAdoptionCommand runs one adoption command in dir, the workspace it names with -R, within the
-// adoption's budget and returns its trimmed standard output. jj also reads the repository of the
-// directory it runs in, whatever -R names, and migrates that repository's legacy configuration, so
-// the command never runs in the shim's own directory. A failure's report ends with a note on each
-// stale git lock it names (staleGitLockNote). The command timed out only when the budget ended it:
-// once jj has exited on its own, adoptionWaitDelay can hold Run open past the budget for a child
-// still holding jj's pipes, and jj's exit is then its answer. A command that never started because
-// an earlier one spent the budget timed out too.
-func runAdoptionCommand(ctx context.Context, budget time.Duration, started time.Time, dir string, env, args []string) (string, error) {
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	cmd.Dir = dir
-	cmd.Env = env
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	cmd.WaitDelay = adoptionWaitDelay
-	killed := procgroup.KilledByContext(cmd)
-	err := cmd.Run()
-	command := strings.Join(args, " ")
-	timedOut := killed() || (cmd.Process == nil && errors.Is(err, context.DeadlineExceeded))
-	if runErr := procgroup.Err(err); runErr != nil && !timedOut {
-		return "", fmt.Errorf("run %s: %w", command, runErr)
+// toDaemonChunked sends a frame that may be larger than one line: under the limit it is one line,
+// and over it the rpc_chunk sequence the daemon's reader reassembles (shimwire.SplitChunks). The
+// bundle result is the one frame of this shim's that can be: everything else fits a line.
+func (s *shim) toDaemonChunked(frame shimwire.Frame) {
+	line, err := json.Marshal(frame)
+	if err != nil {
+		s.log.Printf("[worker-shim] could not encode a %s frame: %v", frame.FrameType(), err)
+		return
 	}
-	if !timedOut && cmd.ProcessState.ExitCode() == 0 {
-		return strings.TrimSpace(stdout.String()), nil
+	if len(line) < shimwire.MaxFrameBytes {
+		s.out.send(line)
+		return
 	}
-	report := strings.TrimSpace(stderr.String())
-	if note := staleGitLockNote(report, time.Now()); note != "" {
-		report += "\n" + note
+	chunks, err := shimwire.SplitChunks(rand.Text(), line)
+	if err != nil {
+		s.log.Printf("[worker-shim] could not chunk a %s frame of %d bytes: %v", frame.FrameType(), len(line), err)
+		return
 	}
-	if timedOut {
-		message := fmt.Sprintf("Command timed out after %s s (ran %.1f s): %s",
-			strconv.FormatFloat(budget.Seconds(), 'f', -1, 64), time.Since(started).Seconds(), command)
-		if report != "" {
-			message += "\n" + report
+	for _, chunk := range chunks {
+		encoded, err := json.Marshal(chunk)
+		if err != nil {
+			s.log.Printf("[worker-shim] could not encode an rpc_chunk frame: %v", err)
+			return
 		}
-		return "", errors.New(message)
+		s.out.send(encoded)
 	}
-	return "", fmt.Errorf("Command failed (exit %d): %s\n%s", cmd.ProcessState.ExitCode(), command, report)
 }
 
 // envValue is name's value in env, the last assignment winning as it does for a process started
@@ -745,24 +786,19 @@ func summarize(frame shimwire.Frame) string {
 		if !f.Success {
 			return strings.TrimSpace("error " + f.Command + " " + f.Error)
 		}
+	case shimwire.ToolExecutionStart:
+		tool := f.ToolName
+		if tool == "" {
+			tool = "unknown"
+		}
+		var args bytes.Buffer
+		if json.Compact(&args, f.Args) != nil || args.String() == "null" {
+			args.Reset()
+			args.WriteString("{}")
+		}
+		return shimwire.TypeToolExecutionStart + " " + tool + " " + truncate(args.String(), 80)
 	case shimwire.Raw:
 		switch f.Type {
-		case "tool_execution_start":
-			var event struct {
-				ToolName string          `json:"toolName"`
-				Args     json.RawMessage `json:"args"`
-			}
-			_ = json.Unmarshal(f.JSON, &event)
-			tool := event.ToolName
-			if tool == "" {
-				tool = "unknown"
-			}
-			var args bytes.Buffer
-			if json.Compact(&args, event.Args) != nil || args.String() == "null" {
-				args.Reset()
-				args.WriteString("{}")
-			}
-			return "tool_execution_start " + tool + " " + truncate(args.String(), 80)
 		case "error":
 			var event struct {
 				Message *string `json:"message"`

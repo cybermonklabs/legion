@@ -27,16 +27,18 @@ import (
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 const (
 	defaultConfigPath = "./legion.yaml"
-	// stopTimeout bounds the wait for a stopping daemon, which returns at most 22 s after its stop
-	// begins once its boot is recorded: its stop budget, the boot's stamp and the store's close
-	// (the daemon package's stopBudget). A signal before then waits out the boot step under way
-	// first, each bounded by the boot's own 30 s (the daemon package's Run).
+	// stopTimeout bounds the wait for a stopping daemon, which returns at most 24 s after its stop
+	// begins once its boot is recorded: its stop budget, the close of the workflow's NATS
+	// connection, the boot's stamp and the store's close (the daemon package's stopBudget). A
+	// signal before then waits out the boot step under way first, each bounded by the boot's own
+	// 30 s (the daemon package's Run).
 	stopTimeout = 30 * time.Second
 	// requestTimeout bounds a CLI read of a daemon's HTTP API.
 	requestTimeout = 5 * time.Second
@@ -48,13 +50,6 @@ const (
 // (packages/daemon/docker/worker.Dockerfile) and the legion release (.github/workflows/release.yaml)
 // with `-ldflags "-X main.revision=<commit>"`; empty otherwise.
 var revision string
-
-// builtFromRepository is the repository this binary is built from: with revision, what the boot
-// compares the open production checks of that repository against (daemon.Build), and so what a
-// release build's boot wakes — a check whose merge the build carries. A Go constant is never
-// empty, so a non-release build's empty revision is what makes its boot compare nothing, as does
-// a deployment whose configured repository is another (the smoke rig's).
-const builtFromRepository = "sjawhar/legion"
 
 // release is the legion-v* version a release binary was built for, linked in by the release
 // workflow with `-ldflags "-X main.release=v<version>"`; empty in every other build.
@@ -91,13 +86,14 @@ var commands = map[string]commandEntry{
 	"model-token":    {runModelToken, "sign a pod in to Cognito with its service-account token and print the access token (a model apiKey command)"},
 	"claims":         {runClaims, "the operator's hand on the daemon's claims"},
 	"sessions":       {runSessions, "copy recorded session files into Oh My Pi's session database (runtime.kubernetes.session_store postgres)"},
-	"handoffs":       {runHandoffs, "copy each in-flight branch's committed .legion/ handoff files onto its Dispatch issue, then remove .legion/ from the branch"},
 	"probe-boot":     {runProbeBoot, "run a Kubernetes daemon's cluster check and worker image probe from legion.yaml, with no workflow, and exit"},
 	"probe-image":    {runProbeImage, "run the worker image's launch probes (the image build and the daemon's probe Sandbox run it)"},
-	"workspace-init": {runWorkspaceInit, "an issue pod's init containers: fetch the repository, provision the issue's workspace; and a repository cache pod's process"},
+	"workspace-init": {runWorkspaceInit, "an issue pod's init containers: fetch the repository, clone the skills marketplace, provision the issue's workspace; and a repository cache pod's process"},
+	"skills-check":   {runSkillsCheck, "compare the skills a role installed with the commit its pod's init container recorded (a role's start wrapper runs it, never a person)"},
 	"controller":     {runController, "start the operator's controller, the interactive Oh My Pi session an operator talks to"},
 	"git-credential": {runGitCredential, "git's credential helper in every shared clone: answers git with the token of the owner the repository's path names (git runs it, never a person)"},
 	"gh":             {runGh, "the gh first on a pane's or pod's PATH: runs the real gh with the gh directory of the owner the command names (a pane runs it, never a person)"},
+	"leak-check":     {runLeakCheck, "run the leak guard over a write the shell is about to make: git's pre-push hook runs its pre-push form, and the rule file's port test runs its text form (never a person)"},
 }
 
 // helpRequested says whether a command's first argument asks for its usage.
@@ -264,12 +260,27 @@ func pluginsLine(cfg config.Config) string {
 // files they name before it writes anything (daemon.CheckStart, the reads boot's own prepare
 // starts with, the daemon's own NATS nkey seed among them), and nothing else: no store, no team, no
 // file written, and no process but `mise where <tool>` when a tmux configuration's omp_invocation
-// names a mise tool. The OK line names each NATS nkey seed's public key when there is one, never
-// the seed. After it, one line per configured repository rename (`repository_renames`), so an
-// operator reads back what the daemon will treat as one repository before a transfer moves the
-// events onto the new name; a file that configures none prints no such line. Then one line per
-// deployment capability the file alone leaves open, in the words boot logs it with
+// names a mise tool. The OK line names the design-gate steps the file resolved to, in the order
+// it named them (`design-gate-steps=`, `none` for a deployment that gates none), and each NATS
+// nkey seed's public key when there is one, never the seed.
+// Right after it comes one line per loader warning (config.Config.Warnings) — a key the file
+// still sets that this daemon no longer reads, whether a project sets it or the file does at its
+// top level — in the words boot logs it with: what the key would have been refused for, and what
+// to change. A deprecation is the first thing an operator reads that way, and the exit stays 0,
+// since such a key is ignored and never refused.
+// Then one line per project, in key order, naming its `production_check` and what the word
+// decides (productionCheckLine), so an operator reads back which projects open a production
+// check at a merge. After them, one line per configured repository rename
+// (`repository_renames`), so an operator reads back what the daemon will treat as one repository
+// before a transfer moves the events onto the new name; a file that configures none prints no
+// such line. Then one line per deployment capability the file alone leaves open, in the words
+// boot logs it with
 // (capabilities.Deployment.OpenFromConfiguration): a report, so the exit stays 0.
+// Then, under either runtime, the intake handler limit's line, but only when
+// worker_rpc_timeout_seconds derived a limit above intake's ten-minute floor
+// (daemon.IntakeHandlerLimitLine): a check of a file that leaves the floor in place says nothing
+// an operator cannot read in the daemon's own default, while the boot log names the limit either
+// way.
 // Under kubernetes, when a pod's reservation requests less cpu or memory than its limit, one plain
 // `resources:` line names those pods as Burstable (capabilities.Deployment.BurstableLine);
 // a file that sets no lower request prints none, its pods all Guaranteed. Then, when the image
@@ -295,7 +306,7 @@ func checkStartConfig(configPath string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "legion start: %v\n", err)
 		return 1
 	}
-	ok := "Config OK: project=" + cfg.Project
+	ok := "Config OK: project=" + cfg.Project + " design-gate-steps=" + designGateSteps(cfg.Gates.Steps())
 	if paneNatsUser != "" {
 		ok += " nats-nkey-user=" + paneNatsUser
 	}
@@ -303,6 +314,12 @@ func checkStartConfig(configPath string, stdout, stderr io.Writer) int {
 		ok += " nats-daemon-nkey-user=" + daemonNatsUser
 	}
 	fmt.Fprintln(stdout, ok)
+	for _, warning := range cfg.Warnings {
+		fmt.Fprintln(stdout, warning)
+	}
+	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
+		fmt.Fprintln(stdout, productionCheckLine(key, cfg.Projects[key]))
+	}
 	for _, rename := range cfg.RepositoryRenames.Pairs() {
 		fmt.Fprintf(stdout, "repository rename: %s and %s are one repository wherever the daemon compares a name; keep the pair configured for as long as any record names %s\n",
 			rename.From, rename.To, rename.From)
@@ -310,6 +327,9 @@ func checkStartConfig(configPath string, stdout, stderr io.Writer) int {
 	deployment := daemon.Deployment(cfg)
 	for _, gap := range deployment.OpenFromConfiguration() {
 		fmt.Fprintln(stdout, gap.OpenLine())
+	}
+	if line, derived := daemon.IntakeHandlerLimitLine(cfg); derived {
+		fmt.Fprintln(stdout, line)
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		if line := deployment.BurstableLine(); line != "" {
@@ -325,6 +345,29 @@ func checkStartConfig(configPath string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, pluginsLine(cfg))
 	}
 	return 0
+}
+
+// designGateSteps is the deployment's design-gate steps as the OK line names them: the step
+// names in the order the file resolved them to, comma-separated, and `none` where the
+// deployment gates no step.
+func designGateSteps(steps []record.DesignStep) string {
+	if len(steps) == 0 {
+		return "none"
+	}
+	return strings.Join(record.StepNames(steps), ",")
+}
+
+// productionCheckLine is `--check-config`'s line for one project's `production_check`: the word
+// the file writes (`tester` or `off`, config.Project.ProductionCheckWord) and what it decides.
+// The role the key names works the check, and `off` opens none; either way the key decides only
+// the checks opened after the load, never one already open, which keeps the role it opened with.
+func productionCheckLine(key string, project config.Project) string {
+	effect := "no production check"
+	if role := project.ProductionCheck; role != "" {
+		effect = fmt.Sprintf("a production check the %s works", role)
+	}
+	return fmt.Sprintf("projects.%s.production_check: %s — a merge that closes one of its issues opens %s",
+		key, project.ProductionCheckWord(), effect)
 }
 
 // reservedUnder is a cpu or memory reservation as --check-config names it: the one quantity when
@@ -361,6 +404,17 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(stderr, "legion start: %v\n", err)
 		return 1
+	}
+	// Each warning the loader has (config.Config.Warnings) is logged once, here and nowhere
+	// further down: daemon.Run logs none of them, so a boot that goes on to serve writes each
+	// line once and not twice. They come before any other work this boot does with the
+	// configuration — before the team is claimed, which another legion's entry refuses — so a
+	// start that never reaches a boot has logged them too, and the lines are the first a reader of
+	// the log meets
+	// (docs/solutions/envoy/a-setting-another-repositorys-deployment-sets-is-removed-in-two-releases-pr2674.md).
+	// The boot goes on: a key another deployment still sets is ignored, never refused.
+	for _, warning := range cfg.Warnings {
+		log.Warn(warning)
 	}
 	// legion.yaml always resolves both bind and port, and both must name the inherited socket: the
 	// registry entry, the default daemon_url and `legion state --port` all dial them.
@@ -418,7 +472,7 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 		}
 	}()
 
-	if err := daemon.Run(ctx, cfg, daemon.Build{Revision: revision, Repository: builtFromRepository}, log, inherited); err != nil {
+	if err := daemon.Run(ctx, cfg, log, inherited); err != nil {
 		fmt.Fprintf(stderr, "legion start: %v\n", err)
 		return 1
 	}
@@ -507,24 +561,22 @@ func runStop(_ context.Context, args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// runState prints the daemon's state. It reaches the daemon as every operator command does
+// (operatorCall): one decision of which daemon the command reads, and the bearer, which this
+// command alone may leave out, read from the same --operator-token-file. With one it also names
+// who suspended each stranded claim, which the state body does not carry (strandedSuspenders).
 func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("state", "usage: legion state [flags]", stderr)
-	asJSON := flags.Bool("json", false, "print the state as the daemon serves it")
-	configPath := flags.String("config", "", "path to legion.yaml (default "+defaultConfigPath+")")
-	port := flags.Int("port", 0, "port to read, overriding the configured one")
-	if code, ok := parseFlags(flags, args); !ok {
+	c := newOperatorCall("state", "usage: legion state [flags]\nthe configuration is named with --config <file>, never as an argument",
+		"file holding the operator bearer the daemon's operator_token_file names; with it the claims nothing will wake name who suspended each", stdout, stderr)
+	asJSON := c.flags.Bool("json", false, "print the state as the daemon serves it")
+	if code, ok := c.parse(args); !ok {
 		return code
 	}
-	if flags.NArg() > 0 {
-		fmt.Fprintf(stderr, "legion state: unexpected argument %q; name the configuration with --config <file>\n", flags.Arg(0))
-		return 2
-	}
-
-	address, err := daemonAddress(*configPath, *port)
-	if err != nil {
-		fmt.Fprintf(stderr, "legion state: %v\n", err)
+	op, ok := c.connect()
+	if !ok {
 		return 1
 	}
+	address := op.base
 	body, err := get(ctx, address+"/legion/v1/state")
 	if err != nil {
 		fmt.Fprintf(stderr, "legion state: %v\n", err)
@@ -547,15 +599,21 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fmt.Fprintf(stdout, "legion %s on %s — schema %d, boot %d started %s (first boot %s)\n",
 		state.Daemon.Project, address, state.Daemon.SchemaVersion, state.Daemon.Boots,
 		state.Daemon.StartedAt.Format(time.RFC3339), state.Daemon.FirstBootAt.Format(time.RFC3339))
-	fmt.Fprintf(stdout, "admission: %d active, %d waiting, cap %d; %d issues\n",
-		len(state.Admission.Active), len(state.Admission.Waiting), state.Admission.Cap, len(state.Issues))
+	fmt.Fprintf(stdout, "admission: %d issues hold a slot, cap %d, %d waiting; %d live trees; %d issues\n",
+		len(state.Admission.Active), state.Admission.Cap, len(state.Admission.Waiting),
+		len(state.Admission.Trees), len(state.Issues))
 	fmt.Fprintln(stdout, blockedSummary(state.Admission.Blocked))
+	fmt.Fprintln(stdout, memorySummary(state.Issues))
 	fmt.Fprintln(stdout, awaitingSummary(state.Issues))
 	fmt.Fprintln(stdout, checksSummary(openChecks(state.Issues)))
 	fmt.Fprintln(stdout, roundsSummary(state.Issues))
+	fmt.Fprintln(stdout, openCallsSummary(state.Issues))
 	fmt.Fprintln(stdout, pendingSummary(state.PendingStatusWrites))
 	fmt.Fprintln(stdout, heldSummary(state.HeldOutboxRows))
-	fmt.Fprintln(stdout, strandedSummary(state.StrandedClaims))
+	fmt.Fprintln(stdout, strandedSummary(state.StrandedClaims, strandedSuspenders(ctx, op, state.StrandedClaims)))
+	if wakes := wakesWaitingSummary(state.WakesWaiting); wakes != "" {
+		fmt.Fprintln(stdout, wakes)
+	}
 	for _, line := range webhookAppLines(state.Repositories.WithoutWebhookApp) {
 		fmt.Fprintln(stdout, line)
 	}
@@ -594,21 +652,70 @@ func blockedSummary(blocked []api.BlockedIssue) string {
 	return fmt.Sprintf("blocked on Dispatch links: %d — %s", len(blocked), strings.Join(waits, "; "))
 }
 
-// awaitingSummary is the one line an operator reads for the roots that gave their admission slot
-// up to wait on a person (api.WaitingOnView): an unanswered one is in neither admission list and
-// holds no slot, so without this line the capacity it freed looks idle. It says how many, how many
-// a person answered (each at the front of the waiting line for the next free slot), and each by
-// key with what it waits on and whether, when and by what act it was answered.
+// memorySummary is the one line an operator reads for the memory groups the project's work was
+// drawn into: how many issues carry a draw at all, and how many of those under each group and
+// mode, in group and then mode order, so two runs over one state print one line.
+//
+// It counts issues, and not the trees the draw is made for, because the state carries no tree: a
+// draw would have to stand for its tree, and it cannot. Every issue of a tree carries its root's
+// draw, and a tree handed over as one of its own carries its old tree's draw verbatim — the
+// group, the mode and the instant alike — so two trees share one draw and no draw is a tree's
+// name. It names no issue either: the per-issue values are in `legion state --json`, where a line
+// per issue would print hundreds on a live deployment.
+func memorySummary(issues map[string]api.Issue) string {
+	type groupMode struct{ group, mode string }
+	counts := map[groupMode]int{}
+	drawn := 0
+	for _, issue := range issues {
+		if issue.MemoryGroup == "" {
+			continue
+		}
+		drawn++
+		counts[groupMode{group: issue.MemoryGroup, mode: issue.MemoryDrawMode}]++
+	}
+	if drawn == 0 {
+		return "memory: none"
+	}
+	kinds := slices.SortedFunc(maps.Keys(counts), func(a, b groupMode) int {
+		return cmp.Or(cmp.Compare(a.group, b.group), cmp.Compare(a.mode, b.mode))
+	})
+	named := make([]string, len(kinds))
+	for i, kind := range kinds {
+		named[i] = fmt.Sprintf("%d %s (%s)", counts[kind], kind.group, kind.mode)
+	}
+	noun := "issues"
+	if drawn == 1 {
+		noun = "issue"
+	}
+	return fmt.Sprintf("memory: %d %s — %s", drawn, noun, strings.Join(named, ", "))
+}
+
+// awaitingSummary is the one line an operator reads for the roots that wait on a person
+// (api.WaitingOnView): such a root keeps the slot it took when the daemon started it, so it
+// stands in `active` while it waits and `active` alone does not say what it waits for. It says
+// how many, how many of them a person answered and the daemon's own published
+// line names (api.WaitingLineView), and each by key with what it waits on and whether, when and by
+// what act it was answered.
+//
+// The second count reads the published line rather than judging the wait a second time. An
+// answered root stands in that line, among the issues whose work came back, oldest first
+// (record.Waiting carries every answered root there, whatever its design gate
+// says), until the pass that resumes it. Two answered roots are in no line this summary reads:
+// one of another Dispatch project, whose line this daemon does not build, and every one of them
+// when the daemon answering is older than contract 58 and has no `waitingLine` to send. The
+// caller is the operator's `legion state`, which a daemon of this release serves in full
+// (api's stateFor), so nothing strips the field from this reader. So the count is 0 against a
+// daemon older than contract 58, which is the true answer for a reader that cannot see the line.
 func awaitingSummary(issues map[string]api.Issue) string {
 	var keys []string
-	answered := 0
+	standing := 0
 	for key, issue := range issues {
 		if issue.WaitingOn == nil {
 			continue
 		}
 		keys = append(keys, key)
-		if issue.WaitingOn.AnsweredAt != nil {
-			answered++
+		if issue.WaitingOn.AnsweredAt != nil && issue.WaitingLine != nil {
+			standing++
 		}
 	}
 	if len(keys) == 0 {
@@ -628,8 +735,8 @@ func awaitingSummary(issues map[string]api.Issue) string {
 		}
 		waits[i] = key + " waits on " + on + ", " + state
 	}
-	return fmt.Sprintf("roots waiting on a person: %d, %d answered and waiting for a slot — %s",
-		len(keys), answered, strings.Join(waits, "; "))
+	return fmt.Sprintf("roots waiting on a person: %d, %d answered and standing in the admission line — %s",
+		len(keys), standing, strings.Join(waits, "; "))
 }
 
 // pendingSummary is the one line an operator reads for the Dispatch status writes the daemon has
@@ -670,8 +777,11 @@ func openChecks(issues map[string]api.Issue) []issueCheck {
 }
 
 // checksSummary is the one line an operator reads for the production checks still open: how many,
-// and the oldest — its issue, pull request and merge commit, which look it is on, what woke that
-// look and when, and when the check is bound.
+// and the oldest — its issue, pull request and merge commit, the role working it, which look it
+// is on, what woke that look and when, and when its next look is due. The role is on the line
+// because a check opened before the release that gave the project `production_check` carries the
+// implementer, and one opened after it the role that setting names, and an operator reading the
+// oldest check cannot tell them apart otherwise.
 func checksSummary(checks []issueCheck) string {
 	if len(checks) == 0 {
 		return "open production checks: none"
@@ -688,8 +798,8 @@ func checksSummary(checks []issueCheck) string {
 	if wake := oldest.check.LastWake; wake != nil {
 		look += fmt.Sprintf(" woken by %s at %s", wake.Kind, wake.At.UTC().Format(time.RFC3339))
 	}
-	return fmt.Sprintf("open production checks: %d; the oldest, %s #%d at %s, %s, bound %s",
-		len(checks), oldest.issue, oldest.check.PullRequest, merge, look, oldest.check.NextWakeAt.UTC().Format(time.RFC3339))
+	return fmt.Sprintf("open production checks: %d; the oldest, %s #%d at %s, worked by the %s, %s, next look %s",
+		len(checks), oldest.issue, oldest.check.PullRequest, merge, oldest.check.Role, look, oldest.check.NextWakeAt.UTC().Format(time.RFC3339))
 }
 
 // issueRound is one update round an issue has open, and the claims in it, by role: the round a
@@ -757,6 +867,63 @@ func roundsSummary(issues map[string]api.Issue) string {
 	return fmt.Sprintf("open update rounds: %d — %s", len(rounds), strings.Join(named, "; "))
 }
 
+// claimCall is one claim's open tool call: the issue and role whose claim it is, and the record
+// of the call (api.StepView).
+type claimCall struct {
+	issue string
+	role  string
+	step  api.StepView
+}
+
+// openCalls is every claim of the state whose agent is in a tool call the daemon has seen the
+// start of and no end of, by issue and then role. A call open is what claims.go's openCallWord
+// prints a word for and nothing else is, so that is the test here too: openCallsSummary names
+// each of these rows with that word. That is the shape a stalled turn leaves behind: the daemon
+// reads the same record to decide a turn has stopped moving, and this is where an operator reads
+// it. A controller's claim is in none of these — internal/projection puts it on no issue — and is
+// read with `legion claims list` instead.
+func openCalls(issues map[string]api.Issue) []claimCall {
+	var calls []claimCall
+	open := func(issue, role string, view api.ClaimView) {
+		if openCallWord(view.Step) == "" {
+			return
+		}
+		calls = append(calls, claimCall{issue: issue, role: role, step: *view.Step})
+	}
+	for key, issue := range issues {
+		if issue.Architect != nil {
+			open(key, string(legionclaim.RoleArchitect), *issue.Architect)
+		}
+		for _, role := range slices.Sorted(maps.Keys(issue.Workers)) {
+			open(key, string(role), issue.Workers[role].Claim)
+		}
+	}
+	slices.SortFunc(calls, func(a, b claimCall) int {
+		return cmp.Or(cmp.Compare(a.issue, b.issue), cmp.Compare(a.role, b.role))
+	})
+	return calls
+}
+
+// openCallsSummary is the one line an operator reads for the agents in a tool call right now: how
+// many, and each by issue and role with the call its stream named and when that call started
+// (claims.go's openCallWord, Go-quoted because the tool and the call id are the agent's own
+// word). A call that has been open for hours is this issue's whole shape — the daemon's backstop
+// ends such a turn, and until it does this line says which agent is in one.
+//
+// The call's arguments are in no column of it: the daemon keeps their length and a fingerprint
+// alone, because a shell command routinely holds a credential (supervise.StepRecord).
+func openCallsSummary(issues map[string]api.Issue) string {
+	calls := openCalls(issues)
+	if len(calls) == 0 {
+		return "agents in a tool call: none"
+	}
+	named := make([]string, len(calls))
+	for i, call := range calls {
+		named[i] = fmt.Sprintf("%s %s %s", call.issue, call.role, strconv.Quote(openCallWord(&call.step)))
+	}
+	return fmt.Sprintf("agents in a tool call: %d — %s", len(calls), strings.Join(named, "; "))
+}
+
 // heldSummary is the one line an operator reads for the lifecycle rows the daemon holds behind
 // their issues' running ones (api.State.HeldOutboxRows): how many, and the one that has waited
 // longest — the first such in the state's order, so ties go to the one due first.
@@ -774,19 +941,22 @@ func heldSummary(held []api.HeldOutboxRow) string {
 var strandedPhrases = map[api.StrandedMove]string{
 	api.StrandedResume:           "resume",
 	api.StrandedSuspendedWorkers: "suspended workers, each brought back as its suspendedBy calls for (legion claims list --json)",
+	api.StrandedReleasedNoResume: "released, woken over ten minutes ago and the pod never came back",
 	api.StrandedRetry:            "failed, retry",
-	api.StrandedWorkflowStart:    "failed, needs a workflow start",
+	api.StrandedWorkflowStart:    "failed or retired, needs a workflow start: the architect's retry_or_escalate of a held phase, a transition into the phase, or a tree close and re-admission",
 }
 
 // strandedSummary is the one line an operator reads for the claims nothing will wake: how many,
 // and each by issue and role under the move that brings it back (api.StrandedClaim.Move, which the
 // boot's log line groups by too). A suspended phase worker's move is the troubleshooting page's "A
-// tree does not move after a restart" for its suspendedBy, which `legion claims list --json` shows.
-func strandedSummary(stranded []api.StrandedClaim) string {
+// tree does not move after a restart" for its suspendedBy, which `legion claims list --json` shows;
+// a released one is a pod whose wake was taken and whose replacement never took a turn, which is
+// the daemon's own log of that wake to read, not a suspension to lift.
+func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) string {
 	if len(stranded) == 0 {
 		return "claims nothing will wake: none"
 	}
-	grouped := api.StrandedByMove(stranded)
+	grouped := api.StrandedByMove(stranded, suspended)
 	var groups []string
 	for _, move := range api.StrandedMoves() {
 		if named := grouped[move]; len(named) > 0 {
@@ -794,6 +964,49 @@ func strandedSummary(stranded []api.StrandedClaim) string {
 		}
 	}
 	return fmt.Sprintf("claims nothing will wake: %d — %s", len(stranded), strings.Join(groups, "; "))
+}
+
+// wakesWaitingSummary is the line an operator reads for the wakes the daemon's pacing is holding
+// until their turn (api.State.WakesWaiting): how many, and each by claim with what kind of wake it
+// is and when it is due, in the state's own claim order. It is empty when nothing waits, and the
+// caller then prints nothing: every other line here says "none" because what it counts is always
+// worth a glance, while a wake queue is empty at every moment outside a restart or a plugin wave,
+// and a line saying so on every read would be noise in the one place an operator reads most.
+func wakesWaitingSummary(wakes []api.WakeWaiting) string {
+	if len(wakes) == 0 {
+		return ""
+	}
+	held := make([]string, len(wakes))
+	for i, wake := range wakes {
+		held[i] = fmt.Sprintf("%s %s due %s", wake.Claim, wake.Kind, wake.DueAt.Format(time.RFC3339))
+	}
+	return fmt.Sprintf("wakes waiting: %d — %s", len(wakes), strings.Join(held, "; "))
+}
+
+// strandedSuspenders is who suspended each stranded claim, which the state body does not carry:
+// every plugin parses that body with the schema of its own contract, so a key added to it refuses
+// the whole state in a session whose plugin predates INFRA-1048 and that the daemon has not
+// relaunched, and is dropped by every plugin after it (api.StrandedClaim). The
+// operator claim routes serve it, and this reads them with the bearer --operator-token-file
+// names, on the daemon op already names. Without that flag, and when the daemon refuses the
+// bearer or answers nothing, the lookup is empty and every stranded claim reads as the plain
+// suspension it is, which `legion claims list --json` tells apart. The state is the operator's
+// one unguarded read, so nothing here fails the command.
+func strandedSuspenders(ctx context.Context, op operator, stranded []api.StrandedClaim) api.Suspenders {
+	if len(stranded) == 0 || op.bearer == "" {
+		return nil
+	}
+	timed, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	status, answer, err := op.do(timed, http.MethodGet, claimsRoute, nil)
+	if err != nil || status/100 != 2 {
+		return nil
+	}
+	var list api.OperatorClaims
+	if json.Unmarshal(answer, &list) != nil {
+		return nil
+	}
+	return api.SuspendersOfOperatorClaims(list.Claims)
 }
 
 // webhookAppLines are the lines an operator reads for the served repositories Dispatch's GitHub App

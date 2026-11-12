@@ -8,14 +8,18 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The three re-entrant helpers this test runs as processes of its own: the stage, which builds a
@@ -26,6 +30,14 @@ const (
 	roleInitStageEnv = "LEGION_ROLE_INIT_TEST_STAGE"
 	roleInitAgentEnv = "LEGION_ROLE_INIT_TEST_AGENT"
 )
+
+// Each helper of this file is the test binary re-executed with its own LEGION_ marker, which
+// Guard would take out, so TestMain runs none in such a child (helperChildVariables,
+// main_test.go). This file builds only under Linux, where the namespaces it works in exist, so it
+// registers its markers itself rather than leaving them in that list.
+func init() {
+	helperChildVariables = append(helperChildVariables, roleInitStageEnv, roleInitAgentEnv, uncoverControlEnv, roleCheckEnv)
+}
 
 // stagePlan is what the stage builds and runs. Mount is the directory it covers with a memory
 // filesystem of its own, so the layout it builds — and the role's own mounts over it — stay out
@@ -131,6 +143,7 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 		{"agent home-mounts-view", "0", "the container's view of the home's volumes is covered: the role sees each at its own path alone"},
 		{"agent tmp-mount", "mounted-a", "a mount /tmp carried is bound back over the role's own /tmp"},
 		{"agent home-carryover", "absent", "the role's first generation starts on a home layer with nothing of its own"},
+		{"agent home-dir-rename", "ok", "the role renames a directory on its own home layer and the sandbox lives; under gVisor without userxattr the rename panics the sandbox instead"},
 		{"stage upper-home", "present", "what the role wrote under its home landed on its own layer"},
 		{"stage upper-tmp", "present", "what the role wrote in /tmp landed in its own temporary directory"},
 		{"stage upper-var-tmp", "present", "what the role wrote in /var/tmp landed in its own temporary directory"},
@@ -512,12 +525,12 @@ func runGeneration(plan stagePlan, layout agentPlan, generation uint64, label st
 // detachedProcess says whether any process of the machine still runs the detached command the
 // role started, once the role's init has exited.
 func detachedProcess(marker string) string {
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		found := false
+	var unreadable string
+	gone := testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool {
 		entries, err := os.ReadDir("/proc")
 		if err != nil {
-			return "unreadable: " + err.Error()
+			unreadable = "unreadable: " + err.Error()
+			return true
 		}
 		for _, entry := range entries {
 			if _, err := strconv.Atoi(entry.Name()); err != nil {
@@ -525,18 +538,18 @@ func detachedProcess(marker string) string {
 			}
 			body, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
 			if err == nil && strings.Contains(string(body), marker) {
-				found = true
-				break
+				return false
 			}
 		}
-		if !found {
-			return "gone"
-		}
-		if time.Now().After(deadline) {
-			return "running"
-		}
-		time.Sleep(50 * time.Millisecond)
+		return true
+	})
+	if unreadable != "" {
+		return unreadable
 	}
+	if gone {
+		return "gone"
+	}
+	return "running"
 }
 
 // TestRoleInitAgentHelper is the worker shim's stand-in: the process role-init starts inside the
@@ -597,6 +610,21 @@ func TestRoleInitAgentHelper(t *testing.T) {
 	// What an earlier generation of this role wrote under its home is still the role's own: the
 	// writable layer is the role's across its generations, as a role container's filesystem was.
 	say("home-carryover", presence(filepath.Join(plan.Home, "planted")))
+	// A directory of the role's own, made and then renamed on its home overlay: the live
+	// reading of the userxattr option the home layer is mounted with. On gVisor a home overlay
+	// mounted without that option does not fail this case, it panics the sandbox and ends the
+	// pod, so this case must never be run at a head whose options string lacks the option. The
+	// safe negative control of the option is TestARoleHomeLayerIsMountedWithUserxattr, which
+	// compares the string alone. The name carries the generation's label: the upper layer is
+	// the role's across its generations and every generation of this helper renames here.
+	made := filepath.Join(plan.Home, "renamed-"+plan.Label)
+	if err := os.MkdirAll(made, 0o755); err != nil {
+		say("home-dir-rename", err.Error())
+	} else if err := os.Rename(made, made+"-again"); err != nil {
+		say("home-dir-rename", err.Error())
+	} else {
+		say("home-dir-rename", "ok")
+	}
 	// The role's config home is its own: what workspace-init wrote in the pod's shared one is
 	// there, a mount under the shared one comes back over it, and what this role's earlier
 	// generations wrote there is still the role's, while a sibling's writes never are. A
@@ -937,6 +965,133 @@ func TestAMountPointsPlaceFollowsNoLinkARoleLeft(t *testing.T) {
 	}
 }
 
+// A mount point's place is decided from a handle the walk opened and read, so a component that
+// changed between the removal of the link that stood there and the making of the place is read
+// again rather than assumed: the directory replaced leaves at the component's own name is the
+// directory the walk descends, where a walk that took its own Mkdirat's refusal as the answer
+// would refuse a place it had just been given. replaced is the only thing that can put an entry
+// at that name while role-init runs — nothing of the role runs then, and no other role reaches
+// the role's layers — so the callback below stands for that window and for nothing else. The two
+// refusals are unchanged behaviour: a new link at the component's name is refused, and so is a
+// directory where a file's mount point goes. No walk here, refused or not, leaves a descriptor
+// behind.
+func TestAMountPointsPlaceRereadsAnEntryThatChangedUnderTheWalk(t *testing.T) {
+	dir := t.TempDir()
+	root, elsewhere := filepath.Join(dir, "home"), filepath.Join(dir, "elsewhere")
+	for _, path := range []string{root, elsewhere} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, place := range []struct {
+		name    string // the component the role left a link at, one per case so the cases do not meet
+		plant   string // what replaced puts back at that component's own name: a dir or a link
+		target  string // the path under the root the walk is asked to make, relative to it
+		dir     bool
+		wantErr bool
+	}{
+		{name: "changed", plant: "dir", target: filepath.Join("changed", "sessions"), dir: true},
+		{name: "relinked", plant: "link", target: filepath.Join("relinked", "sessions"), dir: true, wantErr: true},
+		{name: "as-file", plant: "dir", target: "as-file", dir: false, wantErr: true},
+	} {
+		component := filepath.Join(root, place.name)
+		if err := os.Symlink(filepath.Join(elsewhere, place.name), component); err != nil {
+			t.Fatal(err)
+		}
+		planted, replaced := false, []string(nil)
+		plant := func(link string) {
+			replaced = append(replaced, link)
+			if planted {
+				return
+			}
+			planted = true
+			var err error
+			if place.plant == "link" {
+				err = os.Symlink(filepath.Join(elsewhere, place.name+"-again"), component)
+			} else {
+				err = os.Mkdir(component, 0o755)
+			}
+			if err != nil {
+				t.Error(err)
+			}
+		}
+		before := openDescriptors(t)
+		err := mountPointBeneath(root, filepath.Join(root, place.target), place.dir, plant)
+		descriptorsKept(t, "the place of "+place.target, before, openDescriptors(t))
+		switch {
+		case place.wantErr && (err == nil || !strings.Contains(err.Error(), component)):
+			t.Errorf("the place of %s over the %s replaced left = %v, want a refusal naming %s", place.target, place.plant, err, component)
+		case !place.wantErr && err != nil:
+			t.Errorf("the place of %s over the %s replaced left = %v, want the place made in the role's own layer", place.target, place.plant, err)
+		}
+		if want := []string{component}; strings.Join(replaced, " ") != strings.Join(want, " ") {
+			t.Errorf("the place of %s replaced %q, want %q: the link it removed", place.target, replaced, want)
+		}
+	}
+	for path, want := range map[string]fs.FileMode{
+		"changed": fs.ModeDir, filepath.Join("changed", "sessions"): fs.ModeDir,
+	} {
+		if info, err := os.Lstat(filepath.Join(root, path)); err != nil || info.Mode().Type() != want {
+			t.Errorf("%s is %v (%v), want type %v: the entry replaced left was read again", path, info, err, want)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "plain"), []byte("plain"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := openDescriptors(t)
+	err := mountPointBeneath(root, filepath.Join(root, "plain", "x"), true, func(link string) {
+		t.Errorf("the place through a regular file replaced %s, want no link in its way", link)
+	})
+	descriptorsKept(t, "the place through a regular file", before, openDescriptors(t))
+	if err == nil || !strings.Contains(err.Error(), filepath.Join(root, "plain")) {
+		t.Errorf("the place through a regular file = %v, want a refusal naming it", err)
+	}
+	if entries, err := os.ReadDir(elsewhere); err != nil || len(entries) != 0 {
+		t.Errorf("what the links named holds %v (%v), want nothing: a link was followed", entries, err)
+	}
+}
+
+// openDescriptors is every descriptor this process holds open and what each names, read the
+// moment it is called.
+func openDescriptors(t *testing.T) map[int]string {
+	t.Helper()
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := map[int]string{}
+	for _, entry := range entries {
+		number, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		target, err := os.Readlink(filepath.Join("/proc/self/fd", entry.Name()))
+		if err != nil {
+			continue // the listing's own descriptor, closed before this read
+		}
+		open[number] = target
+	}
+	return open
+}
+
+// descriptorsKept reports what the call between the two snapshots left open, as a set and never
+// as a count: a descriptor open after it, on a target that was not open on that number before
+// it, is one the call opened and did not close. It reads the whole process, so it holds only
+// while nothing else opens a descriptor in the window: no test of this package runs in parallel,
+// and every goroutine a test starts ends with that test. That is why it checks this direction
+// alone: a descriptor vanishing between the snapshots is no finding, because the finaliser of a
+// file an earlier test left unreferenced closes it at whatever garbage collection lands in the
+// window (measured, with the two snapshots around a runtime.GC()), and a finaliser closes where
+// it never opens.
+func descriptorsKept(t *testing.T, label string, before, after map[int]string) {
+	t.Helper()
+	for number, target := range after {
+		if held, ok := before[number]; !ok || held != target {
+			t.Errorf("%s left descriptor %d open on %s, want every handle it opened closed", label, number, target)
+		}
+	}
+}
+
 // A role's own config home is a finished copy only once it holds ownConfigHome's marker: a
 // directory at its path without the marker — a copy a generation stopped midway, or an empty
 // directory something else made there before the role's first start — is removed and copied
@@ -987,5 +1142,110 @@ func TestAnOwnConfigHomeWithoutItsMarkerIsMadeAgain(t *testing.T) {
 	}
 	if got := presence(filepath.Join(elsewhere, configHomeMarker)); got != "present" {
 		t.Errorf("what the link named lost its file (%s): the link was followed", got)
+	}
+}
+
+// The role's own layer over its home is mounted with userxattr, over the home as its lower layer
+// and the role's own upper and work directories. Without that option gVisor marks a renamed
+// directory opaque by writing trusted.overlay.opaque, which a task in the role's nested user
+// namespace may not write, and gVisor panics when that write is refused, which ends the pod's
+// whole sandbox. The safe negative control is this case alone: take ,userxattr out of the string
+// homeOverlayOptions returns and the case fails, naming the options the launch would mount with.
+// Never prove the option by running TestARoleRunsInNamespacesOfItsOwn against a head without it:
+// under gVisor that ends the pod's sandbox rather than failing a test.
+func TestARoleHomeLayerIsMountedWithUserxattr(t *testing.T) {
+	homes := filepath.Join("/roles", RoleHomesDir, "a")
+	home, upper, work := Home, filepath.Join(homes, "upper"), filepath.Join(homes, "work", "0000000001")
+	options := homeOverlayOptions(home, upper, work)
+	named := strings.Split(options, ",")
+	for _, want := range []string{"lowerdir=" + home, "upperdir=" + upper, "workdir=" + work, "userxattr"} {
+		if !slices.Contains(named, want) {
+			t.Errorf("the role's home layer would be mounted with %q, which holds no %s", options, want)
+		}
+	}
+}
+
+// A refused home layer names the options the mount was tried with, userxattr among them, so the
+// operator who reads the failure is told what the launch asked the kernel for rather than that
+// the mount failed. The home here is a regular file and the upper layer does not exist, only the
+// work directory beside it: the file carries no mount, so the call reaches the mount itself,
+// which is refused for every caller on every runtime because there is no upper layer to mount.
+// Nothing is mounted and no directory is renamed. The case reads the refusal's text alone, and
+// fails when the error is nil.
+func TestARefusedRoleHomeLayerNamesTheOptionsItTried(t *testing.T) {
+	dir := t.TempDir()
+	homes, home := filepath.Join(dir, "homes"), filepath.Join(dir, "home")
+	upper, work := filepath.Join(homes, "upper"), filepath.Join(homes, "work", "0000000001")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(home, []byte("no caller mounts over a file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := RoleInitConfig{
+		RolesDir: filepath.Join(dir, "roles"), Role: "a", Generation: 1, Home: home,
+		HomeMounts: filepath.Join(dir, "home-mounts"), FixedRoot: filepath.Join(dir, "fixed"),
+	}
+	err := privateHome(cfg, homes, work)
+	if err == nil {
+		t.Fatalf("the role's home layer over the regular file %s went on, want the mount refused", home)
+	}
+	for _, want := range []string{"lowerdir=" + home, "upperdir=" + upper, "workdir=" + work, "userxattr"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal reads %q, which does not name %s the mount was tried with", err, want)
+		}
+	}
+}
+
+// TestTheStatusPipeReadsTheWidthItCarries pins the reading end of role-init's status pipe, which
+// is parseStatus and nothing else: every line reportStatus can write — it writes the 32 bits of a
+// syscall.WaitStatus as a decimal, so from zero to the largest of them — reads back as itself,
+// and a line holding anything but such a number is no status at all rather than one truncated
+// into a role exit that never happened. Whitespace around the number is ignored, which costs
+// nothing and asks no caller to trim what it read: both readers take the pipe whole with
+// io.ReadAll (roleinit.go:151, launcher.go:634), and the writer sends no newline of its own.
+// What the writer prints is not checked here: reportStatus lives in roleinit_linux.go, runs
+// inside the re-exec stage and writes to an inherited descriptor, so a test of it is a test of
+// that stage rather than of this function.
+func TestTheStatusPipeReadsTheWidthItCarries(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want uint32
+	}{
+		{"an exit of zero", "0", 0},
+		{"an exit code", "1792", 1792},
+		{"a kill by signal", "9", 9},
+		{"the widest status there is", strconv.FormatUint(math.MaxUint32, 10), math.MaxUint32},
+		{"whitespace around the number", "1792\n", 1792},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status := parseStatus([]byte(tc.raw))
+			if status == nil {
+				t.Fatalf("parseStatus(%q) read no status, want %d", tc.raw, tc.want)
+			}
+			if uint32(*status) != tc.want {
+				t.Errorf("parseStatus(%q) = %d, want %d: the pipe carries the status as it was written",
+					tc.raw, uint32(*status), tc.want)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{"nothing at all", ""},
+		{"role-init was killed before it wrote", "   "},
+		{"a line that is not a number", "killed"},
+		{"a negative number no writer sends", "-1"},
+		{"a number wider than a wait status", strconv.FormatUint(math.MaxUint32+1, 10)},
+		{"a number with something after it", "1792 9"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if status := parseStatus([]byte(tc.raw)); status != nil {
+				t.Errorf("parseStatus(%q) = %d, want no status: a line role-init never wrote reports no exit",
+					tc.raw, uint32(*status))
+			}
+		})
 	}
 }

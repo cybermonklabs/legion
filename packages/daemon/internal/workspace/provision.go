@@ -121,16 +121,25 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		return Workspace{}, err
 	}
 	// The checkout writes the issue's working copy, every file of the tree, into the workspace the
-	// registration made with no files: the one step whose time follows the repository's size, and
-	// it writes nothing of the shared clone's, so it runs with the store lock let go, beside other
-	// issues' checkouts, holding one of the places the daemon bounds checkouts by.
+	// registration made with no files: past the shared clone's own clone, whose size-following
+	// steps share one CloneTimeout of their own (ensureRepoClone, above), it is the one step whose
+	// time follows the repository's size, and it writes nothing of the shared clone's, so it runs
+	// with the store lock let go, beside other issues' checkouts, holding one of the places the
+	// daemon bounds checkouts by.
+	//
+	// It is also the one command past those steps that no change of this repository's makes fit
+	// CommandTimeout's five minutes: one write of the largest repository mapped took nine minutes
+	// in an issue pod (CheckoutTimeout), and the runner killing it there failed the whole
+	// provision and spent one of the claim's three launches. So this command alone takes
+	// CheckoutTimeout (request.checkoutBound), and every provisioning command but it and those
+	// steps keeps the runner's slow-command budget.
 	store.unlock()
 	if checkout {
 		release, err := request.checkoutPlace(ctx)
 		if err != nil {
 			return Workspace{}, fmt.Errorf("check out workspace %s: wait for a checkout's place: %w", workspace.Dir, err)
 		}
-		_, err = RunCheckedIn(ctx, run, workspace, []string{"jj", "sparse", "reset"})
+		_, err = runCheckedInWithin(ctx, run, workspace, request.checkoutBound(), []string{"jj", "sparse", "reset"})
 		release()
 		if err != nil {
 			return Workspace{}, fmt.Errorf("check out workspace %s: %w", workspace.Dir, err)
@@ -144,16 +153,49 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 // a launch must not undo. Provision registers a workspace with no pattern and no file (`jj
 // workspace add --sparse-patterns empty`) and checks it out after (`jj sparse reset`), so a
 // workspace whose checkout failed or was cut short — a jj error, a full disk, a daemon stopped
-// mid-checkout — holds no pattern until a provision checks it out. The read never snapshots the
-// working copy (--ignore-working-copy): a pane may be writing it, and a snapshot would run the
-// working-copy filters, fsmonitor and signing programs a tree agent can configure. A directory with
-// no `.jj` is refused, as every jj command in a workspace is (guardWorkspace).
+// mid-checkout — holds no pattern until a provision checks it out. A shared clone made from a
+// pod's feed permanently holds none either, its patterns cleared when it was made so it carries no
+// working tree (feedClone's `jj sparse set --clear`), and that is no unfinished checkout. So
+// CheckedOut refuses two directories rather than answering for them: the shared clone itself, and
+// any directory under the clone root that clone sits in (CloneRoot). A clone's empty pattern set
+// would answer false, the caller would read that as an unfinished checkout, and its `jj sparse
+// reset` would write the whole tree into the clone. The read never snapshots the working copy
+// (--ignore-working-copy): a pane may be writing it, and a snapshot would run the working-copy
+// filters, fsmonitor and signing programs a tree agent can configure. A directory with no `.jj` is
+// refused, as every jj command in a workspace is (guardWorkspace).
 func CheckedOut(ctx context.Context, run Runner, workspace Workspace) (bool, error) {
+	// A clone sits at <clone root>/<owner>/<name> (Location), so the root it sits in is its
+	// grandparent, and the clone itself is under that root. The clone's own case is therefore
+	// first, for the refusal that names what the directory is. Both come before jj runs at all.
+	if workspace.Clone != "" {
+		cloneRoot := filepath.Dir(filepath.Dir(workspace.Clone))
+		switch {
+		case workspace.Dir == workspace.Clone:
+			return false, fmt.Errorf("CheckedOut cannot answer for %s: that directory is the shared clone itself, not a workspace of one."+whyACloneHasNoAnswer, workspace.Dir)
+		case underDirectory(cloneRoot, workspace.Dir):
+			return false, fmt.Errorf("CheckedOut cannot answer for %s: that directory is under the clone root %s, which holds a shared clone of each repository."+whyACloneHasNoAnswer, workspace.Dir, cloneRoot)
+		}
+	}
 	listed, err := RunCheckedIn(ctx, run, workspace, []string{"jj", "sparse", "list", "--ignore-working-copy", "--color=never"})
 	if err != nil {
 		return false, err
 	}
 	return strings.TrimSpace(listed.Stdout) != "", nil
+}
+
+// whyACloneHasNoAnswer is the tail of both of CheckedOut's refusals: the reason a clone's pattern
+// set answers nothing, which is the same whichever clone directory was asked about.
+const whyACloneHasNoAnswer = " A clone holds no sparse pattern by design, because it carries no working tree (feedClone's `jj sparse set --clear`). An answer of false here reads as an unfinished checkout, and the caller then writes the whole tree into the clone"
+
+// underDirectory is whether dir is root or lies below it, compared one path segment at a time
+// (filepath.Rel, then filepath.IsLocal, as cmd/legion's sessions.go and runtime/sandbox's
+// manifest.go compare a path with its root). A string prefix would call /a/bc a child of /a/b.
+func underDirectory(root, dir string) bool {
+	relative, err := filepath.Rel(root, dir)
+	if err != nil {
+		return false
+	}
+	return filepath.IsLocal(relative)
 }
 
 // excludeCodegraphDirectory appends ".codegraph/" to cloneDir's ".git/info/exclude" unless a

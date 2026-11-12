@@ -1,6 +1,6 @@
 // Package ghbranch creates a branch on GitHub through its REST API, the way the daemon makes an
-// issue's branch exist before any role of the issue pushes to it, reads and moves a branch's head,
-// and reads the repository's default branch, the base every issue's branch starts at.
+// issue's branch exist before any role of the issue pushes to it, and reads the repository's
+// default branch, the base every issue's branch starts at.
 package ghbranch
 
 import (
@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 // Create creates branch on repo, whose REST API github calls, at the current commit of base, a
@@ -22,14 +23,36 @@ import (
 // success: GitHub answers its create with 422 "Reference already exists". Every other answer, to
 // the read of base or to the create, is an error naming the repository, the ref and GitHub's
 // answer (a *githubrest.Answer, its status and body).
+//
+// The ref name passes this repository's own private-name rules before anything is sent
+// (leakguard.Rules): a name they match, and a rule pass that could not be made to run, are each
+// an error, and the base is not even read. The check lives here rather than in the daemon that
+// calls Create so that the package's contract holds for every caller: a create of this package
+// publishes no ref name of a class the rules refuse.
+//
+// The rule pass alone runs, and no shared public leak check: a ref name is a branch name of the
+// daemon's own making, which can carry one of this repository's four private classes — the
+// embedded rule file holds all four — and not a secret, customer text or private code, which is
+// what the shared check reads for. The write itself is one POST of a ref and a sha.
 func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, branch, base string) error {
-	head, err := Head(ctx, github, repo, base)
-	if err != nil {
-		return err
+	ref := "refs/heads/" + branch
+	if err := leakguard.New(leakguard.Options{}).Rules(ctx, leakguard.RefRecord(ref)); err != nil {
+		return fmt.Errorf("create a branch of %s: %w", repo, err)
+	}
+	var read struct {
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
+	}
+	if err := github.Get(ctx, "/git/ref/heads/"+refPath(base), &read); err != nil {
+		return fmt.Errorf("read refs/heads/%s of %s: %w", base, repo, err)
+	}
+	head := read.Object.SHA
+	if head == "" {
+		return fmt.Errorf("read refs/heads/%s of %s: GitHub named no commit", base, repo)
 	}
 
-	ref := "refs/heads/" + branch
-	err = github.Post(ctx, "/git/refs", map[string]string{"ref": ref, "sha": head}, nil)
+	err := github.Post(ctx, "/git/refs", map[string]string{"ref": ref, "sha": head}, nil)
 	var answer *githubrest.Answer
 	if err == nil || errors.As(err, &answer) && answer.Status == http.StatusUnprocessableEntity && alreadyExists(answer.Body) {
 		return nil
@@ -37,41 +60,10 @@ func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 	return fmt.Errorf("create %s on %s at %s: %w", ref, repo, head, err)
 }
 
-// Head is the commit branch names on repo, whose REST API github calls, the branch's name read as
-// the one ref it names (refPath). A branch GitHub does not have is the error GitHub answered the
-// read with, which githubrest.NotFound reads, so a caller that needs the branch returns err as it
-// is, and one that asks whether the branch exists tests it with githubrest.NotFound. Every other
-// failure of the read, and an answer naming no commit, is an error of its own.
-func Head(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, branch string) (sha string, err error) {
-	var head struct {
-		Object struct {
-			SHA string `json:"sha"`
-		} `json:"object"`
-	}
-	if err = github.Get(ctx, "/git/ref/heads/"+refPath(branch), &head); err != nil {
-		return "", fmt.Errorf("read refs/heads/%s of %s: %w", branch, repo, err)
-	}
-	if head.Object.SHA == "" {
-		return "", fmt.Errorf("read refs/heads/%s of %s: GitHub named no commit", branch, repo)
-	}
-	return head.Object.SHA, nil
-}
-
-// Move updates branch on repo to commit without force, so GitHub moves it only when commit
-// descends from the branch's head; it answers every other update 422, as it does a refusal of its
-// own (a ruleset's, a validation's). Each refusal is an error naming the branch, the commit and
-// GitHub's answer (a *githubrest.Answer, its status and body).
-func Move(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, branch, commit string) error {
-	if err := github.Patch(ctx, "/git/refs/heads/"+refPath(branch), map[string]any{"sha": commit, "force": false}, nil); err != nil {
-		return fmt.Errorf("move refs/heads/%s of %s to %s: %w", branch, repo, commit, err)
-	}
-	return nil
-}
-
-// refPath is branch as the path of its ref under /git/ref/heads/ and /git/refs/heads/: every
-// character a URL path would read as its own syntax (`#`, `?`, `%`, and the rest url.PathEscape
-// escapes) escaped, and each `/` kept, since it separates the ref's own components, so GitHub
-// reads the one ref branch names.
+// refPath is branch as the path of its ref under /git/ref/heads/: every character a URL path
+// would read as its own syntax (`#`, `?`, `%`, and the rest url.PathEscape escapes) escaped, and
+// each `/` kept, since it separates the ref's own components, so GitHub reads the one ref branch
+// names.
 func refPath(branch string) string {
 	return strings.ReplaceAll(url.PathEscape(branch), "%2F", "/")
 }

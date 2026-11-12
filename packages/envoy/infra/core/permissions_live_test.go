@@ -325,12 +325,7 @@ func startSplitGrantServer(t *testing.T, image string, grant core.Permissions) (
 // the workspace of the repository's root go.work, and returns the binary envoy-<name>.
 func buildEnvoyCommand(t *testing.T, name string) string {
 	t.Helper()
-	binary := filepath.Join(t.TempDir(), "envoy-"+name)
-	build := exec.Command("go", "build", "-o", binary, ".")
-	build.Dir = filepath.Join("..", "..", "cmd", name)
-	out, err := build.CombinedOutput()
-	require.NoError(t, err, "build envoy-%s: %s", name, out)
-	return binary
+	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "envoy-" + name, Dir: filepath.Join("..", "..", "cmd", name)})
 }
 
 // startGrantServer runs image with one nkey user holding grant as the server's whole authorization,
@@ -614,7 +609,7 @@ func TestListenerPermissionsManageSessionConsumersOnRealServers(t *testing.T) {
 			owner, err := bus.ConnectOwningStream([]string{uri}, environment)
 			require.NoError(t, err)
 			t.Cleanup(owner.Close)
-			consumers, err := bus.ConnectSessionConsumers([]string{uri}, environment)
+			consumers, err := bus.ConnectSessionConsumers([]string{uri}, 0, environment)
 			require.NoError(t, err)
 			t.Cleanup(consumers.Close)
 

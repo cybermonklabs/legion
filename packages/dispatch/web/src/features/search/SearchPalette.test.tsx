@@ -1,19 +1,29 @@
-import { expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import {
+  SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
+  SEARCH_OPERATOR_EXCLUDE,
+  SEARCH_OPERATOR_PHRASE,
+} from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import { type ReactNode, useState } from "react";
-import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
+import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
-import { api } from "../../api/client";
-import type { SearchResponse, SearchResult, SearchResultsPage } from "../../api/types";
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api } from "../../api/client";
+import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
+import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
 import { ANSWER_PREVIEW_CHARS } from "./AskHitStatus";
-import { SearchButton } from "./SearchButton";
-import { type PaletteMode, SearchPalette } from "./SearchPalette";
+import { SearchPalette } from "./SearchPalette";
+import { searchAnswer } from "./search-fixture";
 import { optionId } from "./search-model";
+import { KEYSTROKE_DEBOUNCE_MS, MEANING_PAUSE_MS } from "./useTieredSearch";
 
 const results: SearchResult[] = [
   {
@@ -43,17 +53,55 @@ const results: SearchResult[] = [
   },
 ];
 
-/** The server's answer when these hits are every match: one page holding the whole list. */
-function searchAnswer(hits: SearchResult[]): SearchResponse & SearchResultsPage {
-  return {
-    limit: 20,
-    offset: 0,
-    reachable: hits.length,
-    results: hits,
-    took_ms: 1,
-    total: hits.length,
-  };
-}
+/** The last argument of every search the bar makes: React Query's own abort signal, which the
+ *  bar hands the client so a search it has moved on from is dropped rather than waited for. */
+const aborts = { signal: expect.anything() };
+
+/**
+ * Every row of this file runs on a held clock.
+ *
+ * Each keystroke arms two timers of the bar's own (`useTieredSearch.ts`): a 150 ms debounce,
+ * after which it searches the words alone, and a 500 ms meaning pause, after which it searches
+ * again by meaning and that fused order replaces the list. Which of the two has fired when a
+ * row asserts is what the row reads, and on the real clock the machine decides it: a loaded pod
+ * crosses the pause inside a press, and the row then reads a list it was not written for. Held,
+ * the row decides instead - `searchFor` below moves the clock the debounce's length and stops
+ * there, and a row that means the pause to fire moves past 500 ms and says so - so a row reads
+ * the same list on a busy pod as on an idle one.
+ *
+ * The clock is installed here rather than row by row because every row of the file wants it,
+ * and `realClock()` below is what brings the real one back on every path out of a row, one that
+ * throws included. Each row's user is `userOnFakeClock()`, which this install has to come
+ * before: user-event waits between the events of one interaction through `setTimeout`, so a
+ * user built any other way never finishes a press under a held clock.
+ */
+beforeEach(() => {
+  jest.useFakeTimers();
+});
+afterEach(realClock);
+
+/**
+ * An issue hit's row is a reference to that issue, which reads the issue's summary to draw it.
+ * No test here is about that read, so every key is answered with the issue the row names and no
+ * documents.
+ */
+let getIssueSummary: Mock<typeof api.getIssueSummary>;
+
+beforeEach(() => {
+  getIssueSummary = spyOn(api, "getIssueSummary").mockImplementation((key) =>
+    Promise.resolve({
+      documents: [],
+      key,
+      project: key.split("-")[0] ?? "",
+      status: "todo",
+      title: `Instrument ${key}`,
+    } satisfies IssueReferenceSummary)
+  );
+});
+
+afterEach(() => {
+  getIssueSummary.mockRestore();
+});
 
 function CurrentRoute(): ReactNode {
   const location = useLocation();
@@ -69,14 +117,56 @@ function RouteChanger(): ReactNode {
   );
 }
 
-function renderPalette(onClose = () => {}): { queryClient: QueryClient; unmount: () => void } {
+/** A route settling itself the way `ProjectPage` does: a `replace` to the address the page
+ *  belongs at, which the reader did not ask for. */
+function RouteSettler(): ReactNode {
+  const navigate = useNavigate();
+  return (
+    <button onClick={() => navigate("/projects/LEGION/issues", { replace: true })} type="button">
+      Settle the route
+    </button>
+  );
+}
+
+/** The reader going back: the browser's Back button, or anything that calls `navigate(-1)`. */
+function RouteReturner(): ReactNode {
+  const navigate = useNavigate();
+  return (
+    <button onClick={() => navigate(-1)} type="button">
+      Go back
+    </button>
+  );
+}
+
+/** A link whose target is the address already shown. React Router makes that click a `replace`
+ *  that moves nothing, and the reader has moved, so the palette closes: the Inbox drawer's owner
+ *  links are these (dispatch://INFRA-2452). */
+function SameAddressLink({ to }: { to: string }): ReactNode {
+  return <Link to={to}>Open the issue</Link>;
+}
+
+interface RenderPaletteOptions {
+  /** Rendered beside the palette, inside the router: what a navigation row clicks. */
+  control?: ReactNode;
+  entries?: string[];
+  index?: number;
+  onClose?: () => void;
+}
+
+function renderPalette({
+  control,
+  entries = ["/"],
+  index,
+  onClose = () => {},
+}: RenderPaletteOptions = {}): { queryClient: QueryClient; unmount: () => void } {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={entries} initialIndex={index}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
           <CurrentRoute />
-          <SearchPalette mode="all" onClose={onClose} />
+          {control}
+          <SearchPalette onClose={onClose} open />
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -84,19 +174,27 @@ function renderPalette(onClose = () => {}): { queryClient: QueryClient; unmount:
   return { queryClient, unmount: view.unmount };
 }
 
-async function searchFor(query: string): Promise<HTMLInputElement> {
+/** Types `query` into the box and waits for the hits it brings. The 150 ms keystroke debounce
+ *  is moved past here, so the search for these words goes out and answers; the 500 ms meaning
+ *  pause is left standing, so what a row reads after this is the keyword tier's list. A row
+ *  that means the pause to fire moves the clock past it itself. */
+async function searchFor(user: UserEvent, query: string): Promise<HTMLInputElement> {
   const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-  fireEvent.change(input, { target: { value: query } });
+  await user.clear(input);
+  await user.click(input);
+  await user.paste(query);
+  await tick(150);
   await waitFor(() => expect(screen.getAllByRole("option").length).toBeGreaterThan(0));
   return input;
 }
 
 test("renders grouped results with marked snippets and dims a done issue", async () => {
+  const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
   const view = renderPalette();
 
   try {
-    await searchFor("astrolabe");
+    await searchFor(user, "astrolabe");
     await waitFor(() =>
       expect(screen.getAllByText("astrolabe", { selector: "mark" }).length).toBeGreaterThan(0)
     );
@@ -107,8 +205,8 @@ test("renders grouped results with marked snippets and dims a done issue", async
     expect(screen.getAllByRole("group")).toHaveLength(2);
     expect(screen.getAllByRole("option")).toHaveLength(3);
     expect(screen.getAllByText("astrolabe", { selector: "mark" })).not.toHaveLength(0);
-    expect(doneGroup?.getAttribute("data-status")).toBe("done");
-    expect(screen.queryByText(/^Showing the best/)).toBeNull();
+    expect(doneGroup).toHaveAttribute("data-status", "done");
+    expect(screen.queryByText(/^Showing the best/)).not.toBeInTheDocument();
   } finally {
     search.mockRestore();
     view.unmount();
@@ -117,6 +215,7 @@ test("renders grouped results with marked snippets and dims a done issue", async
 });
 
 test("says how many matches a query has when the page holds fewer", async () => {
+  const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue({
     ...searchAnswer(results),
     reachable: 300,
@@ -125,7 +224,7 @@ test("says how many matches a query has when the page holds fewer", async () => 
   const view = renderPalette();
 
   try {
-    await searchFor("astrolabe");
+    await searchFor(user, "astrolabe");
     expect(screen.getAllByRole("option")).toHaveLength(3);
     expect(screen.getByText("Showing the best 3 of 1328 matches")).toBeDefined();
   } finally {
@@ -136,6 +235,7 @@ test("says how many matches a query has when the page holds fewer", async () => 
 });
 
 test("renders document-owned results under the document and opens their discussion", async () => {
+  const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(
     searchAnswer([
       {
@@ -158,12 +258,12 @@ test("renders document-owned results under the document and opens their discussi
   const view = renderPalette();
 
   try {
-    await searchFor("astrolabe");
+    await searchFor(user, "astrolabe");
 
     const documentGroup = document.querySelector('[aria-label="CORE: Navigation design"]');
     expect(documentGroup).not.toBeNull();
     expect(screen.getByRole("group", { name: "CORE: Navigation design" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("option"));
+    await user.click(screen.getByRole("option"));
     expect(screen.getByTestId("current-route").textContent).toBe(
       "/projects/CORE/documents/navigation-design?comment=comment-2"
     );
@@ -175,6 +275,7 @@ test("renders document-owned results under the document and opens their discussi
 });
 
 test("an ask hit says where it stands and shows its latest answer", async () => {
+  const user = userOnFakeClock();
   const answer = {
     at: "2026-10-01T00:00:00Z",
     selected: ["Brass", "Steel"],
@@ -207,21 +308,21 @@ test("an ask hit says where it stands and shows its latest answer", async () => 
   const view = renderPalette();
 
   try {
-    await searchFor("orrery");
+    await searchFor(user, "orrery");
     const option = (id: string) =>
       screen.getAllByRole("option").find((row) => row.textContent?.includes(`frame, ${id}?`));
-    await waitFor(() => expect(option("closed-answered")?.textContent).toContain("both"));
+    await waitFor(() => expect(option("closed-answered")).toHaveTextContent("both"));
 
-    expect(option("open")?.textContent).toContain("Open");
-    expect(option("answered")?.textContent).toContain("Answered");
-    expect(option("answered")?.textContent).toContain("alice · ");
-    expect(option("answered")?.textContent).toContain("No option chosen");
-    expect(option("closed")?.textContent).toContain("Closed, no answer");
-    expect(option("closed")?.textContent).toContain("Resolved by bob · ");
-    expect(option("closed")?.textContent).not.toContain("alice");
-    expect(option("closed-answered")?.textContent).toContain("Closed after an answer");
-    expect(option("closed-answered")?.textContent).toContain("Resolved by bob · ");
-    expect(option("closed-answered")?.textContent).toContain("Chose Brass, Steel");
+    expect(option("open")).toHaveTextContent("Open");
+    expect(option("answered")).toHaveTextContent("Answered");
+    expect(option("answered")).toHaveTextContent("alice · ");
+    expect(option("answered")).toHaveTextContent("No option chosen");
+    expect(option("closed")).toHaveTextContent("Closed, no answer");
+    expect(option("closed")).toHaveTextContent("Resolved by bob · ");
+    expect(option("closed")).not.toHaveTextContent("alice");
+    expect(option("closed-answered")).toHaveTextContent("Closed after an answer");
+    expect(option("closed-answered")).toHaveTextContent("Resolved by bob · ");
+    expect(option("closed-answered")).toHaveTextContent("Chose Brass, Steel");
     expect(screen.getAllByRole("option", { name: /^ask / })).toHaveLength(4);
   } finally {
     search.mockRestore();
@@ -233,6 +334,7 @@ test("an ask hit says where it stands and shows its latest answer", async () => 
 // The answer's three-line clamp is CSS only: whatever text reaches the option is its accessible
 // name, so a long answer is cut to its start before it renders.
 test("an ask hit shows only the start of a long answer, cut at a word with an ellipsis", async () => {
+  const user = userOnFakeClock();
   const text = `Keep **both** frames. ${"The meridian ring stays level. ".repeat(80)}zenithward`;
   const search = spyOn(api, "search").mockResolvedValue(
     searchAnswer([
@@ -253,7 +355,7 @@ test("an ask hit shows only the start of a long answer, cut at a word with an el
   const view = renderPalette();
 
   try {
-    await searchFor("orrery");
+    await searchFor(user, "orrery");
     const option = screen.getByRole("option");
     await waitFor(() => expect(option.querySelector("strong")?.textContent).toBe("both"));
 
@@ -280,6 +382,7 @@ test("an ask hit shows only the start of a long answer, cut at a word with an el
 // for that document all the same, an issue's and a project's alike. The hrefs are read against
 // the page's origin, which happy-dom's `about:blank` does not have.
 test("a hit in a long-named document previews that document", async () => {
+  const user = userOnFakeClock();
   const slug = "a".repeat(2683);
   const search = spyOn(api, "search").mockResolvedValue(
     searchAnswer([
@@ -309,30 +412,50 @@ test("a hit in a long-named document previews that document", async () => {
       },
     ])
   );
+  // The bar reads the viewer, to list what that person opened lately, and the project list, to
+  // offer a project row for every project the words name. This row's page has an origin of its
+  // own - the hrefs are read against it - and it is not the suite's, so the shell's own answers
+  // to those two routes do not resolve against it: both are answered here at the api client, as
+  // the shell answers them, signed out and with no project. Neither adds a row, so the two
+  // document hits below are the whole list.
+  const whoAmI = spyOn(api, "whoAmI").mockRejectedValue(
+    new ApiError(401, { code: "NO_IDENTITY", error: "no identity" })
+  );
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
   const testWindow = window as unknown as HappyDOMWindow;
   const pageBefore = window.location.href;
   testWindow.happyDOM.setURL("https://dispatch.test/issues/LEGION-2");
   const view = renderPalette();
 
   try {
-    await searchFor("astrolabe");
+    await searchFor(user, "astrolabe");
     expect(
       screen.getAllByRole("option").map((option) => option.getAttribute("data-dispatch-ref"))
     ).toEqual([`dispatch://LEGION-2/artifact/${slug}`, `dispatch://CORE/artifact/${slug}`]);
   } finally {
     search.mockRestore();
+    whoAmI.mockRestore();
+    listProjects.mockRestore();
     view.unmount();
     view.queryClient.clear();
     testWindow.happyDOM.setURL(pageBefore);
   }
 });
 
-test("does not query below two characters", () => {
+test("does not query below two characters", async () => {
+  const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([]));
   const view = renderPalette();
 
   try {
-    fireEvent.change(screen.getByRole("combobox", { name: "Search" }), { target: { value: "a" } });
+    const input = screen.getByRole("combobox", { name: "Search" });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("a");
+    // Past both of the bar's timers, by the bar's own numbers, so a search of one character
+    // would have gone out by now if the bar made one - and so this row goes on reaching both
+    // tiers if either number ever moves.
+    await tick(KEYSTROKE_DEBOUNCE_MS + MEANING_PAUSE_MS);
 
     expect(search).not.toHaveBeenCalled();
     expect(screen.getByText("Type at least 2 characters")).not.toBeNull();
@@ -344,26 +467,37 @@ test("does not query below two characters", () => {
 });
 
 test("names the limit instead of querying over it, and queries at it", async () => {
+  const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([]));
   const view = renderPalette();
 
   try {
     const input = screen.getByRole("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "x".repeat(SEARCH_QUERY_MAX + 1) } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("x".repeat(SEARCH_QUERY_MAX + 1));
 
     expect(
       screen.getByText(
         `Search with a short phrase: ${SEARCH_QUERY_MAX + 1} characters is over the ${SEARCH_QUERY_MAX}-character limit`
       )
     ).not.toBeNull();
-    // Past the palette's 150 ms debounce, so a request would have gone out by now.
-    const settled = Promise.withResolvers<void>();
-    setTimeout(settled.resolve, 300);
-    await act(() => settled.promise);
+    // Past both of the bar's timers, by the bar's own numbers: a query over the limit must
+    // reach neither the keystroke tier nor the meaning tier, and an advance short of the pause
+    // would leave the second half of that unchecked.
+    await tick(KEYSTROKE_DEBOUNCE_MS + MEANING_PAUSE_MS);
     expect(search).not.toHaveBeenCalled();
 
-    fireEvent.change(input, { target: { value: "x".repeat(SEARCH_QUERY_MAX) } });
-    await waitFor(() => expect(search).toHaveBeenCalledWith("x".repeat(SEARCH_QUERY_MAX)));
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("x".repeat(SEARCH_QUERY_MAX));
+    await waitFor(() =>
+      expect(search).toHaveBeenCalledWith(
+        "x".repeat(SEARCH_QUERY_MAX),
+        { keywords_only: true },
+        aborts
+      )
+    );
   } finally {
     search.mockRestore();
     view.unmount();
@@ -372,19 +506,25 @@ test("names the limit instead of querying over it, and queries at it", async () 
 });
 
 test("arrow keys move aria-activedescendant and Enter navigates to the active href", async () => {
+  const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
   const view = renderPalette();
 
   try {
-    const input = await searchFor("astrolabe");
-    const options = screen.getAllByRole("option");
-    expect(input.getAttribute("aria-activedescendant")).toBe(options[0]?.id);
+    const input = await searchFor(user, "astrolabe");
+    // Named rather than indexed with `?.`: `toHaveAttribute` given an `undefined` value checks
+    // that the attribute is present and not what it holds, so an option the palette failed to
+    // list would pass the two rows below rather than failing them.
+    const [first, second] = screen.getAllByRole("option");
+    if (first === undefined || second === undefined)
+      throw new Error("the palette listed fewer than two options");
+    expect(input).toHaveAttribute("aria-activedescendant", first.id);
 
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(options[1]?.id);
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", second.id);
 
-    fireEvent.keyDown(input, { key: "ArrowUp" });
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{ArrowUp}");
+    await user.keyboard("{Enter}");
 
     expect(screen.getByTestId("current-route").textContent).toBe(
       "/issues/LEGION-2/spec?q=astrolabe"
@@ -408,12 +548,13 @@ function issueHit(key: string): SearchResult {
 }
 
 test("a refetch that re-ranks the hits leaves the highlight on the hit the reader sees", async () => {
+  const user = userOnFakeClock();
   const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([first, second]));
   const view = renderPalette();
 
   try {
-    const input = await searchFor("astrolabe");
+    const input = await searchFor(user, "astrolabe");
     const shown = input.getAttribute("aria-activedescendant");
     expect(shown).toBe(screen.getAllByRole("option")[0]?.id ?? "");
 
@@ -422,7 +563,7 @@ test("a refetch that re-ranks the hits leaves the highlight on the hit the reade
     search.mockResolvedValue(searchAnswer([second, first]));
     await view.queryClient.refetchQueries();
     await waitFor(() => expect(screen.getAllByRole("option")[0]?.id).not.toBe(shown));
-    expect(input.getAttribute("aria-activedescendant")).toBe(shown);
+    expect(input).toHaveAttribute("aria-activedescendant", shown);
   } finally {
     search.mockRestore();
     view.unmount();
@@ -430,27 +571,77 @@ test("a refetch that re-ranks the hits leaves the highlight on the hit the reade
   }
 });
 
-test("a highlighted hit that drops out hands the highlight to the head, which keeps it", async () => {
+/** The bar's two searches of one query, each answering its own list: `words` for the keystroke's
+ *  search, which asks for the keyword leg alone, and `fused` for the search the pause makes,
+ *  which asks for the whole of it. */
+function bothTiers(
+  words: SearchResult[],
+  fused: SearchResult[]
+): (query: string, options?: { keywords_only?: boolean }) => Promise<SearchResponse> {
+  return (_query, options = {}) =>
+    Promise.resolve(searchAnswer(options.keywords_only === true ? words : fused));
+}
+
+test("a pause searches by meaning too, and its order re-ranks the list under the highlight", async () => {
+  const user = userOnFakeClock();
   const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];
-  const search = spyOn(api, "search").mockResolvedValue(searchAnswer([first, second]));
+  const search = spyOn(api, "search").mockImplementation(
+    bothTiers([first, second], [second, first])
+  );
   const view = renderPalette();
 
   try {
-    const input = await searchFor("astrolabe");
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    const [head, arrowed] = screen.getAllByRole("option").map((option) => option.id);
-    expect(input.getAttribute("aria-activedescendant")).toBe(arrowed ?? "");
+    const input = await searchFor(user, "astrolabe");
+    expect(optionIds()).toEqual([optionId(first), optionId(second)]);
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(first));
+    expect(search.mock.calls).toHaveLength(1);
+    expect(search.mock.calls[0]?.[1]).toEqual({ keywords_only: true });
 
-    search.mockResolvedValue(searchAnswer([first]));
-    await view.queryClient.refetchQueries();
-    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
-    expect(input.getAttribute("aria-activedescendant")).toBe(head ?? "");
+    // The pause asks the same query again, without the flag, and the fused order it answers
+    // replaces the list. The highlighted row is still in that list, so it keeps the highlight
+    // and Enter still opens the row the reader is looking at. The clock crosses the 500 ms
+    // pause here deliberately: this row is about what firing it does.
+    await tick(500);
+    await waitFor(() => expect(search.mock.calls).toHaveLength(2), { timeout: 3000 });
+    expect(search.mock.calls[1]?.[0]).toBe("astrolabe");
+    expect(search.mock.calls[1]?.[1]).toEqual({});
+    await waitFor(() => expect(optionIds()).toEqual([optionId(second), optionId(first)]));
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(first));
 
-    // The row coming back does not take the highlight back from the one the reader now sees.
-    search.mockResolvedValue(searchAnswer([first, second]));
-    await view.queryClient.refetchQueries();
-    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
-    expect(input.getAttribute("aria-activedescendant")).toBe(head ?? "");
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("a re-rank that drops the highlighted hit leaves no row highlighted, and Enter opens nothing", async () => {
+  const user = userOnFakeClock();
+  const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];
+  const search = spyOn(api, "search").mockImplementation(bothTiers([first, second], [first]));
+  const view = renderPalette();
+
+  try {
+    const input = await searchFor(user, "astrolabe");
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(second));
+
+    // The pause's order drops the row the reader had arrowed to. Nothing takes its place: the
+    // head would be a row they never chose, and the next Enter would open it. The clock
+    // crosses the 500 ms pause here deliberately: this row is about what firing it does.
+    await tick(500);
+    await waitFor(() => expect(optionIds()).toEqual([optionId(first)]), { timeout: 3000 });
+    expect(input.getAttribute("aria-activedescendant")).toBeNull();
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("current-route").textContent).toBe("/");
+
+    // The reader's own arrow says which row, and Enter then opens that one.
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(first));
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
   } finally {
     search.mockRestore();
     view.unmount();
@@ -459,13 +650,14 @@ test("a highlighted hit that drops out hands the highlight to the head, which ke
 });
 
 test("a background refresh that fails keeps the hits the query has, and the highlight on its hit", async () => {
+  const user = userOnFakeClock();
   const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([first, second]));
   const view = renderPalette();
 
   try {
-    const input = await searchFor("astrolabe");
-    fireEvent.keyDown(input, { key: "ArrowDown" });
+    const input = await searchFor(user, "astrolabe");
+    await user.keyboard("{ArrowDown}");
     const arrowed = input.getAttribute("aria-activedescendant");
     expect(arrowed).toBe(screen.getAllByRole("option")[1]?.id ?? "");
 
@@ -473,11 +665,13 @@ test("a background refresh that fails keeps the hits the query has, and the high
     search.mockRejectedValue(new Error("503"));
     await view.queryClient.refetchQueries();
     await waitFor(() =>
-      expect(view.queryClient.getQueryState(["search", "astrolabe"])?.status).toBe("error")
+      expect(
+        view.queryClient.getQueryState(["search", "astrolabe", { keywords_only: true }])?.status
+      ).toBe("error")
     );
     expect(screen.getAllByRole("option")).toHaveLength(2);
-    expect(screen.queryByText("Search failed.")).toBeNull();
-    expect(input.getAttribute("aria-activedescendant")).toBe(arrowed);
+    expect(screen.queryByText("Search failed.")).not.toBeInTheDocument();
+    expect(input).toHaveAttribute("aria-activedescendant", arrowed);
   } finally {
     search.mockRestore();
     view.unmount();
@@ -487,8 +681,8 @@ test("a background refresh that fails keeps the hits the query has, and the high
 
 // The shell's part in a chosen action: the palette closes, and the row runs once it has.
 function PaletteHost(): ReactNode {
-  const [mode, setMode] = useState<PaletteMode | null>("all");
-  return <SearchPalette mode={mode} onClose={() => setMode(null)} />;
+  const [open, setOpen] = useState(true);
+  return <SearchPalette onClose={() => setOpen(false)} open={open} />;
 }
 
 function renderPaletteHost(): { queryClient: QueryClient; unmount: () => void } {
@@ -520,6 +714,7 @@ function optionIds(): string[] {
 }
 
 test("a query found inside an action's label lists the action below the hits, and Enter opens the first hit", async () => {
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const hit = issueHit("LEGION-3");
@@ -528,11 +723,15 @@ test("a query found inside an action's label lists the action below the hits, an
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "issue" } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("issue");
+    // The keystroke debounce, after which the search for these words goes out and answers.
+    await tick(150);
     await waitFor(() => expect(optionIds()).toEqual([optionId(hit), CLOSE_ROW]));
-    expect(input.getAttribute("aria-activedescendant")).toBe(optionId(hit));
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(hit));
 
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{Enter}");
     expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
     expect(ran).toEqual([]);
   } finally {
@@ -544,6 +743,7 @@ test("a query found inside an action's label lists the action below the hits, an
 });
 
 test("while the search is in flight no action found inside its label is highlighted, so Enter runs nothing", async () => {
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const hit = issueHit("LEGION-3");
@@ -553,18 +753,26 @@ test("while the search is in flight no action found inside its label is highligh
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "issue" } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("issue");
+    // The keystroke debounce, after which the search goes out; this one never answers.
+    await tick(150);
     await waitFor(() => expect(search).toHaveBeenCalled());
     expect(optionIds()).toEqual([CLOSE_ROW]);
     expect(input.getAttribute("aria-activedescendant")).toBeNull();
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{Enter}");
     expect(screen.getByRole("dialog", { name: "Search" })).toBeTruthy();
     expect(ran).toEqual([]);
 
     // The hits arriving take the head; the action row was never adopted while they were out.
     await act(async () => answer.resolve(searchAnswer([hit])));
-    await waitFor(() => expect(input.getAttribute("aria-activedescendant")).toBe(optionId(hit)));
+    await waitFor(() => expect(input).toHaveAttribute("aria-activedescendant", optionId(hit)));
     expect(optionIds()).toEqual([optionId(hit), CLOSE_ROW]);
+    // Enter then opens the hit the highlight landed on, rather than the action row below it.
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
+    expect(ran).toEqual([]);
   } finally {
     search.mockRestore();
     unregister();
@@ -574,6 +782,7 @@ test("while the search is in flight no action found inside its label is highligh
 });
 
 test("a search that finds nothing still leaves an action found inside its label unhighlighted", async () => {
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([]));
@@ -581,11 +790,15 @@ test("a search that finds nothing still leaves an action found inside its label 
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "issue" } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("issue");
+    // The keystroke debounce, after which the search goes out and answers with nothing.
+    await tick(150);
     await screen.findByText('No results for "issue"');
     expect(optionIds()).toEqual([CLOSE_ROW]);
     expect(input.getAttribute("aria-activedescendant")).toBeNull();
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{Enter}");
     expect(screen.getByRole("dialog", { name: "Search" })).toBeTruthy();
     expect(ran).toEqual([]);
   } finally {
@@ -597,6 +810,7 @@ test("a search that finds nothing still leaves an action found inside its label 
 });
 
 test("an arrow pressed before the search answers reaches no action found inside its label", async () => {
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const hit = issueHit("LEGION-3");
@@ -606,23 +820,27 @@ test("an arrow pressed before the search answers reaches no action found inside 
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "issue" } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("issue");
     // Down and Enter in one burst, inside the debounce and again once the request is out.
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{Enter}");
     expect(input.getAttribute("aria-activedescendant")).toBeNull();
+    // Past the debounce now, so the request for these words is out and still unanswered.
+    await tick(150);
     await waitFor(() => expect(search).toHaveBeenCalled());
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    fireEvent.keyDown(input, { key: "ArrowUp" });
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{ArrowUp}");
     expect(input.getAttribute("aria-activedescendant")).toBeNull();
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{Enter}");
     expect(ran).toEqual([]);
 
     // The hits arrive above it and take the head; Enter opens the first one.
     await act(async () => answer.resolve(searchAnswer([hit])));
     await waitFor(() => expect(optionIds()).toEqual([optionId(hit), CLOSE_ROW]));
-    expect(input.getAttribute("aria-activedescendant")).toBe(optionId(hit));
-    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(hit));
+    await user.keyboard("{Enter}");
     expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
     expect(ran).toEqual([]);
   } finally {
@@ -634,6 +852,7 @@ test("an arrow pressed before the search answers reaches no action found inside 
 });
 
 test("once the search has answered with no hit, Down takes the first action found inside its label", async () => {
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([]));
@@ -641,11 +860,15 @@ test("once the search has answered with no hit, Down takes the first action foun
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "issue" } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("issue");
+    // The keystroke debounce, after which the search goes out and answers with nothing.
+    await tick(150);
     await screen.findByText('No results for "issue"');
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(CLOSE_ROW);
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", CLOSE_ROW);
+    await user.keyboard("{Enter}");
     await waitFor(() => expect(ran).toEqual(["close"]));
   } finally {
     search.mockRestore();
@@ -656,6 +879,7 @@ test("once the search has answered with no hit, Down takes the first action foun
 });
 
 test("while the search is out the arrows walk only the actions the query starts, which keep the highlight as hits arrive", async () => {
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = appKeymap.register("global", [
     { id: "close", keys: [], label: "Close issue", run: () => ran.push("close") },
@@ -673,21 +897,25 @@ test("while the search is out the arrows walk only the actions the query starts,
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "issue" } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("issue");
+    // The keystroke debounce, after which the search goes out; this one never answers.
+    await tick(150);
     await waitFor(() => expect(search).toHaveBeenCalled());
     expect(optionIds()).toEqual([report, triage, CLOSE_ROW]);
-    expect(input.getAttribute("aria-activedescendant")).toBe(report);
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(triage);
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(report);
-    fireEvent.keyDown(input, { key: "ArrowUp" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(triage);
+    expect(input).toHaveAttribute("aria-activedescendant", report);
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", triage);
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", report);
+    await user.keyboard("{ArrowUp}");
+    expect(input).toHaveAttribute("aria-activedescendant", triage);
 
     await act(async () => answer.resolve(searchAnswer([hit])));
     await waitFor(() => expect(optionIds()).toEqual([report, triage, optionId(hit), CLOSE_ROW]));
-    expect(input.getAttribute("aria-activedescendant")).toBe(triage);
-    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input).toHaveAttribute("aria-activedescendant", triage);
+    await user.keyboard("{Enter}");
     await waitFor(() => expect(ran).toEqual(["triage"]));
   } finally {
     search.mockRestore();
@@ -697,41 +925,8 @@ test("while the search is out the arrows walk only the actions the query starts,
   }
 });
 
-test("a refetch behind a stale cached answer is still out, so Down and Enter reach no action found inside its label", async () => {
-  const ran: string[] = [];
-  const unregister = registerClose(ran);
-  const hit = issueHit("LEGION-3");
-  const answer = Promise.withResolvers<SearchResponse>();
-  const search = spyOn(api, "search").mockReturnValue(answer.promise);
-  const view = renderPaletteHost();
-  // The reader searched `issue` earlier and found nothing; that answer is stale now.
-  view.queryClient.setQueryData(["search", "issue"], searchAnswer([]));
-
-  try {
-    const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "issue" } });
-    await waitFor(() => expect(search).toHaveBeenCalled());
-    expect(optionIds()).toEqual([CLOSE_ROW]);
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBeNull();
-    fireEvent.keyDown(input, { key: "Enter" });
-    expect(ran).toEqual([]);
-
-    await act(async () => answer.resolve(searchAnswer([hit])));
-    await waitFor(() => expect(optionIds()).toEqual([optionId(hit), CLOSE_ROW]));
-    expect(input.getAttribute("aria-activedescendant")).toBe(optionId(hit));
-    fireEvent.keyDown(input, { key: "Enter" });
-    expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
-    expect(ran).toEqual([]);
-  } finally {
-    search.mockRestore();
-    unregister();
-    view.unmount();
-    view.queryClient.clear();
-  }
-});
-
 test("once the search has failed, Down takes the first action found inside its label", async () => {
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const search = spyOn(api, "search").mockRejectedValue(new Error("503"));
@@ -739,11 +934,15 @@ test("once the search has failed, Down takes the first action found inside its l
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "issue" } });
-    expect((await screen.findByRole("alert")).textContent).toContain("Search failed.");
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(CLOSE_ROW);
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("issue");
+    // The keystroke debounce, after which the search goes out and fails.
+    await tick(150);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Search failed.");
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", CLOSE_ROW);
+    await user.keyboard("{Enter}");
     await waitFor(() => expect(ran).toEqual(["close"]));
   } finally {
     search.mockRestore();
@@ -754,6 +953,7 @@ test("once the search has failed, Down takes the first action found inside its l
 });
 
 test("a background refetch keeps the actions the query starts and the hits walkable, and a highlight already among the More actions moving", async () => {
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = appKeymap.register("global", [
     { id: "close", keys: [], label: "Close issue", run: () => ran.push("close") },
@@ -775,29 +975,33 @@ test("a background refetch keeps the actions the query starts and the hits walka
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "issue" } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("issue");
+    // The palette's 150 ms keystroke debounce, which the search for these words waits out.
+    await tick(150);
     await waitFor(() => expect(optionIds()).toEqual([report, optionId(hit), CLOSE_ROW]));
-    expect(input.getAttribute("aria-activedescendant")).toBe(report);
+    expect(input).toHaveAttribute("aria-activedescendant", report);
 
     // A focus or staleTime refetch is out with the hits still shown: the arrows walk the
     // leading row and the hits, and stop short of the More actions.
     const first = await refetchHeld(2);
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(optionId(hit));
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(report);
-    fireEvent.keyDown(input, { key: "ArrowUp" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(optionId(hit));
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(hit));
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", report);
+    await user.keyboard("{ArrowUp}");
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(hit));
     await act(async () => first.resolve(searchAnswer([hit])));
     await waitFor(() => expect(view.queryClient.isFetching()).toBe(0));
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(CLOSE_ROW);
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", CLOSE_ROW);
 
     // Moved there after an answer, a highlight among the More actions keeps moving over the
     // whole list through the next refetch.
     const second = await refetchHeld(3);
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(report);
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", report);
     await act(async () => second.resolve(searchAnswer([hit])));
     expect(ran).toEqual([]);
   } finally {
@@ -809,6 +1013,7 @@ test("a background refetch keeps the actions the query starts and the hits walka
 });
 
 test("a query that starts an action's label lists it above the hits, and Enter runs it", async () => {
+  const user = userOnFakeClock();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const hit = issueHit("LEGION-3");
@@ -817,11 +1022,15 @@ test("a query that starts an action's label lists it above the hits, and Enter r
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "clo" } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("clo");
+    // The keystroke debounce, after which the search for these words goes out and answers.
+    await tick(150);
     await waitFor(() => expect(optionIds()).toEqual([CLOSE_ROW, optionId(hit)]));
-    expect(input.getAttribute("aria-activedescendant")).toBe(CLOSE_ROW);
+    expect(input).toHaveAttribute("aria-activedescendant", CLOSE_ROW);
 
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{Enter}");
     await waitFor(() => expect(ran).toEqual(["close"]));
     expect(screen.getByTestId("current-route").textContent).toBe("/");
   } finally {
@@ -832,14 +1041,19 @@ test("a query that starts an action's label lists it above the hits, and Enter r
   }
 });
 
-test("Escape calls onClose", () => {
+test("Escape calls onClose", async () => {
+  const user = userOnFakeClock();
   let closed = 0;
-  const view = renderPalette(() => {
-    closed += 1;
+  const view = renderPalette({
+    onClose: () => {
+      closed += 1;
+    },
   });
 
   try {
-    fireEvent.keyDown(screen.getByRole("dialog", { name: "Search" }), { key: "Escape" });
+    // Escape is the dialog's own keymap binding, registered at the document, so the key
+    // reaches it from whatever holds focus inside the open palette.
+    await user.keyboard("{Escape}");
     expect(closed).toBe(1);
   } finally {
     view.unmount();
@@ -847,16 +1061,22 @@ test("Escape calls onClose", () => {
   }
 });
 
-test("Escape closes the palette even when pressed before focus has moved into it", () => {
+test("Escape closes the palette even when pressed before focus has moved into it", async () => {
+  const user = userOnFakeClock();
   let closed = 0;
-  const view = renderPalette(() => {
-    closed += 1;
+  const view = renderPalette({
+    onClose: () => {
+      closed += 1;
+    },
   });
 
   try {
     // The dialog moves focus inside itself one animation frame after opening; a key pressed
     // in that frame lands on whatever was focused before (the document editor, the body).
-    fireEvent.keyDown(document.body, { key: "Escape" });
+    // user-event sends its key to whatever holds focus, so the focus the dialog took is given
+    // up here: the press has to reach the dialog from outside it, as a press in that frame does.
+    (document.activeElement as HTMLElement | null)?.blur();
+    await user.keyboard("{Escape}");
     expect(closed).toBe(1);
   } finally {
     view.unmount();
@@ -864,41 +1084,117 @@ test("Escape closes the palette even when pressed before focus has moved into it
   }
 });
 
+/** The four rows below drive one navigation each at an open palette and count the closes. */
 test("closes the palette when navigation changes", async () => {
+  const user = userOnFakeClock();
   let closed = 0;
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>
-        <RouteChanger />
-        <SearchPalette
-          mode="all"
-          onClose={() => {
-            closed += 1;
-          }}
-        />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const view = renderPalette({
+    control: <RouteChanger />,
+    onClose: () => {
+      closed += 1;
+    },
+  });
 
   try {
-    fireEvent.click(screen.getByRole("button", { name: "Navigate elsewhere" }));
+    await user.click(screen.getByRole("button", { name: "Navigate elsewhere" }));
     await waitFor(() => expect(closed).toBe(1));
   } finally {
     view.unmount();
-    queryClient.clear();
+    view.queryClient.clear();
+  }
+});
+
+// A bare project path redirects to its board once its architecture sources have loaded, and a
+// `replace` mints a fresh `location.key` like any other navigation. The reader opened the bar
+// over that page and is still on it, so the bar stays open (dispatch://INFRA-2452).
+test("leaves the palette open when the route settles itself with a replace", async () => {
+  const user = userOnFakeClock();
+  let closed = 0;
+  const view = renderPalette({
+    control: <RouteSettler />,
+    entries: ["/projects/LEGION"],
+    onClose: () => {
+      closed += 1;
+    },
+  });
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Settle the route" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/projects/LEGION/issues")
+    );
+    expect(closed).toBe(0);
+    expect(screen.getByRole("combobox", { name: "Search" })).not.toBeNull();
+  } finally {
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// A pop is the reader leaving the page the bar was opened over, as a push is, so it closes the
+// bar; only a `replace` that moves the address is the page correcting itself under a reader who
+// has not moved (dispatch://INFRA-2452).
+test("closes the palette when the reader goes back", async () => {
+  const user = userOnFakeClock();
+  let closed = 0;
+  const view = renderPalette({
+    control: <RouteReturner />,
+    entries: ["/projects/LEGION", "/issues/LEGION-9"],
+    index: 1,
+    onClose: () => {
+      closed += 1;
+    },
+  });
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Go back" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/projects/LEGION")
+    );
+    expect(closed).toBe(1);
+  } finally {
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// React Router makes a `<Link>` click a `replace` whenever the link's target is the address
+// already shown, and that replace moves nothing. The reader followed a link, so the bar closes -
+// the Inbox drawer's owner link to the issue being read is this link (dispatch://INFRA-2452).
+test("closes the palette when a link points at the address already shown", async () => {
+  const user = userOnFakeClock();
+  let closed = 0;
+  const view = renderPalette({
+    control: <SameAddressLink to="/issues/CORE-1" />,
+    entries: ["/issues/CORE-1"],
+    onClose: () => {
+      closed += 1;
+    },
+  });
+
+  try {
+    await user.click(screen.getByRole("link", { name: "Open the issue" }));
+    await waitFor(() => expect(closed).toBe(1));
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1");
+  } finally {
+    view.unmount();
+    view.queryClient.clear();
   }
 });
 
 test("shows a retryable failure when the search request fails", async () => {
+  const user = userOnFakeClock();
   const search = spyOn(api, "search").mockRejectedValue(new Error("500"));
   const view = renderPalette();
 
   try {
-    fireEvent.change(screen.getByRole("combobox", { name: "Search" }), {
-      target: { value: "astrolabe" },
-    });
-    expect((await screen.findByRole("alert")).textContent).toContain("Search failed.");
+    const input = screen.getByRole("combobox", { name: "Search" });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("astrolabe");
+    // The keystroke debounce, after which the search goes out and fails.
+    await tick(150);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Search failed.");
     expect(screen.getByRole("button", { name: "Retry" })).not.toBeNull();
   } finally {
     search.mockRestore();
@@ -907,16 +1203,127 @@ test("shows a retryable failure when the search request fails", async () => {
   }
 });
 
-test("SearchButton announces its shortcut and opens the palette", () => {
-  let opened = 0;
-  const view = render(<SearchButton onOpen={() => (opened += 1)} />);
+// The three forms are offered whatever the query holds; which of them this query was read as
+// using is the answer's own reading of it, so the bar and the search never disagree.
+test("the operator forms are offered, and the answer says which the query uses", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue({
+    ...searchAnswer(results),
+    query: { broadened: false, operators: [SEARCH_OPERATOR_PHRASE, SEARCH_OPERATOR_EXCLUDE] },
+  });
+  const view = renderPalette();
 
   try {
-    const button = screen.getByRole("button", { name: /search/i });
-    expect(button.getAttribute("aria-keyshortcuts")).toBe("Control+K Meta+K");
-    fireEvent.click(button);
-    expect(opened).toBe(1);
+    await searchFor(user, '"brass astrolabe" -steel');
+    const forms = screen.getByRole("list", { name: "What the words can do" });
+    const inUse = (name: string) =>
+      forms.querySelector(`[data-operator="${name}"]`)?.getAttribute("data-in-use");
+
+    expect(forms.textContent).toContain('"two words"');
+    expect(forms.textContent).toContain("this OR that");
+    expect(forms.textContent).toContain("-word");
+    await waitFor(() => expect(inUse("phrase")).toBe("true"));
+    expect(inUse("exclude")).toBe("true");
+    expect(inUse("or")).toBe("false");
+    expect(screen.queryByTestId("search-degraded")).toBeNull();
   } finally {
+    search.mockRestore();
     view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("says meaning search is not running, and still shows the hits", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue({
+    ...searchAnswer(results),
+    degraded: SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
+  });
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    const line = await screen.findByTestId("search-degraded");
+
+    expect(line.textContent).toBe(
+      "Searching words only: meaning search is not running, so a hit that uses other words may be missing."
+    );
+    expect(screen.getAllByRole("option")).toHaveLength(3);
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("a chip narrows the search, reads back in the person's words, and comes off again", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true }, aborts);
+
+    await user.click(screen.getByRole("button", { name: "Status" }));
+    await user.click(screen.getByRole("button", { name: "In progress" }));
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith(
+        "astrolabe",
+        { keywords_only: true, status: "in_progress" },
+        aborts
+      )
+    );
+
+    const chip = screen.getByRole("button", { name: "Remove Status In progress" });
+    expect(chip.textContent).toContain("Status In progress");
+    expect(chip.textContent).not.toContain("status:in_progress");
+
+    await user.click(chip);
+    await waitFor(() => expect(screen.queryByText("Status In progress")).toBeNull());
+    expect(screen.getByRole("button", { name: "Status" })).not.toBeNull();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// A search made from an issue or a project page searches everything, as a search made from
+// anywhere does. The page's project rides under `number_project`, which the route reads a bare
+// issue number in and narrows nothing by, so the bar shows no chip claiming a narrowing.
+test("the page's project is the search's context, not a chip narrowing it", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  // The bar opened over an issue reads that issue, to offer the words as a message to an agent
+  // holding it (`SendToAgentOffer.tsx`). LEGION-2 is the page's issue and the document hit's
+  // own, and no agent holds it, so the bar offers no such row and the chips below the box are
+  // the whole of what this row reads.
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue({
+    ...issueFixture,
+    artifacts: [{ ...specArtifact, issue_key: "LEGION-2", project: "LEGION" }],
+    key: "LEGION-2",
+    number: 2,
+    project: "LEGION",
+    status: "done",
+    title: "Navigation instruments",
+  });
+  const view = renderPalette({ entries: ["/issues/LEGION-2/spec"] });
+
+  try {
+    await searchFor(user, "astrolabe");
+
+    expect(search).toHaveBeenLastCalledWith(
+      "astrolabe",
+      { keywords_only: true, number_project: "LEGION" },
+      aborts
+    );
+    expect(screen.queryByRole("button", { name: /^Remove Project/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Project" })).not.toBeNull();
+  } finally {
+    search.mockRestore();
+    getIssue.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
   }
 });

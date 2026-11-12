@@ -23,6 +23,7 @@ const never = () => Promise.withResolvers<never>().promise;
 let whoAmI: Mock<typeof api.whoAmI>;
 let getInbox: Mock<typeof api.getInbox>;
 let getCredentialPending: Mock<typeof api.getCredentialPending>;
+let getCredentialCapabilities: Mock<typeof api.getCredentialCapabilities>;
 beforeEach(() => {
   window.localStorage.clear();
   whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
@@ -34,11 +35,17 @@ beforeEach(() => {
   getCredentialPending = spyOn(api, "getCredentialPending")
     .mockResolvedValueOnce(null)
     .mockImplementation(never);
+  // A listed request names what the broker can still do; this Dispatch has none, so it offers
+  // the machine-code page to nobody.
+  getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    machine_code_page: false,
+  });
 });
 afterEach(() => {
   whoAmI.mockRestore();
   getInbox.mockRestore();
   getCredentialPending.mockRestore();
+  getCredentialCapabilities.mockRestore();
   focusManager.setFocused(undefined);
 });
 
@@ -84,7 +91,7 @@ test("a Dispatch with no broker is asked once per load, even when that answer be
     });
     inbox.resolve([]);
     expect(await screen.findByText("Nothing needs you")).toBeTruthy();
-    expect(screen.queryByText("Couldn't load credential requests.")).toBeNull();
+    expect(screen.queryByText("Couldn't load credential requests.")).not.toBeInTheDocument();
     expect(getCredentialPending).toHaveBeenCalledTimes(1);
   } finally {
     view.unmount();
@@ -182,10 +189,10 @@ test("with no broker, a gap in the event feed asks the list again once, and a fo
     // The gap's refresh goes through the scheduler, which fetches a read at most once a second
     // (`api/query-refresh.ts`), and the page loaded the Inbox well under a second ago; each wait
     // gives that interval room.
-    await waitFor(() => expect(getCredentialPending).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    await waitFor(() => expect(getCredentialPending).toHaveBeenCalledTimes(2));
     // The gap's whole-cache refresh refetches the inbox list; the held answer is not asked a
     // third time, and nothing blinks while the second call is out.
-    await waitFor(() => expect(getInbox).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    await waitFor(() => expect(getInbox).toHaveBeenCalledTimes(2));
     await act(async () => {
       await Promise.resolve();
     });
@@ -202,15 +209,16 @@ test("with no broker, a gap in the event feed asks the list again once, and a fo
             kind: "agent_secret",
             record_id: "record-1",
             requested_at: new Date().toISOString(),
+            session: { enrollment: null, request: null },
           },
         ],
       });
     });
     expect(await screen.findByRole("link", { name: /Secret request.*DEMO_API_KEY/s })).toBeTruthy();
-    expect(screen.queryByText("Nothing needs you")).toBeNull();
+    expect(screen.queryByText("Nothing needs you")).not.toBeInTheDocument();
   } finally {
     view.unmount();
     liveSocketFor(queryClient).close();
     sockets.restore();
   }
-}, 10_000);
+});

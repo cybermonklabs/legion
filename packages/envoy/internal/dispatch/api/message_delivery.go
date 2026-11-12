@@ -11,9 +11,17 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
+
+// createDeliveryInput is the body of POST /api/v1/messages/{id}/deliveries.
+type createDeliveryInput struct {
+	Delivery string       `json:"delivery" required:"true"`
+	Actor    *model.Actor `json:"actor"`
+}
 
 func (s *server) createDelivery(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
@@ -21,10 +29,7 @@ func (s *server) createDelivery(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	var input struct {
-		Delivery string       `json:"delivery"`
-		Actor    *model.Actor `json:"actor"`
-	}
+	var input createDeliveryInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -61,12 +66,13 @@ func (s *server) createDelivery(w http.ResponseWriter, r *http.Request) {
 const acceptedAsUserTurn = "user_turn"
 
 // acceptFresh is one of the accept's checks, judged by Postgres against the created_at Postgres
-// wrote, as claimLapsed is: the attempt was opened within the last minute. created_at, not
+// wrote, as model.DeliveryClaimFreeSQL is: the attempt was opened within the last minute.
 // claimed_at, because a resume moves claimed_at. So only an attempt a person has just asked for
-// can be taken, and one that reached its session as a card - an older plugin, a Claude Code
-// session, a card fallback of the last minute's accept - can never be taken as a turn later.
+// can be taken, and one that reached its session as a card - an older plugin, a card fallback of
+// the last minute's accept - can never be taken as a turn later.
 // Inside that minute the session itself keeps a carded attempt a card, since only it knows that
-// frame already reached it (pi-envoy's handled attempts, `src/dispatch-user-turn.ts`).
+// frame already reached it (the handled attempts of `@legion/pi-shared/dispatch-user-turn`, kept
+// in an Oh My Pi session's transcript and in claude-envoy's `turns/<session id>.json`).
 const acceptFresh = `created_at >= now() - interval '1 minute'`
 
 // acceptByAuthor is the check that the person who asked for the attempt (its requested_by) is
@@ -77,7 +83,7 @@ const acceptByAuthor = `coalesce(
 	lower(requested_by ->> 'id') = (select lower(author ->> 'id') from messages where id = $1),
 	false)`
 
-// acceptDirect is the check that the message is the one kind pi-envoy takes as a turn, a direct
+// acceptDirect is the check that the message is the one kind a session takes as a turn, a direct
 // message from the Agents page: on no issue, neither a broadcast's copy nor a reply in a
 // broadcast's thread, in a thread whose root targets the accepting session ($3). Who wrote it and
 // how it was sent are the accept's own checks beside it. "Accepted as a user turn" means nothing
@@ -102,11 +108,17 @@ type acceptedDelivery struct {
 // attempt went to records that it took the message as its user's own turn, and is answered the
 // message's stored body in that attempt's mode. It is one compare-and-set under the message's
 // row lock, and it succeeds only for a person's direct message to that session (acceptDirect)
-// which that person wrote, sent as a Send or an Aside, and only for the latest attempt of one
-// none of whose attempts was accepted before, which the message's own author asked for within
-// the last minute and which did not fail; a refusal names the check.
+// which that person wrote themselves, sent as a Send or an Aside, and only for the latest attempt
+// of one none of whose attempts was accepted before, which the message's own author asked for
+// within the last minute and which did not fail; a refusal names the check.
 //
-// It may land while the attempt is still pending, since pi-envoy answers the frame before
+// "That person wrote themselves" is two checks, because a person's own credential now reaches the
+// send route through an agent: the author is a person (byPerson), and that author carries no act
+// (byAgent), the agent an answer, message or review records when one was made for its person. A
+// message an agent wrote for the person must never become words the person typed into the
+// session, so it is refused here and reaches the session as a card naming the agent instead.
+//
+// It may land while the attempt is still pending, since a session answers the frame before
 // Dispatch settles the send, so it writes neither state nor claimed_at, which the settle is
 // scoped to, and appends its own message.accepted rather than a second message.delivery receipt.
 // The event's owners are locked before the message and attempt rows, the order
@@ -120,9 +132,7 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "ACCEPT_FORBIDDEN", http.StatusForbidden, "accept requires an agent bearer token")
 		return
 	}
-	var input struct {
-		Actor *model.Actor `json:"actor"`
-	}
+	var input actorInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -166,13 +176,14 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var sessionID, delivery, state string
-	var direct, byPerson, latest, byAuthor, fresh bool
+	var direct, byPerson, byAgent, latest, byAuthor, fresh bool
 	var taken *int
 	var requester *string
 	err = tx.QueryRow(ctx, messageThreadCTE+`
 		select session_id, delivery, state,
 		       `+acceptDirect+`,
 		       (select author ->> 'kind' = 'user' from messages where id = $1),
+		       (select author ? 'act' from messages where id = $1),
 		       attempt = (select max(attempt) from message_deliveries where message_id = $1),
 		       (select attempt from message_deliveries where message_id = $1 and accepted_at is not null),
 		       requested_by ->> 'kind',
@@ -181,7 +192,7 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		from message_deliveries
 		where message_id = $1 and attempt = $2
 	`, message.ID, number, actor.ID).Scan(
-		&sessionID, &delivery, &state, &direct, &byPerson, &latest, &taken, &requester, &byAuthor, &fresh,
+		&sessionID, &delivery, &state, &direct, &byPerson, &byAgent, &latest, &taken, &requester, &byAuthor, &fresh,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
@@ -202,6 +213,10 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 	case !byPerson:
 		writeError(w, "ACCEPT_NOT_WRITTEN_BY_PERSON", http.StatusConflict,
 			"only a message a person wrote is taken as the session's turn")
+		return
+	case byAgent:
+		writeError(w, "ACCEPT_WRITTEN_BY_AGENT", http.StatusConflict,
+			"this message was written by an agent acting for the person, so it is shown as a card rather than taken as the session's turn")
 		return
 	case delivery != "aside" && delivery != "steer":
 		writeError(w, "ACCEPT_NOT_ASIDE_OR_STEER", http.StatusConflict,
@@ -296,7 +311,7 @@ func (s *server) messageDeliveryRoute(ctx context.Context, message model.Message
 		`, message.ID, resumeAttempt).Scan(&pinned)
 	} else {
 		err = s.deps.Store.Pool.QueryRow(ctx, `
-			select session_id, `+claimLapsed+`
+			select session_id, `+model.DeliveryClaimFreeSQL+`
 			from message_deliveries
 			where message_id = $1 and state = 'pending'
 			order by attempt
@@ -339,9 +354,10 @@ func (s *server) recordPendingMessageDelivery(
 	defer tx.Rollback(ctx)
 	// The issue is locked before the message row and the attempt rows, the order every other
 	// message transaction takes them in, so the two halves of a delivery cannot deadlock
-	// against each other. It is also the receipt owner a supersede below appends against.
+	// against each other. It is also the receipt owner a supersede below appends against. A
+	// closed issue still takes a delivery, so the lock refuses nothing.
 	if message.IssueKey != nil {
-		if _, err := s.requireOpenIssue(ctx, tx, *message.IssueKey); err != nil {
+		if _, err := s.lockIssue(ctx, tx, *message.IssueKey); err != nil {
 			return pendingMessageDelivery{}, err
 		}
 	}
@@ -365,7 +381,7 @@ func (s *server) recordPendingMessageDelivery(
 		var bound model.MessageDelivery
 		var free bool
 		err = tx.QueryRow(ctx, `
-			select attempt, delivery, session_id, urgency, `+claimLapsed+`
+			select attempt, delivery, session_id, urgency, `+model.DeliveryClaimFreeSQL+`
 			from message_deliveries
 			where message_id = $1 and attempt = $2 and state = 'pending'
 			for update
@@ -405,7 +421,7 @@ func (s *server) recordPendingMessageDelivery(
 	var strandedUrgency *string
 	var lapsed bool
 	err = tx.QueryRow(ctx, `
-		select attempt, delivery, session_id, urgency, `+claimLapsed+`
+		select attempt, delivery, session_id, urgency, `+model.DeliveryClaimFreeSQL+`
 		from message_deliveries
 		where message_id = $1 and state = 'pending'
 		order by attempt
@@ -716,7 +732,7 @@ func (s *server) deliverMessageResuming(
 			if err != nil {
 				return ResolvedMention{}, err
 			}
-			return s.resolveMentionTargets(ctx, []string{route}, delivery)[0], nil
+			return s.resolveMentionTarget(ctx, route, delivery, 0), nil
 		},
 		func(ctx context.Context, resolved ResolvedMention) (pendingMessageDelivery, error) {
 			return s.recordPendingMessageDelivery(ctx, message, actor, resolved, replyThread, resumeAttempt)
@@ -739,8 +755,11 @@ func (s *server) deliverMessageResuming(
 	deliveryError, err := takeover.retry(ctx,
 		func() string {
 			var failure string
+			// A direct message is written to the session it names and invites its answer;
+			// nothing about one says a reply is unwanted.
 			envelopeID, duplicate, failure = s.sendResolvedDelivery(
-				ctx, pending.resolved, message.Body, key, pending.urgency, pending.frame,
+				ctx, pending.resolved, message.Body, key, pending.urgency,
+				contracts.ExpectsReplyOptional, pending.frame,
 			)
 			return failure
 		},
@@ -775,7 +794,10 @@ func (s *server) renewMessageDeliveryClaim(
 		route = "session:" + pending.resolved.attemptSessionID
 	}
 	renewed := pending
-	renewed.resolved = s.resolveMentionTargets(ctx, []string{route}, pending.resolved.Delivery)[0]
+	// Unbounded, as the message's own resolution above is: only a comment's creation bounds its
+	// lookups at mentionLookupTimeout, because it answers without them. A read cut short here
+	// would leave the attempt unanswered with no resolve error, and this sender settles it.
+	renewed.resolved = s.resolveMentionTarget(ctx, route, pending.resolved.Delivery, 0)
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return pending, false, err
@@ -800,19 +822,22 @@ func (s *server) renewMessageDeliveryClaim(
 	return renewed, true, nil
 }
 
+// messageReplyInput is the body of POST /api/v1/messages/{id}/reply.
+type messageReplyInput struct {
+	Actor   *model.Actor `json:"actor"`
+	Attempt int          `json:"attempt" required:"true"`
+	Body    *string      `json:"body"`
+	Error   *string      `json:"error"`
+	// InReplyToBlock is the id of the block of message {id} the reply answers ("b2").
+	InReplyToBlock *string `json:"in_reply_to_block"`
+}
+
 func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
 		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "reply requires an agent bearer token")
 		return
 	}
-	var input struct {
-		Actor   *model.Actor `json:"actor"`
-		Attempt int          `json:"attempt"`
-		Body    *string      `json:"body"`
-		Error   *string      `json:"error"`
-		// InReplyToBlock is the id of the block of message {id} the reply answers ("b2").
-		InReplyToBlock *string `json:"in_reply_to_block"`
-	}
+	var input messageReplyInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -825,9 +850,16 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "reply requires one body or error for a delivery attempt")
 		return
 	}
-	if input.Body != nil && strings.TrimSpace(*input.Body) == "" {
-		writeError(w, "MESSAGE_INPUT", http.StatusBadRequest, "message body is required")
-		return
+	if input.Body != nil {
+		if strings.TrimSpace(*input.Body) == "" {
+			writeError(w, "MESSAGE_INPUT", http.StatusBadRequest, "message body is required")
+			return
+		}
+		// A reply is stored as a message of its own, so it takes the message route's bound.
+		if err := blockBoundError(itemblocks.Check("body", *input.Body)); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if input.InReplyToBlock != nil && input.Body == nil {
 		writeError(w, "INVALID_MESSAGE", http.StatusBadRequest, "in_reply_to_block names the block a reply's body answers; an error report has none")
@@ -855,7 +887,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if message.IssueKey != nil {
-		if _, err := s.requireOpenIssue(r.Context(), tx, *message.IssueKey); err != nil {
+		if _, err := s.lockIssue(r.Context(), tx, *message.IssueKey); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

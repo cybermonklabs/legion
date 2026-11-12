@@ -7,6 +7,13 @@
 # ENVOY_CI_DEBOUNCE=250ms keeps this bounded acceptance run responsive while retaining the
 # production settle logic.
 #
+# Role messages: the run proves the listener's kept lane end to end. A publish to a role nobody
+# holds is kept rather than refused and answered 202 with kept_reason unclaimed; that kept message
+# then reaches the session stand-in that claims the role exactly once, as a frame of its own
+# consumer carrying kept_at. A publish to a role whose holder's registration is gone keeps
+# nothing, since that claim stands, and is refused 404 holder_lapsed naming the holder. A publish
+# to a role that live session holds still answers 200 naming the holder, with no kept field.
+#
 # Ports: the OS chooses each one, and each URL is built from the port its own process reports
 # (natsd's "Listening for client connections on" line, the listener's "envoy-listener listening"
 # addr). E2E_NATS_PORT and E2E_PORT set a port explicitly; it is used as given, and one already in
@@ -23,12 +30,17 @@ usage() {
 Usage: e2e-local.sh [--help]
 
 Boot a throwaway NATS and the local Envoy listener, submit signed public GitHub
-fixtures plus one direct message to a session that takes them from its own NATS
-consumer, prove that a registration naming a port is refused and how a send to
-an unknown session and a send whose bus is gone are refused, and write raw and
-rendered acceptance evidence to packages/envoy/out/e2e/. NATS is a server of
-this checkout's own build (internal/testnats/cmd/natsd), so no container
-runtime is needed.
+fixtures plus three direct messages to a session that takes them from its own
+NATS consumer — two of them spelling "no reply wanted" the two ways the wire
+allows, the JSON literal false and the old string "none" — prove that a
+registration naming a port is refused and how a send to an unknown session and
+a send whose bus is gone are refused, prove the kept lane — a role message
+nobody holds is kept and answered 202 and reaches the session that claims the
+role next exactly once, carrying kept_at, while a role whose holder's claim has
+lapsed keeps nothing and is refused 404 and a role a live session holds still
+answers 200 — and write raw and rendered acceptance evidence to
+packages/envoy/out/e2e/. NATS is a server of this checkout's own build
+(internal/testnats/cmd/natsd), so no container runtime is needed.
 EOF
 }
 
@@ -66,17 +78,34 @@ absent_session_id="ses_e2e_local_absent"
 readonly absent_session_id
 
 readonly envelopes_file="${out_dir}/envelopes.jsonl"
+# The listener's own record of where a deleted session consumer stopped, one line per record as
+# `<subject> <json>`: no envelope, so the capture keeps it apart from the envelopes, and the run
+# reads it to show the deregistration below recorded the session's floor.
+readonly resume_records_file="${out_dir}/resume-records.txt"
 readonly session_frames_file="${out_dir}/session-frames.jsonl"
 readonly rendered_ts_file="${out_dir}/rendered-ts.txt"
 readonly direct_response_file="${out_dir}/direct-send-response.json"
+# The two sends that carry an expects_reply. Each is answered in its sender's own dialect, so the
+# two answers are kept apart rather than read from one file.
+readonly no_reply_false_response_file="${out_dir}/no-reply-false-send-response.json"
+readonly no_reply_none_response_file="${out_dir}/no-reply-none-send-response.json"
 readonly registry_session_response_file="${out_dir}/registry-session-response.json"
 readonly registry_missing_response_file="${out_dir}/registry-missing-response.json"
 readonly subscribe_response_file="${out_dir}/subscribe-response.json"
+# The answer to the registration the session makes again after its deregistration: its
+# delivery.consumer_start is where the listener created its consumer, which the floor the delete
+# recorded is read against.
+readonly resubscribe_response_file="${out_dir}/resubscribe-response.json"
 readonly unwired_response_file="${out_dir}/unwired-subscribe-response.json"
 readonly port_registration_response_file="${out_dir}/port-registration-response.json"
 readonly unheld_role_response_file="${out_dir}/unheld-role-response.json"
 readonly role_claim_response_file="${out_dir}/role-claim-response.json"
 readonly held_role_response_file="${out_dir}/held-role-response.json"
+readonly lapsed_role_claim_response_file="${out_dir}/lapsed-role-claim-response.json"
+readonly lapsed_registry_response_file="${out_dir}/lapsed-registry-response.json"
+readonly lapsed_role_response_file="${out_dir}/lapsed-role-response.json"
+readonly lapsed_role_reclaim_response_file="${out_dir}/lapsed-role-reclaim-response.json"
+readonly keep_false_role_response_file="${out_dir}/keep-false-role-response.json"
 readonly listener_log_file="${out_dir}/listener.log"
 readonly session_log_file="${out_dir}/session.log"
 readonly subscriber_log_file="${out_dir}/subscriber.log"
@@ -149,12 +178,16 @@ trap 'cleanup 143' TERM
 
 rm -f "$envelopes_file" "$session_frames_file" "$rendered_ts_file" \
   "$direct_response_file" "$subscribe_response_file" "$unwired_response_file" "$port_registration_response_file" "$unheld_role_response_file" "$role_claim_response_file" "$held_role_response_file" \
+  "$no_reply_false_response_file" "$no_reply_none_response_file" \
+  "$lapsed_role_claim_response_file" "$lapsed_registry_response_file" "$lapsed_role_response_file" "$lapsed_role_reclaim_response_file" \
+  "$keep_false_role_response_file" \
   "$absent_session_response_file" "$bus_down_response_file" "$bus_down_headers_file" "$bus_down_result_file" "$bus_down_client_file" \
   "$registry_session_response_file" "$registry_missing_response_file" \
   "$listener_log_file" "$session_log_file" "$subscriber_log_file" "$nats_log_file" \
   "$listener_binary" "$nats_binary" "$session_ready_fifo" "$subscriber_ready_fifo"
 rm -rf "$nats_store_dir"
 : >"$envelopes_file"
+: >"$resume_records_file"
 : >"$session_frames_file"
 # Every log file is created before the process that writes it, so a wait that reads one cannot
 # race the redirect that creates it: wait_for_listener's jq and wait_for_nats's grep would
@@ -359,23 +392,38 @@ fi
 
 (
   cd "$repo_root"
-  exec env E2E_NATS_URL="$nats_url" E2E_ENVELOPES_FILE="$envelopes_file" bun -e '
+  exec env E2E_NATS_URL="$nats_url" E2E_ENVELOPES_FILE="$envelopes_file" E2E_RESUME_RECORDS_FILE="$resume_records_file" bun -e '
     import { appendFileSync } from "node:fs";
     import { connect, StringCodec } from "nats";
 
     const url = process.env.E2E_NATS_URL;
     const output = process.env.E2E_ENVELOPES_FILE;
-    if (url === undefined || output === undefined) throw new Error("capture configuration is invalid");
+    const resumeOutput = process.env.E2E_RESUME_RECORDS_FILE;
+    if ([url, output, resumeOutput].some((value) => value === undefined)) throw new Error("capture configuration is invalid");
+    const resumePrefix = "notifications.envoy.resume.";
     const codec = StringCodec();
     const connection = await connect({ servers: url, name: "envoy-e2e-capture" });
-    // Everything the listener publishes, except the relay frames of the session above: a frame
-    // carries a copy of a stored envelope, on notifications.envoy.deliver.<session id>, so
-    // counting one here would count its message twice. The frames are evidence of their own, and
-    // the stand-in that writes them also answers the role-forward receipts answered here before.
     const subscription = connection.subscribe("notifications.>");
     process.stdout.write("ready\n");
     for await (const message of subscription) {
-      if (message.subject.startsWith("notifications.envoy.deliver.")) continue;
+      // Only what carries an envelope is captured here. The listener publishes records of its
+      // own under notifications.envoy. as well: the cursor beside a kept role lane, which says
+      // how far that lane has been drained, and the resume floor of a session whose consumer it
+      // has deleted, which says where the next consumer of that session starts. Neither is an
+      // envelope and neither reaches a session, so a reader of this file that took one for an
+      // envelope would read a message with no topic at all. The two things under that prefix
+      // that are envelopes are a kept role copy and a delivery exception, so this capture takes
+      // those and passes over everything else there, a lane added later included. A relay frame
+      // (notifications.envoy.deliver.<session id>) is a copy of a stored envelope and would be
+      // counted twice; the frames are evidence of their own.
+      const subject = message.subject;
+      const ownLane = subject.startsWith("notifications.envoy.") &&
+        !subject.startsWith("notifications.envoy.kept.role.") &&
+        !subject.startsWith("notifications.envoy.exceptions.");
+      if (ownLane) {
+        if (subject.startsWith(resumePrefix)) appendFileSync(resumeOutput, `${subject} ${codec.decode(message.data)}\n`);
+        continue;
+      }
       appendFileSync(output, `${codec.decode(message.data)}\n`);
     }
   ' >"$subscriber_ready_fifo" 2>"$subscriber_log_file"
@@ -509,6 +557,49 @@ jq -e --arg recipient "$session_id" --arg message "$direct_message" \
   exit 1
 }
 
+# The two spellings of "no reply wanted", sent one after the other to the session already
+# registered above. The envelope's expects_reply is the JSON literal false; a plugin build older
+# than that change writes the string "none" for the same thing and cannot parse the literal back.
+# Nothing else in this repository proves the three claims that split apart against a real
+# listener, a real bus and the renderer a session reads: the listener answers each sender in the
+# dialect it spoke, it puts one vocabulary on the bus whichever arrived, and a session is shown
+# one spelling.
+printf 'posting the two spellings of a message that wants no reply\n'
+no_reply_false_message="No-reply direct message written false."
+no_reply_false_body="$(jq -nc \
+  --arg session_id "$session_id" \
+  --arg message "$no_reply_false_message" \
+  '{source:"agent",source_session:"octocat",target_session:$session_id,message:$message,expects_reply:false}')"
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/messages/send" -d "$no_reply_false_body" >"$no_reply_false_response_file"
+# jq's == tells the literal false from the string "false", so this fails on an answer that quotes
+# it as surely as on one that writes the old word back to a sender that never used it.
+jq -e --arg message "$no_reply_false_message" \
+  '.payload_summary == $message and .expects_reply == false' \
+  "$no_reply_false_response_file" >/dev/null || {
+  printf 'ERR: a send writing expects_reply false was not answered the JSON literal false.\n' >&2
+  cat "$no_reply_false_response_file" >&2
+  exit 1
+}
+
+no_reply_none_message="No-reply direct message written none."
+no_reply_none_body="$(jq -nc \
+  --arg session_id "$session_id" \
+  --arg message "$no_reply_none_message" \
+  '{source:"agent",source_session:"octocat",target_session:$session_id,message:$message,expects_reply:"none"}')"
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/messages/send" -d "$no_reply_none_body" >"$no_reply_none_response_file"
+# The older sender gets its own word back. Its envelope schema holds the three-word enum and
+# refuses the literal, so an answer written false is one it cannot parse: its send would be
+# reported unconfirmed and sent again, and its publish would throw.
+jq -e --arg message "$no_reply_none_message" \
+  '.payload_summary == $message and .expects_reply == "none"' \
+  "$no_reply_none_response_file" >/dev/null || {
+  printf 'ERR: a send writing the old expects_reply "none" was not answered that same word.\n' >&2
+  cat "$no_reply_none_response_file" >&2
+  exit 1
+}
+
 # A send to a session id nothing registered. The store holds no key for it, so the listener refuses
 # the send by name instead of publishing into a topic no one reads: the sender is told which
 # session is gone, and can route around that pane. `curl -fsS` cannot assert a refusal (it prints
@@ -523,7 +614,7 @@ absent_status="$(curl -sS -o "$absent_session_response_file" -w '%{http_code}' \
   -X POST -H 'Content-Type: application/json' \
   "${listener_url}/v1/messages/send" -d "$absent_body")"
 if [[ "$absent_status" != 404 ]] || ! jq -e --arg session_id "$absent_session_id" \
-  '.error == ("no live session " + $session_id)' "$absent_session_response_file" >/dev/null; then
+  '.error | startswith("no live session " + $session_id)' "$absent_session_response_file" >/dev/null; then
   printf 'ERR: a send to the unregistered session %s answered HTTP %s, not a 404 naming it.\n' \
     "$absent_session_id" "$absent_status" >&2
   cat "$absent_session_response_file" >&2
@@ -580,6 +671,10 @@ wait_for_listener_record 'refused send' \
 # The one question a caller holding a session id asks before it addresses that session: is this
 # session live? The per-session registry read answers with the row GET /v1/sessions would carry,
 # and an id that never registered is refused with the exact reason Dispatch classifies on.
+# dispatch://INFRA-392 gives that refusal the state it was decided on beside the kept "no live
+# session <id>" prefix (noLiveSessionRefusal, cmd/listener/api.go), and a last_seen only when the
+# listener still remembers a registration: an id nothing ever registered is "gone" with none, so
+# the whole body is the error and that state.
 registry_status="$(curl -sS -o "$registry_session_response_file" -w '%{http_code}' \
   "${listener_url}/v1/registry/${session_id}")"
 if [[ "$registry_status" != 200 ]] || ! jq -e --arg session_id "$session_id" \
@@ -593,34 +688,237 @@ missing_session_id="ses_e2e_local_never_registered"
 missing_status="$(curl -sS -o "$registry_missing_response_file" -w '%{http_code}' \
   "${listener_url}/v1/registry/${missing_session_id}")"
 if [[ "$missing_status" != 404 ]] || ! jq -e --arg session_id "$missing_session_id" \
-  '. == {error: ("no live session " + $session_id)}' "$registry_missing_response_file" >/dev/null; then
-  printf 'ERR: an unregistered session id was not refused 404 with "no live session <id>".\n' >&2
+  '. == {error: ("no live session " + $session_id + "; this listener does not know when it last registered"), state: "gone"}' "$registry_missing_response_file" >/dev/null; then
+  printf 'ERR: an unregistered session id was not refused 404 with "no live session <id>", state gone and the listener saying it cannot name the last registration.\n' >&2
   exit 1
 fi
 
+# The kept lane. A role message no claim holds is not lost and the sender is not left to queue
+# it: the listener keeps the message and hands it to whoever claims the role within the hour.
+# Both windows a give-up reaches are proved here, each on a role of its own: (i) nobody holds the
+# role, where the session stand-in then claims the role and must be handed the kept message
+# exactly once, carrying kept_at, the time the listener took it in; and (ii) a holder whose
+# registration is gone, its claim lapsed, which keeps nothing, since that claim stands until the
+# role-claim reaper releases it and a copy kept for it would wait for a claim that never comes.
+
+# count_session_frames reports how many frames of its own consumer the session took that carry
+# event_id. The drain forwards a kept copy to the holder's agent subject, which the stream stores
+# and the session's consumer delivers, so this counts the session's own deliveries of one message,
+# which is what exactly once is about: the bus holds two copies of a kept message — the one on the
+# kept lane and the forward the drain made of it — and only the second reaches the session.
+count_session_frames() {
+  local event_id=$1
+  jq -rs --arg event_id "$event_id" \
+    '[.[] | select(.event_id == $event_id)] | length' \
+    "$session_frames_file"
+}
+
+# count_kept_forwards reports how many captured frames are the drain's forward of event_id: the
+# copy handed to the role's new holder carries kept_at, the time the stream stored the kept copy,
+# under the role arbiter's forward dedupe key, while the copy on the kept lane itself carries no
+# kept_at and keeps the key the publish gave it.
+count_kept_forwards() {
+  local event_id=$1
+  jq -rs --arg event_id "$event_id" \
+    '[.[] | select(.event_id == $event_id and .kept_at != null and ((.dedupe_key // "") | startswith("envoy.role.forward.")))] | length' \
+    "$envelopes_file"
+}
+
+# wait_for_kept_delivery proves one window of the kept lane: the message the kept answer named
+# reaches the session that has just claimed the role, exactly once and carrying kept_at. The
+# capture of the forward and the session's own frame are written by two processes of their own, so
+# this waits for both to arrive rather than racing either, and then fails on any count but one — a
+# control notice delivered twice is as wrong as one never delivered.
+wait_for_kept_delivery() {
+  local window=$1
+  local event_id=$2
+  local deadline=$((SECONDS + 20))
+  local frames=0
+  local forwards=0
+  while ((SECONDS < deadline)); do
+    frames="$(count_session_frames "$event_id")"
+    forwards="$(count_kept_forwards "$event_id")"
+    if ((frames != 0 && forwards != 0)); then
+      break
+    fi
+    sleep 0.25
+  done
+  if ((frames != 1)); then
+    printf 'ERR: the %s kept message %s reached the session %s times within 20 seconds, not exactly once.\n' \
+      "$window" "$event_id" "$frames" >&2
+    return 1
+  fi
+  if ((forwards != 1)); then
+    printf 'ERR: the %s kept message %s was forwarded carrying kept_at %s times within 20 seconds, not exactly once.\n' \
+      "$window" "$event_id" "$forwards" >&2
+    return 1
+  fi
+  printf '%s: kept message %s reached the session exactly once, carrying kept_at\n' "$window" "$event_id"
+}
+
+# wait_for_unregistered returns once the listener reports the session's registration gone.
+# The registry read and the publish route's first resolution of a role's holder read a session the
+# same way (liveSessionEntry, through a cache the delete evicts), so this is the point from which
+# a claim that names that session is a lapsed one rather than a live holder.
+wait_for_unregistered() {
+  local deadline=$((SECONDS + 20))
+  local status=""
+  while ((SECONDS < deadline)); do
+    status="$(curl -sS -o "$lapsed_registry_response_file" -w '%{http_code}' \
+      "${listener_url}/v1/registry/${session_id}")"
+    if [[ "$status" == 404 ]]; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  printf 'ERR: the listener still answered HTTP %s for the deleted registration of %s after 20 seconds.\n' \
+    "$status" "$session_id" >&2
+  cat "$lapsed_registry_response_file" >&2
+  return 1
+}
+
+# Window (i): nobody holds the role. The publish is answered 202 with the envelope the listener
+# kept, kept true and kept_reason unclaimed, on the role topic it was sent to — not the 404 every
+# sender needed a fallback of its own for.
+printf 'publishing to a role nobody holds\n'
 role="e2e-reviewer"
 unheld_status="$(curl -sS -o "$unheld_role_response_file" -w '%{http_code}' \
   -X POST -H 'Content-Type: application/json' \
   "${listener_url}/v1/messages/publish" \
   -d "{\"topic\":\"notifications.role.${role}\",\"message\":\"Role delivery.\"}")"
-if [[ "$unheld_status" != 404 ]] || ! jq -e --arg role "$role" '.error == ("no holder for role " + $role)' "$unheld_role_response_file" >/dev/null; then
-  printf 'ERR: an unheld role publish was not rejected with 404.\n' >&2
+if [[ "$unheld_status" != 202 ]] || ! jq -e --arg role "$role" \
+  '.kept == true and .kept_reason == "unclaimed" and .topic == ("notifications.role." + $role) and (.event_id | length) > 0' \
+  "$unheld_role_response_file" >/dev/null; then
+  printf 'ERR: a publish to a role nobody holds answered HTTP %s, not a 202 keeping it with kept_reason unclaimed on the role topic.\n' \
+    "$unheld_status" >&2
+  cat "$unheld_role_response_file" >&2
   exit 1
 fi
+unheld_event_id="$(jq -r '.event_id' "$unheld_role_response_file")"
 curl -fsS -X POST -H 'Content-Type: application/json' \
   "${listener_url}/v1/roles/set" \
   -d "{\"session_id\":\"${session_id}\",\"role\":\"${role}\"}" >"$role_claim_response_file"
 jq -e --arg session_id "$session_id" '.session_id == $session_id' "$role_claim_response_file" >/dev/null || {
-  printf 'ERR: fake session did not claim the role.\n' >&2
+  printf 'ERR: the session did not claim the role.\n' >&2
   exit 1
 }
-curl -fsS -X POST -H 'Content-Type: application/json' \
+wait_for_kept_delivery 'unclaimed-role window' "$unheld_event_id"
+
+# The control for the kept window above, on the same route and the same unheld state: a sender
+# that keeps its own queue asks for keep false and gets exactly today's refusal, and the listener
+# stores nothing for the role. The Legion daemon's notice publisher sends this
+# (packages/daemon/internal/notify/notify.go).
+printf 'publishing to a role nobody holds, asking for nothing to be kept\n'
+keep_false_role="e2e-unkept"
+keep_false_status="$(curl -sS -o "$keep_false_role_response_file" -w '%{http_code}' \
+  -X POST -H 'Content-Type: application/json' \
   "${listener_url}/v1/messages/publish" \
-  -d "{\"topic\":\"notifications.role.${role}\",\"message\":\"Role delivery.\"}" >"$held_role_response_file"
-jq -e --arg session_id "$session_id" '.holder == $session_id' "$held_role_response_file" >/dev/null || {
-  printf 'ERR: held role publish did not return the fake-session holder.\n' >&2
+  -d "{\"topic\":\"notifications.role.${keep_false_role}\",\"message\":\"Unkept role delivery.\",\"keep\":false}")"
+# The body carries claim_revision as well since sjawhar/legion#2610's conditional role claim:
+# every 404 role answer reports the revision a lookup would, 0 for a role with no claim record
+# at all. The assertion stays an exact object, so a field that appears or goes is seen here.
+if [[ "$keep_false_status" != 404 ]] || ! jq -e --arg role "$keep_false_role" \
+  '. == {error: ("no holder for role " + $role), reason: "unclaimed", claim_revision: 0}' \
+  "$keep_false_role_response_file" >/dev/null; then
+  printf 'ERR: a publish with keep false to a role nobody holds answered HTTP %s, not the 404 naming the role unclaimed.\n' \
+    "$keep_false_status" >&2
+  cat "$keep_false_role_response_file" >&2
+  exit 1
+fi
+# Nothing was kept, so claiming the role hands the claimant nothing. The claim below is the same
+# call the kept window is drained by; the assertion that nothing arrived is made after the
+# consumer's own frame count has settled (wait_for_consumer_frame_count), so the drain this claim
+# started has had its chance and no fixed sleep is needed here.
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/roles/set" \
+  -d "{\"session_id\":\"${session_id}\",\"role\":\"${keep_false_role}\"}" >/dev/null
+
+# A role a live session holds answers as it always did, beside the kept answer and the lapsed
+# refusal above, so no one of the three can be read for another: 200 naming the holder, and no
+# kept field at all.
+held_status="$(curl -sS -o "$held_role_response_file" -w '%{http_code}' \
+  -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/messages/publish" \
+  -d "{\"topic\":\"notifications.role.${role}\",\"message\":\"Role delivery.\"}")"
+if [[ "$held_status" != 200 ]] || ! jq -e --arg session_id "$session_id" \
+  '.holder == $session_id and (has("kept") | not) and (has("kept_reason") | not)' \
+  "$held_role_response_file" >/dev/null; then
+  printf 'ERR: a publish to the role the session holds answered HTTP %s, not a 200 naming the holder with no kept field.\n' \
+    "$held_status" >&2
+  cat "$held_role_response_file" >&2
+  exit 1
+fi
+
+# Window (ii): a claim that lapsed. The session claims a role of its own, and then its
+# registration is removed through the listener, rather than waiting out the window a claim takes
+# to go stale. A registration and a role claim are separate records, and removing the first
+# leaves the second naming a session nothing can reach: the role has a holder on paper and none
+# to deliver to. That claim stands - no resolution of this build releases one, and the role-claim
+# reaper is the one caller that ever does - so nothing is kept for it and the publish is refused
+# 404 holder_lapsed, naming the holder and its retained claim (dispatch://INFRA-392).
+printf 'publishing to a role whose holder has gone\n'
+lapsed_role="e2e-escalation"
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/roles/set" \
+  -d "{\"session_id\":\"${session_id}\",\"role\":\"${lapsed_role}\"}" >"$lapsed_role_claim_response_file"
+jq -e --arg session_id "$session_id" '.session_id == $session_id' "$lapsed_role_claim_response_file" >/dev/null || {
+  printf 'ERR: the session did not claim the role whose claim is about to lapse.\n' >&2
   exit 1
 }
+curl -fsS -X DELETE "${listener_url}/v1/sessions/${session_id}" >/dev/null
+wait_for_unregistered
+lapsed_status="$(curl -sS -o "$lapsed_role_response_file" -w '%{http_code}' \
+  -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/messages/publish" \
+  -d "{\"topic\":\"notifications.role.${lapsed_role}\",\"message\":\"Lapsed-claim role delivery.\"}")"
+if [[ "$lapsed_status" != 404 ]] || ! jq -e --arg session_id "$session_id" \
+  '.reason == "holder_lapsed" and .holder == $session_id and .claim_released == false and (has("kept") | not)' \
+  "$lapsed_role_response_file" >/dev/null; then
+  printf 'ERR: a publish to the role whose holder is gone answered HTTP %s, not a 404 holder_lapsed naming %s with its claim retained and nothing kept.\n' \
+    "$lapsed_status" "$session_id" >&2
+  cat "$lapsed_role_response_file" >&2
+  exit 1
+fi
+printf 'lapsed-claim window: the publish was refused 404 holder_lapsed, the claim stands and nothing was kept\n'
+
+# The session registers again, with the registration it first made, and claims the role again:
+# its own claim never left it, so the claim answers as the same session's.
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/interests/subscribe" -d "$subscribe_body" >"$resubscribe_response_file"
+curl -fsS -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/roles/set" \
+  -d "{\"session_id\":\"${session_id}\",\"role\":\"${lapsed_role}\"}" >"$lapsed_role_reclaim_response_file"
+jq -e --arg session_id "$session_id" '.session_id == $session_id' "$lapsed_role_reclaim_response_file" >/dev/null || {
+  printf 'ERR: the re-registered session did not claim the lapsed role again.\n' >&2
+  exit 1
+}
+
+# The deregistration above deleted the session's consumer, and before deleting it the listener
+# recorded where that consumer stopped on a lane of its own (notifications.envoy.resume.<session
+# id>, bus.SessionResumeSubject): one record, carrying a floor and the stream's identity, and no
+# envelope, which is why the capture keeps it out of the envelopes. The registration just made
+# carries no resume point of its own, so the consumer it created starts at that floor plus one -
+# which is what keeps a session that comes back from losing what the stream still holds for it.
+resume_record="$(grep -F "notifications.envoy.resume.${session_id} " "$resume_records_file" | tail -n 1)" || true
+if [[ -z "$resume_record" ]]; then
+  printf 'ERR: the deregistration deleted the session consumer without recording its resume floor; the records seen were:\n' >&2
+  cat "$resume_records_file" >&2
+  exit 1
+fi
+resume_floor="$(printf '%s' "${resume_record#* }" | jq -r 'if (.floor | type) == "number" and (.stream_id | length) > 0 then .floor else empty end')"
+if [[ -z "$resume_floor" ]]; then
+  printf 'ERR: the resume record of %s is not a floor and a stream id: %s\n' "$session_id" "$resume_record" >&2
+  exit 1
+fi
+consumer_start="$(jq -r '.delivery.consumer_start // empty' "$resubscribe_response_file")"
+if [[ "$consumer_start" != "$((resume_floor + 1))" ]]; then
+  printf 'ERR: the consumer created for %s starts at %s, not %s, the sequence after the floor its delete recorded (%s)\n' \
+    "$session_id" "${consumer_start:-none}" "$((resume_floor + 1))" "$resume_record" >&2
+  cat "$resubscribe_response_file" >&2
+  exit 1
+fi
+printf 'resume record: the delete recorded floor %s for %s, and its new consumer starts at %s\n' \
+  "$resume_floor" "$session_id" "$consumer_start"
 
 post_github issue_comment "${fixture_dir}/issue-comment-created.json"
 post_github issue_comment "${fixture_dir}/issue-comment-edited.json"
@@ -654,19 +952,46 @@ post_github workflow_run "${fixture_dir}/workflow-run-without-pr.json"
 post_github check_run "${fixture_dir}/check-run-actions-job-without-pr.json"
 post_github check_run "${fixture_dir}/check-run-actions-job-merge-queue.json"
 post_github push "${fixture_dir}/push.json"
-wait_for_consumer_frame_count 15
+wait_for_consumer_frame_count 18
+
+# The keep-false control, read now the consumer's frame count has settled: its claim went in
+# before the lapsed window, so a drain of the unkept role would have run by now. The session was
+# handed nothing for it, and the bus holds no copy of it either.
+if grep -q 'Unkept role delivery.' "$session_frames_file"; then
+  printf 'ERR: a message published with keep false reached the role claimant; nothing should have been kept.\n' >&2
+  exit 1
+fi
+if jq -e 'select(.payload_summary == "Unkept role delivery.")' "$envelopes_file" >/dev/null 2>&1; then
+  printf 'ERR: a message published with keep false is on the bus; the listener stored nothing for it.\n' >&2
+  exit 1
+fi
+printf 'keep-false control: the unheld role answered 404, nothing was stored and its claimant was handed nothing\n'
 
 # What the session itself took, which is the whole point of a consumer: every GitHub delivery, the
-# direct message and the role forward reached it as frames of its own consumer, each exactly once,
-# with no connection opened to it from anywhere.
+# three direct messages and both role forwards reached it as frames of its own consumer, each
+# exactly once, with no connection opened to it from anywhere. Both role forwards are the
+# reviewer role's — the copy kept while nobody held it and the publish its live holder took. The
+# escalation role has none: its holder's claim stood while the holder was gone, so the listener
+# kept nothing for it and refused that publish (dispatch://INFRA-392). The unkept role has no
+# frame either, since its own publish asked for nothing to be kept.
 printf 'consumer frames by topic:\n'
 jq -r '.topic' "$session_frames_file" | sort | uniq -c
-jq -es --arg session_id "$session_id" --arg role_topic "notifications.role.${role}" --arg message "$direct_message" '
-  (map(select(.topic == "notifications.agent." + $session_id)) | length == 1 and .[0].payload == $message)
-  and (map(select(.topic == $role_topic)) | length) == 1
+# The two no-reply sends are checked on the bus here rather than at the session's card: whichever
+# spelling a sender wrote, the envelope the stream carries holds the one vocabulary, the literal
+# false. An answer written "none" is the listener's alone and never leaves it.
+jq -es --arg session_id "$session_id" --arg role_topic "notifications.role.${role}" \
+  --arg lapsed_role_topic "notifications.role.${lapsed_role}" \
+  --arg unkept_role_topic "notifications.role.${keep_false_role}" --arg message "$direct_message" \
+  --arg no_reply_false "$no_reply_false_message" --arg no_reply_none "$no_reply_none_message" '
+  (map(select(.topic == "notifications.agent." + $session_id)) | length == 3 and .[0].payload == $message)
+  and ([.[] | select(.payload_summary == $no_reply_false or .payload_summary == $no_reply_none)]
+       | length == 2 and all(.expects_reply == false))
+  and (map(select(.topic == $role_topic)) | length) == 2
+  and (map(select(.topic == $lapsed_role_topic)) | length) == 0
+  and (map(select(.topic == $unkept_role_topic)) | length) == 0
   and (map(select(.topic | startswith("notifications.github.example-org.example-repo."))) | length) == 13
 ' "$session_frames_file" >/dev/null || {
-  printf 'ERR: the session did not take its GitHub deliveries, its direct message and its role forward from its consumer.\n' >&2
+  printf 'ERR: the session did not take its GitHub deliveries, its three direct messages carrying one expects_reply vocabulary, and its two reviewer-role forwards from its consumer, with nothing for the lapsed role and nothing for the unkept one.\n' >&2
   exit 1
 }
 
@@ -713,10 +1038,30 @@ E2E_ENVELOPES_FILE="$envelopes_file" E2E_RENDERED_TS_FILE="$rendered_ts_file" \
     const directSummary = "Direct acceptance summary.";
     const directBody = `${directSummary}\n\nDirect second paragraph.\n\nDirect third paragraph.`;
     const directTopic = `notifications.agent.${sessionID}`;
-    const direct = withTopic(directTopic);
-    require(direct.length === 1, `direct envelope count = ${direct.length}, want 1`);
+    // Three sends reached this session subject: the three-paragraph message, and the two below
+    // that want no reply. The one read here is the first of them, whose card the renderer
+    // assertions at the end of this block are about.
+    const directAll = withTopic(directTopic);
+    require(directAll.length === 3, `direct envelope count = ${directAll.length}, want 3`);
+    const direct = directAll.filter((item) => item.payload_summary === directSummary);
+    require(direct.length === 1, `three-paragraph direct envelope count = ${direct.length}, want 1`);
     require(direct[0].source === "agent" && direct[0].source_session === "octocat", "direct envelope loses sender identity");
-    require(direct[0].payload_summary === directSummary && direct[0].payload === directBody, "direct envelope loses the three-paragraph body");
+    require(direct[0].payload === directBody, "direct envelope loses the three-paragraph body");
+
+    // One vocabulary on the bus. The sender that wrote the literal false and the sender that
+    // wrote the old string "none" are both carried as the literal: the leniency is the listener
+    // taking the old word in, never passing it on to whoever reads the envelope.
+    const noReply = [
+      "No-reply direct message written false.",
+      "No-reply direct message written none.",
+    ].map((summary) => {
+      const found = directAll.filter((item) => item.payload_summary === summary);
+      require(found.length === 1, `no-reply envelope count for ${summary} = ${found.length}, want 1`);
+      return found[0];
+    });
+    for (const item of noReply) {
+      require(item.expects_reply === false, `envelope ${item.payload_summary} carries expects_reply ${JSON.stringify(item.expects_reply)}, want the literal false`);
+    }
 
     const lifecycle = withTopic(topic("pr.42"));
     require(lifecycle.length === 3, `pr lifecycle count = ${lifecycle.length}, want 3`);
@@ -806,12 +1151,31 @@ E2E_ENVELOPES_FILE="$envelopes_file" E2E_RENDERED_TS_FILE="$rendered_ts_file" \
     const obsolete = ["pr.42.check", "pr.42.ci", "pr.42.merged", "pr.42.closed"];
     for (const suffix of obsolete) require(withTopic(topic(suffix)).length === 0, `obsolete topic was published: ${suffix}`);
 
-    const tsFirst = readFileSync(renderedTSFile, "utf8").split("\n\nenvoy:")[0];
+    const renderedText = readFileSync(renderedTSFile, "utf8");
+    // One card per envelope, in the order the bus carried them. No card holds a blank line, so
+    // the blank line before the next card opens is the only boundary there is to split on.
+    const cards = renderedText.trimEnd().split(/\n{2,}(?=envoy:\n)/);
+    const tsFirst = cards[0];
     // The direct summary is the message head, so the renderer drops the separate summary line and
     // prints the full message once: the summary text appears only where the message opens.
     const fullMessage = `message: ${JSON.stringify(directBody)}`;
     require(tsFirst.split(fullMessage).length === 2, "the renderer did not render the full direct message exactly once");
     require(tsFirst.split(directSummary).length === 2, "the renderer repeats the direct summary outside the message it opens");
+
+    // What the session reads is one spelling, whichever word its sender wrote. The whole evidence
+    // file is read for the old one too: a card that still printed it would be a session shown the
+    // same meaning written two ways.
+    for (const item of noReply) {
+      const card = cards.filter((text) => text.includes(item.payload_summary));
+      require(card.length === 1, `rendered cards naming ${item.payload_summary} = ${card.length}, want 1`);
+      require(card[0].split("\n").includes("  expects_reply: false"), `the card for ${item.payload_summary} carries no expects_reply: false line:\n${card[0]}`);
+      // And it carries no ready-made way to send something. A card that says the sender wants
+      // nothing back while printing a filled-in envoy_send under that line invites the reader to
+      // do what the line says is not wanted, which is the post this issue counts.
+      require(!card[0].includes("reply_with:"), `the card for ${item.payload_summary} wants no reply and still prints a reply_with:\n${card[0]}`);
+      require(!card[0].includes("reply_role:"), `the card for ${item.payload_summary} wants no reply and still prints a reply_role:\n${card[0]}`);
+    }
+    require(!renderedText.includes("expects_reply: none"), "a rendered card still spells wanting no reply as none");
 
     console.log("PASS: topic set, structured payloads, checks settlement, and what renderInbound shows a session match the local acceptance contract");
   '
@@ -822,8 +1186,8 @@ E2E_ENVELOPES_FILE="$envelopes_file" E2E_RENDERED_TS_FILE="$rendered_ts_file" \
 printf 'stopping NATS for the bus-down answers\n'
 stop_nats
 
-# --max-time 5 is the sending client's own per-attempt deadline (DEFAULT_TIMEOUT_MS in
-# packages/envoy-client/src/transport.ts): an answer that arrives after it is, to that caller, no
+# --max-time 5 is the sending client's own per-attempt deadline (LISTENER_CALL_TIMEOUT_MS in
+# packages/contracts/src/envoy-session.ts): an answer that arrives after it is, to that caller, no
 # answer at all. The listener's own budget (sendRequestBudget, 3.5 s) is what keeps it inside.
 printf 'posting a direct message with the bus down\n'
 curl --max-time 5 -sS -o "$bus_down_response_file" -D "$bus_down_headers_file" \

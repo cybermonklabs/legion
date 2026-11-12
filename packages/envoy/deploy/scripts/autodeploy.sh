@@ -7,11 +7,15 @@ REPO="${REPO:-/home/ubuntu/.worktrees/legion/dn-an}"
 COMPOSE_PROJECT="${COMPOSE_PROJECT:-envoy-dispatch}"
 COMPOSE_DIR="${COMPOSE_DIR:-$REPO/packages/envoy/deploy/compose}"
 BACKUPS="${BACKUPS:-/home/ubuntu/tmp/dispatch-backups}"
-IMAGE="${IMAGE:-ghcr.io/sjawhar/legion/envoy}"
+IMAGE="${IMAGE:-ghcr.io/cybermonklabs/legion/envoy}"
 COMPOSE_FILE="$COMPOSE_DIR/dispatch.compose.yml"
 COMPOSE_ENV="$COMPOSE_DIR/.env"
 # pg_dump N dumps servers <= N; the production database is Aurora PostgreSQL 16.
 PG_DUMP_IMAGE="${PG_DUMP_IMAGE:-postgres:16.11-alpine}"
+# SCHEMA_READ_DEADLINE is how long schema_applied polls the migration advisory key before it
+# gives up on reading the applied set. It bounds the whole read and not merely the start of its
+# last try: each try's own timeout is the time this deadline leaves, capped at a minute.
+SCHEMA_READ_DEADLINE="${SCHEMA_READ_DEADLINE:-60}"
 
 case "$#" in
   0)
@@ -137,28 +141,93 @@ pg_client() {
 # on a schema it never ran against. The max and the count are there for a reader of a log line;
 # the digest is what changes whenever the set changes.
 #
-# It first takes the advisory lock Dispatch's migration runner holds for each migration
-# (internal/dispatch/store/store.go, migrationLockKey), in a statement of its own, so a migration
-# transaction still in flight, one a stopped image sent its commit for included, ends before the
-# read takes its snapshot; the versions then come back in one statement, ordered by the database.
+# It reads under the advisory lock Dispatch's migration runner holds for each migration
+# (internal/dispatch/store/store.go, migrationLockKey): one psql session runs a script that tries
+# for the key and then, only once the try was granted, reads the versions. A migration
+# transaction still in flight, one a stopped image sent its commit for included, is waited out
+# only as far as the deadline below reaches: one that ends inside it ends before the read takes
+# its snapshot, and one still holding the key when the deadline passes is not waited out at all:
+# that read fails, and the caller refuses to deploy rather than read behind a held key. The
+# versions a granted try reads come back ordered by the database, and the key is still held as
+# they do (measured on PostgreSQL 18.6: while the read runs, the reading backend is the one
+# session holding the key in that database). The session's end releases it. One statement
+# could not take the key and read behind it: a statement's snapshot is taken when it starts,
+# before its own one-time filter calls pg_try_advisory_lock, so its read would still be of the
+# schema as it stood before the migration committed (measured too).
+#
+# It polls the key rather than waiting for it, because any blocking wait on this key deadlocks
+# against the runner that holds it. A backend blocked on a lock keeps the snapshot its statement
+# took, and CREATE INDEX CONCURRENTLY waits for every snapshot older than its own, so a holder
+# building an index concurrently and a waiter on the key wait for each other (PostgreSQL 18.6,
+# SQLSTATE 40P01). The runner polls for the same reason (store.go, lockMigrations). So each try is
+# a psql session of its own, with no statement open between two tries: a try refused the key
+# answers f, takes nothing and reads nothing at all, and the next try follows a second later as a
+# fresh session holding nothing. The \if is what keeps the read out of a refused try, and it is
+# no nicety. A read that ran behind a held key can fail (a first boot holds the key before
+# schema_migrations is committed, and the runner's one-time widening ALTER TABLE makes the read
+# wait out its lock_timeout), and under ON_ERROR_STOP=1 that failure ends psql non-zero, which
+# would end this read in its caller rather than try the key again. Once the deadline passes with
+# the key still held the read fails, and the caller refuses to deploy rather than wait for ever.
+# The deadline bounds the whole read, not merely the start of its last try: each try's timeout is
+# the time the deadline leaves, capped at the minute a try is given where the deadline leaves
+# more, so a try that starts a second before the deadline ends at it rather than a minute past
+# it. With SCHEMA_READ_DEADLINE where it stands, a first try against a free key still gets the
+# whole minute.
+#
 # psql's stderr is dropped, since its diagnostics can quote the connection; a failure prints
 # nothing and returns psql's status, or 1 for an answer that is no list of versions.
 schema_applied() {
-  local versions line count max digest
-  # shellcheck disable=SC2016 # $DATABASE_URL expands in the container's shell, from its environment
-  versions=$(pg_client 60 'psql -X -q -At -v ON_ERROR_STOP=1 -c "set lock_timeout = 30000" -c "select pg_advisory_lock(8150001)" -c "select version from schema_migrations order by version" "$DATABASE_URL"' 2>/dev/null) ||
-    return
+  local sql answer versions line count max digest deadline try left
+  # The script reaches psql on its standard input, since \gset and \if are psql's own and -c
+  # takes SQL alone. The here-document is the container shell's, so the script travels as part of
+  # sh -c's argument (pg_client) and nothing of it reaches psql's own arguments; it carries no
+  # credential, only the connection's name in the environment.
+  sql="psql -X -q -At -v ON_ERROR_STOP=1 -f - \"\$DATABASE_URL\" <<'PSQL'
+set lock_timeout = 30000;
+select pg_try_advisory_lock(8150001) as got \\gset
+\\echo :got
+\\if :got
+select version from schema_migrations order by version;
+\\endif
+PSQL
+"
+  deadline=$((SECONDS + SCHEMA_READ_DEADLINE))
+  try=0
+  while true; do
+    # Two bounds on the poll, whichever comes first, both read before a try is sent rather than
+    # after one is refused: the deadline, and the count of tries a deadline of seconds can hold
+    # with a second between two of them. The count is what bounds the poll where a sleep returns
+    # early (the test suite's own sleep returns at once, but for the cases that ask it for a real
+    # one); without it such a run would reach for the key as fast as it can until the deadline
+    # passes. The deadline is tested here and nowhere else, so a poll that lost this test would
+    # run its 60 tries out past it, which is what the suite's three-second case reads.
+    ((SECONDS < deadline && try++ < 60)) || return 1
+    # What this try is given: the time the deadline leaves, capped at a minute. That is how the
+    # read ends inside the deadline rather than a timeout past it, where a try starting a second
+    # before the deadline would otherwise get a minute of its own. The test above has left at
+    # least a second, and pg_client must never be given 0: it reads 0 as unbounded.
+    left=$((deadline - SECONDS))
+    ((left > 60)) && left=60
+    answer=$(pg_client "$left" "$sql" 2>/dev/null) ||
+      return
+    [[ "$answer" == t || "$answer" == t$'\n'* ]] && break
+    # f: another session holds the key. Any other answer is none of this read's.
+    [[ "$answer" == f || "$answer" == f$'\n'* ]] || return 1
+    sleep 1
+  done
+  versions="${answer#t}"
+  versions="${versions#$'\n'}"
   count=0
   max=0
   digest=""
-  while IFS= read -r line; do
-    # pg_advisory_lock returns void, which prints as an empty line; a version never does.
-    [[ -z "$line" ]] && continue
-    [[ "$line" =~ ^[0-9]+$ ]] || return 1
-    digest+="$line"$'\n'
-    count=$((count + 1))
-    max="$line"
-  done <<<"$versions"
+  if [[ -n "$versions" ]]; then
+    while IFS= read -r line; do
+      [[ "$line" =~ ^[0-9]+$ ]] || return 1
+      digest+="$line"$'\n'
+      count=$((count + 1))
+      max="$line"
+    done <<<"$versions"
+  fi
   digest=$(printf '%s' "$digest" | sha256sum) || return 1
   printf '%s-%s-%s\n' "$max" "$count" "${digest%% *}"
 }

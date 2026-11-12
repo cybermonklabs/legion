@@ -3,17 +3,19 @@
 // The loader refuses every key it does not model, in one of three ways it decides once, here: a
 // tossed key is refused naming the key and why its setting no longer exists; a migration-only key
 // is refused with the message that names its replacement, worded exactly as operators have met it;
-// anything else is a typo, refused as an unknown key. Under `runtime: kubernetes` the loader also
-// refuses what a pod could not run with: the `runtime.kubernetes` block's own values, and the keys
-// outside it every pod needs.
+// anything else is a typo, refused as an unknown key. One kind is not refused: a warned key
+// (warnedKeys) is accepted, changes nothing, and is kept as a Warning the daemon logs at boot and
+// `legion start --check-config` prints after its OK line. Under `runtime: kubernetes` the loader
+// also refuses what a pod could not run with: the `runtime.kubernetes` block's own values, and the
+// keys outside it every pod needs.
 //
 // Load reads the file and nothing it names: a path key (`instructions`, `envoy_token_file`,
 // `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
-// `runtime.kubernetes.kubeconfig`) is resolved
+// `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
-// ReadSecretPointer, ReadDeploymentInstructions, and the runtime's client, so a configuration loads
-// on a machine that has none of the files it names; `legion start --check-config` then reads them
-// as boot does (daemon.CheckStart).
+// ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
+// configuration loads on a machine that has none of the files it names; `legion start
+// --check-config` then reads them as boot does (daemon.CheckStart).
 package config
 
 import (
@@ -124,6 +126,16 @@ type Config struct {
 	PromptFailureLimit int
 	PromptRetireLimit  int
 
+	// WorkerWakesPerMinute and WorkerWakeBurst are the pace of the wakes the daemon causes — the
+	// role processes it launches, and the tasks and notices it queues to wake a live session in
+	// place of a launch — so that a restart or a wave of plugin deliveries does not push an
+	// Anthropic organization over its per-minute uncached-input cap (internal/wakepace).
+	// `worker_wakes_per_minute` is 8 by default and `worker_wake_burst` 1, which hold a minute to
+	// 9 paced wakes. A rate of 0 turns the pacing off: nothing is paced then, and no bound of this
+	// kind holds.
+	WorkerWakesPerMinute int
+	WorkerWakeBurst      int
+
 	// OperatorTokenFile is the bearer the operator routes compare against, as a path; "" when
 	// the file sets none.
 	OperatorTokenFile string
@@ -150,8 +162,11 @@ type Config struct {
 	GitHubApps        GitHubApps
 	// Linger is how long a finished tree keeps its workspace before it closes (`linger_hours`).
 	Linger time.Duration
-	// ProductionCheckBound is how long a closed issue's production check waits for its deploy
-	// after the close before its last look (`production_check_hours`, 14 days by default).
+	// ProductionCheckBound is how long a closed issue's production check stays open after the
+	// close before its last look (`production_check_hours`, 14 days by default): the check's
+	// bound_at is its open plus this, and the look that starts there is the last one, told that
+	// the bound is up. Nothing waits on a deploy: a look is due at the moment the checking agent
+	// named for itself, at the retry of a look nobody reported, or at this bound.
 	ProductionCheckBound time.Duration
 	// PodUpdateRetask is how long an open update round waits after it sent a worker the task
 	// before it asks that worker again (`pod_update_retask_hours`, an hour by default), and
@@ -161,11 +176,20 @@ type Config struct {
 	// inside one run rather than wait out a day of real time.
 	PodUpdateRetask time.Duration
 	PodUpdateNotice time.Duration
-	ReviewRoundCap  int
-	MaxFixAttempts  int
+	// PodUpdateMaxOpenRounds is how many issues may hold an open pod-update round at once
+	// (`pod_update_max_open_rounds`), and PodUpdateRoundsPerMinute how many rounds one sweep may
+	// open in a minute (`pod_update_rounds_per_minute`). Both are pointers because a file that
+	// leaves the key out asks for no limit at all, which no number says: there is no default to
+	// fall back on, and nil is how a sweep reads "open as many as the fleet needs".
+	PodUpdateMaxOpenRounds   *int
+	PodUpdateRoundsPerMinute *int
+	ReviewRoundCap           int
 	// ControllerWakeInterval is the period of the daemon's `tick` controller wake
 	// (`controller_wake_interval_seconds`, an hour by default); when a tick wakes the controller is
-	// admission's rule (admit.Admission.wakeController and its callers).
+	// admission's rule (admit.Admission.wakeController and its callers). The same tick runs the
+	// workflow's status repair (workflow.Engine.correctStatuses), so this period is also how long
+	// an issue's Dispatch status can stand wrong before the daemon puts it back: an operator who
+	// raises it to quiet the controller slows that repair by as much.
 	ControllerWakeInterval time.Duration
 	// ControllerLaunch is who launches the project's controller (`controller`): the operator unless
 	// the file says the daemon does.
@@ -180,25 +204,60 @@ type Config struct {
 	// (runtime.tmux.pi_config_files, or runtime.kubernetes.pod.env's PI_CONFIG_FILES); a role it
 	// leaves out names those alone. Nil while the file names none.
 	RoleConfigFiles map[claim.Role][]string
+	// WorkerStallBackstops is `worker_stall_backstop_hours`: how long after a role's recorded
+	// last step the daemon ends the turn that step belongs to itself, by role, 0 being the
+	// backstop off for that role (INFRA-1274). A role the file leaves out is not here and runs
+	// on its own ladder's length (StallBackstopFor); nil while the file names none.
+	WorkerStallBackstops map[claim.Role]time.Duration
+	// StallLimits are the worker stall-watch numbers this daemon's own environment sets, which
+	// it passes on to every session it starts. They are no legion.yaml key: the daemon holds
+	// them because the floor under WorkerStallBackstops is computed from them.
+	StallLimits StallLimits
 	// RepositoryRenames is `repository_renames`: the repository pairs this deployment treats as
 	// one repository wherever a name is compared, because a repository moved while Legion's
 	// records keep the name each was written under. The zero value, which answers as
 	// strings.EqualFold does, while the file configures none.
 	RepositoryRenames ghrepo.Renames
+	// Hooks is `hooks`: the deployment's own prompts, each put in front of named roles every
+	// Every moves back of the moves it selects. DefaultHooks() while the file names no key, and
+	// empty where it writes `hooks: []`, which runs none. A `prompt_file` is resolved against
+	// this file's directory and kept as a path: boot reads the words (ReadHookPrompt).
+	Hooks []Hook
+	// Warnings are what the loader has to say to the operator and nothing the daemon runs on, in
+	// file order; empty for a file that raises none. One line names each key the file carries that
+	// this daemon accepts and reads nothing from (warnedKeys, readKeys), and one each place
+	// a project still sets such a key (readProject's `deploys`): the key is accepted and warned
+	// about rather than refused, since the deployment that writes it releases on its own schedule
+	// (docs/solutions/envoy/a-setting-another-repositorys-deployment-sets-is-removed-in-two-releases-pr2674.md).
+	// `legion start` logs each before any other work this boot does with the configuration, and
+	// `legion start --check-config` prints each right after its OK line, so an operator reads the
+	// same sentence either way.
+	Warnings []string
 }
 
 const (
 	defaultPort         = 13370
 	defaultBind         = "127.0.0.1"
 	defaultAdmissionCap = 4
-	defaultRuntimeName  = "tmux"
-	defaultEnvoyURL     = "http://127.0.0.1:9020"
+	// defaultWorkerWakesPerMinute is `worker_wakes_per_minute`'s default. The burst's default is a
+	// countKeys row, because that reader is the one that refuses a burst below 1; the rate is read
+	// on its own, since 0 is how an operator turns the pacing off.
+	defaultWorkerWakesPerMinute = 8
+	defaultRuntimeName          = "tmux"
+	defaultEnvoyURL             = "http://127.0.0.1:9020"
 
 	// maxTimerSeconds is the shipped bound on every duration key (config.ts MAX_TIMER_SECONDS):
 	// the largest whole number of seconds whose milliseconds fit a signed 32-bit timer. Go's
 	// timers are not so bounded; the bound is kept so a file one daemon accepts, the other
 	// accepts too.
 	maxTimerSeconds = 2_147_483
+	// maxTimerMinutes is that same bound for a key written in minutes
+	// (runtime.kubernetes.idle_release), computed from it so the two cannot drift. A key in
+	// minutes needs a bound of its own for a second reason: the daemon turns it into a
+	// time.Duration (IdleReleaseConfig.Idle, Backstop), and an unbounded number of minutes
+	// multiplied by time.Minute wraps negative, which is an idle period every pod has already
+	// passed.
+	maxTimerMinutes = maxTimerSeconds / 60
 )
 
 // durationKeys are the positive-second keys and their defaults (config.ts's DEFAULT_* constants,
@@ -218,8 +277,8 @@ var durationKeys = []struct {
 }
 
 // countKeys are the positive-integer keys with no unit, and their defaults: the registration
-// deadline's interval count (config.ts DEFAULT_WORKER_BOOT_REGISTRATION_DEADLINE_INTERVALS) and the
-// supervision budgets.
+// deadline's interval count (config.ts DEFAULT_WORKER_BOOT_REGISTRATION_DEADLINE_INTERVALS), the
+// supervision budgets, and the wake pacing's burst.
 var countKeys = []struct {
 	key          string
 	defaultValue int
@@ -229,6 +288,7 @@ var countKeys = []struct {
 	{"launch_failure_limit", 3, func(c *Config) *int { return &c.LaunchFailureLimit }},
 	{"prompt_failure_limit", 3, func(c *Config) *int { return &c.PromptFailureLimit }},
 	{"prompt_retire_limit", 2, func(c *Config) *int { return &c.PromptRetireLimit }},
+	{"worker_wake_burst", 1, func(c *Config) *int { return &c.WorkerWakeBurst }},
 }
 
 // tossedKeys are the settings that no longer exist, mapped to why. A file carrying one is refused
@@ -236,9 +296,20 @@ var countKeys = []struct {
 // would.
 var tossedKeys = map[string]string{
 	"worker_cap":                 "the running-worker cap no longer exists (LEGION-208 Requirement 8)",
-	"worker_idle_retire_seconds": `a worker stays live from its role's first assignment until its issue closes, and nothing retires it after an idle window (LEGION-462)`,
+	"worker_idle_retire_seconds": `an idle window retires no worker: it releases the worker's issue pod, and the key for it is runtime.kubernetes.idle_release (idle_minutes, backstop_minutes), which suspends every claim of the released pod with the source released and brings them back on the next wake (INFRA-945)`,
 	"resync_interval_seconds":    `the mirror of Dispatch and GitHub as truth, and resync's drift healing, no longer exist (LEGION-208 Design, "Ported, and tossed")`,
 	"max_recursion_depth":        "an architect spawns no worker and no sub-architect (the daemon starts every phase, and only the operator starts any other claim), so there is no spawn recursion to bound",
+}
+
+// warnedKeys are the settings that no longer exist and that a file may carry all the same, mapped
+// to why setting one changes nothing and what to do instead. The daemon accepts the key, reads no
+// value from it, and warns: the reviewer's rule for this loader is that a refusal must close a
+// vulnerability, and a count nothing reads closes none, so refusing a boot over it would stop a
+// deployment for a word in a file. The refusal this key would otherwise carry is the warning's
+// own text (Config.Warnings, readKeys), which boot logs and `legion start --check-config`
+// prints, so the operator reads what the refusal would have said and the daemon runs.
+var warnedKeys = map[string]string{
+	"max_fix_attempts": "nothing counts fix attempts any more, a red CI verdict always sends the work back to the implementer however many came before, and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
 }
 
 // migrationKeys are the keys refused with a migration message, mapped to that message verbatim.
@@ -260,26 +331,29 @@ const gatesMergeMessage = "gates.merge is not a Legion setting: human approval o
 // fileConfig holds the modelled keys as they were read: a pointer per key, so a key the file
 // leaves out is distinguishable from one it sets to a zero value.
 type fileConfig struct {
-	Project           *string
-	Port              *int
-	Bind              *string
-	AdvertiseHost     *string
-	PostgresDSN       *string
-	StateDir          *string
-	AdmissionCap      *int
-	Kubernetes        *Kubernetes
-	Tmux              *Tmux
-	DaemonURL         *string
-	OmpInvocation     *string
-	OmpLaunchPrefix   []string
-	ProviderKeys      []ProviderKey
-	Instructions      *string
-	WorkerStreamPort  *int
-	OperatorTokenFile *string
-	EnvoyURL          *string
-	NatsURLs          []string
-	EnvoyTokenFile    *string
-	NatsNkeySeedFile  *string
+	Project          *string
+	Port             *int
+	Bind             *string
+	AdvertiseHost    *string
+	PostgresDSN      *string
+	StateDir         *string
+	AdmissionCap     *int
+	Kubernetes       *Kubernetes
+	Tmux             *Tmux
+	DaemonURL        *string
+	OmpInvocation    *string
+	OmpLaunchPrefix  []string
+	ProviderKeys     []ProviderKey
+	Instructions     *string
+	WorkerStreamPort *int
+	// WorkerWakesPerMinute is `worker_wakes_per_minute`, read on its own rather than as a count
+	// key: 0 is a value an operator may set, and the count reader refuses it.
+	WorkerWakesPerMinute *int
+	OperatorTokenFile    *string
+	EnvoyURL             *string
+	NatsURLs             []string
+	EnvoyTokenFile       *string
+	NatsNkeySeedFile     *string
 	// NatsDaemonNkeySeedFile is `nats_daemon_nkey_seed_file`.
 	NatsDaemonNkeySeedFile *string
 	DispatchURL            *string
@@ -291,25 +365,36 @@ type fileConfig struct {
 	ProductionCheckBound   *time.Duration
 	PodUpdateRetask        *time.Duration
 	PodUpdateNotice        *time.Duration
-	ReviewRoundCap         *int
-	MaxFixAttempts         *int
-	Controller             *string
-	Capabilities           *Capabilities
-	Durations              map[string]int
-	Counts                 map[string]int
-	WorkerBackends         map[claim.Role]runtime.Backend
-	RoleConfigFiles        map[claim.Role][]string
-	RepositoryRenames      []ghrepo.Rename
+	// PodUpdateMaxOpenRounds is `pod_update_max_open_rounds` and PodUpdateRoundsPerMinute
+	// `pod_update_rounds_per_minute`; each stays nil when the file leaves its key out, which is
+	// how resolve tells an absent key from a number and leaves Config's own pointer nil.
+	PodUpdateMaxOpenRounds   *int
+	PodUpdateRoundsPerMinute *int
+	ReviewRoundCap           *int
+	Controller               *string
+	Capabilities             *Capabilities
+	Durations                map[string]int
+	Counts                   map[string]int
+	WorkerBackends           map[claim.Role]runtime.Backend
+	RoleConfigFiles          map[claim.Role][]string
+	WorkerStallBackstops     map[claim.Role]time.Duration
+	RepositoryRenames        []ghrepo.Rename
+	// Hooks is `hooks`, a pointer so the settle tells a file that names no key, which runs
+	// DefaultHooks(), from one that writes the empty list, which runs no hook.
+	Hooks *[]Hook
+	// Warnings are the lines the file's keys raise, in file order (warnedKeys, readProjects).
+	Warnings []string
 }
 
-// Load reads the daemon's complete runtime configuration. App private-key commands and secrets
-// resolve only after the YAML's non-secret validation has passed.
+// Load reads the daemon's complete runtime configuration, Warnings among it. App private-key
+// commands and secrets resolve only after the YAML's non-secret validation has passed.
 func Load(path string, env func(string) string) (Config, error) {
 	return load(path, env, true)
 }
 
 // LoadForValidation checks a configuration without executing its App private-key commands or
-// secrets reads. It is the Go equivalent of the shipped daemon's --check-config path.
+// secrets reads, and answers its Warnings as Load does. It is the Go equivalent of the shipped
+// daemon's --check-config path.
 func LoadForValidation(path string, env func(string) string) (Config, error) {
 	return load(path, env, false)
 }
@@ -399,6 +484,8 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 			file.Instructions, err = readNonEmptyString(value, key)
 		case "worker_stream_port":
 			file.WorkerStreamPort, err = readInt(value, key)
+		case "worker_wakes_per_minute":
+			file.WorkerWakesPerMinute, err = readInt(value, key)
 		case "operator_token_file":
 			file.OperatorTokenFile, err = readNonEmptyString(value, key)
 		case "envoy_url":
@@ -416,7 +503,11 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 		case "dispatch_token_file":
 			file.DispatchTokenFile, err = readNonEmptyString(value, key)
 		case "projects":
-			file.Projects, err = readProjects(value, key)
+			// The projects' own warnings join whatever a warned key above them raised, in file
+			// order: one list carries both, so neither producer may write over the other.
+			var raised []string
+			file.Projects, raised, err = readProjects(value, key)
+			file.Warnings = append(file.Warnings, raised...)
 		case "gates":
 			file.Gates, err = readGates(value, key)
 		case "github_apps":
@@ -429,10 +520,14 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 			file.PodUpdateRetask, err = readHours(value, key)
 		case "pod_update_notice_hours":
 			file.PodUpdateNotice, err = readHours(value, key)
+		// Both round caps are read here rather than through countKeys, which carries a default
+		// for every key it holds and so could never report that the operator named neither.
+		case "pod_update_max_open_rounds":
+			file.PodUpdateMaxOpenRounds, err = readPositiveInteger(value, key, 0)
+		case "pod_update_rounds_per_minute":
+			file.PodUpdateRoundsPerMinute, err = readPositiveInteger(value, key, 0)
 		case "review_round_cap":
 			file.ReviewRoundCap, err = readPositiveInteger(value, key, 0)
-		case "max_fix_attempts":
-			file.MaxFixAttempts, err = readPositiveInteger(value, key, 0)
 		case "controller":
 			file.Controller, err = readString(value, key)
 		case "capabilities":
@@ -441,12 +536,22 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 			file.WorkerBackends, err = readWorkerBackends(value, key)
 		case "role_config_files":
 			file.RoleConfigFiles, err = readRoleConfigFiles(value, key)
+		case stallBackstopKey:
+			file.WorkerStallBackstops, err = readStallBackstops(value, key)
 		case repositoryRenamesKey:
 			file.RepositoryRenames, err = readRepositoryRenames(value, key)
+		case hooksKey:
+			file.Hooks, err = readHooks(value, key)
 		default:
-			if isDurationKey(key) || isCountKey(key) {
+			switch {
+			case isDurationKey(key) || isCountKey(key):
 				err = readPositive(value, key, file)
-			} else {
+			case warnedKeys[key] != "":
+				// The value is read for nothing, so no shape of it is refused: the key changes
+				// nothing whatever it says.
+				file.Warnings = append(file.Warnings,
+					fmt.Sprintf("setting %s changes nothing: %s", key, warnedKeys[key]))
+			default:
 				err = classify(key)
 			}
 		}
@@ -703,6 +808,13 @@ var envVarName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // envNameRule is the refusal's words for a name envVarName does not match.
 const envNameRule = "must be an environment variable name (letters, digits, and underscores, not starting with a digit)"
 
+// spendAttributesRule is the refusal's words for an operator value of
+// runtime.SpendAttributesVariable that runtime.SpendAttributesRefusal refuses: one malformed
+// member is caught by the detector's caller with an empty hand, so it costs the launch the whole
+// variable. The two readers of that value (readPodEnv, readPaneEnv) share this clause and keep
+// their own verb before it, so each refusal reads as its own configuration key's sentence.
+const spendAttributesRule = "a value the agent's OpenTelemetry detector would throw on, which costs the launch every attribute of the variable, the operator's own among them"
+
 // ProviderKey is one `provider_keys` entry: Env, the variable Oh My Pi reads (GEMINI_API_KEY), and
 // where its value is held in this deployment, named apart because a deployment names its secrets per
 // environment while the provider's variable is fixed. Secret is the key that holds it
@@ -890,14 +1002,15 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		Bind:                 defaultBind,
 		Runtime:              Runtime{Name: defaultRuntimeName},
 		AdmissionCap:         defaultAdmissionCap,
+		WorkerWakesPerMinute: defaultWorkerWakesPerMinute,
 		EnvoyURL:             defaultEnvoyURL,
-		Gates:                Gates{Design: DesignGateRootIssues},
+		Gates:                Gates{Design: DesignGateRootIssues.Steps()},
 		Linger:               72 * time.Hour,
 		ProductionCheckBound: 336 * time.Hour,
 		PodUpdateRetask:      time.Hour,
 		PodUpdateNotice:      4 * time.Hour,
 		ReviewRoundCap:       3,
-		MaxFixAttempts:       3,
+		Warnings:             file.Warnings,
 	}
 	if file.Project == nil || strings.TrimSpace(*file.Project) == "" {
 		return Config{}, errors.New("project is required")
@@ -961,6 +1074,14 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		return Config{}, errors.New("admission_cap must be a positive integer")
 	}
 
+	if file.WorkerWakesPerMinute != nil {
+		cfg.WorkerWakesPerMinute = *file.WorkerWakesPerMinute
+	}
+	// 0 is the pacing off, which is why the rate is no countKeys row: that reader refuses it.
+	if cfg.WorkerWakesPerMinute < 0 {
+		return Config{}, errors.New("worker_wakes_per_minute must be 0 (the pacing off) or a positive integer")
+	}
+
 	if err := resolveStage2(file, configDir, &cfg); err != nil {
 		return Config{}, err
 	}
@@ -981,12 +1102,20 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if err := checkRoleConfigFiles(cfg); err != nil {
 		return Config{}, err
 	}
+	cfg.WorkerStallBackstops, cfg.StallLimits = file.WorkerStallBackstops, resolveStallLimits(env)
+	if err := checkStallBackstops(cfg); err != nil {
+		return Config{}, err
+	}
+	if err := checkMemory(cfg); err != nil {
+		return Config{}, err
+	}
 	if err := checkRepositoryRenames(file, &cfg); err != nil {
 		return Config{}, err
 	}
-	if err := checkDeployRenames(&cfg); err != nil {
+	if err := checkCommitIssueTrailerRenames(&cfg); err != nil {
 		return Config{}, err
 	}
+	cfg.Hooks = settleHooks(file.Hooks, configDir)
 	if cfg.Runtime.Name == "kubernetes" {
 		if err := checkPodReachable(cfg); err != nil {
 			return Config{}, err
@@ -1124,8 +1253,14 @@ func resolveStage2(file fileConfig, configDir string, cfg *Config) error {
 		*c.field(cfg) = count
 	}
 	// The registration deadline is one timer for the product, so each factor fitting is not
-	// enough (resolveDaemonConfig in config.ts).
-	if int64(cfg.WorkerBootTimeout/time.Second)*int64(cfg.WorkerBootRegistrationDeadlineIntervals) > maxTimerSeconds {
+	// enough (resolveDaemonConfig in config.ts). The product is judged by dividing the bound
+	// rather than by multiplying the two: the timeout carries the timer bound, but a count
+	// carries none of its own, and `9223372036854775807` intervals multiplied by it wraps to a
+	// negative number of seconds, which is at most anything. Dividing refuses exactly what
+	// multiplying refuses wherever multiplying holds — for whole seconds of 1 or more,
+	// seconds × intervals > bound is intervals > bound / seconds.
+	seconds := int64(cfg.WorkerBootTimeout / time.Second)
+	if int64(cfg.WorkerBootRegistrationDeadlineIntervals) > maxTimerSeconds/seconds {
 		return fmt.Errorf("worker_boot_timeout_seconds * worker_boot_registration_deadline_intervals must be at most %d", maxTimerSeconds)
 	}
 

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -23,7 +22,7 @@ func decodeEvent(t *testing.T, eventType string, actor, payload map[string]any) 
 	if err != nil {
 		t.Fatalf("encode the event: %v", err)
 	}
-	decoded, err := decodeMessage("notifications.dispatch.issue.LEGION-7."+eventType, "LEGION", nil, nil, ghrepo.Renames{}, envelopeJSON(t, "dispatch-40", "dispatch", string(event)))
+	decoded, err := decodeMessage("notifications.dispatch.issue.LEGION-7."+eventType, "LEGION", nil, envelopeJSON(t, "dispatch-40", "dispatch", string(event)))
 	if err != nil {
 		t.Fatalf("decode %s: %v, want no poison", eventType, err)
 	}
@@ -205,6 +204,57 @@ func TestAnUnknownAskKindDecodesWithNoKindAndIsReported(t *testing.T) {
 	}
 }
 
+// declineDispatchWords is what Dispatch writes beside a person's note when they decline to answer
+// (its model.DeclineDispatchWords), as the daemon's fixtures carry it: the daemon keeps no
+// constant of its own, so the words reach the architect only by travelling as data.
+const declineDispatchWords = "The person chose not to answer this question. " +
+	"Decide the next step without an answer. " +
+	"Do not ask this question again unless the facts change. " +
+	"Write in your work what you assumed."
+
+// A person who declines an ask closes it as ask.resolved with a resolution of kind `declined`,
+// which carries their own note apart from the sentences Dispatch wrote for the asking agent. The
+// close decodes as the decline it is, with both kept apart, and a decline the person wrote no note
+// with carries the sentences and an empty note. A close whose payload has no resolution, and one
+// whose resolution kind this daemon does not know, decode as a close carrying no decline at all.
+func TestADeclinedResolutionDecodesAsADecline(t *testing.T) {
+	person := map[string]any{"kind": "user", "id": "alice"}
+	closed := func(decline *record.AskDecline) Fact {
+		return DispatchAskClosed{Key: "LEGION-7", Ask: "ask-q", Kind: "question", State: "resolved", Decline: decline,
+			Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark}
+	}
+	for _, tc := range []struct {
+		name       string
+		resolution map[string]any
+		want       Fact
+	}{
+		{name: "a decline with the person's note",
+			resolution: map[string]any{"kind": "declined", "reason": "The vendor owns that date; I do not.", "dispatch_words": declineDispatchWords},
+			want:       closed(&record.AskDecline{Note: "The vendor owns that date; I do not.", Words: declineDispatchWords})},
+		{name: "a decline the person wrote no note with",
+			resolution: map[string]any{"kind": "declined", "reason": "", "dispatch_words": declineDispatchWords},
+			want:       closed(&record.AskDecline{Words: declineDispatchWords})},
+		{name: "a resolution kind this daemon does not know",
+			resolution: map[string]any{"kind": "withdrawn", "reason": "the asker took it back"},
+			want:       closed(nil)},
+		{name: "a close with no resolution at all", resolution: nil, want: closed(nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := map[string]any{"id": "ask-q", "kind": "question", "state": "resolved"}
+			if tc.resolution != nil {
+				payload["resolution"] = tc.resolution
+			}
+			decoded := decodeEvent(t, "ask.resolved", person, payload)
+			if !reflect.DeepEqual(decoded.Fact, tc.want) {
+				t.Fatalf("%s decoded to %#v, want %#v", tc.name, decoded.Fact, tc.want)
+			}
+			if len(decoded.Unread) != 0 {
+				t.Fatalf("%s reported %q, want nothing unread: a resolution the daemon does not act on is no defect", tc.name, decoded.Unread)
+			}
+		})
+	}
+}
+
 // An issue event carries the issue's claim: a holder, null for none, or nothing at all from a
 // Dispatch that predates claims, which says nothing of the claim. A claim that names no actor is
 // unknown and reported, never poison: the issue event is one the workflow acts on.
@@ -227,7 +277,7 @@ func TestADispatchIssueEventCarriesItsClaimHolder(t *testing.T) {
 		{name: "a claim naming no actor", claim: `,\"claim\":{\"actor\":{\"kind\":\"user\",\"id\":\"\"}}`, unread: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			decoded, err := decodeMessage("notifications.dispatch.issue.CAPTURE-3.issue.updated", "CAPTURE", capturedRepositories, nil, ghrepo.Renames{},
+			decoded, err := decodeMessage("notifications.dispatch.issue.CAPTURE-3.issue.updated", "CAPTURE", capturedRepositories,
 				[]byte(strings.Replace(original, anchor, anchor+tc.claim, 1)))
 			if err != nil {
 				t.Fatalf("decode: %v, want no poison", err)

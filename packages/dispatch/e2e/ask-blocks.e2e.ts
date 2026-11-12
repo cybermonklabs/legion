@@ -1,5 +1,3 @@
-import { type Browser, expect, type Locator, type Page, test } from "@playwright/test";
-
 import {
   answerAsk,
   createComment,
@@ -22,12 +20,9 @@ import {
   paste,
   selectEditorText,
 } from "./editor";
-import { resetDatabase } from "./seed";
+import { navigateInApp } from "./sends";
+import { type Browser, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The shared ask card a decision block hosts once the server has indexed the block: the same
  * `AskCard` the Inbox renders, in its compact variant. Its `data-testid` names the ask id in
@@ -193,7 +188,8 @@ test("agentWrittenAskBlockAppearsAndAnswersInPlace", async ({ browser }, testInf
   }
 });
 
-test("a reader asks back from a decision block: the question threads under the block, the decision stays open, and the Inbox row shows the reply @phone", async ({
+// @pr: The live document: a reader's question threads under a decision block, the decision stays open, and the Inbox row carries the reply.
+test("a reader asks back from a decision block: the question threads under the block, the decision stays open, and the Inbox row shows the reply @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -224,9 +220,7 @@ test("a reader asks back from a decision block: the question threads under the b
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    if (testInfo.project.name === "chromium") {
-      await page.setViewportSize({ width: 1280, height: 900 });
-    }
+    await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto(`/issues/${issue.key}`);
     const block = documentEditor(page).locator('[data-dispatch-ask-block="ship-decision"]');
     const hosted = await expectHosted(block);
@@ -268,8 +262,9 @@ test("a reader asks back from a decision block: the question threads under the b
       path: testInfo.outputPath(`askback-reply-${testInfo.project.name}.png`),
     });
 
-    // The Inbox row for the same ask carries the reply.
-    await page.goto("/");
+    // The Inbox row for the same ask carries the reply. Reached in the app: the row is drawn
+    // from the same loaded client, and a second document load would prove nothing more.
+    await navigateInApp(page, "/");
     const row = page.getByTestId(`ask-${blockAsk.id}`);
     await expect(row).toBeVisible();
     await expect(row.getByTestId(`thread-${blockAsk.id}`)).toContainText(questionLead);
@@ -442,6 +437,8 @@ const DECISION_SPEC = [
   "Closing paragraph after the last decision.\n",
 ].join("\n");
 
+// SLOW(>=2s): four cold loads of the issue document - two widths at two colour schemes - each
+// with its own screenshot, over a spec seeded with three decisions, an answer and a reply.
 test("decision blocks read as urgency-accented cards in the document and its version view", async ({
   browser,
 }, testInfo) => {
@@ -456,8 +453,10 @@ test("decision blocks read as urgency-accented cards in the document and its ver
     { ops: [{ after: "end", markdown: DECISION_SPEC, op: "insert" }] },
     { as: "agent" }
   );
-  await expect.poll(async () => (await getIssue(issue.key)).open_asks.length).toBe(3);
-  const naming = (await getIssue(issue.key)).open_asks.find((ask) => ask.block_id === "naming");
+  await expect.poll(async () => ((await getIssue(issue.key)).open_asks ?? []).length).toBe(3);
+  const naming = ((await getIssue(issue.key)).open_asks ?? []).find(
+    (ask) => ask.block_id === "naming"
+  );
   if (naming === undefined) {
     throw new Error("the naming decision was not indexed");
   }
@@ -615,7 +614,7 @@ test("a copied decision block carries its content, not its attribute header", as
     await pasteBefore(page, "Intro.", { html: rendered, text: clipboard.text });
 
     await expect
-      .poll(async () => (await getIssue(issue.key)).open_asks.map((ask) => ask.question))
+      .poll(async () => ((await getIssue(issue.key)).open_asks ?? []).map((ask) => ask.question))
       .toEqual(["Which one?"]);
   } finally {
     await alice.close();
@@ -673,7 +672,7 @@ test("a pasted rendered callout and decision keep attributes, content, and the o
     await pasteBefore(page, "Intro.", { html: rendered, text: clipboard.text });
 
     await expect
-      .poll(async () => (await getIssue(issue.key)).open_asks.map((ask) => ask.question))
+      .poll(async () => ((await getIssue(issue.key)).open_asks ?? []).map((ask) => ask.question))
       .toEqual(["Which one?"]);
     const stored = (await getArtifactText(issue.primary_artifact_id)).markdown;
     const callouts = [...stored.matchAll(/:::callout\{#([^ }]+)([^}]*)\}\n([\s\S]*?)\n:::/g)];
@@ -730,9 +729,9 @@ test("a copy of an answered decision pasted above it leaves the answer on the or
     await pasteBefore(page, "Intro.", await copyWholeDocument(page));
 
     await expect
-      .poll(async () => (await getIssue(issue.key)).open_asks.map((ask) => ask.question))
+      .poll(async () => ((await getIssue(issue.key)).open_asks ?? []).map((ask) => ask.question))
       .toEqual(["Which one?"]);
-    const copy = (await getIssue(issue.key)).open_asks[0];
+    const copy = ((await getIssue(issue.key)).open_asks ?? [])[0];
     expect(copy?.block_id).not.toBe("decision");
     // Both asks read "Which one?", so only the stored order tells the copy from the original.
     const stored = (await getArtifactText(issue.primary_artifact_id)).markdown;
@@ -789,7 +788,7 @@ test("an ask and a callout pasted together as plain text arrive as written", asy
     });
 
     await expect
-      .poll(async () => (await getIssue(issue.key)).open_asks.map((ask) => ask.question))
+      .poll(async () => ((await getIssue(issue.key)).open_asks ?? []).map((ask) => ask.question))
       .toEqual(["Which one?"]);
     const stored = (await getArtifactText(issue.primary_artifact_id)).markdown;
     expect(stored).toMatch(/:::callout\{#c2[^}]*\}\nCareful\.\n:::/);
@@ -821,7 +820,7 @@ for (const [caret, where] of [
       await paste(page, { html: "", text: loneAsk });
 
       await expect
-        .poll(async () => (await getIssue(issue.key)).open_asks.map((ask) => ask.question))
+        .poll(async () => ((await getIssue(issue.key)).open_asks ?? []).map((ask) => ask.question))
         .toEqual(["Which one?"]);
       await expect
         .poll(async () => (await getArtifactText(issue.primary_artifact_id)).markdown)
@@ -887,7 +886,7 @@ for (const [target, spec, quote, pasted, stored] of [
     "- Listed.\n- Second.\n",
     "Listed.",
     loneAsk,
-    "- Listed.\n  :::ask{#d2}\n  Which one?\n\n  - A\n  - B\n  :::\n- Second.\n",
+    "- Listed.\n  :::ask{#d2}\n  Which one?\n  - A\n  - B\n  :::\n- Second.\n",
   ],
   [
     "a list item",
@@ -911,7 +910,7 @@ for (const [target, spec, quote, pasted, stored] of [
         )
         .toBe(stored);
       await expect
-        .poll(async () => (await getIssue(issue.key)).open_asks.map((ask) => ask.question))
+        .poll(async () => ((await getIssue(issue.key)).open_asks ?? []).map((ask) => ask.question))
         .toEqual(block === "ask" ? ["Which one?"] : []);
     } finally {
       await alice.close();
@@ -969,7 +968,7 @@ for (const [shape, before, clipboard, stored] of [
         )
         .toBe(`:::ask{#q1}\n${stored}\n\n- X\n- Y\n:::\n`);
       await expect
-        .poll(async () => (await getIssue(issue.key)).open_asks.map((ask) => ask.block_id))
+        .poll(async () => ((await getIssue(issue.key)).open_asks ?? []).map((ask) => ask.block_id))
         .toEqual(["q1"]);
     } finally {
       await alice.close();

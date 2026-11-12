@@ -19,13 +19,13 @@ type Arrival struct {
 	At, Since      time.Time
 }
 
-// AdvancePullRequestHead applies the shipped resetPrHead fix-attempt decision to a new observed
-// head (advance), arriving by the move arrival names. A head that arrives before every push of its
+// AdvancePullRequestHead applies the shipped resetPrHead decision to a new observed head
+// (advance), arriving by the move arrival names. A head that arrives before every push of its
 // move is recorded - no chain of recorded pushes leads to it from the recorded head
 // (arrivalPushes), or its synchronize names a move the pushes cannot yet tell - opens a head run,
 // and a head that arrives while one is open joins it: each push, and each move a late synchronize
-// names (NameMove), replays the run (replayRun), so the count and the planned mark are those every
-// push and synchronize arriving first would have given.
+// names (NameMove), replays the run (replayRun), so the planned mark is the one every push and
+// synchronize arriving first would have given.
 func AdvancePullRequestHead(pr record.PullRequest, arrival Arrival, headSHA string) record.PullRequest {
 	if pr.Run == nil {
 		if read := arrivalPushes(pr, arrival, headSHA, nil); (read.chained(pr.HeadSHA, headSHA) && !read.waits) || pr.HeadSHA == "" {
@@ -114,10 +114,8 @@ func inWindow(named record.Named, start string, since time.Time) bool {
 
 // advance moves the pull request to a new head, by the move arrival names, and says whether a
 // chain of recorded pushes led to it from the recorded head (chained) with nothing left for it to
-// wait for (arrivalPushes), and returns the named moves its judgement left (names, the run's). A red
-// prior verdict counts once, unless the red was planned (PlannedRed: the review App's red tests) or
-// the recorded pushes show the move spares the count (sparedMove): a chain of pushes from the
-// recorded head to the new one, each the review App's (sparesAttempt). The recorded CI settlement
+// wait for (arrivalPushes), and returns the named moves its judgement left (names, the run's). The
+// recorded CI settlement
 // stays, as CheckedHead's, but stands for nothing at the new head (HeadVerdict): a settlement
 // stands only for the head it names, and the new head's own replaces it (SettlementFor). The move
 // and the chain's pushes join the moves made (madeMoves), and the pushes they spend go
@@ -126,18 +124,12 @@ func inWindow(named record.Named, start string, since time.Time) bool {
 // The move's planned mark is the push on the chain that left the new head (arrivalPlan, pathPlan):
 // the review App's sets it, anyone else's clears it. With no chain, the pushes that left the head
 // decide (unchainedPlan), and a head whose push has not arrived carries the mark.
-//
-// HeadCounted names the head the count last counted, and the attempt it marks runs on through every
-// head pushed on top of it until one is pushed onto a green verdict, or onto a settled head whose
-// base branch requires no check and no workflow (nothingRequired), which clears it: CI sent nothing
-// back from either, so the push is a fresh start. A push onto a head CI has not judged yet, or onto
-// a red that counts nothing, is the same attempt, not a new one.
 func advance(pr record.PullRequest, arrival Arrival, headSHA string, names []record.Named) (record.PullRequest, bool, []record.Named) {
 	read := arrivalPushes(pr, arrival, headSHA, names)
-	var planned, decided, chained, spared bool
+	var planned, decided, chained bool
 	var chain []record.ClassifiedPush
 	if read.path {
-		chained, spared, chain = true, pathSpares(read.pushes), read.pushes
+		chained, chain = true, read.pushes
 		planned, decided = pathPlan(read.pushes), chained
 	} else {
 		planned, chained = arrivalPlan(read.pushes, pr.HeadSHA, headSHA)
@@ -145,7 +137,7 @@ func advance(pr record.PullRequest, arrival Arrival, headSHA string, names []rec
 		if !chained {
 			planned, decided = unchainedPlan(read.pushes, pr.HeadSHA, headSHA)
 		}
-		spared, chain = sparedMove(read.pushes, pr.HeadSHA, headSHA), chainOf(read.pushes, pr.HeadSHA, headSHA)
+		chain = chainOf(read.pushes, pr.HeadSHA, headSHA)
 	}
 	if !read.waits {
 		// An arrival that waits is judged for now by pushes that may not be its own (provisional),
@@ -153,13 +145,6 @@ func advance(pr record.PullRequest, arrival Arrival, headSHA string, names []rec
 		pr.Moves = madeMoves(pr.Moves, pr.HeadSHA, headSHA, chain, pr.Pushes)
 	}
 	pr.Pushes = unspentPushes(pr.Pushes, pr.Moves, true)
-	switch verdict := HeadVerdict(pr); {
-	case verdict == "red" && !pr.PlannedRed && !spared:
-		pr.FixAttempts++
-		pr.HeadCounted = headSHA
-	case verdict == "green" || nothingRequired(pr):
-		pr.HeadCounted = ""
-	}
 	if decided {
 		pr.PlannedRed = planned
 	}
@@ -173,17 +158,6 @@ func advance(pr record.PullRequest, arrival Arrival, headSHA string, names []rec
 // pushes made, so path always holds one.
 func pathPlan(path []record.ClassifiedPush) (planned bool) {
 	return path[len(path)-1].ByReviewApp
-}
-
-// pathSpares is whether path, the pushes of a move in the order the branch made them, is no fix
-// attempt: each of its pushes spares the attempt (sparesAttempt; sparedMove, over a chain).
-func pathSpares(path []record.ClassifiedPush) bool {
-	for _, p := range path {
-		if !sparesAttempt(p) {
-			return false
-		}
-	}
-	return len(path) > 0
 }
 
 // maxMoves bounds the moves a pull request remembers (record.PullRequest.Moves): a push for a move
@@ -837,39 +811,6 @@ func unspentPushes(pushes []record.ClassifiedPush, moves []record.Move, arrival 
 	return kept
 }
 
-// sparesAttempt is whether a push onto a red is no fix attempt: it said which head it replaced, and
-// it was the review App's (its red tests, a red it plans), which who pushed it says.
-func sparesAttempt(p record.ClassifiedPush) bool {
-	return p.Before != "" && p.ByReviewApp
-}
-
-// sparedMove is whether the recorded pushes show the move from from to to is no fix attempt: a
-// chain of pushes leads from from to to, each sparing the attempt (sparesAttempt). Each such push is
-// a fact about two commits, true whenever it is learned, so once every push of the move is recorded
-// the answer does not depend on the order the pushes arrived in, or on whether the daemon recorded
-// the heads between from and to.
-func sparedMove(pushes []record.ClassifiedPush, from, to string) bool {
-	if from == "" || from == to {
-		return false
-	}
-	reached := map[string]bool{to: true}
-	for frontier := []string{to}; len(frontier) > 0; {
-		current := frontier[0]
-		frontier = frontier[1:]
-		for _, p := range pushes {
-			if p.SHA != current || !sparesAttempt(p) || reached[p.Before] {
-				continue
-			}
-			if p.Before == from {
-				return true
-			}
-			reached[p.Before] = true
-			frontier = append(frontier, p.Before)
-		}
-	}
-	return false
-}
-
 // arrivalPlan reads the move from from to to off a chain of recorded pushes between them, each of
 // which said which head it replaced. chained is whether such a chain leads from from to to;
 // planned is whether its last push - the one that left to - was the review App's.
@@ -911,12 +852,12 @@ func arrivalPlan(pushes []record.ClassifiedPush, from, to string) (planned, chai
 // the same two heads pushed again only by a head's next arrival by that move (arrivalPushes). While
 // a head run is open - a head arrived before every push of its move was recorded - the push joins
 // the run's pushes, the run drops what the record's bound let go, and the run is replayed
-// (replayRun): the count, its mark, the planned mark and the CI settlement become those every push
-// arriving before every head would have given. With no run open no head waits for a push of its
+// (replayRun): the planned mark and the CI settlement become those every push arriving before
+// every head would have given. With no run open no head waits for a push of its
 // move - or the run that held one was cut to its bound (maxRunSteps) - and a push changes no
 // judgement until a head arrives: a push that reached the recorded head from another head - the
-// required-checks pass's compare from an approved head - says nothing about the move the count
-// counted.
+// required-checks pass's compare from an approved head - says nothing about the move that
+// brought the record to that head.
 func ApplyPush(pr record.PullRequest, push record.ClassifiedPush) record.PullRequest {
 	pr, _ = ApplyPushDropping(pr, push)
 	return pr
@@ -1168,8 +1109,8 @@ func CodeOnItsWay(pr record.PullRequest) bool {
 // App did not plan it (PlannedRed, the tester's own failing tests, which the implementer is meant
 // to make pass). A red a required workflow alone makes is no exception: CI is the daemon's own
 // rule, read beside the review round and never by it (workflow's decideChecks), so the reviewer's
-// approval and a red at its head are two facts, each acted on as it arrives. The fix-attempt cap
-// is the caller's (FixAttemptCapHolds).
+// approval and a red at its head are two facts, each acted on as it arrives. Nothing counts how
+// many reds came before: a red always sends the work back (dispatch://INFRA-956 R4).
 func RedSendsBack(pr record.PullRequest) bool {
 	return HeadVerdict(pr) == "red" && !pr.PlannedRed
 }
@@ -1203,32 +1144,17 @@ func ConflictWithdrawsReady(pr record.PullRequest) bool {
 	return pr.State == record.PullRequestOpen && pr.Mergeability == record.MergeabilityConflicting
 }
 
-// FixAttemptCapHolds says whether the red verdict standing for the head is one the fix-attempt cap
-// holds: the pull request's fix attempts are at cap, and the head belongs to the attempt the count
-// last counted (HeadCounted): the counted head itself, or a head pushed on top of it before any
-// push landed on a green verdict or on a settled head whose base branch requires nothing
-// (AdvancePullRequestHead). That attempt is the loop the cap bounds, so its red no longer sends the
-// work back from testing, reviewing, retro or merging by itself, however often it returns - a
-// re-run failing again, a red after the head read green, a second push before CI settled - and the
-// architect decides what follows (workflow's standingRed). A head pushed onto a green verdict, or
-// onto a settled head whose base requires nothing, is not that loop: it raised no count and left
-// the attempt, so its red is new. A green head is the fix that worked.
-func FixAttemptCapHolds(pr record.PullRequest, cap int) bool {
-	return cap > 0 && pr.FixAttempts >= cap && pr.HeadCounted != "" && HeadVerdict(pr) == "red"
-}
-
-// BlockFixAttempt marks and reports one exhausted fix-attempt count when the verdict that stands
-// for the head is red after a settlement or a new required set, as the shipped reducer decides
-// pr-blocked on ci-settled-red alone: once per count, never again on a later red at the same count.
-// A green head at an exhausted count is the fix that worked. A zero BlockedAttempts means no count
-// has been reported, because fix attempts begin at one before they can exhaust a positive cap. The
-// caller asks it only of a red that sent nothing back (workflow's decideChecks).
-func BlockFixAttempt(pr record.PullRequest, cap int) (record.PullRequest, bool) {
-	if cap <= 0 || HeadVerdict(pr) != "red" || pr.FixAttempts < cap || pr.BlockedAttempts == pr.FixAttempts {
-		return pr, false
-	}
-	pr.BlockedAttempts = pr.FixAttempts
-	return pr, true
+// ConflictRound says whether a backward move made now is a round a conflict with the base caused:
+// the record holds the pull request's own recorded head as conflicting
+// (record.PullRequest.ConflictingHead), whichever read judged it so and whatever fact is making
+// the move. The exemption keys on that mark rather than on the cause, because every way back out
+// of a conflicting head is the same round of work - the return the merge queue's own state makes,
+// the conflict the two-minute pass finds, a reviewer's request for changes, a worker's backward
+// move, a tester's fail - and the implementer answers each of them with one forward merge. That
+// merge moves the recorded head, the mark no longer equals it, and the next rejection counts,
+// which is how the exemption ends without a write of its own.
+func ConflictRound(pr record.PullRequest) bool {
+	return pr.ConflictingHead != "" && pr.ConflictingHead == pr.HeadSHA
 }
 
 // DesignGateEventKind is the Dispatch artifact observation that changes a registered gate.
@@ -1348,7 +1274,78 @@ func ApprovalFollows(gate record.DesignGate, version int, mark record.EventMark)
 	return approved > version || approved == version && !mark.After(gate.ApprovedMark)
 }
 
-// DesignGateOpen reports whether a human approved the gate's current document version.
+// DesignGateOpen reports whether a human approved the gate's current document version. It
+// answers one step's question; the deployment's whole list is DesignGatesOpen. It is
+// record.GateOpen, where the rule lives because the record package needs it too and may not read
+// this one, and it keeps its name here because every decision in this file is named this way.
 func DesignGateOpen(gate record.DesignGate) bool {
-	return gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion
+	return record.GateOpen(gate)
+}
+
+// RequiredSteps is the steps a root must hold an open gate at before its tree works: the steps
+// the deployment gates, in the order it names them, or the single step spec when it gates none.
+// It is record.RequiredSteps, where the rule lives because the record package needs it too and
+// may not read this one, and it keeps its name here because every reader of a step list in this
+// file reads it through this name.
+func RequiredSteps(configured []record.DesignStep) []record.DesignStep {
+	return record.RequiredSteps(configured)
+}
+
+// DesignGatesOpen reports whether gates, every design gate an issue holds by its step, lets the
+// tree's work run: no required step (RequiredSteps) holds the work. A required step with no row
+// holds the work, as an unregistered gate always has, and since a root always requires at least
+// one step, an issue holding no row at all is held too. A row of a step the deployment does not
+// require is read by nothing here: it is kept as the record of a step gated before, and holds
+// nothing.
+//
+// It is record.TreeGate.Open over the same steps and rows, where the rule lives because the
+// record package needs it too and may not read this one, and it keeps its name here because
+// every decision in this file is named this way. The same answer read the other way round is
+// FirstClosedStep finding no closed step.
+func DesignGatesOpen(configured []record.DesignStep, gates map[record.DesignStep]record.DesignGate) bool {
+	return record.TreeGate{Steps: configured, Rows: gates}.Open()
+}
+
+// FirstClosedStep is the first required step (RequiredSteps) whose gate is not open, in the
+// configured order, with the row it holds — the zero row when it holds none, which is the step
+// nobody has registered. ok is false when every required step is open, which is DesignGatesOpen.
+//
+// It answers which step holds the work now, and so which step a refusal or a hold is about: a
+// step nobody has registered holds it, because nobody has said the document exists. Which step a
+// person is being asked about is another question, since nobody can be asked about a document
+// the record does not know, and the wait reads its own rule for it (StandingGate).
+func FirstClosedStep(configured []record.DesignStep, gates map[record.DesignStep]record.DesignGate) (record.DesignStep, record.DesignGate, bool) {
+	for _, step := range RequiredSteps(configured) {
+		if gate, ok := gates[step]; !ok || !DesignGateOpen(gate) {
+			return step, gate, true
+		}
+	}
+	return "", record.DesignGate{}, false
+}
+
+// StandingGate is the gate a person is being asked about: the row of the first required step
+// (RequiredSteps), in the configured order, that is closed and has a row. That is a different
+// question from which step holds the tree's work (FirstClosedStep), which a step nobody has
+// registered also holds: such a step names no document, so nobody can be asked about it, and the
+// wait it raised would be a wait on nothing. So the wait skips it and names the first registered
+// unapproved step after it, while the work stays held. ok is false when no required step holds a
+// closed row, which is every required step open or every closed one unregistered.
+//
+// A deployment that gates no step asks no person about anything, so the empty list stands on no
+// gate: ok is false whatever rows the root holds. The empty list still holds the tree's work
+// until the spec step is registered, which is FirstClosedStep's answer, not this one.
+//
+// Everything a root's wait is built from reads this one rule: the document its approval requests
+// are counted on (workflow's gateRequestArtifact), the wait it records (waitSubject) and the step
+// its resume speaks of (gateInQuestion).
+func StandingGate(configured []record.DesignStep, gates map[record.DesignStep]record.DesignGate) (record.DesignGate, bool) {
+	if len(configured) == 0 {
+		return record.DesignGate{}, false
+	}
+	for _, step := range RequiredSteps(configured) {
+		if gate, ok := gates[step]; ok && !DesignGateOpen(gate) {
+			return gate, true
+		}
+	}
+	return record.DesignGate{}, false
 }

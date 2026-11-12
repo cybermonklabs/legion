@@ -1,4 +1,7 @@
+import { INBOX_THREAD_KINDS } from "@legion/contracts";
+
 import {
+  infiniteQueryOptions,
   keepPreviousData,
   type QueryFunctionContext,
   queryOptions,
@@ -15,9 +18,10 @@ import type {
   DeliveryLiveView,
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
-  DeliveryTimelineResponse,
+  DeliveryTimelineWithMeasures,
   InboxRow,
   IssueDetails,
+  MyRepliesResponse,
 } from "./types";
 
 /** The signed-in principal (`/auth/whoami`). One key shared by every surface that reads it; it
@@ -110,6 +114,23 @@ export const issueResultsQuery = (key: string) =>
     queryFn: () => api.getIssueResults(key),
   });
 
+/** Everyone who worked one issue, running or not (`GET /api/v1/issues/{key}/collaborators`).
+ *  The Collaborators tab and the composer's "Not running" options read this one entry, so a tab
+ *  read within the shell's `staleTime` opens the picker with no request of its own, and what
+ *  refreshes one refreshes both. The event feed refreshes `["issue", key]` exactly, not as a
+ *  prefix, so this key has a rule of its own there (`changesCollaborators`); the write paths that
+ *  do invalidate the whole `["issue", key]` prefix reach it as well. The key takes `undefined`
+ *  for the composer, whose own `enabled` holds the read until the picker opens on an issue
+ *  owner. */
+export const issueCollaboratorsQuery = (key: string | undefined) =>
+  queryOptions({
+    queryKey: ["issue", key, "collaborators"],
+    queryFn: () => {
+      if (key === undefined) throw new Error("A collaborators read needs the issue's key.");
+      return api.getIssueCollaborators(key);
+    },
+  });
+
 /** The live blocks of one document (`GET /api/v1/artifacts/{id}/blocks`): the document's own
  *  reference panel and the Plan tab's task list read the same key, so a tab opened after the
  *  document finds it answered. */
@@ -119,25 +140,71 @@ export const artifactBlocksQuery = (id: string) =>
     queryFn: () => api.getArtifactBlocks(id),
   });
 
-/** The viewer's per-agent conversation state: each session's Clear, read mark, and count of
- *  unread replies to the viewer's direct messages. The navigation, the Agents page, and the
- *  live view all read this one key. */
+/** The viewer's per-agent conversation state: each session's Clear, read mark, count of unread
+ *  replies to the viewer's direct messages, and `pinned_at` where the viewer pinned it
+ *  (`features/agents/pins.ts`). The navigation, the Agents page, and the live view all read this
+ *  one key, and `user_agent_state.updated` refreshes it, so a pin or a read mark another browser
+ *  of the same person made shows here without a reload. A session the viewer has only pinned is
+ *  in the answer too. */
 export const userAgentStateQuery = () =>
   queryOptions({
     queryKey: ["user-agent-state"],
     queryFn: () => api.getMyAgentState(),
   });
 
-/** The prefix every Replies query shares: the page, its count, and each owner's unread set. One
- *  invalidation of it refreshes them all. */
+/** The prefix every thread query shares: the Inbox's own rows, the unread count, and each
+ *  owner's unread set. One invalidation of it refreshes them all. */
 export const myRepliesKey = ["me", "replies"] as const;
 
-/** The viewer's count of unread threads, from the one-row page's `total`: the header's and the
- *  sidebar's `Replies N`. */
+/** One Inbox thread's ask, with its replies and its answer: the row's body in the list and in
+ *  the reading pane read the one copy under this key. It never goes stale on its own - an event
+ *  refresh is what moves it (`api/event-refresh.ts`). */
+export const askThreadQuery = (threadId: string) =>
+  queryOptions({
+    queryKey: ["ask-thread", threadId],
+    queryFn: () => api.getAsk(threadId),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+
+/** The viewer's count of unread threads, from the one-row page's `total`: the sidebar's and the
+ *  compact header's one Inbox number counts it beside the work waiting on them. One request per
+ *  page load, never the unpaged read below. */
 export const myRepliesCountQuery = () =>
   queryOptions({
     queryKey: [...myRepliesKey, "count"],
-    queryFn: async () => (await api.listMyReplies({ limit: 1 })).total,
+    queryFn: async () => (await api.listMyReplies({ kind: INBOX_THREAD_KINDS, limit: 1 })).total,
+  });
+
+/** The prefix both of the Inbox's thread reads share - its own list and what the reader has
+ *  dismissed out of it: what a refresh rule tests the listed rows under, whichever view the page
+ *  is on (`api/event-refresh.ts`). */
+export const inboxThreadsKey = [...myRepliesKey, "inbox"] as const;
+
+/** Every thread row in the reader's Inbox, in one unpaged read: the Reply and Agent rows of the
+ *  list, read or not, less what they have dismissed. A thread stays here until it is dismissed,
+ *  so reading one leaves its row where it is. The Inbox page and its drawer read this and
+ *  nothing else does - a surface that wants one owner's unread set reads `myRepliesOwnerQuery`
+ *  below. */
+export const inboxThreadsQuery = () =>
+  queryOptions({
+    queryKey: [...inboxThreadsKey, "inbox"],
+    queryFn: () => api.listMyReplies({ kind: INBOX_THREAD_KINDS, state: "inbox" }),
+  });
+
+/** What the reader has dismissed out of their Inbox, newest dismissal first, which the View
+ *  menu's **Dismissed** draws: `INBOX_DISMISSED_PAGE` rows a page, each next page read from the
+ *  last one's `next_cursor` by the list's own **Show more**. */
+export const dismissedThreadsQuery = () =>
+  infiniteQueryOptions({
+    queryKey: [...inboxThreadsKey, "dismissed"],
+    queryFn: ({ pageParam }) =>
+      api.listMyReplies({
+        kind: INBOX_THREAD_KINDS,
+        state: "dismissed",
+        ...(pageParam === undefined ? {} : { cursor: pageParam }),
+      }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last: MyRepliesResponse) => last.next_cursor,
   });
 
 /** One owner's unread threads, which every thread mounted on that owner's page reads to learn
@@ -163,6 +230,15 @@ export const projectsQuery = () =>
   queryOptions({
     queryKey: ["projects"],
     queryFn: () => api.listProjects(),
+  });
+
+/** The two settings the bar reads before it offers a person's typed words as a new issue: the
+ *  label that issue carries and the session it is routed to. One read for the session: the
+ *  deployment changes it only by restarting. */
+export const newIssueSettingsQuery = () =>
+  queryOptions({
+    queryKey: ["new-issue-settings"],
+    queryFn: () => api.getNewIssueSettings(),
   });
 
 /** Everyone who has signed in (`GET /api/v1/users`), sorted by email and kept for the session:
@@ -213,12 +289,16 @@ export const boardMoveMutationKey = (project: string): readonly unknown[] => [
  * unanswered waits for the answer: until then the server may not have applied the move, and its
  * list would put the card back where it came from.
  */
-export const projectIssuesQuery = (project: string, labels: readonly string[]) =>
+export const projectIssuesQuery = (project: string, labels: readonly string[], open = false) =>
   queryOptions({
-    queryKey: projectIssuesQueryKey(project, labels),
+    queryKey: [...projectIssuesQueryKey(project, labels), ...(open ? ["open"] : [])],
     queryFn: async (context) => {
       await boardMovesSettled(context, project);
-      return api.listIssues(labels.length === 0 ? { project } : { labels, project });
+      return api.listIssues({
+        project,
+        ...(labels.length ? { label: [...labels] } : {}),
+        ...(open ? { open: true } : {}),
+      });
     },
   });
 
@@ -267,7 +347,7 @@ const LIVE = {
 
 /** The body each delivery view's kind is answered with: the GET route's it mirrors. */
 interface DeliveryLiveBodies {
-  readonly timeline: DeliveryTimelineResponse;
+  readonly timeline: DeliveryTimelineWithMeasures;
   readonly measures: DeliveryMeasuresResponse;
   readonly pipeline: DeliveryPipelineResponse;
 }

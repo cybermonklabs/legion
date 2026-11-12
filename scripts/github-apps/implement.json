@@ -1,5 +1,5 @@
 {
-  "url": "https://github.com/sjawhar/legion",
+  "url": "https://github.com/cybermonklabs/legion",
   "default_permissions": {
     "actions": "write",
     "checks": "read",
@@ -9,6 +9,7 @@
     "workflows": "write",
     "packages": "read",
     "pull_requests": "write",
+    "security_events": "read",
     "statuses": "write"
   },
   "description": "Legion implementer and merger: writes branches and pull requests, and merges READY heads."

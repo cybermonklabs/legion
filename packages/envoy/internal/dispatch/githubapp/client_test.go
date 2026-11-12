@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 func testKeyPEM(t *testing.T) (*rsa.PrivateKey, string) {
@@ -333,7 +335,8 @@ func (f *fakeGitHub) verifyAppJWT(r *http.Request) {
 	f.t.Helper()
 	raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
-		f.t.Errorf("app endpoint called with Authorization %q, want a bearer JWT", r.Header.Get("Authorization"))
+		f.t.Errorf("app endpoint called with %s, want a bearer JWT",
+			githubapptest.DescribeAuthorization(r.Header.Get("Authorization")))
 		return
 	}
 	parts := strings.Split(raw, ".")
@@ -393,9 +396,8 @@ func newTestClient(t *testing.T, fake *fakeGitHub) *Client {
 	key, pemText := testKeyPEM(t)
 	fake.publicKey = &key.PublicKey
 	fake.clientID = "Iv1.testclient"
-	server := httptest.NewServer(fake.handler())
-	t.Cleanup(server.Close)
-	client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, server.URL)
+	base := githubtest.Server(t, githubtest.Spec{Handle: fake.handler().ServeHTTP})
+	client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}

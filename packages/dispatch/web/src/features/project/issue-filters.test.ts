@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
@@ -20,6 +21,7 @@ function agent(sessionID: string): Agent {
     last_seen: 1,
     open_asks: 0,
     last_activity: null,
+    state: "live",
   };
 }
 
@@ -34,6 +36,7 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     resolved_repo: null,
     route_status: null,
     route_holder: null,
+    route_status_reason: null,
     key: "CORE-1",
     labels: [],
     last_seq: 0,
@@ -50,6 +53,8 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     rank: "U",
     title: "Core work",
     updated_at: "2026-09-10T00:00:00Z",
+    created_by: null,
+    created_at: "2026-09-10T00:00:00Z",
     ...overrides,
   };
 }
@@ -72,9 +77,8 @@ test("parses every filter from the URL and counts them", () => {
   );
   try {
     expect(hook.result.current.labels).toEqual(["a", "b"]);
-    // Status is the List's alone: parsed here, but the Board renders the strip without it, so
-    // neither the count nor the chips include it.
-    expect(hook.result.current.statuses).toEqual(["todo", "done"]);
+    // A `?status=` in the URL is the table's own column filter: this hook neither reads it nor
+    // counts or chips it.
     expect(hook.result.current.search).toBe("ship");
     expect(hook.result.current.needsYou).toBe(true);
     expect(hook.result.current.unread).toBe(true);
@@ -99,10 +103,6 @@ test("setters round-trip through the URL and clearing removes the parameter", ()
     act(() => hook.result.current.setNeedsYou(true));
     act(() => hook.result.current.setUnread(true));
     act(() => hook.result.current.setLabels(["frontend"]));
-    act(() => hook.result.current.setStatuses(["todo", "testing"]));
-    expect(hook.result.current.statuses).toEqual(["todo", "testing"]);
-    act(() => hook.result.current.setStatuses([]));
-    expect(hook.result.current.statuses).toEqual([]);
     expect(hook.result.current.activeFilterCount).toBe(4);
     // One chip per click, a render between them - as the strip drives it.
     while (hook.result.current.activeFilters.length > 0) {
@@ -122,7 +122,7 @@ test("matches applies needs-you, unread and search but never status", () => {
     const { matches } = hook.result.current;
     const match = issue({ key: "CORE-2", last_seq: 4, open_asks: 1, title: "Ship the work" });
     expect(matches(match, 3)).toBe(true);
-    // Status never enters the predicate: the List applies it separately, the Board's columns
+    // Status never enters the predicate: the table applies it separately, the Board's columns
     // are the statuses.
     expect(matches({ ...match, status: "done" }, 3)).toBe(true);
     expect(matches({ ...match, open_asks: 0 }, 3)).toBe(false);
@@ -159,6 +159,37 @@ test("unclaimed keeps the issues nobody is working, a lapsed holder's included",
     expect(hook.result.current.matches(heldBy(running), 0)).toBe(true);
   } finally {
     hook.unmount();
+    agents.mockRestore();
+  }
+});
+
+// A holder that has only missed its heartbeats is still working the issue, and the server
+// refuses a second agent's take, so the filter keeps the issue out of the pickable list. Past
+// the claim's grace the server grants that take, and a filter that still hid the issue would
+// hide work anyone may pick up (dispatch://INFRA-392).
+test("unclaimed holds an unresponsive holder's issue back until its claim is takeable", async () => {
+  const stalled: IssueClaim["actor"] = { kind: "session", id: "session-stalled" };
+  const quiet = (lastSeen: number): Agent => ({
+    ...agent(stalled.id),
+    last_seen: lastSeen,
+    state: "unresponsive",
+  });
+  const agents = spyOn(api, "listAgents").mockResolvedValue([
+    quiet(Date.now() - (ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS - 60_000)),
+  ]);
+  const held = renderFilters("/projects/CORE?unclaimed=1");
+  try {
+    await waitFor(() => expect(held.result.current.unclaimedUnchecked).toBeUndefined());
+    expect(held.result.current.matches(heldBy(stalled), 0)).toBe(false);
+  } finally {
+    held.unmount();
+  }
+  agents.mockResolvedValue([quiet(Date.now() - (ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS + 60_000))]);
+  const takeable = renderFilters("/projects/CORE?unclaimed=1");
+  try {
+    await waitFor(() => expect(takeable.result.current.matches(heldBy(stalled), 0)).toBe(true));
+  } finally {
+    takeable.unmount();
     agents.mockRestore();
   }
 });

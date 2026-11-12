@@ -1,17 +1,19 @@
-import { expect, test } from "@playwright/test";
-
 import { createIssue, createProject, getArtifactText } from "./api";
 import { connectedDot, selectEditorText } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
-// Runs in Firefox as well as Chromium (playwright.config.ts): Firefox's own editing mishandles
-// text typed over whatever follows a block's last line break.
-test.beforeEach(async () => {
-  await resetDatabase();
-});
+// Both rows carry `@firefox`, the tag the `firefox` project selects by (`playwright.config.ts`):
+// Firefox's own editing mishandles text typed over whatever follows a block's last line break.
+// The typed text reaches the server inside the live write, so the markdown below is true within a
+// round trip of the keystroke; the default ladder would not look again until 350 ms.
+const PROBE = { intervals: [50, 50, 100, 200, 500] };
 
-test("typing over the whole last line of a code block replaces that line", async ({ browser }) => {
+// @firefox: native editing over what follows a block's last line break.
+// @pr: The code-block editing family's one row on the lane: typing over a block's last line must replace that line and nothing else.
+test("typing over the whole last line of a code block replaces that line @firefox @pr", async ({
+  browser,
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",
@@ -28,14 +30,20 @@ test("typing over the whole last line of a code block replaces that line", async
     await selectEditorText(page, "let y = 2;");
     await page.keyboard.type("hello");
     await expect
-      .poll(() => getArtifactText(issue.primary_artifact_id).then(({ markdown }) => markdown))
+      .poll(
+        () => getArtifactText(issue.primary_artifact_id).then(({ markdown }) => markdown),
+        PROBE
+      )
       .toContain("```ts\nconst x = 1;\nhello\n```");
   } finally {
     await alice.close();
   }
 });
 
-test("typing over the text after a paragraph's hard break keeps the break", async ({ browser }) => {
+// @firefox: native editing over what follows a block's last line break, here a hard break.
+test("typing over the text after a paragraph's hard break keeps the break @firefox", async ({
+  browser,
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",
@@ -52,7 +60,10 @@ test("typing over the text after a paragraph's hard break keeps the break", asyn
     await selectEditorText(page, "second line");
     await page.keyboard.type("X");
     await expect
-      .poll(() => getArtifactText(issue.primary_artifact_id).then(({ markdown }) => markdown))
+      .poll(
+        () => getArtifactText(issue.primary_artifact_id).then(({ markdown }) => markdown),
+        PROBE
+      )
       .toContain("first line\\\nX\n");
   } finally {
     await alice.close();

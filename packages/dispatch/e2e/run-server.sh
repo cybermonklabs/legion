@@ -97,13 +97,30 @@ else
   port_env=()
 fi
 
-# This process's own web dist and sign-in, read before the sweep below: web/dist and dev sign-in
-# with a cookie key of its own unless two-process mode or DISPATCH_E2E_SIGNIN gave it others
-# (above).
+# This process's own web dist, sign-in and embedder, read before the sweep below: web/dist and
+# dev sign-in with a cookie key of its own unless two-process mode or DISPATCH_E2E_SIGNIN gave
+# it others (above). The dev embedder is the development embedder of the server, which hashes a
+# text's words into a vector in the process, so meaning search answers with no AWS or Azure
+# account. It is off unless DISPATCH_E2E_EMBEDDER=1 asks for it, and it goes only with dev
+# sign-in, the one shape the server reads it in: a suite whose assertions count search hits
+# counts the keyword answers Dispatch gives a deployment with no embedder, which is what every
+# spec but the ones that drive meaning search is written against. The acceptance driver and the
+# two-process run ask for it (packages/dispatch/README.md). No row of the two-process run reads
+# a vector since INFRA-1554 moved its rollout row to a Go test, so that run's request is for the
+# work ahead of it rather than for a row it has: dispatch://INFRA-558's plan builds on an embedder
+# there, and the dev embedder calls no model service, so leaving it on costs that run nothing.
+# DISPATCH_E2E_EMBEDDER=fake is the other embedder a harness can have, the fake below, which this
+# block leaves alone: the server reads it as Bedrock, not as a dev-only setting, so it goes with
+# either sign-in.
 web_dist="${DISPATCH_E2E_SERVER_WEB_DIST:-../dispatch/web/dist}"
+dev_embedder=0
 case "${DISPATCH_E2E_SIGNIN:-}" in
   "")
     signin_env=(DISPATCH_DEV_SIGNIN=1)
+    if [ "${DISPATCH_E2E_EMBEDDER:-}" = "1" ]; then
+      signin_env+=(DISPATCH_DEV_EMBEDDER=1)
+      dev_embedder=1
+    fi
     if [ -n "${DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY:-}" ]; then
       signin_env+=(DISPATCH_DEV_SIGNIN_SHARED_KEY="$DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY")
     fi
@@ -177,6 +194,141 @@ if [ -n "${DISPATCH_E2E_FILE_STORE_ENDPOINT:-}" ]; then
   )
 fi
 
+# The fake embedder, read before the sweep below: DISPATCH_E2E_EMBEDDER=fake points this server
+# at e2e/fake-embedder.ts on FAKE_EMBEDDER_PORT, which the harness started
+# (e2e/harness-embedder.ts, e2e/harness-listeners.ts). The server reads it as Bedrock - the
+# default place, which the SDK addresses wherever AWS_ENDPOINT_URL_BEDROCK_RUNTIME names - so
+# nothing in the server knows it is a fake, and the calls it makes are the calls a deployment
+# makes. The fake verifies no signature, and the static keys below are what the SDK signs with;
+# the region is the one it builds the (unused) regional endpoint from, and no metadata service
+# is asked for a role. They repeat the file store's four above, which are the same values, so
+# each block reads on its own and a server with both gets one set of them.
+fake_embedder=0
+fake_embedder_env=()
+if [ "${DISPATCH_E2E_EMBEDDER:-}" = "fake" ]; then
+  : "${FAKE_EMBEDDER_PORT:?FAKE_EMBEDDER_PORT must name the fake embedder (e2e/fake-embedder.ts) that DISPATCH_E2E_EMBEDDER=fake embeds at}"
+  fake_embedder=1
+  fake_embedder_env=(
+    AWS_ENDPOINT_URL_BEDROCK_RUNTIME="http://127.0.0.1:$FAKE_EMBEDDER_PORT"
+    AWS_REGION=us-east-1
+    AWS_ACCESS_KEY_ID=e2e
+    AWS_SECRET_ACCESS_KEY=e2e
+    AWS_EC2_METADATA_DISABLED=true
+  )
+fi
+
+# The server binary, read before the sweep below: DISPATCH_E2E_SERVER_BIN names a prebuilt
+# envoy-dispatch this run executes instead of building one from this checkout
+# (scripts/e2e/dispatch-claimant-delivery.sh's DISPATCH_BIN is the precedent), which
+# scripts/e2e/dispatch-two-builds.sh gives the build of an older commit so a base build and this
+# one run against one database. Unset, the build below is this checkout's, as it always was. The
+# path is made absolute here, against the caller's directory, since this script changes to
+# packages/envoy before it runs it.
+server_bin="${DISPATCH_E2E_SERVER_BIN:-}"
+if [ -n "$server_bin" ]; then
+  [[ "$server_bin" == /* ]] || server_bin="$PWD/$server_bin"
+  if [ ! -x "$server_bin" ]; then
+    echo "run-server.sh: DISPATCH_E2E_SERVER_BIN=$DISPATCH_E2E_SERVER_BIN is not an executable file" >&2
+    exit 2
+  fi
+fi
+
+# How long a document room waits after its last live update before it settles, read before the
+# sweep below: a settlement is when an `:::ask` block becomes an ask row and when live typing is
+# written as a version, so it is what every row that waits for one waits for. 250ms in place of
+# the document service's own 2 s default (internal/dispatch/docs/service.go), passed as
+# DISPATCH_TEST_SETTLE_DELAY under the DISPATCH_TEST_HOOKS=1 below, which the server requires with
+# it. The one class of row it changes is a row that proves a settlement did NOT happen inside a
+# window: that window must now be shorter than this delay, which the slow-row work owns. A caller
+# that set the variable itself keeps its own value, as it does for DISPATCH_E2E_SERVER_WEB_DIST.
+settle_delay="${DISPATCH_TEST_SETTLE_DELAY:-250ms}"
+
+# The two waits a provisional comment, ask or suggestion mark lives by, read before the sweep
+# below and passed under the same DISPATCH_TEST_HOOKS=1. A mark no row records is swept one
+# unrecorded-mark TTL after the settlement that first saw it: 4s in place of the document
+# service's own minute (internal/dispatch/docs/service.go), which is the shortest value that
+# still lets a row tell that sweep from a socket reconnect - a reconnect takes about two seconds
+# here, and the mark has to outlive it, since a mark its author's browser is back on is kept.
+# A mark the browser says it wrote is waited for before the server answers that the document does
+# not hold it: 250ms in place of its own 1 s, which is the whole cost of every Send whose mark is
+# already gone, and ample for one document update to arrive over the loopback. A caller that set
+# either variable itself keeps its own value, as it does for the settle delay above.
+mark_wait="${DISPATCH_TEST_MARK_WAIT:-250ms}"
+unrecorded_mark_ttl="${DISPATCH_TEST_UNRECORDED_MARK_TTL:-4s}"
+
+# How long a sender keeps trying a listener that is being replaced before a send settles failed,
+# read before the sweep below and passed under the same DISPATCH_TEST_HOOKS=1. 500ms in place of
+# the server's own 12 s (listenerTakeoverWindow, internal/dispatch/api/envoy_resolve.go), which a
+# production sender spends so a send made as a listener hands over still reaches the session. No
+# row here proves that hand-off - the Go tests of internal/dispatch/api do - while a row whose
+# session is really gone waits the whole window out before the failure it reads appears, twice
+# over where it also retries. 500ms leaves such a sender its first try and one backed-off retry
+# (takeoverFirstBackoff, 250ms) under one idempotency key, which is the behaviour those rows read.
+# A caller that set the variable itself keeps its own value, as it does for the settle delay
+# above.
+listener_takeover_window="${DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW:-500ms}"
+
+# How often the delivery reconcile pass runs, read before the sweep below and passed under the
+# same DISPATCH_TEST_HOOKS=1. Unset is the server's own five minutes
+# (delivery.ReconcileInterval), which is longer than any row's window, so nothing changes for a
+# caller that does not ask. A caller that sets it (a run proving a row survives a pass landing
+# inside its window) gets passes at that interval instead.
+delivery_reconcile_env=()
+if [ -n "${DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL:-}" ]; then
+  delivery_reconcile_env=(DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL="$DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL")
+fi
+
+# Meaning search's embedder, read before the sweep below. The file-store block above gives this
+# process the AWS SDK's own variables so it can reach the stack's S3 server, and Bedrock - the
+# default place DISPATCH_EMBEDDER names - takes those same static keys as its credentials and the
+# region as a real region: every text the embedding queue picks up, and every search query, then
+# makes a real call to bedrock-runtime.<region>.amazonaws.com that AWS refuses 403, retries it,
+# and logs it (merge-base run 41085647285 did that 1,522 times with the canary alone). Almost no
+# row reads a meaning-search result - the suite has no model service, so search answers
+# keyword-only whether the call is made and refused or never made at all - so
+# DISPATCH_TEST_EMBEDDER_OFF=1, under the DISPATCH_TEST_HOOKS=1 below, builds no embedder: the
+# queue's Run returns at once and no query is embedded. A caller that set the variable itself
+# keeps its own value, as it does for the settle delay above.
+#
+# The runs that do prove the embed path are the ones this harness builds an embedder for: the
+# dev embedder (DISPATCH_DEV_EMBEDDER above, which calls no model service), which the acceptance
+# driver's meaning rows read vectors from and can pass no other way, and the fake embedder above
+# (DISPATCH_E2E_EMBEDDER=fake), whose own rows read back the calls the server made. The default
+# follows that build rather than making each of them say it twice, and for the dev embedder it
+# follows the build rather than the request for it, since the server reads that one beside dev
+# sign-in alone: a run that asks for it under DISPATCH_E2E_SIGNIN=oidc gets no embedder, and
+# defaulting on the request there would leave it building Bedrock's client on the file store's
+# static keys, which is the one thing this setting exists to stop.
+if [ "$dev_embedder" = "1" ] || [ "$fake_embedder" = "1" ]; then
+  embedder_off="${DISPATCH_TEST_EMBEDDER_OFF:-0}"
+else
+  embedder_off="${DISPATCH_TEST_EMBEDDER_OFF:-1}"
+fi
+
+# The Go runtime's view of the machine, read before the sweep below. Go sizes GOMAXPROCS, and with
+# it the scheduler's threads and the garbage collector's parallelism, from every CPU it can see,
+# and a stack's server sees all of them however many stacks share them: four servers on a four-vCPU
+# runner each run a four-way collector. One core each instead, by integer division with a floor of
+# one. The stacks are DISPATCH_E2E_STACK_COUNT, which e2e/harness-pool.ts puts in each stack's own
+# variables before it starts that stack's processes, so a stack's own server is reached by it. The
+# pool starts one stack per Playwright worker, so the count is this run's worker count; a caller
+# that starts no pool sets nothing and is one.
+#
+# One stack passes no GOMAXPROCS at all, which is not the same as passing nproc: the module is on
+# Go 1.27 (packages/envoy/go.mod), which sizes its own default from the cgroup CPU limit, any
+# explicit GOMAXPROCS turns that sizing off, and nproc reads CPU affinity rather than the limit.
+# So in a container with a CPU limit, passing nproc would give every one-stack caller - `bun run
+# dispatch:local`, the docs media harness, the broker and skill-scenario rigs, a one-stack suite -
+# a scheduler and a collector sized to the node instead of to its limit. Two-process mode runs
+# one stack, so its two servers are among them.
+stacks="${DISPATCH_E2E_STACK_COUNT:-1}"
+gomaxprocs_env=()
+if [ "$stacks" -gt 1 ]; then
+  gomaxprocs=$(( $(nproc) / stacks ))
+  [ "$gomaxprocs" -ge 1 ] || gomaxprocs=1
+  gomaxprocs_env=(GOMAXPROCS="$gomaxprocs")
+fi
+
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in
@@ -204,7 +356,8 @@ done
 app_pem="$(openssl genrsa 2048 2>/dev/null)"
 
 cd "$(dirname "$0")/../../envoy"
-# Build first, in the caller's toolchain environment, and exec the binary itself. A server
+# Build first, in the caller's toolchain environment, and exec the binary itself - or exec the
+# one DISPATCH_E2E_SERVER_BIN named, which is already built and is not this checkout's. A server
 # started as `go run` is the go command's child; the go command ignores only SIGINT and SIGQUIT,
 # so a SIGTERM to it ends the go command and leaves the server listening. Playwright kills the
 # whole process group and the skill-scenarios rig the whole process tree, but a caller that
@@ -213,10 +366,14 @@ cd "$(dirname "$0")/../../envoy"
 # once serialise: Go rewrites it only when the source changed, and a running server keeps the
 # inode it started from. The port is chosen only after the build, and held-port.py execs `env`,
 # which execs the server, so the pid a caller started is still the server's.
-flock ./.dispatch-e2e.lock go build -o ./dispatch-e2e ./cmd/dispatch
+if [ -z "$server_bin" ]; then
+  flock ./.dispatch-e2e.lock go build -o ./dispatch-e2e ./cmd/dispatch
+  server_bin=./dispatch-e2e
+fi
 exec "${listen[@]}" env \
   "${broker_env[@]}" \
   "${file_store_env[@]}" \
+  "${fake_embedder_env[@]}" \
   "${signin_env[@]}" \
   DATABASE_URL="$database_url" \
   DISPATCH_AGENT_TOKEN=e2e-token \
@@ -228,12 +385,19 @@ exec "${listen[@]}" env \
   DISPATCH_LISTEN_HOST=127.0.0.1 \
   DISPATCH_NATS_DISABLED=1 \
   "${port_env[@]}" \
+  "${delivery_reconcile_env[@]}" \
+  DISPATCH_TEST_EMBEDDER_OFF="$embedder_off" \
   DISPATCH_TEST_HOOKS=1 \
+  DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW="$listener_takeover_window" \
+  DISPATCH_TEST_MARK_WAIT="$mark_wait" \
   DISPATCH_TEST_ROSTER_UNCACHED=1 \
+  DISPATCH_TEST_SETTLE_DELAY="$settle_delay" \
+  DISPATCH_TEST_UNRECORDED_MARK_TTL="$unrecorded_mark_ttl" \
   DISPATCH_WEB_DIST="$web_dist" \
   ENVOY_URL="http://127.0.0.1:$fake_envoy_port" \
+  "${gomaxprocs_env[@]}" \
   HOME=/nonexistent \
   XDG_CACHE_HOME=/nonexistent \
   XDG_CONFIG_HOME=/nonexistent \
   XDG_DATA_HOME=/nonexistent \
-  ./dispatch-e2e
+  "$server_bin"

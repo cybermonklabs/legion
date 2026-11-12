@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 
 import { getUnsubscribeCalls, setInterests, setLiveSessions } from "./agents";
 import {
@@ -10,7 +10,7 @@ import {
   getIssueEvents,
   listAskFollowers,
 } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // Two sessions write to one ask over the API with the agent bearer token: the asker and a
@@ -19,11 +19,8 @@ import { asUser } from "./users";
 const asker = { kind: "session" as const, id: "e2e-follow-asker" };
 const replier = { kind: "session" as const, id: "e2e-follow-replier" };
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("the ask card lists every session that wrote to the ask and a human can unfollow one", async ({
+// @pr: A write the server settles: the ask card lists every session that wrote to the ask, and an unfollow takes one off.
+test("the ask card lists every session that wrote to the ask and a human can unfollow one @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -42,7 +39,7 @@ test("the ask card lists every session that wrote to the ask and a human can unf
     { session_id: asker.id, title: "Asker (e2e)" },
     { session_id: replier.id, title: "Replier (e2e)" },
   ]);
-  expect((await listAskFollowers(ask.id)).followers.map((row) => row.session_id)).toEqual([
+  expect(((await listAskFollowers(ask.id)).followers ?? []).map((row) => row.session_id)).toEqual([
     asker.id,
     replier.id,
   ]);
@@ -50,6 +47,9 @@ test("the ask card lists every session that wrote to the ask and a human can unf
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
   try {
+    // The re-follow at the end of the row arrives over the event feed, whose refetch the page
+    // holds to one per second (`MIN_REFETCH_INTERVAL_MS`): a page timer its own clock fires.
+    await page.clock.install();
     await page.goto("/");
     const card = page.getByTestId(`ask-${ask.id}`);
     const followers = card.getByRole("region", { name: "Recipients" });
@@ -78,7 +78,12 @@ test("the ask card lists every session that wrote to the ask and a human can unf
     await expect(followers.locator(`[title='${replier.id}']`)).toHaveCount(0);
     await expect(followers.locator(`[title='${asker.id}']`)).toHaveCount(1);
     await expect
-      .poll(async () => (await listAskFollowers(ask.id)).followers.map((row) => row.session_id))
+      .poll(
+        async () => ((await listAskFollowers(ask.id)).followers ?? []).map((row) => row.session_id),
+        // The server answered the unfollow before the card dropped the chip above, so this is
+        // true within a round trip; the default ladder would not look again until 350 ms.
+        { intervals: [50, 50, 100, 200, 500] }
+      )
       .toEqual([asker.id]);
     const removed = (await getIssueEvents(issue.key)).find(
       (event) => event.type === "ask.follower_removed"
@@ -90,6 +95,7 @@ test("the ask card lists every session that wrote to the ask and a human can unf
 
     // The replier rejoins over the API; the open card picks it up from the live event feed.
     await followAsk(ask.id, replier.id, replier);
+    await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
     await expect(followers).toContainText("Reaches 2");
     await expect(followers.locator(`[title='${replier.id}']`)).toHaveCount(1);
   } finally {
@@ -118,7 +124,7 @@ test("the ask card lists the issue's subscribers and removing one cuts the issue
   await setInterests([
     { session_id: watcher, topics: [`notifications.dispatch.issue.${issue.key}.>`] },
   ]);
-  expect((await listAskFollowers(ask.id)).followers.map((row) => row.session_id)).toEqual([
+  expect(((await listAskFollowers(ask.id)).followers ?? []).map((row) => row.session_id)).toEqual([
     asker.id,
   ]);
 
@@ -159,9 +165,9 @@ test("the ask card lists the issue's subscribers and removing one cuts the issue
       .poll(async () => (await getUnsubscribeCalls()).some((call) => call.session_id === watcher))
       .toBe(true);
     // The follower route was never touched: the asker still follows.
-    expect((await listAskFollowers(ask.id)).followers.map((row) => row.session_id)).toEqual([
-      asker.id,
-    ]);
+    expect(((await listAskFollowers(ask.id)).followers ?? []).map((row) => row.session_id)).toEqual(
+      [asker.id]
+    );
   } finally {
     await alice.close();
   }

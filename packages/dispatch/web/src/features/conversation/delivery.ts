@@ -20,15 +20,30 @@ export const MODE_LABELS: Record<MessageDeliveryMode, string> = {
 /** A capability a session advertises, as a person reads it: its mode's label, or the capability
  *  as the session wrote it when this dashboard knows no such mode. */
 export function capabilityLabel(capability: string): string {
-  const mode = DELIVERY_CAPABILITIES.find((known) => known === capability);
+  const mode = deliveryMode(capability);
   return mode === undefined ? capability : MODE_LABELS[mode];
+}
+
+/** `value` as a delivery mode, or `undefined` where this dashboard knows no such mode: a mode
+ *  reaches the browser as the string the route table declares, and `DELIVERY_CAPABILITIES` is the
+ *  closed list that string is one of. Every surface that needs the mode itself narrows here. */
+export function deliveryMode(value: string): MessageDeliveryMode | undefined {
+  return DELIVERY_CAPABILITIES.find((known) => known === value);
+}
+
+/** `value` as an attempt's state. Dispatch writes one of the three the route table carries as a
+ *  plain string; one this build does not know reads as `sent`, which is what every surface
+ *  already showed for it - each tests for `failed` and for `pending`, and draws anything else as
+ *  sent. */
+export function deliveryOutcomeState(value: string): DeliveryOutcome["state"] {
+  return value === "failed" || value === "pending" ? value : "sent";
 }
 
 /**
  * The mode a message with no `/aside ` or `/btw ` command goes in when it answers no thread, from
  * the capabilities of each live session it addresses: Send when every one of them advertises it,
- * else Aside when every one of them advertises that - so a plain message to a Claude Code session,
- * which takes only Aside, is an Aside rather than a Send recorded as failed. A session that
+ * else Aside when every one of them advertises that - so a plain message to a session that takes
+ * only Aside is an Aside rather than a Send recorded as failed. A session that
  * advertises no mode takes none, so it does not decide the mode for the rest. BTW is never picked
  * for the reader: it answers in a side turn that leaves the conversation as it was, which a plain
  * message does not ask for. Otherwise, or with nobody live to ask, it is a Send, which the composer
@@ -43,8 +58,8 @@ export function plainDelivery(capabilities: readonly (readonly string[])[]): Mes
 /**
  * The mode a broadcast goes in until its sender picks one, from the capabilities of each live
  * session selected: BTW, the broadcast's own default, when every one of them advertises it, else
- * Aside when every one advertises that - so a selection that holds a Claude Code session, which
- * takes only Aside, reaches it rather than leaving it out. A session that advertises no mode takes
+ * Aside when every one advertises that - so a selection that holds a session taking only Aside
+ * reaches it rather than leaving it out. A session that advertises no mode takes
  * none and does not decide it. Otherwise, or with nobody live, it is BTW, and the composer names
  * who that leaves out.
  */

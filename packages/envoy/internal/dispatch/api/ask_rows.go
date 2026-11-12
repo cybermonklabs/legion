@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -67,6 +68,19 @@ const waitingOnExpression = `case
 	else coalesce(lr.turn, 'human')
 end`
 
+// askedOfPersonExpression is the one rule for which person an ask waits on: the person somebody
+// handed it to, and the assignee of its issue until somebody does. Three reads share it: the
+// Inbox read's person filter (?assignee=, api/inbox.go), the author's read behind
+// `dispatch open-asks` (listOpenAsks in api/asks.go), and the open ask the Replies list leaves
+// out, since the Inbox already lists it (myRepliesOwner in api/replies.go). It names the ask a
+// and its issue i, so every query reading it joins issues as i.
+//
+// It compares with = rather than wrapping either column in lower(btrim(...)): both
+// asks.asked_of and issues.assignee hold what model.CanonicalLogin returns, so the two sides
+// match as they are stored. The expression spans two tables, so no index on issues.assignee
+// (store/migrations/0034_issue_assignee.up.sql:6) serves a filter on it.
+const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee)`
+
 // askItemRefExpression is the SPA item route of the ask aliased a, whose issue is aliased i and
 // whose project document is aliased ar: an issue ask's `/issues/<key>/asks/<id>`, which lands an
 // anchored ask on its document and an unanchored one on its Conversation turn (the bare issue page
@@ -90,12 +104,17 @@ func askWaitingOn(ctx context.Context, q queryer, askID string) (string, error) 
 // askReadColumns are askRowColumns plus the newest comment in the ask's thread. WaitingOn derives
 // from that reply with the moved and newly handed-back approval-request overrides in
 // waitingOnExpression, aliased waiting_on so a query ordering by it (the Inbox) names the column
-// rather than evaluating the rule a second time; LastReply still names the newest comment. Queries
-// selecting them read from askReadFrom. Event payloads are built from askRowColumns instead: they
-// never carry WaitingOn.
-const askReadColumns = askRowColumns + `, lr.author, lr.created_at, ` + waitingOnExpression + ` as waiting_on`
+// rather than evaluating the rule a second time; LastReply still names the newest comment.
+// WaitingOnPerson is askedOfPersonExpression, the person that turn waits on, aliased
+// waiting_on_person for the same reason, and null when nobody waits. Queries selecting them read
+// from askReadFrom. Event payloads are built from askRowColumns instead: they carry neither.
+const askReadColumns = askRowColumns + `, lr.author, lr.created_at, ` + waitingOnExpression +
+	` as waiting_on, ` + askedOfPersonExpression + ` as waiting_on_person`
 
-var askReadFrom = askRowFrom + lastReplyJoin
+// askReadFrom joins the ask's issue as i, which askedOfPersonExpression reads; a query over it
+// that wants the issue's own columns reads them from that join rather than joining issues again.
+var askReadFrom = askRowFrom + `
+	left join issues i on i.key = a.issue_key` + lastReplyJoin
 
 // nullableAskArtifactRef holds the nullable columns of one optional document an ask names - a
 // quoted anchor's or an approval request's artifact_id, both resolved through a left join that
@@ -160,19 +179,66 @@ func attachAskBacklinkCounts(ctx context.Context, q queryer, asks []*model.Ask) 
 	if len(asks) == 0 {
 		return nil
 	}
-	ids := make([]string, 0, len(asks))
-	for _, ask := range asks {
-		ids = append(ids, ask.ID)
-	}
-	counts, err := refs.BacklinkCounts(ctx, q, "ask", ids, refs.AskBacklinkExclusions)
+	counts, err := refs.BacklinkCounts(ctx, q, "ask", distinctAskIDs(asks), refs.AskBacklinkExclusions)
 	if err != nil {
 		return err
 	}
+	applyAskBacklinkCounts(asks, counts)
+	return nil
+}
+
+// applyAskBacklinkCounts stamps each ask with its count, zero included, from what the count
+// query answered: attachAskBacklinkCounts for one ask, and queueAskDetails for every list of
+// asks.
+func applyAskBacklinkCounts(asks []*model.Ask, counts map[string]int) {
 	for _, ask := range asks {
 		count := counts[ask.ID]
 		ask.ReferencedByCount = &count
 	}
-	return nil
+}
+
+// queueAskDetails queues in b what every listed ask carries beside its row - its identity event,
+// its inbound graph-edge count, and the part ids of its options and of its answer with its part
+// revision - and returns the apply that stamps them onto the asks once the batch is closed. The
+// three statements are queued in that order wherever an ask is read: the issue read queues them
+// beside its other reads (readIssueDetails), and a read of its own sends them as a batch of its
+// own (loadAskDetails). No ask queues nothing and its apply stamps nothing. A node kind refs
+// declares no counting arms for is refused as the count is queued, which queues nothing and
+// answers nothing itself, so the apply reports that refusal.
+func queueAskDetails(b *pgx.Batch, asks []*model.Ask) func() error {
+	askIDs := distinctAskIDs(asks)
+	openedEventIDs := make(map[string]int64, len(askIDs))
+	counts := map[string]int{}
+	partIDs := make([]refs.AskIDs, len(asks))
+	events.QueueOpenedEventIDs(b, askIDs, openedEventIDs)
+	countsErr := refs.QueueBacklinkCounts(b, "ask", askIDs, refs.AskBacklinkExclusions, counts)
+	refs.QueueAskPartIDs(b, asks, partIDs)
+	return func() error {
+		if countsErr != nil {
+			return countsErr
+		}
+		if err := applyOpenedEventIDs(asks, openedEventIDs); err != nil {
+			return err
+		}
+		applyAskBacklinkCounts(asks, counts)
+		applyAskPartIDs(asks, partIDs)
+		return nil
+	}
+}
+
+// loadAskDetails sends queueAskDetails's statements as a batch of their own on q, for an ask read
+// that queues nothing else: an owner's asks, the Inbox's rows, an event payload's asks. The batch
+// holds q's connection until its results close, so nothing else reads the database in between.
+func loadAskDetails(ctx context.Context, q queryer, asks []*model.Ask) error {
+	batch := &pgx.Batch{}
+	apply := queueAskDetails(batch, asks)
+	if batch.Len() == 0 {
+		return nil
+	}
+	if err := q.SendBatch(ctx, batch).Close(); err != nil {
+		return err
+	}
+	return apply()
 }
 
 // attachAskPartIDs reads, in one query over `ask_blocks`, the part id of every listed ask's
@@ -180,7 +246,8 @@ func attachAskBacklinkCounts(ctx context.Context, q queryer, asks []*model.Ask) 
 // that shows an ask's options shows the reference of each: `dispatch://<key>/ask/<id>#b-<part
 // id>`, pinned to the ask's `revision` with `@v<N>`. It is read beside attachAskBacklinkCounts,
 // which every list and detail read of an ask already pays for, and never by a write, whose
-// answer carries no id.
+// answer carries no id. A list of asks reads the same ids in its own batch instead
+// (queueAskDetails, over refs.QueueAskPartIDs).
 //
 // Which option or answer each stored part stands for, and what an ask the index has not reached
 // or an option no part stands for carries, is refs.AskPartIDs'.
@@ -192,6 +259,15 @@ func attachAskPartIDs(ctx context.Context, q queryer, asks []*model.Ask) error {
 	if err != nil {
 		return err
 	}
+	applyAskPartIDs(asks, partIDs)
+	return nil
+}
+
+// applyAskPartIDs stamps each ask with the ids read for it, in the asks' own order: the part id
+// of each of its options and of its answer, and the revision its parts have reached. Both halves
+// of the read end here - attachAskPartIDs for one ask or a read of its own, queueAskDetails for
+// a list read in a batch.
+func applyAskPartIDs(asks []*model.Ask, partIDs []refs.AskIDs) {
 	for index, ask := range asks {
 		ask.Revision = partIDs[index].Revision
 		for option := range ask.Options {
@@ -201,14 +277,12 @@ func attachAskPartIDs(ctx context.Context, q queryer, asks []*model.Ask) error {
 			ask.Answer.ID = partIDs[index].Answer
 		}
 	}
-	return nil
 }
 
-// attachAskReadFields is what every list and detail read of an ask attaches beyond its row: its
-// inbound graph-edge count (attachAskBacklinkCounts), then the part ids of its options and of its
-// answer with its part revision (attachAskPartIDs). A write attaches neither. The two are always
-// read together and in this order, so the reads a caller pays for, and the error it reports, are
-// the same at every site.
+// attachAskReadFields is what the read of one ask (getAsk) attaches beyond its row: its inbound
+// graph-edge count (attachAskBacklinkCounts), then the part ids of its options and of its answer
+// with its part revision (attachAskPartIDs). A write attaches neither. A list of asks reads the
+// same fields, with their identity events, in one batch instead (queueAskDetails, loadAskDetails).
 func attachAskReadFields(ctx context.Context, q queryer, asks []*model.Ask) error {
 	if err := attachAskBacklinkCounts(ctx, q, asks); err != nil {
 		return err
@@ -233,18 +307,23 @@ func (s *server) loadAskAnchorArtifact(
 }
 
 // scanAskRead decodes one askReadColumns row; an open ask gets WaitingOn from
-// waitingOnExpression, and the newest reply is returned separately (nil when the thread is
-// empty).
+// waitingOnExpression, WaitingOnPerson comes from askedOfPersonExpression, which is null in SQL
+// when nobody waits on the ask, and the newest reply is returned separately (nil when the thread
+// is empty).
 func scanAskRead(row pgx.Row, extra ...any) (model.Ask, *model.AskLastReply, error) {
 	var replyAuthor []byte
 	var repliedAt *time.Time
 	var turn string
-	ask, err := scanAskRow(row, append([]any{&replyAuthor, &repliedAt, &turn}, extra...)...)
+	var waitingOnPerson *string
+	ask, err := scanAskRow(row, append([]any{&replyAuthor, &repliedAt, &turn, &waitingOnPerson}, extra...)...)
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
 	if ask.State == "open" {
 		ask.WaitingOn = turn
+	}
+	if waitingOnPerson != nil {
+		ask.WaitingOnPerson = *waitingOnPerson
 	}
 	if repliedAt == nil {
 		return ask, nil, nil

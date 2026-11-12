@@ -9,41 +9,44 @@ Dispatch is a record for the people who decide, never a log of your work.
 
 - Use the `dispatch` command; the HTTP API only for what no command does. `dispatch <command> --help` gives its rules and an example.
 - Put long text on stdin: `--<field>-file -` with a quoted here-document (`<<'EOF'`); give object and list fields as JSON.
-- Exit 1 is a refusal, 2 a usage error. A refusal lists each problem: fix them all, then call once.
+- Exit 1 is a refusal, 2 a usage error. A refusal lists every problem: fix all, call once.
+- A command hard to use, or storing or losing something wrongly, is a defect to report, not work around: open an issue in the owning project's code and tell its controller; a Legion role tells its architect (`skill://legion-worker/references/findings.md`).
 
 ## Asks and ask blocks
 
-- A design question a document records is an ask block (a decision block) at the end of its section:
+- An ask is a question for a person, never a request to another agent. Ask an agent by envoy_send or a comment on the issue.
+- An ask waits on the issue's assignee until a person hands it on. No agent can hand one on.
+- A design question a document records is an ask block ending its section:
 
 ```md
 :::ask{urgency="med"}
-Which machines, files or people, the numbers, then "A happens to X, or B to Y?" Recommendation and its reason.
+The question and the recommendation (`skill://dispatch-writing-specs`).
 
 - Option one: what it costs.
 - Option two: what it costs.
 :::
 ```
 
-- In Legion, fix a clear defect in code your tree uses, hand others to the controller, and ask about decisions (`skill://legion-worker/references/findings.md`).
-- An open ask is the request; never repeat it per message.
-- Change an open ask's block with `dispatch edit-ask`, or `doc-edit`'s `replace` or `move`. An answered ask is fixed: ask anew.
+- A decision block in a comment, message or close reason is refused: ask in the issue's document, or `dispatch ask`.
+- Never repeat an open ask in a message.
+- Change an open ask's block with `dispatch edit-ask` (its ask id), or `doc-edit`'s `replace` or `move` (its block id). An answered ask is fixed: ask anew. `dispatch read --ref` takes either id.
 - Reply on an open ask with `dispatch comment --reply-to-ask`; `--turn agent` (a progress note) needs it. An approval request a newer version moved needs `request-approval` again.
 - When an answer's option and text disagree, the text wins.
-- An ask block has a block id, for `doc-edit`, and an ask id, for the ask commands. `dispatch read --ref dispatch://KEY/ask/<id>` takes either.
-- An ask reaches the issue's assignee; if none, name who answers.
 
 ## Choosing what to work on
 
-- When you finish an issue, take the top ready one: `todo`, by priority then board rank, per project.
+- Finishing an issue, take the top `todo` one by priority then board rank, per project.
 - `todo` means specced and waiting on nothing; one that waits goes in `backlog`, saying on what.
 - Hold at most three issues in flight; move the rest to `backlog`, saying where each is.
 - Never reorder the board: one agent keeps each project's order (`issue-update --before`/`--after`). If the top looks wrong, tell `notifications.role.legion-<project>-controller`.
 
 ## Issue status is yours to move
 
-Outside Legion, claim your issue (`dispatch claim`) and move it and your children: `in_progress` at implementation, `testing` on a production-like surface, `needs_review` while its PR waits, `done` with `--reason` once driven in production. Never write or route the status of an issue with the `legion` label or under one, and claim one only as a role of its tree, even when its claim reads `· not running`: an outside claim can take the tree out of the workflow. A status write is set back or stands.
+Outside Legion, claim your issue (`dispatch claim`) and move it and your children: `in_progress` at implementation, `testing` on a production-like surface, `needs_review` while its PR waits, `done` with `--reason` once driven in production. Never write or route the status of an issue with the `legion` label or under one, and claim one only as a role of its tree: an outside claim can take the tree out of the workflow. A status write is set back or stands.
 
-A claim, or `dispatch issue-update --route session:<your id>` (`--route ''` on release), brings a person's answers, comments and messages; for agents' activity, `envoy_subscribe notifications.dispatch.issue.<KEY>.>`, which shows no quiet event.
+`unresponsive` holders keep their claims 20 minutes (`skill://envoy`).
+
+A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to release) brings a person's answers, comments and messages; `envoy_subscribe notifications.dispatch.issue.<KEY>.>` adds agents' activity, no quiet event.
 
 ## Close what you opened
 
@@ -57,7 +60,7 @@ A claim, or `dispatch issue-update --route session:<your id>` (`--route ''` on r
 
 ## Architecture components
 
-Attach each architectural issue to its components (`--components-json`), the root before decomposing it. Change code and `.dispatch/architecture/<id>.md` in the same review.
+Attach each architectural issue to its components (`--components-json`), the root first; change code and `.dispatch/architecture/<id>.md` together.
 
 ## References
 
@@ -79,7 +82,7 @@ dispatch://PROJECT/artifact/<slug>/ask/<id>
 dispatch://PROJECT/artifact/<slug>/comment/<id>#b-<block>[@vN]
 ```
 
-A bare id, filename or path is not a reference, and outside Dispatch neither is `dispatch://`: give the `https://` link `dispatch` printed. Write each id whole.
+A bare id or path, or `dispatch://` outside Dispatch, is no link: give the `https://` one. Write ids whole.
 
 ## Setup and the HTTP API
 

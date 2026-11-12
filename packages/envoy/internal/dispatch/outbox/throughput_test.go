@@ -259,9 +259,9 @@ func unpublishedCount(t *testing.T, database *store.Store) int {
 	return count
 }
 
-// streamOrder reads every message the notification stream holds, in stream order, and returns the
-// dispatch event id each carries, grouped by subject, and the ids of all of them in stream order.
-func streamOrder(t *testing.T, conn *natsgo.Conn) (map[string][]int64, []int64) {
+// streamMessages reads every message the notification stream holds, in stream order: the one walk
+// of the stream the checks of what it holds share (streamOrder, assertKeptLaneInOrder).
+func streamMessages(t *testing.T, conn *natsgo.Conn) []*natsgo.RawStreamMsg {
 	t.Helper()
 	js, err := conn.JetStream()
 	if err != nil {
@@ -271,13 +271,24 @@ func streamOrder(t *testing.T, conn *natsgo.Conn) (map[string][]int64, []int64) 
 	if err != nil {
 		t.Fatalf("read the stream: %v", err)
 	}
-	bySubject := map[string][]int64{}
-	var all []int64
+	var messages []*natsgo.RawStreamMsg
 	for sequence := info.State.FirstSeq; sequence <= info.State.LastSeq && info.State.Msgs > 0; sequence++ {
 		message, err := js.GetMsg(bus.Stream, sequence)
 		if err != nil {
 			t.Fatalf("read stream message %d: %v", sequence, err)
 		}
+		messages = append(messages, message)
+	}
+	return messages
+}
+
+// streamOrder is streamMessages read as the dispatch event id each message carries, grouped by
+// subject, and the ids of all of them in stream order.
+func streamOrder(t *testing.T, conn *natsgo.Conn) (map[string][]int64, []int64) {
+	t.Helper()
+	bySubject := map[string][]int64{}
+	var all []int64
+	for _, message := range streamMessages(t, conn) {
 		id := envelopeEventID(t, message.Data)
 		bySubject[message.Subject] = append(bySubject[message.Subject], id)
 		all = append(all, id)
@@ -285,12 +296,20 @@ func streamOrder(t *testing.T, conn *natsgo.Conn) (map[string][]int64, []int64) 
 	return bySubject, all
 }
 
+// envelopeEventID is the dispatch event id data's envelope carries (sourceEventID).
 func envelopeEventID(t *testing.T, data []byte) int64 {
 	t.Helper()
 	var envelope contracts.Envelope
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		t.Fatalf("decode an envelope: %v", err)
 	}
+	return sourceEventID(t, envelope)
+}
+
+// sourceEventID is the dispatch event id envelope was made of, for a caller that has decoded it
+// already.
+func sourceEventID(t *testing.T, envelope contracts.Envelope) int64 {
+	t.Helper()
 	id, err := strconv.ParseInt(envelope.SourceEventID, 10, 64)
 	if err != nil {
 		t.Fatalf("envelope source event id %q: %v", envelope.SourceEventID, err)
@@ -324,6 +343,88 @@ type throughputRig struct {
 	// role is every forward the role's holder received, in arrival order.
 	roleMu sync.Mutex
 	role   []int64
+}
+
+// outstandingSends counts how many of the outbox's sends are outstanding at once. It wraps the
+// publisher the outbox sends through: a send counts from the moment the outbox makes it until
+// its answer is in. One outstandingSends counts across every window the publisher hands out,
+// because a scan runs up to concurrentBatches batches at once and each takes a window of its
+// own, so the reading is the peak over the whole drain: the most sends that were outstanding at
+// any one moment.
+//
+// The row reads that peak because it is what the outbox's throughput is made of, and unlike a
+// rate no load on the machine can change it. A drain that sends while earlier sends are
+// unanswered holds many at once, so a remote hub's round trips overlap and the peak is tens. A
+// drain that waits for each answer before it makes the next send holds about one send per batch
+// however fast or slow the machine runs, so its peak is the number of batches.
+type outstandingSends struct {
+	Publisher
+	mu          sync.Mutex
+	outstanding int
+	peak        int
+}
+
+// WindowUntil wraps the real window, so every send of it is counted.
+func (c *outstandingSends) WindowUntil(deadline func() time.Time) bus.Sender {
+	return outstandingWindow{Sender: c.Publisher.WindowUntil(deadline), sends: c}
+}
+
+// began counts one more send outstanding and keeps the peak.
+func (c *outstandingSends) began() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.outstanding++
+	if c.outstanding > c.peak {
+		c.peak = c.outstanding
+	}
+}
+
+// answered counts one fewer send outstanding.
+func (c *outstandingSends) answered() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.outstanding--
+}
+
+// peakOutstanding is the most sends that were outstanding at any one moment so far.
+func (c *outstandingSends) peakOutstanding() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.peak
+}
+
+// outstandingWindow is one counted window. Each of its three sending methods counts its send
+// outstanding and hands the caller a channel of its own, which yields what the real channel
+// yielded, exactly once, so the outbox sees what it would have seen. Probe goes straight through,
+// as Connected and ConnectionChanged do on the publisher.
+type outstandingWindow struct {
+	bus.Sender
+	sends *outstandingSends
+}
+
+func (s outstandingWindow) PublishAsync(item contracts.Envelope) <-chan error {
+	return s.count(s.Sender.PublishAsync(item))
+}
+
+func (s outstandingWindow) PublishStoredAsync(subject string, item contracts.Envelope, msgID string) <-chan error {
+	return s.count(s.Sender.PublishStoredAsync(subject, item, msgID))
+}
+
+func (s outstandingWindow) Request(subject string, item contracts.Envelope, opts bus.RequestOptions) <-chan error {
+	return s.count(s.Sender.Request(subject, item, opts))
+}
+
+// count holds one send outstanding until answer yields, and relays that one value on a buffered
+// channel, which the relaying goroutine can always write to whether the outbox reads it or not.
+func (s outstandingWindow) count(answer <-chan error) <-chan error {
+	s.sends.began()
+	relayed := make(chan error, 1)
+	go func() {
+		err := <-answer
+		s.sends.answered()
+		relayed <- err
+	}()
+	return relayed
 }
 
 func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
@@ -379,31 +480,49 @@ func (r *throughputRig) roleArrivals() []int64 {
 	return append([]int64(nil), r.role...)
 }
 
-// The outbox publishes a backlog at well above the rate Dispatch creates events under load (2.3 to
-// 4.5 a second in production) when every NATS round trip carries a remote hub's latency and the
-// API keeps the shared database pool busy, and it keeps the order consumers rely on: each issue's
-// events reach each of its destinations in id order - its subject on the stream, a session's own
-// subject, the role's holder, forwarded to with a receipt (the Legion daemon fences an issue's
-// facts on their sequence and drops one older than the last it applied). Different issues' events
-// interleave as their sends' answers allow. It does so for a backlog of messages, for one whose
-// half are a person's replies in comment threads, which take the issue's claimant and a query of
-// the threads' sessions, and for one of a person's comments on issues with no route and no claim,
+// The outbox sends while its earlier sends are unanswered, which is what lets it publish a
+// backlog at well above the rate Dispatch creates events under load (2.3 to 4.5 a second in
+// production) when every NATS round trip carries a remote hub's latency and the API keeps the
+// shared database pool busy, and it keeps the order consumers rely on: each issue's events reach
+// each of its destinations in id order - its subject on the stream, a session's own subject, the
+// role's holder, forwarded to with a receipt (the Legion daemon fences an issue's facts on their
+// sequence and drops one older than the last it applied). Different issues' events interleave as
+// their sends' answers allow. It does so for a backlog of messages, for one whose half are a
+// person's replies in comment threads, which take the issue's claimant and a query of the
+// threads' sessions, and for one of a person's comments on issues with no route and no claim,
 // which take a query of the issues' primary documents' sessions and, for a reply, of the threads'
-// sessions. The rate, and the destinations each event type reached, are logged for comparison; the
-// count of destinations is checked last, so a publisher that reaches fewer still reports its rate
-// and order.
+// sessions. The destinations each event type reached are logged for comparison; the count of
+// destinations is checked last, so a publisher that reaches fewer still reports its order.
+//
+// The reading is how many sends the outbox held outstanding at once, at its peak over the drain
+// (outstandingSends, minOutstanding). The rate is logged beside it and nothing is asserted of it:
+// a floor of 25 events/s failed in 20 of 20 runs that published every event, each run in at
+// least one of its cases: 118 of the 240 readings were below 25 events/s, the slowest 9.6, under
+// 48 busy loops on a 2-CPU box on 2026-11-09, so the rate read the machine rather than the
+// outbox.
 //
 // The burst cases put a batch of messages on one issue, the shape whose events share every
 // destination, so each destination takes them one round trip after another, and log the drain
-// time: from the outbox's start until every event is marked published. They hold no rate floor;
-// the drain time is the reading.
-func TestOutboxThroughputUnderRemoteLatency(t *testing.T) {
+// time: from the outbox's start until every event is marked published. One issue is one chain, so
+// they hold only a few sends outstanding and reach no floor; the drain time is the reading.
+func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 	const (
 		backlogIssues = 20
 		backlogCount  = 2 * batchSize
 		burstCount    = batchSize
-		minRate       = 25.0
-		waitTime      = 3 * time.Minute
+		// minOutstanding is the fewest sends a correct drain holds outstanding at its peak, in
+		// the non-burst cases. Measured three ways under 48 busy loops on a 2-CPU box on
+		// 2026-11-09. The product held 50 (messages), 55 (comment replies) and 60 (unclaimed
+		// comments), the same figure in each of three runs. The product with concurrentBatches
+		// cut to 1 and the sends unchanged held 50, 55 and 60 too, so the reading is one batch's
+		// own overlap and not the scan's batches running side by side. A drain patched to issue
+		// one chain and wait for its answer before the next held 3 in every non-burst case. The
+		// floor sits between the two: 20 is 6.7 times the serialized drain's 3, and the lowest
+		// healthy peak measured is 45, which is 2.25 times the floor. That 45 was read once
+		// among the 60 non-burst readings of the loaded campaign at head 844b43ec05b2 on
+		// 2026-11-09; every other reading of it was 50, 55 or 60.
+		minOutstanding = 20
+		waitTime       = 3 * time.Minute
 	)
 	for _, load := range []struct {
 		name string
@@ -462,7 +581,8 @@ func TestOutboxThroughputUnderRemoteLatency(t *testing.T) {
 					}
 
 					started := time.Now()
-					stop := runOutbox(t, outboxStore, rig.client, rig.broker)
+					sends := &outstandingSends{Publisher: rig.client}
+					stop := runOutboxThrough(t, outboxStore, rig.client, sends, rig.broker)
 					defer stop()
 					deadline := started.Add(waitTime)
 					for unpublishedCount(t, rig.database) > 0 && time.Now().Before(deadline) {
@@ -471,16 +591,19 @@ func TestOutboxThroughputUnderRemoteLatency(t *testing.T) {
 					elapsed := time.Since(started)
 					left := unpublishedCount(t, rig.database)
 					rate := float64(count-left) / elapsed.Seconds()
+					peak := sends.peakOutstanding()
 					if tc.burst {
-						t.Logf("%s: drained %d of %d events on one issue in %s: %.1f events/s", name, count-left, count, elapsed.Round(time.Millisecond), rate)
-						if left > 0 {
-							t.Fatalf("%s: %d of %d events left unpublished after %s", name, left, count, waitTime)
-						}
+						t.Logf("%s: drained %d of %d events on one issue in %s: %.1f events/s, %d sends outstanding at the peak", name, count-left, count, elapsed.Round(time.Millisecond), rate, peak)
 					} else {
-						t.Logf("%s: published %d of %d events in %s: %.1f events/s", name, count-left, count, elapsed.Round(time.Millisecond), rate)
-						if left > 0 || rate < minRate {
-							t.Fatalf("%s: %.1f events/s with %d left unpublished, want every event at %.0f events/s or more", name, rate, left, minRate)
-						}
+						t.Logf("%s: published %d of %d events in %s: %.1f events/s, %d sends outstanding at the peak", name, count-left, count, elapsed.Round(time.Millisecond), rate, peak)
+					}
+					if left > 0 {
+						t.Fatalf("%s: %d of %d events left unpublished after %s", name, left, count, waitTime)
+					}
+					// One issue is one chain, so a burst holds a send or three at once whatever
+					// the drain does, and reads nothing here.
+					if !tc.burst && peak < minOutstanding {
+						t.Fatalf("%s: %d sends outstanding at the peak, want %d or more: the outbox waited for each send's answer before it made the next, instead of sending while earlier sends were unanswered", name, peak, minOutstanding)
 					}
 
 					issueOf := map[int64]string{}
@@ -562,11 +685,19 @@ func logDestinations(t *testing.T, name string, seeded []model.Event, stream []i
 // the returned func stops it.
 func runOutbox(t *testing.T, database *store.Store, client *bus.Client, broker *events.Broker) func() {
 	t.Helper()
+	return runOutboxThrough(t, database, client, client, broker)
+}
+
+// runOutboxThrough is runOutbox publishing through publisher rather than through client itself,
+// for a row that reads what the outbox's own sends do (outstandingSends). Role routes still
+// resolve on client's connection, as cmd/dispatch has them.
+func runOutboxThrough(t *testing.T, database *store.Store, client *bus.Client, publisher Publisher, broker *events.Broker) func() {
+	t.Helper()
 	pool, err := database.Pool.Outbox()
 	if err != nil {
 		t.Fatalf("open the outbox's pool: %v", err)
 	}
-	holders := roles.NewBuckets(client)
-	return runDeps(t, Deps{Store: &store.Store{Pool: pool}, Publisher: client, Broker: broker, Listen: database.Pool.Listener,
+	holders := roles.NewBuckets(client, roles.Windows{})
+	return runDeps(t, Deps{Store: &store.Store{Pool: pool}, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener,
 		RoleClaims: holders, Sessions: holders}, 10*time.Second)
 }

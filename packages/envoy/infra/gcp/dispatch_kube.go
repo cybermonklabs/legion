@@ -161,11 +161,10 @@ func secretChecksum(secret *corev1.Secret) pulumi.StringOutput {
 
 // answersProbe is a startup or liveness probe of the HTTP server on the container's loopback port:
 // it fails only when the process does not answer at all. It asks /livez, which runs no dependency
-// check: envoy-dispatch answers it 204 with no I/O, and envoy-listener, which has no such route,
-// answers it 404 from its mux, outside the /v1 routes its bearer guards, with no I/O either. curl
-// without -f exits 0 whatever the status, so any HTTP answer passes, and neither a dependency
-// outage nor a slow Postgres or NATS restarts every pod; --max-time 8 makes curl give up inside the
-// probe's 9 s timeout.
+// check: envoy-dispatch and envoy-listener each answer it 204 with no I/O. curl without -f exits 0
+// whatever the status, so any HTTP answer passes, and neither a dependency outage nor a slow
+// Postgres or NATS restarts every pod; --max-time 8 makes curl give up inside the probe's 9 s
+// timeout.
 func answersProbe(port, periodSeconds, failureThreshold int) *corev1.ProbeArgs {
 	return &corev1.ProbeArgs{
 		Exec: &corev1.ExecActionArgs{Command: pulumi.StringArray{
@@ -379,26 +378,37 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	if err != nil {
 		return err
 	}
+	// One of the three SecretProviderClasses, which differ in nothing else: the CSI driver reads
+	// the Secret Manager secret the consumer's Input names, at its latest version, and mounts it
+	// as the one file file names. input is that Input's own schema name, which the seed refusal
+	// names (refuseDispatchSeed): a seed there fails the output, so no child is registered with
+	// it. The rendered YAML is what the goldens hold, so writing it once changes nothing about
+	// what is applied.
+	secretClass := func(name string, secret pulumi.StringInput, input, file string) error {
+		path := refuseDispatchSeed(secret, dispatch, input).ApplyT(func(resource string) string {
+			return strings.TrimSuffix(resource, "/") + "/versions/latest"
+		}).(pulumi.StringOutput)
+		_, err := apiextensions.NewCustomResource(ctx, name, &apiextensions.CustomResourceArgs{
+			ApiVersion: pulumi.String("secrets-store.csi.x-k8s.io/v1"), Kind: pulumi.String("SecretProviderClass"), Metadata: metadata(name),
+			OtherFields: kubernetes.UntypedArgs{"spec": pulumi.Map{"provider": pulumi.String("gke"), "parameters": pulumi.Map{"secrets": path.ApplyT(func(path string) string { return "- resourceName: " + path + "\n  path: " + file + "\n" }).(pulumi.StringOutput)}}},
+		}, child...)
+		return err
+	}
 	seedName := s.hostname + "-nats-seed"
-	seedPath := refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret").ApplyT(func(secret string) string {
-		return strings.TrimSuffix(secret, "/") + "/versions/latest"
-	}).(pulumi.StringOutput)
-	if _, err := apiextensions.NewCustomResource(ctx, seedName, &apiextensions.CustomResourceArgs{
-		ApiVersion: pulumi.String("secrets-store.csi.x-k8s.io/v1"), Kind: pulumi.String("SecretProviderClass"), Metadata: metadata(seedName),
-		OtherFields: kubernetes.UntypedArgs{"spec": pulumi.Map{"provider": pulumi.String("gke"), "parameters": pulumi.Map{"secrets": seedPath.ApplyT(func(path string) string { return "- resourceName: " + path + "\n  path: nats-seed\n" }).(pulumi.StringOutput)}}},
-	}, child...); err != nil {
+	if err := secretClass(seedName, args.NatsSeedSecret, "natsSeedSecret", "nats-seed"); err != nil {
 		return err
 	}
 
 	azureKeyClassName := s.hostname + "-azure-embed-key"
 	if s.azure.key {
-		keyPath := refuseDispatchSeed(args.AzureEmbedKeySecret, dispatch, "azureEmbedKeySecret").ApplyT(func(secret string) string {
-			return strings.TrimSuffix(secret, "/") + "/versions/latest"
-		}).(pulumi.StringOutput)
-		if _, err := apiextensions.NewCustomResource(ctx, azureKeyClassName, &apiextensions.CustomResourceArgs{
-			ApiVersion: pulumi.String("secrets-store.csi.x-k8s.io/v1"), Kind: pulumi.String("SecretProviderClass"), Metadata: metadata(azureKeyClassName),
-			OtherFields: kubernetes.UntypedArgs{"spec": pulumi.Map{"provider": pulumi.String("gke"), "parameters": pulumi.Map{"secrets": keyPath.ApplyT(func(path string) string { return "- resourceName: " + path + "\n  path: key\n" }).(pulumi.StringOutput)}}},
-		}, child...); err != nil {
+		if err := secretClass(azureKeyClassName, args.AzureEmbedKeySecret, "azureEmbedKeySecret", "key"); err != nil {
+			return err
+		}
+	}
+
+	chatTokenClassName := s.hostname + "-chat-token"
+	if s.answerer.place == dispatchAnswererEndpoint {
+		if err := secretClass(chatTokenClassName, args.ChatTokenSecret, "chatTokenSecret", "token"); err != nil {
 			return err
 		}
 	}
@@ -593,10 +603,18 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// killed holder's lease is taken over in about six. Readiness is /healthz, which answers within
 	// 5 s, so the probe allows 6; startup and liveness only ask that the listener answers
 	// (answersProbe). The pre-stop wait keeps a stopping pod answering /v1 while its removal from
-	// the Service propagates, and the 35 s grace period covers those 5 s, the listener's own stop
-	// of about 26 s, and a margin.
+	// the Service propagates, and the 40 s grace period covers those 5 s and the listener's own
+	// stop of 28 s, with the margin listenerGraceMargin names. That 28 s is three hard deadlines
+	// the listener sets itself and holds as constants, stopHTTPGrace, stopLaneGrace and
+	// stopClientDrain, summed as stopBudget (packages/envoy/cmd/listener/main.go), whose own test
+	// holds this pod's golden to that sum and that margin. They cannot overrun, so the margin
+	// covers the kubelet's own latency between the pre-stop hook's return and SIGTERM, the
+	// container's teardown and a late tick on a loaded node, and not a listener that runs over.
+	// This pod and the clustered hub's listener pod run the same binary at the same budget, and
+	// what holds the two graces equal is
+	// TestDispatchAndClusteredHubListenerPodsStopInsideTheirGrace, which reads both.
 	if _, err := deployment(listenerName, s.listenerReplicas, s.disruption.listenerPDBMinAvailable, map[string]*corev1.Secret{listenerName: listenerSecret}, corev1.PodSpecArgs{
-		ServiceAccountName: pulumi.String(s.hostname), TerminationGracePeriodSeconds: pulumi.Int(35), EnableServiceLinks: pulumi.Bool(false),
+		ServiceAccountName: pulumi.String(s.hostname), TerminationGracePeriodSeconds: pulumi.Int(40), EnableServiceLinks: pulumi.Bool(false),
 		Containers: corev1.ContainerArray{
 			corev1.ContainerArgs{
 				Name: pulumi.String("envoy-listener"), Image: pulumi.String(s.images.envoy), Resources: resources("500m", "512Mi"), Env: listenerEnv, VolumeMounts: seedMount,
@@ -675,12 +693,25 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 			corev1.VolumeProjectionArgs{ServiceAccountToken: &corev1.ServiceAccountTokenProjectionArgs{Audience: pulumi.String(s.agentSecretsAudience), ExpirationSeconds: pulumi.Int(agentSecretsTokenSeconds), Path: pulumi.String("agent-secrets-account-token")}},
 		}}})
 	}
+	if s.oidcAudience != "" {
+		// Dispatch verifies a caller's projected ServiceAccount token itself, which is how the
+		// secrets broker's judge reads Dispatch. The issuer is this cluster's own unless
+		// oidcIssuer names another, so a token minted in this cluster needs the audience alone;
+		// it is an Output there, rendered once the cluster's project, location and name resolve.
+		// Dispatch refuses half the pair at boot (oidc.ConfigFromEnv), so both render together.
+		issuer := cloud.issuer
+		if s.oidcIssuer != "" {
+			issuer = pulumi.String(s.oidcIssuer).ToStringOutput()
+		}
+		appEnv = append(appEnv, corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_OIDC_ISSUER"), Value: issuer},
+			valueEnv("DISPATCH_OIDC_AUDIENCE", s.oidcAudience))
+	}
 	if s.appClientID != "" {
 		// The App key is one key of a Kubernetes Secret this component never creates: it exists at
 		// run time (GKE SecretSync), so the Deployment does not wait on it.
 		appEnv = append(appEnv, valueEnv("DISPATCH_APP_CLIENT_ID", s.appClientID), valueEnv("DISPATCH_APP_ID", s.appID), secretEnv("DISPATCH_APP_PEM_B64", s.appKeySecretName, s.appKeySecretKey))
 	}
-	if s.azure.enabled() {
+	if s.azure.embedder {
 		// Meaning search embeds on Azure AI Foundry. The endpoint, and the deployment when given,
 		// are Inputs, rendered once they resolve, with a seed refused then.
 		appEnv = append(appEnv, valueEnv("DISPATCH_EMBEDDER", "azure"),
@@ -698,11 +729,43 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		appVolumes = append(appVolumes, corev1.VolumeArgs{Name: pulumi.String("azure-embed-key"), Csi: &corev1.CSIVolumeSourceArgs{Driver: pulumi.String("secrets-store-gke.csi.k8s.io"), ReadOnly: pulumi.Bool(true), VolumeAttributes: pulumi.StringMap{"secretProviderClass": pulumi.String(azureKeyClassName)}}})
 		appGrants = append(appGrants, database.azureKeyAccessor)
 	}
+	if s.answerer.place == dispatchAnswererAzure {
+		// The server generates text on an Azure AI Foundry chat deployment. The endpoint and the
+		// deployment are Inputs, rendered once they resolve, with a seed refused then; the
+		// api-version and the scope render only when their inputs are set, where Dispatch
+		// otherwise sends no api-version and asks for the scope the embedder asks for. The sign-in
+		// is the shared keyless credential below, which this form takes no API key beside.
+		appEnv = append(appEnv, valueEnv("DISPATCH_ANSWERER", dispatchAnswererAzure),
+			corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_AZURE_CHAT_ENDPOINT"), Value: refuseDispatchSeed(args.AzureChatEndpoint, dispatch, "azureChatEndpoint")},
+			corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_AZURE_CHAT_DEPLOYMENT"), Value: refuseDispatchSeed(args.AzureChatDeployment, dispatch, "azureChatDeployment")},
+			valueEnv("DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE", strconv.Itoa(s.answerer.tokensPerMinute)))
+		if s.answerer.apiVersion != "" {
+			appEnv = append(appEnv, valueEnv("DISPATCH_AZURE_CHAT_API_VERSION", s.answerer.apiVersion))
+		}
+		if s.answerer.scope != "" {
+			appEnv = append(appEnv, valueEnv("DISPATCH_AZURE_CHAT_SCOPE", s.answerer.scope))
+		}
+	}
+	if s.answerer.place == dispatchAnswererEndpoint {
+		// The other form: an OpenAI-shaped service whose bearer token is read at run time from
+		// Secret Manager through its own SecretProviderClass and volume, as the Azure embedder's
+		// key is, and the pods wait for its grant. DISPATCH_CHAT_TOKEN_FILE names the mounted
+		// file, which Dispatch re-reads on every call, so a rotation needs no restart.
+		appEnv = append(appEnv, valueEnv("DISPATCH_ANSWERER", dispatchAnswererEndpoint),
+			corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_CHAT_ENDPOINT"), Value: refuseDispatchSeed(args.ChatEndpoint, dispatch, "chatEndpoint")},
+			valueEnv("DISPATCH_CHAT_MODEL", s.answerer.model),
+			valueEnv("DISPATCH_CHAT_TOKEN_FILE", "/var/run/secrets/chat-token/token"))
+		appMounts = append(appMounts, corev1.VolumeMountArgs{Name: pulumi.String("chat-token"), MountPath: pulumi.String("/var/run/secrets/chat-token"), ReadOnly: pulumi.Bool(true)})
+		appVolumes = append(appVolumes, corev1.VolumeArgs{Name: pulumi.String("chat-token"), Csi: &corev1.CSIVolumeSourceArgs{Driver: pulumi.String("secrets-store-gke.csi.k8s.io"), ReadOnly: pulumi.Bool(true), VolumeAttributes: pulumi.StringMap{"secretProviderClass": pulumi.String(chatTokenClassName)}}})
+		appGrants = append(appGrants, database.chatTokenAccessor)
+	}
 	if s.azure.keyless {
-		// The keyless form: the kubelet projects a service-account token for the federation's
-		// audience into the pod and rotates it before its hour runs out; Dispatch re-reads the
-		// file on every exchange with Entra, whose federated credential trusts the token's issuer
-		// and subject (the serviceAccountIssuer and serviceAccountSubject outputs).
+		// The shared sign-in, rendered whenever either feature is on Azure: the embedder in its
+		// keyless form, the answerer in its only form. The kubelet projects a service-account token
+		// for the federation's audience into the pod and rotates it before its hour runs out;
+		// Dispatch re-reads the file on every exchange with Entra, whose federated credential
+		// trusts the token's issuer and subject (the serviceAccountIssuer and
+		// serviceAccountSubject outputs).
 		appEnv = append(appEnv,
 			corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_AZURE_TENANT_ID"), Value: refuseDispatchSeed(args.AzureTenantId, dispatch, "azureTenantId")},
 			corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_AZURE_CLIENT_ID"), Value: refuseDispatchSeed(args.AzureClientId, dispatch, "azureClientId")},

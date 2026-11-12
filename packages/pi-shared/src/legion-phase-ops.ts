@@ -1,6 +1,7 @@
 import { type LegionRole, zodSchemaApi } from "@legion/contracts";
 import {
   LEGION_PHASE_BACKWARD_TARGETS,
+  LegionInstant,
   type LegionIssue,
   type LegionPhase,
   type LegionState,
@@ -16,7 +17,8 @@ import type { HandoffReport } from "./handoff-record";
 /** The claim a session registered, as the phase ops need it, and as the claim boot
  * (`legion-claim-core`) records it: its own id, the claim token and the launch generation every
  * claim route authenticates with, the daemon's answer for tree, issue and role, and the secret
- * every grant is minted with. */
+ * every grant is minted with. The token and the secret are the pair the claim routes
+ * authenticate a pod by, and they stay in this process: nothing writes either to disk. */
 export interface ClaimCapability {
   readonly sessionID: string;
   readonly claimToken: string;
@@ -25,6 +27,14 @@ export interface ClaimCapability {
   readonly issue: string;
   readonly role: LegionRole;
   readonly secret: string;
+  /** The task agents the registration answered with (`LegionRegistration.promptAgents`), which
+   * the session's own capability measurements check its discovered agents against long after the
+   * boot returned. `bootLegionClaim` is this field's only producer, and every claim in production
+   * carries the list: `packages/claude-envoy/src/legion-claim.ts`, the other host that records a
+   * claim, records what that boot hands it. It is optional because a reader that finds no value
+   * has a defined answer — it measures against no prompt agents — so a claim built without it,
+   * which only a test does, is read rather than refused. */
+  readonly promptAgents?: readonly string[];
 }
 
 /**
@@ -34,6 +44,7 @@ export interface ClaimCapability {
  */
 export const PHASE_OPS = [
   "read_record",
+  "read_release_records",
   "handoff_complete",
   "request_backward_move",
   "ready_for_update",
@@ -49,6 +60,35 @@ const requiredString = (op: PhaseOp, field: string) => {
   const message = `${op} requires ${field}`;
   return z.string({ error: message }).refine((value) => value.trim() !== "", { error: message });
 };
+
+/** A string field `op` requires in the RFC 3339 form the route takes, refused here by the op's
+ * own name with message rather than as the request schema's parse failure; a blank one is
+ * refused as missing alone (requiredString). The form is the contract's `LegionInstant`, read
+ * here so that this tool refuses exactly the strings the daemon's decode refuses:
+ * `z.iso.datetime({ offset: true })` is not it, since it takes `2026-11-06T10:00Z`, which Go's
+ * `time.Time` refuses, and the agent would then get the daemon's generic invalid-body answer
+ * instead of the message below. */
+const rfc3339String = (op: PhaseOp, field: string, message: string) =>
+  requiredString(op, field).refine(
+    (value) => value.trim() === "" || LegionInstant.safeParse(value).success,
+    { error: message }
+  );
+
+/** `read_release_records`' window: the instant it reads from (`LegionReleaseRecordsRequest`'s
+ * `since`). */
+const windowStart = rfc3339String(
+  "read_release_records",
+  "since",
+  "read_release_records' since is an RFC 3339 time, as 2026-11-02T09:00:00Z is"
+);
+
+/** `handoff_complete`'s `wake_at`: when the checking agent asks to be woken for its next look
+ * (`LegionHandoffCompleteRequest`'s `wakeAt`, which is what goes on the wire). */
+const nextLook = rfc3339String(
+  "handoff_complete",
+  "wake_at",
+  "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is"
+);
 
 /** One operation's arguments: `op` and `shape`, and nothing else. */
 const operation = <Op extends PhaseOp, Shape extends z.ZodRawShape>(op: Op, shape: Shape) =>
@@ -70,6 +110,9 @@ export const PhaseOpArguments = z.discriminatedUnion(
   "op",
   [
     operation("read_record", { issue: requiredString("read_record", "issue") }),
+    operation("read_release_records", {
+      since: windowStart,
+    }),
     operation("handoff_complete", {
       summary: requiredString("handoff_complete", "summary"),
       verdict: z
@@ -78,6 +121,7 @@ export const PhaseOpArguments = z.discriminatedUnion(
         })
         .optional(),
       ready: z.boolean({ error: "handoff_complete's ready is true or false" }).optional(),
+      wake_at: nextLook.optional(),
     }),
     operation("request_backward_move", {
       // The issue the move names: the tree architect's move names the issue it returns from
@@ -137,10 +181,17 @@ export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType>
   return byField;
 }
 
-/** The `legion` tool's sentences on `read_record` and `request_backward_move`, which a host whose
- * tool states them passes as `before` and `after` (`legionToolDescription`). */
+/** The `legion` tool's sentences on `read_record`, `read_release_records` and
+ * `request_backward_move`, which a host whose tool states them passes as `before` and `after`
+ * (`legionToolDescription`). */
 export const PHASE_OP_SENTENCES = {
   readRecord: "read_record returns the record of `issue` from the daemon's state. ",
+  readReleaseRecords:
+    "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
+    "every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no " +
+    "role, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and " +
+    "the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A release that suspended no role is woken by " +
+    "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. ",
   requestBackwardMove:
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`): a phase worker moves its own issue; " +
     "the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which counts a review round. ",
@@ -151,7 +202,8 @@ export const PHASE_OP_SENTENCES = {
  * then `handoff_complete`'s contract, then `after`, then where a question for another role goes,
  * `envoyPublish` being the host's name for Envoy's publish tool. `before` and `after` are whole
  * sentences, each ending in a space: the host's sentences on its other operations, and on
- * `read_record` and `request_backward_move` when it states them (`PHASE_OP_SENTENCES`).
+ * `read_record`, `read_release_records` and `request_backward_move` when it states them
+ * (`PHASE_OP_SENTENCES`).
  */
 export function legionToolDescription(host: {
   readonly envoyPublish: string;
@@ -162,17 +214,21 @@ export function legionToolDescription(host: {
     "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
     (host.before ?? "") +
     "handoff_complete (phase workers and sub-architects; the daemon accepts a completion only from the role working the issue's current phase, " +
-    "and the implementer's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
-    "architect, or the merger's READY packet), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
-    "any other role there) and pass|pending|fail from the implementer on a production check report (pending: production does not carry the merge " +
+    "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for " +
+    "the architect, or the merger's READY packet), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict " +
+    "from any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
     "yet), `ready: true` for the merger's READY. A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
     "calling. This call reads the phase's newest record from Dispatch and reports it; the implementer's round also reports the commit " +
     "`legion/<issue>@origin` names, so push the branch first; retro and the merger's READY report the commit the workspace stands on. It " +
     "refuses, posting nothing, a phase with no record, a Dispatch that does not answer, or an implementer's `@-` not yet on " +
     "`legion/<issue>@origin`, each naming the remedy. A production check report " +
-    "(the task whose first line is `Production check of <KEY>`, handed to the implementer once the merge closed its issue) needs no handoff and no " +
-    "commit: it carries its verdict and summary alone, and the daemon refuses it when no check is open (CHECK_NOT_OPEN). The daemon refuses " +
+    "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
+    "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
+    "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
+    "(CHECK_WAKE_UNEXPECTED), and a pending on any other look is refused without one (CHECK_WAKE_REQUIRED). A report on an issue whose check is " +
+    "closed or never opened is refused (CHECK_NOT_OPEN), and so is one from a role the check does not record (CHECK_ROLE_MISMATCH). " +
+    "The daemon refuses " +
     "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
     "write this phase's handoff), " +
     "HANDOFF_STALE_ASSIGNMENT (the issue left your phase and came back while your turn ran, so this completion is of the assignment before the one " +
@@ -206,6 +262,9 @@ export interface PhaseOpRuntime {
   /** How `handoff_complete` waits out a daemon restart (`retryWhileDaemonRestarts`): the host's
    * sentence to the agent, and a test's clock. */
   readonly restart?: DaemonRestartRetry;
+  /** The clock `read_release_records` measures a release the daemon has not resumed yet against,
+   * `Date` itself unless a test hands it another. */
+  readonly now?: () => Date;
 }
 
 /** A grant for one write of the claim's session, minted on `/grants`' session form with the
@@ -233,22 +292,27 @@ const ROOT_COMPLETION_REFUSAL =
   "handoff_complete is not available to a root architect session, which runs no phase";
 
 /**
- * Runs one phase op and answers its JSON result: `{ record }` for `read_record`, the daemon's
- * answer for `handoff_complete`, `{}` for `request_backward_move`, and `{}` for
- * `ready_for_update`, or `{ note }` when its branch-head lookup failed. A refusal throws before
- * any write, minting nothing and posting nothing: each problem `PhaseOpArguments` finds, joined
- * by `; `, a field the operation does not take named first, then a root architect's completion,
+ * Runs one phase op and answers its JSON result: `{ record }` for `read_record`, the window's
+ * records and their counts for `read_release_records`, the daemon's answer for
+ * `handoff_complete`, `{}` for `request_backward_move`, and `{}` for `ready_for_update`, or
+ * `{ note }` when its branch-head lookup failed. A refusal throws before any write, minting
+ * nothing and posting nothing: each problem `PhaseOpArguments` finds, joined by `; `, a field
+ * the operation does not take named first, then a root architect's completion,
  * then each problem with the operation's own fields in the order it takes them; then what the
- * record decides (a check report's verdict, `pending` on a phase completion, the issue a move
+ * record decides (a check report's verdict, its claim's role against the check's own, its
+ * `wake_at`, `pending` or `wake_at` on a phase completion, the issue a move
  * names), then a refused handoff report (`findHandoffReport`). A daemon refusal throws its code
  * and sentence.
  *
- * A completion is a phase's or the implementer's report on a look of its closed issue's
- * production check, told apart as the daemon tells them (`api.handoffComplete`): the
- * implementer's call on an issue no role works (`done`) whose `check` is open. A check report
- * names its verdict (`pass`, `pending` or `fail`) and nothing else: no handoff was written and
- * nothing pushed, so no record or commit is looked up and none is sent; `pending` is a check's
- * verdict alone, refused on a phase completion.
+ * A completion is a phase's or a look's report on the closed issue's production check. The daemon
+ * tells them apart by the caller's own live assignment (`api.handoffComplete`,
+ * `supervise.Claim.ServingCheck`), which this tool cannot read: it shapes the call by the issue's
+ * phase instead, a call on a `done` issue carrying what a check report carries and every other
+ * call what its phase's completion carries, and the daemon's answer decides. A check report names
+ * its verdict (`pass`, `pending` or `fail`), and a `pending` whose look is not the check's last
+ * the `wake_at` of its next look; no handoff was written and nothing pushed, so no record or commit
+ * is looked up and none is sent. `pending` is a check's verdict alone, refused on a phase
+ * completion, and so is `wake_at`.
  */
 export async function executePhaseOp(
   runtime: PhaseOpRuntime,
@@ -278,6 +342,8 @@ export async function executePhaseOp(
   switch (args.op) {
     case "read_record":
       return { record: recordFrom(await daemon.state(), args.issue) };
+    case "read_release_records":
+      return releaseRecords(runtime, args.since);
     case "handoff_complete":
       // Retried whole while the daemon restarts: the record, the handoff report and a fresh grant
       // are read again on each attempt. A repeat never applies twice, but it cannot tell a landed
@@ -351,22 +417,147 @@ export async function executePhaseOp(
   }
 }
 
+/** A release woken again within this of its release is churn: the pod was given up and paid for
+ * again at once (`docs/kubernetes.md`, "Idle release"). */
+const WOKEN_SOON_MS = 10 * 60 * 1000;
+
+/** How many rows of each `key`, the key's own order kept. */
+const countedBy = <Row>(
+  rows: readonly Row[],
+  key: (row: Row) => string
+): Readonly<Record<string, number>> => {
+  const counts: Record<string, number> = {};
+  for (const row of rows) counts[key(row)] = (counts[key(row)] ?? 0) + 1;
+  return counts;
+};
+
+/** The nearest-rank percentile of `sorted`, ascending: the smallest value `share` of the rows
+ * are at or below. Null for no rows, which is a window nothing was measured in rather than a
+ * zero. */
+const percentile = (sorted: readonly number[], share: number): number | null =>
+  sorted.length === 0 ? null : (sorted[Math.max(Math.ceil(share * sorted.length), 1) - 1] ?? null);
+
+/**
+ * `read_release_records`: the window's records from the daemon, with the numbers a report of the
+ * deployment's idle release is written from, so an agent counts nothing itself. The claim's own
+ * token and secret authenticate the read, as every other claim route is authenticated, and they
+ * never leave this process.
+ *
+ * A release that suspended no role is known by the empty `roles` list the record already carries:
+ * every release of the rule that reclaims an issue pod no claim can use is one, and so is the
+ * rare idle release whose stops suspended nobody. No role of it is ever woken, so nothing records
+ * when its issue's pod came back, and the three measurements of a release's life leave it out.
+ * `counts.releases` counts every release and `counts.releasesSuspendingNoRole` counts these.
+ *
+ * `podHoursReleased` is how long the released pods were gone: from each release that suspended a
+ * role to the first resume of it, and to `asOf` for one the daemon has not resumed yet, since
+ * that pod is gone now. A pod's roles wake one resume each, so the first of them ends the
+ * release. A release that suspended no role is charged nothing, because charging it that way
+ * would bill the fleet from its moment to the moment of every later read, for ever, though an
+ * operator's retry may have rebuilt the pod a minute later.
+ * `wokenWithinTenMinutes` counts the releases a wake followed that soon, the churn of releasing
+ * a pod that was wanted again at once, over the releases that suspended a role alone: a release
+ * no wake can reach belongs in neither half of that share, which it would otherwise lower for
+ * ever. `wakeToFirstTurnSeconds` measures each resume the daemon has seen a first turn for,
+ * `withoutFirstTurn` counting the rest, and reports the nearest-rank median and 90th percentile
+ * and the maximum; it reads the resume rows, of which a release that suspended no role has none,
+ * so it leaves those releases out by its own shape.
+ */
+async function releaseRecords(
+  runtime: PhaseOpRuntime,
+  since: string
+): Promise<Readonly<Record<string, unknown>>> {
+  const { claim } = runtime;
+  const records = await runtime.daemon.releaseRecords({
+    claimToken: claim.claimToken,
+    secret: claim.secret,
+    since,
+  });
+  const asOf = runtime.now?.() ?? new Date();
+  const wokenAt = new Map<number, number>();
+  for (const resume of records.resumes) {
+    if (resume.release === 0) continue;
+    const at = Date.parse(resume.at);
+    const first = wokenAt.get(resume.release);
+    if (first === undefined || at < first) wokenAt.set(resume.release, at);
+  }
+  let releasedMs = 0;
+  let wokenSoon = 0;
+  let suspendedNoRole = 0;
+  for (const release of records.releases) {
+    // The empty role list is the whole mark of a release no wake can reach, so it is counted
+    // here and measured nowhere.
+    if (release.roles.length === 0) {
+      suspendedNoRole += 1;
+      continue;
+    }
+    const from = Date.parse(release.at);
+    const woken = wokenAt.get(release.id);
+    releasedMs += Math.max((woken ?? asOf.getTime()) - from, 0);
+    if (woken !== undefined && woken - from <= WOKEN_SOON_MS) wokenSoon += 1;
+  }
+  const wakeable = records.releases.length - suspendedNoRole;
+  const waits = records.resumes
+    .flatMap((resume) =>
+      resume.firstTurnAt === undefined
+        ? []
+        : [(Date.parse(resume.firstTurnAt) - Date.parse(resume.at)) / 1000]
+    )
+    .sort((one, other) => one - other);
+  const whole = (value: number | null) => (value === null ? null : Math.round(value));
+  return {
+    since,
+    asOf: asOf.toISOString(),
+    releases: records.releases,
+    resumes: records.resumes,
+    holds: records.holds,
+    counts: {
+      releases: records.releases.length,
+      releasesSuspendingNoRole: suspendedNoRole,
+      resumes: records.resumes.length,
+      resumesByKind: countedBy(records.resumes, (resume) => resume.kind),
+      holds: records.holds.length,
+      holdsByReason: countedBy(records.holds, (hold) => hold.reason),
+    },
+    podHoursReleased: Math.round((releasedMs / 3_600_000) * 100) / 100,
+    wokenWithinTenMinutes: {
+      releases: wokenSoon,
+      share: wakeable === 0 ? 0 : Math.round((wokenSoon / wakeable) * 1000) / 1000,
+    },
+    wakeToFirstTurnSeconds: {
+      measured: waits.length,
+      withoutFirstTurn: records.resumes.length - waits.length,
+      median: whole(percentile(waits, 0.5)),
+      p90: whole(percentile(waits, 0.9)),
+      max: whole(waits.at(-1) ?? null),
+    },
+  };
+}
+
 /** One attempt of `handoff_complete` (`executePhaseOp`'s doc comment). */
 async function completeHandoff(
   runtime: PhaseOpRuntime,
   args: Extract<z.infer<typeof PhaseOpArguments>, { op: "handoff_complete" }>
 ): Promise<Readonly<Record<string, unknown>>> {
   const { daemon, claim } = runtime;
-  // The record is read before anything is minted: it says whether this is a phase
-  // completion or a check report, by the daemon's own rule (`api/handoff.go`): the
-  // implementer's call on an issue no role works (`done`) is a check report, whether or not
-  // the record shows a check — a done issue whose check closed, or opened none, has no
-  // handoff for the implementer to write, so no record or commit is looked up, and the daemon
-  // answers the report `CHECK_NOT_OPEN`. The report's own refusals (a verdict, no READY) apply
-  // while the record shows the check it is of. A refusal here posts nothing and mints nothing.
+  // The record is read before anything is minted: it says what this call has to carry. An issue
+  // no role works (`done`) has no handoff for anyone to write, so no record or commit is looked
+  // up, and the call carries what a check report carries; it is posted all the same where the
+  // record shows no open check, for the daemon's own answer. Which of the two the call is, is the
+  // daemon's to say, and it says it from the caller's own live assignment (`api/handoff.go`,
+  // `supervise.Claim.ServingCheck`), which the record does not show: a session working a look of
+  // its issue's production check reports on that look, and every other session's completion is
+  // its phase's, which the daemon refuses on a `done` issue whatever it carries
+  // (`CHECK_LOOK_NOT_SERVED`). So the two can disagree: a look's report from an issue back in
+  // the workflow is refused here as a phase completion, and a phase's completion that outlived
+  // the close is posted here as a report and refused `CHECK_LOOK_NOT_SERVED`, before the phase
+  // path.
+  // The report's own refusals apply while the record shows the check it is of: the state carries
+  // that object only while the check is open. A refusal here posts nothing and mints nothing.
   const record = recordFrom(await daemon.state(), claim.issue);
-  if (claim.role === "implementer" && record.phase === "done") {
-    if (record.check !== undefined) {
+  if (record.phase === "done") {
+    const check = record.check;
+    if (check !== undefined) {
       if (args.verdict === undefined) {
         throw new Error(
           "handoff_complete on a production check names a verdict of pass, pending or fail"
@@ -375,17 +566,50 @@ async function completeHandoff(
       if (args.ready === true) {
         throw new Error("handoff_complete on a production check is no READY: leave ready out");
       }
+      // The check records the role that works it, and takes a report from that role alone, as
+      // the daemon does (CHECK_ROLE_MISMATCH).
+      if (claim.role !== check.role) {
+        throw new Error(
+          `${claim.issue}'s production check is the ${check.role}'s, and this session is the ${claim.role}'s: only the role the check records reports on it`
+        );
+      }
+      // The checking agent names its own next look, and nothing else starts one, so a pending
+      // carries a wake wherever a look follows it (CHECK_WAKE_REQUIRED). A pass and a fail close
+      // the check, and the last look's pending closes it as not run, so none of them carries one
+      // (CHECK_WAKE_UNEXPECTED).
+      if (args.verdict === "pending" && args.wake_at === undefined && !check.last) {
+        throw new Error(
+          `handoff_complete's pending report names wake_at, when the next look of ${claim.issue}'s production check is due`
+        );
+      }
+      if (args.wake_at !== undefined && (args.verdict !== "pending" || check.last)) {
+        const why =
+          args.verdict === "pending"
+            ? `look ${check.looks} is the check's last, after which the check closes as not run`
+            : `a ${args.verdict} report closes the check`;
+        throw new Error(
+          `handoff_complete names wake_at and no look follows it: ${why}; send it again without a time`
+        );
+      }
     }
     return daemon.handoffComplete({
       grantId: await mintClaimGrant(daemon, claim),
       summary: args.summary,
       verdict: args.verdict ?? "",
       ready: false,
+      ...(args.wake_at === undefined ? {} : { wakeAt: args.wake_at }),
     });
   }
   if (args.verdict === "pending") {
     throw new Error(
       "handoff_complete's verdict is pass or fail on a phase completion; pending is a production check's"
+    );
+  }
+  // The daemon refuses a phase completion that carries a wake (CHECK_WAKE_UNEXPECTED); this says
+  // so without the round trip.
+  if (args.wake_at !== undefined) {
+    throw new Error(
+      "handoff_complete's wake_at is a production check's pending report alone; a phase completion carries none"
     );
   }
   // The record and the commit are found before the grant is minted. The phase is the issue

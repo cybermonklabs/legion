@@ -1,0 +1,115 @@
+name: CodeQL
+
+# CodeQL code scanning, as GitHub's starter workflow for advanced setup writes it
+# (actions/starter-workflows, code-scanning/codeql.yml): a pull request to main, a push to main
+# and one scheduled run a week. The repository is public, so GitHub charges nothing for it.
+#
+# GitHub's default setup for code scanning is off for this repository since 2026-11-05, so this
+# workflow is the repository's code scanning: every analysis below uploads its results, and the
+# alerts of `main` are what the push run writes. While default setup was still on, each analysis
+# ran and then failed to upload, because GitHub refuses results from an advanced configuration
+# while default setup owns a repository's code scanning. That is history: a red check here now is
+# an ordinary failure, read in its own log.
+#
+# What is analysed, and why those languages (counted over the tracked tree):
+#   * go - 2,658 .go files in the two modules go.work binds, packages/daemon and packages/envoy;
+#   * javascript-typescript - 1,068 .ts, 304 .tsx and 4 .js files under packages/, docs/site and
+#     scripts/; CodeQL analyses both languages under this one name;
+#   * python - 8 .py files: the CI checks' engine (.github/scripts/ci_filter_coverage.py,
+#     ci_job_reads.py, ci_images.py, workflow_paths.py), two e2e helpers under scripts/e2e/lib and
+#     two media scripts under docs/site/media. Few, but each one runs in CI or in a release path;
+#   * actions - every workflow under .github/workflows and the 11 composite `action.yml` files,
+#     which run with this repository's tokens.
+# The repository's shell scripts (179 .sh) and SQL migrations (403 .sql) have no CodeQL language,
+# so no analysis here covers them. Build modes are the starter workflow's: `autobuild` for go,
+# which CodeQL has no `none` mode for, and `none` for the three others.
+#
+# Every pull request starts an analysis, documentation-only ones included, and that is why this
+# trigger carries no `paths-ignore`. The code-scanning rule on the ruleset of `main` holds a pull
+# request until CodeQL has reported on it, so a pull request the workflow skipped was held for an
+# analysis that never came: measured on 2026-11-09, a scratch pull request changing one Markdown
+# file was blocked with no CodeQL check run at all, while the same rule let through a pull
+# request that changed a file carrying an open alert. The cost is one run for each
+# documentation-only change, 4 to 9 minutes as measured on 2026-11-08. The `push` and `schedule`
+# triggers below carry no such list either, so `main`'s own alerts are unaffected.
+#
+# No `merge_group` trigger, though GitHub's documentation adds one. A pull request that adds a
+# high-severity finding is held by GitHub's own code-scanning rule on the ruleset of `main`
+# (Settings, then Rules, then Rulesets), which reads the alerts of the pull request's own
+# analysis; that rule is no status check of this workflow, so nothing here has to report on a
+# queued group, and a scan of the group would analyse the same code a second time. The trigger is
+# reserved in any case: .github/scripts/ci_workflow_rules.py's check_one_merge_group_workflow
+# allows it on ci.yaml alone, because a POSTed ci-ok joins the first check suite at that commit
+# and a second merge-group workflow can take that suite.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, off the hour: a cron on the hour queues behind everyone else's.
+    - cron: '17 4 * * 2'
+
+# A newer push to a pull request cancels its older analysis, waiting or running, as ci.yaml's
+# group does and for the same reason: the older head's alerts answer for code the pull request no
+# longer has. On push and on the schedule the key is the ref, refs/heads/main, with the default
+# queue and no cancellation: the running analysis finishes, one run waits, and a newer push
+# replaces the waiting one, so main's alerts end at its newest commit.
+concurrency:
+  group: codeql-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# The analyze job declares every scope it needs in a block of its own; nothing runs under this
+# default.
+permissions: {}
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    # The whole default setup took about 13.6 minutes per pull-request push for every language at
+    # once, so this bounds a hung extractor, not an analysis.
+    timeout-minutes: 60
+    # The starter workflow's least permissions: security-events: write uploads the results,
+    # packages: read fetches CodeQL packs, actions: read and contents: read let the action read
+    # this run and the checkout.
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+    strategy:
+      # One language's failure leaves the others' alerts uploaded.
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+          - language: go
+            build-mode: autobuild
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Before init, as the starter workflow's comment says setup steps go: go.work asks for a Go
+      # the runner image does not carry, and autobuild builds both modules of the workspace with
+      # whatever `go` is on the PATH. cache: false, as in every other Go job here: this workflow
+      # fills no Actions cache entry (INFRA-490's budget).
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: matrix.language == 'go'
+        with:
+          go-version-file: go.work
+          cache: false
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: "/language:${{ matrix.language }}"

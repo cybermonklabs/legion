@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // refusedLine is the exact line the broker logs for a refused secret: the deployment's alarm
@@ -111,7 +112,9 @@ func TestARefusalForANameOrTagCostsNoAliasLookup(t *testing.T) {
 // prefix is refused, each logged as the one line the deployment's alarm filters on, while every
 // other secret is still served: one person's malformed tag never freezes anyone else's policy. A
 // secret with no value and a tag or key fault is logged for the fault, which a value alone would
-// not fix.
+// not fix. The one secret it serves carries shape=document, so the table holds both halves of
+// that tag: a word the loader knows is carried into the Secret, and a word it does not is
+// refused.
 func TestLoadRefusesEachUnservableSecretByNameWithTheExactLine(t *testing.T) {
 	refusals := map[string]struct {
 		secret secrets.LocalSecret
@@ -153,8 +156,11 @@ func TestLoadRefusesEachUnservableSecretByNameWithTheExactLine(t *testing.T) {
 		s.KmsKeyID = ""
 		s.Value = ""
 	})
+	refuse("BOGUS_SHAPE", policy.ReasonShapeMalformed, func(s *secrets.LocalSecret) { s.Tags[policy.TagShape] = "bogus" })
 
-	store := secrets.NewLocal(policytest.Secret("WELL_TAGGED", owner, policy.TierAgent, "v"))
+	wellTagged := policytest.Secret("WELL_TAGGED", owner, policy.TierAgent, "v")
+	wellTagged.Tags[policy.TagShape] = policy.ShapeDocument
+	store := secrets.NewLocal(wellTagged)
 	store.Alias("arn:aws:kms:us-east-1:111122223333:key/another-key", "alias/someone-elses")
 	for _, r := range refusals {
 		store.Put(r.secret)
@@ -170,6 +176,9 @@ func TestLoadRefusesEachUnservableSecretByNameWithTheExactLine(t *testing.T) {
 	}
 	if len(set.Secrets) != 1 || set.Secrets["WELL_TAGGED"].Name != "WELL_TAGGED" {
 		t.Fatalf("served %+v, want only WELL_TAGGED", set.Secrets)
+	}
+	if got := set.Secrets["WELL_TAGGED"].Shape; got != policy.ShapeDocument {
+		t.Errorf("WELL_TAGGED's Shape = %q, want the %s tag the store holds", got, policy.ShapeDocument)
 	}
 	lines := logged.String()
 	for name, r := range refusals {
@@ -383,12 +392,8 @@ func TestReloadKeepsThePolicyWhenSecretsManagerFails(t *testing.T) {
 
 func await(t *testing.T, done func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !done() {
-		if time.Now().After(deadline) {
-			t.Fatal("condition not met within 5s")
-		}
-		time.Sleep(5 * time.Millisecond)
+	if !testwait.Holds(5*time.Second, 5*time.Millisecond, done) {
+		t.Fatal("condition not met within 5s")
 	}
 }
 
@@ -441,6 +446,49 @@ func TestVersionNamesThePolicyNotItsListingOrder(t *testing.T) {
 	}
 }
 
+// TestTheAirlockDigestIsInTheVersion pins the three things a rules file may do to a deployment's
+// policy version. A loader with no AirlockDigest — a deployment with no rules file — gives every
+// secret an empty digest; a file naming no served secret leaves the version exactly where such a
+// deployment has it, so this release does not end a running deployment's grants; and a change to
+// one secret's entry moves it, which is what ends the grants that entry affects.
+func TestTheAirlockDigestIsInTheVersion(t *testing.T) {
+	store := secrets.NewLocal(
+		policytest.Secret("A_KEY", owner, policy.TierAgent, "v"),
+		policytest.Secret("B_KEY", policy.OwnerShared, policy.TierHuman, "v"),
+	)
+	load := func(digests map[string]string) *policy.Set {
+		t.Helper()
+		loader := policytest.Loader(store)
+		if digests != nil {
+			loader.AirlockDigest = func(name string) string { return digests[name] }
+		}
+		set, err := loader.Load(context.Background())
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		return set
+	}
+	none := load(nil)
+	for _, name := range []string{"A_KEY", "B_KEY"} {
+		if d := none.Secrets[name].AirlockDigest; d != "" {
+			t.Errorf("a loader with no AirlockDigest gave %s the digest %q, want none", name, d)
+		}
+	}
+	if unnamed := load(map[string]string{"OTHER_KEY": "d1"}); unnamed.Version != none.Version {
+		t.Errorf("rules naming no served secret moved the version to %s, want %s", unnamed.Version, none.Version)
+	}
+	named := load(map[string]string{"B_KEY": "d1"})
+	if got := named.Secrets["B_KEY"].AirlockDigest; got != "d1" {
+		t.Errorf("B_KEY's digest = %q, want d1", got)
+	}
+	if named.Version == none.Version {
+		t.Error("a secret the rules name left the version unchanged")
+	}
+	if changed := load(map[string]string{"B_KEY": "d2"}); changed.Version == named.Version {
+		t.Error("a changed entry left the version unchanged")
+	}
+}
+
 // goldenFixture is a fixed namespace whose Version a full Load produced at legion main 7544b767,
 // before NewSet existed. A change to the digest's bytes or order fails TestGoldenDigest, and the
 // production digests (requests.rules_version rows) would shift with it.
@@ -487,6 +535,89 @@ func TestGoldenDigestWithKindAndMaxGrant(t *testing.T) {
 	}
 	if set.Version != want {
 		t.Fatalf("Version = %s, want the kind golden %s", set.Version, want)
+	}
+}
+
+// TestGoldenDigestWithScopesAndAdmin pins the lines of secrets that carry a scopes or an admin
+// tag: NewSet ends such a line, after the requesters list, with "\tscopes=<list>" and then
+// "\tadmin=true". A google-service-account secret carrying neither writes the bytes it wrote
+// before the two tags existed, so no deployed secret's digest shifts when a release adds them,
+// and each tag gives the secret a line, and a version, of its own. The expected values are the
+// SHA-256 of the lines printed by hand, so they hold the bytes and not just their stability:
+// printf 'A_B\tada@example.com\thuman\t<arn>/a-b\nA0\t…\tagent\t<arn>/a0\n
+// DEEL_API_KEY\tshared\thuman\t<arn>/deel-api-key\n
+// GOLDEN_ACCOUNT\tada@example.com\thuman\tmint:google-service-account:<arn>/golden-account
+// \t1h0m0s\t\trequesters=ada@example.com<tail>\n' | sha256sum, with <arn>
+// arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets and <tail> empty,
+// "\tscopes=admin.directory.group apps.groups.settings" or "\tadmin=true".
+func TestGoldenDigestWithScopesAndAdmin(t *testing.T) {
+	version := func(edit func(*secrets.LocalSecret)) string {
+		t.Helper()
+		store := goldenFixture()
+		account := policytest.KindSecret("GOLDEN_ACCOUNT", "ada@example.com", policy.TierHuman,
+			policy.KindGoogleServiceAccount, `{"service_account": "releases@example-project.iam.gserviceaccount.com"}`)
+		edit(&account)
+		store.Put(account)
+		set, err := policytest.Loader(store).Load(context.Background())
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		return set.Version
+	}
+	// The scopes tag is written unsorted and double-spaced, so the pinned bytes are the one
+	// canonical form ParseScopes answers and not the tag as a person typed it.
+	for name, tc := range map[string]struct {
+		want string
+		edit func(*secrets.LocalSecret)
+	}{
+		"neither tag": {"e918b72687a566e455b7d59585df0e5ac6edd7529ac1d9822ff7b8a7115c20e8", func(*secrets.LocalSecret) {}},
+		"scopes": {"04a5ed5dd44be3bfa0f6bf2b28d9035ad8976b3a48cac2899d2dce10e4922130", func(s *secrets.LocalSecret) {
+			s.Tags[policy.TagScopes] = "apps.groups.settings  admin.directory.group"
+		}},
+		"admin": {"3327086f9c271078a77058b80d6ac88623de5ae6f0ced1bc36bad6a737518b24", func(s *secrets.LocalSecret) {
+			s.Tags[policy.TagAdmin] = "true"
+		}},
+	} {
+		if got := version(tc.edit); got != tc.want {
+			t.Errorf("Version with %s = %s, want the golden %s", name, got, tc.want)
+		}
+	}
+}
+
+// TestTheShapeTagIsInThePolicyVersion pins what the shape tag does to the digest: a secret
+// carrying the tag writes a version of its own, and each word writes its own. That is what
+// carries a retag to the airlock proxy, which holds a grant's released values per pod and reads
+// them again on no event but a name's own reread or the policy version moving
+// (internal/broker/airlockproxy/bound.go), so a pod would otherwise go on spending the untrimmed
+// value. The other half, that a namespace tagging no shape digests the bytes it digested before
+// the tag existed, is TestGoldenDigest's, which pins this same fixture's version.
+func TestTheShapeTagIsInThePolicyVersion(t *testing.T) {
+	version := func(shape string) string {
+		t.Helper()
+		store := goldenFixture()
+		if shape != "" {
+			deel := policytest.Secret("DEEL_API_KEY", policy.OwnerShared, policy.TierHuman, "v1")
+			deel.Tags[policy.TagShape] = shape
+			store.Put(deel)
+		}
+		set, err := policytest.Loader(store).Load(context.Background())
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got := set.Secrets["DEEL_API_KEY"].Shape; got != shape {
+			t.Fatalf("DEEL_API_KEY's Shape = %q, want %q", got, shape)
+		}
+		return set.Version
+	}
+	untagged, token, document := version(""), version(policy.ShapeToken), version(policy.ShapeDocument)
+	if token == untagged {
+		t.Error("tagging a secret shape=token left the version where an untagged namespace has it, so no retag would reach a pod already holding the values")
+	}
+	if token == document {
+		t.Error("shape=token and shape=document gave one version, so the digest holds the tag's presence and not its word")
+	}
+	if document == untagged {
+		t.Error("tagging a secret shape=document left the version where an untagged namespace has it, so no retag would reach a pod already holding the values")
 	}
 }
 
@@ -565,5 +696,307 @@ func TestLoadOneMakesNoCallForAnIDPastSecretsManagersNameLimit(t *testing.T) {
 	}
 	if lk, err := loader.LoadOne(ctx, atLimit+"C"); !errors.Is(err, policy.ErrNameInvalid) || count.Calls.Load() != 1 {
 		t.Fatalf("LoadOne(a name whose id is 513 characters) = %+v, %v after %d DescribeSecret calls; want ErrNameInvalid with no further call", lk, err, count.Calls.Load())
+	}
+}
+
+// TestRequestersLoad pins what the loader makes of a requesters tag, each refusal logged as the
+// one line the deployment's alarm filters on, with its own reason: a list it cannot read at all
+// is requesters-malformed, an entry naming a service this deployment does not register included;
+// a google-service-account secret whose grants are unbounded, or bounded past an hour, is
+// max-grant-required, the cap its kind demands; and one whose requesters are not its own person
+// owner is requesters-not-owner, a missing list included. The well-tagged secret beside them is
+// served, so the rules refuse these secrets and not every secret. A secret that merely lists its
+// requesters is held to no cap of its own: SERVED_KEY carries one, but dropping it would leave
+// the secret served.
+func TestRequestersLoad(t *testing.T) {
+	const (
+		sami   = "sami@theorem.dev"
+		jason  = "jason@theorem.dev"
+		daemon = "legion-daemon"
+	)
+	type refusal struct {
+		secret secrets.LocalSecret
+		reason string
+	}
+	refusals := map[string]refusal{}
+	refuse := func(name, reason string, edit func(*secrets.LocalSecret)) {
+		s := policytest.ListedSecret(name, sami, policy.TierAgent, sami, "v")
+		edit(&s)
+		refusals[name] = refusal{s, reason}
+	}
+	refuseKind := func(name, reason string, edit func(*secrets.LocalSecret)) {
+		s := policytest.KindSecret(name, sami, policy.TierAgent, policy.KindGoogleServiceAccount,
+			`{"service_account": "releases@example-project.iam.gserviceaccount.com"}`)
+		edit(&s)
+		refusals[name] = refusal{s, reason}
+	}
+	refuse("COMMA_LIST", policy.ReasonRequestersMalformed, func(s *secrets.LocalSecret) {
+		s.Tags[policy.TagRequesters] = sami + "," + daemon
+	})
+	refuse("EMPTY_LIST", policy.ReasonRequestersMalformed, func(s *secrets.LocalSecret) {
+		s.Tags[policy.TagRequesters] = "  "
+	})
+	refuse("CASED_EMAIL", policy.ReasonRequestersMalformed, func(s *secrets.LocalSecret) {
+		s.Tags[policy.TagRequesters] = "Sami@Theorem.dev"
+	})
+	refuse("UNKNOWN_SERVICE", policy.ReasonRequestersMalformed, func(s *secrets.LocalSecret) {
+		s.Tags[policy.TagRequesters] = "dispatch"
+	})
+	refuseKind("ACCOUNT_NO_MAX_GRANT", policy.ReasonMaxGrantRequired, func(s *secrets.LocalSecret) {
+		delete(s.Tags, policy.TagMaxGrant)
+	})
+	refuseKind("ACCOUNT_LONG_MAX_GRANT", policy.ReasonMaxGrantRequired, func(s *secrets.LocalSecret) {
+		s.Tags[policy.TagMaxGrant] = "2h"
+	})
+	refuseKind("ACCOUNT_NO_LIST", policy.ReasonRequestersNotOwner, func(s *secrets.LocalSecret) {
+		delete(s.Tags, policy.TagRequesters)
+	})
+	refuseKind("ACCOUNT_TWO_PEOPLE", policy.ReasonRequestersNotOwner, func(s *secrets.LocalSecret) {
+		s.Tags[policy.TagRequesters] = sami + " " + jason
+	})
+	refuseKind("ACCOUNT_ANOTHER_PERSON", policy.ReasonRequestersNotOwner, func(s *secrets.LocalSecret) {
+		s.Tags[policy.TagRequesters] = jason
+	})
+
+	served := policytest.ListedSecret("SERVED_KEY", sami, policy.TierAgent, sami, "v")
+	store := secrets.NewLocal(served)
+	for _, r := range refusals {
+		store.Put(r.secret)
+	}
+
+	logged := policytest.CaptureLog(t)
+	set, err := policytest.Loader(store, daemon).Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(set.Secrets) != 1 || set.Secrets["SERVED_KEY"].Requesters != sami {
+		t.Fatalf("served %+v, want only SERVED_KEY, listing %s", set.Secrets, sami)
+	}
+	lines := logged.String()
+	for name, r := range refusals {
+		if want := refusedLine(name, r.reason); strings.Count(lines, want) != 1 {
+			t.Errorf("log has %d of %q, want exactly one:\n%s", strings.Count(lines, want), want, lines)
+		}
+	}
+	if got := strings.Count(lines, "\n"); got != len(refusals) {
+		t.Errorf("logged %d lines, want one per refused secret (%d):\n%s", got, len(refusals), lines)
+	}
+
+	// The same tag read by a loader that registers no service at all, which is what the broker
+	// has when BROKER_SERVICES is unset: an entry naming a service is refused
+	// requesters-malformed, exactly as an owner tag naming an unregistered service is refused,
+	// since no pod can prove a name the deployment does not register.
+	unregistered := policytest.ListedSecret("SERVICE_LIST_KEY", sami, policy.TierAgent, daemon, "v")
+	bareLog := policytest.CaptureLog(t)
+	bare, err := policytest.Loader(secrets.NewLocal(unregistered)).Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load with no registered services: %v", err)
+	}
+	if len(bare.Secrets) != 0 {
+		t.Errorf("a loader registering no service served %+v, want the list naming %s refused", bare.Secrets, daemon)
+	}
+	bareLines := bareLog.String()
+	if want := refusedLine("SERVICE_LIST_KEY", policy.ReasonRequestersMalformed); strings.Count(bareLines, want) != 1 {
+		t.Errorf("log has %d of %q, want exactly one:\n%s", strings.Count(bareLines, want), want, bareLines)
+	}
+}
+
+// TestAdminCap pins every rule the admin tag and the scopes tag bring, both ways, driven through
+// the loader as TestRequestersLoad is: the refusal a row reads is the line the deployment's alarm
+// filters on, not TagRules' answer called directly. An admin secret is human tier, names its
+// requesters and caps its grants at an hour, so every release of it is approved, asked for by
+// someone it names and short enough to review while it is live; a secret that merely lists its
+// requesters keeps its own cap, or none, whatever its tier. A google-service-account secret
+// carries that same hour's cap, is asked for by its one person owner, and may name registered
+// services beside that owner only at human tier and only where the deployment binds it to an
+// account that is not one person's own dev-<name> one. The scopes tag is read on that kind alone.
+func TestAdminCap(t *testing.T) {
+	const (
+		sami         = "sami@theorem.dev"
+		jason        = "jason@theorem.dev"
+		daemon       = "legion-daemon"
+		fleetAccount = "releases@example-project.iam.gserviceaccount.com"
+		devAccount   = "dev-sami@theorem-agent-identities.iam.gserviceaccount.com"
+		accountValue = `{"service_account": "releases@example-project.iam.gserviceaccount.com"}`
+	)
+	// An admin secret as the rules want it (ListedSecret's max-grant is an hour), a secret that
+	// only lists its requesters, and a google-service-account one, each before a row's edit.
+	adminSecret := func(name, tier string, edit func(*secrets.LocalSecret)) secrets.LocalSecret {
+		s := policytest.ListedSecret(name, sami, tier, sami, "v")
+		s.Tags[policy.TagAdmin] = "true"
+		edit(&s)
+		return s
+	}
+	loginSecret := func(name, tier string, edit func(*secrets.LocalSecret)) secrets.LocalSecret {
+		s := policytest.KindSecret(name, sami, tier, policy.KindGoogleLogin, "v")
+		s.Tags[policy.TagRequesters] = sami
+		edit(&s)
+		return s
+	}
+	accountSecret := func(name, tier string, edit func(*secrets.LocalSecret)) secrets.LocalSecret {
+		s := policytest.KindSecret(name, sami, tier, policy.KindGoogleServiceAccount, accountValue)
+		edit(&s)
+		return s
+	}
+	unedited := func(*secrets.LocalSecret) {}
+	// The name a session asks for the fixture by, which the refusals are keyed and logged under.
+	nameOf := func(s secrets.LocalSecret) string {
+		return policy.SlugToName(strings.TrimPrefix(s.Name, policytest.Prefix))
+	}
+
+	served := []secrets.LocalSecret{
+		adminSecret("ADMIN_KEY", policy.TierHuman, unedited),
+		loginSecret("LISTED_HUMAN", policy.TierHuman, unedited),
+		loginSecret("LISTED_AGENT", policy.TierAgent, unedited),
+		loginSecret("LISTED_LONG_CAP", policy.TierHuman, func(s *secrets.LocalSecret) {
+			s.Tags[policy.TagMaxGrant] = "12h"
+		}),
+		accountSecret("ACCOUNT_DAEMON", policy.TierHuman, func(s *secrets.LocalSecret) {
+			s.Tags[policy.TagRequesters] = sami + " " + daemon
+		}),
+	}
+	refusals := map[string]struct {
+		secret secrets.LocalSecret
+		reason string
+	}{}
+	refuse := func(secret secrets.LocalSecret, reason string) {
+		refusals[nameOf(secret)] = struct {
+			secret secrets.LocalSecret
+			reason string
+		}{secret, reason}
+	}
+	refuse(adminSecret("ADMIN_NO_CAP", policy.TierHuman, func(s *secrets.LocalSecret) {
+		delete(s.Tags, policy.TagMaxGrant)
+	}), policy.ReasonMaxGrantRequired)
+	refuse(adminSecret("ADMIN_LONG_CAP", policy.TierHuman, func(s *secrets.LocalSecret) {
+		s.Tags[policy.TagMaxGrant] = "2h"
+	}), policy.ReasonMaxGrantRequired)
+	refuse(adminSecret("ADMIN_AGENT_TIER", policy.TierAgent, unedited), policy.ReasonAdminTier)
+	refuse(adminSecret("ADMIN_NO_LIST", policy.TierHuman, func(s *secrets.LocalSecret) {
+		delete(s.Tags, policy.TagRequesters)
+	}), policy.ReasonAdminRequesters)
+	refuse(adminSecret("ADMIN_YES", policy.TierHuman, func(s *secrets.LocalSecret) {
+		s.Tags[policy.TagAdmin] = "yes"
+	}), policy.ReasonAdminMalformed)
+	refuse(accountSecret("ACCOUNT_NO_CAP", policy.TierHuman, func(s *secrets.LocalSecret) {
+		delete(s.Tags, policy.TagMaxGrant)
+	}), policy.ReasonMaxGrantRequired)
+	refuse(accountSecret("ACCOUNT_SERVICE_AGENT", policy.TierAgent, func(s *secrets.LocalSecret) {
+		s.Tags[policy.TagRequesters] = sami + " " + daemon
+	}), policy.ReasonRequestersNotOwner)
+	refuse(accountSecret("ACCOUNT_TWO_PEOPLE", policy.TierHuman, func(s *secrets.LocalSecret) {
+		s.Tags[policy.TagRequesters] = sami + " " + jason
+	}), policy.ReasonRequestersNotOwner)
+	// The same list ACCOUNT_DAEMON is served for, on a secret the deployment binds to one
+	// person's own dev-<name> account: that token is theirs, so no service may ask for it.
+	refuse(accountSecret("ACCOUNT_DEV_BOUND", policy.TierHuman, func(s *secrets.LocalSecret) {
+		s.Tags[policy.TagRequesters] = sami + " " + daemon
+	}), policy.ReasonRequestersNotOwner)
+	appScopes := policytest.KindSecret("APP_SCOPES", sami, policy.TierAgent, policy.KindGitHubApp, "v")
+	appScopes.Tags[policy.TagScopes] = "cloud-platform"
+	refuse(appScopes, policy.ReasonScopesKind)
+	refuse(accountSecret("ACCOUNT_BAD_SCOPES", policy.TierHuman, func(s *secrets.LocalSecret) {
+		s.Tags[policy.TagScopes] = "cloud-platform,bigquery"
+	}), policy.ReasonScopesMalformed)
+
+	store := secrets.NewLocal(served...)
+	for _, r := range refusals {
+		store.Put(r.secret)
+	}
+	loader := policytest.Loader(store, daemon)
+	loader.ServiceAccounts = map[string]string{"ACCOUNT_DAEMON": fleetAccount, "ACCOUNT_DEV_BOUND": devAccount}
+
+	logged := policytest.CaptureLog(t)
+	set, err := loader.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for _, s := range served {
+		if _, ok := set.Secrets[nameOf(s)]; !ok {
+			t.Errorf("%s was refused, want it served", nameOf(s))
+		}
+	}
+	if len(set.Secrets) != len(served) {
+		t.Errorf("served %+v, want only the %d rows the rules allow", set.Secrets, len(served))
+	}
+	if !set.Secrets["ADMIN_KEY"].Admin {
+		t.Errorf("ADMIN_KEY = %+v, want it served as an administrator's secret", set.Secrets["ADMIN_KEY"])
+	}
+	lines := logged.String()
+	for name, r := range refusals {
+		if want := refusedLine(name, r.reason); strings.Count(lines, want) != 1 {
+			t.Errorf("log has %d of %q, want exactly one:\n%s", strings.Count(lines, want), want, lines)
+		}
+	}
+	if got := strings.Count(lines, "\n"); got != len(refusals) {
+		t.Errorf("logged %d lines, want one per refused secret (%d):\n%s", got, len(refusals), lines)
+	}
+}
+
+// TestTagRulesRefusesAShapeThatIsNeitherWord is the shape tag's own rule, weighed by calling
+// TagRules rather than by driving a load as the two tests above do: the tag says what the stored
+// value is, so the broker takes the two words it knows and the absent tag, and refuses every
+// other value — another casing of a word it knows among them — as ReasonShapeMalformed rather
+// than reading it as one of them. The line a load writes for such a secret is
+// TestLoadRefusesEachUnservableSecretByNameWithTheExactLine's BOGUS_SHAPE row; this is the rule
+// that line comes of, and the one `agent-secrets secret` applies before it writes a tag.
+func TestTagRulesRefusesAShapeThatIsNeitherWord(t *testing.T) {
+	for _, c := range []struct{ shape, reason string }{
+		{"", ""},
+		{policy.ShapeToken, ""},
+		{policy.ShapeDocument, ""},
+		{"Token", policy.ReasonShapeMalformed},
+		{"DOCUMENT", policy.ReasonShapeMalformed},
+		{"documents", policy.ReasonShapeMalformed},
+		{"one-line", policy.ReasonShapeMalformed},
+		{" ", policy.ReasonShapeMalformed},
+	} {
+		// Every other tag of the set is one the rules allow, so the answer is the shape's alone.
+		set := policy.TagSet{Owner: owner, Tier: policy.TierAgent, Shape: c.shape}
+		if got := policy.TagRules(set); got != c.reason {
+			t.Errorf("TagRules(shape=%q) = %q, want %q", c.shape, got, c.reason)
+		}
+	}
+}
+
+// TestNewSetDigest pins what a requesters tag does to the digest: two spellings of one list — the
+// entries in another order, separated by more space — are one policy and one version, a changed
+// list is another, and a namespace that carries no requesters digests to the bytes it digested
+// before the tag existed, written out here, so a change that moved them fails. The expected value
+// is the SHA-256 of the lines printed by hand:
+// printf 'LIMITED_KEY\tada@example.com\thuman\t<arn>/limited-key\t1h0m0s\t\n
+// PLAIN_KEY\tada@example.com\tagent\t<arn>/plain-key\n' | sha256sum, with <arn>
+// arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets.
+func TestNewSetDigest(t *testing.T) {
+	const (
+		sami   = "sami@theorem.dev"
+		daemon = "legion-daemon"
+	)
+	version := func(requesters string) string {
+		t.Helper()
+		s := policytest.ListedSecret("LISTED_KEY", sami, policy.TierAgent, requesters, "v1")
+		set, err := policytest.Loader(secrets.NewLocal(s), daemon).Load(context.Background())
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		return set.Version
+	}
+	if first, again := version(daemon+" "+sami), version("  "+sami+"   "+daemon+" "); first != again {
+		t.Errorf("two spellings of one list gave %s and %s, want one version", first, again)
+	}
+	if listed, narrowed := version(daemon+" "+sami), version(sami); listed == narrowed {
+		t.Error("dropping a requester from the list left the version unchanged")
+	}
+
+	const want = "4b1e0cfefd5df408721f6fa65119a8991fadc3f4e91b46bba981f7a22de6c9c3"
+	limited := policytest.Secret("LIMITED_KEY", "ada@example.com", policy.TierHuman, "v1")
+	limited.Tags[policy.TagMaxGrant] = "1h"
+	plain := policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "v1")
+	set, err := policytest.Loader(secrets.NewLocal(limited, plain)).Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if set.Version != want {
+		t.Fatalf("Version = %s, want %s: a namespace with no requesters digests the bytes it always did", set.Version, want)
 	}
 }

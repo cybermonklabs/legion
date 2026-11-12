@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -42,9 +43,10 @@ type natsSessions struct {
 }
 
 // subscribeSessions connects natsConns connections the sessions share; each session subscribes
-// its own agent topic and its watched issues' topics, as the pi plugin's self-subscription does.
-// Under consumer delivery each session subscribes its relay subject before those, as the plugin
-// does before it registers. The connections it made are closed by close, also when it fails.
+// its own agent topic and the topics of the issues it watches, in every population the step
+// drives, as the pi plugin's self-subscription does. Under consumer delivery each session
+// subscribes its relay subject before those, as the plugin does before it registers. The
+// connections it made are closed by close, also when it fails.
 func (st *step) subscribeSessions() (*natsSessions, error) {
 	ns := &natsSessions{receipts: newCollector[receipt](1 << 16), envelopes: envelopeSamples{data: map[string][]byte{}, marked: map[string]bool{}}}
 	for i := range st.cfg.natsConns {
@@ -60,25 +62,27 @@ func (st *step) subscribeSessions() (*natsSessions, error) {
 		ns.pulls = spy
 	}
 	if st.cfg.sessionDelivery == sessionDeliveryConsumer {
-		ns.relay = newRelaySessions(len(st.sessions), len(ns.conns))
+		ns.relay = newRelaySessions(len(st.ids), len(ns.conns))
 	}
-	for i, s := range st.sessions {
+	for i, id := range st.ids {
 		nc := ns.conns[i%len(ns.conns)]
 		if ns.relay != nil {
-			if _, err := nc.Subscribe(bus.DeliverSubject(s.id), ns.relay.handler(ns, i, contracts.AgentSubject(s.id), st.nonce)); err != nil {
+			if _, err := nc.Subscribe(bus.DeliverSubject(id), ns.relay.handler(ns, i, contracts.AgentSubject(id), st.nonce)); err != nil {
 				return ns, err
 			}
 			ns.subs++
 		}
-		if _, err := nc.Subscribe(contracts.AgentSubject(s.id), ns.handler(i, true, st.nonce)); err != nil {
+		if _, err := nc.Subscribe(contracts.AgentSubject(id), ns.handler(i, true, st.nonce)); err != nil {
 			return ns, err
 		}
 		ns.subs++
-		for _, w := range s.watched {
-			if _, err := nc.Subscribe(st.issueTopic(w), ns.handler(i, false, st.nonce)); err != nil {
-				return ns, err
+		for _, p := range st.pops {
+			for _, w := range p.sessions[i].watched {
+				if _, err := nc.Subscribe(p.issueTopic(w), ns.handler(i, false, st.nonce)); err != nil {
+					return ns, err
+				}
+				ns.subs++
 			}
-			ns.subs++
 		}
 	}
 	for _, nc := range ns.conns {
@@ -99,24 +103,36 @@ func (ns *natsSessions) handler(session int, agent bool, nonce int64) nats.MsgHa
 			ns.relay.coreCopy(m, agent)
 			return
 		}
-		var env contracts.Envelope
-		if json.Unmarshal(m.Data, &env) != nil {
+		id, typ, ok := envelopeEvent(m.Data)
+		if !ok {
 			return
 		}
-		var ev struct {
-			ID   int64  `json:"id"`
-			Type string `json:"type"`
-		}
-		if json.Unmarshal([]byte(env.Payload), &ev) != nil {
-			return
-		}
-		key := ev.Type
+		// A payload with no event type is a listener send (a mention), not a Dispatch event.
+		key := cmp.Or(typ, "send")
 		if agent {
-			key = "agent." + ev.Type
+			key = "agent." + key
 		}
 		ns.envelopes.offer(key, m.Data, nonce)
-		ns.receipts.add(receipt{EventID: ev.ID, Recv: now, Agent: agent})
+		ns.receipts.add(receipt{EventID: id, Recv: now, Agent: agent})
 	}
+}
+
+// envelopeEvent is the id and the type of the Dispatch event an envelope carries, as a session
+// reads them off a message of its subscriptions or off a relay frame; ok is false when the bytes
+// are no envelope, or its payload is no event of Dispatch's (internal/contracts envelope.go).
+func envelopeEvent(data []byte) (id int64, typ string, ok bool) {
+	var env contracts.Envelope
+	if json.Unmarshal(data, &env) != nil {
+		return 0, "", false
+	}
+	var ev struct {
+		ID   int64  `json:"id"`
+		Type string `json:"type"`
+	}
+	if json.Unmarshal([]byte(env.Payload), &ev) != nil {
+		return 0, "", false
+	}
+	return ev.ID, ev.Type, true
 }
 
 func (ns *natsSessions) close() {
@@ -224,21 +240,34 @@ func (r *registrar) register(ctx context.Context, i int) error {
 	return nil
 }
 
-// registrationFields is session s's registration with the listener: its directory, title and
-// the topics of the issues it watches. registerSessions adds a delivery field under consumer
+// registrationFields is one session's registration with the listener: its directory, title and
+// the topics it watches, which are the issue topics it follows in each of the step's
+// populations. With -mention-frac, it advertises the default mention delivery, so Dispatch
+// delivers a mention of the session. registerSessions adds a delivery field under consumer
 // delivery (registrar.register).
-func (st *step) registrationFields(s session) map[string]any {
+func (st *step) registrationFields(i int) map[string]any {
 	topics := []string{}
-	for _, w := range s.watched {
-		topics = append(topics, st.issueTopic(w))
+	for _, p := range st.pops {
+		topics = append(topics, p.topics(p.sessions[i])...)
 	}
-	return map[string]any{"session_id": s.id, "dir": "/work/" + s.id, "title": "load " + s.id,
-		"topics": topics, "port": 0, "self_subscribed": true, "driving": false, "capabilities": []string{}}
+	return registrationFieldsOf(st.ids[i], topics, st.cfg.mentionFrac > 0)
 }
 
-// registrationBody is registrationFields encoded, as the listener receives it.
-func (st *step) registrationBody(s session) []byte {
-	b, _ := json.Marshal(st.registrationFields(s))
+// registrationFieldsOf is that registration for a session id and the topics it follows, which
+// the replay's roster builds one of before the session is laid out (newReplayStep). mentions
+// advertises the default mention delivery, which is what -mention-frac needs of a session.
+func registrationFieldsOf(id string, topics []string, mentions bool) map[string]any {
+	capabilities := []string{}
+	if mentions {
+		capabilities = []string{mentionDelivery}
+	}
+	return map[string]any{"session_id": id, "dir": "/work/" + id, "title": "load " + id,
+		"topics": topics, "port": 0, "self_subscribed": true, "driving": false, "capabilities": capabilities}
+}
+
+// registrationBody is registrationFieldsOf encoded, as the listener receives it.
+func registrationBody(id string, topics []string, mentions bool) []byte {
+	b, _ := json.Marshal(registrationFieldsOf(id, topics, mentions))
 	return b
 }
 
@@ -247,19 +276,19 @@ func (st *step) registrationBody(s session) []byte {
 // one, its resume point (relaySessions.delivery).
 func (st *step) registerSessions(ctx context.Context, ns *natsSessions) *registrar {
 	reg := &registrar{url: st.cfg.ep.listener, token: st.cfg.ep.listenerToken, client: &http.Client{Timeout: 10 * time.Second},
-		bodies: make([]map[string]any, len(st.sessions)), relay: ns.relay}
-	for i, s := range st.sessions {
-		reg.bodies[i] = st.registrationFields(s)
+		bodies: make([]map[string]any, len(st.ids)), relay: ns.relay}
+	for i := range st.ids {
+		reg.bodies[i] = st.registrationFields(i)
 	}
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 16)
-	for i, s := range st.sessions {
+	for i, id := range st.ids {
 		sem <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-sem }()
 			if err := reg.register(ctx, i); err != nil {
 				if reg.errs.Add(1) <= 5 {
-					st.lg.Printf("register %s: %v", s.id, err)
+					st.lg.Printf("register %s: %v", id, err)
 				}
 				return
 			}
@@ -275,11 +304,11 @@ func (st *step) registerSessions(ctx context.Context, ns *natsSessions) *registr
 	return reg
 }
 
-// startHeartbeat re-registers one session at a time, so that each one's 90 s heartbeat is spread
-// evenly (packages/envoy-client/src/envoy-settings.ts), until ctx ends.
+// startHeartbeat re-registers one session at a time, so that each one's heartbeat
+// (contracts.SessionHeartbeat) is spread evenly, until ctx ends.
 func (st *step) startHeartbeat(ctx context.Context, reg *registrar) {
 	go func() {
-		t := time.NewTicker(90 * time.Second / time.Duration(len(st.sessions)))
+		t := time.NewTicker(contracts.SessionHeartbeat / time.Duration(len(st.ids)))
 		defer t.Stop()
 		for i := 0; ; i++ {
 			select {
@@ -289,10 +318,10 @@ func (st *step) startHeartbeat(ctx context.Context, reg *registrar) {
 				go func(i int) {
 					if err := reg.register(ctx, i); err != nil && ctx.Err() == nil {
 						if reg.heartbeatErrs.Add(1) <= 5 {
-							st.lg.Printf("heartbeat %s: %v", st.sessions[i].id, err)
+							st.lg.Printf("heartbeat %s: %v", st.ids[i], err)
 						}
 					}
-				}(i % len(st.sessions))
+				}(i % len(st.ids))
 			}
 		}
 	}()

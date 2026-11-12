@@ -17,8 +17,10 @@
 # write of Dispatch's and a result at the new head reads current (A4); a result for an
 # `after_merge` check recorded on a closed issue, where a document write is still refused 409
 # ISSUE_CLOSED (A5); a `default_branch` check whose result at a commit the compare calls `behind`
-# reads current, while its result at a commit the compare calls `diverged` does not (A10); and an
-# issue whose repository the fake's installation lookup does not find, whose result is marked
+# reads current, while its result at a commit the compare calls `diverged` does not (A10); a
+# result at a 40-hex commit the fake was seeded with nowhere, refused 400 RESULT_COMMIT_UNKNOWN
+# naming the commit and the `owner/repo`, which leaves the check no row; and an issue whose
+# repository the fake's installation lookup does not find, whose result is marked
 # neither current nor older. Each case prints `== <case>`, what it read, and `ok <case>` or
 # `FAIL <case>`; the first case failing stops the run, since every later case records a result
 # too, and any FAIL exits 1.
@@ -27,11 +29,12 @@
 #     [DISPATCH_BIN=<envoy-dispatch>] bash scripts/e2e/verification-results.sh
 #
 # DATABASE_URL is required, and the run refuses to start without it: it names a loopback PostgreSQL
-# (127.0.0.1, localhost or ::1, never a host given as a parameter) whose `public` schema this run
-# drops and recreates before the server migrates it, and it leaves what the run wrote there for
-# inspection. DISPATCH_BIN is optional and names a prebuilt envoy-dispatch: built from the base
-# commit it is this change's negative control, and it fails at the first result write, the route it
-# does not serve; unset, the script builds ./cmd/dispatch from this checkout. The ports are
+# (127.0.0.1, localhost or ::1, as scripts/e2e/lib/loopback-dsn.py reads the DSN with libpq's own
+# parser) whose `public` schema this run drops and recreates before the server migrates it, and it
+# leaves what the run wrote there for inspection. DISPATCH_BIN is optional and names a prebuilt
+# envoy-dispatch: built from the base commit it is this change's negative control, and it fails at
+# the first result write, the route it does not serve; unset, the script builds ./cmd/dispatch
+# from this checkout. The ports are
 # VERIFICATION_RESULTS_E2E_DISPATCH_PORT (19061), VERIFICATION_RESULTS_E2E_ENVOY_PORT (19063) and
 # VERIFICATION_RESULTS_E2E_GITHUB_PORT (19065), each refused when something already answers on it;
 # NATS listens on a port the kernel picks. The work directory, under TMPDIR, holds the binaries and
@@ -68,12 +71,12 @@ github_port=${VERIFICATION_RESULTS_E2E_GITHUB_PORT:-19065}
 
 # A Legion pane exports the real listener (ENVOY_URL), the real Dispatch (DISPATCH_URL,
 # DISPATCH_TOKEN_FILE) and an nkey for the real NATS; nothing this run starts inherits any of it.
-# psql reads PGHOSTADDR, which would replace the URL's host for the reset below while the server,
-# which never reads it, connects to the host the check admitted.
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with them: require_loopback_dsn in
+# scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in
-    DISPATCH_* | ENVOY_* | NATS_* | FAKE_* | PGHOSTADDR) unset "$name" ;;
+    DISPATCH_* | ENVOY_* | NATS_* | FAKE_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$name" ;;
   esac
 done
 
@@ -109,39 +112,17 @@ trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
 
-# port_answers PORT succeeds when something accepts a connection on 127.0.0.1:PORT.
-port_answers() {
-  (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
-}
-
 begin prerequisites
 [ -n "$database_url" ] ||
   fail "DATABASE_URL is required: it names a loopback PostgreSQL database this run resets (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable)"
-# The host of postgres://[user[:password]@]host[:port]/database[?params]: the run drops the
-# database's public schema, so it must be this machine's, as the dev sign-in the server runs with
-# also insists. A host given by a parameter, or several hosts, are refused rather than parsed.
+for tool in go bun curl psql openssl python3; do
+  command -v "$tool" >/dev/null || fail "$tool is not on PATH"
+done
 case "$database_url" in
   postgres://* | postgresql://*) ;;
   *) fail "DATABASE_URL must be a postgres:// or postgresql:// URL" ;;
 esac
-authority=${database_url#*://}
-authority=${authority%%[/?]*}
-hostport=${authority##*@}
-if [[ "$hostport" == \[* ]]; then
-  db_host=${hostport#\[}
-  db_host=${db_host%%\]*}
-else
-  db_host=${hostport%%:*}
-fi
-case "$db_host" in
-  127.0.0.1 | localhost | ::1) ;;
-  *) fail "DATABASE_URL must name 127.0.0.1, localhost or ::1, not '$db_host': this run resets the database" ;;
-esac
-[[ "$database_url" != *[?\&]host=* && "$database_url" != *[?\&]hostaddr=* ]] ||
-  fail "DATABASE_URL must not name its host in a parameter"
-for tool in go bun curl psql openssl; do
-  command -v "$tool" >/dev/null || fail "$tool is not on PATH"
-done
+require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
 if [ -n "$dispatch_bin" ]; then
   [ -x "$dispatch_bin" ] || fail "DISPATCH_BIN=$dispatch_bin is not an executable file"
 fi

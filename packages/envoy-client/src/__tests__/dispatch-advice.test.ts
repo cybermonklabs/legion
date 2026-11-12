@@ -1,13 +1,28 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
-import type { SearchAsk, Suggestions, WriteAdvice, WriteSuggestion } from "@legion/contracts";
+import type {
+  DocumentWriteAdvice,
+  SearchAsk,
+  Suggestions,
+  SupersededApprovalGate,
+  WriteAdvice,
+  WriteSuggestion,
+} from "@legion/contracts";
+import { bearerCredential } from "../bearer";
 import type { ExecFn } from "../dispatch-cwd";
 import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
 
-type AdviceFixture = WriteAdvice;
+/** A write's advice as the route table states it: an issue write answers `WriteAdvice`, a
+ *  project document's write the decision-block half alone. */
+type AdviceFixture = WriteAdvice | DocumentWriteAdvice;
 
-const config = { enabled: true, url: "http://dispatch.test", token: "secret", error: null };
+const config = {
+  enabled: true,
+  url: "http://dispatch.test",
+  credential: bearerCredential("secret"),
+  error: null,
+};
 const issueSuffix =
   "(not subscribed to DSP-42; envoy_subscribe notifications.dispatch.issue.DSP-42.> for every event on it)";
 
@@ -221,8 +236,10 @@ async function executeWrite(tool: string, args: Record<string, unknown>, advice?
   });
 }
 
-function advice(overrides: Partial<AdviceFixture> = {}): AdviceFixture {
+function advice(overrides: Partial<WriteAdvice> = {}): WriteAdvice {
   return {
+    decision_blocks: 0,
+    decision_blocks_added: 0,
     issue_status: "in_progress",
     session_writes_since_human: 0,
     your_open_asks: [],
@@ -248,7 +265,7 @@ describe("Dispatch write advice", () => {
   });
 
   test("renders only decision-block advice for a project document", async () => {
-    const rawAdvice: WriteAdvice = { decision_blocks: 0 };
+    const rawAdvice: DocumentWriteAdvice = { decision_blocks: 0, decision_blocks_added: 0 };
     const result = await executeWrite(
       "dispatch_artifact",
       { project: "DSP", name: "spec.md", content: "# Spec\n" },
@@ -318,7 +335,7 @@ describe("Dispatch write advice", () => {
   });
   test("handles decision-only advice on a project-document ask reply", async () => {
     const ask = "01234567-0000-4000-8000-000000000042";
-    const rawAdvice: WriteAdvice = { decision_blocks: 0 };
+    const rawAdvice: DocumentWriteAdvice = { decision_blocks: 0, decision_blocks_added: 0 };
     const result = await executeWrite(
       "dispatch_comment",
       {
@@ -910,7 +927,7 @@ describe("the related-item check", () => {
       [
         createdLine,
         "No related-item check was made: the search behind it failed. Search before you rely on this being new: dispatch search --project DSP --query 'Created issue'",
-        "Title overlaps you forced past: DSP-3 [todo] Created issue → http://dispatch.test/issues/DSP-3",
+        "Near copy you forced past: DSP-3 [todo] Created issue → http://dispatch.test/issues/DSP-3",
       ].join("\n")
     );
   });
@@ -928,8 +945,9 @@ describe("the related-item check", () => {
   test("advice that cannot be shown leaves the created line and the form, and says so", async () => {
     const result = await createIssue(
       { outcome: "none", search: "meaning_and_keywords", related: [] },
-      // A malformed field makes the advice renderer throw.
-      { unparsed_openers: { count: 2, examples: null as unknown as string[] } }
+      // A malformed field makes the advice renderer throw. The route table states `examples` as
+      // a list or null, so neither is malformed now; a string in its place is.
+      { unparsed_openers: { count: 2, examples: "two" as unknown as string[] } }
     );
     const lines = result.text.split("\n");
 
@@ -1021,7 +1039,11 @@ describe("the related-item check", () => {
       { issue: "DSP-42", question: "Should the billing service retry?" },
       advice({
         session_writes_since_human: 3,
-        suggestions: { related: [], missing: "the search behind it did not answer within 300ms" },
+        suggestions: {
+          outcome: "not_made",
+          related: [],
+          missing: "the search behind it did not answer within 300ms",
+        },
       })
     );
     const lines = result.text.split("\n");
@@ -1132,25 +1154,65 @@ describe("dispatch_doc_edit's decision block checks", () => {
 // on a document nobody approved, one whose approval was already stale, and one whose version
 // carried that approval forward (an answer to a decision block, or text the approved version held
 // exactly, an undo among them) all arrive here with the field absent, and print nothing.
+//
+// The gate clause between the two is printed from `design_gates` alone, the issues whose design
+// gate records this document: no field at all (what an older Dispatch answers), an empty list and
+// a list that did not read as one all print the line without it.
 describe("a document write that superseded a person's approval", () => {
-  const supersededLine =
-    "Stored version 15, superseding version 14, which alice approved. That approval is stale until someone approves version 15 or a later write stores the text of version 14 again exactly, with no decision block in it decided since: a Legion design gate on this document is closed meanwhile, so every READY in its tree is refused. Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan.";
+  const stored =
+    "Stored version 15, superseding version 14, which alice approved. That approval is stale until someone approves version 15 or a later write stores the text of version 14 again exactly, with no decision block in it decided since.";
+  const nextStep =
+    "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan.";
+  const supersededLine = `${stored} ${nextStep}`;
   const superseded = { approved_version: 14, version: 15, approved_by: "alice" };
+  const editArgs = {
+    issue: "DSP-42",
+    artifact: "spec",
+    ops: [{ op: "replace", find: "a stale sentence", with: "" }],
+  };
+
+  async function editWithGates(design_gates: SupersededApprovalGate[]) {
+    return executeWrite(
+      "dispatch_doc_edit",
+      editArgs,
+      advice({ superseded_approval: { ...superseded, design_gates } })
+    );
+  }
 
   test.each([
-    [
-      "dispatch_doc_edit",
-      {
-        issue: "DSP-42",
-        artifact: "spec",
-        ops: [{ op: "replace", find: "a stale sentence", with: "" }],
-      },
-    ],
+    ["dispatch_doc_edit", editArgs],
     ["dispatch_artifact", { issue: "DSP-42", name: "spec.md", content: "# Spec\n" }],
   ])("%s names the approval its version superseded, last", async (tool, args) => {
     const result = await executeWrite(tool, args, advice({ superseded_approval: superseded }));
 
     expect(result.text).toEndWith(supersededLine);
+    expect(result.text).not.toContain("design gate");
+  });
+
+  test("a record that names no gate prints the line without the clause", async () => {
+    const result = await editWithGates([]);
+
+    expect(result.text).toEndWith(supersededLine);
+    expect(result.text).not.toContain("design gate");
+  });
+
+  test("one gate names its issue and step", async () => {
+    const result = await editWithGates([{ issue: "INFRA-1503", step: "spec" }]);
+
+    expect(result.text).toEndWith(
+      `${stored} A Legion design gate records this document, so every READY in its tree is refused until that approval comes back: INFRA-1503, step spec. ${nextStep}`
+    );
+  });
+
+  test("two gates name both trees, in the order the server sent them", async () => {
+    const result = await editWithGates([
+      { issue: "INFRA-1503", step: "spec" },
+      { issue: "INFRA-2200", step: "criteria" },
+    ]);
+
+    expect(result.text).toEndWith(
+      `${stored} A Legion design gate records this document, so every READY in each tree is refused until that approval comes back: INFRA-1503, step spec; INFRA-2200, step criteria. ${nextStep}`
+    );
   });
 
   test("a write that superseded no approval says nothing about one", async () => {
@@ -1203,7 +1265,7 @@ describe("dispatch_related", () => {
         project: "DSP",
         title: "Retry failed webhook deliveries",
         text: "Back off exponentially.",
-        exclude_issue: "DSP-9",
+        exclude_issues: ["DSP-9"],
         keywords_only: true,
       },
       answer
@@ -1216,7 +1278,7 @@ describe("dispatch_related", () => {
         body: {
           title: "Retry failed webhook deliveries",
           text: "Back off exponentially.",
-          exclude_issue: "DSP-9",
+          exclude_issues: ["DSP-9"],
           keywords_only: true,
         },
       },

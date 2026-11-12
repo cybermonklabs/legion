@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # A GitHub-hosted runner shares one anonymous pull quota with every other runner on its address,
 # so a CI job that fetches an image from a third-party registry fails for a reason the change
-# under test did not cause. Every image a CI job of this repository fetches is therefore one copy
-# in one package this repository publishes, ghcr.io/sjawhar/legion/ci, and every reference names
-# that copy by digest. .github/ci-images.yaml holds one row per distinct upstream image, and
-# .github/scripts/mirror-ci-images.sh copies the rows the package does not hold yet with
-# `crane copy`, which keeps the manifest digest. ci.yaml's ci-images job runs that script and
-# then the package mode of this check, in that order. That job is the one copy path, and it runs
-# on a pull request, on a merge group and on a push to main. This check holds the two sides to
-# each other.
+# under test did not cause. Every image a CI job of this repository fetches is therefore one
+# image in one package this repository publishes, ghcr.io/cybermonklabs/legion/ci, and every
+# reference names it by digest. .github/ci-images.yaml holds one row per image, and a row is
+# one of two kinds. A row carrying `upstream:` is a copy of a third-party image:
+# .github/scripts/mirror-ci-images.sh makes it with `crane copy`, which keeps the manifest
+# digest. A row carrying `built:` is an image this repository builds itself, from the
+# Dockerfile that key names, and .github/workflows/browser-image.yaml builds and pushes it. A
+# row carries exactly one of the two keys, because each of them says where the row's bytes came
+# from. ci.yaml's ci-images job runs the copy script and then the package mode of this check,
+# in that order. That job is the one copy path, and it runs on every event ci.yaml runs on: a
+# pull request, a merge group and a dispatch. This check holds the two sides to each other.
 #
 # THE TWO MODES. This check takes one mode argument, and runs that half alone. A call that names
 # no mode, or that names more than one, fails naming both.
@@ -17,33 +20,40 @@
 #            ci.yaml's lint job runs it, and lint runs on every non-draft run. A change that
 #            names a third-party registry again can touch any file of the tree, and an image
 #            filter names few of those files, so this half must read every change.
-#   package  the one refusal that reads the package, over the network. ci.yaml's ci-images job
-#            runs it, after the copy of that same job. The ci_images filter selects that job and
-#            names every file that decides what the copy and this read do: .github/ci-images.yaml,
-#            the two scripts, .github/scripts/ci_images.py (the reference grammar both read a row
-#            with), .github/actions/install-crane and ci.yaml itself. The package can
+#   package  the two refusals that read the package, over the network. ci.yaml's ci-images job
+#            runs them, after the copy of that same job. The ci_images filter selects that job
+#            and names every file that decides what the copy and these reads do:
+#            .github/ci-images.yaml, the two scripts, .github/scripts/ci_images.py (the
+#            reference grammar both read a row with), .github/docker/browser.Dockerfile (rule
+#            10 hashes it), .github/actions/install-crane and ci.yaml itself. The package can
 #            also change under a run that touches none of them, and a re-run reads it again.
 #
 # Both modes read .github/ci-images.yaml, because the package mode asks ghcr.io about each row's
-# digest. The package mode leaves the shape of a row to the tree mode, which runs on every change.
+# digest, and both read the Dockerfile a `built` row names: the tree mode to see that this tree
+# holds it and that it is the file the build workflow builds, the package mode to hash it. The
+# package mode leaves the shape of a row to the tree mode, which runs on every change.
 #
 # It fails, naming the file, the line and the remedy, on:
 #
 # IN TREE MODE:
 #
-#   1. a row this check cannot read: a row that is not a mapping, a missing or empty `upstream`,
-#      `tag` or `digest`, or a digest that is not `sha256:` and 64 hex characters. A tag is
-#      required because an untagged manifest is a package version nothing names, and a retention
-#      policy may delete a digest a job pins.
+#   1. a row this check cannot read: a row that is not a mapping, a row carrying both
+#      `upstream` and `built` or neither of them, a missing or empty `upstream`, `built`, `tag`
+#      or `digest`, a `built` naming a file this tree does not hold, or a digest that is not
+#      `sha256:` and 64 hex characters. A tag is required because an untagged manifest is a
+#      package version nothing names, and a retention policy may delete a digest a job pins.
 #   2. two rows with the same digest, two rows with the same tag, or a tag that is not the one
-#      its own row's upstream and digest give it. The row is what says which image a digest is
-#      — which upstream it copies, and which version that upstream carries — so one digest
-#      names one row and one row names one tag. The digest in the tag is what makes one tag
-#      name one digest: a row that moves to a new digest takes a new tag with it, the digest it
-#      leaves keeps the tag it had, and no copy moves a tag off a digest a consumer pins. The
-#      tag a row must carry is the upstream repository's last path element, then the upstream
-#      tag when the row names one, then the first eight hex characters of the digest. This
-#      check reads the whole string, not the eight characters alone.
+#      its own row gives it. The row is what says which image a digest is — which upstream it
+#      copies and which version that upstream carries, or which Dockerfile of this repository
+#      builds it — so one digest names one row and one row names one tag. The digest in the tag
+#      is what makes one tag name one digest: a row that moves to a new digest takes a new tag
+#      with it, the digest it leaves keeps the tag it had, and no copy moves a tag off a digest
+#      a consumer pins. The tag an `upstream` row must carry is the upstream repository's last
+#      path element, then the upstream tag when the row names one, then the first eight hex
+#      characters of the digest. The tag a `built` row must carry is its Dockerfile's name
+#      without the `.Dockerfile` suffix, then those same eight characters, so
+#      .github/docker/browser.Dockerfile at sha256:1a2b3c4d… is browser-1a2b3c4d. This check
+#      reads the whole string, not the eight characters alone.
 #   3. a version this repository pins elsewhere that no row carries: no `oven/bun` row at the
 #      version `.bun-version` locks, with or without the `-slim` suffix, or no `library/golang`
 #      row at `ARG GO_VERSION` of packages/daemon/docker/worker.Dockerfile. A row for another
@@ -54,7 +64,7 @@
 #      rule 7 read a row's repository with Docker Hub's implicit `library/` written out, so
 #      `docker.io/golang:1.27.1-alpine` and `docker.io/library/golang:1.27.1-alpine` are one
 #      repository to both of them.
-#   4. a reference in CI's reach that names a registry other than ghcr.io/sjawhar/legion/ci,
+#   4. a reference in CI's reach that names a registry other than ghcr.io/cybermonklabs/legion/ci,
 #   5. a reference in CI's reach that is not pinned by digest (`@sha256:` and 64 hex characters):
 #      a tag is a name the registry can move, so only a digest names the bytes a job ran,
 #   6. a reference in CI's reach whose digest no row of .github/ci-images.yaml holds,
@@ -64,13 +74,56 @@
 #      other row: that stage would build with the other Go, and the worker's toolchain stage
 #      downloads the ARG's. A bump's second commit moves the ARG and every FROM together, so it
 #      passes. .github/scripts/check-bun-version.sh holds a Bun FROM to .bun-version this way.
+#   8. a `built` row naming a Dockerfile other than .github/docker/browser.Dockerfile.
+#      .github/workflows/browser-image.yaml builds that one file and no other, so a row built
+#      from anything else is a row nothing builds and nothing pushes: no image of the package
+#      was ever pushed from it, and rule 10 below would hold the row to the hash of a build
+#      recipe no build ever ran. Rule 10 does refuse such a row, in the package mode and over
+#      the network, including one naming another file of .github/docker, because the recipe
+#      hash folds in the Dockerfile's own path and not only the files of the directory it
+#      sits in; the argument for that path is .github/scripts/ci_images.py's recipe_sha256
+#      docstring, which is where this repository makes it. This rule is that same refusal
+#      made in lint, which reads the files of this tree alone and runs on every change, so a
+#      row nothing builds is refused where it is written rather than in the one job that
+#      reads the package. A second image this repository builds is a second build workflow,
+#      and this rule and rule 10 would then name the Dockerfile each of them builds.
 #
 # IN PACKAGE MODE:
 #
-#   8. a row whose digest the package does not hold: the manifest is read with an anonymous
-#      `HEAD` against ghcr.io. Its message names .github/ci-images.yaml and says that ci.yaml's
-#      ci-images job copies a row before this mode reads the package, so the usual remedy is to
-#      merge the row and let that job run.
+#   9. a row whose digest the package does not hold: the manifest is read with an anonymous
+#      `HEAD` against ghcr.io. A `built` row is in the package like any other, because the
+#      build pushes it there. The message of an `upstream` row names .github/ci-images.yaml and
+#      says that ci.yaml's ci-images job copies a row before this mode reads the package, so
+#      the usual remedy is to merge the row and let that job run. The message of a `built` row
+#      names its Dockerfile and .github/workflows/browser-image.yaml instead: that build runs
+#      in the push that adds the Dockerfile, and the row carrying the digest it pushed lands in
+#      a later push.
+#  10. a `built` row whose published image was built from another build recipe than the one
+#      this tree holds. THE RECIPE IS NOT THE DOCKERFILE ALONE: it is the row's own Dockerfile
+#      path, every file of the build context directory that Dockerfile sits in, and
+#      .github/workflows/browser-image.yaml itself. One function hashes it,
+#      .github/scripts/ci_images.py's recipe_sha256, whose docstring is where what the recipe
+#      holds and why each part of it is in there are written; that workflow stamps the hash
+#      into the image it pushes, as the label legion.browser-image.source-sha256, and this
+#      rule reads the label back out of the image at the row's own digest and holds it equal
+#      to the hash of the recipe this tree holds.
+#      Without it an edit to the recipe merges green and changes nothing CI runs: the row still
+#      names a digest the package holds, so rule 9 passes, the tag still matches that digest,
+#      so rule 2 passes, and every `shard` and `alone` leg keeps running the image built before
+#      the edit. The tree mode cannot make this comparison, because the label is on the
+#      published image and only a read of the registry can see it.
+#      The remedy is the build: let .github/workflows/browser-image.yaml push the image this
+#      recipe makes, then move the row's digest onto what it pushed.
+#      What this rule does NOT prove is where the published bytes came from: it reads only the
+#      image's label, which the run that published the image writes, so it passes any image at
+#      the row's digest whose label carries this tree's recipe hash, whatever built its bytes.
+#      On a pull request that run executes the pull request's own copy of that workflow, and of
+#      the install-crane action and ci_images.py it runs before the build, none of which is
+#      checked against the bytes it pushed. What it catches is a row left behind at an old
+#      digest. A gate on the bytes would read the attestation's source commit; none exists, by
+#      the controller's decision, no such attack having been seen, and no by-hand reading stands
+#      in for it (one was written and withdrawn, dispatch://INFRA-1443). AGENTS.md states the
+#      same limit in the item after its "Container images" one.
 #
 # CI'S REACH is every .github/workflows/*.yaml, every .github/actions/*/action.yml, and each
 # other file a CI job runs that names an image. The first two kinds come from those two globs;
@@ -113,15 +166,31 @@
 # Files are discovered by walking the tree, not by asking git, so an unsnapshotted change cannot
 # read green locally.
 #
-# CHECK 8 AND THE NETWORK. The package mode's read of the package is one anonymous token request
-# (`GET https://ghcr.io/token?scope=repository:sjawhar/legion/ci:pull&service=ghcr.io`) and one
-# `HEAD https://ghcr.io/v2/sjawhar/legion/ci/manifests/<digest>` per row, with an `Accept` naming
-# the four index and manifest media types. CI_IMAGES_MANIFEST_HEAD is the seam that read hangs
-# on: when it is set, this check runs `"$CI_IMAGES_MANIFEST_HEAD" <digest>` once per row instead
-# and reads the HTTP status code the command prints on stdout (200 = the package holds the
-# digest, 404 = it does not). check-ci-images.test.sh sets it to a small script of its own, and
-# mirror-ci-images.test.sh drives this rule with it over the repository's own rows, so no case of
-# either test reaches the network.
+# CHECKS 9 AND 10 AND THE NETWORK. The package mode's read of the package is one anonymous token
+# request (`GET https://ghcr.io/token?scope=repository:cybermonklabs/legion/ci:pull&service=ghcr.io`)
+# and one `HEAD https://ghcr.io/v2/cybermonklabs/legion/ci/manifests/<digest>` per row, with an
+# `Accept` naming the four index and manifest media types. Rule 10 adds, for each `built` row
+# the package holds, one `crane config --platform linux/amd64
+# ghcr.io/cybermonklabs/legion/ci@<digest>`, which answers the image config a label is written
+# in. That is the read .github/scripts/mirror-ci-images.sh already makes for a row's Go
+# version, with the crane .github/actions/install-crane puts on PATH in ci.yaml's ci-images
+# job, before this mode runs there; one reader of an image config, so the two cannot disagree
+# about which bytes of an index they read. The platform is named because the build pushes
+# linux/amd64 alone, and a read that answered for whatever entry an index happened to carry
+# would hold a row to the label of an image this repository never built. A read that fails for
+# any reason — no crane on PATH, a refusal from the registry, an image carrying no label — is a
+# refusal naming what failed, never a pass.
+# CI_IMAGES_MANIFEST_HEAD is the seam both reads hang on: when it is set, this check runs
+# `"$CI_IMAGES_MANIFEST_HEAD" <digest>` once per row instead of reaching ghcr.io or running
+# crane, and reads what the command prints on stdout — the HTTP status code of the HEAD (200 =
+# the package holds the digest, 404 = it does not), and after it the image's
+# legion.browser-image.source-sha256 label. A stand-in that prints a status alone answers for
+# the manifest and not for a label, and rule 10 refuses a `built` row answered that way rather
+# than passing it over: a seam that could turn a rule off is a seam that hides what the rule
+# would have said. check-ci-images.test.sh sets the seam to a small script of its own, which
+# prints the label its rule 10 cases drive the comparison with, and mirror-ci-images.test.sh
+# drives rule 9 with it over the repository's own rows, so no case of either test reaches the
+# network.
 #
 # Run from anywhere: .github/scripts/check-ci-images.sh tree
 #                    .github/scripts/check-ci-images.sh package
@@ -136,7 +205,7 @@ cd "$(dirname "$0")/../.."
 case "$#:${1:-}" in
   1:tree | 1:package) ;;
   *)
-    echo "::error file=.github/scripts/check-ci-images.sh::this check takes one mode: \`tree\` reads the files of this tree and makes no network read, and \`package\` reads ghcr.io/sjawhar/legion/ci. Run \`.github/scripts/check-ci-images.sh tree\` or \`.github/scripts/check-ci-images.sh package\`." >&2
+    echo "::error file=.github/scripts/check-ci-images.sh::this check takes one mode: \`tree\` reads the files of this tree and makes no network read, and \`package\` reads ghcr.io/cybermonklabs/legion/ci. Run \`.github/scripts/check-ci-images.sh tree\` or \`.github/scripts/check-ci-images.sh package\`." >&2
     exit 1
     ;;
 esac
@@ -154,10 +223,20 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 
-from ci_images import DIGEST, split_reference, upstream_parts
+from ci_images import (
+    BUILT,
+    DIGEST,
+    UPSTREAM,
+    recipe_sha256,
+    row_kind,
+    row_tag,
+    split_reference,
+    upstream_parts,
+)
 
 
 class LineLoader(yaml.SafeLoader):
@@ -198,11 +277,34 @@ def key_line(mapping: object, name: str) -> int:
 PACKAGE = "package"
 MODE = os.environ["CI_IMAGES_MODE"]
 
-REGISTRY = "ghcr.io/sjawhar/legion/ci"
-REPOSITORY = "sjawhar/legion/ci"
+REGISTRY = "ghcr.io/cybermonklabs/legion/ci"
+REPOSITORY = "cybermonklabs/legion/ci"
 CI_IMAGES = Path(".github/ci-images.yaml")
 MIRROR_SCRIPT = ".github/scripts/mirror-ci-images.sh"
 MIRROR_JOB = "ci.yaml's ci-images job"
+# The workflow that publishes a row of the second kind. The two kinds themselves, and which one
+# a row is, are .github/scripts/ci_images.py's UPSTREAM, BUILT and row_kind, which every reader
+# of a row shares: a row carrying `upstream:` is a copy MIRROR_SCRIPT makes, and a row carrying
+# `built:` is an image this repository builds from the Dockerfile that key names, which nothing
+# copies.
+BUILD_WORKFLOW = ".github/workflows/browser-image.yaml"
+# The one Dockerfile BUILD_WORKFLOW builds, and the label that build writes the hash of its
+# whole build recipe into — that Dockerfile's own path, the context directory it sits in, and
+# BUILD_WORKFLOW itself (ci_images.py's recipe_sha256, whose docstring argues for each of the
+# three). Rule 8 holds every `built` row to that file, because a row naming another is a row
+# no build pushes, which the hash says too: the path is in it, so a row naming another file
+# of the context directory hashes to something other than the label the published image
+# carries. Rule 10 reads that label back out of the image the row's digest names, and so is
+# the only half of this check that can tell an edited recipe from the bytes the package
+# serves.
+BUILT_DOCKERFILE = ".github/docker/browser.Dockerfile"
+SOURCE_LABEL = "legion.browser-image.source-sha256"
+# How rule 10 reads an image's label: `crane config` answers the config a label is written in,
+# and the platform is named because this repository's build pushes linux/amd64 alone.
+# MIRROR_SCRIPT reads a row's Go version with this same call, and CRANE_ACTION is the step that
+# puts crane on PATH in MIRROR_JOB, which runs the copy and then this mode.
+CRANE_CONFIG = ("crane", "config", "--platform", "linux/amd64")
+CRANE_ACTION = ".github/actions/install-crane"
 BUN_PIN = Path(".bun-version")
 WORKER_DOCKERFILE = Path("packages/daemon/docker/worker.Dockerfile")
 # The two upstream repositories a pin of this repository names: rule 3 asks for a row at each
@@ -228,6 +330,7 @@ ACCEPT = ",".join(
 # Every file a CI job runs that names a container image. Each entry is a file: a directory would
 # grow a file this check never read.
 REACH = (
+    ".github/docker/browser.Dockerfile",
     "packages/envoy/docker/Dockerfile",
     "packages/envoy/infra/host/heldportwrapper/Dockerfile",
     "packages/daemon/docker/worker.Dockerfile",
@@ -237,6 +340,7 @@ REACH = (
     "packages/envoy/internal/tests3/seaweedfs.go",
     "packages/envoy-client/src/__tests__/nats-server.ts",
     "scripts/e2e/lib/nats-stream.test.ts",
+    "packages/dispatch/e2e/visual-run.sh",
     "packages/pi-legion/scripts/skill-scenarios/rig.sh",
     "scripts/e2e/stage1-skeleton.sh",
 )
@@ -251,10 +355,6 @@ IMAGE_FROM = {
         "or comes from the `images:` input, which ci.yaml's envoy-smoke job fills with the FROM "
         "arguments of packages/envoy/docker/Dockerfile; every one of those files is in the reach "
         "above, and this check reads the references in them"
-    ),
-    (".github/workflows/ci.yaml", "image"): (
-        "the dispatch job's step reads it from `const Image` of "
-        "packages/envoy/internal/tests3/seaweedfs.go, which is in the reach above"
     ),
     (".github/workflows/ci.yaml", "ENVOY_SMOKE_IMAGE"): (
         "the local tag the envoy-smoke job's own build loaded (ci.yaml sets it to "
@@ -301,13 +401,15 @@ EXCEPTIONS = {
     "scripts/e2e/stage4a-sandbox-runtime.sh": NO_CI_JOB,
     "scripts/e2e/stage4b-sandbox-tree.sh": NO_CI_JOB,
     "scripts/e2e/verifiers-staging-token.sh": NO_CI_JOB,
-    "packages/daemon/internal/testpg/testpg.go": FETCHES_NOTHING,
+    "packages/daemon/internal/testpg/testdb/testdb.go": FETCHES_NOTHING,
     "packages/envoy/scripts/dev-postgres.sh": FETCHES_NOTHING,
     "packages/envoy/scripts/dev-postgres.test.sh": FETCHES_NOTHING,
     "packages/envoy/loadtest/cluster/cluster.sh": FETCHES_NOTHING,
     "packages/envoy/loadtest/cluster/cluster.test.sh": FETCHES_NOTHING,
     "packages/envoy/loadtest/cluster/manifests/nats.yaml": FETCHES_NOTHING,
     "packages/envoy/loadtest/cluster/render-nats.sh": FETCHES_NOTHING,
+    "packages/envoy/loadtest/vm/vm.test.sh": FETCHES_NOTHING,
+    "packages/envoy/loadtest/vm/deployment.example.json": FETCHES_NOTHING,
 }
 
 # ---------------------------------------------------------------- reference grammar
@@ -404,36 +506,94 @@ rows = document.get("images")
 if not isinstance(rows, list) or not rows:
     fatal(f"{CI_IMAGES}:{key_line(document, 'images')}: images is empty, so nothing is checked")
 
-readable: list[tuple[int, str, str, str]] = []  # line, upstream, tag, digest
+
+class Row(NamedTuple):
+    """One row of .github/ci-images.yaml this check could read: the line it is written on, and
+    the four things the rules below read it for. `kind` is UPSTREAM or BUILT, and `source` is
+    what that kind says the row's bytes came from: the upstream reference for an UPSTREAM row,
+    and the Dockerfile this repository builds the image from for a BUILT one."""
+
+    line: int
+    kind: str
+    source: str
+    tag: str
+    digest: str
+
+
+readable: list[Row] = []
 for row in rows:
     line = line_of(row) or key_line(document, "images")
     if not isinstance(row, dict):
-        problems.append(f"{CI_IMAGES}:{line}: this row is not a mapping of upstream, tag, digest")
-        continue
-    upstream, tag, digest = (row.get(key) for key in ("upstream", "tag", "digest"))
-    if not isinstance(upstream, str) or not upstream.strip():
         problems.append(
-            f"{CI_IMAGES}:{key_line(row, 'upstream')}: this row has no upstream, and "
-            f"{MIRROR_SCRIPT} copies from it"
+            f"{CI_IMAGES}:{line}: this row is not a mapping of upstream or built, tag, digest"
+        )
+        continue
+    kind_and_source = row_kind(row)
+    # Which kind a row is, is row_kind's; WHY a row is neither is this rule's, and the four
+    # shapes it refuses are the four row_kind answers None for. The keys are read again here
+    # for the message alone.
+    if kind_and_source is None:
+        upstream, built = row.get("upstream"), row.get("built")
+        if upstream is not None and built is not None:
+            problems.append(
+                f"{CI_IMAGES}:{key_line(row, 'built')}: this row carries both `upstream:` and "
+                f"`built:`, and a row is one or the other: a copy {MIRROR_SCRIPT} makes, or an "
+                f"image this repository builds. A row with both says two different things about "
+                f"where its bytes came from. Delete the key that is not this row's."
+            )
+        elif upstream is None and built is None:
+            problems.append(
+                f"{CI_IMAGES}:{line}: this row carries neither `upstream:` nor `built:`, and a "
+                f"row is one or the other: `upstream:` is the image {MIRROR_SCRIPT} copies "
+                f"from, and `built:` is the Dockerfile this repository builds the image from. "
+                f"Give it one of the two."
+            )
+        elif built is not None:
+            problems.append(
+                f"{CI_IMAGES}:{key_line(row, 'built')}: this row's built is {one_line(built)}, "
+                f"and it names the Dockerfile this repository builds the image from."
+            )
+        else:
+            problems.append(
+                f"{CI_IMAGES}:{key_line(row, 'upstream')}: this row has no upstream, and "
+                f"{MIRROR_SCRIPT} copies from it"
+            )
+        continue
+    kind, source = kind_and_source
+    tag, digest = row.get("tag"), row.get("digest")
+    if kind == BUILT and not Path(source).is_file():
+        problems.append(
+            f"{CI_IMAGES}:{key_line(row, 'built')}: this row is built from "
+            f"{one_line(source)}, and this tree holds no such file, so nothing builds the "
+            f"row. Name the Dockerfile {BUILD_WORKFLOW} builds, or delete the row."
         )
         continue
     if not isinstance(tag, str) or not tag.strip():
+        rule = (
+            "the upstream repository's last path element, then the upstream tag when this row "
+            "names one, then the first eight hex characters of the digest"
+            if kind == UPSTREAM
+            else "the Dockerfile's name without the .Dockerfile suffix, then the first eight "
+            "hex characters of the digest"
+        )
         problems.append(
-            f"{CI_IMAGES}:{key_line(row, 'tag')}: the row for {one_line(upstream)} has no tag. "
+            f"{CI_IMAGES}:{key_line(row, 'tag')}: the row for {one_line(source)} has no tag. "
             f"An untagged manifest is a package version nothing names, and a retention policy "
-            f"may delete a digest a job pins. Give it one: the upstream repository's last path "
-            f"element, then the upstream tag when this row names one, then the first eight hex "
-            f"characters of the digest."
+            f"may delete a digest a job pins. Give it one: {rule}."
         )
         continue
     if not isinstance(digest, str) or not DIGEST.fullmatch(digest.strip()):
+        read_it = (
+            f"Read it with `crane digest {one_line(source)}`."
+            if kind == UPSTREAM
+            else f"It is the digest {BUILD_WORKFLOW} pushed when it built {one_line(source)}."
+        )
         problems.append(
-            f"{CI_IMAGES}:{key_line(row, 'digest')}: the row for {one_line(upstream)} has digest "
-            f"{one_line(digest)}, which is not sha256: and 64 hex characters. Read it with "
-            f"`crane digest {one_line(upstream)}`."
+            f"{CI_IMAGES}:{key_line(row, 'digest')}: the row for {one_line(source)} has digest "
+            f"{one_line(digest)}, which is not sha256: and 64 hex characters. {read_it}"
         )
         continue
-    readable.append((line, upstream.strip(), tag.strip(), digest.strip()))
+    readable.append(Row(line, kind, source, tag.strip(), digest.strip()))
 
 
 def verdict(what: str, summary: str) -> None:
@@ -447,18 +607,84 @@ def verdict(what: str, summary: str) -> None:
     raise SystemExit(0)
 
 
-# ---------------------------------------------------------------- rule 8: the package
-def manifest_status(digests: list[str]) -> dict[str, str]:
-    """The HTTP status of an anonymous manifest HEAD, per digest. CI_IMAGES_MANIFEST_HEAD stands
-    in for the read, so a test drives this check without the network."""
+# ---------------------------------------------------------------- rules 9 and 10: the package
+class PackageRead(NamedTuple):
+    """What this mode read about one row's digest. `status` is the HTTP status of the manifest
+    HEAD rule 9 reads. `label` is the SOURCE_LABEL the image at that digest carries, which rule
+    10 holds the row's build recipe to, and `trouble` says why a read that was made gave no
+    label. For a `built` row the package holds, one of the two is always set: a read that gave
+    no label is a read rule 10 refuses on, never one it passes over."""
+
+    status: str
+    label: str
+    trouble: str
+
+
+def source_label(digest: str) -> tuple[str, str]:
+    """The SOURCE_LABEL the image at one digest carries, and, where it gives none, the clause
+    that says why. An image's labels are written in its config, and `crane config` is what
+    answers one: the read MIRROR_SCRIPT already makes for a row's Go version, under the crane
+    CRANE_ACTION puts on PATH in the job that runs both. The platform is named because an
+    index names one manifest per platform and this repository's build pushes linux/amd64
+    alone, so reading whatever entry an index happens to carry would hold a row to the label
+    of an image no build of this repository pushed."""
+    reference = f"{REGISTRY}@{digest}"
+    call = " ".join((*CRANE_CONFIG, reference))
+    try:
+        done = subprocess.run(
+            [*CRANE_CONFIG, reference], capture_output=True, text=True, check=False, timeout=120
+        )
+    except Exception as error:  # noqa: BLE001 - every failure to read the package is a refusal
+        return "", (
+            f"`{call}` would not run ({type(error).__name__}: {one_line(error)}), and "
+            f"{CRANE_ACTION} is what puts crane on PATH before this mode runs"
+        )
+    if done.returncode != 0:
+        return "", (
+            f"`{call}` exited {done.returncode} "
+            f"({one_line(done.stderr) or 'saying nothing on stderr'})"
+        )
+    try:
+        config = json.loads(done.stdout)
+    except ValueError as error:
+        return "", f"`{call}` answered what is not an image config ({one_line(error)})"
+    labels = (config.get("config") or {}).get("Labels") if isinstance(config, dict) else None
+    carried = (labels or {}).get(SOURCE_LABEL, "")
+    if not carried:
+        return "", f"the image at that digest carries no {SOURCE_LABEL} label"
+    return one_line(carried), ""
+
+
+def package_reads(rows: list[Row]) -> dict[str, PackageRead]:
+    """What the package says about each row, by digest. CI_IMAGES_MANIFEST_HEAD stands in for
+    both reads, so a test drives this mode without the network."""
     command = os.environ.get("CI_IMAGES_MANIFEST_HEAD", "")
     if command:
         out = {}
-        for digest in digests:
+        for row in rows:
             done = subprocess.run(
-                [command, digest], capture_output=True, text=True, check=False
+                [command, row.digest], capture_output=True, text=True, check=False
             )
-            out[digest] = done.stdout.strip().split()[0] if done.stdout.strip() else "no status"
+            # The stand-in prints the status, and after it the label the image at that digest
+            # carries. A stand-in that prints a status alone has answered for the manifest and
+            # not for the label, and that is trouble rather than silence: this seam stands in
+            # for the whole of the package read, so a half-answer it passed over would turn
+            # rule 10 off and no run would say so.
+            words = done.stdout.split()
+            label = words[1] if len(words) > 1 else ""
+            out[row.digest] = PackageRead(
+                words[0] if words else "no status",
+                label,
+                ""
+                if label
+                else (
+                    f"the CI_IMAGES_MANIFEST_HEAD stand-in {one_line(command)} printed a "
+                    f"status and no {SOURCE_LABEL} label after it, so it answered for the "
+                    f"manifest and not for the image's label. Have it print that label after "
+                    f"the status, or unset CI_IMAGES_MANIFEST_HEAD and let this check read the "
+                    f"package itself"
+                ),
+            )
         return out
     try:
         with urllib.request.urlopen(
@@ -474,87 +700,171 @@ def manifest_status(digests: list[str]) -> dict[str, str]:
         )
         return {}
     out = {}
-    for digest in digests:
+    for row in rows:
         request = urllib.request.Request(
-            f"https://ghcr.io/v2/{REPOSITORY}/manifests/{digest}", method="HEAD"
+            f"https://ghcr.io/v2/{REPOSITORY}/manifests/{row.digest}", method="HEAD"
         )
         request.add_header("Authorization", f"Bearer {token}")
         request.add_header("Accept", ACCEPT)
         try:
             with urllib.request.urlopen(request, timeout=30) as answer:
-                out[digest] = str(answer.status)
+                status = str(answer.status)
         except urllib.error.HTTPError as error:
-            out[digest] = str(error.code)
+            status = str(error.code)
         except Exception as error:  # noqa: BLE001
-            out[digest] = f"{type(error).__name__}: {one_line(error)}"
+            status = f"{type(error).__name__}: {one_line(error)}"
+        # The label is read for a `built` row alone, and only where the package holds the
+        # digest: rule 9 already names a digest the package lacks, and an image that is not
+        # there has no config to read.
+        label, trouble = "", ""
+        if row.kind == BUILT and status == "200":
+            label, trouble = source_label(row.digest)
+        out[row.digest] = PackageRead(status, label, trouble)
     return out
 
 
 if MODE == PACKAGE:
     # Rule 1, a row's own shape, is the tree mode's, and that mode reads every change. A row
     # this mode cannot read is one it asks ghcr.io nothing about, so this mode names the rows
-    # the package lacks and nothing else.
+    # the package lacks, and the built rows the package holds at other bytes than this tree's,
+    # and nothing else.
     problems = []
     held = 0
+    compared = 0
     if readable:
-        statuses = manifest_status([row[3] for row in readable])
-        for line, upstream, tag, digest in readable:
-            status = statuses.get(digest)
-            if status == "200":
+        reads = package_reads(readable)
+        for line, kind, source, tag, digest in readable:
+            read = reads.get(digest)
+            if read is None:
+                continue
+            if read.status == "200":
                 held += 1
-            elif status is not None:
+            elif kind == UPSTREAM:
                 problems.append(
                     f"{CI_IMAGES}:{line}: {REGISTRY}@{digest} ({tag}, the copy of "
-                    f"{one_line(upstream)}) is not in the package: a manifest HEAD answered "
-                    f"{status}. {MIRROR_JOB} copies a row of {CI_IMAGES} before this mode reads "
-                    f"the package, so merge this row, or re-run that job, before a job pins the "
-                    f"digest."
+                    f"{one_line(source)}) is not in the package: a manifest HEAD answered "
+                    f"{read.status}. {MIRROR_JOB} copies a row of {CI_IMAGES} before this mode "
+                    f"reads the package, so merge this row, or re-run that job, before a job "
+                    f"pins the digest."
                 )
+            else:
+                # A built row is in the package like any other, because the build pushes it
+                # there; nothing copies it, so the remedy names the build and not the mirror.
+                problems.append(
+                    f"{CI_IMAGES}:{line}: {REGISTRY}@{digest} ({tag}, the image "
+                    f"{BUILD_WORKFLOW} builds from {one_line(source)}) is not in the package: a "
+                    f"manifest HEAD answered {read.status}. That build runs in the push that "
+                    f"adds {one_line(source)}, and the row carrying the digest it pushed lands "
+                    f"in a later push, so let that build run, or re-run it, before a job pins "
+                    f"the digest."
+                )
+            # Rule 10: the published image carries the hash of the build recipe the row's
+            # Dockerfile belongs to, because the build writes it there. Every `built` row the
+            # package holds is compared, and a read that gave no label is refused below on its
+            # `trouble`: a row this rule read nothing for is a row nothing held to a recipe.
+            if kind != BUILT or read.status != "200":
+                continue
+            # Half of that recipe is BUILD_WORKFLOW's own text, so a tree without it is a tree
+            # this rule cannot hash a row against, and saying so beats a traceback.
+            if not Path(BUILD_WORKFLOW).is_file():
+                problems.append(
+                    f"{CI_IMAGES}:{line}: this tree holds no {BUILD_WORKFLOW}, and that "
+                    f"workflow's own text is half of the build recipe this row's published "
+                    f"image is held to, so there is nothing to compare its {SOURCE_LABEL} "
+                    f"label with. Restore that workflow, or delete the row nothing builds."
+                )
+                continue
+            recipe = Path(source).parent.as_posix()
+            tree_sha256 = recipe_sha256(source, BUILD_WORKFLOW)
+            if read.label == tree_sha256:
+                compared += 1
+                continue
+            carried = read.trouble or (
+                f"the image at that digest carries sha256 {read.label} in its {SOURCE_LABEL} "
+                f"label"
+            )
+            problems.append(
+                f"{CI_IMAGES}:{line}: {REGISTRY}@{digest} ({tag}) is not the image this tree's "
+                f"build recipe makes: the name {one_line(source)}, every file of {recipe} and "
+                f"{BUILD_WORKFLOW} hash to sha256 {tree_sha256} as this tree holds them, and "
+                f"{carried}. "
+                f"{BUILD_WORKFLOW} writes that recipe's own sha256 into the image it pushes, "
+                f"as that label, so the two differ when a file of the recipe changed and no "
+                f"build pushed the change: every job pinning this row would keep running the "
+                f"image built before it. Let that build push the image this recipe makes, then "
+                f"move this row's digest onto what it pushed."
+            )
     verdict(
         f"between {CI_IMAGES} and the package",
-        f"{CI_IMAGES} holds {len(readable)} row(s), {held} of them in the package",
+        f"{CI_IMAGES} holds {len(readable)} row(s), {held} of them in the package, "
+        f"{compared} built row(s) at the build recipe this tree holds",
     )
 
 
-def tag_rule(upstream: str, digest: str) -> str:
-    """The tag the rule gives a row: the upstream repository's last path element, then the
-    upstream tag when the row names one, then the first eight hex characters of the digest."""
-    _, path, carried, _ = upstream_parts(upstream)
-    short = digest.partition(":")[2][:8]
-    parts = [part for part in (path.rpartition("/")[2], carried, short) if part]
-    return "-".join(parts)
+# Rule 2's tag is .github/scripts/ci_images.py's row_tag, the rule the build writes a tag with
+# and this check holds a row to: one function, so no row can carry a tag the build gives it and
+# this check refuses.
 
 
-by_digest: dict[str, tuple[int, str, str, str]] = {}
-by_tag: dict[str, tuple[int, str, str, str]] = {}
+by_digest: dict[str, Row] = {}
+by_tag: dict[str, Row] = {}
 for row in readable:
-    line, upstream, tag, digest = row
+    line, kind, source, tag, digest = row
     earlier = by_digest.get(digest)
     if earlier is not None:
         problems.append(
             f"{CI_IMAGES}:{line}: {digest} is also the digest of the row for "
-            f"{one_line(earlier[1])} on line {earlier[0]}. The row is what says which image a "
-            f"digest is, so one digest names one row: delete one of them."
+            f"{one_line(earlier.source)} on line {earlier.line}. The row is what says which "
+            f"image a digest is, so one digest names one row: delete one of them."
         )
     else:
         by_digest[digest] = row
     earlier = by_tag.get(tag)
     if earlier is not None:
         problems.append(
-            f"{CI_IMAGES}:{line}: tag {tag} is also the tag of the row for {one_line(earlier[1])} "
-            f"on line {earlier[0]}, and the second copy would move the tag off the first row's "
-            f"digest. Give one of them another tag."
+            f"{CI_IMAGES}:{line}: tag {tag} is also the tag of the row for "
+            f"{one_line(earlier.source)} on line {earlier.line}, and the second copy would move "
+            f"the tag off the first row's digest. Give one of them another tag."
         )
     else:
         by_tag[tag] = row
-    wanted = tag_rule(upstream, digest)
+    wanted = row_tag(kind, source, digest)
     if tag != wanted:
+        gives = "upstream" if kind == UPSTREAM else "Dockerfile"
         problems.append(
-            f"{CI_IMAGES}:{line}: tag {tag} is not {wanted}, the tag this row's upstream and "
+            f"{CI_IMAGES}:{line}: tag {tag} is not {wanted}, the tag this row's {gives} and "
             f"digest give it. The last eight characters are what keeps one tag on one digest. A "
             f"tag without them is a tag another digest of the same image can take, and the copy "
             f"that takes it moves the tag off the digest consumers pin. The rest names the image "
             f"a reader of the package sees. Name this row {wanted}."
+        )
+
+
+# Rule 8: a `built` row names the one Dockerfile BUILD_WORKFLOW builds. Rule 1 has already held
+# `built` to a file this tree holds; this rule holds it to the file that workflow builds,
+# because a row built from any other file is a row no build pushes — so rule 10, which reads
+# the published image's recipe hash back out of the registry, would hold the row to a recipe
+# no build ever ran, and refuse it there. That holds for a file of BUILT_DOCKERFILE's own
+# directory as much as for one anywhere else, because recipe_sha256 folds the Dockerfile's
+# path in beside the files of the context; the argument for that path is written in
+# recipe_sha256's own docstring, beside the fold. This rule is that refusal made in lint: the
+# tree alone says which file BUILD_WORKFLOW builds, so the row is refused on every change
+# rather than in the one job that reads the package. The path is compared as a path, which is
+# how BUILD_WORKFLOW reads the same key when it looks its own row up.
+for row in readable:
+    if row.kind == BUILT and Path(row.source) != Path(BUILT_DOCKERFILE):
+        problems.append(
+            f"{CI_IMAGES}:{row.line}: this row is built from {one_line(row.source)}, and "
+            f"{BUILD_WORKFLOW} builds {BUILT_DOCKERFILE} and no other file, so nothing builds "
+            f"this row: no build ever pushed an image from {one_line(row.source)}, and rule 10 "
+            f"refuses this row in the package mode, where it holds the published image to the "
+            f"hash of a recipe no build ever ran — that hash covers the Dockerfile's own "
+            f"path, so a row naming another file of {BUILT_DOCKERFILE}'s own directory is "
+            f"refused there too (.github/scripts/ci_images.py's recipe_sha256 says why the "
+            f"path is in it). This is that refusal in lint, which reads "
+            f"this tree alone. Name {BUILT_DOCKERFILE}, or give {BUILD_WORKFLOW} a build for "
+            f"{one_line(row.source)} and this check the rule that holds the row it pushes to "
+            f"it."
         )
 
 
@@ -583,8 +893,12 @@ if not go_pin:
     fatal(f"{WORKER_DOCKERFILE} declares no ARG GO_VERSION=<version>, which a golang row copies")
 
 carried_by: dict[str, list[str]] = {BUN_REPOSITORY: [], GOLANG_REPOSITORY: []}
-for _, upstream, _, _ in readable:
-    _, repository, carried, _ = upstream_parts(upstream)
+for _, kind, source, _, _ in readable:
+    # A built row's source is a Dockerfile of this repository and no upstream repository at
+    # all, so it is neither the oven/bun row nor the library/golang row this rule asks for.
+    if kind != UPSTREAM:
+        continue
+    _, repository, carried, _ = upstream_parts(source)
     if repository in carried_by:
         carried_by[repository].append(carried)
 if not any(carried in {bun_pin, f"{bun_pin}-slim"} for carried in carried_by[BUN_REPOSITORY]):
@@ -665,12 +979,16 @@ def judge(path: str, line: int, text: str, how: str) -> None:
         )
         return
     # Rule 7. Rule 3 admits a library/golang row beside the one the ARG names, which is what a
-    # bump's first commit lands, so the row a Go FROM names is read here against that ARG.
-    _, row_repository, carried, _ = upstream_parts(row[1])
+    # bump's first commit lands, so the row a Go FROM names is read here against that ARG. A
+    # built row is an image this repository builds and never a copy of library/golang, so it
+    # carries no upstream tag to read a Go version out of.
+    if row.kind != UPSTREAM:
+        return
+    _, row_repository, carried, _ = upstream_parts(row.source)
     if row_repository == GOLANG_REPOSITORY and carried.partition("-")[0] != go_pin:
         version = one_line(carried) if carried else "no version this check can read"
         problems.append(
-            f"{path}:{line}: {how} names the row for {one_line(row[1])} on line {row[0]} of "
+            f"{path}:{line}: {how} names the row for {one_line(row.source)} on line {row.line} of "
             f"{CI_IMAGES}, which copies Go {version}, and {WORKER_DOCKERFILE} pins "
             f"ARG GO_VERSION={go_pin}. A stage that builds with another Go is not the Go the "
             f"worker's toolchain stage downloads, so name the row at {go_pin} here. Raising Go "

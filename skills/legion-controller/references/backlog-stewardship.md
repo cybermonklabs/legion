@@ -13,19 +13,24 @@ reach you on `notifications.role.legion-<project>-controller`.
 
 ## Reconcile the weekly plan
 
-Run this pass on the first turn of every UTC day and after every ruling from a person:
+Run this pass on the first turn of every UTC day and after every directive from a person:
 
 1. Read the weekly-planning issue and select its newest `plan-week-*` artifact by its latest
    `artifact.version` event. Read that artifact before changing any issue.
 2. For every plan line whose issue key carries this project's prefix (`daemon.project` in
-   `read_state`), make the project's board order match the line order exactly, because Legion
-   admits waiting roots by board rank alone. Set the priority the plan line states, and leave the
-   priority where it states none; priority changes no admission order. When one plan line lists
+   `read_state`), make the project's board order match the line order exactly, because board rank
+   is the order Legion admits by: an issue whose first phase can start takes the rank of its
+   tree's root, and an issue whose work came back goes ahead of all of them. Set the priority the
+   plan line states, and leave the priority where it states none; priority changes no admission
+   order. When one plan line lists
    several issues, keep them in that order. Take the order from the plan alone, never from a
    title or a route. Reorder with
    `dispatch issue-update --issue <KEY> --before <OTHER>` or `--after <OTHER>`.
-3. Reconcile the plan's one-owner map. A session is live when `envoy_sessions` lists it; check
-   each listed owner that way. For unowned work, find an owner whose `envoy_sessions` `dir` is a
+3. Reconcile the plan's one-owner map. `envoy_sessions` gives each session a `state` (`live`,
+   `unresponsive` or `gone`) and a `last_seen`; read the state, never the presence or absence of
+   the row. A `live` or `unresponsive` owner still owns its work: change nothing for it. Only an
+   owner that reads `gone`, or that the registry has no record of, is without a session. For
+   unowned work, find an owner whose `envoy_sessions` `dir` is a
    checkout of the issue's repository, route the issue to it
    (`dispatch issue-update --issue <KEY> --route session:<session id>`) and `envoy_send` it
    `You own <KEY>: <title>.`. Routing starts nothing on Legion and sets no label. Never route an
@@ -36,11 +41,11 @@ Run this pass on the first turn of every UTC day and after every ruling from a p
    instead of keeping a change log in it, because the artifact states the current rule. A comment
    or message does not update the one-owner map.
 
-A ruling from a person is a direct Dispatch message to this controller. Answer it first, carry out
-its scope or priority decision, then record the resulting current rule in the affected weekly-plan
-row (or its ruling section when it has no one line). Link the message when Dispatch gave it a
+A directive from a person is a direct Dispatch message to this controller. Answer it first, carry out
+its directive on scope or priority, then record the resulting current rule in the affected weekly-plan
+row (or its directives section when it has no one line). Link the message when Dispatch gave it a
 reference.
-A ruling triggers the full reconciliation pass even when it appears to affect only one issue.
+A directive triggers the full reconciliation pass even when it appears to affect only one issue.
 
 ## Answering controller deliveries
 
@@ -74,15 +79,19 @@ Treat a session route as stopped only after two reads of
 `dispatch issues --project <KEY> --route-status no_holder --all` at least ten minutes apart
 both list it, as `dispatch issues --help` says for `route_status`, because a
 restarting session is absent for minutes. Do not poll to create the second read; use the next
-controller wake. Then confirm with `envoy_sessions` that no live session owns the work (the
-session the route names, or one that took it over), because a live owner still holds it.
+controller wake. Then read the owner's state with `envoy_sessions` (the session the route names,
+or one that took it over). A `live` owner still holds the work. So does an `unresponsive` one,
+which is past the live window but inside the gone horizon: it keeps its claims, and a message you
+send it waits for it. Recover the work only from an owner that reads `gone`, or that reads
+`unresponsive` with a `last_seen` more than 20 minutes old, which is as long as an issue claim is
+protected.
 
-For work that a ruling of a person's, recorded in the plan with its link (the ruling section
+For work that a person's directive, recorded in the plan with its link (the directives section
 above), says moves to Legion when its session stops, preserve its existing labels, add `legion`,
-then set it `todo` with the `legion` tool's `set_status`. A plan row you wrote with no such ruling
+then set it `todo` with the `legion` tool's `set_status`. A plan row you wrote with no such directive
 behind it moves nothing. The label comes first: it is what
-lets the daemon admit the root. Do not apply that recovery to an issue already in an active Legion
-tree; its architect and daemon own its lifecycle. Update the weekly-plan owner row after the move.
+lets the daemon admit the root. Do not apply that recovery to an issue already in a live Legion
+tree (a root in `admission.trees`, or an issue whose `tree` is one); its architect and daemon own its lifecycle. Update the weekly-plan owner row after the move.
 
 ## A root the plan defers
 
@@ -90,5 +99,5 @@ A person's `legion` label outranks a plan's deferral. The daemon queues the root
 person's label on an unrecorded root in `triage` is the root's `todo`, written by the daemon. A
 labelled root the weekly plan says to defer is parked by you at your next backlog pass, not
 before: `set_status` it to `backlog`, or to `icebox` for a longer deferral, and cite the plan's
-ruling in a comment on the issue. The cost is the architect's work between the daemon's `todo`
+directive in a comment on the issue. The cost is the architect's work between the daemon's `todo`
 and your park.

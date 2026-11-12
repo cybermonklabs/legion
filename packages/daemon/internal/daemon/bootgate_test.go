@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
@@ -838,14 +839,17 @@ func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 
 // The gate runs under the environment a pane gets from the daemon's own (HOME and OMP_PROFILE here)
 // before the daemon boots: a refusal records no boot, and a daemon stopped while the gate waits
-// stops cleanly, having served nothing.
+// stops cleanly, having served nothing. The plugin is held to this daemon's own number, so the
+// contract below it — the one the previous release pins — is refused like any other.
 func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 	// The daemon holds the plugin to its own DaemonAPIVersion.
 	thisDaemons := `{"daemonApiVersion":` + strconv.Itoa(api.DaemonAPIVersion) + `}`
+	previous := strconv.Itoa(api.DaemonAPIVersion - 1)
 	for _, testCase := range []struct {
 		name, legion, step, want string
 	}{
 		{"another contract", `{"daemonApiVersion":1}`, "yes", "speaks daemon API contract 1"},
+		{"the contract below this one", `{"daemonApiVersion":` + previous + `}`, "yes", "speaks daemon API contract " + previous},
 		{"not loaded", thisDaemons, "no", "is installed but not loaded by omp"},
 		{"stopped while the probe runs", thisDaemons, "hang", ""},
 	} {
@@ -870,7 +874,7 @@ func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 				time.AfterFunc(300*time.Millisecond, cancel)
 			}
 
-			err := run(ctx, cfg, Build{}, quietLogger(), o)
+			err := run(ctx, cfg, quietLogger(), o)
 
 			if testCase.want == "" && err != nil {
 				t.Fatalf("run stopped during its gate = %v, want a clean stop", err)
@@ -904,7 +908,7 @@ func TestTheTmuxGateAsksForWhatTheRolePromptsName(t *testing.T) {
 		return ""
 	}
 
-	if err := run(context.Background(), cfg, Build{}, quietLogger(), o); err == nil {
+	if err := run(context.Background(), cfg, quietLogger(), o); err == nil {
 		t.Fatal("run passed the gate, want the fake's not-loaded refusal")
 	}
 	var skills string
@@ -953,7 +957,7 @@ esac
 		return ""
 	}
 
-	if err := run(context.Background(), cfg, Build{}, quietLogger(), o); err == nil || !strings.Contains(err.Error(), "is installed but not loaded by omp") {
+	if err := run(context.Background(), cfg, quietLogger(), o); err == nil || !strings.Contains(err.Error(), "is installed but not loaded by omp") {
 		t.Fatalf("run = %v, want the gate's refusal", err)
 	}
 	var got []string
@@ -964,5 +968,39 @@ esac
 	}
 	if want := []string{"GEMINI_API_KEY=the-provider-key"}; !slices.Equal(got, want) {
 		t.Errorf("the probe ran with %q, want %q: the provider key, as a pane's shim exports it", got, want)
+	}
+}
+
+// The boot gate probes under the environment a pane gets, so it carries the operator's own spend
+// attributes as the operator wrote them in `runtime.tmux.pane_env` and nothing more: the probe
+// serves no issue and runs in no role, so the composition every launch goes through
+// (runtime.SpendResourceAttributes with the zero spec, gateEnvironment) writes neither
+// legion.issue nor legion.role, and the probe's minutes are billed under the deployment's own
+// attributes rather than under some launch's issue.
+func TestTheGateIsToldTheOperatorsSpendAttributesAlone(t *testing.T) {
+	// The live deployment's own value, the shape an operator writes: the project, the lane, the
+	// credential the gateway bills and the person who owns the spend.
+	const operator = "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@theorem.dev"
+	block := &config.Tmux{PaneEnv: map[string]string{runtime.SpendAttributesVariable: operator}}
+	env, err := gateEnvironment([]string{"HOME=" + t.TempDir()}, t.TempDir(), "", block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, ok := env[runtime.SpendAttributesVariable]
+	if !ok || value != operator {
+		t.Errorf("the gate is told %s = %q (set %v), want the operator's own %q", runtime.SpendAttributesVariable, value, ok, operator)
+	}
+	if strings.Contains(value, runtime.SpendIssueAttribute) || strings.Contains(value, runtime.SpendRoleAttribute) {
+		t.Errorf("the gate is told %s = %q, want no %s and no %s: the probe serves no issue and runs in no role",
+			runtime.SpendAttributesVariable, value, runtime.SpendIssueAttribute, runtime.SpendRoleAttribute)
+	}
+	// An operator who sets no attributes leaves the gate told none, rather than an empty variable
+	// invented for it.
+	bare, err := gateEnvironment([]string{"HOME=" + t.TempDir()}, t.TempDir(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := bare[runtime.SpendAttributesVariable]; ok {
+		t.Errorf("a gate under no operator attributes is told %s = %q, want no such variable", runtime.SpendAttributesVariable, value)
 	}
 }

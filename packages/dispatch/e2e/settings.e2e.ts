@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { expect, test } from "@playwright/test";
 
+import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import {
   createIssue,
   createProject,
@@ -10,12 +10,8 @@ import {
   putRepoProject,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("a repository mapping added in Settings assigns a new external issue to its selected project", async ({
   browser,
@@ -121,7 +117,8 @@ test("a project's default repository moves with its Default radio, and a mapping
 // server saves the pick of acme/gadgets at once, another browser makes acme/widgets the default
 // again (which this page hears and shows), and only then does the first answer reach the page: the
 // page reads the mappings again rather than put acme/gadgets back.
-test("a late answer to a Default pick does not undo a default another browser set since", async ({
+// @pr: A two-context race: a late answer to this page's pick must not undo the default another browser set since.
+test("a late answer to a Default pick does not undo a default another browser set since @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -455,8 +452,7 @@ test("a person sets, changes and clears a project's default assignee, and a proj
 
 test("a default assignee picked while the last pick is saving waits its turn, and the last pick is the one kept", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the queue");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   // Creating OPS as bob makes him a person who has signed in, so he is an option in the control.
   await createProject({ key: "OPS", name: "Ops" }, "bob");
@@ -521,8 +517,7 @@ test("a default assignee picked while the last pick is saving waits its turn, an
 // before leaving, so it is the only one sent after the held save and the one the server keeps.
 test("default assignee picks made when Settings is left and reopened supersede the pick queued before leaving, and the newest is the one sent after the held save", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the queue across a remount");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   // Creating OPS as bob and QA as carol makes each a person who has signed in, so both are
   // options in the control.
@@ -591,8 +586,7 @@ test("default assignee picks made when Settings is left and reopened supersede t
 // walk the project's default through everyone they passed.
 test("default assignee picks made while a save is out are superseded by the newest, so only it follows the save", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the queue");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   await createProject({ key: "OPS", name: "Ops" }, "bob");
   await createProject({ key: "QA", name: "Quality" }, "carol");
@@ -649,8 +643,7 @@ test("default assignee picks made while a save is out are superseded by the newe
 // than showing the old default as if nothing had been asked.
 test("a default assignee save refused while Settings is left says so when Settings is reopened", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the remount");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   await createProject({ key: "OPS", name: "Ops" }, "bob");
   await putProjectDefaultAssignee("CORE", { assignee: "alice" });
@@ -696,8 +689,7 @@ test("a default assignee save refused while Settings is left says so when Settin
 
 test("a default assignee the page has not read yet is never shown as Unassigned", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the read states");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   await putProjectDefaultAssignee("CORE", { assignee: "alice" });
   const context = await asUser(browser, "alice");
@@ -719,6 +711,9 @@ test("a default assignee the page has not read yet is never shown as Unassigned"
       }
       return route.fallback();
     });
+    // The refused read below is retried twice, `QUERY_RETRY_DELAY_MS` apart, before the page
+    // calls it failed: page timers, which the page's own clock fires.
+    await page.clock.install();
     await page.goto("/settings");
     const core = page.getByRole("combobox", { exact: true, name: "Default assignee of CORE" });
     await expect(core).toBeVisible();
@@ -734,7 +729,16 @@ test("a default assignee the page has not read yet is never shown as Unassigned"
     const loadError = page
       .getByRole("alert")
       .filter({ hasText: "Couldn't load the default assignees." });
-    await expect(loadError).toBeVisible();
+    // Each refusal arms the next retry, so the jump repeats until the page gives the read up.
+    await expect
+      .poll(
+        async () => {
+          await page.clock.runFor(QUERY_RETRY_DELAY_MS + 50);
+          return loadError.count();
+        },
+        { intervals: [50, 50, 100, 200, 500] }
+      )
+      .toBe(1);
     await expect(core).toBeDisabled();
     await expect(core).not.toHaveValue("");
     await expect(core).toHaveText("Unavailable");

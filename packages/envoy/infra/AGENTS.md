@@ -41,7 +41,7 @@ versions. Never add the module to the root `go.work`.
 | `nats/` | The schema types every NATS component shares, whatever its cloud, importing no cloud package: `RulesArgs`, `nats:Rules`, one direction's permissions of a NATS user, which `aws:User` and `gcp:Permissions` take (`rules.go`). A type shared by components of more than one cloud lives here, never in one cloud's package, so a single-cloud consumer's SDK shows no other cloud's types; `gcp/imports_test.go` fails if the `gcp` package compiles any `aws` package. |
 | `aws/` | `aws:NatsService` (`natsservice.go`) and `aws:WebhookListener` (`webhooklistener.go`): their resources, refusals and outputs, with the goldens of their container definitions in `testdata/`. `fargate.go` holds what both register identically: each child's options, its tags, the log group and the task definition's base. |
 | `aws/rendering/` | What the AWS components render, with no Pulumi in it: the container definitions, the NATS start script, the listener's environment and read policy, the metric filters and the alarms' text. Its own tests hold `ListenerEnv.Check`'s refusals; `aws/`'s pin its texts, building each component from one example. |
-| `gcp/` | `gcp:NatsHub` (`natshub.go`, which also holds `authorization`, the users rendering both hubs share) and its VM's cloud-config, with the secret fetcher's, the listener's seed script's and the joined marker's scripts (`cloudconfig.go`, golden-tested in `testdata/cloud-config.golden`); `gcp:Dispatch` (`dispatch.go`, `dispatch_cloud.go`, `dispatch_kube.go`; `dispatch.go` also holds `podPriorityClass`, the priority-class rule `gcp:ClusteredNatsHub` shares) and its Kubernetes and Serve renderings, golden-tested in `testdata/dispatch-*.golden`, with its front door and the Tailscale Service `svc:<hostname>` it declares itself in `dispatch_frontdoor.go` (`newDispatchTailscaleService`), its one resource outside Google Cloud and the cluster, which is why it requires a `tailscale` provider wherever it builds the front door; `gcp:ClusteredNatsHub`: its inputs, refusals and sizing (`clusteredhub.go`, with its pods' Autopilot size rule in `clusteredhub_autopilot.go`), its Kubernetes provider, the `nats` chart with the transform that protects its StatefulSet, its NetworkPolicy and its PodMonitoring (`clusteredhub_kube.go`), and its tailnet hosts (`clusteredhub_tailnet.go`, golden-tested in `testdata/clustered-hub-*.golden`), with the chart's archive vendored for its render test (`testdata/nats-2.15.1.tgz`); and `tailnet_service.go`, a Tailscale Service host's parts (the tailscale container's environment, the serve configs, the advertiser and preStop scripts, the probes), functions of the Service's name and ports, which every multi-pod Tailscale Service host reuses rather than writing its own. |
+| `gcp/` | `gcp:NatsHub` (`natshub.go`, which also holds `authorization`, the users rendering both hubs share) and its VM's cloud-config, with the secret fetcher's, the listener's seed script's and the joined marker's scripts (`cloudconfig.go`, golden-tested in `testdata/cloud-config.golden`); `gcp:Dispatch` (`dispatch.go`, `dispatch_cloud.go`, `dispatch_kube.go`; `dispatch.go` also holds `podPriorityClass`, the priority-class rule `gcp:ClusteredNatsHub` shares) and its Kubernetes and Serve renderings, golden-tested in `testdata/dispatch-*.golden`, with its front door and the Tailscale Service `svc:<hostname>` it declares itself in `dispatch_frontdoor.go` (`newDispatchTailscaleService`), its one resource outside Google Cloud and the cluster, which is why it requires a `tailscale` provider wherever it builds the front door; `gcp:ClusteredNatsHub`: its inputs, refusals and sizing (`clusteredhub.go`, with its pods' Autopilot size rule in `clusteredhub_autopilot.go`), its Kubernetes provider, the `nats` chart with the transform that protects its StatefulSet, its NetworkPolicy and its PodMonitoring (`clusteredhub_kube.go`), its tailnet hosts (`clusteredhub_tailnet.go`) and the session listener's own workload, the Deployment the hosts forward port 9020 to (`clusteredhub_listener.go`), both golden-tested in `testdata/clustered-hub-*.golden`, with the chart's archive vendored for its render test (`testdata/nats-2.15.1.tgz`); and `tailnet_service.go`, a Tailscale Service host's parts (the tailscale container's environment, the serve configs, the advertiser and preStop scripts, the probes), functions of the Service's name and ports, which every multi-pod Tailscale Service host reuses rather than writing its own. |
 | `docs/` | Each component's operator document beside the module's README: `nats-hub.md` for `gcp:NatsHub`, and for how `gcp:ClusteredNatsHub` runs, updates and is watched beside it. It lives outside the component's package so that an edit to it cuts no release, which a file in a package the plugin compiles does (see Release contract). |
 | `internal/providers/` | `Require`, the providers check. |
 | `internal/pulumitest/` | The tests' harness: the mock engine a component's unit tests run on (`Mocks`, `Construct`, `mocks.go`), and the live tests' plugin build and pulumi CLI. |
@@ -145,11 +145,14 @@ versions. Never add the module to the root `go.work`.
   (`TestDispatchRefusesASeedInTheComponentName`); its resolver refuses a seed in every plain
   string input the component carries (`gcp.dispatchSeededInput`, one row each in
   `TestDispatchRefusesAnNKeySeedInAPlainInput`, `azureFederationAudience` among them);
-  `tailnetAuthKey`, `signInClientSecret`, `natsSeedSecret`, `databaseWaitsFor` and the Azure
+  `tailnetAuthKey`, `signInClientSecret`, `natsSeedSecret`, `databaseWaitsFor`, the Azure
   embedder's Pulumi inputs `azureEmbedEndpoint`, `azureEmbedDeployment`, `azureEmbedKeySecret`,
-  `azureTenantId` and `azureClientId` are checked for a seed once they resolve, before any child
+  `azureTenantId` and `azureClientId`, and the answerer's `azureChatEndpoint`,
+  `azureChatDeployment`, `chatEndpoint` and `chatTokenSecret` are checked for a seed once they
+  resolve, before any child
   takes them (`gcp.refuseDispatchSeedInSecret`, `gcp.refuseDispatchSeed`,
   `TestConstructRefusesASeedInADispatchInput`, `TestConstructRefusesASeedInAnAzureInput`,
+  `TestConstructRefusesASeedInAnAnswererInput`,
   `TestDispatchRefusesASeedInDatabaseWaitsFor`, whose value reaches no resource and whose
   dependencies alone order the Cloud SQL instance); the two credentials `tailnetAuthKey` and
   `signInClientSecret` are also refused blank or whitespace-only then, through the one rule both
@@ -165,9 +168,19 @@ versions. Never add the module to the root `go.work`.
   creates at run time, which the component never parses, creates or waits on) enter by reference,
   so their values never enter the component or Pulumi state
   (`TestDispatchHoldsNoBrokerTokenOrAppKeyMaterial`,
-  `TestDispatchGrantsTheAzureKeyAccessorOnlyWithTheKeyForm`); the GitHub App's four inputs come
-  together, each missing one named, and the Azure inputs come with `azureEmbedEndpoint`, its quota
-  and exactly one credential form (`TestDispatchResolverRefusesInvalidInputs`); and `natsUrl` is
+  `TestDispatchGrantsTheAzureKeyAccessorOnlyWithTheKeyForm`); the answerer's bearer token is a
+  third such reference: `chatTokenSecret`, the one input of its group carrying
+  `provider:"secret"`, a Secret Manager resource path read through the SecretProviderClass
+  `<hostname>-chat-token` with a per-secret accessor member of its own, so the token's own value
+  never enters the component either
+  (`TestDispatchRegistersTheChatTokenSecretOnlyWithTheEndpointForm`); the GitHub App's four
+  inputs come
+  together, each missing one named, the Azure embedder's inputs come with `azureEmbedEndpoint`,
+  its quota and exactly one credential form, and the answerer's come with one of
+  `azureChatEndpoint`, which needs its quota, its deployment and the shared keyless sign-in, and
+  `chatEndpoint`, which needs `chatTokenSecret` and `chatModel` and is refused beside
+  `azureChatEndpoint`; the shared sign-in itself is taken with either Azure endpoint and refused
+  with neither (`TestDispatchResolverRefusesInvalidInputs`); and `natsUrl` is
   checked inside the `ApplyT` that renders the listener container's environment, where core's
   `Env` refusals — which name core's own inputs, `natsUrls` and `socks5Proxy` — are mapped onto
   `natsUrl`, each a `core.InputError` naming it, wrapped with the component's type and name and
@@ -210,7 +223,7 @@ versions. Never add the module to the root `go.work`.
   and its `THIRD_PARTY_NOTICES` in one directory, `envoy-infra-<os>-<arch>/`, which mise's
   `github:` backend strips on install. A mise pin names that archive per platform with a tool alias
   (`README.md`, "The command"), since the same tag carries the plugin's archives and
-  `github:sjawhar/legion` the `legion` command's. Changing either side breaks every consumer's
+  `github:cybermonklabs/legion` the `legion` command's. Changing either side breaks every consumer's
   install. A version is cut only from what the plugin and the command build from: the workflow's
   version step lists, with `go list -deps ./cmd/...` for each target, the directories of the
   workspace's modules either compiles in, and adds those modules' `go.mod` and `go.sum`, the
@@ -436,8 +449,14 @@ the SDK `pulumi package add` generates. They take:
   `host/heldportwrapper/Dockerfile` on top of the smoke image (`packages/envoy/docker/Dockerfile`).
   A live test without it fails at once, printing both builds, and never builds one itself;
 - `ENVOY_INFRA_DOCKER_PLUGIN`, the path of the docker provider plugin tarball of
-  `pulumitest.DockerPluginVersion` for this machine's platform, whose SHA-256 the caller has
-  checked. The test binary refuses a tarball of another version, installs it into a `PULUMI_HOME`
+  `pulumitest.DockerPluginVersion` for this machine's platform.
+  The `pulumi-docker` row of `.github/ci-tools.yaml` pins both that version and the tarball's
+  SHA-256, and `.github/actions/install-docker-plugin` fetches it through
+  `.github/scripts/ci-tools.sh`, which checks that digest before the bytes reach the path it
+  hands on.
+  That row carries a second source as well, so an outage of GitHub's release assets does not stop
+  the job.
+  The test binary refuses a tarball of another version, installs it into a `PULUMI_HOME`
   it makes for itself in a temporary directory and removes when its tests end, so the CLI
   downloads no plugin and the caller's own Pulumi home is untouched.
 
@@ -455,8 +474,14 @@ it, and every test runs that build. A package whose tests use the harness calls
 `os.Exit(pulumitest.Main(m))` from its `TestMain`, which removes that `PULUMI_HOME` and that build.
 
 To run them, install the CLI as `.github/actions/install-pulumi` does and download the docker
-provider plugin as the `envoy-smoke` job's "Download the docker provider plugin the live tests pin"
-step does, each checked against the SHA-256 pinned there; then, from the repository root:
+provider plugin as `.github/actions/install-docker-plugin` does.
+The `pulumi-docker` row of `.github/ci-tools.yaml` pins the plugin's version and its SHA-256, that
+action fetches it through `.github/scripts/ci-tools.sh`, and the row carries a second source so a
+release-asset outage does not stop the job.
+That helper reads the row by parsing the manifest with `python3` and PyYAML, so a machine running
+either fetch by hand needs both; without PyYAML the fetch ends in an import traceback rather than
+a tarball.
+Then, from the repository root:
 
 ```sh
 docker buildx build --load -t legion-envoy-smoke:local -f packages/envoy/docker/Dockerfile .

@@ -98,12 +98,17 @@ func testSpec() runtime.SpawnSpec {
 // bundle's root and LEGION_GH_PATH the real gh the `legion gh` wrapper runs — PI_SHELL_PREFIX over
 // the launcher directory alone, PI_CONFIG_FILES holding the operator's overlays and the role's own
 // and nothing else — empty where neither names one — the XDG base directories under
-// `<state_dir>/home` explicitly, the caller's own variables sorted, then one `<NAME>_FILE` pointer
+// `<state_dir>/home` explicitly, OTEL_RESOURCE_ATTRIBUTES, which the runtime composes from the
+// operator's own attributes and this launch's issue and role (here no operator sets any, so it is
+// the launch's two alone), the caller's own variables sorted, then one `<NAME>_FILE` pointer
 // per secret — the boot token's first. PATH is never a pair: tmux would discard it (LEGION-91); the
 // shell command exports it. No other tool path is a pair: a pane's git and jj are its PATH's. No
-// secret value is in any pair.
+// secret value is in any pair. This pane's repository is one the project names, so it carries
+// LEGION_ISSUE_TRAILER beside its issue, the key its commits are stamped with; the pane below,
+// whose repository the project does not name, carries no such pair rather than an empty one.
 func TestPanePairs(t *testing.T) {
 	spec := testSpec()
+	spec.IssueTrailer = spec.Issue
 	in := PaneInputs{
 		StateDir:    "/state",
 		Workspace:   "/state/workspaces/LEGION-43",
@@ -120,6 +125,7 @@ func TestPanePairs(t *testing.T) {
 	want := []string{
 		"-e", "LEGION_TREE=LEGION-42",
 		"-e", "LEGION_ISSUE=LEGION-43",
+		"-e", "LEGION_ISSUE_TRAILER=LEGION-43",
 		"-e", "LEGION_ROLE=tester",
 		"-e", "LEGION_GENERATION=2",
 		"-e", "LEGION_PROJECT=omp",
@@ -141,6 +147,7 @@ func TestPanePairs(t *testing.T) {
 		"-e", "XDG_CACHE_HOME=/state/home/.cache",
 		"-e", "XDG_DATA_HOME=/state/home/.local/share",
 		"-e", "XDG_STATE_HOME=/state/home/.local/state",
+		"-e", "OTEL_RESOURCE_ATTRIBUTES=legion.issue=LEGION-43,legion.role=tester",
 		"-e", "JJ_USER=legion-tester",
 		"-e", "TZ=UTC",
 		"-e", "LEGION_BOOT_TOKEN_FILE=/state/secrets/legion-omp-legion-43-tester",
@@ -156,6 +163,16 @@ func TestPanePairs(t *testing.T) {
 	for _, pair := range panePairs(spec, in, files) {
 		if strings.HasPrefix(pair, "ENVOY_NATS_URL=") {
 			t.Errorf("an unconfigured NATS still produced %q", pair)
+		}
+	}
+
+	// A pane whose repository the project does not name stamps nothing: no LEGION_ISSUE_TRAILER
+	// pair rather than an empty one.
+	unstamped := spec
+	unstamped.IssueTrailer = ""
+	for _, pair := range panePairs(unstamped, in, files) {
+		if strings.HasPrefix(pair, "LEGION_ISSUE_TRAILER=") {
+			t.Errorf("a pane that stamps no issue key still produced %q", pair)
 		}
 	}
 
@@ -188,28 +205,40 @@ func TestPanePairs(t *testing.T) {
 	}
 }
 
-// The four stall limits a phase worker's reminder runs on reach a pane as ordinary -e pairs: the
-// daemon merges the ones it holds into the spec's Env (the daemon package's workerSpawnSpec) and
-// a pane carries Env verbatim, so nothing of them is tmux's own.
+// The seven stall limits a Legion session's turn runs on reach a pane as ordinary -e pairs: the
+// daemon merges the ones it holds into the spec's Env (the daemon package's SpawnSpec, after its
+// fork) and a pane carries Env verbatim, so nothing of them is tmux's own, and the controller's
+// pane is told them exactly as a phase worker's is.
 func TestPanePairsCarryTheStallLimits(t *testing.T) {
-	spec := testSpec()
 	limits := map[string]string{
-		"LEGION_STALL_REMINDER_MS":     "45000",
-		"LEGION_STALL_WAITING_MS":      "900000",
-		"LEGION_STALL_RESUME_MS":       "15000",
 		"LEGION_STALL_ARCHITECT_AFTER": "3",
+		"LEGION_STALL_CALL_BOUND_MS":   "3600000",
+		"LEGION_STALL_CALL_GRACE_MS":   "300000",
+		"LEGION_STALL_REMINDER_MS":     "45000",
+		"LEGION_STALL_RESUME_MS":       "15000",
+		"LEGION_STALL_STEP_MS":         "120000",
+		"LEGION_STALL_WAITING_MS":      "900000",
 	}
-	maps.Copy(spec.Env, limits)
 	in := PaneInputs{
 		StateDir: "/state", Workspace: "/state/workspaces/LEGION-43", DaemonURL: "http://127.0.0.1:13370",
 		EnvoyURL: "http://127.0.0.1:9020", GHOwnersDir: "/state/secrets/legion-omp-legion-43-tester-gh",
 		GHDefault: "acme", GH: "/usr/bin/gh",
 	}
-	pairs := panePairs(spec, in, secretFiles("/state", spec))
-	for name, value := range limits {
-		if !slices.Contains(pairs, name+"="+value) {
-			t.Errorf("the pane's -e pairs = %q, want %q among them", pairs, name+"="+value)
-		}
+	controller := runtime.SpawnSpec{
+		Claim: claim.ControllerToken("omp"), Project: "omp", Role: claim.RoleController, Generation: 1,
+		BootToken: "boot-secret", Env: map[string]string{},
+		Prompt: runtime.PromptParts{RolePromptPaths: []string{"/roles/controller-root.md"}},
+	}
+	for kind, spec := range map[string]runtime.SpawnSpec{"a phase worker": testSpec(), "the controller": controller} {
+		t.Run(kind, func(t *testing.T) {
+			maps.Copy(spec.Env, limits)
+			pairs := panePairs(spec, in, secretFiles("/state", spec))
+			for name, value := range limits {
+				if !slices.Contains(pairs, name+"="+value) {
+					t.Errorf("%s's -e pairs = %q, want %q among them", kind, pairs, name+"="+value)
+				}
+			}
+		})
 	}
 }
 
@@ -272,10 +301,13 @@ func TestPaneVariablesNamesNoOverlayOfLegionsOwn(t *testing.T) {
 }
 
 // A spec the runtime cannot honour exactly is refused before anything touches the disk or tmux:
-// the shared refusal against tmux's own runtime-owned variables (runtime.ValidateSpawnSpec, tested
-// with its own table, which also holds the claim token to the one its coordinates derive), then
+// the shared refusal against tmux's own runtime-owned and composed variables
+// (runtime.ValidateSpawnSpec over ownedNames, tested with its own table, which also holds the
+// claim token to the one its coordinates derive), then
 // what is tmux's alone: a pane's workspace is provisioned on the daemon's host, never recovered
-// from a ref, and the controller's marker is the runtime's to set.
+// from a ref, and the controller's marker is the runtime's to set. A spec that sets a composed
+// name is refused too: the pane would carry two pairs of it, and the one the agent's process
+// reads is then the C library's choice rather than the composition's.
 func TestValidateSpawnSpecRefuses(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -285,6 +317,8 @@ func TestValidateSpawnSpecRefuses(t *testing.T) {
 		{"no claim", func(s *runtime.SpawnSpec) { s.Claim = "" }, "spawn: no claim token"},
 		{"an XDG directory", func(s *runtime.SpawnSpec) { s.Env["XDG_CONFIG_HOME"] = "/home/me/.config" }, "spawn legion-omp-legion-43-tester: Env sets XDG_CONFIG_HOME, which the runtime sets itself"},
 		{"the controller's marker", func(s *runtime.SpawnSpec) { s.Env["LEGION_CONTROLLER"] = "1" }, "spawn legion-omp-legion-43-tester: Env sets LEGION_CONTROLLER, which the runtime sets itself"},
+		{"the composed spend attributes", func(s *runtime.SpawnSpec) { s.Env[runtime.SpendAttributesVariable] = "legion.issue=OTHER-1" },
+			"spawn legion-omp-legion-43-tester: Env sets " + runtime.SpendAttributesVariable + ", which the runtime sets itself"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := testSpec()
@@ -356,7 +390,8 @@ func TestNewRefusesAProviderKeyEveryPaneCarries(t *testing.T) {
 				Project: "omp", StateDir: stateDir, StreamAddress: "unix:///s", DaemonURL: "http://127.0.0.1:1",
 				EnvoyURL: "http://127.0.0.1:2", Launchers: ompOnly("omp"), StopGrace: time.Second, ProbeInterval: time.Second,
 				AdoptTimeout: time.Second, Conns: fake.NewConns(), Environ: []string{"PATH=/usr/bin:/bin"},
-				Executable: func() (string, error) { return "/opt/legion", nil }, ProviderEnvDir: dir, GitHubCredential: staticCredential, GH: fakeGH, RepositoryOwner: acmeOwner,
+				Executable: func() (string, error) { return "/opt/legion", nil }, ProviderEnvDir: dir, GitHubCredential: staticCredential,
+				ControllerCredential: staticControllerCredential, GH: fakeGH, ClaimRepository: acmeWidgets,
 			})
 			if err == nil || err.Error() != tc.want {
 				t.Fatalf("New = %v, want %q", err, tc.want)
@@ -390,7 +425,8 @@ func TestNewRefusesAProviderDispatchTokenOnlyWhenDispatchIsConfigured(t *testing
 				Project: "omp", StateDir: stateDir, StreamAddress: "unix:///s", DaemonURL: "http://127.0.0.1:1",
 				EnvoyURL: "http://127.0.0.1:2", Launchers: ompOnly("omp"), StopGrace: time.Second, ProbeInterval: time.Second,
 				AdoptTimeout: time.Second, Conns: fake.NewConns(), Environ: []string{"PATH=/usr/bin:/bin"},
-				Executable: func() (string, error) { return "/opt/legion", nil }, ProviderEnvDir: dir, GitHubCredential: staticCredential, GH: fakeGH, RepositoryOwner: acmeOwner,
+				Executable: func() (string, error) { return "/opt/legion", nil }, ProviderEnvDir: dir, GitHubCredential: staticCredential,
+				ControllerCredential: staticControllerCredential, GH: fakeGH, ClaimRepository: acmeWidgets,
 			}
 			if tc.dispatch {
 				opts.DispatchURL = "http://127.0.0.1:18766"
@@ -408,28 +444,55 @@ func TestNewRefusesAProviderDispatchTokenOnlyWhenDispatchIsConfigured(t *testing
 	}
 }
 
-// runtimeOwned is exactly what a tree pane is told by the runtime itself: every name it sets with
-// Env empty and no secret but the boot token, every optional value configured. A name added to the
-// pairs and not to runtimeOwned is one a spec could override; a name left in runtimeOwned that the
-// pairs no longer set is one a spec is refused for nothing. A controller pane is told the same gh
-// pairs as any other, so the sets are equal.
+// runtimeOwned and the composed names together are exactly what a tree pane is told by the runtime
+// itself: every name it sets with Env empty and no secret but the boot token, every optional value
+// configured — a repository the project names among them, so the pane stamps its commits and is
+// told the key. A name added to
+// the pairs and in neither set is one a spec could override; a name left in runtimeOwned that
+// the pairs no longer set is one a spec is refused for nothing. A controller pane is told the same
+// gh pairs as any other, so the sets are equal.
+//
+// PUBLIC_LEAK_CHECK is the one pair the runtime sets that is deliberately not owned, so it is
+// left out of the inputs here and read on its own below: an operator's pane variable and a
+// spec's own Env must be able to point a pane at another copy of the check, and a name the
+// runtime owned could be set by neither
+// (TestAnOperatorsCheckAndASpecsOutrankTheResolvedOne).
 func TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime(t *testing.T) {
 	spec := testSpec()
 	spec.Env, spec.Secrets = nil, nil
+	spec.IssueTrailer = spec.Issue
 	in := PaneInputs{
 		StateDir: "/state", Workspace: "/state/workspaces/LEGION-43", DaemonURL: "http://127.0.0.1:13370",
 		EnvoyURL: "http://127.0.0.1:9020", NATSURLs: []string{"nats://a:4222"},
 		DispatchURL: "http://127.0.0.1:18766", DispatchTokenFile: "/state/secrets/" + runtime.DispatchTokenFileName,
 		GHOwnersDir: "/state/secrets/legion-omp-legion-43-tester-gh", GHDefault: "acme", GH: "/usr/bin/gh",
 	}
+	owned := maps.Clone(runtimeOwned)
+	maps.Copy(owned, composed)
 	told := map[string]bool{}
 	pairs := panePairs(spec, in, secretFiles("/state", spec))
 	for i := 1; i < len(pairs); i += 2 {
 		name, _, _ := strings.Cut(pairs[i], "=")
 		told[name] = true
 	}
-	if !reflect.DeepEqual(told, runtimeOwned) {
-		t.Errorf("a pane is told %v by the runtime, and runtimeOwned is %v", slices.Sorted(maps.Keys(told)), slices.Sorted(maps.Keys(runtimeOwned)))
+	if !reflect.DeepEqual(told, owned) {
+		t.Errorf("a pane is told %v by the runtime, and runtimeOwned with the composed names is %v", slices.Sorted(maps.Keys(told)), slices.Sorted(maps.Keys(owned)))
+	}
+	// The resolved check is the one name beyond that set, and it joins neither owned set.
+	in.LeakCheck = "/opt/machine/public-leak-check.sh"
+	withCheck := map[string]bool{}
+	pairs = panePairs(spec, in, secretFiles("/state", spec))
+	for i := 1; i < len(pairs); i += 2 {
+		name, _, _ := strings.Cut(pairs[i], "=")
+		withCheck[name] = true
+	}
+	want := maps.Clone(owned)
+	want["PUBLIC_LEAK_CHECK"] = true
+	if !reflect.DeepEqual(withCheck, want) {
+		t.Errorf("a pane told a resolved check is told %v, want the runtime's own names and PUBLIC_LEAK_CHECK", slices.Sorted(maps.Keys(withCheck)))
+	}
+	if ownedNames["PUBLIC_LEAK_CHECK"] {
+		t.Error("PUBLIC_LEAK_CHECK is in ownedNames, so a spec that points its pane at another copy of the check is refused")
 	}
 }
 

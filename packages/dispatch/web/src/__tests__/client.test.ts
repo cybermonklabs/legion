@@ -18,6 +18,8 @@ import {
   type UploadImplementation,
 } from "../api/client";
 import { QUERY_RETRY_DELAY_MS, queryRetryDelay } from "../api/query-client";
+import { FIRST_BACKOFF_MS, writeUnderKey } from "../features/writes/keyed-write";
+import { onFakeClock, settle } from "./fake-clock";
 
 interface RecordedRequest {
   body?: BodyInit | null;
@@ -79,18 +81,6 @@ function outcome(pending: Promise<unknown>): Promise<unknown> {
  *  `Idempotency-Key` and a `PUT` or a `DELETE` leaves off. */
 function keyed(key: string): { key: string } {
   return { key };
-}
-
-/** Runs `body` on the fake clock. A timer left at zero delay would hang a later test's `waitFor`
- *  once the real clock is back, so the fake one moves a millisecond before it goes. */
-async function onFakeClock(body: () => Promise<void>): Promise<void> {
-  jest.useFakeTimers();
-  try {
-    await body();
-  } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
-  }
 }
 
 // A read Dispatch never answers would leave its page loading for good: every GET gives up at the
@@ -437,6 +427,48 @@ test("a write's failures are classified by kind", async () => {
   });
 });
 
+// W28. An answer whose body stops part way down says nothing of what Dispatch did, as a
+// connection that never answered says nothing: it is a `NetworkError`, which the write waits out
+// and asks again under its own key. Refused instead, its Retry would mint a new key and Dispatch
+// would make the person's write a second time.
+test("a 2xx whose body read fails is a NetworkError, retried under its key", async () => {
+  // A browser errors the body of a response whose connection dropped under it.
+  const cutOff = () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start: (body) => body.error(new TypeError("network error")),
+      }),
+      { status: 201 }
+    );
+
+  const dropped = createApiClient(async () => cutOff());
+  expect(
+    await outcome(dropped.createIssue({ project: "CORE", title: "x" }, keyed("k")))
+  ).toBeInstanceOf(NetworkError);
+
+  // And the write's policy admits it: `retryAfter` gives a `NetworkError` a wait rather than
+  // `undefined`, so the write waits its first backoff and asks again under the same key.
+  await onFakeClock(async () => {
+    let attempts = 0;
+    const api = createApiClient(async () => {
+      attempts += 1;
+      return attempts === 1 ? cutOff() : Response.json({ key: "CORE-1" }, { status: 201 });
+    });
+
+    const made = writeUnderKey(
+      (bounds) => api.createIssue({ project: "CORE", title: "x" }, bounds),
+      "k",
+      { carried: null }
+    );
+    await settle();
+    expect(attempts).toBe(1);
+    jest.advanceTimersByTime(FIRST_BACKOFF_MS);
+
+    expect(await made).toMatchObject({ key: "CORE-1" });
+    expect(attempts).toBe(2);
+  });
+});
+
 // W26. Every write names the person who pressed it (`Dispatch-Login`), so Dispatch refuses it
 // under anyone else's session; a write with no login says nothing.
 test("a write carries the login of the person who pressed it", async () => {
@@ -606,7 +638,7 @@ test("API client sends the documented method and JSON body for mutations", async
   });
 });
 
-test("API client sends comment edits and reopen actions to their endpoints", async () => {
+test("API client sends comment edits to their endpoint, and the reopen with no body at all", async () => {
   const stub = stubFetch();
   const api = createApiClient(stub.fetch);
 
@@ -618,7 +650,11 @@ test("API client sends comment edits and reopen actions to their endpoints", asy
     ["POST", "/api/v1/comments/comment-1/reopen"],
   ]);
   expect(JSON.parse(stub.requests[0]?.body as string)).toEqual({ body: "Revised comment" });
-  expect(JSON.parse(stub.requests[1]?.body as string)).toEqual({});
+  // `POST /api/v1/comments/{id}/reopen` takes no request body: the route reads the person from
+  // the caller's own credential (`comment_actions.go`), so the document declares none for it and
+  // the client sends none, which leaves the request without a body and without a Content-Type.
+  expect(stub.requests[1]?.body).toBeUndefined();
+  expect(stub.requests[1]?.init?.headers).not.toHaveProperty("Content-Type");
 });
 
 test("API client sends repository project mapping requests to their settings routes", async () => {
@@ -742,11 +778,11 @@ test("API client encodes list filters and artifact version query parameters", as
     status: "in progress",
     parent: "CORE-1",
     updated_since: "2026-09-10T12:00:00Z",
-    labels: ["frontend", "docs"],
+    label: ["frontend", "docs"],
   });
   await api.getIssueEvents("CORE-1", { after: 3, limit: 20 });
   await api.getIssueEvents("CORE-1", { before: 40, order: "desc" });
-  await api.getIssueEvents("CORE-1", { ids: ["42", "10"] });
+  await api.getIssueEvents("CORE-1", { ids: "42,10" });
   await api.listComments("CORE-1", "spec");
 
   expect(stub.requests.map(({ path }) => path)).toEqual([
@@ -765,6 +801,35 @@ test("API client searches with the documented query parameters", async () => {
 
   expect(stub.requests.map(({ path }) => path)).toEqual([
     "/api/v1/search?q=astrolabe&project=LEGION&limit=5",
+  ]);
+});
+test("a search of the members every build reads goes to /api/v1/search", async () => {
+  const stub = stubFetch(() => Response.json({ results: [], took_ms: 1 }));
+  const api = createApiClient(stub.fetch);
+
+  await api.search("astrolabe");
+  await api.search("astrolabe", { project: "LEGION", limit: 5, offset: 10 });
+
+  expect(stub.requests.map(({ path }) => path)).toEqual([
+    "/api/v1/search?q=astrolabe",
+    "/api/v1/search?q=astrolabe&project=LEGION&limit=5&offset=10",
+  ]);
+});
+// The bar's own filters ask for a path of their own: a Dispatch released before them answers it
+// `404 no route`, which is a refusal, where it answers `/api/v1/search` `200` with the filter
+// dropped, which is unnarrowed rows under the filters a person chose.
+test("a search carrying a member everyBuildReadsSearch drops goes to /api/v1/search/results", async () => {
+  const stub = stubFetch(() => Response.json({ results: [], took_ms: 1 }));
+  const api = createApiClient(stub.fetch);
+
+  await api.search("astrolabe", { status: "in_progress" });
+  await api.search("astrolabe", { number_project: "INFRA", keywords_only: true });
+  await api.search("astrolabe", { author: "sami@theorem.dev", updated_since: "2026-11-01" });
+
+  expect(stub.requests.map(({ path }) => path)).toEqual([
+    "/api/v1/search/results?q=astrolabe&status=in_progress",
+    "/api/v1/search/results?q=astrolabe&number_project=INFRA&keywords_only=true",
+    "/api/v1/search/results?q=astrolabe&author=sami%40theorem.dev&updated_since=2026-11-01",
   ]);
 });
 test("API client reaches project artifact and owner-scoped document endpoints", async () => {
@@ -1048,7 +1113,7 @@ test("API client reaches every remaining documented endpoint", async () => {
   await api.listIssueAskThreads("CORE-1");
   await api.getAsk("ask-1");
   await api.listMyAnswers({ limit: 50, offset: 100 });
-  await api.listMyReplies({ limit: 50, offset: 0 });
+  await api.listMyReplies({ limit: 50 });
   await api.listMyReplies({ issue: "CORE-1", limit: 200 });
   await api.listMyReplies({ artifact: "artifact-1", limit: 200 });
   await api.markThreadRead("comment-1", "2026-10-12T00:00:00.000Z", keyed("put-1"));
@@ -1121,7 +1186,7 @@ test("API client reaches every remaining documented endpoint", async () => {
     ["GET", "/api/v1/issues/CORE-1/asks?state=all&thread=1"],
     ["GET", "/api/v1/asks/ask-1"],
     ["GET", "/api/v1/me/answers?limit=50&offset=100"],
-    ["GET", "/api/v1/me/replies?limit=50&offset=0"],
+    ["GET", "/api/v1/me/replies?limit=50"],
     ["GET", "/api/v1/me/replies?issue=CORE-1&limit=200"],
     ["GET", "/api/v1/me/replies?artifact=artifact-1&limit=200"],
     ["PUT", "/api/v1/me/threads/comment-1/read"],
@@ -1238,6 +1303,8 @@ const CLIENT_PLUMBING = new Set([
   "post",
   "put",
   "remove",
+  "read",
+  "patch",
 ]);
 
 /** The one write Dispatch's keyed layer does not take, and so the one the page makes outside the
@@ -1259,8 +1326,11 @@ test("every write method of the client goes through the one keyed path", async (
   const stub = stubFetch(() => Response.json({}));
   const api = createApiClient(stub.fetch);
   const told: string[] = [];
-  /** Stands for any argument: a path segment, a JSON body, and a press's bounds. */
+  /** Stands for any argument: a path segment, a JSON body, an artifact's owner, and a press's
+   *  bounds. `issue` names the owner an upload's three routes are picked by, so the census
+   *  reaches one of them rather than building a path with no owner in it. */
   const anything = Object.assign(new String("owner/repo"), {
+    issue: "CORE-1",
     key: "census-key",
     login: "alice",
     sent: (request: { method: string; path: string }) =>

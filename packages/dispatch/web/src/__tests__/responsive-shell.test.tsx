@@ -1,15 +1,26 @@
 import { afterEach, expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { api } from "../api/client";
-import type { InboxRow, IssueDetails } from "../api/types";
+import { ApiError, api } from "../api/client";
+import type { Agent, InboxRow, IssueDetails, UserAgentState } from "../api/types";
 import { AuthGate } from "../app";
+import { liveViewsOf } from "../features/agent-view/live-views";
+import { jump, onFakeClock } from "./fake-clock";
+import { answerAgentStates } from "./send-answers";
+// The issue page is a lazy route of the app. Its module's first compile is not what a wait is
+// for, so the module is loaded here, with the test file, and no wait measures that load.
+import "../features/issue/IssuePage";
 
 const issue: IssueDetails = {
   route_status: null,
   route_holder: null,
+  route_status_reason: null,
+  holder_state: null,
+  last_seen: null,
+  takeable_at: null,
   artifacts: [
     {
       created_at: "2026-09-10T00:00:00Z",
@@ -20,6 +31,8 @@ const issue: IssueDetails = {
       kind: "doc",
       name: "Spec",
       primary: true,
+      ref_key: "CORE-1/spec",
+      session_id: null,
       slug: "spec",
       versions: [],
     },
@@ -28,6 +41,7 @@ const issue: IssueDetails = {
   closed_at: null,
   created_at: "2026-09-10T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
+  design_gates: [],
   external_links: [],
   key: "CORE-1",
   labels: [],
@@ -40,7 +54,10 @@ const issue: IssueDetails = {
   assignee: null,
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+  decisions_artifact_id: "",
+  plan_artifact_id: "",
   primary_artifact_id: "artifact-1",
+  verification_artifact_id: "",
   project: "CORE",
   referenced_by_count: 0,
   route: null,
@@ -54,15 +71,20 @@ const issue: IssueDetails = {
 };
 
 const originalApi = {
+  getAsk: api.getAsk,
   getInbox: api.getInbox,
   getIssue: api.getIssue,
+  getIssueSubscribers: api.getIssueSubscribers,
   getMyAgentState: api.getMyAgentState,
   getMyState: api.getMyState,
+  listAgents: api.listAgents,
   listComments: api.listComments,
   listIssueAsks: api.listIssueAsks,
   listIssues: api.listIssues,
   listMyReplies: api.listMyReplies,
+  listProjectArchitectureSources: api.listProjectArchitectureSources,
   listProjects: api.listProjects,
+  listRepoProjects: api.listRepoProjects,
   whoAmI: api.whoAmI,
 };
 const originalMatchMedia = window.matchMedia;
@@ -81,11 +103,17 @@ function setViewport(width: number): void {
     }) as MediaQueryList) as typeof window.matchMedia;
 }
 
-function renderShellAt(width: number, inbox: InboxRow[] = [], unreadThreads = 0): void {
+function renderShellAt(
+  width: number,
+  inbox: InboxRow[] = [],
+  unreadThreads = 0,
+  listedAgents: Agent[] = []
+): QueryClient {
   setViewport(width);
   api.whoAmI = async () => ({ event_head: "0", kind: "user", login: "alice" });
   api.listMyReplies = async (query) => ({
-    limit: query.limit,
+    as_of: "2026-10-12T00:00:00Z",
+    limit: query.limit ?? 0,
     offset: 0,
     rows: [],
     total: unreadThreads,
@@ -97,10 +125,12 @@ function renderShellAt(width: number, inbox: InboxRow[] = [], unreadThreads = 0)
       resolved_repo: null,
       route_status: null,
       route_holder: null,
+      route_status_reason: null,
       key: issue.key,
       open_asks: 0,
       progress: { tasks: null, children: null },
       last_seq: 0,
+      labels: [],
       parent: issue.parent,
       blocked_by: issue.blocked_by,
       primary_artifact_id: issue.primary_artifact_id,
@@ -112,6 +142,8 @@ function renderShellAt(width: number, inbox: InboxRow[] = [], unreadThreads = 0)
       rank: issue.rank,
       title: issue.title,
       updated_at: issue.updated_at,
+      created_by: issue.created_by,
+      created_at: issue.created_at,
     },
   ];
   api.getMyState = async () => ({
@@ -120,24 +152,43 @@ function renderShellAt(width: number, inbox: InboxRow[] = [], unreadThreads = 0)
   api.getIssue = async () => issue;
   api.getInbox = async () => inbox;
   api.listProjects = async () => [
-    { created_at: "2026-09-10T00:00:00Z", key: "CORE", name: "Core", open_asks: 0 },
+    {
+      created_at: "2026-09-10T00:00:00Z",
+      key: "CORE",
+      name: "Core",
+      open_asks: 0,
+      gated_steps: [],
+    },
   ];
   api.listIssueAsks = async () => [];
   api.listComments = async () => [];
+  api.listAgents = async () => listedAgents;
+  // The issue page under the shell reads these of its own; no test here asserts them.
+  api.getIssueSubscribers = async () => [];
+  api.listRepoProjects = async () => [];
+  api.listProjectArchitectureSources = async () => [];
+  // Each ask card refreshes its own thread; the row the Inbox listed carries the one Dispatch
+  // would answer with.
+  api.getAsk = async (id) => {
+    const row = inbox.find((ask) => ask.id === id);
+    if (row === undefined) {
+      throw new Error(`the Inbox lists no ask ${id}`);
+    }
+    const { thread, ...ask } = row;
+    return { ...thread, ask };
+  };
 
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
   render(
-    <QueryClientProvider
-      client={
-        new QueryClient({
-          defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-        })
-      }
-    >
+    <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={["/issues/CORE-1/children"]}>
         <AuthGate />
       </MemoryRouter>
     </QueryClientProvider>
   );
+  return queryClient;
 }
 
 afterEach(() => {
@@ -152,9 +203,13 @@ test("tablet uses the drawer and bottom-sheet controls instead of hidden desktop
   await waitFor(() =>
     expect(screen.queryByRole("button", { name: "Open navigation" })).not.toBeNull()
   );
-  expect(screen.queryByRole("button", { name: /Open review panel/ })).not.toBeNull();
-  expect(screen.queryByRole("navigation", { name: "Issues" })).toBeNull();
-  expect(screen.queryByRole("complementary", { name: "Review margin" })).toBeNull();
+  // The margin's own code is fetched after the first paint (`features/margin/MarginColumn.tsx`),
+  // so its control arrives on a later frame than the shell's.
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: /Open review panel/ })).not.toBeNull()
+  );
+  expect(screen.queryByRole("navigation", { name: "Issues" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("complementary", { name: "Review margin" })).not.toBeInTheDocument();
 });
 
 test("desktop exposes the persistent sidebar navigation and review margin", async () => {
@@ -163,22 +218,33 @@ test("desktop exposes the persistent sidebar navigation and review margin", asyn
   await waitFor(() =>
     expect(screen.queryByRole("navigation", { name: "Navigation" })).not.toBeNull()
   );
-  expect(screen.queryByRole("complementary", { name: "Review margin" })).not.toBeNull();
-  expect(screen.queryByRole("button", { name: "Open navigation" })).toBeNull();
-  expect(screen.queryByRole("button", { name: /Open review panel/ })).toBeNull();
+  // As above: the margin lands once its chunk has.
+  await waitFor(() =>
+    expect(screen.queryByRole("complementary", { name: "Review margin" })).not.toBeNull()
+  );
+  expect(screen.queryByRole("button", { name: "Open navigation" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Open review panel/ })).not.toBeInTheDocument();
 });
 test("compact top bar shows only asks waiting on the viewer", async () => {
   renderShellAt(800, [
     {
       anchor: null,
       answer: null,
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       author: { id: "session-1", kind: "session" },
+      block_id: null,
       created_at: "2026-09-10T00:00:00Z",
       edited_at: null,
       id: "ask-waiting",
-      // The badge counts the reader's own: the shell signs in as `alice`.
+      // The badge counts the questions waiting on the reader, which is what the server answers
+      // in `waiting_on_person`; the shell signs in as `alice`.
       issue: { assignee: "alice", key: "CORE-1", title: "Responsive shell" },
       issue_key: "CORE-1",
+      last_reply: null,
+      waiting_on_person: "alice",
       kind: "question",
       multiple: false,
       opened_event_id: 1,
@@ -192,6 +258,7 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
         route: null,
         route_status: null,
         route_holder: null,
+        route_status_reason: null,
       },
       priority: null,
       snoozed_until: null,
@@ -203,7 +270,12 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
     {
       anchor: null,
       answer: null,
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
       author: { id: "session-2", kind: "session" },
+      block_id: null,
       created_at: "2026-09-10T00:00:00Z",
       edited_at: null,
       id: "ask-answered",
@@ -222,6 +294,7 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
         route: null,
         route_status: null,
         route_holder: null,
+        route_status_reason: null,
       },
       priority: null,
       snoozed_until: null,
@@ -232,24 +305,166 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
     },
   ]);
 
-  expect(await screen.findByText("Needs you 1")).not.toBeNull();
+  // One number now: the asks waiting on the reader and the threads they have not read.
+  expect(await screen.findByText("Inbox 1")).not.toBeNull();
 });
 
-test("the compact header links Replies N to the Replies page, beside the Agents replies badge", async () => {
+test("the compact header's one Inbox link counts the unread threads too and opens the Inbox", async () => {
   api.getMyAgentState = async () => ({ planner: { unread_replies: 1 } });
   renderShellAt(800, [], 2);
 
-  const replies = await screen.findByRole("link", { name: "Replies 2" });
-  expect(replies.getAttribute("href")).toBe("/replies");
+  const inbox = await screen.findByRole("link", { name: "Inbox 2" });
+  expect(inbox).toHaveAttribute("href", "/");
   const agents = screen.getByRole("link", { name: "New reply 1" });
-  expect(replies.previousElementSibling).toBe(agents);
+  expect(inbox.nextElementSibling).toBe(agents);
 });
 
-test("the compact header shows no Replies link while nothing is unread", async () => {
+test("the compact header's Inbox link is plain while nothing waits and nothing is unread", async () => {
   renderShellAt(800, [], 0);
 
   await waitFor(() =>
     expect(screen.queryByRole("button", { name: "Open navigation" })).not.toBeNull()
   );
-  expect(screen.queryByRole("link", { name: /^Replies/ })).toBeNull();
+  expect(screen.getByRole("link", { name: "Inbox" })).toHaveAttribute("href", "/");
+  expect(screen.queryByRole("link", { name: /^Replies/ })).not.toBeInTheDocument();
+});
+
+/** A session Dispatch lists, for the rail's pinned rows. */
+function agent(sessionId: string, title: string): Agent {
+  return {
+    capabilities: ["aside"],
+    dir: "/workspaces/legion",
+    host: "build-host",
+    last_activity: null,
+    last_seen: Date.now(),
+    machine_id: "build-host",
+    open_asks: 0,
+    roles: [],
+    session_id: sessionId,
+    state: "running",
+    title,
+  };
+}
+
+const PINS_KEY = "dispatch.agents.pinned:alice";
+
+// The pins were this browser's until INFRA-812 made them the person's. The shell writes each id
+// the old key holds as a pin and removes the key, so the person's pins survive the change
+// without being pinned again by hand, and each browser migrates only its own list.
+//
+// One write at a time, in the order the key kept them: Dispatch stamps each pin as it arrives
+// and `pinned_at` is the order the rail draws. The key holds every id until the last of them
+// has landed, so nothing in between - a reload, a build rolled back - loses a pin that was
+// never written.
+test("the shell writes the browser's old pins one at a time and forgets the key once they land", async () => {
+  const planner = Promise.withResolvers<UserAgentState>();
+  const putAgentState = answerAgentStates().mockImplementation(async (session) =>
+    session === "planner-session"
+      ? planner.promise
+      : { pinned_at: "2026-09-14T12:00:01Z", unread_replies: 0 }
+  );
+  window.localStorage.setItem(PINS_KEY, JSON.stringify(["planner-session", "reviewer-session"]));
+  api.getMyAgentState = async () => ({});
+
+  try {
+    renderShellAt(1280);
+    // The first id is out on its own, and the key still holds both: nothing has landed yet.
+    await waitFor(() => expect(putAgentState).toHaveBeenCalledTimes(1));
+    expect(putAgentState.mock.calls[0]?.[0]).toBe("planner-session");
+    expect(window.localStorage.getItem(PINS_KEY)).not.toBeNull();
+
+    await act(async () => {
+      planner.resolve({ pinned_at: "2026-09-14T12:00:00Z", unread_replies: 0 });
+      await planner.promise;
+    });
+    await waitFor(() => expect(putAgentState).toHaveBeenCalledTimes(2));
+    expect(putAgentState.mock.calls.map(([session, input]) => [session, input])).toEqual([
+      ["planner-session", { pinned: true }],
+      ["reviewer-session", { pinned: true }],
+    ]);
+    await waitFor(() => expect(window.localStorage.getItem(PINS_KEY)).toBeNull());
+
+    // The next load of the same browser has nothing left to migrate, so it writes nothing.
+    cleanup();
+    renderShellAt(1280);
+    await waitFor(() =>
+      expect(screen.queryByRole("navigation", { name: "Navigation" })).not.toBeNull()
+    );
+    expect(putAgentState).toHaveBeenCalledTimes(2);
+  } finally {
+    window.localStorage.removeItem(PINS_KEY);
+    putAgentState.mockRestore();
+  }
+});
+
+// A write Dispatch refuses is the reader's to retry or discard in the pending-writes list, and
+// what they discard was never made: the key keeps every id it held, including the ids after the
+// refused one, which this load does not write at all. The next load writes the lot again, in
+// the same order.
+test("a pin write Dispatch refuses leaves the browser's old key as it was", async () => {
+  const kept = JSON.stringify(["planner-session", "reviewer-session"]);
+  const putAgentState = answerAgentStates().mockImplementation(async (session) => {
+    if (session === "planner-session") {
+      throw new ApiError(400, { code: "AGENT_STATE_INPUT", error: "Dispatch refused it" });
+    }
+    return { pinned_at: "2026-09-14T12:00:01Z", unread_replies: 0 };
+  });
+  window.localStorage.setItem(PINS_KEY, kept);
+  api.getMyAgentState = async () => ({});
+
+  try {
+    renderShellAt(1280);
+    await waitFor(() => expect(putAgentState).toHaveBeenCalled());
+    // Long enough for a second write to have gone out, had the refusal not stopped the run; the
+    // 50 ms runs on the fake clock, so the wait costs no real time.
+    await onFakeClock(() => jump(50));
+    expect(putAgentState.mock.calls.map(([session]) => session)).toEqual(["planner-session"]);
+    expect(window.localStorage.getItem(PINS_KEY)).toBe(kept);
+  } finally {
+    window.localStorage.removeItem(PINS_KEY);
+    putAgentState.mockRestore();
+  }
+});
+
+// Below 1280 pixels the rail is a sheet behind the Menu control, and the person's pinned agents
+// are in that sheet (R1), not left behind on the desktop rail.
+test("a phone finds the pinned agents in the sidebar sheet", async () => {
+  const user = userEvent.setup();
+  api.getMyAgentState = async () => ({
+    "planner-session": { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 0 },
+  });
+  renderShellAt(800, [], 0, [agent("planner-session", "Planner")]);
+
+  await user.click(await screen.findByRole("button", { name: "Open navigation" }));
+  const sheet = await screen.findByRole("dialog", { name: "Navigation" });
+  await within(sheet).findByRole("link", { name: "Planner" });
+  expect(
+    within(sheet).getByRole("button", { name: "Unpin Planner from the sidebar" })
+  ).toBeTruthy();
+});
+
+// The registry keeps a sleeping pinned view and discards a sleeping unpinned one (`D8`), so the
+// shell - not the rail, which is off the page at a phone width or a collapsed sidebar - tells it
+// what the person has pinned. Without that, coming back to a pinned agent would lose where they
+// were reading.
+test("the shell tells the live-view registry which agents the person pinned", async () => {
+  api.getMyAgentState = async () => ({
+    "planner-session": { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 0 },
+  });
+  const queryClient = renderShellAt(1280, [], 0, [agent("planner-session", "Planner")]);
+  await screen.findByRole("button", { name: "Unpin Planner from the sidebar" });
+
+  const views = liveViewsOf(queryClient);
+  act(() => {
+    views.show("planner-session");
+    views.setPlace("planner-session", { id: "dispatch:m-4", top: -120 });
+    views.show("other-session");
+    views.setPlace("other-session", { id: "dispatch:m-7", top: -40 });
+    // A third view puts the first to sleep at once, where only a pin keeps its entry.
+    views.show("third-session");
+    views.show(null);
+  });
+
+  expect(views.place("planner-session")).toEqual({ id: "dispatch:m-4", top: -120 });
+  expect(views.place("other-session")).toBeNull();
 });

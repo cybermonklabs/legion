@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -778,7 +779,7 @@ func (e *countingGroupEmbedder) Embed(_ context.Context, texts []string, _ embed
 // TestChunkForBudgetSplitsAnOverCeilingBatchAndEmbedRowsCommitsEachGroupOnlyOnce proves both
 // halves of embedRows' own contract at once: chunkForBudget actually produces more than one
 // group once a batch's combined estimated tokens exceed the embedder's BackgroundTokensPerMinute
-// (Bedrock's 200,000: 25 rows at maxInputChars, each truncated to exactly 8,000 estimated tokens,
+// (Bedrock's 200,000: 25 rows at embed.MaxInputRunes, each truncated to exactly 8,000 estimated tokens,
 // fill one 200,000-token group exactly; a 26th, poisoned row starts a second), and a later
 // group's failure never re-embeds an earlier group's already-committed rows: Embed is called
 // exactly three times (once for each group, plus confirmSoloFailure's own canary probe once the
@@ -787,7 +788,7 @@ func (e *countingGroupEmbedder) Embed(_ context.Context, texts []string, _ embed
 func TestChunkForBudgetSplitsAnOverCeilingBatchAndEmbedRowsCommitsEachGroupOnlyOnce(t *testing.T) {
 	database := storetest.Open(t)
 	const healthyCount = 25                    // 25 * 8,000 = 200,000 = Bedrock's BackgroundTokensPerMinute exactly
-	healthyTitle := strings.Repeat("h", 32000) // embed.maxInputChars (unexported): truncates to exactly 8,000 estimated tokens
+	healthyTitle := strings.Repeat("h", 32000) // embed.MaxInputRunes: truncates to exactly 8,000 estimated tokens
 	poisonTitle := "poisoned"
 	seedManyIssues(t, database, "CHNK", healthyCount+1, func(i int) string {
 		if i == healthyCount {
@@ -1403,12 +1404,8 @@ func (e *syncEmbedder) canaryCalls() int {
 // eventually polls done until it reports true, failing once within passes.
 func eventually(t *testing.T, within time.Duration, what string, done func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for !done() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: not within %v", what, within)
-		}
-		time.Sleep(50 * time.Millisecond)
+	if !testwait.Holds(within, 50*time.Millisecond, done) {
+		t.Fatalf("%s: not within %v", what, within)
 	}
 }
 
@@ -1447,20 +1444,29 @@ func runHub(t *testing.T, hub *pglisten.Hub) {
 	})
 }
 
-// insertComment writes a comment on issueKey through its trigger, which enqueues it.
-func insertComment(t *testing.T, q querier, issueKey, body string) {
+// insertCommentWithWindow writes a comment on issueKey and the one window the block-index
+// tick's window arm writes for it (refs.WriteItemWindows), which is what enqueues it now that
+// the comment's own write-time trigger is gone.
+func insertCommentWithWindow(t *testing.T, q querier, issueKey, body string) {
 	t.Helper()
-	mustExec(t, q, `insert into comments (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', $2)`, issueKey, body)
+	var comment string
+	if err := q.QueryRow(context.Background(), `
+		insert into comments (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', $2) returning id::text
+	`, issueKey, body).Scan(&comment); err != nil {
+		t.Fatalf("insert the comment: %v", err)
+	}
+	enqueueWindow(t, q, "comment_block", "comment/"+comment, "b1", body, "b1")
 }
 
-// Once Run has embedded what was pending at boot and its coverage pass has added and the queue
-// embedded what no trigger saw, nothing changes, so Run makes no statement at all: no scan
-// timer, no due time, no coverage pass. The window is longer than the 5-second period the scan
-// ticker ran at before.
+// Once Run has embedded what was pending at boot and its coverage pass has run, nothing
+// changes, so Run makes no statement between one identity recheck and the next: no scan timer,
+// no due time, no further pass. The window is longer than the 5-second period the scan ticker
+// ran at before, and far shorter than identityRecheckInterval, which this test leaves at its
+// ten minutes.
 func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "IDLE", "IDLE-1", "Enqueued by its trigger")
-	withTriggersOff(t, database, func(q querier) { insertComment(t, q, "IDLE-1", "Written with the triggers off") })
+	insertCommentWithWindow(t, database.Pool, "IDLE-1", "A comment its indexer windowed")
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
 	runQueue(t, Deps{Store: counted, Embedder: newSyncEmbedder(configuredIdentity)})
@@ -1472,10 +1478,11 @@ func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
 	storetest.RequireNoStatements(t, counter, 7*time.Second, "Run with nothing pending and nothing changing")
 }
 
-// A write's notification wakes the idle queue, through a real pglisten.Hub on WakeChannel: a
-// comment written once the queue has drained, and once the scan the hub's catch-up signal after
-// its LISTEN earned has run, is embedded within 6 seconds, and nothing else would have scanned
-// for it.
+// A write's notification wakes the idle queue, through a real pglisten.Hub on WakeChannel: the
+// window of a comment written once the queue has drained, and once the scan the hub's catch-up
+// signal after its LISTEN earned has run, is embedded within 6 seconds, and nothing else would
+// have scanned for it. embeddings_enqueue_window announces on the same channel as
+// embeddings_enqueue, so a window wakes the queue exactly as a whole-text row did.
 func TestAWriteIsEmbeddedOnItsNotification(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "NTFY", "NTFY-1", "Written before the queue started")
@@ -1498,7 +1505,7 @@ func TestAWriteIsEmbeddedOnItsNotification(t *testing.T) {
 	time.Sleep(time.Until(started.Add(retryInterval + time.Second)))
 	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, 10*time.Second)
 
-	insertComment(t, database.Pool, "NTFY-1", "Written while the queue is idle")
+	insertCommentWithWindow(t, database.Pool, "NTFY-1", "Written while the queue is idle")
 	if got := pendingCount(t, database); got != 1 {
 		t.Fatalf("pending after the comment = %d, want 1", got)
 	}

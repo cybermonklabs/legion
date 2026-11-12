@@ -37,11 +37,19 @@ Inputs (environment):
                                  default https://api.anthropic.com)
   PARKED_DECISION_EVIDENCE_DIR   the evidence directory (default: a fresh /tmp directory, kept)
   PARKED_DECISION_UNTIL          stop after this checkpoint passes (a development run, not the proof)
-  LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_KEY_NAME, LEGION_E2E_REVIEW_APP_ID,
-  LEGION_E2E_REVIEW_APP_KEY_NAME, LEGION_E2E_APP_KEY_RUNNER
-                                 Legion's two role Apps (default: this deployment's own, read
-                                 through agent-secrets; lib/github-apps.sh), proved against
-                                 GitHub's GET /app in prerequisites
+  LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET, LEGION_E2E_REVIEW_APP_ID
+                                 the implement App's id and the name of the secrets broker
+                                 github-app secret its tokens are minted through, and the review
+                                 App's id (default: this deployment's own; lib/github-apps.sh)
+  LEGION_E2E_REVIEW_APP_KEY_COMMAND
+                                 shell text that prints the review App's PEM private key on
+                                 stdout (required, no default); prerequisites runs it once, on
+                                 this box, in the operator's own environment, into a 0600 file of
+                                 the run's work directory that cleanup removes on every exit. The
+                                 daemon never runs it: it reads the key from that file (its
+                                 private_key_command is a cat of it) and mints and renews that
+                                 App's tokens itself. Both Apps are proved from their tokens
+                                 against GitHub's GET /apps/<slug> in prerequisites
 The devbox gh must act as the proof human.
 
 Checkpoints, in order:
@@ -162,6 +170,9 @@ cleanup() {
   trap 'printf "cleanup warning: line %s exited %s\n" "$LINENO" "$?" >&2' ERR
   # The key-file route's key command bakes in the key file's path: it never survives the run.
   rm -rf "$work/model-gateway-key" || true
+  # The review App's private key goes with it: prerequisites resolved the operator's key command
+  # into $work/app-key for the daemon to read, and $work is kept when a run fails.
+  rm -rf "$work/app-key" || true
   tm kill-server >/dev/null 2>&1 || true
   stop_pid "$daemon_pid"
   stop_pid "$dispatch_pid"
@@ -185,6 +196,9 @@ cleanup() {
   [ -n "${ok:-}" ] || [[ $status =~ ^(129|130|143)$ ]] ||
     bash "$root/scripts/e2e/lib/model-gateway-unserved.sh" --notes "$evidence/model-gateway" "$check_started" "$check" >&2 || true
   [ -n "${ok:-}" ] || printf 'parked decision devbox e2e: FAIL (check %s)\n' "$check" >&2
+  # The review App's private key must be gone, whatever else the teardown did: the lib's own check
+  # of the directory the removals above were to take (lib/github-apps.sh, app_key_left).
+  app_key_left "$work/app-key" || exit 1
   return 0
 }
 trap cleanup EXIT
@@ -261,10 +275,16 @@ projects:
   $project: {}
 gates:
   design: root-issues
-# Three: trees 1 and 4 run again from answer-readmits and approval-queues, and tree 3 still needs a
-# slot in walk-on-start.
-admission_cap: 3
+# Four: an issue keeps the slot the daemon gave it until it is done, leaves the workflow or waits
+# only for its merge (INFRA-1909), so the four roots that wait on a person at trees-wait-on-a-person
+# — trees 1, 2, 4 and 5 — hold a row each at once, which is this lane's peak. It is the peak again
+# later: tree 5, which waits on its gate throughout, beside trees 1 and 4 running again
+# (answer-readmits, approval-queues) and tree 3 taking one in walk-on-start.
+admission_cap: 4
 review_round_cap: 3
+# The wake pacing off (INFRA-976): this proof starts many roles and waits on bounded times, and at
+# the default of 8 wakes a minute every wake after the first would spend those waits queueing.
+worker_wakes_per_minute: 0
 # A day: the one tick is the boot's, before any tree exists, so no tick walk races the notice of
 # answer-readmits, and the walk runs only at a controller's start (walk-on-start).
 controller_wake_interval_seconds: 86400
@@ -579,11 +599,13 @@ stop_agent_daemons() {
 # ---- checkpoints --------------------------------------------------------------------------------------
 begin prerequisites
 for tool in go docker jq curl python3 tmux bun mise agent-secrets gh shellcheck jj pgrep; do command -v "$tool" >/dev/null || fail "$tool is required"; done
-# Legion's two role Apps, this deployment's own unless the App inputs name another's, proved
+# Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
+# implement App's broker secret and the review App's key command behind them (--help), proved
 # against GitHub here, before the run writes anything (lib/github-apps.sh, as Stage 3 does);
-# legion.yaml's github_apps is the block proved.
+# legion.yaml's github_apps is the block proved. The key command runs once, here, in this shell's
+# own environment, into $work/app-key, which the daemon reads the key from and cleanup removes.
 require_app_inputs implement review
-write_github_apps implement review
+write_github_apps --key-dir "$work/app-key" implement review
 read_app_logins
 until_checkpoint=${PARKED_DECISION_UNTIL:-}
 if [ -n "$until_checkpoint" ]; then
@@ -705,7 +727,9 @@ write_legion_config
 # such as the devbox's dotfiles shim, and realbin puts the real gh first (lib/rig.sh, real_bin_path).
 out=$(HOME="$omp_home" OMP_PROFILE="$profile" PATH="$realbin:$PATH" "$work/legion" start --check-config --config "$work/legion.yaml") ||
   fail "legion start --check-config refused the run's legion.yaml: $out"
-[ "$(head -n 1 <<<"$out")" = "Config OK: project=$project" ] || fail "legion start --check-config said: $out"
+# The OK line names the design-gate steps the file resolved to; this run's `gates.design` is
+# root-issues, which is the single step spec.
+[ "$(head -n 1 <<<"$out")" = "Config OK: project=$project design-gate-steps=spec" ] || fail "legion start --check-config said: $out"
 note "$(head -n 1 <<<"$out")"
 start_daemon
 daemon_state >"$evidence/boot-state.json" || fail "legion state does not answer"

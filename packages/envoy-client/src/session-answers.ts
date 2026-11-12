@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { SessionAnswer, SessionAnswerRelation } from "@legion/contracts";
+import { actorActText, type SessionAnswer, type SessionAnswerRelation } from "@legion/contracts";
+import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
 import type { DispatchConfigResolution } from "./dispatch-config";
 import { DispatchClient, isNoRoute } from "./dispatch-http";
 import { ownerTitle } from "./dispatch-owner";
@@ -20,7 +21,7 @@ import { messageFor } from "./errors";
 /** How far back the list reaches, at the read and again at each render. */
 export const SESSION_ANSWERS_WINDOW_MS = 72 * 3_600_000;
 
-/** The cap on the whole rendered message, in UTF-16 units as `DISPATCH_BODY_MAX` counts. */
+/** The cap on the whole rendered message, in UTF-16 units, as Dispatch counts a text. */
 export const SESSION_ANSWERS_MAX_CHARS = 8_000;
 
 /** How long one model request waits on the read before it carries the last list read. */
@@ -31,9 +32,6 @@ const READ_TIMEOUT_MS = 10_000;
 
 /** How long a Dispatch that has no answers route is not asked again, process-wide. */
 const NO_ROUTE_BACKOFF_MS = 5 * 60_000;
-
-/** How much of an ask's question an item quotes: the session's own words, not the person's. */
-const QUESTION_MAX = 200;
 
 /** The rendered list's first line, and the marker a host checks to find a list it already added.
  *  A list carried from the cache adds its read time on the line after, so this line never varies. */
@@ -48,6 +46,7 @@ export const NO_ANSWERS_ROUTE_REASON = "this Dispatch build has no answers route
 
 const RELATION_PHRASES: Readonly<Record<SessionAnswerRelation, string>> = {
   answered_your_ask: "answered your ask",
+  declined_your_ask: "declined to answer your ask",
   replied_on_your_ask: "replied on your ask",
   replied_in_a_comment_thread: "replied in a comment thread",
   commented_on_a_document: "commented on a document",
@@ -56,6 +55,12 @@ const RELATION_PHRASES: Readonly<Record<SessionAnswerRelation, string>> = {
   sent_you_a_message: "sent you a message",
   replied_to_your_message: "replied to your message",
 };
+
+/** Whether a `relation` the server sent is one this build words; the wire type is an open
+ *  string, so a relation a newer Dispatch adds is printed as it came. */
+function isSessionAnswerRelation(value: string): value is SessionAnswerRelation {
+  return Object.hasOwn(RELATION_PHRASES, value);
+}
 
 /** Whether `text` is a message `renderSessionAnswers` or the failure line wrote: what a host checks
  *  so a second copy of its extension adds no second list. */
@@ -73,15 +78,25 @@ export function isNoAnswersRoute(error: unknown): boolean {
 
 /**
  * One item as both the per-request list and `dispatch answers` print it, in this order: the time
- * the person wrote it, the person and what it is to the session (with `replaces an earlier answer`
- * on an answer that replaced one, and `edited <time>` on an edited comment); its `dispatch://`
- * reference and its issue or document, or that it is a direct message; the ask's question, cut to
- * 200 characters, on an answer and a reply in an ask's thread; on an answer, `Selected:` with the
- * options chosen or `none`; then the person's words in full.
+ * the person wrote it, the person (with the agent that wrote it for them, through
+ * `actorActText`) and what it is to the session (with `replaces an earlier answer` on an answer
+ * that replaced one, and `edited <time>` on an edited comment); its `dispatch://` reference and
+ * its issue or document, or that it is a direct message; the ask's question, cut to 200
+ * characters, on an answer, on a decline and on a reply in an ask's thread; on an answer,
+ * `Selected:` with the options chosen or `none`; on a decline, `Dispatch's words:` with the
+ * sentences Dispatch wrote for the asking agent; then the person's words in full.
+ *
+ * The person's own words and Dispatch's stand on lines of their own, the label naming whose
+ * each is, so nobody reads Dispatch's instruction as something the person wrote. The words print
+ * wherever an item carries them rather than on the `declined` kind alone, so an item kind a
+ * newer Dispatch adds keeps them.
  */
 export function renderSessionAnswerItem(item: SessionAnswer): string {
-  const relation = `${RELATION_PHRASES[item.relation]}${item.replaced === true ? " (replaces an earlier answer)" : ""}`;
-  const head = [item.at, `user ${item.author.id}`, relation];
+  const phrase = isSessionAnswerRelation(item.relation)
+    ? RELATION_PHRASES[item.relation]
+    : item.relation;
+  const relation = `${phrase}${item.replaced === true ? " (replaces an earlier answer)" : ""}`;
+  const head = [item.at, actorActText(`user ${item.author.id}`, item.author.act), relation];
   if (item.edited_at !== undefined) head.push(`edited ${item.edited_at}`);
   const owner = item.owner === null ? undefined : ownerTitle(item.owner);
   const where =
@@ -92,15 +107,16 @@ export function renderSessionAnswerItem(item: SessionAnswer): string {
         : `${item.ref} · ${owner}`;
   const lines = [head.join(" · "), where];
   if (item.ask !== undefined) {
-    const question = item.ask.question.replace(/\s+/g, " ").trim();
-    lines.push(
-      `Question: ${question.length > QUESTION_MAX ? `${question.slice(0, QUESTION_MAX)}…` : question}`
-    );
+    // The question is the session's own words, not the person's, so cutting it to the length
+    // every surface quotes a question at (QUESTION_HEAD) loses nothing a person wrote.
+    lines.push(`Question: ${textHead(item.ask.question, QUESTION_HEAD)}`);
   }
   if (item.kind === "answer") {
     const selected = item.selected ?? [];
     lines.push(`Selected: ${selected.length === 0 ? "none" : selected.join(", ")}`);
   }
+  const words = dispatchWordsText(item.dispatch_words);
+  if (words !== undefined) lines.push(words);
   if (item.text !== "") lines.push(item.text);
   return lines.join("\n");
 }
@@ -117,13 +133,17 @@ function withinWindow(items: readonly SessionAnswer[], now: number): SessionAnsw
  * a host comparing two reads' sets tells a new item shown, or an answer or comment a person
  * changed, from a list that only lost items or changed what the session or Dispatch says around
  * them (an issue's title, an ask's question, a cached list's header).
+ *
+ * The author is the rendered act (`actorActText`), not the person's id alone, so the same words
+ * from the person themselves and from an agent acting for them are two different items: a host
+ * that compared ids would carry the second as if the person had written it.
  */
 export function sessionAnswersWords(items: readonly SessionAnswer[]): string[] {
   return items.map((item) =>
     JSON.stringify([
       item.kind,
       item.id,
-      item.author.id,
+      actorActText(item.author.id, item.author.act),
       item.at,
       item.edited_at ?? null,
       item.selected ?? null,
@@ -503,7 +523,7 @@ export async function readSessionAnswers(
   }
   let read = current.inFlight;
   if (read === undefined) {
-    const client = new DispatchClient(url, dispatch.token, options.fetchImpl ?? fetch);
+    const client = new DispatchClient(url, dispatch.credential, options.fetchImpl ?? fetch);
     const started = client
       .sessionAnswers(session, {
         maxChars: SESSION_ANSWERS_MAX_CHARS,

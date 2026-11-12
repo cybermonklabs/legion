@@ -7,14 +7,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// Unresumable is the one rule for whether a root that returns its admission slot to wait on a
-// person may run again in its own architect session: it returns why it may not, or "" when it may.
+// Unresumable is the one rule for whether a root that waits on a person, holding the admission
+// slot it took when the daemon started it, may run again in its own architect session: it
+// returns why it may not, or "" when it may.
 // Its hand-over label gone, or its leaving the workflow, ends that, and so does a Dispatch claim
 // held by a person or by a session outside its tree, which owns the issue instead; the daemon's own
 // session and a session that claims within the tree are legitimate holders. The claim is the one
@@ -25,7 +25,7 @@ func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, issue recor
 	switch {
 	case !issue.HandedOver:
 		return "the legion label was removed", nil
-	case issue.Lingers() || !InWorkflow(issue):
+	case issue.Lingers() || !record.InWorkflow(issue):
 		return "it left the workflow", nil
 	}
 	claimedBy, err := store.DispatchClaim(ctx, tx, issue.Key)
@@ -48,8 +48,9 @@ func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, issue recor
 	return fmt.Sprintf("its Dispatch claim is held by %s", claimedBy), nil
 }
 
-// armed says whether the design gate is armed: with it off, no approval is asked for.
-func (e *Engine) armed() bool { return e.cfg.DesignGate != config.DesignGateOff }
+// armed says whether the design gate is armed: the deployment gates at least one step. With no
+// step gated, no approval is asked for.
+func (e *Engine) armed() bool { return len(e.cfg.Steps) > 0 }
 
 // declare records a hand-back of root's architect to the person at mark (its sequence and
 // Dispatch's time of it, where the wait it starts begins), fresh for its ask: one at or below the
@@ -63,18 +64,30 @@ func (e *Engine) declare(ctx context.Context, tx pgx.Tx, root record.Issue, mark
 	return e.store.Declare(ctx, tx, root.Key, mark)
 }
 
-// personAnswered answers root's wait with a person's act on ask at mark. The architect is the
-// tree's only agent while it waits, so a person's act on any ask of the root counts — an act on
-// another question, which the architect may have asked in place of the one the wait names, among
-// them. The act answers only a wait it follows: one Dispatch recorded at or before the wait's
-// start (record.EventMark.After against Awaiting.Since) is an answer the person gave before the
-// architect handed the work back to them, and the root waits on their next act.
-func (e *Engine) personAnswered(ctx context.Context, tx pgx.Tx, root record.Issue, ask string, mark record.EventMark) error {
+// personAnswered answers root's wait with a person's act on ask at mark, which is their decline of
+// it where decline is set. The architect is the tree's only agent while it waits, so a person's
+// act on any ask of the root counts — an act on another question, which the architect may have
+// asked in place of the one the wait names, among them. The act answers only a wait it follows: one
+// Dispatch recorded at or before the wait's start (record.EventMark.After against Awaiting.Since)
+// is an answer the person gave before the architect handed the work back to them, and the root
+// waits on their next act.
+//
+// A decline is the answer whichever ask it is, and the detail is that ask, so the resume names the
+// question the person would not answer even where the wait names another. It is read from the act
+// in hand and never from the ask's mirror row: the row's decline is a fact of the ask that nothing
+// takes back (askChange.apply), so a later reply of the person's in that same thread, which
+// answers the next wait as a reply, would be named a decline again and the resume would point at
+// the old note instead of what they just wrote. Admission's own pass has no act to read and reads
+// the row's sequences instead (answeredSince).
+func (e *Engine) personAnswered(ctx context.Context, tx pgx.Tx, root record.Issue, ask string, mark record.EventMark, decline *record.AskDecline) error {
 	if !root.AwaitingPerson() || root.Awaiting.AnsweredAt != nil {
 		return nil
 	}
 	answer, by := "workflow: a person acted on an ask of a root waiting on them", record.AnsweredByReply
-	if root.Awaiting.Ask == ask {
+	switch {
+	case decline != nil:
+		answer, by = "workflow: a person declined to answer an ask of a root waiting on them", record.AnsweredByDecline
+	case root.Awaiting.Ask == ask:
 		answer, by = "workflow: an architect ask was answered", record.AnsweredByAsk
 	}
 	if !placedAfter(root, mark) {
@@ -100,11 +113,11 @@ func (e *Engine) itemLeft(ctx context.Context, tx pgx.Tx, root record.Issue, bef
 	if !root.AwaitingPerson() || root.Awaiting.AnsweredAt != nil || !before.WithHuman() || after.WithHuman() {
 		return nil
 	}
-	gate, err := e.store.Gate(ctx, tx, root.Key)
+	gates, err := e.store.GatesOf(ctx, tx, root.Key)
 	if err != nil {
 		return err
 	}
-	isRequest := after.GateRequestOf(gateRequestArtifact(gate, e.armed()))
+	isRequest := after.GateRequestOf(gateRequestArtifact(e.cfg.Steps, gates))
 	if !isRequest && (!before.ByTree || !before.Question()) {
 		return nil
 	}
@@ -113,7 +126,7 @@ func (e *Engine) itemLeft(ctx context.Context, tx pgx.Tx, root record.Issue, bef
 		return err
 	}
 	onSubject := root.Awaiting.Ask == before.Ask || isRequest && root.Awaiting.GateVersion != 0
-	if next, ok := waitSubject(asks[root.Key], gate, e.armed(), root.Awaiting.Since); ok {
+	if next, ok := waitSubject(asks[root.Key], e.cfg.Steps, gates, root.Awaiting.Since); ok {
 		if !onSubject {
 			return nil
 		}
@@ -145,11 +158,11 @@ func (e *Engine) catchUpApplied(ctx context.Context, tx pgx.Tx, fact intake.Catc
 	return intake.Result{}, e.store.SetCaughtUp(ctx, tx, issue.Key, fact.Through)
 }
 
-// answerWait records that by answered root's wait now, with detail, which puts the root at the
-// front of the waiting line (record.Waiting) and names the act in the task its architect resumes
-// with (resumeTask). The detail is the act's own: the ask a person acted on, the version and
-// reason of the review that answered, or who took the question away, so a later act of the same
-// kind does not rename it.
+// answerWait records that by answered root's wait now, with detail, which puts the root in the
+// waiting line (record.Waiting) — among the issues whose work came back, oldest first — and
+// names the act in the task its architect resumes with (resumeTask). The detail is the act's
+// own: the ask a person acted on, the version and reason of the review that answered, or who
+// took the question away, so a later act of the same kind does not rename it.
 func (e *Engine) answerWait(ctx context.Context, tx pgx.Tx, root record.Issue, by record.Answer, detail string) error {
 	at := e.now()
 	root.Awaiting.AnsweredAt, root.Awaiting.AnsweredBy, root.Awaiting.AnsweredDetail = &at, by, detail

@@ -1,6 +1,6 @@
 ---
 name: legion-controller
-description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, unslotted, awaiting-person, parked-decision, held, worker-died, update-stalled), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, an architect's escalation, or a person's message or mention.
+description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, unslotted, awaiting-person, parked-decision, held, worker-died, worker-stalled, update-stalled, provider-errors), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, an architect's escalation, or a person's message or mention.
 ---
 
 # Legion Controller
@@ -14,15 +14,18 @@ except a clear defect a role reports ([Issues handed to Legion](#issues-handed-t
 
 - Handle no wake until the extension has registered this session with the daemon as the project's controller, at session startup or, in a controller an operator started, from its first command once Oh My Pi has started, because without that registration the daemon does not know you as its controller.
 - Answer a person's direct message first, in the conversation. A plain user turn that is neither the start message nor a task sent with `legion claims deliver` is a person writing from Dispatch's Agents page.
-- A direct Dispatch message that decides scope, priority or an owner is a ruling: after you answer it, run the weekly-plan reconciliation (`skill://legion-controller/references/backlog-stewardship.md`), because the plan must record the rule.
+- A direct Dispatch message that settles scope, priority or an owner is a directive: after you answer it, run the weekly-plan reconciliation (`skill://legion-controller/references/backlog-stewardship.md`), because the plan must record the rule.
 - Handle one wake per turn, then end the turn. Never poll or wait for an event, because the daemon wakes you again (`tick` at least every `controller_wake_interval_seconds`).
 - Before any side effect, read `read_state` and the Dispatch issue, because a wake can be stale or sent twice.
+- Read a session's state from the Envoy registry, never from its absence from a list (`skill://envoy`). Start no replacement for an `unresponsive` session, take nothing from it, and never report it as gone, because it is working and keeps its claims.
 - Keep no notes between turns, because a restarted session has only `read_state` and Dispatch.
 - Reach the daemon only through the `legion` tool: `read_state`, and `set_status` to `todo`, `backlog` or `icebox`. Run no `legion` from bash, because the tool holds the controller grant.
 - Never edit a repository, push a commit or call `handoff_complete`, and never forward a raw event to an architect, because the daemon runs the phases and raw events only fill the architect's context.
-- Never open a design gate, because only a person's approval of the root's spec in Dispatch opens it.
-- When a `dispatch` command fails, or a `curl` read fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message), because an empty read is no evidence.
+- Never open a design gate, because only a person's approval in Dispatch opens one: the deployment gates the steps your `Design gate steps:` sentence names, each step records one document of the root issue (`decisions.md`, `verification.md` or the primary document), and the tree's work starts when a person has approved every one of them.
+- When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message), because an empty read is no evidence. A Slack read answers a JSON object, and `skill://legion-controller/references/slack-mentions.md` holds its own success test.
+- Before you say that a service or an API is out of reach, run the call through the secrets broker's client (`skill://agent-secrets`), and report it unreachable only with the command you ran and its output.
 - Write every Dispatch comment, message and ask as `skill://dispatch-writing-specs`'s "Rules for the text" say.
+- A message that must reach more than 4 role topics is yours to send and nobody else's (`skill://envoy`). Send it to no more than 4 topics a minute, and send none while a daemon restart or a pod roll is under way, because each publish wakes a session that reads its whole context again, which the provider charges as uncached input: a mean of 576,083 tokens a wake, a median of 493,636 and a ninetieth percentile of 1,327,888. Spread the rest over later turns, and name in your summary the topics you have not sent to yet.
 
 Launch, `gh`, pull requests, takeover: `skill://legion-controller/references/session.md`.
 
@@ -30,10 +33,13 @@ Launch, `gh`, pull requests, takeover: `skill://legion-controller/references/ses
 
 1. Recheck [trees waiting on a root claim](#trees-waiting-on-a-root-claim).
 2. Do the wake's work, or, on a start message, the start procedure below.
-3. On your first turn of each UTC day, whatever woke you: run the weekly-plan reconciliation
+3. On your first turn of each UTC week, whatever woke you: run the weekly audit
+   (`skill://legion-controller/references/weekly-audit.md`) before the day's report, so its
+   numbers and its nudges go in that report.
+4. On your first turn of each UTC day, whatever woke you: run the weekly-plan reconciliation
    (`skill://legion-controller/references/backlog-stewardship.md`), then post the
    [daily report](#daily-report).
-4. Name the [free slots](#free-slots) in your summary, so a person sees room to hand Legion work.
+5. Name the [free slots](#free-slots) in your summary, so a person sees room to hand Legion work.
 
 ## What happened before you started
 
@@ -63,11 +69,13 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `slot-free on <KEY>`, `todo on <KEY>` | Name the free slots; take nothing |
 | `tick on <PROJECT>` | The every-turn steps, then the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`) |
 | `unslotted on <KEY>` | Re-admit nothing; name it in your summary |
-| `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for the slot it returned |
+| `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |
 | `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation |
 | `worker-died on <KEY>` (`role: "architect"`) | Re-admit once its cause is gone, else park it |
+| `worker-stalled on <KEY>` (`role: "architect"`) | Nothing, unless the notice says the claim failed: its turn was ended, its task is still owed, and the notice says what became of its process |
 | `update-stalled on <KEY>` | `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled` |
+| `provider-errors on <KEY>` | Name the run and its model in the day's report; send it to the issue's architect; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
 | An architect's escalation | `skill://legion-controller/references/escalation.md` |
 | A finding ask's reference, or its answer | `skill://legion-controller/references/finding-asks.md` |
 | A clear defect a role sends | `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect` |
@@ -79,16 +87,18 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 ## Trees waiting on a root claim
 
 A root architect whose claim on its root was refused waits, holding its slot, and nothing tells it
-when the holder lets go. `dispatch read` each root in `admission.active` whose `phase` is still
+when the holder lets go. `dispatch read` each root in `admission.trees` whose `phase` is still
 `admitted`. When `Claimed by:` is `nobody` or ends `· not running`, `envoy_publish` `<KEY>: the
 claim is free; claim it again.` to `notifications.role.<issues.<KEY>.architect.locator.claim>`.
+
+Before you publish to more than one role topic, read whether a wave of wakes is already running, in the state `read_state` returns: `wakesWaiting`, every wake the daemon's pacing holds until its turn, which is empty at every moment outside a wave; `daemon.startedAt`, since a restart minutes old is a wave; and each claim's `updateRound`, which an open pod-update round sets. While any of the three says a wave is running, publish nothing and say so in your summary, because your wake would land on the same minute as the daemon's own.
 
 ## Issues handed to Legion
 
 The daemon works only issues carrying the Dispatch label `legion` (any case). Work reaches Legion
 by a person's decision: they set the label from the issue header, or ask you to (a direct
 message, a Slack request that asks Legion to do the work, their answer to a finding ask, or a
-ruling the weekly plan records with its link). The one exception is a clear defect a role hands
+directive the weekly plan records with its link). The one exception is a clear defect a role hands
 you whose code no running tree owns: you file it with the label, because its fix is how to do work
 a person already wants, and humans decide what, agents decide how (the operator's answer on one
 such case: a clear defect is fixed, not asked about). A defect whose code a running
@@ -105,15 +115,39 @@ outbox. A person's approval of the primary document of a parked (`backlog` or `i
 root with no live tree is queued by the daemon the same way. You write `todo` only for the roots
 you label at a person's request or file yourself.
 
+An issue whose work must start at a commit other than its base branch's head needs its branch
+`legion/<KEY>` created at that commit before Legion starts the issue. One command creates it:
+`gh api -X POST repos/<owner>/<name>/git/refs -f ref=refs/heads/legion/<KEY> -f sha=<commit>`. You
+ask for that command rather than run it, because you edit no repository and push no commit: for a
+root, whoever hands the work over runs it; for a child of a tree, the tree's architect runs it. The
+daemon sets the deadline: its own `issue_branch` row creates `legion/<KEY>` at the issue's base
+branch and leaves a branch GitHub already has where it is, so a root's branch must exist before
+the issue is admitted, and a child's before the child starts its first phase, which it can do as
+soon as its tree's design gate opens and nothing holds it. Read the branch back before you
+`set_status` the root to `todo`:
+`gh api repos/<owner>/<name>/git/ref/heads/legion/<KEY>`. The issue's own spec tells its worker
+which branch to open the pull request against; nothing else carries that.
+
 ## Free slots
 
 A free slot is no reason to take an issue: a labelled root in `todo` takes the next slot through
 `admission.waiting` without you, and a parked issue (status `backlog` or `icebox`) means "do not
-run now". Move an issue out of `backlog` or `icebox` only on a request or a plan ruling that names
-it, and cite that request. The free slots are `admission.cap` minus the roots in
-`admission.active` and the roots in `admission.waiting` that are not in `admission.blocked`, since
-a blocked root takes no slot until its blockers are done. Every move to `todo` you make is one of
-these:
+run now". Move an issue out of `backlog` or `icebox` only on a request or a plan directive that names
+it, and cite that request. A slot is one issue the daemon has started, a root or a child, not one
+tree: a tree of four started issues holds four slots. An issue takes its slot when the daemon
+starts it and keeps it
+until it is done, leaves the workflow or waits only for its merge,
+so a root waiting on a person keeps the slot it took, and `admission.trees` is what names the
+roots of the live trees. The free slots are `admission.cap`, less every issue in
+`admission.active`, which is every issue holding a slot, and less again each issue of
+`admission.waiting` that stands in neither `admission.active` nor `admission.blocked`: the
+daemon counts a slot a waiting issue will take as taken already, and an issue in
+`admission.blocked` waits on a blocker rather than on a slot. Count no issue twice. An issue
+that holds a slot and waits for a promotion stands in both lists — a root a person answered,
+a tree's own root at `admitted` under a design gate a person has opened, a root another tree
+handed over with the slot it held there, and a child the daemon started that a person set back
+to `todo` — and subtracting such an issue a second time would hide a slot that is free. Every
+move to `todo` you make is one of these:
 
 - a root you labelled at a person's request or filed for a clear defect no tree owns, at triage (a
   root a person labelled is queued by the daemon);
@@ -122,7 +156,7 @@ these:
   gone, or because a person asks;
 - a tree you parked for a hold (`Parked by Legion while it waits on:`), once a person's decision
   gives it a next step (`skill://legion-controller/references/parked-decisions.md`);
-- stopped-session work that a person's ruling in the weekly plan moves to Legion.
+- stopped-session work that a person's directive in the weekly plan moves to Legion.
 
 ## Findings, and the issues you file
 

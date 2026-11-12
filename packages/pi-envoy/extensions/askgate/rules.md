@@ -101,10 +101,10 @@ access 7.) These shapes fail it:
    need them (a credential, grant or permission only they can give, an
    incident decision, a data-recovery priority)
    passes with the rest. (Not this: an ownership question the ask ties to a
-   ruling of theirs that put the work outside the asker's lane — that passes.)
+   decision of theirs that put the work outside the asker's lane — that passes.)
 5. **Tracker housekeeping**: Dispatch tree shape, re-parenting, project keys,
    "approve this layout" for an issue structure.
-6. **Applying a ruling they already gave**: the ask quotes a ruling of the person's,
+6. **Applying a decision they already gave**: the ask quotes a decision of the person's,
    or the transcript above shows them answering this same question (or a
    materially identical one on the same issue) earlier in it, and the ask
    asks whether to implement it, or asks whether to extend a fix they already
@@ -112,7 +112,7 @@ access 7.) These shapes fail it:
    asked: the person already gave the answer. (Also a
    genuine-uncertainty failure; name both, one note. Not this: a revisit
    prompted by a new fact — "my last ask called the bug new, and it is not" — a
-   ruling that bears on the question without deciding it, or a question the
+   decision that bears on the question without settling it, or a question the
    transcript shows as still open.)
 7. **A control nobody asked for**: the ask asks them to approve a control,
    policy, protection or pause, justified by a security, isolation,
@@ -141,14 +141,20 @@ access 7.) These shapes fail it:
 
 ### Genuine-uncertainty failure (`concern`)
 
-Only when the ask's text itself shows that no question is left. Three shapes do this.
+Only when the ask's text itself shows that no question is left. Four shapes do this.
 It asks them to ratify work already done ("as built", "already live —
 approve?") with no open alternative. It says in its own words that the
 matter is not a judgment call ("each value comes from the docs",
 "mechanical", "nothing here is open") and still asks. Or it presents a hard
 blocker the same text admits is unverified ("I have not checked",
-"assumed"). A recommendation with reasons is not this — every good ask has
-one.
+"assumed"). Or — read every call for this one — it puts a choice the facts
+the same text states have already decided: take each option in turn against
+what the text itself reports, a measurement, a rule it quotes, a limit or a
+deadline it names, and when all but one of them contradict one of those
+facts, the text has answered its own question and what is left to write is a
+report of the answer, not an ask. A recommendation with reasons is not this — every good ask has
+one, and neither is a choice the text leaves genuinely open on taste, risk or
+cost once its facts are in.
 
 ### Phone-readability failures (`concern`)
 
@@ -186,7 +192,7 @@ The person answers from their phone. Only these shapes fail:
 
 9. **An unsourced claim about what we run or use today.** The ask states,
    as settled fact with no citation anywhere in its text — no file, no
-   command output, no `dispatch://` link, no past ruling — what system,
+   command output, no `dispatch://` link, no past decision — what system,
    provider, or process the team uses today, and that claim is the reason a
    particular option exists or another is ruled out. The person cannot tell
    where the claim comes from, so they cannot check the reason.
@@ -340,7 +346,7 @@ failure it shows.
   I do both, one after the other?" → authority 4. The agent coordinates with
   the peer and does not ask the person.
 - "dispatch://ACME-3/ask/<id> rules that the report leaves out the old
-  formats… Should the report leave them out?" → authority 6. The ruling the
+  formats… Should the report leave them out?" → authority 6. The decision the
   ask links already answers it.
 - "Import: dup ids = skip, or fail…? March file: 3 dup rows vs 0 allowed…"
   → phone-readability 1. Fragments, not sentences.

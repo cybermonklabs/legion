@@ -30,7 +30,9 @@ type sessionConsumerRig struct {
 	consumers *bus.SessionConsumers
 }
 
-func newSessionConsumerRig(t *testing.T) *sessionConsumerRig {
+// newSessionConsumerRig is the rig on a server of its own, its session registry opened with
+// sessionOptions beside the harness's own (newListenerDeliveryHarnessOn).
+func newSessionConsumerRig(t *testing.T, sessionOptions ...session.SessionRegistryOption) *sessionConsumerRig {
 	t.Helper()
 	url := testnats.URL(t)
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
@@ -38,24 +40,29 @@ func newSessionConsumerRig(t *testing.T) *sessionConsumerRig {
 		t.Fatalf("connect the listener: %v", err)
 	}
 	t.Cleanup(client.Close)
-	return newSessionConsumerRigOn(t, client, url)
+	return newSessionConsumerRigOn(t, client, url, sessionOptions...)
 }
 
-func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string) *sessionConsumerRig {
+func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string, sessionOptions ...session.SessionRegistryOption) *sessionConsumerRig {
 	t.Helper()
-	harness := newListenerDeliveryHarnessOn(t, client)
-	delivery := connectSessionDelivery([]string{url}, harness.config.logger)
+	harness := newListenerDeliveryHarnessOn(t, client, sessionOptions...)
+	// The connection is opened with the threshold this listener's own windows derive, as main
+	// opens it (inactiveThresholdFor), so every consumer the rig creates carries what a
+	// deployment with these windows would give it.
+	delivery := connectSessionDelivery([]string{url},
+		inactiveThresholdFor(harness.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval),
+		harness.config.logger)
 	t.Cleanup(delivery.close)
 	if delivery.consumers == nil {
 		t.Fatal("the session-consumer connection did not open")
 	}
-	observer, err := bus.ConnectSessionConsumers([]string{url})
+	observer, err := bus.ConnectSessionConsumers([]string{url}, 0)
 	if err != nil {
 		t.Fatalf("connect the test's view of the session consumers: %v", err)
 	}
 	t.Cleanup(observer.Close)
 	delivery.relay = &recordingRelay{}
-	deps := &listenerDeps{client: client, registry: harness.registry, sessions: harness.sessions, consumers: delivery}
+	deps := &listenerDeps{client: client, registry: harness.registry, sessions: harness.sessions, consumers: delivery, delivery: &harness.config}
 	mux := http.NewServeMux()
 	registerV1Routes(mux, deps, "test-machine", harness.config.logger)
 	return &sessionConsumerRig{harness: harness, deps: deps, mux: mux, consumers: observer}
@@ -65,11 +72,12 @@ func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string) *sess
 type subscribeAnswer struct {
 	raw      string
 	Delivery *struct {
-		Mode     string `json:"mode"`
-		Subject  string `json:"subject"`
-		StreamID string `json:"stream_id"`
-		Gap      *bool  `json:"gap"`
-		Reason   string `json:"reason"`
+		Mode          string `json:"mode"`
+		Subject       string `json:"subject"`
+		StreamID      string `json:"stream_id"`
+		Gap           *bool  `json:"gap"`
+		ConsumerStart uint64 `json:"consumer_start"`
+		Reason        string `json:"reason"`
 	} `json:"delivery"`
 }
 
@@ -114,6 +122,16 @@ func (rig *sessionConsumerRig) filters(t *testing.T, sessionID string) []string 
 	}
 	slices.Sort(filters)
 	return filters
+}
+
+// startSeq is the stream sequence sessionID's consumer was created at.
+func (rig *sessionConsumerRig) startSeq(t *testing.T, sessionID string) uint64 {
+	t.Helper()
+	info, err := rig.consumers.Info(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("read the consumer of %s: %v", sessionID, err)
+	}
+	return info.Config.OptStartSeq
 }
 
 // awaitPending waits until sessionID's consumer has want messages pending, and fails the test
@@ -221,8 +239,8 @@ func TestSessionConsumerOverlappingFollowsAreAccepted(t *testing.T) {
 
 func TestSessionConsumerResumePointOfTheCurrentStreamSeedsTheNewConsumer(t *testing.T) {
 	rig := newSessionConsumerRig(t)
-	// A resume point names a sequence the session wrote; 0 names none, so the first stream
-	// sequence goes to a message of another session's.
+	// A message of another session's takes the first stream sequence, so the resume point below
+	// names a positive sequence (a resume point at 0 has a test of its own).
 	rig.store(t, contracts.AgentSubject("ses_bystander"))
 	resumed := rig.store(t, contracts.AgentSubject("ses_resumed"))
 	foreign := rig.store(t, contracts.AgentSubject("ses_foreign"))
@@ -237,8 +255,81 @@ func TestSessionConsumerResumePointOfTheCurrentStreamSeedsTheNewConsumer(t *test
 	}
 	// The earlier message to the resumed session is pending: its consumer starts after the resume
 	// point. A resume point of another stream starts the consumer at the stream's end.
+	if start := rig.startSeq(t, "ses_resumed"); start != resumed {
+		t.Fatalf("the consumer of ses_resumed starts at %d, want %d, the sequence after its resume point", start, resumed)
+	}
+	if start := rig.startSeq(t, "ses_foreign"); start != foreign+1 {
+		t.Fatalf("the consumer of ses_foreign starts at %d, want %d, the stream's end", start, foreign+1)
+	}
 	rig.awaitPending(t, "ses_resumed", 1)
 	rig.awaitPending(t, "ses_foreign", 0)
+}
+
+// A resume point at 0 of the current stream is a session that holds nothing of the stream, such
+// as a cursor at 0 on a stream that was empty: its new consumer starts at sequence 1, and the
+// session receives every message stored for it before it registered, from the first, once and in
+// stream order.
+func TestSessionConsumerResumePointAtZeroOfTheCurrentStreamDeliversFromTheFirstSequence(t *testing.T) {
+	rig := newRelayRig(t)
+	const sessionID = "ses_resumed_at_zero"
+	agent := contracts.AgentSubject(sessionID)
+	var stored []contracts.Envelope
+	for want := uint64(1); want <= 3; want++ {
+		item, seq := rig.storeEvent(t, agent)
+		if seq != want {
+			t.Fatalf("the stream stored the session's message %d at sequence %d, want %d", want, seq, want)
+		}
+		stored = append(stored, item)
+	}
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+
+	answer := rig.subscribe(t, `{"session_id":"`+sessionID+`","self_subscribed":true,"topics":[],
+		"delivery":{"consumer":true,"epoch":"e","resume":{"stream_id":"`+rig.streamID(t)+`","seq":0}}}`)
+
+	if answer.Delivery == nil || answer.Delivery.Mode != "consumer" || answer.Delivery.Gap == nil || *answer.Delivery.Gap {
+		t.Fatalf("answer %s, want delivery mode consumer with gap false", answer.raw)
+	}
+	if start := rig.startSeq(t, sessionID); start != 1 {
+		t.Fatalf("the consumer of %s starts at %d, want 1, the sequence after its resume point at 0", sessionID, start)
+	}
+	if start := rig.entry(t, sessionID).ConsumerStart; start != 1 {
+		t.Fatalf("the session entry of %s records consumer start %d, want 1", sessionID, start)
+	}
+	frames := standIn.collect(t, len(stored), 5*time.Second)
+	requireFrames(t, frames, stored...)
+	if frames[0].seq != 1 {
+		t.Fatalf("the first frame carries stream sequence %d, want 1: %v", frames[0].seq, frameEvents(frames))
+	}
+	standIn.none(t, time.Second)
+}
+
+// A registration with no resume point it can use creates the session's consumer at the stream's
+// end, so a message stored for the session before it registered is in no consumer: one with no
+// resume point, one whose resume point carries no seq, and one whose resume point at 0 names
+// another stream.
+func TestSessionConsumerRegistrationWithoutAUsableResumePointStartsAtTheStreamsEnd(t *testing.T) {
+	rig := newSessionConsumerRig(t)
+	sessions := []struct{ sessionID, resume string }{
+		{"ses_no_resume", ``},
+		{"ses_resume_without_seq", `,"resume":{"stream_id":"` + rig.streamID(t) + `"}`},
+		{"ses_resume_of_another_stream", `,"resume":{"stream_id":"another-stream","seq":0}`},
+	}
+	var end uint64
+	for _, registration := range sessions {
+		end = rig.store(t, contracts.AgentSubject(registration.sessionID))
+	}
+
+	for _, registration := range sessions {
+		answer := rig.subscribe(t, `{"session_id":"`+registration.sessionID+`","self_subscribed":true,"topics":[],
+			"delivery":{"consumer":true,"epoch":"e"`+registration.resume+`}}`)
+		if answer.Delivery == nil || answer.Delivery.Mode != "consumer" {
+			t.Fatalf("answer %s, want delivery mode consumer", answer.raw)
+		}
+		if start := rig.startSeq(t, registration.sessionID); start != end+1 {
+			t.Fatalf("the consumer of %s starts at %d, want %d, the stream's end", registration.sessionID, start, end+1)
+		}
+		rig.awaitPending(t, registration.sessionID, 0)
+	}
 }
 
 func jsonUint(n uint64) string {
@@ -558,6 +649,22 @@ func TestSessionConsumerWithoutTheGrantAnswersCoreAndDeliversAsBefore(t *testing
 	if lines := strings.Count(rig.harness.logs.String(), "sessions stay on core delivery until the grant carries them"); lines != 1 {
 		t.Fatalf("the missing grant was logged %d times, want once:\n%s", lines, rig.harness.logs.String())
 	}
+	// Every other path that meets the refusal belongs to the same episode: a consumer delete,
+	// the deregistration's and the sweep's, writes no line of its own while the backoff stands
+	// (sessionDelivery.deleteConsumer), where one per delete is what a hub whose user may not
+	// manage session consumers at all would otherwise carry.
+	deleteUngranted := func(ctx context.Context) error {
+		return rig.deps.consumers.consumers.Delete(ctx, "ses_ungranted_gone")
+	}
+	if rig.deps.consumers.deleteConsumer(context.Background(), rig.harness.sessions, "ses_ungranted_gone", deleteUngranted) {
+		t.Fatal("the delete of ses_ungranted_gone's consumer reported the consumer gone; this user may make no session consumer call at all")
+	}
+	if lines := strings.Count(rig.harness.logs.String(), "sessions stay on core delivery until the grant carries them"); lines != 1 {
+		t.Fatalf("the missing grant was logged %d times once a delete had met it too, want once:\n%s", lines, rig.harness.logs.String())
+	}
+	if lines := strings.Count(rig.harness.logs.String(), "session consumer delete failed"); lines != 0 {
+		t.Fatalf("the delete wrote %d failure lines of its own, want none: the episode's one warning is the whole of it\n%s", lines, rig.harness.logs.String())
+	}
 	if entry := rig.entry(t, "ses_ungranted"); entry.Delivery != "" {
 		t.Fatalf("session entry %+v, want no consumer delivery", entry)
 	}
@@ -574,5 +681,55 @@ func TestSessionConsumerWithoutTheGrantAnswersCoreAndDeliversAsBefore(t *testing
 	requireNoException(t, exceptions, "the core-path session's message")
 	if body := deliveredMetrics(t, rig.harness); !strings.Contains(body, `test_messages_delivered{delivery_status="skipped"} 1`) {
 		t.Fatalf("delivery metrics %s, want the stored copy skipped", body)
+	}
+}
+
+// The threshold the server removes an idle session consumer after is the deployment's own, not
+// the compiled floor: the listener derives it from the windows its own session registry runs
+// with and gives it to the session-consumer connection before that connection creates
+// anything. On a deployment whose session bucket keeps a record far longer than its gone
+// horizon, that record's life is what the sweep waits on, so the threshold must stand above
+// the bucket's age plus a reaper pass and a sweep pass - a consumer the server removed first
+// would take with it the only record of where that session's delivery stopped. Every consumer
+// the listener creates carries the value, which is what the rig's own connection is opened
+// with (newSessionConsumerRigOn, as main opens it).
+//
+// That the arithmetic above the three windows is right is bus.InactiveThresholdFor's own row
+// (internal/bus), and that a connection hands its threshold to every consumer is
+// bus.ConnectSessionConsumers's own row; what this row is about is the listener handing it its
+// own windows.
+func TestTheListenerDerivesItsInactiveThresholdFromItsOwnWindows(t *testing.T) {
+	// A bucket that keeps a record for well past the horizon, as a deployment that raised
+	// ENVOY_SESSION_MAX_AGE has.
+	const (
+		bucketAge = 2 * time.Hour
+		horizon   = time.Minute
+	)
+	rig := newSessionConsumerRig(t,
+		session.WithSessionTTL(bucketAge),
+		session.WithSessionLiveWindow(horizon),
+		session.WithSessionGoneHorizon(horizon),
+	)
+	if ttl := rig.harness.sessions.TTL(); ttl != bucketAge {
+		t.Fatalf("the rig's session bucket keeps a record for %s, want %s: this row needs an age above its gone horizon", ttl, bucketAge)
+	}
+
+	// The derivation the rig's connection was opened with, read from the same windows and the
+	// same two intervals a deployment that sets neither runs.
+	threshold := inactiveThresholdFor(rig.harness.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval)
+
+	if bound := bucketAge + defaultSessionReapInterval + defaultSessionConsumerSweepInterval; threshold <= bound {
+		t.Fatalf("the inactive threshold is %s, want it above this deployment's sweep bound %s: a record kept %s, the reaper's pass %s, the sweep's pass %s",
+			threshold, bound, bucketAge, defaultSessionReapInterval, defaultSessionConsumerSweepInterval)
+	}
+	const sessionID = "ses_inactive_threshold"
+	rig.subscribe(t, `{"session_id":"`+sessionID+`","self_subscribed":true,"topics":[],
+		"delivery":{"consumer":true,"epoch":"e"}}`)
+	info, err := rig.consumers.Info(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("read the consumer of %s: %v", sessionID, err)
+	}
+	if info.Config.InactiveThreshold != threshold {
+		t.Fatalf("the consumer of %s carries an inactive threshold of %s, want the %s this listener's windows derive", sessionID, info.Config.InactiveThreshold, threshold)
 	}
 }

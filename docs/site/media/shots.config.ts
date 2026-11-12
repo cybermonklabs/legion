@@ -7,22 +7,25 @@ import type { Locator, Page } from "@playwright/test";
 import { type DispatchWorkspace, expect, seedDispatchWorkspace } from "./harness";
 import type { ShotSet } from "./shot-runner";
 
-/** The Inbox page from 1280 px: the two columns, the questions as short rows in the list, one
- *  row selected, and the snoozed one folded under Later. */
+/** The Inbox page from 1280 px: the two columns, every row short in the list, one of them
+ *  selected, the bands the default grouping (Priority) draws, and the snoozed question folded
+ *  under Later. */
 async function inboxPaneReady(page: Page): Promise<void> {
   await expect(page.getByRole("heading", { name: "Inbox" })).toBeVisible();
   await expect(page.getByTestId("inbox-list")).toBeVisible();
   await expect(page.getByTestId("inbox-pane")).toBeVisible();
   await expect(page.locator('[data-inbox-selected="true"]')).toHaveCount(1);
+  await expect(page.getByRole("button", { name: /^P1 \(1\)/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Later \(1\)/ })).toBeVisible();
 }
 
-/** The Inbox below 1280 px: no reading column, so each question holds its own card in its row,
- *  the blocking one first, with the snoozed one folded under Later. */
+/** The Inbox below 1280 px: no reading column, so each row holds its own card, under the same
+ *  priority bands, with the snoozed question folded under Later. */
 async function inboxCardsReady(page: Page): Promise<void> {
   await expect(page.getByRole("heading", { name: "Inbox" })).toBeVisible();
   await expect(page.getByTestId("inbox-pane")).toHaveCount(0);
   await expect(page.getByRole("article", { name: "Urgency: Blocking" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^P1 \(1\)/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Later \(1\)/ })).toBeVisible();
 }
 
@@ -52,7 +55,7 @@ const dispatch: ShotSet<DispatchWorkspace> = {
   shots: [
     {
       id: "inbox",
-      alt: "The Dispatch Inbox in two columns: the open questions as short rows on the left, and the selected question, a decision block, open in its own document on the right.",
+      alt: "The Dispatch Inbox in two columns: the list of open questions and unread threads on the left, grouped by priority, and the selected question, a decision block, open in its own document on the right.",
       route: "/",
       viewport: "desktop",
       theme: "light",
@@ -129,19 +132,22 @@ const dispatch: ShotSet<DispatchWorkspace> = {
     },
     {
       id: "agents",
-      alt: "The Agents page: live sessions grouped by activity, one opened to show the conversation with it.",
+      alt: "The Agents page: live sessions in the four groups it reads them by, one opened to show the conversation with it.",
       route: "/agents",
       viewport: "desktop",
       theme: "light",
       ready: async (page) => {
         const agents = page.getByRole("region", { name: "Agents" });
-        // A folded section's rows stay mounted, hidden (packages/dispatch/AGENTS.md), so only the
-        // rows on screen are counted.
+        // Every group is open when the page loads, so the whole seed is listed: the three
+        // sessions with Dispatch activity under `Active`, the one it has never heard from under
+        // `Idle`, and the one unseen for twenty minutes under `Quiet`
+        // (packages/dispatch/AGENTS.md). The list is windowed and a closed group's rows leave
+        // the page, so what is counted here is the rows drawn.
         await expect
           .poll(async () =>
             (await agents.locator("article:not([hidden]) h2").allTextContents()).sort()
           )
-          .toEqual(["Planner", "Reviewer", "Tester"]);
+          .toEqual(["Archivist", "Observer", "Planner", "Reviewer", "Tester"]);
       },
       steps: async (page) => {
         const planner = page

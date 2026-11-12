@@ -22,9 +22,13 @@ The head the merger names is the head the reviewer approved.
 - **A change after the approved head** (`READY_UNREVIEWED_CHANGE`): the
   daemon diffs the reviewer's approved head against the head on GitHub, and the issue goes back to
   the reviewer for another review. READY still lets through a commit that changes only
-  `docs/solutions/`, which no role writes any more, and a file under `.legion/` that GitHub lists
-  as removed: the commit `legion handoffs import` makes, never one of yours. Since retro commits
-  nothing, an ordinary head carries neither.
+  `docs/solutions/`, which no role writes any more, and a change whose every path is under
+  `.legion/`, where handoffs lived before they moved to the Dispatch issue and which nothing
+  writes or reads now, so nobody reviews a path there. Since retro commits nothing, an ordinary
+  head carries neither.
+- `READY_UNREVIEWED_CHANGE` has more causes than a path outside retro's own. Every one of them
+  sends the head back to review and none is an error to retry; the complete list, with each
+  remedy, is the merger's own role prompt part.
 
 Work on the existing issue branch: never rebase it onto another base, never make another branch or
 bookmark, and push nothing, because READY reads this branch's head and a push of yours would void
@@ -47,7 +51,7 @@ for a finished retro only.
    that line quotes). Every `before_merge` check of the issue carries a passing result that is
    current at the approved head, the implementer's and the tester's alike, and the pull request
    body's `Checks` block carries each of those lines. In
-   sjawhar/legion a surface may also be the daemon's real-process tests, a live proof under
+   cybermonklabs/legion a surface may also be the daemon's real-process tests, a live proof under
    `scripts/e2e/`, or a live check at the operator's next daemon restart recorded on the pull
    request. When a check has no current passing result, or its only evidence is a unit suite,
    call the `legion` tool's `request_backward_move` with `to: implementing` for the implementer's
@@ -58,8 +62,8 @@ for a finished retro only.
    working options, approaches you abandoned, and code another issue could reuse, so the second
    answer does not set your list. Then run `task(agent="oracle")` (read-only) with the issue, the
    pull request body and the diff in its brief, asking for reusable learnings, and `wait` for its
-   answer, since it runs as a job of its own. You decide which points to keep. Drop one that cites
-   no file, line or commit of this pull request.
+   answer, since it runs as a job of its own. You decide which points to keep. Drop a point that
+   cites no file, symbol, quoted text or commit of this pull request.
 3. **Record the learnings.** Write each kept point you can state as a rule a worker on another
    issue could follow as one `dispatch comment` on the issue, per
    `skill://legion-retro/references/learnings.md`, which says what a point must carry for the
@@ -90,8 +94,10 @@ for a finished retro only.
    EOF
    ```
 
-   The merge's close hands you the production check's first look in this session; the daemon
-   wakes a later look at a deploy only after you report `pending`
+   The merge's close hands the production check's first look to the role the project's
+   `production_check` setting names — the tester, unless the setting is `off`, where the close
+   opens no check at all — so it reaches that role's session, not yours, and the look after it is
+   the one that look's own `wake_at` names
    (`skill://legion-worker/references/merge-gate.md#the-production-check-after-the-close`).
 6. **Complete** with the `legion` tool's `handoff_complete`, its summary two sentences for the
    architect. It reports the commit your workspace stands on, which is the head you found: retro

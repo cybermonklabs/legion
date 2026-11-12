@@ -1,20 +1,28 @@
-import { actorAttribution, actorName, sessionLabel, shortSessionId } from "@legion/contracts";
+import {
+  actorActText,
+  actorAttribution,
+  actorName,
+  sessionLabel,
+  shortSessionId,
+} from "@legion/contracts";
 import { Fragment, type ReactNode, useMemo } from "react";
 import { generatePath, Link } from "react-router-dom";
 
 import type { Actor, AskResolution } from "../../api/types";
 import {
   focusVisibleRing,
+  inlineWarningText,
   linkHoverText,
   linkText,
   liveDotBg,
   offlineDotBorder,
+  stalledDotBorder,
   unknownDotBorder,
 } from "../../theme/classes";
 import { askResolutionBadge, askResolutionReason } from "./actor";
 import { type AgentRegistry, type AgentState, useAgentRegistry } from "./agent-registry";
 import { AGENT_LIVE_PATH } from "./routes";
-import { relativeTimeLabel } from "./Timestamp";
+import { relativeTimeLabel, Timestamp } from "./Timestamp";
 
 /**
  * How Dispatch shows an agent (a session), in one place: named by its current registry title
@@ -28,7 +36,14 @@ import { relativeTimeLabel } from "./Timestamp";
  * `packages/dispatch/AGENTS.md` ("How an agent is shown") catches that member use.
  */
 
-type SessionActor = Extract<Actor, { kind: "session" }>;
+type SessionActor = Actor & { kind: "session" };
+
+/** Whether an actor is a session's. An actor's kind reaches the browser as the string the route
+ *  table declares, and `session` is the one word that names a session; every surface that needs
+ *  the session itself narrows here. */
+function isSessionActor(actor: Actor): actor is SessionActor {
+  return actor.kind === "session";
+}
 
 /** An agent to name: an actor, or a bare session id with the title stamped where it was
  *  recorded. */
@@ -58,7 +73,7 @@ function resolveAgent(ref: AgentRef, registry: AgentRegistry): ResolvedAgent {
     return {
       attribution: actorAttribution(actor),
       name: actorName(actor, registry.titles),
-      sessionId: actor.kind === "session" ? actor.id : undefined,
+      sessionId: isSessionActor(actor) ? actor.id : undefined,
     };
   }
   return {
@@ -73,12 +88,26 @@ type AgentSubject =
   | { actor?: never; sessionId: string; storedTitle: string | undefined };
 
 type AgentVariant =
-  /** `link` (default): the name links to the live conversation. `static`: no link, for the
-   *  places a link cannot sit (a tooltip, a listbox option, the live page's own header). */
-  | { kind?: "link" | "static"; control?: never }
+  /** `link` (default): the name links to the live conversation, pushing the address, so Back
+   *   walks the pages the reader came from. `replace` is the rail's pinned rows alone
+   *   (INFRA-812): a move from one pinned agent to another replaces the live view the reader is
+   *   in rather than stacking it. `onNavigate` is told the link was followed, which is how the
+   *   rail's sheet closes behind it. `static`: no link, for the places a link cannot sit (a
+   *   tooltip, a listbox option, the live page's own header). */
+  | {
+      kind?: "link" | "static";
+      control?: never;
+      onNavigate?: () => void;
+      replace?: boolean;
+    }
   /** `control`: the host keeps its own control around the name, and the live link renders
    *  beside it, outside the host control. */
-  | { kind: "control"; control: (name: ReactNode) => ReactNode };
+  | {
+      kind: "control";
+      control: (name: ReactNode) => ReactNode;
+      onNavigate?: never;
+      replace?: never;
+    };
 
 type AgentNameProps = AgentSubject &
   AgentVariant & {
@@ -93,17 +122,30 @@ const MARK_CLASS = "mr-1 inline-block h-2 w-2 shrink-0 rounded-full align-middle
 
 const AGENT_SPAN_CLASS = "min-w-0 [overflow-wrap:anywhere]";
 
-/** Filled, hollow and dashed: the states read apart without colour. */
+/** Filled, amber-ringed, hollow and dashed: the states read apart without colour. */
 const STATE_MARK_CLASS: Record<AgentState, string> = {
   "not-running": `${MARK_CLASS} border-2 border-solid ${offlineDotBorder}`,
   running: `${MARK_CLASS} ${liveDotBg}`,
   unknown: `${MARK_CLASS} border border-dashed ${unknownDotBorder}`,
+  unresponsive: `${MARK_CLASS} border-2 border-solid ${stalledDotBorder}`,
 };
 
 const STATE_LABEL: Record<AgentState, string> = {
   "not-running": "Not running",
   running: "Running",
   unknown: "Running state unknown",
+  unresponsive: "Unresponsive",
+};
+
+/** What each state's mark says beyond its name. An unresponsive session's whole point is when
+ *  it was last heard from - that is what tells a reader whether to wait for it - so its mark
+ *  says so as a running one's does, and says that it has not ended. */
+const STATE_NOTE: Record<AgentState, string> = {
+  "not-running": "",
+  running: "",
+  unknown: "",
+  unresponsive:
+    " · it has missed its heartbeats without ending: it keeps its roles and claims, and messages are stored for it",
 };
 
 function AgentStateMark({
@@ -114,7 +156,7 @@ function AgentStateMark({
   state: AgentState;
 }): ReactNode {
   const seen =
-    state === "running" && lastSeen !== undefined
+    (state === "running" || state === "unresponsive") && lastSeen !== undefined
       ? relativeTimeLabel(new Date(lastSeen), Date.now())
       : undefined;
   return (
@@ -122,16 +164,53 @@ function AgentStateMark({
       aria-label={STATE_LABEL[state]}
       className={STATE_MARK_CLASS[state]}
       role="img"
-      title={seen === undefined ? STATE_LABEL[state] : `${STATE_LABEL[state]} · seen ${seen}`}
+      title={`${STATE_LABEL[state]}${seen === undefined ? "" : ` · seen ${seen}`}${STATE_NOTE[state]}`}
     />
   );
 }
 
 /**
+ * The visible mark beside an unresponsive session on a surface that lists sessions (the Agents
+ * page's row, its live conversation's header). The state mark alone is a ring a reader must
+ * hover to read, and this state is the one a person has to act on - wait for the session, or
+ * decide it is lost - so it is also said in words, with the heartbeat it was last seen at.
+ * Renders nothing for any other state, so a page of running sessions stays quiet.
+ */
+export function AgentUnresponsiveNote({
+  className,
+  lastSeen,
+  state,
+}: {
+  className?: string;
+  lastSeen: number | undefined;
+  state: AgentState;
+}): ReactNode {
+  if (state !== "unresponsive") {
+    return null;
+  }
+  const seen = lastSeen === undefined ? undefined : new Date(lastSeen).toISOString();
+  return (
+    <span
+      className={`${className === undefined ? "" : `${className} `}shrink-0 text-xs ${inlineWarningText}`}
+      data-testid="agent-unresponsive"
+      title={`This session has missed its heartbeats${seen === undefined ? "" : ` since ${new Date(seen).toLocaleString()}`}. It has not ended: it keeps its roles and claims, and messages sent to it are stored until it answers.`}
+    >
+      Unresponsive
+      {seen === undefined ? null : (
+        <>
+          {" "}
+          · seen <Timestamp at={seen} />
+        </>
+      )}
+    </span>
+  );
+}
+
+/**
  * An agent, as every place in the app shows one. A `user` or `system` actor is its id as plain
- * text (inside the host's control, for `kind="control"`) and reads no registry. A session
- * renders in one `<span data-agent-name data-agent-state>`: its state mark, its name, and its
- * attribution.
+ * text (inside the host's control, for `kind="control"`) and reads no registry; a person an
+ * agent acted for also carries that agent (`actorActText`). A session renders in one
+ * `<span data-agent-name data-agent-state>`: its state mark, its name, and its attribution.
  */
 export function AgentName(props: AgentNameProps): ReactNode {
   if (props.sessionId !== undefined) {
@@ -145,8 +224,11 @@ export function AgentName(props: AgentNameProps): ReactNode {
     );
   }
   const { actor } = props;
-  if (actor.kind !== "session") {
-    const named = props.kind === "control" ? props.control(actor.id) : actor.id;
+  if (!isSessionActor(actor)) {
+    // An act an agent made for its person is recorded as the person's, so the person's name
+    // carries the agent beside it, by the one rule every reader of an act follows.
+    const text = actor.kind === "user" ? actorActText(actor.id, actor.act) : actor.id;
+    const named = props.kind === "control" ? props.control(text) : text;
     return props.className === undefined ? named : <span className={props.className}>{named}</span>;
   }
   return (
@@ -189,9 +271,16 @@ function SessionAgentName({
     named = name;
   } else {
     // No `aria-label`: the link is named by its visible name, and the attribution after it is
-    // read once, as text.
+    // read once, as text. Inside a sentence it is underlined, as every other inline link of the
+    // app is: the link blue alone does not reach 3:1 against the text around it in dark, so
+    // colour on its own would be the only thing marking it a link (axe's `link-in-text-block`).
     named = (
-      <Link className={inline ? `${LINK_CLASS} dispatch-inline-link` : LINK_CLASS} to={to}>
+      <Link
+        className={inline ? `${LINK_CLASS} dispatch-inline-link underline` : LINK_CLASS}
+        onClick={variant.onNavigate}
+        replace={variant.replace === true}
+        to={to}
+      >
         {name}
       </Link>
     );
@@ -251,7 +340,11 @@ export function useAgentText(): AgentText {
   return useMemo(() => {
     const label = (ref: AgentRef) => {
       const { attribution, name } = resolveAgent(ref, registry);
-      return `${name}${attribution}`;
+      // The same name `AgentName` draws, the agent an act was made through included, so a title
+      // or an aria-label never says a person wrote what their agent wrote for them.
+      const acted =
+        "actor" in ref && ref.actor.kind === "user" ? actorActText(name, ref.actor.act) : name;
+      return `${acted}${attribution}`;
     };
     return {
       initials: (actor: Actor) => agentInitials(resolveAgent({ actor }, registry).name),
@@ -264,17 +357,18 @@ export function useAgentText(): AgentText {
 }
 
 /** The text before and after a resolution's actor. A withdrawal is the close of the ask's issue,
- *  so it names the closer: `Withdrawn when <agent> closed the issue`; else `<Verb> by <agent>`. */
+ *  so it names the closer: `Withdrawn when <agent> closed the issue`. A decline is the person's
+ *  own act, so it says what they did: `<agent> declined to answer`. Else `<Verb> by <agent>`. */
 function resolutionFrame(resolution: AskResolution): readonly [before: string, after: string] {
-  return resolution.kind === "withdrawn"
-    ? ["Withdrawn when ", " closed the issue"]
-    : [`${askResolutionBadge(resolution)} by `, ""];
+  if (resolution.kind === "withdrawn") return ["Withdrawn when ", " closed the issue"];
+  if (resolution.kind === "declined") return ["", " declined to answer"];
+  return [`${askResolutionBadge(resolution)} by `, ""];
 }
 
-/** `Resolved by <agent>` / `Retracted by <agent>` / `Withdrawn when <agent> closed the issue`:
- *  the actor sentence of a resolution, for callers that render its reason (`askResolutionReason`)
- *  with their own markup. `agent="static"` names the agent without its link, for a host that is
- *  itself one control (a listbox option). */
+/** `Resolved by <agent>` / `Retracted by <agent>` / `Withdrawn when <agent> closed the issue` /
+ *  `<agent> declined to answer`: the actor sentence of a resolution, for callers that render its
+ *  reason (`askResolutionReason`) with their own markup. `agent="static"` names the agent
+ *  without its link, for a host that is itself one control (a listbox option). */
 export function AskResolutionLine({
   agent,
   resolution,

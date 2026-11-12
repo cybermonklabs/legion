@@ -24,7 +24,7 @@ import (
 func TestSearchLinksAnAskBlockOnlyWhileTheBlockIsANode(t *testing.T) {
 	const server = "https://dispatch.example"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "TEST", "Ask block links", "Context paragraph.\n")
 	long := randomBlockID(t, 3200)
 	askBlock := func(id, question string) string {
@@ -70,14 +70,19 @@ func TestSearchLinksAnAskBlockOnlyWhileTheBlockIsANode(t *testing.T) {
 		t.Fatalf("the block id of %d bytes is a graph node, want none past the bound", len(long))
 	}
 
+	// The writes record the asks' parts; their windows are the tick's to write (INFRA-988),
+	// and the rows embedded below are the ones it writes.
+	windowOwedOwners(t, deps)
+
 	// Each ask is a meaning match for wibbleflorp, at a cosine above the floor, on an axis of
 	// its own, under the embedder's identity, which meaning search compares a query with alone;
-	// no other row has an embedding.
+	// no other row has an embedding. Each short ask holds one window over its parts.
 	for index, ask := range asks {
-		tag, err := database.Pool.Exec(context.Background(), `update embeddings set embedding = $2::vector, model = $3 where kind = 'ask' and id = $1`,
+		tag, err := database.Pool.Exec(context.Background(),
+			`update embeddings set embedding = $2::vector, model = $3 where kind = 'ask_part' and split_part(id, '#', 1) = 'ask/' || $1`,
 			ask.id, embed.Literal(angledVector(0.9-0.05*float64(index), 2+index)), embedder.Identity())
 		if err != nil || tag.RowsAffected() != 1 {
-			t.Fatalf("embed the ask %q: %v (%d rows)", ask.question, err, tag.RowsAffected())
+			t.Fatalf("embed the window of the ask %q: %v (%d rows)", ask.question, err, tag.RowsAffected())
 		}
 	}
 

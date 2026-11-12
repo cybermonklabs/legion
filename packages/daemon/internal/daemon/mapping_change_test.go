@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -19,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -33,8 +33,9 @@ import (
 func TestAMappingChangeAtRuntimeChangesWhatTheDaemonServes(t *testing.T) {
 	t.Run("GitHub answering at once", func(t *testing.T) { mappingChangeAtRuntime(t, 5*time.Second, 0) })
 	// A refresh reads Dispatch and GitHub, which can take longer than the event's acknowledgement
-	// window (AckWait): a GitHub answering every read later than that window still has the change
-	// applied, rather than its event redelivered with a refresh that never finishes.
+	// window (AckWait), the bound intake puts on a mapping read a handler makes inline: a GitHub
+	// answering every read later than that window still has the change applied, by the refresh
+	// that runs on its own, rather than cut off part way and never finishing.
 	t.Run("every GitHub read outlasting the acknowledgement window", func(t *testing.T) {
 		mappingChangeAtRuntime(t, 300*time.Millisecond, 400*time.Millisecond)
 	})
@@ -43,11 +44,7 @@ func TestAMappingChangeAtRuntimeChangesWhatTheDaemonServes(t *testing.T) {
 func mappingChangeAtRuntime(t *testing.T, ackWait, delay time.Duration) {
 	pool := isolatedOutboxPool(t)
 	url := workflowNATS(t)
-	conn, err := nats.Connect(url, nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, url)
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)

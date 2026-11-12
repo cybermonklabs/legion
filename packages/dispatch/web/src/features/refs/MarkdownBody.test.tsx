@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the `error` events below are a picture failing to load, which user-event has no form for.
+import { act, fireEvent, waitFor, within } from "@testing-library/react";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { graphNodeFields } from "../../__tests__/graph-fixture";
+import { renderWithQueries as render } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
 import type {
   AskRead,
@@ -82,8 +85,8 @@ describe("Dispatch pictures", () => {
 
     try {
       const shot = await within(view.container).findByRole("img", { name: "shot.png" });
-      expect(shot.getAttribute("src")).toBe("/api/v1/issues/CORE-1/artifacts/shot-png/versions/1");
-      expect(shot.getAttribute("loading")).toBe("lazy");
+      expect(shot).toHaveAttribute("src", "/api/v1/issues/CORE-1/artifacts/shot-png/versions/1");
+      expect(shot).toHaveAttribute("loading", "lazy");
       // At its own size scaled down to the column, with no cap on its height.
       const classes = shot.className.split(" ");
       expect(classes).toEqual(
@@ -93,12 +96,12 @@ describe("Dispatch pictures", () => {
       expect(shot.closest("a")?.getAttribute("href")).toBe("/issues/CORE-1/artifacts/shot-png?v=1");
       // A picture with no caption is named by its slug.
       const plan = within(view.container).getByRole("img", { name: "plan-png" });
-      expect(plan.getAttribute("src")).toBe("/api/v1/projects/CORE/artifacts/plan-png/versions/3");
+      expect(plan).toHaveAttribute("src", "/api/v1/projects/CORE/artifacts/plan-png/versions/3");
       expect(plan.closest("a")?.getAttribute("href")).toBe(
         "/projects/CORE/documents/plan-png?version=3"
       );
       const face = within(view.container).getByRole("img", { name: "face.png" });
-      expect(face.getAttribute("src")).toBe("/api/v1/agents/ses-1/artifacts/face-png/versions/2");
+      expect(face).toHaveAttribute("src", "/api/v1/agents/ses-1/artifacts/face-png/versions/2");
       expect(face.closest("a")?.getAttribute("href")).toBe("/agents/ses-1/artifacts/face-png?v=2");
     } finally {
       view.unmount();
@@ -122,7 +125,7 @@ describe("Dispatch pictures", () => {
       const face = await within(view.container).findByRole("img", {
         name: "face [1] back\\slash.png",
       });
-      expect(face.getAttribute("src")).toBe("/api/v1/agents/ses-1/artifacts/face-png/versions/1");
+      expect(face).toHaveAttribute("src", "/api/v1/agents/ses-1/artifacts/face-png/versions/1");
     } finally {
       view.unmount();
     }
@@ -163,7 +166,7 @@ describe("Dispatch pictures", () => {
 
     try {
       const shot = await within(view.container).findByRole("img", { name: "shot.png" });
-      expect(shot.getAttribute("src")).toBe("/api/v1/issues/CORE-1/artifacts/shot-png/versions/2");
+      expect(shot).toHaveAttribute("src", "/api/v1/issues/CORE-1/artifacts/shot-png/versions/2");
       expect(shot.className.split(" ")).toContain("max-w-full");
       expect(shot.className.split(" ")).not.toContain("h-10");
       expect(shot.closest("a")?.getAttribute("href")).toBe("/issues/CORE-1/artifacts/shot-png");
@@ -186,9 +189,12 @@ describe("Dispatch pictures", () => {
 
     try {
       const v2 = await within(view.container).findByRole("img", { name: "shot.png" });
+      // A picture failing to load is an `error` event, which user-event has no form for.
       fireEvent.error(v2);
       await waitFor(() =>
-        expect(within(view.container).queryByRole("img", { name: "shot.png" })).toBeNull()
+        expect(
+          within(view.container).queryByRole("img", { name: "shot.png" })
+        ).not.toBeInTheDocument()
       );
       // An upload of version 3 refreshes the summary, as its event does.
       act(() => {
@@ -198,7 +204,7 @@ describe("Dispatch pictures", () => {
         );
       });
       const v3 = await within(view.container).findByRole("img", { name: "shot.png" });
-      expect(v3.getAttribute("src")).toBe("/api/v1/issues/CORE-1/artifacts/shot-png/versions/3");
+      expect(v3).toHaveAttribute("src", "/api/v1/issues/CORE-1/artifacts/shot-png/versions/3");
     } finally {
       getIssueSummary.mockRestore();
       view.unmount();
@@ -221,7 +227,7 @@ describe("Dispatch pictures", () => {
 
     try {
       const link = await within(view.container).findByRole("link", { name: "notes.md" });
-      expect(link.getAttribute("href")).toBe("/issues/CORE-1/artifacts/notes-md");
+      expect(link).toHaveAttribute("href", "/issues/CORE-1/artifacts/notes-md");
       expect(view.container.querySelector("img")).toBeNull();
     } finally {
       getIssueSummary.mockRestore();
@@ -278,10 +284,11 @@ describe("Dispatch pictures", () => {
         );
         return image as HTMLImageElement;
       });
+      // A picture failing to load is an `error` event, which user-event has no form for.
       fireEvent.error(thumbnail);
       await waitFor(() => expect(link.querySelector("img")).toBeNull());
       expect(link.textContent).toBe("shot.png");
-      expect(link.getAttribute("href")).toBe("/issues/CORE-1/artifacts/shot-png?v=99");
+      expect(link).toHaveAttribute("href", "/issues/CORE-1/artifacts/shot-png?v=99");
     } finally {
       getIssueSummary.mockRestore();
       view.unmount();
@@ -315,10 +322,11 @@ describe("Dispatch pictures", () => {
 
     try {
       const image = await within(view.container).findByRole("img", { name: "notes" });
+      // A picture failing to load is an `error` event, which user-event has no form for.
       fireEvent.error(image);
       const link = await within(view.container).findByRole("link", { name: "notes.pdf" });
-      expect(link.getAttribute("href")).toBe("/issues/CORE-1/artifacts/notes-pdf?v=1");
-      expect(within(view.container).queryByRole("img")).toBeNull();
+      expect(link).toHaveAttribute("href", "/issues/CORE-1/artifacts/notes-pdf?v=1");
+      expect(within(view.container).queryByRole("img")).not.toBeInTheDocument();
     } finally {
       getIssueSummary.mockRestore();
       view.unmount();
@@ -350,11 +358,11 @@ describe("Dispatch pictures", () => {
     try {
       await act(() => worker.answer(0));
       const shot = await within(view.container).findByRole("img", { name: "shot" });
-      expect(shot.getAttribute("src")).toBe(`/api/v1/issues/CORE-1/artifacts/${slug}/versions/1`);
+      expect(shot).toHaveAttribute("src", `/api/v1/issues/CORE-1/artifacts/${slug}/versions/1`);
       expect(shot.closest("a")?.getAttribute("href")).toBe(`/issues/CORE-1/artifacts/${slug}?v=1`);
       const link = await within(view.container).findByRole("link", { name: "design.md" });
-      expect(link.getAttribute("href")).toBe(`/issues/CORE-1/artifacts/${slug}`);
-      expect(link.getAttribute("data-dispatch-ref")).toBe(`dispatch://CORE-1/artifact/${slug}`);
+      expect(link).toHaveAttribute("href", `/issues/CORE-1/artifacts/${slug}`);
+      expect(link).toHaveAttribute("data-dispatch-ref", `dispatch://CORE-1/artifact/${slug}`);
     } finally {
       getArtifactText.mockRestore();
       getIssueSummary.mockRestore();
@@ -394,17 +402,17 @@ describe("Dispatch pictures", () => {
       const designs = await within(view.container).findAllByRole("link", { name: "design.md" });
       expect(designs).toHaveLength(2);
       for (const link of designs) {
-        expect(link.getAttribute("href")).toBe(`/issues/CORE-1/artifacts/${slug}`);
-        expect(link.getAttribute("data-dispatch-ref")).toBe(`dispatch://CORE-1/artifact/${slug}`);
+        expect(link).toHaveAttribute("href", `/issues/CORE-1/artifacts/${slug}`);
+        expect(link).toHaveAttribute("data-dispatch-ref", `dispatch://CORE-1/artifact/${slug}`);
       }
       const plans = await within(view.container).findAllByRole("link", { name: "plan.md" });
       expect(plans).toHaveLength(2);
       for (const link of plans) {
-        expect(link.getAttribute("href")).toBe("/issues/CORE-1/artifacts/plan-md");
-        expect(link.getAttribute("data-dispatch-ref")).toBe("dispatch://CORE-1/artifact/plan-md");
+        expect(link).toHaveAttribute("href", "/issues/CORE-1/artifacts/plan-md");
+        expect(link).toHaveAttribute("data-dispatch-ref", "dispatch://CORE-1/artifact/plan-md");
       }
       const bare = within(view.container).getByRole("link", { name: page });
-      expect(bare.getAttribute("href")).toBe(page);
+      expect(bare).toHaveAttribute("href", page);
       expect(bare.getAttribute("data-dispatch-ref")).toBeNull();
     } finally {
       getArtifactText.mockRestore();
@@ -451,7 +459,7 @@ describe("Dispatch pictures", () => {
       const plans = await within(view.container).findAllByRole("link", { name: "plan.md" });
       expect(plans).toHaveLength(2);
       for (const link of plans) {
-        expect(link.getAttribute("data-dispatch-ref")).toBe(plan);
+        expect(link).toHaveAttribute("data-dispatch-ref", plan);
       }
       // Past the bounds each is its words as plain text: no link to click, and no
       // `data-dispatch-href` for the hover card (`RefPreview`'s trigger) to find.
@@ -479,7 +487,7 @@ describe("Dispatch pictures", () => {
 
     try {
       const image = await within(view.container).findByRole("img", { name: "chart" });
-      expect(image.getAttribute("src")).toBe("https://example.com/a.png");
+      expect(image).toHaveAttribute("src", "https://example.com/a.png");
       expect(image.closest("a")).toBeNull();
       expect(image.getAttribute("loading")).toBeNull();
     } finally {
@@ -525,6 +533,16 @@ function withAskCard(children: ReactNode): ReactNode {
   );
 }
 
+/** The one line the card draws under a decision block a reader meets in a body. */
+const textOnlyLine =
+  "This question is text: it must be opened as an ask before anyone can answer it.";
+
+/** What a reader could press to answer where the block stands: a card in a body draws none of
+ *  it, so the counts below are zero. */
+function answerControls(shell: HTMLElement): Element[] {
+  return Array.from(shell.querySelectorAll("button, input, textarea, select"));
+}
+
 const askBody = "Which one?\n\n- A: first\n- B: second\n:::\n";
 
 /** The `ask` shell a body drew, once it has drawn one. */
@@ -566,7 +584,7 @@ test("an ask block in a body draws the decision card: urgency and Decision above
       expect(within(second as HTMLElement).getByText("B")).toBeDefined();
       expect(within(second as HTMLElement).getByText("second")).toBeDefined();
     });
-    expect(shell.getAttribute("data-dispatch-ask-options")).toBe("rows");
+    expect(shell).toHaveAttribute("data-dispatch-ask-options", "rows");
     // A body nested in a document's decision footer must not add a second decision id there.
     expect(view.container.querySelector("[data-dispatch-ask-block]")).toBeNull();
   } finally {
@@ -584,13 +602,13 @@ test("an ask block in a body ignores server-owned attributes its text forges and
     const shell = await findAskShell(view.container);
     expect(await within(shell).findByText("Decision")).toBeDefined();
     const rows = await findRecordRows(shell);
-    expect(shell.getAttribute("data-dispatch-ask-state")).toBe("open");
+    expect(shell).toHaveAttribute("data-dispatch-ask-state", "open");
     expect(view.container.textContent).not.toContain("Answered by");
     expect(view.container.textContent).not.toContain("sami");
     expect(view.container.textContent).not.toContain("Copied from");
     expect(view.container.querySelector("[data-dispatch-ask-answer]")).toBeNull();
     expect(rows.map((row) => row.getAttribute("data-selected"))).toEqual(["false", "false"]);
-    expect(within(shell).queryByRole("img", { name: "Selected" })).toBeNull();
+    expect(within(shell).queryByRole("img", { name: "Selected" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -607,7 +625,7 @@ test("an ask block in a body with no card provided keeps its question and option
       "A: first",
       "B: second",
     ]);
-    expect(shell.hasAttribute("data-dispatch-ask-options")).toBe(false);
+    expect(shell).not.toHaveAttribute("data-dispatch-ask-options");
     expect(view.container.querySelector("[data-dispatch-ask-record]")).toBeNull();
   } finally {
     view.unmount();
@@ -629,8 +647,80 @@ test("a malformed ask block in a body names why and keeps its source list, with 
     expect(await within(header).findByText("Malformed")).toBeDefined();
     expect(within(header).getByText("Option 2 has no label")).toBeDefined();
     expect(view.container.textContent).not.toContain("re-activates");
-    expect(shell.hasAttribute("data-dispatch-ask-options")).toBe(false);
+    expect(shell).not.toHaveAttribute("data-dispatch-ask-options");
     expect(shell.querySelectorAll("[data-proof-block-content] ul li")).toHaveLength(2);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a well-formed ask block in a body keeps its record and says the question is text", async () => {
+  const view = render(
+    withAskCard(<MarkdownBody markdown={`:::ask{urgency="high"}\n${askBody}`} />)
+  );
+
+  try {
+    const shell = await findAskShell(view.container);
+    const header = shell.querySelector<HTMLElement>("[data-dispatch-ask-header]") as HTMLElement;
+    expect(await within(header).findByText("Decision")).toBeDefined();
+    expect(header.querySelector('[data-dispatch-ask-pill="high"]')?.textContent).toBe("High");
+    const [first, second] = await findRecordRows(shell);
+    expect(within(first as HTMLElement).getByText("A")).toBeDefined();
+    expect(within(second as HTMLElement).getByText("B")).toBeDefined();
+    const footer = shell.querySelector<HTMLElement>("[data-dispatch-ask-footer]") as HTMLElement;
+    const line = footer.querySelector<HTMLElement>("[data-dispatch-ask-text-only]");
+    expect(line?.textContent).toBe(textOnlyLine);
+    // The line stands under the record, which is the last thing the footer drew before it.
+    expect(line?.previousElementSibling).toBe(footer.querySelector("[data-dispatch-ask-record]"));
+    expect(answerControls(shell)).toHaveLength(0);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The reader opens an `ask` container on an opening line carrying no attributes, as it does on
+// one carrying urgency, and draws the same card for it. The server refuses every body it opens
+// one in (INFRA-1201), so this is what a reader meets in a body stored before that rule stood.
+test("an ask block in a body whose opening line carries no attributes draws the card and its one line", async () => {
+  const view = render(withAskCard(<MarkdownBody markdown={`:::ask\n${askBody}`} />));
+
+  try {
+    const shell = await findAskShell(view.container);
+    const header = shell.querySelector<HTMLElement>("[data-dispatch-ask-header]") as HTMLElement;
+    expect(await within(header).findByText("Decision")).toBeDefined();
+    const [first, second] = await findRecordRows(shell);
+    expect(within(first as HTMLElement).getByText("A")).toBeDefined();
+    expect(within(second as HTMLElement).getByText("B")).toBeDefined();
+    const footer = shell.querySelector<HTMLElement>("[data-dispatch-ask-footer]") as HTMLElement;
+    const line = footer.querySelector<HTMLElement>("[data-dispatch-ask-text-only]");
+    expect(line?.textContent).toBe(textOnlyLine);
+    expect(answerControls(shell)).toHaveLength(0);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a malformed ask block in a body says the question is text, where it drew nothing before", async () => {
+  const view = render(
+    withAskCard(
+      <MarkdownBody
+        markdown={':::ask{urgency="high"}\nWhich one?\n\n- A: first\n- : no label\n:::\n'}
+      />
+    )
+  );
+
+  try {
+    const shell = await findAskShell(view.container);
+    const header = shell.querySelector<HTMLElement>("[data-dispatch-ask-header]") as HTMLElement;
+    expect(await within(header).findByText("Malformed")).toBeDefined();
+    const footer = shell.querySelector<HTMLElement>("[data-dispatch-ask-footer]") as HTMLElement;
+    await waitFor(() => {
+      const line = footer.querySelector<HTMLElement>("[data-dispatch-ask-text-only]");
+      expect(line?.textContent).toBe(textOnlyLine);
+    });
+    expect(footer.querySelector("[data-dispatch-ask-record]")).toBeNull();
+    expect(view.container.textContent).not.toContain("re-activates");
+    expect(answerControls(shell)).toHaveLength(0);
   } finally {
     view.unmount();
   }
@@ -677,8 +767,8 @@ test("a decision written inside another decision's option keeps each card in its
       expect(innerRows).toHaveLength(1);
       expect(within(innerRows[0] as HTMLElement).getByText("X")).toBeDefined();
     });
-    expect(within(innerFooter).queryByText("B")).toBeNull();
-    expect(within(innerFooter).queryByText("second")).toBeNull();
+    expect(within(innerFooter).queryByText("B")).not.toBeInTheDocument();
+    expect(within(innerFooter).queryByText("second")).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -734,8 +824,8 @@ test("a decision the read-only parse refuses leaves the valid decision beside it
         expect(within(rows[0] as HTMLElement).getByText("A")).toBeDefined();
         expect(within(rows[1] as HTMLElement).getByText("B")).toBeDefined();
       });
-      expect(shell.getAttribute("data-dispatch-ask-options")).toBe("rows");
-      expect(within(footer).queryByText("X")).toBeNull();
+      expect(shell).toHaveAttribute("data-dispatch-ask-options", "rows");
+      expect(within(footer).queryByText("X")).not.toBeInTheDocument();
       expect(view.container.querySelector("[data-markdown-fallback]")).toBeNull();
     } finally {
       view.unmount();
@@ -748,7 +838,7 @@ test("a Pandoc fenced div reads as text and the body still formats", async () =>
 
   try {
     expect(await within(view.container).findByText("bold", { selector: "strong" })).toBeDefined();
-    expect(view.container.textContent).toContain("::: warning");
+    expect(view.container).toHaveTextContent("::: warning");
     expect(view.container.querySelector("[data-markdown-fallback]")).toBeNull();
   } finally {
     view.unmount();
@@ -767,16 +857,25 @@ test("a code span containing tag-shaped text renders the literal characters with
 });
 
 test("raw unsupported HTML renders as literal text with no element created", async () => {
-  const view = render(<MarkdownBody markdown="<img src=x onerror=alert(1)>" />);
+  // The engine draws a block of HTML as a paragraph whose one child is that block's text as
+  // inline HTML (`remarkHtmlBlockParagraphs`), so a body that is nothing but a tag parses and the
+  // literal-text fallback never runs for it. What a reader sees is what it was: the characters
+  // the author wrote, and no element built from them.
+  for (const [markdown, tag] of [
+    ["<img src=x onerror=alert(1)>", "img"],
+    ["<div>y</div>", "div"],
+  ] as const) {
+    const view = render(<MarkdownBody markdown={markdown} />);
 
-  try {
-    expect(await within(view.container).findByText("<img src=x onerror=alert(1)>")).not.toBeNull();
-    expect(view.container.querySelector("img")).toBeNull();
-    await waitFor(() =>
-      expect(view.container.firstElementChild?.getAttribute("data-markdown-fallback")).toBe("true")
-    );
-  } finally {
-    view.unmount();
+    try {
+      expect(await within(view.container).findByText(markdown)).not.toBeNull();
+      const body = view.container.firstElementChild as HTMLElement;
+      expect(body.querySelector(tag)).toBeNull();
+      expect(body.querySelector("p")?.textContent).toBe(markdown);
+      await waitFor(() => expect(body.getAttribute("data-markdown-fallback")).toBeNull());
+    } finally {
+      view.unmount();
+    }
   }
 });
 
@@ -801,6 +900,11 @@ test("a clock time such as 16:25Z renders as Markdown, not as the literal-text f
 test("a bare dispatch ask reference renders an inline link to the ask route with the resolved question", async () => {
   const askRead: AskRead = {
     ask: {
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      block_id: null,
       id: "ask-1",
       issue_key: "CORE-1",
       kind: "question",
@@ -823,6 +927,7 @@ test("a bare dispatch ask reference renders an inline link to the ask route with
     route: null,
     route_status: null,
     route_holder: null,
+    route_status_reason: null,
     replies: [],
   };
   const getAsk = spyOn(api, "getAsk").mockResolvedValue(askRead);
@@ -834,8 +939,12 @@ test("a bare dispatch ask reference renders an inline link to the ask route with
   );
 
   try {
-    const link = await within(view.container).findByRole("link", { name: "CORE-1 ask" });
-    expect(link.getAttribute("href")).toBe("/issues/CORE-1/asks/ask-1");
+    // Until the ask is read the link shows the reference as its author wrote it, never a short
+    // form of it: a target that never resolves then reads as the words on the page.
+    const link = await within(view.container).findByRole("link", {
+      name: "dispatch://CORE-1/ask/ask-1",
+    });
+    expect(link).toHaveAttribute("href", "/issues/CORE-1/asks/ask-1");
     await waitFor(() => expect(link.textContent).toBe("Ship it?"));
     expect(within(view.container).getAllByRole("link")).toHaveLength(1);
     expect(getAsk).toHaveBeenCalledWith("ask-1");
@@ -855,6 +964,7 @@ test("a block reference reads as the headline of its text: the pinned version's,
   );
   const getIssue = spyOn(api, "getIssue");
   const node = {
+    ...graphNodeFields(),
     block_id: "p1",
     changed_version: 3,
     document: "dispatch://CORE-1/spec",
@@ -886,12 +996,12 @@ test("a block reference reads as the headline of its text: the pinned version's,
 
   try {
     const current = await within(view.container).findByRole("link", { name: "Ship it on Monday." });
-    expect(current.getAttribute("href")).toBe("/issues/CORE-1/spec#b-p1");
+    expect(current).toHaveAttribute("href", "/issues/CORE-1/spec#b-p1");
     const pinned = await within(view.container).findByRole("link", { name: "Ship it on Friday." });
     await waitFor(() =>
-      expect(pinned.getAttribute("href")).toBe("/issues/CORE-1/artifacts/design-md?v=2")
+      expect(pinned).toHaveAttribute("href", "/issues/CORE-1/artifacts/design-md?v=2")
     );
-    expect(pinned.getAttribute("data-dispatch-ref")).toBe("dispatch://CORE-1/spec#b-p1@v2");
+    expect(pinned).toHaveAttribute("data-dispatch-ref", "dispatch://CORE-1/spec#b-p1@v2");
     expect(getIssue).not.toHaveBeenCalled();
   } finally {
     getReferences.mockRestore();
@@ -922,8 +1032,8 @@ test("an external URL unrelated to the app renders as an ordinary link", async (
     const link = await within(view.container).findByRole("link", {
       name: "https://example.com/docs",
     });
-    expect(link.getAttribute("href")).toBe("https://example.com/docs");
-    expect(link.hasAttribute("data-dispatch-ref")).toBe(false);
+    expect(link).toHaveAttribute("href", "https://example.com/docs");
+    expect(link).not.toHaveAttribute("data-dispatch-ref");
   } finally {
     view.unmount();
   }
@@ -932,6 +1042,11 @@ test("an external URL unrelated to the app renders as an ordinary link", async (
 test("two references in one body each resolve their own inline link and title, reading only what each shows", async () => {
   const askRead: AskRead = {
     ask: {
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      block_id: null,
       id: "ask-1",
       issue_key: "CORE-1",
       kind: "question",
@@ -954,6 +1069,7 @@ test("two references in one body each resolve their own inline link and title, r
     route: null,
     route_status: null,
     route_holder: null,
+    route_status_reason: null,
     replies: [],
   };
   const getAsk = spyOn(api, "getAsk").mockResolvedValue(askRead);
@@ -978,8 +1094,8 @@ test("two references in one body each resolve their own inline link and title, r
   try {
     const askLink = await within(view.container).findByRole("link", { name: "Ship it?" });
     const documentLink = await within(view.container).findByRole("link", { name: "Runbook.md" });
-    expect(askLink.getAttribute("href")).toBe("/issues/CORE-1/asks/ask-1");
-    expect(documentLink.getAttribute("href")).toBe("/projects/CORE/documents/runbook-md");
+    expect(askLink).toHaveAttribute("href", "/issues/CORE-1/asks/ask-1");
+    expect(documentLink).toHaveAttribute("href", "/projects/CORE/documents/runbook-md");
     expect(within(view.container).getAllByRole("link")).toHaveLength(2);
     expect(getProjectDocumentSummary).toHaveBeenCalledWith("CORE", "runbook-md");
     // An ask link reads its ask alone, and an inline document link shows no text, so reads none.
@@ -1005,7 +1121,7 @@ test("the inline variant drops a later paragraph's code span instead of leaking 
   );
 
   try {
-    await waitFor(() => expect(view.container.textContent).toContain("First line."));
+    await waitFor(() => expect(view.container).toHaveTextContent("First line."));
     expect(view.container.textContent).not.toContain("dispatch://CORE-1");
     expect(view.container.querySelector("a")).toBeNull();
   } finally {
@@ -1016,6 +1132,11 @@ test("the inline variant drops a later paragraph's code span instead of leaking 
 test("a hand-authored Markdown link to a dispatch:// target resolves through data-dispatch-href", async () => {
   const askRead: AskRead = {
     ask: {
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      block_id: null,
       id: "ask-1",
       issue_key: "CORE-1",
       kind: "question",
@@ -1038,6 +1159,7 @@ test("a hand-authored Markdown link to a dispatch:// target resolves through dat
     route: null,
     route_status: null,
     route_holder: null,
+    route_status_reason: null,
     replies: [],
   };
   const getAsk = spyOn(api, "getAsk").mockResolvedValue(askRead);
@@ -1054,8 +1176,8 @@ test("a hand-authored Markdown link to a dispatch:// target resolves through dat
 
   try {
     const link = await within(view.container).findByRole("link", { name: "Ship it?" });
-    expect(link.getAttribute("href")).toBe("/issues/CORE-1/asks/ask-1");
-    expect(link.getAttribute("data-dispatch-ref")).toBe("dispatch://CORE-1/ask/ask-1");
+    expect(link).toHaveAttribute("href", "/issues/CORE-1/asks/ask-1");
+    expect(link).toHaveAttribute("data-dispatch-ref", "dispatch://CORE-1/ask/ask-1");
     expect(getAsk).toHaveBeenCalledWith("ask-1");
   } finally {
     getAsk.mockRestore();
@@ -1228,7 +1350,15 @@ function looseText(container: HTMLElement): string {
 }
 
 /** The next task, so a row reads what one slice of a paint left in the element: the task that
- *  slice queued is ahead of this one, so exactly one of them has run when it resolves. */
+ *  slice queued is ahead of this one, so exactly one of them has run when it resolves.
+ *
+ *  This one stays on the real clock (INFRA-1505). A paint fills one task until its budget runs
+ *  out, and that budget is read from `performance.now()` (`useRenderedMarkdown`,
+ *  `paintAcrossTasks`), which `jest.useFakeTimers()` freezes: under a fake clock one task
+ *  paints the whole body, so the rows below - which read what a single slice left in the
+ *  element - would have nothing to read. The rows also drive the parse worker through
+ *  `parse-worker-fixture.ts`, whose own `tick` is a zero-delay `setTimeout` that a fake clock
+ *  leaves waiting for an advance nothing makes. */
 function nextTask(): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, 0);
@@ -1316,6 +1446,12 @@ describe("A long body parsed in the worker", () => {
   // fails if the page reaches for `nodeFromJSON` again.
   test("rebuilds a body holding a picture, which its own parser writes a null title for", async () => {
     const worker = installFakeParseWorker();
+    // This row's page is at `about:blank`, where the picture's bytes cannot load: it falls back
+    // to its reference, which resolves against CORE-1's summary, answered here as the rows above
+    // answer it.
+    const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(
+      issueSummary([picture])
+    );
     const markdown = longBody(
       "A picture over a list\n\n![shot.png](dispatch://CORE-1/artifact/shot-png@v1)"
     );
@@ -1332,6 +1468,7 @@ describe("A long body parsed in the worker", () => {
       await waitFor(() => expect(pendingMark(view.container)).toBeNull());
       expect(fallbackMark(view.container)).toBeNull();
     } finally {
+      getIssueSummary.mockRestore();
       view.unmount();
     }
   });
@@ -1736,7 +1873,10 @@ describe("A long body parsed in the worker", () => {
   // Nothing ever answers this body. The engine's deadline ends with the body parsed on the page;
   // this row shortens it through `setParseDeadline`, the seam `resetMermaidDiagrams` is for the
   // diagram renderer's own limit, so it proves what the deadline ends in without waiting out the
-  // page's own 10 s. The 25 s below is room for a loaded runner, not a second bound.
+  // page's own 10 s. The 25 s wait below is above this package's 10 s default
+  // (`web/src/__tests__/setup.ts`) because the row waits out a parse deadline on a parse the test
+  // itself slowed to a stop - its worker never answers - and then the long body's own parse on
+  // the page's thread.
   test("ends formatted on the page's own thread when the worker misses its deadline", async () => {
     const worker = installFakeParseWorker();
     setParseDeadline(50);
@@ -1754,7 +1894,7 @@ describe("A long body parsed in the worker", () => {
       setParseDeadline();
       view.unmount();
     }
-  }, 40_000);
+  }, 40_000); // the 25 s wait must run out inside the test; below the package's 60 s deadline
 
   // The other end of the same deadline. An element keeps its place on the parse the worker is
   // holding when it goes (`keepIfPosted`), which is how a streaming turn is shown the frame the
@@ -1774,10 +1914,10 @@ describe("A long body parsed in the worker", () => {
     } finally {
       left.unmount();
     }
-    // Well past the deadline, which fires with the element gone and its place still on the job.
-    const pastTheDeadline = Promise.withResolvers<void>();
-    setTimeout(pastTheDeadline.resolve, 300);
-    await pastTheDeadline.promise;
+    // The deadline fires with the element gone and its place still on the job, and stopping the
+    // worker it was holding is what it does: that, rather than a wait of the test's, is what
+    // says it has passed.
+    await waitFor(() => expect(worker.workers[0]?.terminated).toBe(true));
 
     const back = render(<MarkdownBody markdown={markdown} />);
     try {
@@ -1794,7 +1934,7 @@ describe("A long body parsed in the worker", () => {
       setParseDeadline();
       back.unmount();
     }
-  }, 20_000);
+  });
 
   // Every paint recomputes the ask hosts, so a body whose decision card arrives late draws it
   // from the answer it already has: the card is a dependency of the render, never a new parse.
@@ -1813,7 +1953,7 @@ describe("A long body parsed in the worker", () => {
       await act(() => worker.answer(0));
       await waitFor(() => expect(topItems(view.container)).toHaveLength(longItems));
       const shell = await findAskShell(view.container);
-      expect(within(shell).queryByText("Decision")).toBeNull();
+      expect(within(shell).queryByText("Decision")).not.toBeInTheDocument();
       expect(worker.requests).toHaveLength(1);
 
       view.rerender(withAskCard(<MarkdownBody markdown={markdown} />));

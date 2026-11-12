@@ -1,5 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_KEY_PATTERN } from "@legion/contracts";
+import { bearerCredential } from "../bearer";
 import { DISPATCH_WRITE_RETRY, DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
 
 // Every write the `dispatch` command makes carries one key because every request DispatchClient
@@ -47,6 +48,10 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   sessionAnswers: (client) => client.sessionAnswers("session-1"),
   listAgents: (client) => client.listAgents(),
   whoami: (client) => client.whoami(),
+  limits: (client) => client.limits(),
+  inbox: (client) => client.inbox("me"),
+  myReplies: (client) => client.myReplies(),
+  credentialPending: (client) => client.credentialPending(),
   createProject: (client) => client.createProject({ key: "DSP", name: "Dispatch" } as never),
   listProjects: (client) => client.listProjects(),
   listArchitectureSources: (client) => client.listArchitectureSources("DSP"),
@@ -76,6 +81,8 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   artifactSuggest: (client) =>
     client.artifactSuggest("artifact-1", { replace_with: "better", actor } as never),
   message: (client) => client.message("DSP-1", { body: "Shipped.", actor }),
+  agentMessage: (client) =>
+    client.agentMessage("session-1", { body: "DSP-1: please take this.", delivery: "aside" }),
   messageReply: (client) => client.messageReply("message-1", { body: "Done.", actor } as never),
   deliveryReply: (client) => client.deliveryReply("message", "message-1", { body: "Done." }),
   getMessage: (client) => client.getMessage("DSP-1", "message-1"),
@@ -113,11 +120,13 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
 afterEach(forgetKeyedLayerMemory);
 
 test("every DispatchClient method reaches Dispatch through its one request function, every write keyed", async () => {
-  expect(
-    Object.getOwnPropertyNames(DispatchClient.prototype)
-      .filter((name) => name !== "constructor")
-      .sort()
-  ).toEqual(Object.keys(CALLS).sort());
+  // Every method, which is every own property of the prototype that is one: `token` is an
+  // accessor (the secret the client presents, which a broker credential renews), not a call.
+  const methods = Object.getOwnPropertyNames(DispatchClient.prototype).filter((name) => {
+    const property = Object.getOwnPropertyDescriptor(DispatchClient.prototype, name);
+    return name !== "constructor" && typeof property?.value === "function";
+  });
+  expect(methods.sort()).toEqual(Object.keys(CALLS).sort());
   const global = spyOn(globalThis, "fetch");
   const keys: string[] = [];
   try {
@@ -132,7 +141,7 @@ test("every DispatchClient method reaches Dispatch through its one request funct
       }) as typeof fetch;
       const client = new DispatchClient(
         "http://dispatch.test",
-        "secret",
+        bearerCredential("secret"),
         recording,
         undefined,
         DISPATCH_WRITE_RETRY

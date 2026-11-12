@@ -12,9 +12,10 @@ in](/legion/broker/guides/log-a-machine-in/) first and start each agent with
 `agent-secrets register --wait 10 --exec -- <agent>`.
 
 No broker yet? [Run the local stack](/legion/broker/guides/run-locally/) and log its helper in, as
-that page shows. Its two secrets are `ada@example.com`'s: `DEMO_READ_TOKEN` at the agent tier,
-which her own sessions get without asking, and `DEMO_API_KEY` at the human tier, which she
-approves. It has no Dispatch: step 2's Inbox row is absent there, and the page a person approves
+that page shows. Two of its three secrets are `ada@example.com`'s: `DEMO_READ_TOKEN` at the agent
+tier, which her own sessions get without asking, and `DEMO_API_KEY` at the human tier, which she
+approves; the third is a registered service's, which only a pod session of that service gets.
+It has no Dispatch: step 2's Inbox row is absent there, and the page a person approves
 on is the one `agent-secrets` prints, as [approving without
 Dispatch](/legion/broker/guides/approve-a-request/#without-dispatch) shows. Every terminal output
 below is from that stack, with the record id in the approval link written as `<record>`.
@@ -81,11 +82,11 @@ prints means).
 ## 2. The approver decides on the broker's page
 
 The approver (here `ada@example.com`, the secret's owner and the operator of the machine the agent
-runs on) opens that page. A secret request is decided there and nowhere else: a person signs in to
-the broker itself with their Workspace account, which asks nothing of someone already signed in to
-it, and lands back on the request. Where there is a Dispatch, the same page is one click away: the
-request is at the top of their **Inbox**, under **Credential requests**, as a **Secret request**
-row naming `DEMO_API_KEY` and when it was asked, and that row is a link to it.
+runs on) opens that page. A person decides a secret request there and nowhere else: they sign in
+to the broker itself with their Workspace account, which asks nothing of someone already signed
+in to it, and lands back on the request. Where there is a Dispatch, the same page is one click
+away: the request is at the top of their **Inbox**, under **Credential requests**, as a **Secret
+request** row naming `DEMO_API_KEY` and when it was asked, and that row is a link to it.
 
 The page prints the broker's own record of the request:
 
@@ -94,7 +95,7 @@ The page prints the broker's own record of the request:
 | Secrets | The secrets asked for: `DEMO_API_KEY` |
 | Requested by (verified by the broker) | The enrollment asking, as kind, operator and runtime id: `session · example-host-build:2150654:335907311 · ada@example.com` |
 | Reason | The `--reason` the agent gave: Deploy the example service |
-| Lasts once approved | How long a grant would last: 12 hours, the `--ttl` the agent asked for, or until the session ends for a secret tagged `default-grant=session` |
+| Lasts once approved | How long a grant would last: the `--ttl` the agent asked for; with none, 15 minutes when any secret is human tier and 12 hours otherwise, or until the session ends for a secret tagged `default-grant=session` |
 | Requested, Expires | When it was asked, and when it [expires](/legion/broker/concepts/#approvals) undecided |
 | Approver | `ada@example.com` |
 | State | pending, or how it was decided, by whom and when |
@@ -102,6 +103,17 @@ The page prints the broker's own record of the request:
 and two buttons, **Approve** and **Deny**. The broker records the decision under the email the
 approver signed in to the broker as; [approving a request](/legion/broker/guides/approve-a-request/)
 covers the page in full.
+
+Some requests never reach that page. Where the deployment configures a model judge, the broker
+that wrote a request pending puts it to a model in the background, as long as it asks for one
+secret, for 15 minutes or less that the secret's airlock rules let the judge decide, with a
+reason naming a Dispatch issue that is not done. The judge approves such a request or leaves it
+here for the approver, and it never denies. A judged approval takes the request out of every
+Inbox, and the **State** line names `judge:<model id>` as the decider, as
+`agent-secrets status <request id>` then does under `decided_by`
+([Concepts](/legion/broker/concepts/#the-model-judge)). The local stack this page
+uses runs no judge; the airlock stack does ([let the judge decide a
+request](/legion/broker/guides/run-locally/#let-the-judge-decide-a-request)).
 
 ## 3. The command runs
 
@@ -114,8 +126,9 @@ agent-secrets: DEMO_API_KEY from the broker AGENT_SECRETS_URL names (AWS Secrets
 deploying with a 18-character key
 ```
 
-The grant outlives the command: it lasts 12 hours (or until the session ends for a secret tagged
-`default-grant=session`), unless the agent asked for another lifetime with `--ttl`. Meanwhile the same session asking for exactly the same secrets gets it again without
+The grant outlives the command: it lasts 15 minutes for a human-tier secret such as this one and
+12 hours otherwise (or until the session ends for a secret tagged `default-grant=session`), unless
+the agent asked for another lifetime with `--ttl`. Meanwhile the same session asking for exactly the same secrets gets it again without
 asking anyone; `agent-secrets self` lists the session's live grants, and the broker and kind of
 store they are at:
 

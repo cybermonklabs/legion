@@ -1,20 +1,19 @@
-import { expect, test } from "@playwright/test";
-
 import { shownAgentRows } from "./agents";
 import { getInbox } from "./api";
 import { askCard, inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
+import { navigateInApp } from "./sends";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 import { seedWorkspace } from "./workspace";
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-// Every surface a human alone acts on has to come up non-empty from this one seed: an empty
+// Every surface the `person` scope opens has to come up non-empty from this one seed: an empty
 // Inbox, Agents page or broadcast would prove nothing about a change to it.
-test("the seeded workspace fills every human-only surface", async ({ browser }, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the seeded workspace");
+// SLOW(>=2s): the whole workspace seed, the four surfaces it has to fill and three full-page
+// screenshots of them.
+// @pr: The seeded workspace every other row builds on: each surface the person scope opens has to come up non-empty.
+test("the seeded workspace fills every surface the person scope opens @pr", async ({
+  browser,
+}, testInfo) => {
   const seeded = await seedWorkspace();
   expect(await getInbox({ login: "alice" })).toHaveLength(seeded.inboxRows);
 
@@ -43,30 +42,30 @@ test("the seeded workspace fills every human-only surface", async ({ browser }, 
     // seed her own list leaves out; the Unassigned filter is where it is listed.
     await expect(inboxRow(page, seeded.asks.document)).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("workspace-inbox.png"), fullPage: true });
-    await page.goto("/?assignee=unassigned");
+    await navigateInApp(page, "/?assignee=unassigned");
     await expect(inboxRow(page, seeded.asks.document)).toContainText("Runbook");
 
-    // Every session with Dispatch activity is an open row; the one Dispatch never heard from and
-    // the one unseen for twenty minutes each sit under their own fold. A fold's rows follow the
-    // open rows in the page's one list, mounted and hidden while it is closed.
-    await page.goto("/agents");
+    // Every session with Dispatch activity is `Active`; the one Dispatch never heard from is
+    // `Idle` and the one unseen for twenty minutes is `Quiet`. Every group is open when the
+    // page loads, so the seed fills the list rather than two closed folds.
+    await navigateInApp(page, "/agents");
     const agents = page.getByRole("region", { name: "Agents" });
-    const quiet = agents.getByRole("button", { name: "No Dispatch activity (1)" });
-    const inactive = agents.getByRole("button", { name: "Inactive (1)" });
+    const idle = agents.getByTestId("agents-group-toggle-idle");
+    const quiet = agents.getByTestId("agents-group-toggle-quiet");
     const shownTitles = shownAgentRows(page).locator("h2");
-    await expect(quiet).toBeVisible();
-    await expect(inactive).toBeVisible();
+    await expect(idle).toHaveAccessibleName("Idle (1)");
+    await expect(quiet).toHaveAccessibleName("Quiet (1)");
+    await expect
+      .poll(async () => (await shownTitles.allTextContents()).sort())
+      .toEqual(["Archivist", "Observer", "Planner", "Reviewer", "Tester"]);
+    // A closed group's rows leave the page; its heading stays, with its count.
+    await idle.click();
+    await quiet.click();
     await expect
       .poll(async () => (await shownTitles.allTextContents()).sort())
       .toEqual(["Planner", "Reviewer", "Tester"]);
+    await idle.click();
     await quiet.click();
-    await expect(shownTitles).toHaveCount(4);
-    await expect(shownTitles.last()).toHaveText("Observer");
-    await quiet.click();
-    await inactive.click();
-    await expect(shownTitles).toHaveCount(4);
-    await expect(shownTitles.last()).toHaveText("Archivist");
-    await inactive.click();
     const plannerCard = agents
       .locator("article")
       .filter({ has: page.getByRole("heading", { level: 2, name: "Planner" }) });
@@ -78,7 +77,7 @@ test("the seeded workspace fills every human-only surface", async ({ browser }, 
 
     // The broadcast keeps the order it was sent in, which is not alphabetical, and shows the one
     // answer it has.
-    await page.goto(`/agents/broadcasts/${seeded.broadcast.id}`);
+    await navigateInApp(page, `/agents/broadcasts/${seeded.broadcast.id}`);
     const broadcast = page.getByRole("region", { name: "Broadcast" });
     await expect(broadcast.getByRole("article")).toHaveText([/Tester/, /Observer/, /Planner/]);
     await expect(broadcast.getByText("1 of 3 answered")).toBeVisible();
@@ -86,7 +85,7 @@ test("the seeded workspace fills every human-only surface", async ({ browser }, 
 
     // The issue's Conversation holds the answered ask and, inside the mention's thread, the
     // mentioned session's reply.
-    await page.goto(`/issues/${seeded.issues.broadcastOrder}/conversation`);
+    await navigateInApp(page, `/issues/${seeded.issues.broadcastOrder}/conversation`);
     const turns = page.getByRole("list", { name: "Conversation turns" });
     await expect(turns.getByText("Ship the recipient-order fix?")).toBeVisible();
     const mention = turns

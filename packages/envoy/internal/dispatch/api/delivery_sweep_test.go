@@ -88,10 +88,11 @@ type sweepRoute struct {
 	path func(issue, document string) string
 	body map[string]any
 	// atCommit is a write answered as soon as it commits, its delivery behind the answer: the
-	// broadcast. Every other route answers once its own attempt has settled.
+	// broadcast and a comment's mentions, which the mention sender delivers after the response.
+	// Every other route answers once its own attempt has settled.
 	atCommit bool
-	// comment says the attempt is a comment mention's, keyed <comment id>:<target>:<mode>; any
-	// other is a message's, keyed <message id>:<mode>.
+	// comment says the attempt is a comment mention's, keyed <comment id>:<target>:<the mention's
+	// mode>; any other is a message's, keyed <message id>:<mode>.
 	comment bool
 }
 
@@ -119,14 +120,16 @@ var sweepRoutes = map[string]sweepRoute{
 		body: map[string]any{
 			"body": "@s1 look", "delivery": "steer", "mentions": []map[string]string{{"target": "session:s1"}},
 		},
-		comment: true,
+		atCommit: true,
+		comment:  true,
 	},
 	"a document comment's mention": {
 		path: func(_, document string) string { return "/api/v1/artifacts/" + document + "/comments" },
 		body: map[string]any{
 			"body": "@s1 look", "delivery": "steer", "mentions": []map[string]string{{"target": "session:s1"}},
 		},
-		comment: true,
+		atCommit: true,
+		comment:  true,
 	},
 }
 
@@ -258,10 +261,10 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 	}
 }
 
-// A comment's mentions are delivered on a context its client cannot cancel, a write sent without a
-// key included (a keyed one's whole run is detached already): a client that gives up while a
-// mention is being sent leaves that send to finish, and its attempt settles as what the listener
-// answered rather than as cut off or pending.
+// A comment's mentions are sent after the comment's response, on the server's lifetime rather
+// than on the request (comment_mention_sender.go): a client that is answered and drops its
+// connection while a mention is still being sent leaves that send to finish, and its attempt
+// settles as what the listener answered rather than as cut off or pending.
 func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
 	for name, path := range map[string]func(issue, document string) string{
 		"an issue comment":   sweepRoutes["a comment's mention"].path,
@@ -307,11 +310,13 @@ func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
 				}
 				gaveUp <- err
 			}()
+			// The comment is answered as soon as it commits, with its attempt pending; the send
+			// that reaches the listener is the mention sender's, behind that answer.
+			if err := <-gaveUp; err != nil {
+				t.Fatalf("the comment was not answered before its mention's send: %v", err)
+			}
 			<-sending
 			abort()
-			if err := <-gaveUp; err == nil {
-				t.Fatal("the client was answered before it gave up")
-			}
 			letProceed()
 			deadline := time.Now().Add(10 * time.Second)
 			var state string
@@ -508,6 +513,30 @@ func (rig sweepRig) strandMentions(issue string, count int, ago string, mentione
 	if err != nil {
 		rig.t.Fatalf("strand mentions: %v", err)
 	}
+	return rig.strandMentionAttempts(rows, ago, mentioned)
+}
+
+// strandDocumentMentions makes count comments on a project document mentioning s1, each with its
+// mention and its one attempt pending under a claim that lapsed ago, as old as that claim. It
+// returns the comments' ids.
+func (rig sweepRig) strandDocumentMentions(document string, count int, ago string) []string {
+	rig.t.Helper()
+	rows, err := rig.database.Pool.Query(context.Background(), `
+		insert into comments (artifact_id, author, body)
+		select $1::uuid, '{"kind":"user","id":"alice"}', '@s1 look ' || n from generate_series(1, $2) n
+		returning id::text
+	`, document, count)
+	if err != nil {
+		rig.t.Fatalf("strand document mentions: %v", err)
+	}
+	return rig.strandMentionAttempts(rows, ago, true)
+}
+
+// strandMentionAttempts gives each comment the rows read names its mention of s1, unless the
+// comment no longer holds it, and its one attempt pending under a claim that lapsed ago, as old
+// as that claim.
+func (rig sweepRig) strandMentionAttempts(rows pgx.Rows, ago string, mentioned bool) []string {
+	rig.t.Helper()
 	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
 		rig.t.Fatalf("strand mentions: %v", err)
@@ -526,116 +555,132 @@ func (rig sweepRig) strandMentions(issue string, count int, ago string, mentione
 	return ids
 }
 
-// INFRA-258. The sweep never sticks on an attempt nothing can send. An owed attempt whose issue
-// closed - every sender refuses a delivery there - or whose comment no longer holds its mention
-// is settled failed with that cause, and the receipt its row owes, instead of being picked again
-// on every pass; a keyed send that closed with no attempt at all gets a failed first attempt the
-// same way. However many there are, they never crowd what can be sent out of a pass's batch: a
-// batch's worth and one more of each kind, all older than one sendable attempt of that kind, and
-// one pass delivers the three sendable ones and settles every other. A second pass changes
-// nothing.
+// INFRA-258, INFRA-448. The sweep never sticks on an attempt nothing can send. A closed issue is
+// no longer one of those: every sender takes a delivery there (lockIssue,
+// lockedCommentForDelivery), so the attempts a dead process left on a closed issue - a message's,
+// a keyed send with no attempt at all, a comment mention's - are sent like any other, each under
+// its own attempt number. What nothing can send is a mention attempt whose comment no longer
+// holds its mention, settled failed with that cause and the receipt its row owes instead of being
+// picked again on every pass, and one whose document is no longer a project's, which the pass
+// reads with its own cause (undeliverableDocumentGone) and keeps out of what it sends. However
+// many of either there are, they never crowd what can be sent out of a pass's batch: a batch's
+// worth and one more of each cause, all older than the closed issue's three sendable attempts. A
+// second pass changes nothing.
 func TestTheDeliverySweepSettlesWhatItCannotSend(t *testing.T) {
 	listener, sends := newBroadcastListener(t, agentSessions)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	rig := sweepRig{t: t, database: database}
 	closed := createTestIssue(t, handler, "STUCK", "Closed under its deliveries")
 	open := createTestIssue(t, handler, "OPEN", "Still open")
+	document := createProjectDocument(t, handler, "OPEN", "Project runbook", "# Runbook\n\nStep one.\n").ID
 	unsendable := deliverySweepBatch + 1
 
-	closedMessages := rig.strandMessages(closed, unsendable, "10 minutes")
-	closedKeyed := rig.strandKeyedSends(closed, unsendable, "10 minutes")
-	closedMentions := rig.strandMentions(closed, unsendable-1, "10 minutes", true)
-	goneMention := rig.strandMentions(open, 1, "10 minutes", false)[0]
-	sendableMessage := rig.strandMessages(open, 1, "5 minutes")[0]
-	sendableKeyed := rig.strandKeyedSends(open, 1, "5 minutes")[0]
-	posted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+open+"/comments",
+	goneMentions := rig.strandMentions(open, unsendable, "10 minutes", false)
+	documentMentions := rig.strandDocumentMentions(document, unsendable, "9 minutes")
+	closedMessage := rig.strandMessages(closed, 1, "5 minutes")[0]
+	closedKeyed := rig.strandKeyedSends(closed, 1, "5 minutes")[0]
+	posted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+closed+"/comments",
 		sweepRoutes["a comment's mention"].body, "alice")
 	if posted.Code != http.StatusCreated {
-		t.Fatalf("post the sendable comment: status=%d body=%s", posted.Code, posted.Body.String())
+		t.Fatalf("post the closed issue's comment: status=%d body=%s", posted.Code, posted.Body.String())
 	}
-	sendableMention := decodeBody[struct {
+	closedMention := decodeBody[struct {
 		ID string `json:"id"`
 	}](t, posted).ID
-	// Its attempt as a sender that died inside the send leaves it.
+	// Its own mention send runs after the comment's response; once it has settled, the test leaves
+	// the attempt as a sender that died inside the send leaves it.
+	settledCommentDeliveries(t, database, closedMention)
 	rig.exec(`
 		update comment_deliveries set state = 'pending', envelope_id = null,
 		       claimed_at = now() - interval '5 minutes', created_at = now() - interval '5 minutes'
 		where comment_id = $1
-	`, sendableMention)
+	`, closedMention)
 	if closing := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+closed,
 		map[string]string{"status": "done"}, "alice"); closing.Code != http.StatusOK {
 		t.Fatalf("close the issue: status=%d body=%s", closing.Code, closing.Body.String())
 	}
-	if len(closedMessages) != unsendable || len(closedKeyed) != unsendable || len(closedMentions) != unsendable-1 {
-		t.Fatalf("seeded %d, %d and %d undeliverable attempts, want %d of each kind",
-			len(closedMessages), len(closedKeyed), len(closedMentions)+1, unsendable)
+	// The document leaves the project, the one state in which a comment's owner check refuses its
+	// delivery for good (ownerStatus reads a project's artifact alone).
+	rig.exec(`update artifacts set issue_key = $2 where id = $1::uuid`, document, open)
+	if len(goneMentions) != unsendable || len(documentMentions) != unsendable {
+		t.Fatalf("seeded %d mention-gone and %d document-gone attempts, want %d of each",
+			len(goneMentions), len(documentMentions), unsendable)
 	}
 
-	mentionKey := sendableMention + ":session:s1:steer"
-	want := []string{mentionKey, mentionKey, sendableKeyed + ":steer", sendableMessage + ":steer"}
+	mentionKey := closedMention + ":session:s1:steer"
+	want := []string{mentionKey, mentionKey, closedKeyed + ":steer", closedMessage + ":steer"}
 	slices.Sort(want)
 	settled := func() map[string]int {
 		return map[string]int{
-			"closed message attempts failed": rig.count(`
-				select count(*) from message_deliveries d join messages m on m.id = d.message_id
-				where m.issue_key = $1 and d.state = 'failed' and d.error = $2`, closed, undeliverableIssueClosed),
-			"closed message attempts pending": rig.count(`
-				select count(*) from message_deliveries d join messages m on m.id = d.message_id
-				where m.issue_key = $1 and d.state = 'pending'`, closed),
-			"closed message receipts": rig.count(`
-				select count(*) from events where type = 'message.delivery' and issue_key = $1
-				  and payload ->> 'state' = 'failed' and payload ->> 'error' = $2`, closed, undeliverableIssueClosed),
-			"closed mention attempts failed": rig.count(`
-				select count(*) from comment_deliveries d join comments c on c.id = d.comment_id
-				where c.issue_key = $1 and d.state = 'failed' and d.error = $2`, closed, undeliverableIssueClosed),
-			"closed mention receipts": rig.count(`
-				select count(*) from events where type = 'comment.delivery' and issue_key = $1
-				  and payload ->> 'state' = 'failed' and payload ->> 'error' = $2`, closed, undeliverableIssueClosed),
-			"gone mention attempts failed": rig.count(`
-				select count(*) from comment_deliveries where comment_id = $1 and state = 'failed' and error = $2`,
-				goneMention, undeliverableMentionGone),
-			"gone mention receipts": rig.count(`
-				select count(*) from events where type = 'comment.delivery' and payload ->> 'comment_id' = $1
-				  and payload ->> 'error' = $2`, goneMention, undeliverableMentionGone),
-			"pending mention attempts": rig.count(`
-				select count(*) from comment_deliveries where state = 'pending'`),
-			"sendable attempts sent": rig.count(`
-				select count(*) from message_deliveries where message_id = any($1::uuid[]) and state = 'sent'`,
-				[]string{sendableMessage, sendableKeyed}) + rig.count(`
-				select count(*) from comment_deliveries where comment_id = $1 and state = 'sent'`, sendableMention),
+			"the closed issue's message attempts sent": rig.count(`
+				select count(*) from message_deliveries
+				where message_id = any($1::uuid[]) and attempt = 1 and state = 'sent'`,
+				[]string{closedMessage, closedKeyed}),
+			"the closed issue's mention attempts sent": rig.count(`
+				select count(*) from comment_deliveries where comment_id = $1 and attempt = 1 and state = 'sent'`,
+				closedMention),
+			"mention-gone attempts failed": rig.count(`
+				select count(*) from comment_deliveries
+				where comment_id = any($1::uuid[]) and state = 'failed' and error = $2`,
+				goneMentions, undeliverableMentionGone),
+			"mention-gone receipts": rig.count(`
+				select count(*) from events where type = 'comment.delivery'
+				  and payload ->> 'comment_id' = any($1::text[]) and payload ->> 'error' = $2`,
+				goneMentions, undeliverableMentionGone),
+			"document-gone attempts settled": rig.count(`
+				select count(*) from comment_deliveries where comment_id = any($1::uuid[]) and state <> 'pending'`,
+				documentMentions),
+			"attempts left pending": rig.count(`
+				select count(*) from comment_deliveries where state = 'pending'`) + rig.count(`
+				select count(*) from message_deliveries where state = 'pending'`),
 		}
 	}
 	wantSettled := map[string]int{
-		// A keyed send with no attempt is settled as its first attempt, so the closed issue holds
-		// one failed attempt per message of either kind.
-		"closed message attempts failed":  2 * unsendable,
-		"closed message attempts pending": 0,
-		"closed message receipts":         2 * unsendable,
-		"closed mention attempts failed":  unsendable - 1,
-		"closed mention receipts":         unsendable - 1,
-		"gone mention attempts failed":    1,
-		"gone mention receipts":           1,
-		"pending mention attempts":        0,
-		"sendable attempts sent":          3,
+		// A keyed send with no attempt opens its first attempt as it is sent, so the closed issue
+		// holds one sent attempt per message of either kind.
+		"the closed issue's message attempts sent": 2,
+		"the closed issue's mention attempts sent": 1,
+		"mention-gone attempts failed":             unsendable,
+		"mention-gone receipts":                    unsendable,
+		// A document-gone attempt settles nowhere: the receipt its row owes has no owner left to
+		// append to once its document is no longer a project's (lockEventOwner), so the settle
+		// fails and the pass logs it. It is still left out of every send batch, which is what
+		// keeps the sendable attempts above in the batch they filled.
+		"document-gone attempts settled": 0,
+		"attempts left pending":          unsendable,
 	}
 	for pass := range 2 {
 		if err := served.resumeOwedDeliveries(context.Background()); err != nil {
 			t.Fatalf("sweep pass %d: %v", pass+1, err)
 		}
 		if keys := keysOf(sends); !slices.Equal(keys, want) {
-			t.Fatalf("after sweep pass %d the listener was sent %v, want the comment's first send and the three sendable attempts %v",
+			t.Fatalf("after sweep pass %d the listener was sent %v, want the comment's first send and the closed issue's three attempts %v",
 				pass+1, keys, want)
 		}
 		if got := settled(); !maps.Equal(got, wantSettled) {
 			t.Fatalf("after sweep pass %d: %v, want %v", pass+1, got, wantSettled)
 		}
 	}
+	undeliverable, full, err := served.undeliverableDeliveries(context.Background())
+	if err != nil {
+		t.Fatalf("read what the pass cannot send: %v", err)
+	}
+	causes := map[string]int{}
+	for _, attempt := range undeliverable {
+		causes[attempt.cause]++
+	}
+	if !full || !maps.Equal(causes, map[string]int{undeliverableDocumentGone: deliverySweepBatch}) {
+		t.Fatalf("the pass reads %v with a full batch=%v, want %d attempts, each %q",
+			causes, full, deliverySweepBatch, undeliverableDocumentGone)
+	}
 }
 
 // INFRA-258. The sweep sends exactly the attempt it found owed. A delivery a card retry
 // overtook while its first sender still held it has two pending attempts once both senders die,
 // and the sweep owes only the retry's, the latest: it sends that one, in its own mode and to its
-// own session, and never the older attempt in its place, which stays the retry's to answer.
+// own session, and never the older attempt in its place. A mention's older attempt is then the
+// retry's to answer, and its sender settles it superseded once its own send has landed
+// (supersedeOvertakenAttempts); a message's is left as it stands.
 func TestTheDeliverySweepSendsTheAttemptItFoundOwed(t *testing.T) {
 	t.Run("a comment's mention", func(t *testing.T) {
 		listener, sends := newBroadcastListener(t, agentSessions)
@@ -650,6 +695,9 @@ func TestTheDeliverySweepSendsTheAttemptItFoundOwed(t *testing.T) {
 		comment := decodeBody[struct {
 			ID string `json:"id"`
 		}](t, posted).ID
+		// The comment's own mention send runs after its response; it has to have settled before the
+		// test can leave its attempt pending as a dead sender's.
+		settledCommentDeliveries(t, database, comment)
 		// The first attempt in steer, and the card's retry in btw, both left by senders that died.
 		rig.exec(`
 			update comment_deliveries set state = 'pending', envelope_id = null,
@@ -660,18 +708,26 @@ func TestTheDeliverySweepSendsTheAttemptItFoundOwed(t *testing.T) {
 			insert into comment_deliveries (comment_id, target, attempt, delivery, session_id, state, claimed_at, created_at)
 			values ($1, 'session:s1', 2, 'btw', 's1', 'pending', now() - interval '5 minutes', now() - interval '5 minutes')
 		`, comment)
-		before := len(keysOf(sends))
+		before := keysOf(sends)
 		if err := served.resumeOwedDeliveries(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		if keys := keysOf(sends); len(keys) != before+1 || !slices.Contains(keys, comment+":session:s1:btw") {
-			t.Fatalf("the sweep sent %v after the comment's own send, want the retry's attempt alone, in btw", keys)
+		// Every attempt of one mention sends under its one key - the mention's target and the
+		// mode the comment recorded on it, not attempt 2's btw - so which attempt the sweep sent
+		// shows in the rows below - attempt 2 sent, attempt 1 superseded by it - rather than in
+		// the key.
+		want := slices.Concat(before, []string{comment + ":session:s1:steer"})
+		slices.Sort(want)
+		if keys := keysOf(sends); !equalStrings(keys, want) {
+			t.Fatalf("the sweep sent %v after the comment's own send, want %v: the retry's attempt alone", keys, want)
 		}
 		if states := rig.count(`
 			select count(*) from comment_deliveries
-			where comment_id = $1 and (attempt, state) in ((1, 'pending'), (2, 'sent'))
-		`, comment); states != 2 {
-			t.Fatalf("after the sweep the attempts are not the first pending and the retry's sent")
+			where comment_id = $1 and ((attempt, state) = (2, 'sent')
+			  or (attempt, state, error) = (1, 'failed', $2))
+		`, comment, mentionSupersededError); states != 2 {
+			t.Fatalf("after the sweep the attempts are not the retry's sent and the one it overtook " +
+				"settled superseded by it")
 		}
 	})
 	t.Run("a message", func(t *testing.T) {

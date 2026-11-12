@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/rescue/rescuetest"
@@ -81,8 +82,21 @@ func TestAnUnpushedGitCommitOnTheWorkspaceHeadIsRescued(t *testing.T) {
 	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
 }
 
-// A commit on a local git branch of the clone that no remote ref holds is rescued, though neither
-// the workspace's HEAD nor jj names it.
+// A commit on the issue's own branch that no remote ref holds is rescued, though the workspace's
+// HEAD does not name it: the branch is the issue's, whichever worktree last worked on it.
+func TestAnUnpushedCommitOnTheIssuesOwnBranchIsRescued(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	tree := d.Run(d.Clone, "git", "rev-parse", d.Base+"^{tree}")
+	commit := d.Run(d.Clone, "git", "commit-tree", tree, "-p", d.Base, "-m", "work on the issue's branch")
+	d.Run(d.Clone, "git", "branch", "--force", d.Branch, commit)
+	if head := d.Git("rev-parse", "HEAD"); head != d.Base {
+		t.Fatalf("the workspace's git HEAD is %s, want %s: only the issue's branch may name the commit", head, d.Base)
+	}
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
+}
+
+// A commit a role made in the pod on a local git branch of another name than the issue's is
+// rescued, though neither the workspace's HEAD nor jj's own line names it.
 func TestAnUnpushedCommitOnALocalGitBranchIsRescued(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	tree := d.Run(d.Clone, "git", "rev-parse", d.Base+"^{tree}")
@@ -136,15 +150,13 @@ func TestADirtyTreeIsRescuedAsOneCommitWithoutChangingTheWorkspace(t *testing.T)
 	}
 }
 
-// A commit jj alone holds — `jj commit` with no bookmark, never pushed, and the working copy moved
-// back onto the issue's bookmark since, so neither the workspace's git HEAD nor any git branch
-// names it — is rescued.
+// A commit only jj names — the working copy described with the work in it, so the workspace's git
+// HEAD is still the pushed commit under it — is rescued as jj holds it, on the workspace's own line.
 func TestAJJOnlyCommitIsRescued(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	d.Write(d.Workspace, "feature.txt", "work jj alone holds\n")
-	d.JJ("commit", "-m", "work jj alone holds")
-	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
-	d.JJ("new", `bookmarks(exact:"`+d.Branch+`")`)
+	d.JJ("describe", "-m", "work jj alone holds")
+	commit := d.JJ("log", "--no-graph", "-r", "@", "-T", "commit_id")
 	if head := d.Git("rev-parse", "HEAD"); head != d.Base {
 		t.Fatalf("the workspace's git HEAD is %s, want %s: only jj may name the commit", head, d.Base)
 	}
@@ -155,7 +167,8 @@ func TestAJJOnlyCommitIsRescued(t *testing.T) {
 // changed", because the bookmark still names the commit the remote has, and the merge is on the
 // disk alone. It is empty — both of its parents are pushed and it resolves nothing — but it is
 // described, and it is rescued, whatever the bookmarks say: with the working copy still on top of
-// it, and with the working copy moved back onto the bookmark since, where jj alone names it.
+// it, and with the working copy moved back onto the bookmark since, where it is on neither line and
+// is the pod's own because the pod made it.
 func TestAMergeWhoseBookmarkWasNotMovedOntoItIsRescued(t *testing.T) {
 	for name, moveOn := range map[string]bool{"the working copy on top of it": false, "the working copy moved back onto the bookmark": true} {
 		t.Run(name, func(t *testing.T) {
@@ -224,18 +237,18 @@ func TestARescueBranchSkipsANumberTheRemoteHoldsAndReportsIt(t *testing.T) {
 	}
 }
 
-// A commit only a stale remote-tracking ref names — its branch deleted on the remote since the
-// pod last fetched — is a commit the remote may no longer hold, and it is rescued.
-func TestACommitOnlyAStaleRemoteTrackingRefNamesIsRescued(t *testing.T) {
+// A commit of the issue's own branch that only a stale remote-tracking ref names — the branch
+// deleted on the remote since the pod last fetched — is a commit the remote may no longer hold,
+// and it is rescued.
+func TestAnOwnCommitOnlyAStaleRemoteTrackingRefNamesIsRescued(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	tree := d.Run(d.Clone, "git", "rev-parse", d.Base+"^{tree}")
 	commit := d.Run(d.Clone, "git", "commit-tree", tree, "-p", d.Base, "-m", "pushed once, then deleted on the remote")
-	d.Run(d.Clone, "git", "branch", "topic", commit)
-	d.Run(d.Clone, "git", "push", "--quiet", "origin", "topic")
-	d.Run(d.Clone, "git", "fetch", "--quiet", "origin", "topic:refs/remotes/origin/topic")
-	d.Run(d.Remote, "git", "branch", "--quiet", "-D", "topic")
-	if tracked := d.Run(d.Clone, "git", "rev-parse", "refs/remotes/origin/topic"); tracked != commit {
-		t.Fatalf("the clone's origin/topic is %s, want the stale %s", tracked, commit)
+	d.Run(d.Clone, "git", "branch", "--force", d.Branch, commit)
+	d.Run(d.Clone, "git", "push", "--quiet", "origin", d.Branch)
+	d.Run(d.Remote, "git", "branch", "--quiet", "-D", d.Branch)
+	if tracked := d.Run(d.Clone, "git", "rev-parse", "refs/remotes/origin/"+d.Branch); tracked != commit {
+		t.Fatalf("the clone's origin/%s is %s, want the stale %s", d.Branch, tracked, commit)
 	}
 	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
 }
@@ -285,6 +298,44 @@ func TestAnotherWorktreeOfTheCloneIsChecked(t *testing.T) {
 	}
 	if body := d.Run(d.Remote, "git", "show", rescued+":notes.txt"); body != "notes in no commit" {
 		t.Errorf("the rescued commit's notes.txt holds %q, want the other worktree's file", body)
+	}
+}
+
+// The clone's own working tree is left out of the walk. An issue pod's clone holds no working
+// tree at all (workspace.feedClone), while its git HEAD and its index still name every file of
+// the default branch, so a check that took the clone's directory would read the whole tree as
+// deleted and push that deletion as a rescue branch. The clone is no agent's workspace, and
+// nothing of it is recorded or pushed.
+func TestTheClonesOwnDirectoryIsNotChecked(t *testing.T) {
+	d := rescuetest.NewWithoutCloneTree(t, issue)
+	if files := d.Run(d.Clone, "git", "ls-files"); files != "base.txt" {
+		t.Fatalf("the clone's index names %q, want base.txt: the case stands on a clone whose HEAD and index name a file it holds no copy of", files)
+	}
+	before := d.RemoteBranches()
+	w := only(t, d, d.Check(context.Background(), prefix))
+	if w.Status != rescue.Clean || len(w.Branches) != 0 || w.Error != "" {
+		for _, b := range w.Branches {
+			t.Errorf("the check pushed %s at %s, whose tree is %s, against the clone's HEAD tree %s",
+				b.Name, b.Commit, d.Run(d.Remote, "git", "rev-parse", b.Commit+"^{tree}"),
+				d.Run(d.Clone, "git", "rev-parse", "HEAD^{tree}"))
+		}
+		t.Fatalf("the check reported %+v, want clean: the clone's absent working tree is no agent's work", w)
+	}
+	if after := d.RemoteBranches(); !slices.Equal(after, before) {
+		t.Errorf("the remote's branches are %v, want %v unchanged", after, before)
+	}
+}
+
+// Leaving the clone out takes no work with it: a workspace on such a disk that holds a commit the
+// remote lacks is rescued, as it is on a disk whose clone has a working tree.
+func TestAWorkspaceOfACloneWithNoWorkingTreeIsStillRescued(t *testing.T) {
+	d := rescuetest.NewWithoutCloneTree(t, issue)
+	d.Write(d.Workspace, "fix.txt", "a fix the remote lacks\n")
+	d.JJ("commit", "-m", "a fix the remote lacks")
+	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
+	if body := d.Run(d.Remote, "git", "show", commit+":fix.txt"); body != "a fix the remote lacks" {
+		t.Errorf("the rescued commit's fix.txt holds %q, want the workspace's file", body)
 	}
 }
 
@@ -342,5 +393,59 @@ func TestTheTestsEnvironmentReachesNoNetworkRemote(t *testing.T) {
 	}
 	if n := requests.Load(); n != 0 {
 		t.Errorf("the loopback server received %d requests, want none", n)
+	}
+}
+
+// Every push passes the leak guard before it is made: a push the shared public leak check
+// refuses fails the workspace, leaving the remote without the branch it would have created,
+// and the same push passes and is made once the check clears it. The check the guard runs is
+// the disk's stand-in (rescuetest.Passes, rescuetest.Refuses), the real one being a script no
+// clone of this repository holds.
+func TestAPushTheLeakGuardRefusesIsNotMade(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	d.LeakCheck(rescuetest.Refuses)
+	d.Write(d.Workspace, "feature.txt", "work the guard reads before it is pushed\n")
+	d.JJ("commit", "-m", "work the guard reads before it is pushed")
+	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
+	before := d.RemoteBranches()
+
+	w := only(t, d, d.Check(context.Background(), prefix))
+	if w.Status != rescue.Failed || len(w.Branches) != 0 || !strings.Contains(w.Error, "LEAK CHECK: refusing") {
+		t.Fatalf("the check reported %+v, want the guard's refusal and no branch", w)
+	}
+	if held := d.RemoteBranch(prefix + "-1"); held != "" {
+		t.Errorf("the remote holds %s-1 at %s, want no such branch", prefix, held)
+	}
+	if after := d.RemoteBranches(); !slices.Equal(after, before) {
+		t.Errorf("the remote's branches are %v, want %v unchanged", after, before)
+	}
+
+	d.LeakCheck(rescuetest.Passes)
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
+}
+
+// The guard's call keeps a reserve of the workspace's bound for the push it clears, and that
+// reserve now holds two things: the push itself, and the second run of the shared check that a
+// pod's pre-push hook makes inside it (GuardReserve, 150 s, and the gitPins comment for why the
+// hook runs at all). A workspace bound that cannot hold the reserve is refused before the guard
+// runs at all, with nothing pushed — the fail-closed answer, and the reason a workspace's own
+// bound is six minutes (WorkspaceTimeout, derived from the reserve). The minute a bound was
+// here before is now such a bound, which is what this reads.
+func TestAWorkspaceBoundUnderTheGuardsReserveIsRefusedAndPushesNothing(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	d.Write(d.Workspace, "feature.txt", "work a bound too small never carries\n")
+	d.JJ("commit", "-m", "work a bound too small never carries")
+	before := d.RemoteBranches()
+
+	checked := rescue.Run(context.Background(), rescue.Request{
+		StateDir: d.StateDir, Branch: prefix, Env: d.Env,
+		WorkspaceTimeout: time.Minute, Deadline: time.Now().Add(2 * time.Minute),
+	})
+	w := only(t, d, checked)
+	if w.Status != rescue.Failed || len(w.Branches) != 0 || !strings.Contains(w.Error, "has no time left to check this push in") {
+		t.Fatalf("the check reported %+v, want a refusal naming the bound and no branch", w)
+	}
+	if after := d.RemoteBranches(); !slices.Equal(after, before) {
+		t.Errorf("the remote's branches are %v, want %v unchanged", after, before)
 	}
 }

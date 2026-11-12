@@ -1,20 +1,26 @@
 import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import { lazy, type ReactNode, type RefObject, Suspense, useEffect, useRef, useState } from "react";
-import { Link, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { api, isNoIdentity, isUnauthorized } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
 import { useLiveSocketPill } from "./api/live-socket";
 import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
 import type { AuthenticatedUser } from "./api/types";
+import { useLiveViews } from "./features/agent-view/live-views";
+import { LiveViewRoute, MountedLiveViews } from "./features/agent-view/MountedLiveViews";
+import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/agents/pins";
 import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread";
+import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
-import { useNeedsYouCount } from "./features/inbox/BlockedOnYou";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
+import { useInboxCount } from "./features/inbox/useInboxCount";
 import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
-import { DEFAULT_MARGIN_WIDTH, Margin } from "./features/margin/Margin";
+import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
+import { MarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
+import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
 import { AgentRegistryPoller } from "./features/refs/agent-registry";
 import { TextAskCard } from "./features/refs/markdown-cards";
 import { RefPreviewHost } from "./features/refs/RefPreview";
@@ -22,23 +28,28 @@ import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
+  buildInboxPath,
   buildProjectPath,
+  liveViewSessionOf,
   parseIssuePath,
   parseProjectPath,
-  REPLIES_PATH,
   routeFillsViewport,
   routeHasMargin,
   routeIsInbox,
   routeProjectOf,
 } from "./features/refs/routes";
-import { useRepliesCount } from "./features/replies/useRepliesCount";
-import { SearchButton } from "./features/search/SearchButton";
-import { type PaletteMode, SearchPalette } from "./features/search/SearchPalette";
-import { SettingsPage } from "./features/settings/SettingsPage";
+import { useRecordRecents } from "./features/search/recents";
+import { SearchPalette } from "./features/search/SearchPalette";
 import { ErrorBoundary } from "./features/shell/ErrorBoundary";
 import { KeymapProvider } from "./features/shell/KeymapProvider";
-import { appKeymap, type KeyBindingDescription, useKeymap } from "./features/shell/keymap";
+import {
+  appKeymap,
+  type KeyBindingDescription,
+  MOD_KEY_LABEL,
+  useKeymap,
+} from "./features/shell/keymap";
 import { NotFoundPage } from "./features/shell/NotFoundPage";
+import { RailButton } from "./features/shell/RailButton";
 import { ShortcutHelp } from "./features/shell/ShortcutHelp";
 import {
   SIGN_OUT_SETTLE_MS,
@@ -53,13 +64,14 @@ import {
 } from "./features/shell/useDialog";
 import { useDocumentTitle } from "./features/shell/useDocumentTitle";
 import { useKeyboardFit } from "./features/shell/useKeyboardFit";
-import { useUserPreference } from "./features/shell/userPreference";
+import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userPreference";
 import { Sidebar } from "./features/sidebar/Sidebar";
 import "./features/writes/kinds";
 import { KeptWrites } from "./features/writes/KeptWrites";
 import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
 import { useKeyedWrite } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
+import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
 import {
   backdrop50,
   badgeBlocking,
@@ -110,10 +122,12 @@ const AgentsPage = lazy(() =>
   import("./features/agents/AgentsPage").then((module) => ({ default: module.AgentsPage }))
 );
 
-const AgentConversationPage = lazy(() =>
-  import("./features/agent-view/AgentConversationPage").then((module) => ({
-    default: module.AgentConversationPage,
-  }))
+const MachinesPage = lazy(() =>
+  import("./features/machines/MachinesPage").then((module) => ({ default: module.MachinesPage }))
+);
+
+const MachinePage = lazy(() =>
+  import("./features/machines/MachinePage").then((module) => ({ default: module.MachinePage }))
 );
 
 const AgentArtifactPage = lazy(() =>
@@ -136,16 +150,12 @@ const DeliveryPage = lazy(() =>
 const PipelinePage = lazy(() =>
   import("./features/delivery/PipelinePage").then((module) => ({ default: module.PipelinePage }))
 );
-const MachineLoginPage = lazy(() =>
-  import("./features/credentials/MachineLoginPage").then((module) => ({
-    default: module.MachineLoginPage,
-  }))
-);
+
 const AnswersPage = lazy(() =>
   import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
 );
-const RepliesPage = lazy(() =>
-  import("./features/replies/RepliesPage").then((module) => ({ default: module.RepliesPage }))
+const SettingsPage = lazy(() =>
+  import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage }))
 );
 
 function IssuePageFallback(): ReactNode {
@@ -174,8 +184,11 @@ function IssuePageFallback(): ReactNode {
           />
         </h1>
       </header>
-      <div className={`mb-4 flex gap-2 border-b ${borderDefault}`} role="tablist">
-        {["Spec", "Conversation", "Children", "Artifacts", "Activity"].map((label) => (
+      {/* `overflow-hidden`: the nine labels are wider than a narrow window and this row neither
+          wraps nor scrolls, where the real tablist scrolls inside itself. Clipped, a chunk's load
+          never scrolls the page sideways. */}
+      <div className={`mb-4 flex gap-2 overflow-hidden border-b ${borderDefault}`} role="tablist">
+        {ISSUE_TAB_LABELS.map((label) => (
           <span
             className={`animate-pulse rounded px-3 py-2 text-sm ${textTransparent} ${skeletonBg}`}
             key={label}
@@ -301,6 +314,7 @@ function NavigationContents({
   closeButtonRef,
   compact,
   onClose,
+  onCreateIssue,
   onHideSidebar,
   onOpenInboxDrawer,
   onSearch,
@@ -312,6 +326,7 @@ function NavigationContents({
   closeButtonRef: RefObject<HTMLButtonElement | null>;
   compact: boolean;
   onClose: () => void;
+  onCreateIssue: () => void;
   onHideSidebar: () => void;
   onOpenInboxDrawer: () => void;
   onSearch: () => void;
@@ -338,11 +353,27 @@ function NavigationContents({
           </button>
         ) : null}
       </div>
-      <SearchButton
+      <RailButton
+        ariaKeyshortcuts="Control+K Meta+K"
+        className="mt-4"
+        label="Search"
         onOpen={() => {
           onClose();
           onSearch();
         }}
+        shortcut={MOD_KEY_LABEL === "⌘" ? "⌘K" : "Ctrl K"}
+      />
+      {/* The hint is `AppShell`'s global `create` binding, written as `?` and the palette write
+          it (`c`); `aria-keyshortcuts` names the same key in ARIA's uppercase form. */}
+      <RailButton
+        ariaKeyshortcuts="C"
+        className="mt-1"
+        label="New issue"
+        onOpen={() => {
+          onClose();
+          onCreateIssue();
+        }}
+        shortcut="c"
       />
       <Sidebar
         onHide={compact ? undefined : onHideSidebar}
@@ -380,9 +411,14 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [inboxDrawerOpen, setInboxDrawerOpen] = useState(false);
-  // Which palette is open, and `null` for none: `$mod+k` and the rail's Search control list this
-  // page's actions and the hits, `/` searches only, and `g p` lists projects.
-  const [paletteMode, setPaletteMode] = useState<PaletteMode | null>(null);
+  // Whether the bar is open. `$mod+k`, `/`, `g p` and the rail's Search control open the one
+  // bar: this page's actions, the person's recent items, the projects a query names and the
+  // hits, with a chip saying what it will act on.
+  const [barOpen, setBarOpen] = useState(false);
+  // What the person opened, for the bar to list back while its box is empty. It is recorded in
+  // the shell rather than on each page, so every way into an item - a link, the bar itself, a
+  // reload - records it.
+  useRecordRecents();
   const [sidebarHidden, setSidebarHidden] = useUserPreference(
     "shell.sidebar",
     (stored) => stored === "hidden",
@@ -432,14 +468,62 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const readingPaneShown = useMediaQuery(READING_PANE_QUERY);
   const fillsViewport =
     routeFillsViewport(location.pathname) || (routeIsInbox(location.pathname) && readingPaneShown);
+  // The session whose live view the address names, or `null` on every other page. The shell
+  // mounts that view and the one the person left (`MountedLiveViews`, below `<Routes>`), so it
+  // is the one thing about the live view the router still decides.
+  const frontLiveView = liveViewSessionOf(location.pathname) ?? null;
+  // The person's pins, which the shell owns rather than the rail: the registry keeps a sleeping
+  // pinned view and discards a sleeping unpinned one (`live-views.ts`, D8), and the rail is not
+  // on the page while the sidebar is collapsed or its sheet is closed.
+  const liveViews = useLiveViews();
+  const pinnedAgents = usePinnedAgents();
+  useEffect(() => {
+    liveViews.setPinned(pinnedAgents);
+  }, [liveViews, pinnedAgents]);
+  // The pins were this browser's until INFRA-812 made them the person's. At the first load
+  // after the change each id the old key holds is written as a pin, so this runs once per
+  // browser and Dispatch ends up holding the union of what each of the person's browsers had
+  // kept.
+  //
+  // One write at a time, in the order the key kept them, because Dispatch stamps each pin as it
+  // arrives and `pinned_at` is the order the rail draws; and the key is removed only once every
+  // one of them has landed, since a write Dispatch refuses is the reader's to retry or discard
+  // and a key removed before that would be the person's pins gone. A refusal stops the run and
+  // leaves the key whole, so the next load writes the lot again, in the same order. The key the
+  // run began under is held here rather than read back from storage, because the key outlives
+  // the first write now: an effect that runs again - React runs it twice under StrictMode -
+  // would otherwise write every id a second time.
+  const writePin = useAgentPinWrite();
+  const migrated = useRef<string | null>(null);
+  useEffect(() => {
+    const key = legacyPinnedAgentsKey(user.login);
+    if (migrated.current === key) return;
+    const kept = window.localStorage.getItem(key);
+    if (kept === null) return;
+    migrated.current = key;
+    void (async () => {
+      for (const sessionId of legacyPinnedIds(kept)) {
+        if (!(await writePin(sessionId, true))) return;
+      }
+      window.localStorage.removeItem(key);
+    })();
+  }, [user.login, writePin]);
   const connection = useLiveSocketPill();
-  const needsYouCount = useNeedsYouCount();
+  // One number for the Inbox, composed in one place (`useInboxCount.ts`): the work
+  // waiting on the reader plus the threads they have not read.
+  const inboxCount = useInboxCount();
   const unreadReplies = totalUnreadReplies(useQuery(userAgentStateQuery()).data);
-  const unreadThreads = useRepliesCount();
 
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  // The status corner floats over the foot of the screen as the composers it sits above do, so
+  // it publishes its own reach the same way: a control floating at that foot - the
+  // Conversation's `Jump to latest` - rides above the whole corner rather than under the
+  // pending-writes indicator or the connection pill. An empty corner has no box, so it publishes
+  // nothing and the property is unset.
+  const statusCornerRef = useRef<HTMLDivElement>(null);
+  useFootInset(statusCornerRef, true, FOOT_STATUS_INSET_PROPERTY);
   const isFirstRender = useRef(true);
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
   const drawer = useDialog<HTMLElement>({
@@ -454,22 +538,24 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const routeProject = routeProjectOf(location.pathname);
   useKeymap("global", [
     {
-      // Opens only: while the palette is open the `dialog` scope is the only one consulted, and
-      // the palette's own `$mod+k` binding closes it.
+      // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
+      // the bar's own `$mod+k` binding closes it. It fires while the reader is writing, so
+      // the key reaches the bar from inside a document's editor too.
       id: "search",
       inEditable: true,
       keys: "$mod+k",
       label: "Search and actions",
-      run: () => setPaletteMode("all"),
+      run: () => setBarOpen(true),
     },
     {
-      // No row: chosen from `$mod+k`'s palette it would only reopen that palette with its actions
-      // taken away.
+      // The same bar. No row: chosen from the bar it would only reopen the bar. Not
+      // `inEditable`, so a slash typed into a document stays a slash, and the Agents page
+      // shadows it with its own filter box.
       id: "search-only",
       keys: "/",
-      label: "Search only",
+      label: "Search",
       palette: false,
-      run: () => setPaletteMode("search"),
+      run: () => setBarOpen(true),
     },
     {
       id: "help",
@@ -493,10 +579,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       when: () => routeProject !== undefined,
     },
     {
+      // The same bar again, where a reader after a project types its name: its projects are
+      // rows of the one list. No row, for `/`'s reason.
       id: "go-project",
       keys: "g p",
       label: "Go to project…",
-      run: () => setPaletteMode("projects"),
+      palette: false,
+      run: () => setBarOpen(true),
     },
     {
       id: "inbox-drawer",
@@ -586,9 +675,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       closeButtonRef={closeButtonRef}
       compact={isCompactViewport}
       onClose={() => setNavigationOpen(false)}
+      onCreateIssue={() => setCreateOpen(true)}
       onHideSidebar={() => setSidebarHidden(true)}
       onOpenInboxDrawer={() => setInboxDrawerOpen(true)}
-      onSearch={() => setPaletteMode("all")}
+      onSearch={() => setBarOpen(true)}
       onSignOut={() => {
         // Signing out discards the person's own writes in every tab of this browser, so it asks
         // first while any is unsent, naming each once - this tab's, and every other tab's, which
@@ -621,16 +711,14 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     />
   );
 
-  // On the Inbox page the compact header's badge stays plain text: the page is the Inbox
-  // already, so there's nothing for it to open.
-  const needsYouBadge =
-    needsYouCount === 0 ? null : (
-      <span
-        className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
-      >
-        Needs you {needsYouCount}
-      </span>
-    );
+  // One count on one control: the work waiting on the reader and the threads they have not
+  // read, which the Inbox lists together now. On the Inbox page it stays plain text - the page
+  // is the Inbox already, so there is nowhere for it to go. The peek that opened the drawer
+  // from this bar stays beside it, without the count it used to carry.
+  const inboxLabel = inboxCount === 0 ? "Inbox" : `Inbox ${inboxCount}`;
+  const inboxBadgeClass = `whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${
+    inboxCount === 0 ? railHoverBg : `${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`
+  }`;
 
   return (
     <MarginProvider>
@@ -650,7 +738,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             bottom bar. Only what it shows takes the pointer. A socket Dispatch refuses carries no
             status the page can read, so nothing in the pill is terminal: once reconnecting has
             gone on for two minutes it offers a reload, and the page keeps trying underneath. */}
-        <div className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-composer-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-composer-inset,0px)_+_1rem)] *:pointer-events-auto">
+        <div
+          className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-composer-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-composer-inset,0px)_+_1rem)] *:pointer-events-auto"
+          ref={statusCornerRef}
+        >
           <PendingWritesIndicator />
           {connection === "stuck" ? (
             <p
@@ -683,24 +774,22 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
               <Link className="shrink-0 text-lg font-semibold" to="/">
                 Dispatch
               </Link>
-              {/* Everywhere but the Inbox page, the same badge also opens the Inbox drawer. */}
               {routeIsInbox(location.pathname) ? (
-                needsYouBadge
+                <span className={inboxBadgeClass}>{inboxLabel}</span>
               ) : (
-                <button
-                  aria-label={
-                    needsYouCount === 0 ? "Open inbox" : `Open inbox, needs you ${needsYouCount}`
-                  }
-                  className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${
-                    needsYouCount === 0
-                      ? railHoverBg
-                      : `${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`
-                  }`}
-                  onClick={() => setInboxDrawerOpen(true)}
-                  type="button"
-                >
-                  {needsYouCount === 0 ? "Inbox" : `Needs you ${needsYouCount}`}
-                </button>
+                <>
+                  <button
+                    aria-label="Peek at the inbox without leaving this page"
+                    className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
+                    onClick={() => setInboxDrawerOpen(true)}
+                    type="button"
+                  >
+                    Peek
+                  </button>
+                  <Link className={inboxBadgeClass} to="/">
+                    {inboxLabel}
+                  </Link>
+                </>
               )}
               {unreadReplies === 0 ? null : (
                 <Link
@@ -708,14 +797,6 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                   to="/agents"
                 >
                   {unreadRepliesLabel(unreadReplies)}
-                </Link>
-              )}
-              {unreadThreads === 0 ? null : (
-                <Link
-                  className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
-                  to={REPLIES_PATH}
-                >
-                  Replies {unreadThreads}
                 </Link>
               )}
             </div>
@@ -793,12 +874,20 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
               <Routes>
                 <Route element={<InboxPage />} path="/" />
                 <Route element={<AnswersPage />} path={ANSWERS_PATH} />
-                <Route element={<RepliesPage />} path={REPLIES_PATH} />
+                {/* The Replies page is the Inbox's Reply rows now; an old link lands on them. */}
+                <Route
+                  element={
+                    <Navigate replace to={buildInboxPath({ filters: { type: ["reply"] } })} />
+                  }
+                  path="/replies"
+                />
                 <Route element={<AgentsPage />} path="/agents" />
                 <Route element={<BroadcastsPage />} path="/agents/broadcasts" />
                 <Route element={<BroadcastPage />} path="/agents/broadcasts/:id" />
-                <Route element={<AgentConversationPage />} path={AGENT_LIVE_PATH} />
+                <Route element={<LiveViewRoute />} path={AGENT_LIVE_PATH} />
                 <Route element={<AgentArtifactPage />} path={AGENT_ARTIFACT_PATH} />
+                <Route element={<MachinesPage />} path="/machines" />
+                <Route element={<MachinePage />} path="/machines/:machine" />
                 <Route element={<IssuePage />} path="/issues/:key/*" />
                 <Route element={<ProjectPage />} path="/projects/:key" />
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
@@ -806,7 +895,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<ProjectPage />} path="/projects/:key/documents" />
                 <Route element={<DocumentPage />} path="/projects/:key/documents/:slug" />
                 <Route element={<InboxPage />} path="/credentials/*" />
-                <Route element={<MachineLoginPage />} path="/credentials/machine" />
+                <Route element={<MachineLoginRoute />} path="/credentials/machine" />
                 <Route element={<SettingsPage />} path="/settings" />
                 <Route element={<DeliveryPage />} path="/delivery" />
                 <Route element={<PipelinePage />} path="/pipeline" />
@@ -814,16 +903,22 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
               </Routes>
             </Suspense>
           </ErrorBoundary>
+          {/* The live views the person has open, inside `<main>` so each takes the layout and
+              the iOS keyboard fit the live route already has, and beside the routes rather than
+              under them: a view outlives the address that opened it, so neither leaving the
+              live route, nor another page's throw, nor a lazy page suspending may unmount it.
+              The live route's own element renders nothing. */}
+          <MountedLiveViews front={frontLiveView} />
         </main>
         <ErrorBoundary region="the margin" resetKey={location.pathname}>
-          <Margin
+          <MarginColumn
             collapsed={marginHidden}
             onCollapsedChange={setMarginHidden}
             onWidthChange={setMarginWidth}
             width={marginWidth}
           />
         </ErrorBoundary>
-        <SearchPalette mode={paletteMode} onClose={() => setPaletteMode(null)} />
+        <SearchPalette onClose={() => setBarOpen(false)} open={barOpen} />
         <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
         {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}

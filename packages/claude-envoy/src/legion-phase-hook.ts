@@ -3,6 +3,7 @@ import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import type { LegionState } from "@legion/contracts/legion-api"
 import { messageFor } from "@legion/envoy-client/errors"
+import type { ActivityInput } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import {
   createPhaseReminder,
@@ -10,6 +11,11 @@ import {
   type PhaseReminderLog,
 } from "@legion/pi-shared/phase-reminder"
 import { type PhaseStallEntry, phaseStallEntryFrom } from "@legion/pi-shared/phase-stall"
+import {
+  CLAUDE_BACKGROUND_TASK_KIND,
+  sessionActivity,
+  sessionActivityRequest,
+} from "@legion/pi-shared/session-activity"
 import { stallLimits } from "@legion/pi-shared/stall-limits"
 import { workspaceRecreated, workspaceRecreatedNotice } from "@legion/pi-shared/workspace-recreated"
 import { z } from "zod"
@@ -159,9 +165,20 @@ export interface PhaseHookDeps {
    * reminder and the recreated-workspace notice both need the claim, and neither is sent before
    * one exists. Never rejects. */
   readonly booted: Promise<void>
+  /** A turn of this session has started, whatever started it: the daemon's task, an Envoy
+   * delivery, a reminder, a person. The channel server answers it by firing the claim boot's
+   * deferred role claim (`startLegionClaim`'s `onFirstTurn`), so the session takes its Envoy
+   * name inside a turn that is already running (INFRA-1573). It is called for every
+   * `UserPromptSubmit`, and the server decides which of them counts: one before the boot
+   * registered its step — the bridge's seeding `/rename` — signals nothing, and one after the
+   * name is taken costs nothing. */
+  readonly firstTurnStarted: () => void
   /** The daemon's whole state, for the reminder's record check, aborted with `signal` once the
    * check's bound passes (`PhaseReminderDeps.readState`). */
   readonly readState: (signal: AbortSignal) => Promise<LegionState>
+  /** Sends this session's activity report to the daemon (`LegionDaemonClient.activity`), so the
+   * idle rule can decide whether the pane's pod may be released (INFRA-945). */
+  readonly reportActivity: (input: ActivityInput) => Promise<void>
   /** Writes one line into the session over the bridge's inbox, which turns it into a user turn,
    * and resolves once the bridge has queued it. Undefined for a session outside a Legion pane,
    * where nothing can reach the worker between its turns. */
@@ -302,7 +319,7 @@ export function writePhaseStallRecord(
  * restored here before any hook can be answered.
  */
 export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint {
-  const limits = stallLimits(deps.env, deps.log)
+  const limits = stallLimits(deps.env, deps.log, configuredValue(deps.env["LEGION_ROLE"]))
   const restored = readPhaseStallRecord(deps.stateFile, deps.log)
   // The machine's entry and this host's own key are one record, so the last entry written is kept
   // for the write the notice makes.
@@ -396,6 +413,36 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
   reminder.restore(restored.entry)
 
   /**
+   * INFRA-945: what this session is doing, reported to the daemon as each turn settles, so the
+   * idle rule can decide whether the pane's pod may be released. Claude Code's only sight of
+   * background work is the `Stop` hook's `${background_tasks}`, so this host reports at the
+   * settle and nowhere else; the one kind it can name is a Claude Code background task.
+   *
+   * A report that does not reach the daemon is logged and dropped: the turn's reminder is what
+   * the hook owes its worker, and a claim with no report after its last turn is held rather than
+   * released.
+   */
+  const sendActivity = async (claim: ClaimCapability, backgroundWork: boolean): Promise<void> => {
+    const request = sessionActivityRequest({
+      project: configuredValue(deps.env["LEGION_PROJECT"]),
+      claim,
+      report: sessionActivity(
+        backgroundWork ? [CLAUDE_BACKGROUND_TASK_KIND] : [],
+        reminder.phaseWake(),
+      ),
+    })
+    if (request === undefined) return
+    try {
+      await deps.reportActivity(request)
+    } catch (error) {
+      deps.log.warn("legion: this session's activity report did not reach the daemon", {
+        issue: claim.issue,
+        error: messageFor(error),
+      })
+    }
+  }
+
+  /**
    * D29: a worker whose launcher recreated its workspace is told so, as an Oh My Pi one is, over
    * the same inbox the reminders use. Once per launch: the record it is written in is the one the
    * phase and count live in, so a server Claude Code restarts inside the same `claude` process
@@ -442,6 +489,13 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
       // itself: it is refused, and no state moves, so it cannot zero its own count.
       if (!parsed.success) return { error: PHASE_HOOK_REFUSAL }
       const event = parsed.data
+      // Before the gate below, and before anything else this endpoint does: the claim's own
+      // first-turn signal is not the reminder's business, and a turn is a turn whether or not a
+      // claim has registered yet (the bridge's seeding `/rename` turn runs before one has) and
+      // whatever role this pane holds, an architect's included. What a prompt before the boot
+      // registered its step comes to is the server's to decide, not this endpoint's: it holds
+      // the step the signal runs (`src/envoy-channel-server.ts`).
+      if (event.event === "UserPromptSubmit") deps.firstTurnStarted()
       // The same gate as `phaseWorkerSession` in `packages/pi-legion/extensions/legion.ts`: the
       // machine runs for a phase worker whose claim has booted, and for nobody else. The bridge's
       // seeding `/rename` turn is what writes the transcript the claim boot waits for
@@ -465,6 +519,10 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           const reminded = await reminder.settle(event.lastAssistantMessage ?? "", {
             backgroundWork,
           })
+          // After the settle, so the report carries the wake that settle armed. The daemon
+          // releases no claim whose last report is older than its last turn, so it goes at every
+          // settle, whatever it says.
+          await sendActivity(claim, backgroundWork)
           return reminded === undefined ? {} : { decision: "block", reason: reminded }
         }
         case "StopFailure": {

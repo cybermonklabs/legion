@@ -2,6 +2,156 @@
 
 Rules for this repository's tests that the code under test does not show.
 
+## The fixtures a test takes rather than copies
+
+Each of these is one body per Go module, and a test that needs what it does calls it rather than writing the body again.
+Each bullet says what the helper does not do, so a site that must keep its own body is not folded into it.
+
+- A test that captures a log takes its buffer from the module's own: `packages/daemon/internal/testlog`'s `Buffer`, and `packages/envoy/internal/logtest`'s, which lives beside that package's default-logger swap and carries `Lines`, the logged lines holding a substring.
+  `packages/envoy/internal/cmdtest`'s `LockedBuffer` and `storetest`'s `LockedLog` are both aliases of it, so either name reaches the same body.
+  It is a mutex around a byte sink and nothing else: a type that needs a reader of its own embeds it and keeps that reader, and a writer that is no log sink — an `http.ResponseWriter`, a TCP relay, a writer that gates what it passes on — keeps its own body.
+
+- A bounded wait is the module's `internal/testwait`.
+  `Eventually` is the wait a test usually wants, a minute or the binary's own deadline less a second, at `Poll`, the package's own pace, failing with what it waited for; `WithinPolling` takes a bound and a pace of its own; `Holds` answers rather than fails, for a caller whose failure text is its own diagnostic dump or is built at give-up; and `Bounded` is that deadline clamp alone, for a wait that keeps a loop or a margin of its own, as the idle rig's do.
+  A loop that is not a wait-for keeps its body: one that runs its check for a whole span rather than stopping at the first success, one that sends or serves on a tick, one that drives a stand-in process's own main loop, and one that retries a compare-and-set.
+
+- A fixture that runs git or jj takes its runner and its `init` argv from `packages/daemon/internal/fixturegit`.
+  `Runner` holds the test and the child's whole environment — `Isolated(t, home)` is the usual one — and runs one command four ways: `Run` trimmed, `Raw` untrimmed, `Out` for standard output alone, and `Try` for a caller that keeps the error.
+  `InitBare`, `InitWorkTree` and `JJInit` build the whole argv, and the semantic axes stay the call site's: bare or not, the initial branch, and colocation, with only the quiet spelling normalised.
+  The runner chooses no binary — `argv[0]` does, so a fixture that runs a pinned git or jj passes that path itself.
+  `packages/envoy` has no Go git or jj fixture runner, so this one is the daemon module's alone.
+
+- A fake GitHub server is the module's `internal/githubtest`: `Server` for a fake its caller reaches by URL, `Serve` where the caller needs the server itself, and `Unexpected` as the default arm of a fake for which an unplanned request is a failure.
+  `Spec` carries the opt-in bearer gate and the opt-in request recorder.
+  The `switch`, its `default:` arm and the fake's own state stay the caller's, because they are what each test proves: a fake that reads the per-owner token the daemon minted must answer a request it then reads, and a `default:` that logs, that answers 400 or that is the happy path says something a shared arm would take away.
+  A server that is no fake GitHub keeps its body, whatever it mentions: the daemon's own API, the issue-sandbox API, a fake Dispatch, a fake secrets broker, a reverse proxy in front of another fake, and a real `git http-backend` CGI behind a TLS proxy.
+  A fake a test builds inline, in its own body rather than in a function of its own, is the same skeleton and takes the helper the same way; it is no shared copy, though, so nothing counts it, and most of the two modules' inline fakes still write it out.
+
+- An in-test `go build` in `packages/envoy` goes through `internal/cmdtest`: `Build`, `BuildStamped`, or `BuildCommand` for a build that needs a directory, a target, flags or an environment of its own.
+  One body holds `ENVOY_TEST_GO_OVERLAY`, the output under the test's own temporary directory and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
+  A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`: `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
+
+
+## Bun tests
+
+`bun test` runs every file of a package in one process, so what one file leaves behind is what the
+next file reads: a directory, an environment variable, a port, a container, a cache. These rules are
+how a file leaves nothing behind. `@legion/test-fixtures` holds the shared pieces, and nine
+packages depend on it: broker-client, claude-envoy, contracts, dispatch, envoy-client, pi-envoy,
+pi-legion, pi-shared and proof-editor. The one Bun package that does not is the fixture package
+itself, whose tests import its sources by relative path.
+
+- Take a temporary directory from `@legion/test-fixtures/temporary-directories`, never from an
+  `mkdtemp` with a cleanup of your own. One directory for a whole file or `describe` is
+  `temporaryDirectory(prefix)`: call it at the test file's module scope, or in the body of a
+  `describe`, never inside a test body. It reserves the path at the call and returns it, and
+  registers the `beforeAll` that makes the directory and the `afterAll` that removes it where it is
+  called. A directory per test is `temporaryDirectories(prefix)`, registered in those same two
+  places, which returns a maker that makes a directory at each call and removes every one of them in
+  its `afterEach`. Call that maker from a test body or a `beforeEach`, never from a `beforeAll`: it
+  makes its directory at the call, and its `afterEach` removes it after the scope's first row, so
+  one a `beforeAll` made is gone for every later row. A directory a whole file or `describe` shares
+  is `temporaryDirectory`, which makes nothing until its hook runs. `bun:test` takes a hook's scope
+  from the point of the call, and Bun 1.4.4 evaluates a module body and a `describe` body in three
+  cases where it then runs no hook that body registered: a `bun test -t <pattern>` that selects no
+  row of the file, one that selects no row of the `describe`, and `describe.skipIf(true)`. Nothing
+  catches what such a run leaves: under `bun test` neither `process.once("exit")` nor `"beforeExit"`
+  runs. So anything a file creates, sets or writes at module scope or in a `describe` body survives
+  a filtered run, and a directory must be made where the hooks run. Write into a reserved directory
+  from a test body, or from a hook registered below the reservation, since nothing is at the path
+  until that `beforeAll` has run and Bun runs a scope's hooks in the order they were registered. A
+  `describe` whose rows are each `.skip` runs both its `beforeAll` and its `afterAll`, so a
+  directory reserved in its body is made and removed as usual; `describe.skipIf(true)` runs neither,
+  so that directory is never made (`packages/test-fixtures/src/temporary-directories.test.ts` holds
+  both, and `filtered-run.test.ts` runs a file under a filter that selects nothing and reads its
+  `TMPDIR` afterwards). The fixture's own module body registers no hook, and cannot: Bun evaluates
+  an imported module once per process, so a hook there would take the scope of whichever test file
+  imported the fixture first, and every other file's directories would outlive their tests.
+  `temporaryTmpdir(prefix)` (`@legion/test-fixtures/temporary-tmpdir`) is the same shape for a whole
+  file's `TMPDIR`: it reserves one root, and makes it and points `TMPDIR` at it in a `beforeAll`
+  whose `afterAll` puts the name back and removes the root. Anything staged under that root is
+  staged in a hook too, since the name holds the caller's value until that `beforeAll` has run.
+  Both forms take `root`, the directory the temporary one is made in, for a test that needs another
+  filesystem, such as `/dev/shm` for a rename that must cross one. Both remove a tree a test left
+  read-only: the removal chmods `u+rwX` down the tree first, following no symlink out of it and
+  leaving a file's own mode alone, because `rmSync` alone fails on the 0555 directories and 0444
+  files a Go module cache writes, and because a file in such a tree can be a hard link to one
+  outside it.
+
+- Put a variable back with `restoreEnvironment` or `captureEnvironment`
+  (`@legion/test-fixtures/environment`), which set and delete the names themselves. A name that held
+  no value is captured as unset and the restore deletes it again; setting it to the empty string
+  instead would leave the next reader a value its caller never had. A file that loads a plugin entry
+  captures the names that entry writes above the import that loads it:
+  `packages/pi-envoy/extensions/envoy.ts` puts its own `bin/` first on `PATH`, sets `DISPATCH_HOST`
+  and picks `ENVOY_CONFIG_FILE` when its module loads, and a capture below that import would put
+  back what the entry wrote rather than what the caller had. Never restore by replacing the whole
+  object (`process.env = { ...saved }`): that swaps the runtime's environment for a plain one, and
+  after it `process.env !== Bun.env`, a write reaches neither `Bun.env` nor a child process the test
+  spawns, and the names the test deleted stay deleted in the real environment. Under `--parallel`,
+  which implies `--isolate`, the next file gets a fresh `process` and never sees the swap, so the
+  damage shows only where it is hardest to read.
+
+- `mock.module` at module scope outlives the file that wrote it: a filtered run that selects no row
+  of the file still applies it, Bun 1.4.4 has no API that takes a module mock off again, and every
+  later file of the process reads the mocked module (`packages/pi-shared/test/host-registry.ts` says
+  what that costs the suites that mock the host package). Prefer a seam the code under test exposes,
+  set in a `beforeAll` and cleared in the matching `afterAll`, as `setNatsConnectForTests` and
+  `resetNatsConnectForTests` in `packages/pi-envoy/extensions/envoy.ts` are.
+
+- A suite that runs jj or git takes its isolation from `versionControlEnvironment`
+  (`@legion/test-fixtures/version-control-environment`): a home of the suite's own with a jj
+  configuration file in it, no git configuration at all (`GIT_CONFIG_GLOBAL=/dev/null`,
+  `GIT_CONFIG_NOSYSTEM=1`), no credential prompt, and the identity jj commits as. So neither the
+  developer's `~/.jjconfig.toml`, nor their `~/.gitconfig`, nor the system gitconfig decides a
+  result. A suite whose code under test starts jj with the process's own environment puts those
+  names on `process.env` itself, and hands `versionControlNames` to `restoreEnvironment` so the next
+  file finds its own again.
+
+- Take a port from the kernel: bind port 0, read back the port the listener reports, and hold that
+  listener from the moment it binds, so nothing else on the machine can take the port between the
+  question and the row that asks it (`stubBroker` in
+  `packages/envoy-client/src/__tests__/broker-credential.test.ts`). Never write a port number into a
+  test. The Dispatch e2e harness is the same rule at the scale of a run: a port variable left unset
+  is port 0, one that is set is used as given, and two variables naming one port are refused where
+  the ports resolve rather than by whichever listener loses the race (`harnessPort` and
+  `harnessPorts` in `packages/dispatch/e2e/harness-ports.ts`).
+
+- A suite that needs a program this host may not have skips with that program's name. Call
+  `skipWithout("docker")` once, at the file's module scope, and hand the answer to every
+  `describe.skipIf` and `test.skipIf` of the file: it prints one line naming the missing programs
+  and the file whose tests did not run (`@legion/test-fixtures/host-tools`), and a call per test
+  would print that line per test. A suite that needs a service does the same with the variable that
+  names it, and makes a database of its own rather than reading the one it finds
+  (`LEGION_TEST_PG_DSN`, `packages/dispatch/e2e/__tests__/psql-session.test.ts`). One that needs
+  both builds the two halves into a single list and prints one line, rather than calling
+  `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
+  (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
+
+- Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
+  not once the whole start has succeeded: a start that throws half-way has already made the
+  container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f
+  -v`, and give it the CPU and memory limits "Containers a test starts" below requires.
+
+- Two caches stay where their tool puts them, under the user's cache directory, and this is the one
+  rule here that holds only under a condition. Oh My Pi's native modules, about 116 MiB a pin, are
+  hardlinked into each test's fresh HOME from one copy per binary at
+  `$XDG_CACHE_HOME/legion/test-omp-natives`, or `$HOME/.cache/legion/test-omp-natives` where
+  `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
+  `nativesCache` in `packages/daemon/internal/testbin/natives.go` computes that same path with
+  `os.UserCacheDir` and `OMPHome` hardlinks out of it, so moving the Bun side alone would split a
+  cache that exists to be shared by both languages and either fills for the other. The Go build and
+  module caches of `scripts/e2e/lib/held-port.test.ts` and of the `go run` in `runDaemonPane`
+  (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason: CI's
+  `test` job restores `~/.cache/go-build` and `~/go/pkg/mod` in its `go-cache` step, keyed
+  `go-daemon-<runner os>-go<version>`, immediately before the step that runs `bun test
+  scripts/e2e/lib` (`.github/workflows/ci.yaml`). The condition is the rename: `fillNativesCache` in
+  `packages/pi-shared/test/omp-natives.ts` renames a directory inside the cache root, and a
+  directory rename under `$HOME` panics the gVisor sandbox of a Legion pod and kills every role in
+  it. So the permission holds only while `XDG_CACHE_HOME` is honoured and the pod points it at its
+  own volume, which Legion's runtime does for every role (`/legion/scratch/cache`). With
+  `XDG_CACHE_HOME` unset in a pod, that cache is no longer a tool's cache but the pod's death.
+
 ## Unix sockets in Go tests
 
 A unix socket path must be 107 bytes or shorter. Linux's `sun_path` holds 108 bytes with the
@@ -12,10 +162,35 @@ and a socket under it, or under a directory made from it (an `XDG_RUNTIME_DIR`, 
 directory a test sets to `t.TempDir()`), a temporary directory of about 20 bytes is enough to pass
 the limit, as on a dev box whose `TMPDIR` is on a data disk.
 
-- Put a test's socket under a short directory of its own: `os.MkdirTemp("", "<short prefix>")`,
-  removed in `t.Cleanup`. A package that binds sockets in its tests keeps one helper for it,
-  `shortTempDir` (`packages/daemon/internal/daemon/daemon_test.go` is one). Use the package's
-  helper, or add one where the package has none.
+- Take a test's socket directory from the module's `internal/testtmp`, the one helper every test
+  that binds a socket calls (`packages/daemon/internal/testtmp`, and the same file in
+  `packages/envoy`). `testtmp.Dir(t, longest)` is a fresh directory of the test's own, removed
+  when the test ends, where `longest` is the longest path the test puts inside it, written
+  relative to the directory (`"g9/.s.PGSQL.5432"`); `testtmp.Socket(t, name)` is the path of a
+  socket named `name` in such a directory. `Dir` makes the directory under `TMPDIR` and measures
+  what `longest` would come to there; only when that passes 107 bytes, or `TMPDIR` holds no
+  directory at all, does it fall back to `/tmp`, and it says so with `t.Logf` when it does. Each
+  module's `internal/testtmp` keeps a test that fails a new `os.TempDir()`, or a new
+  `os.MkdirTemp` whose first argument is a string literal naming a directory, anywhere in that
+  module's tests. It reads no other shape: a directory named by a variable or a constant, or an
+  `os.CreateTemp`, is left to review.
+- Two kinds of site keep a directory of their own on purpose.
+  `packages/daemon/internal/shim/socketpath_test.go`'s `roleTempDir` builds a deliberately long
+  one, as long as the `TMPDIR` a Legion role is told, so that its test proves sockets still bind
+  where a role runs; a short directory would take the proof away. The once-per-binary
+  directories a package's `TestMain` owns (the build directories of `internal/daemon`,
+  `internal/stream` and `internal/runtime/tmux`, the jj configuration directory of
+  `cmd/legion/main_test.go` and the home of `internal/workspace/workspace_test.go` in the daemon
+  module; the sign-in secret directory of `internal/broker/config` and the certificate directory
+  of `infra/seed/main_test.go` in the envoy module) bind no socket, so they need no byte budget,
+  and no `*testing.T` outlives them, so they keep `os.MkdirTemp("", …)` and a removal in that
+  `TestMain`.
+- A test changes a process variable, `TMPDIR` above all, only through `t.Setenv`, and a test
+  that must unset one calls the module's `fixtureenv.Unset`, which goes through `t.Setenv`,
+  never a bare `os.Setenv` or `os.Unsetenv`. `t.Setenv` puts back what the process held when the
+  test ends, and Go refuses it in a parallel test or under a parallel parent, while a parallel
+  test runs only beside other parallel tests, so no test can read a value another test changed.
+  A bare call has neither fence.
 - Before you call a test that binds a socket done, run it with a temporary directory of about 64
   bytes. A pass under `/tmp` does not show that the test works under a longer one. Set `GOTMPDIR`
   as well, since `t.TempDir()` reads it first:
@@ -37,6 +212,8 @@ cd packages/envoy
 go test -timeout 20m ./internal/dispatch/api
 ```
 
+A Legion issue pod does not run that whole package: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
+
 CI's `envoy-go` job runs it that way, alone and before the module's other packages
 (`.github/workflows/ci.yaml`), and `envoy-go-race-api`, the race job that runs that package by
 itself, gives it 30 minutes; `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
@@ -45,21 +222,60 @@ rather than beside the module's other Postgres-backed packages: together they sh
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
-`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. The test job now
-runs it only under the race detector, in its race step, once per job; the plain step ("Test the Go
-daemon") leaves it out, and `go vet -tags e2e ./...` in the `typecheck` job still compiles it
-without the detector. On CI's runners, while the plain step still ran it, it took at most 625 s
-there over the 49 green main `test` jobs of 2026-11-01 to 2026-11-03, and up to 733.581 s in the
-jobs whose race step timed out (job 125688799071). Under `-race` it took 306 to 570 s over the 51
-green `test` jobs of 2026-11-02 and 2026-11-03 that sjawhar/legion#2709 measured, on main and on
-pull requests, and ran go test's own ten minutes out on main at 2201840998; the race step gives it
-30 minutes. On a busy machine it takes longer still (908 s under `-race` on a shared devbox), so a
-command that runs the whole package, alone or in a pattern that includes it, passes `-timeout 30m`:
+`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. The test
+job now runs it only under the race detector, in its race step, once per job; the plain step
+("Test the Go daemon") leaves it out, and `go vet -tags e2e ./...` in the `typecheck` job still
+compiles it without the detector. On CI's runners, while the plain step still ran it, it took
+at most 625 s there over the 49 green main `test` jobs of 2026-11-01 to 2026-11-03, and up to
+733.581 s in the jobs whose race step timed out (job 125688799071). Under `-race` it took up
+to 570 s over the 51 green `test` jobs of 2026-11-02 and 2026-11-03 that sjawhar/legion#2709
+measured, on main and on pull requests, and ran go test's own ten minutes out on main at
+job 125691048644 of run 41562777668; the race step gives it 30 minutes. On a busy machine it
+takes longer still (908 s under `-race` on a shared devbox), so a command that runs the whole
+package, alone or in a pattern that includes it, passes `-timeout 30m`:
 
 ```sh
 cd packages/daemon
 go test -race -timeout 30m ./internal/daemon/
 ```
+
+A Legion issue pod does not run that whole package either: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
+
+## A cleanup's closure or argument holds nothing that reaches its object
+
+A `runtime.AddCleanup` or `runtime.SetFinalizer` closure captures, and its argument carries, nothing that reaches the object the cleanup is attached to.
+`runtime.AddCleanup` says what that costs: "If ptr is reachable from cleanup or arg, ptr will never be collected and the cleanup will never run."
+The runtime keeps a cleanup's closure and its argument alive for as long as the object it is attached to, so either of them reaching that object makes the object immortal, and everything the object holds with it.
+In `packages/envoy/internal/dispatch/docs` the object is a room's live document, and two closures held the service and one of its listings, each of which reaches every resident document through ygo's room table:
+every room the tests loaded then stayed in memory with its replica and its trees, which is what took the `envoy-go-race-docs` job over its runner's memory (dispatch://INFRA-1085).
+
+Hold the owner through a `weak.Pointer` instead, and do nothing when its `Value()` is nil, as that package's `keepInstance` (`roomcursor.go`) and `listResident` (`tree.go`) do: the cleanup drops its entry while the owner is alive, and an owner that is gone has no map left to drop it from.
+Hold weakly what the argument would carry as well, and pass `struct{}{}`, which reaches nothing, as `keepInstance` does with the room load its cleanup once took as its argument.
+A pointer to a field of the owner counts as the owner, since a field and the value holding it are one allocation.
+`weak.Make` takes such an interior pointer and that weak pointer dies with the whole allocation, which is how `listResident` holds the listing it was given, `Service.instances` or `Service.replicas`.
+
+Go's own detector finds a closure that reaches its object:
+
+```sh
+cd packages/envoy
+GODEBUG=checkfinalizers=1 go test -count=1 -timeout 34m ./internal/dispatch/docs/
+```
+
+It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable from cleanup or cleanup argument` line per site naming that site's file and line, and ends the run with `fatal error: detected possible issues with cleanups and/or finalizers`.
+The rule covers the cleanup's argument as well as its closure, so an argument that reaches the object is the same defect: the room load `keepInstance` passed reached a document of its own, which is the finding this job made on a head where the closure itself was already weak, and the comment on that cleanup names the path it took (dispatch://INFRA-1085).
+A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
+`GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
+CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci.yaml`), which the `envoy_go_race_docs` filter selects.
+It is one of the eight slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
+
+That job runs the command with `-v` for a second check Go's detector does not make:
+the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
+A test that builds a `*Service` gives it a `t.Cleanup` that shuts it down.
+A service a test left running holds its rooms, and their documents, for the rest of the binary's run.
+
+`packages/envoy/internal/dispatch/docs` is the only package of this repository that registers a cleanup today, and no repository-wide check holds that true:
+`grep -rn "runtime.AddCleanup\|runtime.SetFinalizer" --include=*.go .` finds those two sites and nothing else.
+A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package comes with a detector job of its own, in the same pull request.
 
 ## A database a Go test creates
 
@@ -73,9 +289,54 @@ hundredth of its template's size, and each module's `internal/testpg` test
 `TestEveryCreatedDatabaseIsAFileCopy` fails on any line of the module's Go files that opens a
 database's creation in a string without `strategy file_copy` on the same line.
 
+A test that needs the schema takes a clone of a template its package migrated once, rather than
+running the migrations itself: `packages/daemon/internal/testpg`'s `Clone` answers the clone's
+URL, `ClonePool` an open `pgxpool` on it and `CloneStore` the opened store, each dropped when the
+test ends, and the package's
+`TestMain` is `testpg.Main("<prefix>", m.Run)`, which drops the template when the run ends and
+composes with the `TestMain` a package already has
+(`testpg.Main(prefix, func() int { return testnats.Main(m) })`).
+`packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same fixture for Dispatch's
+schema.
+`testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
+apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
+clone would not let them do.
+`internal/store`'s own tests take that same `Database`, from the leaf package
+`packages/daemon/internal/testpg/testdb` that holds it: `internal/testpg` imports `internal/store`
+to migrate the template its `Clone` copies, so a test binary of `internal/store` cannot import
+`internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which
+imports nothing of the module and so is open to every package of it.
+A package whose tests migrate into the database their DSN names, rather than taking one each,
+takes one database for its whole run instead: `testdb.RunDatabaseMain` from its `TestMain`, and
+`testdb.RunDatabaseFor` wherever it reads the DSN (`internal/daemon`, whose daemons migrate the
+database they are given).
+
+A test that needs one of envoy's binaries takes it from
+`packages/daemon/internal/testbuild`'s `EnvoyBinary`, which builds each command once per test
+process and removes the directory when `testbuild.Main` ends the run.
+
 A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): the server
 `DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on
 `packages/envoy/scripts/dev-postgres.sh`'s container.
+
+## A Go test that opens a NATS client
+
+The daemon's NATS tests share one server per test binary, and `packages/daemon/internal/testnats`
+hands it to one test at a time (`URL`, `JetStream`). A test that wants a client of its own takes
+it from `testnats.Connect(t, url)`, which names it after the test and closes it when the test
+ends. A test that dials the shared server itself leaves a connection nobody named.
+
+The fixture reads the server's client connections when a test takes it and again when that test
+ends, so a connection that was not there at the start and is still there at the end fails the
+test that left it, naming each one by the id the server gave it and the name its client carries
+(`packages/daemon/internal/testnats/leakcheck.go`). A client the fixture opened it also closes,
+so the next test still gets the server empty; one it never opened — a child process's, or a raw
+`nats.Connect` — it records, and the next test to take the server fails at once naming the test
+that left it, because nothing in this process can close another client's connection.
+
+The daemon's own production clients are named too: `natsauth.Connect` takes the name as a
+parameter rather than an option, so no call site can leave one empty, and an operator reading
+`/connz` on the Envoy NATS sees which process holds each connection.
 
 ## A test that reads `GET /api/v1/references?since=` reads again
 
@@ -115,6 +376,37 @@ done
 The holder must release each transaction: one that never commits holds the horizon back for good,
 so no bounded re-read succeeds under it and the test fails after `eventFeedWait`, naming the hold.
 
+## A test that waits for the event feed's first frame
+
+The rule above bounds a *re-read*: the route answers at the horizon it has, so the test asks again.
+A test waiting for the event feed's `events_start` has nothing to ask again.
+That frame is the last thing a new subscription sends, not the first: `feedEvents` writes it only once `events.Horizon.Await` has returned
+(`packages/envoy/internal/dispatch/api/live_events.go`, `event_stream_relay.go`), and the horizon's proof is instance-wide, so the frame is as late as the longest write transaction open anywhere on the Postgres instance.
+No fixed deadline bounds that, and a deadline raised to fit the worst run anyone has seen is the same flake on the day someone holds a transaction for a minute.
+
+So the test waits on what the server says about itself.
+`events.StallWarning` is the message `Horizon.warnStall` logs, every `warnEvery`, while a pending observation is held back, naming the holder's kind, pid, database and query.
+`waitEventsStart` (`packages/envoy/cmd/dispatch/live_events_wait_test.go`, which `openLiveEvents` calls) reads the frame on a goroutine that sets no read deadline, because a gorilla connection is corrupt after a read timeout, and polls the process's output: while that warning keeps arriving the wait goes on, and it fails when the warning stops.
+Count the lines that hold the message, never `strings.Contains`: a contains check latches on the first warning and waits for ever.
+
+The wait still ends in a named failure, which is what the `eventFeedWait` rule above asks for; the bound is a signal rather than a clock.
+It fails when no warning at all has arrived within a base bound, when no new warning has arrived within an extension window, when a warning names the process's own database and says that observation has been pending at least `eventsStartOwnHoldBound` — a client of Dispatch's own database holding its readers back that long is the defect, not a stall to wait out — and a drain margin before the run's own deadline, so the failure prints rather than being cut off by the package timeout.
+Each failure names the newest warning, so the holder is in the output; the own-database failure also names that client's `application_name` and pid out of the warning, because a transaction in that database can be anyone's — an operator's `psql`, another test's fixture — and not only Dispatch's own.
+The base bound and the extension window are each three times a measurement taken under load or read from the server's own constants; `events/horizon.go`'s `horizonDiagnosisTimeout` is in the window between two warnings, because `warnStall` logs after its `pg_stat_activity` diagnosis.
+The other two numbers are neither: `eventsStartPoll` (250 ms) is the rate at which the wait samples the process's output, below a tenth of the extension window so it costs that window nothing, and `eventsStartDrain` (30 s) is what the wait leaves of the run's own deadline so that its failure prints instead of being cut off by the package timeout, which would name no test.
+`eventsStartOwnHoldBound` (5 s) is three times a measurement of its own: sampling `pg_stat_activity` every 100 ms over 10 runs of that test under the load below, in this repository's pod on 2026-11-10, `nproc` 2, PostgreSQL 18.6, 202 samples caught a transaction holding a transaction id in a `dispatch_test_*` database, across 27 backends, all of them carrying no `application_name` — which is what Dispatch's own pools look like and what the test's own fixtures look like too, so the samples do not say whose the transactions were — and the worst age was 1.449 s.
+The bound is read from the warning's own `pending_for`, the age of the oldest pending observation, so the wait needs no clock of its own; a hold shorter than it extends the wait exactly as a foreign hold does.
+Short thresholds are why the Horizon runs one diagnosis at a time: at a `warnEvery` below that diagnosis bound, several scans at once would queue for the two connections of the horizon's own pool, ahead of the observation the waiting reader needs.
+
+The 2 s pulse above does not prove such a test: a hold shorter than the wait's own bound delays no `events_start` past it.
+Prove it with a transaction held longer than that bound, and hold it so that it is still open when the socket subscribes, not merely when `go test` starts:
+the test builds its own binary inside its own clock (`cmdtest.Build`, from `startDispatchProcessWith`), which is a second on a warm build cache and minutes on a loaded machine, so a one-shot hold started before the command can be spent before the socket exists.
+A rolling hold — a new 25 s transaction every second — does not depend on that, and is the recipe to use.
+Measured in this repository's own pod on 2026-11-10, `nproc` 2, under 8 busy loops at four times `nproc`: under a rolling hold the old 10 s deadline failed all five runs it was measured over, three at one head and two at another, and the wait on the signal passed 50 of 50;
+five runs are enough against that deadline because the rolling hold keeps a transaction open whenever the socket subscribes, so what fails it is the shape of the hold rather than the weight of a sample.
+The same one-shot 90 s holder shows both answers, which is why the condition and not the duration is what the recipe names:
+started about a second before `go test` it left the test green (82.11 s on a cold build cache, 72.65 s on a warm one), and started once Dispatch was connected to its own database it failed it (82.62 s, 51 s of that run being the build), each at `main`.
+
 ## A writer a test holds
 
 A test that needs a live socket's writer held, so that frames queue behind it while the test
@@ -139,6 +431,8 @@ So a test whose jj child names no directory opens and writes that clone, and the
 
 - Set `Dir` on every `exec.Command` a test starts that runs `jj`, and on every one that runs `git`, to a directory the test made.
   A `--git-dir` is not enough on its own: it tells git which repository to act on and leaves the child standing wherever the test process stands, which is what the next reader of the command has to work out again.
+  `Dir` is not enough on its own either, and this is the step the rule stopped short of: an inherited `GIT_DIR` names the repository git acts on whatever directory the child stands in, so it outranks `Dir` and `-C` alike, and a Legion issue pod hands every process such a block.
+  So a test that starts git takes those variables out of the child's environment as well as placing it: `fixtureenv.Guard` in the package's `TestMain` for a child that inherits `os.Environ()`, or `fixtureenv.Isolated` for one given an environment of its own.
 
 - The two probes that got this wrong were copies of one helper, now `testbin.RequireJJFilters` in `packages/daemon/internal/testbin`, each running `jj config list` with no `Dir`.
   A probe is as much a jj child as a fixture is.
@@ -151,15 +445,23 @@ So a test whose jj child names no directory opens and writes that clone, and the
 
 ## A test that starts jj or git inherits no pod's environment
 
-A Legion issue pod hands every process its live workspace (`LEGION_WORKSPACE`), its git configuration (`GIT_CONFIG_*`), its GitHub credential and more.
+A Legion issue pod hands every process its live workspace (`LEGION_WORKSPACE`), its git configuration (`GIT_CONFIG_*`), its GitHub credential, the deployment's own session store (`OMP_SESSION_SQL_DSN_FILE`, `OMP_SESSION_STORAGE`) and more.
 A test that let git or jj inherit them read and pushed the pod's own work: the shim's rescue test, run with no `LEGION_WORKSPACE` of its own, pushed the pod's workspace to the real origin as `legion/WIDGETS-42-rescue-…` branches.
 
-- A `packages/daemon` package whose tests run git or jj, as children or in-process through the code under test, calls `fixtureenv.Guard` in its `TestMain`, after any branch where the test binary runs as a helper child, and holds `fixtureenv.RequireGuarded` in a test.
-  Guard unsets every `LEGION_*`, `GIT_*`, `JJ_*`, `GH_*` and `GITHUB_*` variable, `SSH_AUTH_SOCK` and `SSH_ASKPASS`, keeping the tests' own inputs (`LEGION_TEST_*`, `LEGION_E2E*`, `GITHUB_ACTIONS`, and the names the package passes), and sets `GIT_ALLOW_PROTOCOL=file`, which a repository's own `protocol.<name>.allow` cannot override.
+- A `packages/daemon` package whose tests run git or jj, as children or in-process through the code under test, calls `fixtureenv.MustGuard` in its `TestMain`, after any branch where the test binary runs as a helper child.
+  MustGuard is Guard with a `TestMain`'s only answer to a failure: it prints it and ends the process with status 1, which `packages/daemon/internal/fixtureenv`'s own test holds, with the guarantee Guard gives every package (`fixtureenv.RequireGuarded` stays for the test that needs the check in its own body).
+  Such a package is also a line of `guardingPackages` in `packages/daemon/internal/fixtureenv/guardingpackages_test.go`, which fails when a listed package's `TestMain` calls no `MustGuard`, calls it only inside a branch, runs the tests before it, or runs them under a branch whose condition does not say a helper-child marker is set (`os.Getenv(<name>) != ""`, or `if _, ok := os.LookupEnv(<name>); ok`), since every ordinary run of the package takes such a branch too.
+  It also fails a `TestMain` that a build constraint keeps out of the default `go test` build, and a package of the module whose `TestMain` calls `MustGuard` while the list does not hold it, so adding a package to the guard adds it to the list.
+  No test can see another package's process, so that list is the one check of every package's guard.
+  Guard unsets every `LEGION_*`, `GIT_*`, `JJ_*`, `GH_*` and `GITHUB_*` variable, `SSH_AUTH_SOCK` and `SSH_ASKPASS`, and the three names that place an Oh My Pi session (`OMP_SESSION_SQL_DSN_FILE`, `OMP_SESSION_STORAGE` and `OMP_SESSION_SQL_DSN`, which carries the same URL by value), keeping the tests' own inputs (`LEGION_TEST_*`, `LEGION_E2E*`, `GITHUB_ACTIONS`, and the names the package passes), and sets `GIT_ALLOW_PROTOCOL=file`, which a repository's own `protocol.<name>.allow` cannot override.
+  The session store a pod names holds the conversation of every agent of the deployment, so a test that opened it would read and write what those agents are reading and writing.
   Code under test that names its own transport, as provisioning's `GIT_ALLOW_PROTOCOL=https` does, still uses it.
   Guard does the same under the `e2e` build tag, whose untagged tests are the same fixtures.
   A live proof of that build, which reaches a real cluster and GitHub on purpose, calls `fixtureenv.Live(t)` first in its entry point: that gives the test the process's own values back of everything Guard took out or set, until the test ends.
-- A fixture command runs under `fixtureenv.Isolated(home)`: the same variables dropped, a home of the test's, and an identity. A package whose code under test reads the process's home sets `fixtureenv.Home` on the process and gives its fixtures that same home (`packages/daemon/internal/workspace`'s `setupEnvironment`).
+
+- A fixture command runs under `fixtureenv.Isolated(home)`: the same variables dropped, a home of the test's, and an identity.
+  A package whose code under test reads the process's home sets `fixtureenv.Home` on the process and gives its fixtures that same home (`packages/daemon/internal/workspace`'s `setupEnvironment`).
+  Isolated keeps no test input either, so a fixture that needs one appends it after.
 
 ## Containers a test starts
 
@@ -180,3 +482,29 @@ that other work shares.
   lists each proof's containers and their limits.
 - Remove a container with its anonymous volumes: `docker rm -f -v`, since the Postgres images
   declare a `VOLUME` that a plain `docker rm -f` leaves on the host.
+
+## A CI job that failed with no log at all
+
+A job that stored no log did not hang: it lost its runner, and the one artifact that outlives the log says so.
+
+GitHub stores a job's log when the runner finalises it.
+A runner the service stops hearing from never finalises, so the logs endpoint answers `HTTP 404` with `<Code>BlobNotFound</Code>`, where a job that was cancelled, that failed and that passed each answers its log.
+The check run's annotation is written by the service and not by the runner, so it is still there:
+
+```sh
+gh api repos/<owner>/<repo>/check-runs/<job id>/annotations
+```
+
+It answers one annotation at `annotation_level: failure`, in these words:
+"The hosted runner lost communication with the server.
+Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error."
+
+Read the job record beside it (`gh api repos/<owner>/<repo>/actions/jobs/<job id>`).
+A lost runner leaves one step `in_progress` with a null conclusion and every step after it `pending`, so the last line of the step record is the last second anything was reported.
+Compare `created_at` with `completed_at` and with the job's own `timeout-minutes`:
+a job its ceiling ended stops at the ceiling, and one that stopped before it was ended by something else.
+
+Those three causes are what GitHub can say, and none of them is a reading of your job.
+A job that carries `.github/scripts/disk_watch.py` through its steps prints the free disk, the memory the kernel reports available and the one-minute load of every second it watched, which is what tells the second cause from the other two on the next run that does store a log.
+`tool-fallback` and `tool-fallback-arm` carry it from before their first faulted install to after their last, and `envoy-smoke` carries it around its live-tests step alone.
+It says nothing about the run that was lost: the series goes to the log, and that run has none (dispatch://INFRA-2605).

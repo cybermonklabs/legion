@@ -13,6 +13,23 @@ decides it for everyone: it then leaves every Inbox.
 [Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret) explains which
 requests need whom.
 
+Some requests are decided before you see them. Where the deployment configures a model judge, it
+takes one narrow class of the requests that would wait for you — one secret, 15 minutes at most
+and no more than the secret's airlock rules let the judge decide, and a reason naming a Dispatch
+issue that is not done — and approves such a request or leaves it here for you. It never denies.
+A request it approved is gone from your Inbox, and its page's **State** line reads
+`approved by the model judge judge:<model id> at <time>`, with no person beside it. Click
+**Approve** on a page you opened before the judge decided and you read
+`already decided: granted (approved by judge:<model id> at <time>)`: your click changed nothing.
+The grant is still yours to end: it records you as its
+approver, or anyone for a shared secret, so it is on your Settings page, where the row reads
+**Approved by** `judge:<model id>`, and `agent-secrets grant revoke` ends it
+([revoke a session or a grant](/legion/broker/guides/revoke-a-session/)). Ending it ends that grant
+alone and withholds nothing, so the session may ask again, and the judge may approve that request
+as it approved this one.
+[Concepts](/legion/broker/concepts/#the-model-judge) says what the judge checks before it asks a
+model anything.
+
 ## Find it
 
 Pending requests you decide appear at the top of your Dispatch **Inbox**, under **Credential
@@ -41,10 +58,12 @@ along:
   `pod` enrollment also shows its worker slot when it has one.
 - **Session the request names (its own unsigned claim, not verified)**: shown only when the request
   names a session other than its enrollment's. The enrollment above is the one the broker checked.
-- **Reason**: the `--reason` the agent gave, shown as plain text.
+- **Reason**: the `--reason` the agent gave, shown as plain text. Every request you see here has
+  one: a request with no reason is denied before anyone is asked to approve it.
 - **Lasts once approved**: how long the grant would last from the moment you approve: the `--ttl`
-  the agent asked for, **12 hours** when it named none, or **until the session ends** for a
-  secret tagged `default-grant=session`.
+  the agent asked for; when it named none, **15 minutes** if any secret is human tier and
+  **12 hours** otherwise, or **until the session ends** for a secret tagged
+  `default-grant=session`.
 - **Requested** and **Expires**: when it was made, and when it
   [expires](/legion/broker/concepts/#approvals) if nobody decides it.
 - **Approver**: who may decide it: an email, or anyone signed in for a shared secret.
@@ -71,7 +90,8 @@ The page then shows, under **What happened**, what became of each request it dec
 | `granted (approved by <you> at <time>)` | The grant is made; the agent's command collects it. |
 | `denied by <you> at <time>` | You denied it; the agent's command exits 77. |
 | `recorded as denied because the requesting session ended` | You approved it, but the session that asked had ended, so nothing was granted. |
-| `already decided: …` | Someone, or another tab, decided it first, or the agent's session ended and withdrew it (`cancelled`). |
+| `already decided: …` | Someone else, another tab of your own, or the model judge decided it first. The rest of the line says who and when: `already decided: granted (approved by judge:<model id> at <time>)` for the judge. |
+| `cancelled at <time>: the requesting session withdrew it or ended` | Nobody decided it: the session that asked ended first. |
 | `expired before anyone decided it` | It waited past its expiry. The agent asks again if it still needs the secret. |
 | `not yours to decide; only <approver> may` | The request names someone else. |
 | `still pending; it was not decided` | The broker refused your approval though the request names you: the secret's tags now name someone else to approve it ([what an owner change does](/legion/broker/concepts/#approvals)), the session's operator withheld one of its secrets, which only that secret's owner may then approve, and no one while the broker does not serve that secret to that session (it is out of the policy, or a service's), or the secret's `max-grant` became shorter than the lifetime the request asked for, which no one may then approve. You can still deny it. |

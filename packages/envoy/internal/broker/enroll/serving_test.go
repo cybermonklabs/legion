@@ -1,7 +1,6 @@
 package enroll
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // notServingAfter is the threshold every clock in this file records unless a test says otherwise:
@@ -166,22 +166,7 @@ func within(t *testing.T, what string, got, low, high time.Time) {
 }
 
 // logBuffer is a log destination safe to write from several goroutines and read from the test.
-type logBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *logBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *logBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
+type logBuffer = logtest.Buffer
 
 // captureSlog sends slog's default logger to a buffer until t ends, and answers the buffer.
 func captureSlog(t *testing.T) *logBuffer {
@@ -415,6 +400,45 @@ func sortedCopy(s []string) []string {
 	return s
 }
 
+// A beat counts the brokers beating at its own instant and hands that count to OnReplicas: its
+// own row and every other row whose gap since its last beat is within that row's own threshold.
+// A row that stopped beating is not one of them, however recently it is still in the table, so a
+// fleet that loses a pod stops counting it a threshold later rather than at the next prune, an
+// hour on.
+func TestABeatCountsTheBrokersStillBeating(t *testing.T) {
+	r := newServingRig(t)
+	var counted []int
+	r.clock.OnReplicas = func(replicas int) { counted = append(counted, replicas) }
+	r.exec(t, `insert into broker_serving (process, last_serving_at, not_serving_after) values
+		('peer-1', now(), interval '15 seconds'),
+		('peer-2', now(), interval '15 seconds'),
+		('peer-3', now(), interval '15 seconds'),
+		('peer-4', now(), interval '15 seconds')`)
+	r.beat(t)
+	if want := []int{5}; !slices.Equal(counted, want) {
+		t.Fatalf("a beat beside four beating peers counted %v, want %v: the four and this process's own row", counted, want)
+	}
+	r.exec(t, `update broker_serving set last_serving_at = now() - interval '1 minute' where process like 'peer-%'`)
+	r.beat(t)
+	if want := []int{5, 1}; !slices.Equal(counted, want) {
+		t.Fatalf("a beat beside four peers a minute past their own %s threshold counted %v, want %v", notServingAfter, counted, want)
+	}
+}
+
+// A broker beating alone counts one, itself, and says so: holding a lone pod to the rate two
+// pods get is api.MinReplicas's work and not the count's, so the count a process hands over is
+// the fleet it really sees.
+func TestALoneBrokersBeatCountsItself(t *testing.T) {
+	r := newServingRig(t)
+	var counted []int
+	r.clock.OnReplicas = func(replicas int) { counted = append(counted, replicas) }
+	r.beat(t)
+	r.beat(t)
+	if want := []int{1, 1}; !slices.Equal(counted, want) {
+		t.Fatalf("a lone broker's two beats counted %v, want %v", counted, want)
+	}
+}
+
 // A beat held up on its own row (another transaction holds it) fails within about its bound and
 // Run logs that it timed out, while another broker beats on: that broker keeps the latest row
 // current across more than the threshold, so the guard stays off and a lease that runs out in the
@@ -422,7 +446,14 @@ func sortedCopy(s []string) []string {
 func TestAHeldServingLockFailsTheBeatAndAnotherBrokerKeepsTheGuardOff(t *testing.T) {
 	r := newServingRig(t)
 	ctx := context.Background()
-	const interval, threshold = 200 * time.Millisecond, time.Second
+	// Every bound here is the clock's own, and a loaded machine must still meet them: Beat bounds
+	// itself, its lock wait and its statement by Interval (ServingClock.Beat), so at 200 ms a
+	// machine with more runnable threads than cores times the setup's beats out, and the serving
+	// broker's beats with them, which turns the guard on and makes the lapsed lease below read
+	// live. Both were seen in 50 runs under eight busy loops on two cores. A second of interval
+	// and four of threshold keep every relation this row reads and give that machine room
+	// (INFRA-985).
+	const interval, threshold = time.Second, 4 * time.Second
 	stuck := &ServingClock{Enrollments: r.svc, Interval: interval, NotServingAfter: threshold}
 	serving := &ServingClock{Enrollments: r.svc, Interval: interval, NotServingAfter: threshold}
 	for _, clock := range []*ServingClock{stuck, serving} {
@@ -447,8 +478,10 @@ func TestAHeldServingLockFailsTheBeatAndAnotherBrokerKeepsTheGuardOff(t *testing
 
 	began := time.Now()
 	err = stuck.Beat(ctx)
-	if took := time.Since(began); err == nil || took >= 2*interval || !beatTimedOut(err) {
-		t.Fatalf("Beat on a held row = %v after %s, want a timeout within %s", err, took, 2*interval)
+	// Beat bounds itself by Interval, so a held row fails at about that; the bound here is a
+	// hang guard around it rather than a second measurement of the same clock.
+	if took := time.Since(began); err == nil || took >= 4*interval || !beatTimedOut(err) {
+		t.Fatalf("Beat on a held row = %v after %s, want a timeout within %s", err, took, 4*interval)
 	}
 
 	runs, cancel := context.WithCancel(ctx)
@@ -477,16 +510,24 @@ func TestAHeldServingLockFailsTheBeatAndAnotherBrokerKeepsTheGuardOff(t *testing
 	if last, _ := r.servingOf(t, stuck); !last.Equal(stuckLast) {
 		t.Fatalf("the stuck broker's last_serving_at = %s, want it left at %s while its row is held", last, stuckLast)
 	}
-	// Only the stuck clock's warning is this test's subject. The serving clock's own beats are
-	// bounded by Interval too, so one of them can time out under load and warn as well.
+	// Only the stuck clock's warnings are this test's subject, and what it claims is that Run
+	// says the beat timed out: the stuck row is held for the whole of Run, so every beat of that
+	// clock times out and warns, and how many of them a machine fits into the window is the
+	// machine's business, not this test's. Holding it to exactly one failed under load, which
+	// is a count of beats rather than the behaviour (INFRA-985).
 	warnings := []string{}
 	for line := range strings.Lines(logged.String()) {
 		if strings.Contains(line, "level=WARN") && strings.Contains(line, "process="+stuck.processID()) {
 			warnings = append(warnings, line)
 		}
 	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "the serving clock could not beat") || !strings.Contains(warnings[0], "timed_out=true") {
-		t.Fatalf("Run logged warnings %q for the stuck broker, want one that the serving clock could not beat, with timed_out=true", warnings)
+	if len(warnings) == 0 {
+		t.Fatal("Run logged no warning for the stuck broker, want it to say the serving clock could not beat, with timed_out=true")
+	}
+	for _, warning := range warnings {
+		if !strings.Contains(warning, "the serving clock could not beat") || !strings.Contains(warning, "timed_out=true") {
+			t.Fatalf("Run logged warning %q for the stuck broker, want every one of them to say the serving clock could not beat, with timed_out=true", warning)
+		}
 	}
 }
 
@@ -507,13 +548,11 @@ func (r servingRig) beatsPast(t *testing.T, clock *ServingClock, want time.Time)
 		}
 		wait = min(wait, left-beatsPastMargin)
 	}
-	for deadline := time.Now().Add(wait); ; time.Sleep(10 * time.Millisecond) {
-		if last, _ := r.servingOf(t, clock); last.After(want) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the serving broker's last_serving_at did not pass %s within %s", want, wait)
-		}
+	if !testwait.Holds(wait, 10*time.Millisecond, func() bool {
+		last, _ := r.servingOf(t, clock)
+		return last.After(want)
+	}) {
+		t.Fatalf("the serving broker's last_serving_at did not pass %s within %s", want, wait)
 	}
 }
 
@@ -542,5 +581,175 @@ func TestRunBeatsAtOnceAndReturnsWhenItsContextEnds(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run did not return after its context ended")
+	}
+}
+
+// beforeTheSharedRule is the gap condition ServingClock.Beat held inline, in SQL of its own,
+// before migration 0024 gave the rule one definition: $1 is the beat's instant and latest is the
+// latest broker_serving row, left joined so that an empty table is no outage.
+const beforeTheSharedRule = `coalesce($1::timestamptz - latest.last_serving_at > latest.not_serving_after, false)`
+
+// beforeTheSharedRuleLiveness is enrollment_lease_live's body as migration 0019 wrote it, with
+// now() written as $1 and the lease as $2, so that this instant is a parameter here too.
+const beforeTheSharedRuleLiveness = `($2::timestamptz > $1::timestamptz or exists (
+		select from (
+			select last_serving_at, not_serving_after from broker_serving order by last_serving_at desc limit 1
+		) old
+		where $1::timestamptz - old.last_serving_at > old.not_serving_after
+			and $2::timestamptz > old.last_serving_at))`
+
+// outageRow is one broker_serving row of the matrix below, placed behind the instant the case is
+// measured at.
+type outageRow struct {
+	process   string
+	behind    time.Duration // how far behind that instant this process last served
+	threshold time.Duration // its not_serving_after
+}
+
+// The one rule migration 0024 states, broker_outage_since, answers what the beat's own inline
+// condition answered and what enrollment_lease_live answers, over a matrix of rows, thresholds,
+// leases and instants: a gap below the threshold, a gap exactly on it, a gap one microsecond past
+// it, no row at all, and a lease before, on and after the latest beat. The case's instant is a
+// parameter and the rows are placed against it, so the boundary is exact rather than whatever a
+// wall clock left between two statements. The whole case runs in one transaction that never
+// commits, so now() - the instant enrollment_lease_live measures from - is that same parameter,
+// and the rows it inserts are gone when it ends.
+//
+// This one test does three jobs:
+//
+//  1. it is the test that fails if the two statements of the rule can disagree (the beat's old
+//     condition against the shared function), and it places a gap exactly on the threshold;
+//  2. it is the proof that the build an image pin replaces still reads and beats against the
+//     schema this migration leaves: enrollment_lease_live at its old one-argument signature and
+//     the old inline SQL, both run here over the post-0024 schema, answer what they answered
+//     before it. A roll runs pods of both builds, and 0024 touches no table, so nothing a pod of
+//     either build writes is at stake;
+//  3. it is the target of this change's named revert: >= in place of > inside
+//     broker_outage_since, which turns the row whose gap lies exactly on the threshold red.
+func TestTheOutageRuleAgreesWithTheBeatsOldCondition(t *testing.T) {
+	r := newServingRig(t)
+	for _, c := range []struct {
+		name       string
+		rows       []outageRow
+		lease      time.Duration // the lease under test, as an offset from the case's instant
+		wantOutage bool
+		wantLive   bool
+	}{
+		{name: "no row at all and a lease that has run out", lease: -time.Second},
+		{name: "no row at all and a lease still running", lease: time.Second, wantLive: true},
+		{
+			name:  "a gap below the threshold",
+			rows:  []outageRow{{process: "p1", behind: 10 * time.Second, threshold: notServingAfter}},
+			lease: -time.Second,
+		},
+		{
+			name:  "a gap exactly on the threshold",
+			rows:  []outageRow{{process: "p1", behind: notServingAfter, threshold: notServingAfter}},
+			lease: -time.Second,
+		},
+		{
+			name:       "a gap one microsecond past the threshold",
+			rows:       []outageRow{{process: "p1", behind: notServingAfter + time.Microsecond, threshold: notServingAfter}},
+			lease:      -time.Second,
+			wantOutage: true,
+			wantLive:   true,
+		},
+		{
+			name:       "a lease that ran out before the latest beat",
+			rows:       []outageRow{{process: "p1", behind: time.Minute, threshold: notServingAfter}},
+			lease:      -90 * time.Second,
+			wantOutage: true,
+		},
+		{
+			name:       "a lease that ran out exactly at the latest beat",
+			rows:       []outageRow{{process: "p1", behind: time.Minute, threshold: notServingAfter}},
+			lease:      -time.Minute,
+			wantOutage: true,
+		},
+		{
+			name:       "a lease that ran out after the latest beat",
+			rows:       []outageRow{{process: "p1", behind: time.Minute, threshold: notServingAfter}},
+			lease:      -30 * time.Second,
+			wantOutage: true,
+			wantLive:   true,
+		},
+		{
+			name:       "a lease still running while no broker serves",
+			rows:       []outageRow{{process: "p1", behind: time.Minute, threshold: notServingAfter}},
+			lease:      time.Second,
+			wantOutage: true,
+			wantLive:   true,
+		},
+		{
+			name: "the latest row's own threshold decides, not an older row's",
+			rows: []outageRow{
+				{process: "older", behind: time.Minute, threshold: notServingAfter},
+				{process: "latest", behind: 20 * time.Second, threshold: 30 * time.Second},
+			},
+			lease: -time.Second,
+		},
+		{
+			name: "an older row within its own generous threshold is not read",
+			rows: []outageRow{
+				{process: "older", behind: 5 * time.Minute, threshold: time.Hour},
+				{process: "latest", behind: 20 * time.Second, threshold: notServingAfter},
+			},
+			lease:      -10 * time.Second,
+			wantOutage: true,
+			wantLive:   true,
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			tx, err := r.svc.Store.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(ctx)
+			var at time.Time
+			if err := tx.QueryRow(ctx, `select now()`).Scan(&at); err != nil {
+				t.Fatal(err)
+			}
+			for _, row := range c.rows {
+				if _, err := tx.Exec(ctx, `insert into broker_serving (process, last_serving_at, not_serving_after)
+					values ($1, $2::timestamptz - $3::interval, $4::interval)`, row.process, at, row.behind, row.threshold); err != nil {
+					t.Fatalf("insert the broker_serving row of %s: %v", row.process, err)
+				}
+			}
+			lease := at.Add(c.lease)
+			var outageSince, latest *time.Time
+			var oldOutage, live, oldLive, atIsNow bool
+			if err := tx.QueryRow(ctx, `select broker_outage_since($1::timestamptz), `+beforeTheSharedRule+`,
+					enrollment_lease_live($2::timestamptz), `+beforeTheSharedRuleLiveness+`,
+					latest.last_serving_at, now() = $1::timestamptz
+				from (select 1) beat
+				left join lateral (
+					select last_serving_at, not_serving_after from broker_serving order by last_serving_at desc limit 1
+				) latest on true`, at, lease).Scan(&outageSince, &oldOutage, &live, &oldLive, &latest, &atIsNow); err != nil {
+				t.Fatal(err)
+			}
+			if !atIsNow {
+				t.Fatalf("the transaction's now() is not %s, the instant its rows are placed against: enrollment_lease_live would measure from another instant", at)
+			}
+			outage := outageSince != nil
+			if outage != oldOutage {
+				t.Fatalf("broker_outage_since(%s) is not null = %t, while the beat's own old condition at that instant = %t: the shared rule and the condition it replaced disagree",
+					at, outage, oldOutage)
+			}
+			if outage != c.wantOutage {
+				t.Fatalf("broker_outage_since(%s) is not null = %t, want %t", at, outage, c.wantOutage)
+			}
+			if outage && (latest == nil || !outageSince.Equal(*latest)) {
+				t.Fatalf("broker_outage_since(%s) = %s, want the latest row's last_serving_at %v: that is the instant the beat gives the gap back from",
+					at, *outageSince, latest)
+			}
+			if live != oldLive {
+				t.Fatalf("enrollment_lease_live(%s) = %t, while enrollment_lease_live as migration 0019 wrote it = %t: a pod of the build before 0024 would read this lease differently",
+					lease, live, oldLive)
+			}
+			if live != c.wantLive {
+				t.Fatalf("enrollment_lease_live(%s) = %t, want %t", lease, live, c.wantLive)
+			}
+		})
 	}
 }

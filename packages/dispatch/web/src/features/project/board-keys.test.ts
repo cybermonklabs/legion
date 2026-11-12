@@ -11,6 +11,7 @@ function issue(key: string, status: IssueStatus): IssueSummary {
     resolved_repo: null,
     route_status: null,
     route_holder: null,
+    route_status_reason: null,
     key,
     labels: [],
     last_seq: 1,
@@ -27,6 +28,8 @@ function issue(key: string, status: IssueStatus): IssueSummary {
     status,
     title: key,
     updated_at: "2026-09-15T00:00:00Z",
+    created_by: null,
+    created_at: "2026-09-15T00:00:00Z",
   };
 }
 

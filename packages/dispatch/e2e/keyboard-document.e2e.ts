@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createIssue, createProject, createProjectDocument, listArtifactComments } from "./api";
 import {
   composer,
@@ -9,33 +7,23 @@ import {
   placeCaret,
   selectEditorText,
 } from "./editor";
+import { nextFrames } from "./frames";
 import { commentWithBody } from "./margin-helpers";
-import { resetDatabase } from "./seed";
+import { devices, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const initialMarkdown = "The quick brown fox";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The provisional or recorded comment marks in `page`'s editor. */
 function commentMarks(page: Page): Locator {
   return documentEditor(page).locator('span[data-proof="comment"][data-id]');
 }
 
-/** Waits two rendering frames, so a composer a key press opened has had its chance to render. */
-function nextFrames(page: Page): Promise<void> {
-  return page.evaluate(
-    () =>
-      new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())))
-  );
-}
-
 // Ctrl+Alt+M (Cmd+Option+M on a Mac) is Google Docs' chord for the bar's Comment button. The
 // editor's own keymap must leave it alone - it reaches the page only once ProseMirror passes on
 // it - and it belongs to the editor: from the composer it opens, it types and opens nothing.
-test("Ctrl+Alt+M comments on the selected text as the bar's Comment does, and only from the editor", async ({
+// @pr: The document keyboard surface's own row: Ctrl+Alt+M comments on the selection, and only from the editor.
+test("Ctrl+Alt+M comments on the selected text as the bar's Comment does, and only from the editor @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -114,20 +102,21 @@ test("Ctrl+Alt+M comments on a project document", async ({ browser }) => {
   }
 });
 
-// Playwright's Linux keyboard cannot produce Mac Option's µ character. The iphone project has
-// the iPhone user agent, so this raw event is the real browser path for Cmd+Option+M's key shape.
-test("Cmd+Option+M comments on a project document on a Mac user agent @phone", async ({
-  browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the physical-key fallback is Mac-only");
-  await createProject({ key: "CORE", name: "Core" });
-  await createProjectDocument("CORE", {
-    content: "# Handbook\n\nThe quick brown fox\n",
-    name: "Handbook",
-  });
-  const alice = await asUser(browser, "alice");
-  try {
-    const page = await alice.newPage();
+// Playwright's Linux keyboard cannot produce Mac Option's µ character. The Mac keymap is the user
+// agent's, not the viewport's (`web/src/features/shell/keymap.ts` reads `navigator.userAgent`), so
+// this row runs in chromium under the iPhone user agent, where this raw event is the real browser
+// path for Cmd+Option+M's key shape.
+test.describe("under a Mac user agent", () => {
+  test.use({ userAgent: devices["iPhone 13"].userAgent });
+
+  // The one row of this file that reads Playwright's own page, so alice's sign-in is the `test`
+  // this file imports (e2e/test.ts) rather than a call of its own.
+  test("Cmd+Option+M comments on a project document on a Mac user agent", async ({ page }) => {
+    await createProject({ key: "CORE", name: "Core" });
+    await createProjectDocument("CORE", {
+      content: "# Handbook\n\nThe quick brown fox\n",
+      name: "Handbook",
+    });
     await page.goto("/projects/CORE/documents/handbook");
     await expect(documentEditor(page)).toContainText("The quick brown fox");
     await expect(connectedDot(page)).toHaveText("connected");
@@ -144,7 +133,5 @@ test("Cmd+Option+M comments on a project document on a Mac user agent @phone", a
     });
     await expect(form).toContainText("fox");
     await expect(form.getByLabel("Comment")).toBeFocused();
-  } finally {
-    await alice.close();
-  }
+  });
 });

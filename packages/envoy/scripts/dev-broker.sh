@@ -3,11 +3,34 @@
 #
 # The local dev surface a human can drive without AWS, Dispatch or a cluster. Boots Postgres
 # (the dispatch-pg container, through dev-postgres.sh), builds the
-# broker, its three clients (agent-secrets, agent-secrets-helper and agent-secrets-devrelay) and
-# dev-oidc-issuer, writes a fake secrets file standing in for Secrets Manager (DEMO_READ_TOKEN,
-# tagged owner=APPROVER_LOGIN tier=agent, so APPROVER_LOGIN's sessions get it without asking, and
-# DEMO_API_KEY, tagged tier=human, which APPROVER_LOGIN approves), then starts cmd/broker against
+# broker, its three clients (agent-secrets, agent-secrets-helper and agent-secrets-devrelay),
+# dev-oidc-issuer and dev-airlock-stands, writes a fake secrets file standing in for Secrets
+# Manager (DEMO_READ_TOKEN,
+# tagged owner=APPROVER_LOGIN tier=agent, so APPROVER_LOGIN's sessions get it without asking,
+# DEMO_API_KEY, tagged tier=human, which APPROVER_LOGIN approves, DEMO_SERVICE_TOKEN, tagged
+# owner=SERVICE tier=agent, which every pod session of that registered service gets without
+# asking and no person's session sees, and the two github-app secrets below), then starts
+# cmd/broker against
 # it. Prints the exports a second shell needs to drive the clients against it.
+#
+# The GitHub a github-app secret is minted against is a stand-in this script starts:
+# cmd/dev-airlock-stands, of whose nine stands this stack uses the GitHub one
+# (BROKER_AIRLOCK_TEST_GITHUB_API_BASE names it). It records every call it was sent, at the
+# recording route the banner names, and the answer it gives a token request is set while it runs,
+# at the answer route the banner names too: the ordinary mint, the HTTP 422 that mints nothing,
+# and a token wider than the body asked for. The App is installed on three accounts, each with
+# an installation id of its own.
+#
+# Two github-app secrets are written for it, both holding that stand's App id and private key as
+# their stored value and both owned by the registered service, as DEMO_SERVICE_TOKEN is, so a pod
+# session of that service gets each without asking. DEMO_GITHUB_APP's github-owners tag names
+# the one account acme-org. DEMO_GITHUB_APP_CASE_PAIR's names ada, on which the App has two
+# installations whose logins differ only in case (ada and Ada): GitHubApp.Mint keys the released
+# object by the login GitHub answered with and compares a narrowing's owner without regard to
+# case (internal/broker/secrets/githubapp.go), so a narrowing to ada mints for both and the
+# released object holds two installations, which is the release a client that hands one token
+# over must refuse. GitHub itself allows no two accounts whose logins differ only in case: this
+# pair exists to drive that refusal and stands for nothing real.
 #
 # The broker's approval routes, and its introspection route, take the calling service's own
 # Kubernetes ServiceAccount token (BROKER_API_ACCOUNTS, verified against BROKER_K8S_OIDC_ISSUER),
@@ -24,6 +47,14 @@
 # the service login (BROKER_SERVICE_LOGINS) that stands in for the deployment's daemon and
 # registers the pod under the session name it writes as. The broker trusts that issuer for all
 # five.
+#
+# SERVICE is registered under both halves a service needs: BROKER_SERVICE_LOGINS names the
+# account that logs in as it, and BROKER_SERVICES names the account its pods run as
+# (EXCHANGE_ACCOUNT's, the pod this script registers). Both are needed for a service-owned
+# secret: the policy serves a secret tagged owner=<service> only for a service the deployment
+# registered in BROKER_SERVICES, and refuses every other one as owner-tag-malformed on every
+# reread, so without that half DEMO_SERVICE_TOKEN would reach nobody and a pod enrolled under
+# the service login would have no secret of its own to ask for.
 #
 # A secret request is approved on the broker's own page, <broker>/approve/<record>, by a person
 # signed in to the broker (BROKER_SIGNIN_*). The same issuer process stands in for that person's
@@ -45,9 +76,19 @@
 # five-second drain exists to outlast a Kubernetes EndpointSlice propagation nothing here has, so
 # here it would be pure delay on every Ctrl-C and every restart.
 #
-# The helper a second shell runs keeps its socket, sessions file and log in WORK_DIR too: the
-# printed exports name WORK_DIR's helper.sock and operator file (written here), so a walk through
-# the stack leaves nothing in the caller's directory.
+# The helper a second shell runs keeps its socket, records file and log in WORK_DIR too: the
+# printed exports name WORK_DIR's helper.sock, operator file (written here), machine file and
+# sessions.json, so a walk through the stack leaves nothing in the caller's directory and
+# nothing of an installed helper's. The records file is named outright
+# (AGENT_SECRETS_STATE_FILE): the helper keeps its records beside its machine login by default,
+# and an export that named only the socket would leave this helper writing the records of the
+# helper installed under this HOME, whose named sessions' signing keys are in them.
+#
+# Needs bash, go, curl and jq, and a Postgres server. With DEV_BROKER_POSTGRES_URL it reaches
+# that server through psql, and without it, it starts the dispatch-pg container through
+# dev-postgres.sh, which needs Docker. It builds the fake secrets file with jq -n and reads the
+# stand's report with jq -r, so a box without jq fails once Postgres is up and the six builds
+# have run.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -75,7 +116,7 @@ fi
 POSTGRES_SERVER="${BASH_REMATCH[1]:-}"
 POSTGRES_QUERY="${BASH_REMATCH[3]:-}"
 
-WORK_DIR="$(mktemp -d /tmp/agent-secrets-dev.XXXXXX)"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-secrets-dev.XXXXXX")"
 BIN_DIR="$WORK_DIR/bin"
 BROKER_BIN="$BIN_DIR/broker"
 FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
@@ -85,6 +126,23 @@ SECRETS_PREFIX="example/agent-secrets/"
 SECRETS_KMS_KEY_ARN="arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
 BROKER_LOG="$WORK_DIR/broker.log"
 OPERATOR_FILE="$WORK_DIR/operator"
+# The stand-in GitHub, its files and the accounts it answers as installations of the App. The
+# three are one account for a check that narrows a token to a repository of it, and the pair
+# whose logins differ only in case, which is the one way a release covers two installations
+# under a narrowing to one account (see the header).
+STANDS_BIN="$BIN_DIR/dev-airlock-stands"
+STANDS_DIR="$WORK_DIR/stands"
+STANDS_JSON="$WORK_DIR/stands.json"
+STANDS_LOG="$WORK_DIR/stands.log"
+GITHUB_OWNER="acme-org"
+GITHUB_INSTALLATION=7
+GITHUB_CASE_OWNER="ada"
+GITHUB_CASE_INSTALLATION=8
+GITHUB_CASE_OTHER_OWNER="Ada"
+GITHUB_CASE_OTHER_INSTALLATION=9
+# The two github-app secrets, named for the account each one's github-owners tag names.
+GITHUB_SECRET="DEMO_GITHUB_APP"
+GITHUB_CASE_SECRET="DEMO_GITHUB_APP_CASE_PAIR"
 # The local issuer and what it mints for (above): the audience every enrolment and listed caller's
 # token carries, the exchange's own audience, and the four accounts, as internal/broker/brokertest's
 # rig names them. The exchange entry fixes no session, so a pod names its own — and a pod of such
@@ -100,6 +158,13 @@ API_ACCOUNT="system:serviceaccount:example-ns:example-dispatch"
 LISTENER_ACCOUNT="system:serviceaccount:example-ns:example-listener"
 EXCHANGE_ACCOUNT="system:serviceaccount:example-ns:example-worker"
 REGISTRAR_ACCOUNT="system:serviceaccount:example-ns:example-daemon"
+# The one registered service this stack has, under both halves a service needs: the name the
+# registrar account logs in as (BROKER_SERVICE_LOGINS) and the name the pod account is bound to
+# (BROKER_SERVICES). A secret tagged owner=<service> is served only when the deployment
+# registered that service, so without the second half the policy refuses this stack's
+# service-owned secret as owner-tag-malformed on every reread; with it, the pod a daemon enrolls
+# under that service gets the secret without asking, as a Legion worker pod gets its daemon's.
+SERVICE="legion-daemon"
 EXCHANGE_PROJECT="EXAMPLE"
 # The session name this stack's pod is registered for, the one it exchanges under.
 EXCHANGE_SESSION="example-worker-session"
@@ -131,13 +196,14 @@ fi
 
 BROKER_PID=""
 ISSUER_PID=""
+STANDS_PID=""
 # Set once this run's own create database succeeded: a run whose create failed (the name taken by
 # another run) must never drop that other run's database.
 CREATED_DB=false
 cleanup() {
-  # The broker first, then the issuer whose keys it reads.
+  # The broker first, then the issuer whose keys it reads and the stand-in GitHub it mints at.
   local pid
-  for pid in "$BROKER_PID" "$ISSUER_PID"; do
+  for pid in "$BROKER_PID" "$ISSUER_PID" "$STANDS_PID"; do
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
@@ -189,23 +255,87 @@ fi
 # The banner names the database without any password the URL carries.
 DISPLAY_URL="$(printf '%s' "$POSTGRES_URL" | sed -E 's#^(postgres(ql)?://[^:/@?]+):[^@/?]*@#\1:***@#')"
 
-# --- Build the broker, the local issuer, and the clients a second shell drives it with. ---
-echo "dev-broker: building broker, dev-oidc-issuer, agent-secrets, agent-secrets-helper and agent-secrets-devrelay..." >&2
+# --- Build the broker, the local issuer, the stand-ins, and the clients a second shell drives it
+# with. ---
+echo "dev-broker: building broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper and agent-secrets-devrelay..." >&2
 mkdir -p "$BIN_DIR"
-for cmd in broker dev-oidc-issuer agent-secrets agent-secrets-helper agent-secrets-devrelay; do
-  ( cd "$ENVOY_DIR" && GOTOOLCHAIN=go1.27.1 go build -o "$BIN_DIR/$cmd" "./cmd/$cmd" )
+for cmd in broker dev-oidc-issuer dev-airlock-stands agent-secrets agent-secrets-helper agent-secrets-devrelay; do
+  ( cd "$ENVOY_DIR" && GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/$cmd" "./cmd/$cmd" )
 done
 
+# await <what> <seconds> <log file> <grep -E pattern> [pid to watch]
+# Waits for a line one process logs, and fails the run the moment that process dies instead of
+# looping until the wait gives up. scripts/dev-airlock.sh has the same helper, and the two
+# scripts' waits read alike.
+await() {
+  local what="$1" seconds="$2" file="$3" pattern="$4" watch="${5:-}" waited=0
+  while [ "$waited" -lt "$((seconds * 2))" ]; do
+    if grep -qE "$pattern" "$file" 2>/dev/null; then
+      return 0
+    fi
+    if [ -n "$watch" ] && ! kill -0 "$watch" 2>/dev/null; then
+      echo "dev-broker: $what exited during startup (see $file)" >&2
+      exit 1
+    fi
+    sleep 0.5
+    waited=$((waited + 1))
+  done
+  echo "dev-broker: $what did not happen within ${seconds}s (see $file)" >&2
+  exit 1
+}
+
+# --- The stand-in GitHub the two github-app secrets are minted against. dev-airlock-stands
+# serves nine stands and this stack uses the GitHub one; the others cost a loopback port each and
+# nothing points at them. It writes this run's App key and prints one JSON report naming that
+# file, the App id and every address, which is where the secrets below and the banner get theirs.
+# Its output is teed as the issuer's and the broker's are, so a human sees its lines live. ---
+echo "dev-broker: starting dev-airlock-stands (its GitHub stand mints the github-app secrets)..." >&2
+: >"$STANDS_LOG"
+"$STANDS_BIN" --dir "$STANDS_DIR" \
+  --github-owner "$GITHUB_OWNER=$GITHUB_INSTALLATION" \
+  --github-owner "$GITHUB_CASE_OWNER=$GITHUB_CASE_INSTALLATION" \
+  --github-owner "$GITHUB_CASE_OTHER_OWNER=$GITHUB_CASE_OTHER_INSTALLATION" \
+  >"$STANDS_JSON" 2> >(trap '' TERM INT; exec tee -a "$STANDS_LOG" >&2) &
+STANDS_PID=$!
+# The stands write their report and then log this line, so once it is in STANDS_LOG the JSON is
+# whole and every stand is listening.
+await "dev-airlock-stands" 30 "$STANDS_LOG" 'stands listening records=' "$STANDS_PID"
+stand() { jq -r "$1" "$STANDS_JSON"; }
+# The GitHub stand is reached by the broker's own minter, which trusts the host's roots and
+# nothing else, so it is served over plain http on a port the system picked and is named by that
+# address.
+GITHUB_URL="$(stand '.stands.github.url')"
+GITHUB_RECORDS_URL="$(stand '.stands.github.records_url')"
+GITHUB_ANSWER_URL="$(stand .github_answer_url)"
+GITHUB_APP_ID="$(stand .github_app_id)"
+GITHUB_APP_KEY_FILE="$(stand .github_app_key_file)"
+
 # --- Fake Secrets Manager: one agent-tier secret its owner's sessions get without asking, one
-# human-tier secret its owner approves. ---
-cat > "$FAKE_SECRETS_FILE" <<EOF
-{"secrets": [
-  {"name": "${SECRETS_PREFIX}demo-read-token", "kms_key_id": "${SECRETS_KMS_KEY_ARN}",
-   "tags": {"owner": "${APPROVER_LOGIN}", "tier": "agent"}, "value": "demo-read-token-value"},
-  {"name": "${SECRETS_PREFIX}demo-api-key", "kms_key_id": "${SECRETS_KMS_KEY_ARN}",
-   "tags": {"owner": "${APPROVER_LOGIN}", "tier": "human"}, "value": "demo-api-key-value"}
-]}
-EOF
+# human-tier secret its owner approves, one agent-tier secret the registered service owns, which
+# every pod session of that service gets without asking and no person's session sees, and the two
+# github-app secrets, which that same service owns for the same reason. The service-owned ones
+# are what BROKER_SERVICES makes servable: a secret owned by a service the deployment never
+# registered is refused owner-tag-malformed by the policy and reaches nobody. Written with jq, so
+# the App's PEM is escaped once and correctly. ---
+jq -n \
+  --arg prefix "$SECRETS_PREFIX" --arg kms "$SECRETS_KMS_KEY_ARN" \
+  --arg approver "$APPROVER_LOGIN" --arg service "$SERVICE" \
+  --arg appid "$GITHUB_APP_ID" --rawfile appkey "$GITHUB_APP_KEY_FILE" \
+  --arg owner "$GITHUB_OWNER" --arg casepair "$GITHUB_CASE_OWNER" \
+  '{secrets: [
+     {name: ($prefix + "demo-read-token"), kms_key_id: $kms,
+      tags: {owner: $approver, tier: "agent"}, value: "demo-read-token-value"},
+     {name: ($prefix + "demo-api-key"), kms_key_id: $kms,
+      tags: {owner: $approver, tier: "human"}, value: "demo-api-key-value"},
+     {name: ($prefix + "demo-service-token"), kms_key_id: $kms,
+      tags: {owner: $service, tier: "agent"}, value: "demo-service-token-value"},
+     {name: ($prefix + "demo-github-app"), kms_key_id: $kms,
+      tags: {owner: $service, tier: "agent", kind: "github-app", "github-owners": $owner},
+      value: ({app_id: $appid, private_key: $appkey} | tojson)},
+     {name: ($prefix + "demo-github-app-case-pair"), kms_key_id: $kms,
+      tags: {owner: $service, tier: "agent", kind: "github-app", "github-owners": $casepair},
+      value: ({app_id: $appid, private_key: $appkey} | tojson)}
+   ]}' >"$FAKE_SECRETS_FILE"
 chmod 600 "$FAKE_SECRETS_FILE"
 echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
 
@@ -250,6 +380,18 @@ if [ -z "$ISSUER_URL" ]; then
   exit 1
 fi
 
+# The uid dev-oidc-issuer bound to the pod it minted POD_TOKEN_FILE for, off its own line for
+# that file: `<file> holds <account>'s token for audience <audience> (pod <uid>)`. An enrolment
+# of that pod names it, so the banner below prints the one command that takes
+# DEMO_SERVICE_TOKEN rather than leaving a reader to find the uid in the issuer's log. The
+# issuer writes every token file and logs every such line before it logs its URL, so the line is
+# there by now.
+POD_UID="$(sed -n "s#^dev-oidc-issuer: ${POD_TOKEN_FILE} holds .* (pod \(.*\))\$#\1#p" "$ISSUER_LOG" | head -n1)"
+if [ -z "$POD_UID" ]; then
+  echo "dev-broker: dev-oidc-issuer logged no pod uid for $POD_TOKEN_FILE" >&2
+  exit 1
+fi
+
 # --- Start the broker: BROKER_LISTEN_ADDR/BROKER_PUBLIC_URL of port 0 (above); its own log names
 # the real address once Listen succeeds. Output is teed to BROKER_LOG (read below) and to this
 # script's own stderr, so a human watching this script sees the broker's log lines live (it keeps
@@ -279,7 +421,9 @@ BROKER_SIGNIN_CLIENT_SECRET_FILE="$SIGNIN_SECRET_FILE" \
 BROKER_SIGNIN_DOMAIN="$SIGNIN_DOMAIN" \
 BROKER_EXCHANGE_K8S_AUDIENCE="$EXCHANGE_AUDIENCE" \
 BROKER_EXCHANGE_ACCOUNTS="$EXCHANGE_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
-BROKER_SERVICE_LOGINS="legion-daemon=$REGISTRAR_ACCOUNT" \
+BROKER_SERVICE_LOGINS="$SERVICE=$REGISTRAR_ACCOUNT" \
+BROKER_SERVICES="$SERVICE=$EXCHANGE_ACCOUNT" \
+BROKER_AIRLOCK_TEST_GITHUB_API_BASE="$GITHUB_URL" \
 "$BROKER_BIN" > >(trap '' TERM INT; exec tee -a "$BROKER_LOG" >&2) 2>&1 &
 BROKER_PID=$!
 
@@ -355,10 +499,20 @@ dev-broker: ready.
   export AGENT_SECRETS_HELPER_SOCK=$WORK_DIR/helper.sock
   export AGENT_SECRETS_OPERATOR_FILE=$OPERATOR_FILE
   export AGENT_SECRETS_MACHINE_FILE=$WORK_DIR/machine.json
+  export AGENT_SECRETS_STATE_FILE=$WORK_DIR/sessions.json
   export DEV_BROKER_DIR=$WORK_DIR
+  export DEV_BROKER_POD_UID=$POD_UID
+  export DEV_BROKER_SERVICE=$SERVICE
+  export DEV_BROKER_GITHUB_URL=$GITHUB_URL
+  export DEV_BROKER_GITHUB_RECORDS_URL=$GITHUB_RECORDS_URL
+  export DEV_BROKER_GITHUB_ANSWER_URL=$GITHUB_ANSWER_URL
+  export DEV_BROKER_GITHUB_SECRET=$GITHUB_SECRET
+  export DEV_BROKER_GITHUB_OWNER=$GITHUB_OWNER
+  export DEV_BROKER_GITHUB_CASE_SECRET=$GITHUB_CASE_SECRET
+  export DEV_BROKER_GITHUB_CASE_OWNER=$GITHUB_CASE_OWNER
   export PATH=$BIN_DIR:\$PATH
 
-  binaries:            $BIN_DIR  (broker, dev-oidc-issuer, agent-secrets, agent-secrets-helper, agent-secrets-devrelay)
+  binaries:            $BIN_DIR  (broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper, agent-secrets-devrelay)
   fake secrets file:   $FAKE_SECRETS_FILE  (each secret's tags and value, for confirming a released grant)
   approver login:      $APPROVER_LOGIN (whom the issuer signs in to approve a secret, and whom devrelay names deciding a machine login)
   database:            $DISPLAY_URL  (this instance's own; created and dropped by this script)
@@ -368,13 +522,38 @@ dev-broker: ready.
   listener token:      $LISTENER_TOKEN_FILE  ($LISTENER_ACCOUNT, the caller "listener")
   exchange token:      $EXCHANGE_TOKEN_FILE  ($EXCHANGE_ACCOUNT's pod, audience $EXCHANGE_AUDIENCE)
   pod token:           $POD_TOKEN_FILE  (the same pod, audience $BROKER_AUDIENCE: what its registration named it by)
-  registrar token:     $REGISTRAR_TOKEN_FILE  ($REGISTRAR_ACCOUNT, the service login "legion-daemon")
+  registrar token:     $REGISTRAR_TOKEN_FILE  ($REGISTRAR_ACCOUNT, the service login "$SERVICE")
+  registered service:  $SERVICE  (BROKER_SERVICE_LOGINS=$REGISTRAR_ACCOUNT, BROKER_SERVICES=$EXCHANGE_ACCOUNT)
+  github stand:        $GITHUB_URL  (BROKER_AIRLOCK_TEST_GITHUB_API_BASE; plain http, since the broker's minter trusts this host's own roots and nothing else)
+  github records:      $GITHUB_RECORDS_URL  (GET: every call that stand was sent, as JSON)
+  github answers:      $GITHUB_ANSWER_URL  (POST {"mode": "ordinary"|"refuse"|"widen"}: what each token request is answered from then on)
+  stand-in files:      $STANDS_DIR  (this run's GitHub App key and the stands' certificate authority; the whole report in $STANDS_JSON, its log in $STANDS_LOG)
 
   One agent-tier secret (DEMO_READ_TOKEN, granted without asking) and one human-tier secret
   (DEMO_API_KEY, approver: $APPROVER_LOGIN), both owned by $APPROVER_LOGIN, whose sessions ask
-  for them. A grant lasts for the --ttl its request names, else 12 hours.
+  for them, and three agent-tier secrets owned by the registered service
+  $SERVICE, which a pod session enrolled under that service gets without asking and a person's
+  session never sees: DEMO_SERVICE_TOKEN, a stored value, and the two github-app secrets
+  $GITHUB_SECRET, whose github-owners tag names $GITHUB_OWNER, and $GITHUB_CASE_SECRET, whose
+  tag names $GITHUB_CASE_OWNER, on which the App is installed twice under logins that differ
+  only in case ($GITHUB_CASE_OWNER and $GITHUB_CASE_OTHER_OWNER), so a release of it holds two
+  installations. A grant lasts for the --ttl its request names, else 15 minutes for
+  DEMO_API_KEY and 12 hours for the agent-tier ones.
   Drive it with agent-secrets and agent-secrets-helper in another shell;
-  press Ctrl-C here to stop the broker and its issuer.
+  press Ctrl-C here to stop the broker, its issuer and the stand-ins.
+
+  This script enrols no pod session of its own. To take DEMO_SERVICE_TOKEN or a github-app
+  secret, enrol one as the deployment's daemon does — the registrar token above, and the pod
+  token of the account BROKER_SERVICES binds — from packages/envoy:
+
+    KEYS=\$(mktemp -d)
+    dev-airlock-stands enroll-pod --url $PUBLIC_URL --service $SERVICE \\
+      --token-file $REGISTRAR_TOKEN_FILE --pod-token-file $POD_TOKEN_FILE --pod-uid $POD_UID \\
+      --thumbprint "\$(agent-secrets keygen --out "\$KEYS")" | jq -r .enrollment_id >"\$KEYS/enrollment"
+    AGENT_SECRETS_KEY_DIR=\$KEYS agent-secrets DEMO_SERVICE_TOKEN -- printenv DEMO_SERVICE_TOKEN
+    AGENT_SECRETS_KEY_DIR=\$KEYS agent-secrets $GITHUB_SECRET --github-owner $GITHUB_OWNER \\
+      --github-repo proofs --github-token -- \\
+      sh -c 'curl -fsS -H "Authorization: Bearer \$$GITHUB_SECRET" $GITHUB_URL/repos/$GITHUB_OWNER/proofs'
 
   To approve a pending request for DEMO_API_KEY, open the approve_url agent-secrets prints for
   it (${PUBLIC_URL}/approve/<record>) in a browser: the broker sends you to sign in at

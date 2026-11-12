@@ -32,7 +32,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // kubernetesConfig is testConfig under runtime: kubernetes, its client a kubeconfig whose current
@@ -42,7 +44,7 @@ func kubernetesConfig(t *testing.T, server string) config.Config {
 	t.Helper()
 	cfg := testConfig(t)
 	cfg.Runtime = config.Runtime{Name: "kubernetes", Kubernetes: &config.Kubernetes{
-		Namespace: "legion", Image: "ghcr.io/sjawhar/legion-worker@sha256:" + strings.Repeat("a", 64),
+		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
 		StorageClass: "gp2", IssueVolume: "20Gi", Kubeconfig: writeKubeconfig(t, server, "test"),
 		Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
 	}}
@@ -116,7 +118,7 @@ func TestAKubernetesDaemonRefusesAClusterWithoutAgentSandboxBeforeItsBoot(t *tes
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	err := run(ctx, cfg, Build{}, quietLogger(), overrides{clock: stillClock{}, listen: heldListen})
+	err := run(ctx, cfg, quietLogger(), overrides{clock: stillClock{}, listen: heldListen})
 	if err == nil {
 		t.Fatal("the daemon booted on a cluster without Agent Sandbox")
 	}
@@ -180,7 +182,7 @@ func TestAKubernetesDaemonRefusesALegacyPerClaimSandboxBeforeItOpensItsStore(t *
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	err := run(ctx, cfg, Build{}, quietLogger(), overrides{clock: stillClock{}, listen: heldListen})
+	err := run(ctx, cfg, quietLogger(), overrides{clock: stillClock{}, listen: heldListen})
 	if err == nil || !strings.Contains(err.Error(), "legacy issue Sandbox "+legacy) {
 		t.Fatalf("boot = %v, want the refusal naming the legacy Sandbox %s", err, legacy)
 	}
@@ -202,12 +204,12 @@ func TestAKubernetesDaemonRefusesTheBootItsWorkerImageProbeRefuses(t *testing.T)
 	var probed runtime.Runtime
 	o.probe = func(_ context.Context, built runtime.Runtime) (bootprobe.ImageReport, error) {
 		probed = built
-		return bootprobe.ImageReport{}, errors.New("worker image ghcr.io/sjawhar/legion-worker@sha256:aaaa refused: the plugin declares contract 3")
+		return bootprobe.ImageReport{}, errors.New("worker image ghcr.io/cybermonklabs/legion-worker@sha256:aaaa refused: the plugin declares contract 3")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	err := run(ctx, cfg, Build{}, quietLogger(), o)
+	err := run(ctx, cfg, quietLogger(), o)
 	if err == nil || !strings.Contains(err.Error(), "the plugin declares contract 3") {
 		t.Fatalf("boot = %v, want the image probe's refusal", err)
 	}
@@ -236,7 +238,7 @@ func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t
 	logger := slog.New(slog.NewJSONHandler(&logged, nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, cfg, Build{}, logger, o) }()
+	go func() { done <- run(ctx, cfg, logger, o) }()
 	defer func() {
 		cancel()
 		if err := <-done; err != nil {
@@ -383,7 +385,7 @@ func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) 
 	o.workflowTokens, o.githubAPI = &workflowTokenRecorder{}, repositoriesGitHub(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, cfg, Build{}, quietLogger(), o) }()
+	go func() { done <- run(ctx, cfg, quietLogger(), o) }()
 	defer func() {
 		cancel()
 		if err := <-done; err != nil {
@@ -512,12 +514,40 @@ func TestEveryReservationReachesTheSandboxRuntimeAsRequestAndLimit(t *testing.T)
 	}
 }
 
+// runtime.kubernetes.skills_repository reaches sandbox.Options unchanged: every issue pod then runs
+// the skills init container and every role installs from the volume it fills, while leaving the
+// setting out keeps the runtime skills-free.
+func TestKubernetesSkillsRepositoryReachesTheSandboxRuntime(t *testing.T) {
+	cfg := config.Config{Project: "TEST", Projects: map[string]config.Project{"TEST": {}}}
+	k := config.Kubernetes{
+		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
+		StorageClass: "gp2", IssueVolume: "20Gi", Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
+	}
+	k.SkillsRepository = ghrepo.MustParse("theorem-labs/verification-skills")
+	opts, err := sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	if err != nil {
+		t.Fatalf("sandboxOptions: %v", err)
+	}
+	if opts.SkillsRepository != k.SkillsRepository {
+		t.Errorf("Options.SkillsRepository = %v, want %v", opts.SkillsRepository, k.SkillsRepository)
+	}
+
+	k.SkillsRepository = ghrepo.Repository{}
+	opts, err = sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	if err != nil {
+		t.Fatalf("sandboxOptions without a skills repository: %v", err)
+	}
+	if !opts.SkillsRepository.IsZero() {
+		t.Errorf("Options.SkillsRepository = %v without runtime.kubernetes.skills_repository, want none", opts.SkillsRepository)
+	}
+}
+
 // runtime.kubernetes.setup reaches sandbox.Options unchanged: every role's launcher receives this
 // argv, while leaving the setting out keeps the runtime setup-free.
 func TestKubernetesSetupReachesTheSandboxRuntime(t *testing.T) {
 	cfg := config.Config{Project: "TEST", Projects: map[string]config.Project{"TEST": {}}}
 	k := config.Kubernetes{
-		Namespace: "legion", Image: "ghcr.io/sjawhar/legion-worker@sha256:" + strings.Repeat("a", 64),
+		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
 		StorageClass: "gp2", IssueVolume: "20Gi", Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
 	}
 	want := []string{"/bin/sh", "-c", "omp plugin install agent-skills"}
@@ -593,7 +623,7 @@ github_apps:
 runtime:
   kubernetes:
     namespace: legion
-    image: ghcr.io/sjawhar/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    image: ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     storage_class: gp2
     session_store: postgres
     session_dsn_secret: SESSION_DSN
@@ -785,25 +815,25 @@ func TestTheNatsSeedReachesTheSandboxRuntimeAsTheProvidersSecrets(t *testing.T) 
 // awaitHealthz returns once the daemon answers /healthz, and fails if it exits first.
 func awaitHealthz(t *testing.T, cfg config.Config, done chan error) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/healthz")
+	var err error
+	if !testwait.Holds(15*time.Second, 20*time.Millisecond, func() bool {
+		var response *http.Response
+		response, err = pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/healthz")
 		if err == nil {
 			response.Body.Close()
 			if response.StatusCode == http.StatusOK {
-				return
+				return true
 			}
 		}
 		select {
-		case err := <-done:
-			done <- err
-			t.Fatalf("the daemon exited before it answered /healthz: %v", err)
+		case exited := <-done:
+			done <- exited
+			t.Fatalf("the daemon exited before it answered /healthz: %v", exited)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the daemon never answered /healthz: %v", err)
-		}
-		time.Sleep(20 * time.Millisecond)
+		return false
+	}) {
+		t.Fatalf("the daemon never answered /healthz: %v", err)
 	}
 }
 
@@ -974,22 +1004,7 @@ func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
 }
 
 // lockedBuffer is a log a test reads while a goroutine writes it.
-type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
+type lockedBuffer = testlog.Buffer
 
 // A hello carrying an agent-secrets identity maps to the machine's StreamHello with it; a hello
 // with none maps to one with no identity.

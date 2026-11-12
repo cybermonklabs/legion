@@ -79,11 +79,61 @@ export function outsideFences(markdown: string): string[] {
   return kept;
 }
 
+/** `#`, which the parse below counts from the end of a line one code unit at a time. */
+const HASH = "#".charCodeAt(0);
+/** The characters `.` never matches, so no heading's text can hold one or run past one. */
+const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
+
+/**
+ * The text a heading line renders, or undefined where the line is no heading: one to six `#`, then
+ * at least one whitespace character, then at least one character of text, with the line's trailing
+ * run of `#` and the whitespace before that run dropped.
+ *
+ * This reads `/^#{1,6}\s+(.+?)\s*#*$/` as it is written, line by line, rather than running it. That
+ * expression is quadratic: `\s*#*$` rescans the line's trailing whitespace once for every expansion
+ * of the lazy group, so one long heading line in a repository file holds every developer's run of
+ * this guard for minutes (330 ms at 10,000 trailing spaces, 122 s at 200,000). The parse below
+ * reads each line a bounded number of times and keeps that expression's meaning for every input,
+ * oddities included: the group must match one character, so `## ###` is the heading `#`, and the
+ * trailing hashes are dropped only where they end the line, so `## a  ##  ` is the heading `a  ##`.
+ */
+export function headingText(line: string): string | undefined {
+  // The hashes `#{1,6}` matches are the line's whole leading run: after a shorter run stands a `#`,
+  // which is no whitespace, so a line opening with seven leaves `\s+` nothing to match.
+  const opener = /^(#{1,6})(\s+)/.exec(line);
+  if (opener === null) return undefined;
+  const spaces = opener[2];
+  const rest = line.slice(opener[0].length);
+  if (rest === "") {
+    // Whitespace is all that follows the hashes, so `\s+` hands its last character back to the
+    // group, which must match one, and the capture is that one character. The engine hands back
+    // another only where the character is a line terminator, which `.` never matches, and it keeps
+    // the first character for `\s+` itself.
+    for (let at = spaces.length - 1; at >= 1; at--) {
+      const character = spaces.charAt(at);
+      if (!LINE_TERMINATOR.test(character)) return character;
+    }
+    return undefined;
+  }
+  // The group is lazy, so it stops at the first point where `\s*#*$` can read the whole remainder:
+  // the end of the line, the start of its trailing run of `#`, or the start of the whitespace
+  // before that run. Nowhere earlier can, since the character before that whitespace is neither.
+  // `trimEnd` drops exactly the characters `\s` matches (both are WhiteSpace and LineTerminator),
+  // in one pass of its own rather than a regular expression call for every character.
+  let end = rest.length;
+  while (end > 0 && rest.charCodeAt(end - 1) === HASH) end--;
+  end = rest.slice(0, end).trimEnd().length;
+  const heading = rest.slice(0, Math.max(end, 1));
+  // Past a line terminator the group cannot reach, so the expression finds no heading at all: the
+  // shorter captures it could take instead all leave a remainder `\s*#*$` will not read.
+  return LINE_TERMINATOR.test(heading) ? undefined : heading;
+}
+
 /** GitHub's heading anchor: lower-cased, punctuation dropped, each space a hyphen. */
 export function anchors(markdown: string): Set<string> {
   return new Set(
     outsideFences(markdown).flatMap((line) => {
-      const heading = /^#{1,6}\s+(.+?)\s*#*$/.exec(line)?.[1];
+      const heading = headingText(line);
       if (heading === undefined) return [];
       return [
         heading
@@ -270,4 +320,113 @@ export function unresolvedAgentDispatches(
       ({ source, name }) =>
         `${source} dispatches ${name}, which neither this plugin nor Oh My Pi ships`
     );
+}
+
+/** The worker skill, the one file the release rule below is written over. */
+export const WORKER_SKILL = path.join(REPO_ROOT, "skills/legion-worker/SKILL.md");
+
+/** The worker skill's tool reference, the one file the shared-database rules are written over. */
+export const WORKER_TOOLS = path.join(REPO_ROOT, "skills/legion-worker/references/tools.md");
+
+/**
+ * What one skill file gets wrong about a rule pinned over the repository's own `skills/`: it
+ * still carries a claim the rule retired (`retired.claim`, a pattern rather than its one wording,
+ * so a reword of the same shape is caught too), or it has lost the sentence the rule turns on
+ * (`required.sentence`, pinned whole and literally). Each fault is one sentence naming `file` and
+ * saying what a reader of the wrong text would believe. The text is whitespace-normalized first,
+ * because these files are wrapped and a sentence of one crosses lines.
+ */
+function prosePinFaults(
+  file: string,
+  markdown: string,
+  retired: { claim: RegExp; because: string },
+  required: { sentence: string; because: string }
+): string[] {
+  const text = markdown.replace(/\s+/g, " ");
+  const faults: string[] = [];
+  const found = text.match(retired.claim);
+  if (found !== null) faults.push(`${file} says "${found[0]}": ${retired.because}`);
+  if (!text.includes(required.sentence)) {
+    faults.push(`${file} does not say "${required.sentence}": ${required.because}`);
+  }
+  return faults;
+}
+
+/**
+ * The claim the idle release retired (INFRA-945): that a role, or the pane it runs in, stays live
+ * for as long as its issue is in the workflow. Under `runtime: kubernetes` the daemon now releases
+ * an issue pod that has had no turn in progress and no turn due for the idle period, which ends
+ * every role process of it and deletes the pod, its disk and its Sandbox. What outlives that is
+ * the claim's session, its phase and the task it holds, which a wake resumes — so a sentence
+ * saying the *session* is kept is the rule as it now is, and one saying the *role* stays live is
+ * what this forbids. The subject is listed rather than inferred so the two read apart: "your
+ * session is kept, until your issue leaves the workflow, to answer questions" passes, and main's
+ * "you stay live only to answer questions" does not.
+ */
+const ROLE_STAYS_LIVE =
+  /\b(?:you|your (?:role|pane|process|pod|agent)|the (?:role|worker|pane|process))\s+(?:stays?|remains?|keeps?)\s+(?:live|alive|running|up)\b/i;
+
+/**
+ * The sentence the skill must carry instead, which is the heading of the bullet that tells a
+ * worker what a release does to it. It is pinned whole and literally: a worker that reads nothing
+ * about release reads its pod's deletion as a crash and its restored workspace as lost work.
+ */
+const RELEASE_IS_NO_STOP = "A released pod is not a stop.";
+
+/** What `markdown` — skills/legion-worker/SKILL.md — gets wrong about a released pod. */
+export function retiredWorkerLifecycleClaims(markdown: string): string[] {
+  return prosePinFaults(
+    "skills/legion-worker/SKILL.md",
+    markdown,
+    {
+      claim: ROLE_STAYS_LIVE,
+      because:
+        "a released pod ends every role process of it, so no role stays live for as long as its issue is in the workflow",
+    },
+    {
+      sentence: RELEASE_IS_NO_STOP,
+      because: "a worker told nothing about release reads its pod's deletion as a crash",
+    }
+  );
+}
+
+/**
+ * The claim INFRA-1315 retired: that a login, or the URL that carries one, can create and drop
+ * databases on the shared server. The skill ships to every deployment and cannot know what a
+ * deployment's session login may do, so it claims no power for it: a deployment that splits that
+ * login gives its roles one that owns nothing, and a role that read the old claim there would
+ * believe a power it does not have. The claim is a pattern rather than its one wording, and the
+ * subject is named rather than left open, so the file's own "Each makes and drops a database of
+ * its own per test", said of the pod's server, stays outside it; the rule the file does carry,
+ * that nothing which creates or drops a database gets the session URL, names no login that can
+ * and so passes too.
+ */
+const LOGIN_OWNS_DATABASES =
+  /\b(?:login|account|credentials?|URL|DSN)\b[^.]{0,40}?\b(?:can|could|may|is able to|is allowed to|has (?:the )?(?:rights?|permissions?|privileges?) to)\s+(?:create|make|drop|delete)\b[^.]{0,40}?\bdatabases?\b/i;
+
+/**
+ * The sentence of `## Reading a shared database` a role must not lose, pinned whole and literally:
+ * a role that reads nothing about it reads the shared store through the write-capable session URL,
+ * which on 2026-11-05 left a session-level read-only setting on a pooled backend and failed 1,432
+ * session writes.
+ */
+const NO_READ_THROUGH_SESSION_URL =
+  "Never read it through the session URL the file `OMP_SESSION_SQL_DSN_FILE` names.";
+
+/** What `markdown` — skills/legion-worker/references/tools.md — gets wrong about a shared database. */
+export function brokenSharedDatabaseRules(markdown: string): string[] {
+  return prosePinFaults(
+    "skills/legion-worker/references/tools.md",
+    markdown,
+    {
+      claim: LOGIN_OWNS_DATABASES,
+      because:
+        "the skill cannot know what a deployment's session login may do, so it claims no power for that login",
+    },
+    {
+      sentence: NO_READ_THROUGH_SESSION_URL,
+      because:
+        "a role told nothing about reads reaches the shared store through the write-capable session URL",
+    }
+  );
 }

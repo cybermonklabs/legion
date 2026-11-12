@@ -1,10 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { RELATED_DEBOUNCE_MS } from "../web/src/features/issue/related-timing";
 import { createIssue, createProject } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /** The no-write check the dialog asks, for any project. A glob would read `?` as a wildcard. */
@@ -61,11 +59,8 @@ async function openCreateDialog(
   return { dialog, related: dialog.getByRole("region", { name: "Related items" }), title };
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("a title checked before an issue was filed is checked again, not answered from before", async ({
+// @pr: Create through answer to close: the related-issue check behind the create dialog must ask again once an issue was filed, not answer from before.
+test("a title checked before an issue was filed is checked again, not answered from before @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -73,12 +68,16 @@ test("a title checked before an issue was filed is checked again, not answered f
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
+    // The dialog waits out `RELATED_DEBOUNCE_MS` before it checks a title; that is a page timer,
+    // so the page's own clock is what spends it.
+    await page.clock.install();
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Inbox" })).toBeVisible();
 
     const draft = "Astrolabe drift spoils the mooring calibration";
     const first = await openCreateDialog(page);
     await first.title.fill(draft);
+    await page.clock.runFor(RELATED_DEBOUNCE_MS);
     await expect(first.related.getByText(/searched .*and found nothing\.$/u)).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(first.dialog).toHaveCount(0);
@@ -94,6 +93,7 @@ test("a title checked before an issue was filed is checked again, not answered f
 
     const second = await openCreateDialog(page);
     await second.title.fill(draft);
+    await page.clock.runFor(RELATED_DEBOUNCE_MS);
     await expect(second.related.getByRole("link", { name: `${filed.key} ${draft}` })).toBeVisible();
   } finally {
     await context.close();
@@ -169,11 +169,15 @@ test("a title whose rare words match an existing issue lists it with its link", 
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
+    // The dialog waits out `RELATED_DEBOUNCE_MS` before it checks a title; that is a page timer,
+    // so the page's own clock is what spends it.
+    await page.clock.install();
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Inbox" })).toBeVisible();
     const { related, title } = await openCreateDialog(page);
 
     await title.fill("Astrolabe drift during mooring");
+    await page.clock.runFor(RELATED_DEBOUNCE_MS);
     const hit = related.getByRole("link", { name: `${seeded.astrolabe} ${astrolabeTitle}` });
     await expect(hit).toBeVisible();
     await expect(hit).toHaveAttribute("href", `/issues/${seeded.astrolabe}`);
@@ -187,6 +191,7 @@ test("a title whose rare words match an existing issue lists it with its link", 
     // The control: a title sharing no rare word with anything in the project says so, in words
     // that cannot be read as a check that never ran.
     await title.fill("Repaint the tender's bollards");
+    await page.clock.runFor(RELATED_DEBOUNCE_MS);
     await expect(related.getByText(/searched .*and found nothing\.$/u)).toBeVisible();
     await expect(related.getByRole("link")).toHaveCount(0);
   } finally {
@@ -275,6 +280,9 @@ test("an answer that arrives after the title changed is not shown for the new ti
     release();
     await answered;
     await page.clock.runFor(1);
+    // The render's margin, from the paragraph above: react-query delivered the answer on the
+    // tick before this, and this window is what a render of it would show in. It is Node's
+    // clock, since the page's is the test's and a page-side wait would never return.
     await sleep(250);
 
     // The answer that landed is the first title's, so the dialog still says it is checking and

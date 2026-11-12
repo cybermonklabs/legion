@@ -12,7 +12,7 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import type { AgentStreamCommand } from "@legion/contracts";
-import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { RefusableButton } from "../../components/RefusableButton";
@@ -43,6 +43,7 @@ import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { ErrorBoundary } from "../shell/ErrorBoundary";
 import { readDispatchMarks, turnKey } from "./dispatch-marks";
+import type { LivePlace } from "./live-views";
 import { useLiveFollow } from "./use-live-follow";
 import { useFrameCoalesced } from "./useFrameCoalesced";
 
@@ -178,6 +179,12 @@ function AssistantMessage(): ReactNode {
   // The provider/model that produced this streamed turn (LEGION-548): absent for a reply sent
   // through Dispatch, and for a turn whose publishing host reported none.
   const model = useAuiState((state) => readDispatchMarks(state.message.metadata.custom).model);
+  // Whether the session is still writing this turn: assistant-ui's own message status, which
+  // `toThreadMessages` sets to `running` while a message streams and to `complete` once a frame
+  // settles it. A third selector returning a boolean, for the `Object.is` reason above. A turn
+  // that calls a tool shows the tool card's own `running…`; this is the mark every other turn
+  // has, including one that writes nothing but prose.
+  const running = useAuiState((state) => state.message.status?.type === "running");
   const turn = useTurnKey();
   if (fromDispatch) {
     return (
@@ -206,6 +213,11 @@ function AssistantMessage(): ReactNode {
           <TruncatedText>{model}</TruncatedText>
         </p>
       )}
+      {running ? (
+        <p className={`mb-1 text-xs ${textMutedOnCanvas}`} data-testid="agent-message-running">
+          writing…
+        </p>
+      ) : null}
       <MessagePrimitive.Parts
         components={{ Reasoning, Text: MarkdownText, tools: { Fallback: ToolCall } }}
       />
@@ -217,34 +229,54 @@ function AssistantMessage(): ReactNode {
  *  hundreds, and the person narrows them by typing. */
 const SHOWN_COMMANDS = 50;
 
-/**
- * Where a slash command is being typed: only a `/` that starts the message, since the session runs
- * the text as a command only from the start of its input, as its terminal does, and only while the
- * caret is still in the command's name. The replaced span is the whole name, so a pick made with
- * the caret inside a name replaces all of it.
- */
-const atMessageStart: Unstable_TriggerMatcher = (text, trigger, cursor) => {
-  if (!text.startsWith(trigger)) return null;
-  const query = text.slice(trigger.length, cursor);
-  if (/\s/u.test(query)) return null;
-  const nameEnd = text.slice(trigger.length).search(/\s/u);
-  return {
-    endOffset: nameEnd === -1 ? text.length : trigger.length + nameEnd,
-    offset: 0,
-    query,
-  };
-};
+/** How the session's publisher names a skill: `skill:<name>` (`AgentStreamCommand` in
+ *  `packages/contracts/src/agent-stream.ts`; the plugin passes its host's picker names through).
+ *  Anchored, so only the prefix goes and a name holding `skill:` later keeps it. */
+const SKILL_PREFIX = /^skill:/u;
 
 /**
- * A picked command goes into the message as the person would type it at the session's terminal:
- * `/name`, and the popover adds the space after it. assistant-ui's own formatter writes a
- * `:type[label]` directive, which the session would receive as that markup rather than as its
- * command. `parse` serves only a rich-text input, which this composer is not.
+ * Where a slash command is being typed: the `/` token the caret sits in, whose `/` starts the
+ * message or follows a space or a line break. A `/` inside a word - a path, a date - belongs to
+ * that word and opens nothing. The replaced span is the whole token, so a pick made with the
+ * caret inside a name replaces all of it.
+ *
+ * It also records where that `/` is, which is what the formatter below needs and the library
+ * never hands it: `serialize(item)` takes the item alone. The matcher runs on every keystroke
+ * and on every move of the caret, so the offset it leaves is the open popover's own.
  */
-const slashFormatter: Unstable_DirectiveFormatter = {
-  parse: (text) => [{ kind: "text", text }],
-  serialize: (item) => `/${item.id}`,
-};
+function slashAtCaret(triggerOffset: RefObject<number>): Unstable_TriggerMatcher {
+  return (text, trigger, cursor) => {
+    // The token the caret sits in: back to the space or line break before it, or to the start.
+    const offset = text.slice(0, cursor).search(/\S*$/u);
+    if (!text.startsWith(trigger, offset)) return null;
+    const tokenEnd = text.slice(cursor).search(/\s/u);
+    triggerOffset.current = offset;
+    return {
+      endOffset: tokenEnd === -1 ? text.length : cursor + tokenEnd,
+      offset,
+      query: text.slice(offset + trigger.length, cursor),
+    };
+  };
+}
+
+/**
+ * What a picked command puts in the message. A pick that starts the message is a command line:
+ * the session runs it as the person would have typed it at its terminal, `/skill:asd-ste100`,
+ * and the popover adds the space after it. A pick inside a sentence is the person naming the
+ * skill to the session - nothing there is run - so it writes the bare name, `asd-ste100`,
+ * without the slash and without the publisher's `skill:` prefix.
+ *
+ * assistant-ui's own formatter writes a `:type[label]` directive, which the session would
+ * receive as that markup rather than as its command. `parse` serves only a rich-text input,
+ * which this composer is not.
+ */
+function slashFormatter(triggerOffset: RefObject<number>): Unstable_DirectiveFormatter {
+  return {
+    parse: (text) => [{ kind: "text", text }],
+    serialize: (item) =>
+      triggerOffset.current === 0 ? `/${item.id}` : item.id.replace(SKILL_PREFIX, ""),
+  };
+}
 
 /**
  * The commands that match what the person typed after the slash, at most `SHOWN_COMMANDS`: every
@@ -310,20 +342,23 @@ function CommandItem({ index, item }: { index: number; item: Unstable_TriggerIte
         ) : null}
       </span>
       {item.description === undefined ? null : (
-        <TruncatedText
-          className={`self-stretch text-xs ${textOptionDescription}`}
-          title={item.description}
-        >
-          {item.description}
-        </TruncatedText>
+        // Whole, on as many lines as it takes (INFRA-812, R5): a row of this list is read to
+        // learn what the command does, and an ellipsis there hides the half that says it.
+        <span className={`self-stretch text-xs ${textOptionDescription}`}>{item.description}</span>
       )}
     </ComposerPrimitive.Unstable_TriggerPopoverItem>
   );
 }
 
-/** The session's slash commands, offered while the message starts with `/`. A pick writes
- *  `/name ` into the message; sending it is the composer's ordinary Send. */
+/** The session's slash commands, offered for the `/` token the caret sits in. A pick writes the
+ *  command at the start of a message and the bare name inside a sentence (`slashFormatter`);
+ *  sending it is the composer's ordinary Send. */
 function SlashCommands({ commands }: { commands: readonly AgentStreamCommand[] }): ReactNode {
+  // Where the open popover's `/` sits, written by the matcher and read by the formatter, which
+  // the library gives nothing else to tell a command line from a mention by.
+  const triggerOffset = useRef(0);
+  const matcher = useMemo(() => slashAtCaret(triggerOffset), []);
+  const formatter = useMemo(() => slashFormatter(triggerOffset), []);
   const adapter = useMemo(
     () => ({
       categories: () => [],
@@ -338,9 +373,9 @@ function SlashCommands({ commands }: { commands: readonly AgentStreamCommand[] }
       aria-label="Slash commands"
       char="/"
       className={`absolute right-0 bottom-full left-0 z-10 mb-2 flex max-h-72 flex-col gap-1 overflow-y-auto rounded-lg border p-1 shadow-lg ${card}`}
-      matcher={atMessageStart}
+      matcher={matcher}
     >
-      <ComposerPrimitive.Unstable_TriggerPopover.Directive formatter={slashFormatter} />
+      <ComposerPrimitive.Unstable_TriggerPopover.Directive formatter={formatter} />
       <ComposerPrimitive.Unstable_TriggerPopoverItems className="contents">
         {(items) =>
           items.map((item, index) => <CommandItem index={index} item={item} key={item.id} />)
@@ -363,13 +398,15 @@ export function AgentThread({
   commands,
   contentIds,
   empty,
+  front,
   held,
+  initialPlace,
+  onPlace,
   ownSendCount,
   placeholder,
   replayCount,
   resetKey,
   sends,
-  sessionId,
 }: {
   /** The slash commands the composer completes; none is offered while this is undefined or
    *  empty. */
@@ -378,9 +415,18 @@ export function AgentThread({
    *  `data-message-id`: what the follow hook counts as new and finds the reader's place in. */
   contentIds: readonly string[];
   empty: string;
+  /** Whether this is the view the person is looking at. A view the shell keeps mounted behind
+   *  the one in front is laid out over the page rather than in it, so its own geometry is the
+   *  shell's doing and never the reader moving (`useLiveFollow`). */
+  front: boolean;
   /** Whether a model or thinking switch is pending on this session: Send is disabled, still
    *  reading "Send", until it ends, and `placeholder` is what says why. */
   held: boolean;
+  /** Where this session's reader was when its view last reported, which the view's entry in
+   *  `live-views.ts` holds while the view sleeps, or `null` for one that was following. */
+  initialPlace: LivePlace | null;
+  /** Reports the place the transcript holds, for that entry to keep. */
+  onPlace: (place: LivePlace | null) => void;
   /** Bumped once per message this viewer sent that the session accepted. */
   ownSendCount: number;
   placeholder: string;
@@ -390,8 +436,6 @@ export function AgentThread({
   /** Every message to the session Dispatch has not yet made, in press order, each a turn of its
    *  own at the transcript's end, and what acts on them. */
   sends: SessionSends;
-  /** The session being read: moving to another one lands at its live end. */
-  sessionId: string;
 }): ReactNode {
   // The element itself, not a ref held once: this viewport is inside the boundary below, which
   // renders a fresh node once a reset clears the error it was holding, and the hook binds its
@@ -403,9 +447,11 @@ export function AgentThread({
       () => [...contentIds, ...pending.map((send) => `pending:${send.id}`)],
       [contentIds, pending]
     ),
+    front,
+    initialPlace,
+    onPlace,
     ownSendCount,
     replayCount,
-    sessionId,
     viewport,
   });
   // An empty box is the one thing that refuses Send (INFRA-442): a message still out, late or
@@ -414,6 +460,14 @@ export function AgentThread({
   // decides what a message does mid-turn by its delivery mode, as at its terminal.
   const boxEmpty = useAuiState((state) => state.composer.isEmpty);
   const refusal = boxEmpty && !held ? "Type a message first." : null;
+  // The line under the box reads nothing until a person presses Send and the press is refused
+  // (INFRA-812, R6): an empty box is where this view rests, and a reason printed there before
+  // anybody tries is rule text on the page, which the question mark under the box now holds.
+  // The reason reaches a screen reader all the same, on the button's own hidden line and its
+  // title, and the next thing typed clears the press.
+  const [refusedPress, setRefusedPress] = useState(false);
+  const shownRefusal = refusedPress ? refusal : null;
+  if (refusal === null && refusedPress) setRefusedPress(false);
   const hintId = useId();
   return (
     <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
@@ -502,18 +556,25 @@ export function AgentThread({
               busy={held ? "Send" : undefined}
               className="min-h-11"
               describedBy={held ? hintId : undefined}
+              onRefusedPress={() => setRefusedPress(true)}
               refusal={refusal}
-              refusalShownBy={hintId}
+              refusalShownBy={shownRefusal === null ? undefined : hintId}
               type="submit"
             >
               Send
             </RefusableButton>
           </div>
-          {/* While a switch is pending this line says what the box's placeholder says, which the
-              text typed may hide; with nothing typed it says why Send refuses; otherwise it says
-              how to send. */}
-          <p className={`text-xs ${textMutedOnCanvas}`} id={hintId}>
-            {held ? placeholder : (refusal ?? "Enter to send · Shift+Enter for a new line")}
+          {/* The Send control's own words, and nothing else: while a switch is pending this line
+              says what the box's placeholder says, which the text typed may hide, and once a
+              person has pressed Send with nothing typed it says why that press was refused. At
+              rest it reads nothing - how to send is a rule of the page, which the question mark
+              under the box now holds (INFRA-812, R6), not a word about this press. */}
+          <p
+            className={`text-xs ${textMutedOnCanvas}`}
+            data-testid="agent-composer-hint"
+            id={hintId}
+          >
+            {held ? placeholder : shownRefusal}
           </p>
         </ComposerPrimitive.Root>
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>

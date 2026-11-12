@@ -1,6 +1,8 @@
+import { useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -8,8 +10,16 @@ import {
   useState,
 } from "react";
 
-import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
-import type { AnswerAskInput, Ask, AskRead, Comment, CreateCommentInput } from "../../api/types";
+import { type ArtifactOwner, api, type DeclineAskInput, type WriteBounds } from "../../api/client";
+import { usersQuery } from "../../api/queries";
+import type {
+  AnswerAskInput,
+  Ask,
+  AskRead,
+  AskUrgency,
+  Comment,
+  CreateCommentInput,
+} from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
@@ -22,6 +32,7 @@ import {
   badgeHigh,
   badgeLow,
   badgeMed,
+  badgePrimary,
   borderDefault,
   card,
   cardHoverBorder,
@@ -39,13 +50,17 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
-import { askRepliesOwner, useMarkThreadRead } from "../replies/useMarkThreadRead";
+import { textSourceOf } from "../refs/text-references";
+import { composerFirst } from "../threads/thread-layout";
+import { useThreadOrder } from "../threads/thread-order";
+import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskBlockLink } from "./AskBlockLink";
@@ -59,14 +74,21 @@ import { AskChoiceRow } from "./AskOptionRow";
 import { AskRecipients } from "./AskRecipients";
 import { AskThread } from "./AskThread";
 import { AskThreadDisclosure } from "./AskThreadDisclosure";
+import type { OwnedAsk } from "./ask-name";
 import { askTurnHolder } from "./ask-turn";
-import { URGENCY_LABELS } from "./ask-urgency";
+import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
+import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
+import { AskHandOnLiveContext } from "./hand-on-live";
+import { askWaitingOnPerson } from "./list-row";
 import { clearReplyDraft } from "./reply-drafts";
 import { useAskAnswerForm } from "./useAskAnswerForm";
+import { useAskHandOn } from "./useAskHandOn";
 
 const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<Ask> =>
   api.answerAsk(id, input, bounds);
+const declineAsk = (id: string, input: DeclineAskInput, bounds: WriteBounds): Promise<Ask> =>
+  api.declineAsk(id, input, bounds);
 const getAskThread = (id: string): Promise<AskRead> => api.getAsk(id);
 const createReply = (
   issueKey: string,
@@ -76,7 +98,7 @@ const createReply = (
 
 export interface AskCardProps {
   artifactSlug?: string;
-  ask: Ask;
+  ask: OwnedAsk;
   /** The project document that owns an ask whose read lacks `document` (only Inbox rows carry
    *  it), so the card can still name the ask's `dispatch://` reference. */
   owner?: { project: string; slug: string };
@@ -95,6 +117,7 @@ export interface AskCardProps {
    *  what the block lacks — who asked and when, the exchange, and the composer or the record. */
   frame?: AskFrame;
   answerAsk?: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>;
+  declineAsk?: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
   /** Reply-thread fetch/write seams for tests; default to the real API. */
   getAskThread?: (id: string) => Promise<AskRead>;
   /** Data the Inbox response already hydrated for the first card render. */
@@ -114,18 +137,23 @@ export interface AskCardProps {
   onAnswered?: (id: string) => void;
   /** `change` opens the seeded form when the viewer may replace the current answer. */
   mode?: "answer" | "change";
-  /** Marks the ask's thread read on the Replies page once its newest write (the newest reply, or
-   *  an answer given after every reply) has been on screen. Set only on the ask's own pages - its
-   *  Conversation turn, its margin card, its decision block - so the Inbox, its drawer and the
-   *  Answers page start no unread-set reads. */
+  /** Marks the ask's thread read through the shared thread read mark (`useMarkThreadRead`) once
+   *  its newest write (the newest reply, or an answer given after every reply) has been on
+   *  screen. Set only on the ask's own pages - its Conversation turn, its margin card, its
+   *  decision block - so the Inbox, its drawer and the Answers page start no unread-set reads. */
   markRead?: boolean;
+  /** The ids of the ask's replies the reader has not read, from a host that holds the fact
+   *  itself: the Inbox, whose row carries the thread's read mark. Without it the card reads the
+   *  set from the mark it makes under `markRead`, and a card that does neither folds by count
+   *  alone. An unread reply is never folded away (`threads/thread-layout.ts`). */
+  unread?: ReadonlySet<string>;
   /** The reply a deep link named: the Conversation marks that reply and opens the card's
    *  collapsed thread over it. No other surface lands on a reply. */
   currentReplyId?: string;
 }
 
 /** The urgency notch's text colour, matching the urgency badge of the same level. */
-const URGENCY_NOTCH_TEXT: Record<Ask["urgency"], string> = {
+const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
   blocking: badgeBlocking.text,
   high: badgeHigh.text,
   low: badgeLow.text,
@@ -163,6 +191,134 @@ function useFormRef(): [
   return [formRef, track];
 }
 
+/**
+ * Who an open ask waits on, and the one control that hands it to somebody else. It sits in the
+ * card rather than in the Inbox, so every surface that draws an open ask has it: the Inbox row
+ * and its reading pane, the issue page, a document's margin, a document's ask block and
+ * `ThreadBody`.
+ *
+ * The badge is the server's own answer (`waiting_on_person`: whoever the ask was handed to, and
+ * the assignee of its issue until somebody hands it on), and the picker over it is the same
+ * invisible native `<select>` the assignee and priority pickers use, so the menu is one tap on
+ * a phone and one keyboard interaction on a desktop. Its people are everyone who has signed in
+ * (`usersQuery`, read only once the reader reaches for the control and then kept for the
+ * session), with the assignee of the ask's own issue offered first where the card has it -
+ * `assignee` is the Inbox row's `issue.assignee`, the one read that hydrates the issue, and
+ * null on every other surface - since handing the ask back to them is what empties the stored
+ * field and lets the ask follow its issue again. Where it is null that person is still in the
+ * people list, under their own login: the named choice is a label, not the only way to pick
+ * them, and the control's own value comes from the ask itself.
+ *
+ * Under it, where somebody has already handed the ask on, who did it and when
+ * (`asked_of_by`, `asked_of_at`). A refusal shows the server's reason with Retry where the
+ * reader pressed it, as `AssignToMe` and `SnoozeControl` do - and, as those two do, it asks
+ * the list drawing it to hold the ask while that write is live (pending or failed), because
+ * the optimistic `waiting_on_person` takes the row out of the Inbox's own list the moment the
+ * write starts (`isMine`, `inAssigneeFilter`): without the hold this card would be unmounted
+ * before the server answered, and a refusal would put the row back with a fresh card that
+ * never failed, so the reader would see it return and no reason. The hold comes from the list
+ * itself, through the context it provides (`hand-on-live.ts`), rather than from a prop every
+ * host passes down: the card the reader pressed can be one the Inbox never rendered itself -
+ * the decision block its reading column draws through the document page - and a prop that
+ * path does not carry is a hold that path does not get. What the list does with the request
+ * is the list's own: it holds an ask it already listed a row for and ignores one it did not,
+ * since a card can be drawn inside a list that lists no row for its ask - a Reply-thread
+ * card, a sibling ask block - and holding that ask would pull it into the reader's list. A
+ * card drawn where no list can drop it registers with nobody.
+ */
+function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
+  const [wanted, setWanted] = useState(false);
+  const people = useQuery({ ...usersQuery(), enabled: wanted });
+  const want = () => setWanted(true);
+  const write = useAskHandOn(ask);
+  const onLive = useContext(AskHandOnLiveContext);
+  const live = write.pending || write.failed;
+  useEffect(() => {
+    if (!live) return;
+    onLive(ask.id, true);
+    return () => onLive(ask.id, false);
+  }, [ask.id, live, onLive]);
+  const waitingOn = askWaitingOnPerson(ask) ?? "";
+  // The list is drawn only once the reader reaches for the control, as it is read: the query
+  // keeps its people for the session, so a card that built its options from whatever another
+  // control had already fetched would draw one `<option>` per signed-in person for every open
+  // ask on the page.
+  const logins = (wanted ? (people.data ?? []) : [])
+    .map((user) => user.login)
+    .filter((login) => login !== assignee);
+  // Whoever holds the ask stays selectable even where the people list does not carry them (it
+  // is unread until the reader reaches for the control), so the select never shows a value its
+  // options lack.
+  const others =
+    waitingOn === "" || waitingOn === assignee || logins.includes(waitingOn)
+      ? logins
+      : [waitingOn, ...logins];
+  const handedOnBy = ask.asked_of_by ?? "";
+  const handedOnAt = ask.asked_of_at ?? null;
+  const tone = waitingOn === "" ? badgeLow : badgePrimary;
+  return (
+    <div
+      className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs ${textMutedOnSurface}`}
+    >
+      <span className={badgeSelectWrapper}>
+        <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
+          {write.pending
+            ? "Handing on…"
+            : waitingOn === ""
+              ? "Asked of nobody"
+              : `Asked of ${waitingOn}`}
+        </span>
+        <select
+          aria-label="Hand this question to"
+          className={badgeSelectOverlay}
+          data-ask-hand-on={ask.id}
+          onChange={(event) => {
+            const { value } = event.target;
+            if (value !== "") write.submit(value);
+          }}
+          onFocus={want}
+          onMouseDown={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+          onPointerEnter={want}
+          onTouchStart={(event) => {
+            event.stopPropagation();
+            want();
+          }}
+          value={waitingOn}
+        >
+          {/* The ask waits on nobody until somebody is picked, and nobody is not a pick: the
+              route takes a person's email and refuses anything else. */}
+          <option disabled value="">
+            Nobody
+          </option>
+          {assignee === null ? null : (
+            <option value={assignee}>{assignee} (the issue's assignee)</option>
+          )}
+          {others.map((login) => (
+            <option key={login} value={login}>
+              {login}
+            </option>
+          ))}
+        </select>
+      </span>
+      {handedOnBy === "" || handedOnAt === null ? null : (
+        <span>
+          handed on by {handedOnBy} <Timestamp at={handedOnAt} />
+        </span>
+      )}
+      {write.failed ? (
+        <span className="basis-full">
+          <QueryError
+            message={write.error ?? "Could not hand this question on."}
+            onRetry={write.retry}
+            retrying={write.pending}
+          />
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 export function AskCard({
   artifactSlug,
   ask,
@@ -172,6 +328,7 @@ export function AskCard({
   frame = "card",
   answerAsk: answer = answerAsk,
   createReply: reply = createReply,
+  declineAsk: decline = declineAsk,
   getAskThread: getThread = getAskThread,
   initialThread,
   initialThreadUpdatedAt,
@@ -179,6 +336,7 @@ export function AskCard({
   onAnswered,
   mode = "answer",
   markRead = false,
+  unread,
   currentReplyId,
 }: AskCardProps): ReactNode {
   const {
@@ -243,10 +401,15 @@ export function AskCard({
   const referencesPanelId = useId();
   const isCompact = variant === "compact";
   const inBlock = frame === "block";
-  const reference = itemRoute("ask", displayedAsk, displayedAsk.document ?? owner);
+  // `document` is the Inbox row's: the ask read carries no owner, so the fresher `displayedAsk`
+  // cannot name it and this card's own row is where it is read.
+  const reference = itemRoute("ask", displayedAsk, ask.document ?? owner);
+  // Where a `#id` in the ask's own text resolves: the document the server scopes this ask to -
+  // the one its block is on, the one it is anchored to, else its issue's spec (`refs.ScopeOf`).
+  const source = textSourceOf("ask", displayedAsk.id);
   // Where a file pasted or dropped into the answer, or into a reply under the ask, goes: the
   // ask's issue, or the project of the document it was asked on.
-  const documentProject = (displayedAsk.document ?? owner ?? displayedAsk.anchor_artifact)?.project;
+  const documentProject = (ask.document ?? owner ?? displayedAsk.anchor_artifact)?.project;
   const uploadOwner: ArtifactOwner | undefined =
     displayedAsk.issue_key !== null
       ? { issue: displayedAsk.issue_key }
@@ -311,8 +474,8 @@ export function AskCard({
   // The copy handles' values: the title the session stamped, as the clipboard has always had it.
   const sessionTitle = sessionAuthor?.origin?.session_title?.trim();
   const tmuxTarget = sessionAuthor?.origin?.tmux;
-  const hasUrgencyNotch =
-    !inBlock && (displayedAsk.urgency === "blocking" || displayedAsk.urgency === "high");
+  const urgency = askUrgency(displayedAsk.urgency);
+  const hasUrgencyNotch = !inBlock && (urgency === "blocking" || urgency === "high");
   // The thread's own "still open?" wording must track the post-answer ask, not the possibly
   // stale prop passed to this instance: `completed` renders before an invalidated `ask` prop
   // round-trips down from the parent.
@@ -325,20 +488,32 @@ export function AskCard({
   // The count comes from `displayedAsk`, never from `completed`: answering an ask does not move
   // a backlink count, and the answer response is the one ask shape that carries no count.
   const referencedByCount = displayedAsk.referenced_by_count ?? 0;
-  const turnHolder = askTurnHolder(currentAsk, threadQuery.data?.replies.at(-1));
-  // The thread's newest write the card shows, which the Replies mark watches and reads through:
-  // the newest reply, unless the record's answer came after it (an answer is a write like a reply).
-  const newestReply = threadQuery.data?.replies.at(-1);
+  const turnHolder = askTurnHolder(currentAsk, (threadQuery.data?.replies ?? []).at(-1));
+  // The thread's newest write the card shows, which the shared thread read mark watches and
+  // reads through: the newest reply, unless the record's answer came after it (an answer is a
+  // write like a reply).
+  const newestReply = (threadQuery.data?.replies ?? []).at(-1);
   const recordedAnswer = completed?.state === "answered" ? completed.answer : null;
   const answerIsNewest =
     recordedAnswer !== null &&
     (newestReply === undefined || compareTimestamps(recordedAnswer.at, newestReply.created_at) > 0);
-  const markNewest = useMarkThreadRead({
+  // The mark the card makes, and with it which of the replies on screen are still unread: an
+  // unread reply is never folded away. A card that marks nothing read reads nothing, so it takes
+  // what its host passes, and folds by count alone where the host passes none.
+  const threadRead = useMarkThreadRead({
     enabled: markRead,
     newestShownAt: answerIsNewest ? recordedAnswer?.at : newestReply?.created_at,
     owner: askRepliesOwner(displayedAsk),
     threadId: displayedAsk.id,
+    writes: threadQuery.data?.replies ?? undefined,
   });
+  const markNewest = threadRead.ref;
+  const unreadReplies = unread ?? threadRead.unread;
+  // The one order every thread reads in, the reader's own (`threads/thread-order.ts`): it places
+  // the replies, this card's options and answer box, and the thread's reply composer. Where the
+  // box goes is the layout's own rule, which this card reads rather than works out again.
+  const [threadOrder] = useThreadOrder();
+  const answerFirst = composerFirst(threadOrder);
   const referencedByNode =
     reference === undefined || referencedByCount === 0 ? null : (
       <div className="mt-3">
@@ -365,7 +540,9 @@ export function AskCard({
         currentReplyId={currentReplyId}
         embedded={completed === null}
         markNewest={answerIsNewest ? undefined : markNewest}
+        order={threadOrder}
         thread={threadQuery}
+        unread={unreadReplies}
         uploadOwner={uploadOwner}
       />
     ) : (
@@ -375,7 +552,9 @@ export function AskCard({
         currentReplyId={currentReplyId}
         embedded={completed === null}
         markNewest={answerIsNewest ? undefined : markNewest}
+        order={threadOrder}
         thread={threadQuery}
+        unread={unreadReplies}
         uploadOwner={uploadOwner}
       />
     );
@@ -522,11 +701,11 @@ export function AskCard({
 
   return (
     <article
-      aria-label={`Urgency: ${URGENCY_LABELS[displayedAsk.urgency]}`}
+      aria-label={`Urgency: ${URGENCY_LABELS[urgency]}`}
       className={
         inBlock
           ? "relative mt-3"
-          : `relative rounded-xl border-l-4 shadow-sm ${isCompact ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${hasUrgencyNotch ? "mt-3" : ""} ${card} ${askUrgencyAccent[displayedAsk.urgency]}`
+          : `relative rounded-xl border-l-4 shadow-sm ${isCompact ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${hasUrgencyNotch ? "mt-3" : ""} ${card} ${askUrgencyAccent[urgency]}`
       }
       // The one handle on a card as a whole, carrying the question the card draws: a page-level
       // key that must not fire while the reader is answering an ask (the issue page's priority
@@ -539,9 +718,9 @@ export function AskCard({
       {hasUrgencyNotch ? (
         <span
           aria-hidden="true"
-          className={`absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${surfaceBg} ${URGENCY_NOTCH_TEXT[displayedAsk.urgency]}`}
+          className={`absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${surfaceBg} ${URGENCY_NOTCH_TEXT[urgency]}`}
         >
-          {URGENCY_LABELS[displayedAsk.urgency].toUpperCase()}
+          {URGENCY_LABELS[urgency].toUpperCase()}
         </span>
       ) : null}
       <AskAnchorHeader ask={displayedAsk} inBlock={inBlock} quoteSpacing="roomy" tone="surface" />
@@ -567,7 +746,7 @@ export function AskCard({
         ) : null}
         {inBlock ? null : (
           <div className={`text-[15px] leading-relaxed font-medium ${textPrimaryOnSurface}`}>
-            <MarkdownBody markdown={displayedAsk.question} />
+            <MarkdownBody markdown={displayedAsk.question} source={source} />
           </div>
         )}
         {/* A request to approve again names the approval it follows, under the question (the
@@ -666,6 +845,15 @@ export function AskCard({
             </span>
           )}
         </div>
+        {/* Whose question it is now, and the one control that hands it to somebody else. An
+            ask that is not open waits on nobody, so it has none: a card whose ask is answered,
+            resolved or withdrawn draws its record instead, and the one case that reaches here
+            is a reader changing the answer of a closed ask. The ask is the fresher read and
+            the issue is the card's own prop: only an Inbox row carries one, and the ask reads
+            do not. */}
+        {displayedAsk.state === "open" ? (
+          <AskHandOn ask={displayedAsk} assignee={ask.issue?.assignee ?? null} />
+        ) : null}
         <AskEditHistory ask={displayedAsk} edits={edits} />
         {referencedByNode}
       </div>
@@ -675,12 +863,14 @@ export function AskCard({
           answer again; your draft text is still here.
         </p>
       ) : null}
-      {threadNode}
+      {/* The options and the answer box sit where the order puts a thread's reply box: under
+          the question in Newest first, at the foot of the card in Oldest first. */}
+      {answerFirst ? null : threadNode}
       <form className="mt-3 space-y-3" onSubmit={submit} ref={trackForm}>
-        {displayedAsk.options.length === 0 ? null : (
+        {(displayedAsk.options ?? []).length === 0 ? null : (
           <fieldset className="min-w-0 space-y-2">
             <legend className="sr-only">Answer options</legend>
-            {displayedAsk.options.map((option) => (
+            {(displayedAsk.options ?? []).map((option) => (
               <AskChoiceRow
                 checked={selected.includes(option.label)}
                 disabled={isSubmitting}
@@ -766,6 +956,12 @@ export function AskCard({
           />
         ) : null}
       </form>
+      {/* The person's way out of a question they will not answer, under the form that answers
+          it. An approval request draws none: it is answered with Approve or Request changes. */}
+      {displayedAsk.state === "open" && displayedAsk.kind === "question" ? (
+        <DeclineControl ask={displayedAsk} decline={decline} onDeclined={onAnswered} />
+      ) : null}
+      {answerFirst ? threadNode : null}
       <AskRecipients
         askId={displayedAsk.id}
         claimant={threadQuery.data?.claimant ?? null}

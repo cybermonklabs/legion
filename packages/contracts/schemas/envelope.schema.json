@@ -24,6 +24,8 @@
     "dedupe_key": { "type": "string", "minLength": 1 },
     "issued_at": { "type": "integer" },
     "expires_at": { "type": "integer" },
+    "kept_at": { "type": "integer" },
+    "mention_dedupe_keys": { "type": "object", "additionalProperties": { "type": "string" } },
     "payload_summary": { "type": "string", "minLength": 1 },
     "payload_ref": { "type": "string" },
     "payload": { "type": "string" },
@@ -50,8 +52,8 @@
       "enum": ["low", "med", "high", "blocking"]
     },
     "expects_reply": {
-      "type": "string",
-      "enum": ["none", "optional", "required"]
+      "enum": [false, "optional", "required"],
+      "x-go-type": "ExpectsReply"
     }
   },
   "additionalProperties": false

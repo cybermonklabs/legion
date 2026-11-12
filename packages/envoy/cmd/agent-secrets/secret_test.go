@@ -390,7 +390,8 @@ func TestSecretAcceptsLoopbackHTTPBrokerURL(t *testing.T) {
 
 // TestSecretCreateResolvesOwnerMeFromTheSessionName: --owner me is the sign-in's session name, the
 // person's email, lowercased; the secret is created on the broker's key with the value read from
-// standard input less its one trailing newline, and the broker is asked to serve it.
+// standard input less its trailing line ending (the shape rule,
+// TestTheValueReaderRemovesATrailingLineEndingBeforeItStores), and the broker is asked to serve it.
 func TestSecretCreateResolvesOwnerMeFromTheSessionName(t *testing.T) {
 	local := secrets.NewLocal()
 	broker := startSecretBroker(t, servedBy(local))
@@ -475,6 +476,81 @@ func TestSecretFormsRefuseBadUsageWithExitTwo(t *testing.T) {
 				t.Fatalf("a usage error wrote %d secrets", len(out.SecretList))
 			}
 		})
+	}
+}
+
+// TestTheValueReaderRemovesATrailingLineEndingBeforeItStores: the value a write pipes in is
+// stored as the broker's own shape rule reads it (policy.TrimForShape), so a value stored
+// through this client and a value stored by any other writer are spent alike: a one-line
+// credential loses its whole trailing run of carriage returns and line feeds, however many and
+// in whichever order, rather than keeping a carriage return an editor or a shell left behind.
+// Where the rule changes nothing — a document, whose every byte is part of it, and a value that
+// holds a line ending inside it — one final line feed goes, which is what this reader has always
+// removed. A value that is only line endings is not emptied by the rule, so it keeps every line
+// feed but the last, and a single one of them is refused as an empty value.
+func TestTheValueReaderRemovesATrailingLineEndingBeforeItStores(t *testing.T) {
+	const pem = "-----BEGIN KEY-----\nabc\n-----END KEY-----\n"
+	for _, tc := range []struct {
+		name, piped, shape, stored, refusal string
+	}{
+		{name: "token-and-a-line-feed", piped: "tok\n", stored: "tok"},
+		{name: "token-and-a-carriage-return-and-a-line-feed", piped: "tok\r\n", stored: "tok"},
+		{name: "token-and-a-carriage-return", piped: "tok\r", stored: "tok"},
+		{name: "token-and-two-line-feeds", piped: "tok\n\n", stored: "tok"},
+		{name: "a-pem-document", piped: pem, stored: "-----BEGIN KEY-----\nabc\n-----END KEY-----"},
+		{name: "one-line-feed-alone", piped: "\n", refusal: "standard input, which was empty"},
+		{name: "two-line-feeds", piped: "\n\n", stored: "\n"},
+		// An owner who declared the secret a document asked for its bytes to be kept, so only
+		// the one final line feed goes and the carriage return before it stays.
+		{name: "a-document-token-and-a-carriage-return-and-a-line-feed", piped: "tok\r\n", shape: policy.ShapeDocument, stored: "tok\r"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			local := secrets.NewLocal()
+			startSecretBroker(t, servedBy(local))
+			useAWS(t, local, testAccount, adaSignIn)
+			useStdin(t, tc.piped)
+			args := []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}
+			if tc.shape != "" {
+				args = append(args, "--shape", tc.shape)
+			}
+			_, stderr, code := runSecret(args...)
+			if tc.refusal != "" {
+				if code != exitUsageError || !strings.Contains(stderr, tc.refusal) {
+					t.Fatalf("exit %d, stderr %q; want %d naming %q", code, stderr, exitUsageError, tc.refusal)
+				}
+				if out, _ := local.ListSecrets(context.Background(), &secretsmanager.ListSecretsInput{}); len(out.SecretList) != 0 {
+					t.Fatalf("a refused value wrote %d secrets", len(out.SecretList))
+				}
+				return
+			}
+			if code != 0 {
+				t.Fatalf("create: exit %d, stderr %q", code, stderr)
+			}
+			if v := valueOf(t, local, "NEW_KEY"); v != tc.stored {
+				t.Fatalf("stored %q, want %q", v, tc.stored)
+			}
+		})
+	}
+}
+
+// TestSecretSetReadsTheSecretsOwnShape: a set names no tag, so it reads the shape the secret
+// already carries and stores the value under it. The value is one line, a carriage return and a
+// line feed: under the document reading the carriage return stays and only the final line feed
+// goes, while the untagged reading would store the line alone, so the test fails if the set
+// stores the value under no shape at all.
+func TestSecretSetReadsTheSecretsOwnShape(t *testing.T) {
+	const piped, want = "tok\r\n", "tok\r"
+	wholeFile := policytest.Secret("DOCUMENT_KEY", "ada@example.com", policy.TierAgent, "old")
+	wholeFile.Tags[policy.TagShape] = policy.ShapeDocument
+	local := secrets.NewLocal(wholeFile)
+	startSecretBroker(t, servedBy(local))
+	useAWS(t, local, testAccount, adaSignIn)
+	useStdin(t, piped)
+	if _, stderr, code := runSecret("set", "DOCUMENT_KEY"); code != 0 {
+		t.Fatalf("set: exit %d, stderr %q", code, stderr)
+	}
+	if v := valueOf(t, local, "DOCUMENT_KEY"); v != want {
+		t.Fatalf("stored %q, want %q", v, want)
 	}
 }
 
@@ -910,7 +986,7 @@ func TestSecretListShowsValueAndDeletion(t *testing.T) {
 	}
 	rows := map[string][]string{}
 	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
-	if got := strings.Fields(lines[0]); strings.Join(got, " ") != "NAME OWNER TIER KIND MAX_GRANT DEFAULT_GRANT VALUE DELETED EARLIEST_PURGE" {
+	if got := strings.Fields(lines[0]); strings.Join(got, " ") != "NAME OWNER TIER KIND SHAPE MAX_GRANT DEFAULT_GRANT VALUE DELETED EARLIEST_PURGE" {
 		t.Fatalf("header = %q", lines[0])
 	}
 	for _, line := range lines[1:] {
@@ -918,10 +994,10 @@ func TestSecretListShowsValueAndDeletion(t *testing.T) {
 		rows[fields[0]] = fields
 	}
 	want := map[string][]string{
-		"EMPTY_KEY":    {"EMPTY_KEY", "shared", "agent", "-", "-", "-", "no", "-", "-"},
-		"GONE_KEY":     {"GONE_KEY", "ada@example.com", "agent", "-", "-", "-", "yes", "2026-10-01T12:00:00Z", "2026-10-08T12:00:00Z"},
-		"LIVE_KEY":     {"LIVE_KEY", "ada@example.com", "human", "-", "-", "session", "yes", "-", "-"},
-		"UNTAGGED_KEY": {"UNTAGGED_KEY", "-", "-", "-", "-", "-", "yes", "-", "-"},
+		"EMPTY_KEY":    {"EMPTY_KEY", "shared", "agent", "-", "-", "-", "-", "no", "-", "-"},
+		"GONE_KEY":     {"GONE_KEY", "ada@example.com", "agent", "-", "-", "-", "-", "yes", "2026-10-01T12:00:00Z", "2026-10-08T12:00:00Z"},
+		"LIVE_KEY":     {"LIVE_KEY", "ada@example.com", "human", "-", "-", "-", "session", "yes", "-", "-"},
+		"UNTAGGED_KEY": {"UNTAGGED_KEY", "-", "-", "-", "-", "-", "-", "yes", "-", "-"},
 	}
 	if len(rows) != len(want) {
 		t.Fatalf("rows = %v, want exactly %v", rows, want)
@@ -1005,8 +1081,9 @@ func TestEarliestPurgeIsTheOnePlaceDeletedDateIsRead(t *testing.T) {
 	}
 }
 
-// TestSecretShowNeverPrintsTheValue: show prints a secret's owner, tier, dates and versions, a
-// date Secrets Manager answers none for as absent, and never the value, as text or as JSON.
+// TestSecretShowNeverPrintsTheValue: show prints a secret's name, secret name, owner, tier,
+// requesters, created and last-changed times and versions, a field the secret holds none of as
+// "-", no deletion for a secret not scheduled for one, and never the value, as text or as JSON.
 func TestSecretShowNeverPrintsTheValue(t *testing.T) {
 	const value = "show-must-not-print-this"
 	local := secrets.NewLocal(policytest.Secret("SHOWN_KEY", "ada@example.com", policy.TierHuman, value))
@@ -1018,7 +1095,7 @@ func TestSecretShowNeverPrintsTheValue(t *testing.T) {
 	}
 	for _, want := range []string{
 		"name: SHOWN_KEY\n", "secret_name: " + policytest.ID("SHOWN_KEY") + "\n",
-		"owner: ada@example.com\n", "tier: human\n", "created: -\n", "last_changed: -\n",
+		"owner: ada@example.com\n", "tier: human\n", "requesters: -\n", "created: -\n", "last_changed: -\n",
 		"version: local-current AWSCURRENT\n",
 	} {
 		if !strings.Contains(stdout, want) {
@@ -1039,6 +1116,100 @@ func TestSecretShowNeverPrintsTheValue(t *testing.T) {
 	}
 	if _, _, code := runSecret("show", "MISSING_KEY"); code != 1 {
 		t.Fatalf("show of a secret Secrets Manager does not hold: exit %d, want 1", code)
+	}
+}
+
+// TestSecretShowAndListPrintTheShape: show prints a shape line holding the shape tag the store
+// holds, and "-" for a secret carrying none; list prints the same value in a SHAPE column, since
+// the shape is a one-word tag as the kind, the max grant and the default grant are. Each form's
+// --json carries the tag as the store holds it, "" for a secret carrying none, so a reader of
+// the JSON tells a secret tagged nothing from one tagged a word the broker refuses it for.
+func TestSecretShowAndListPrintTheShape(t *testing.T) {
+	oneLine := policytest.Secret("TOKEN_KEY", "ada@example.com", policy.TierAgent, "tok-abc")
+	oneLine.Tags[policy.TagShape] = policy.ShapeToken
+	wholeFile := policytest.Secret("DOCUMENT_KEY", "ada@example.com", policy.TierAgent, "-----BEGIN KEY-----\n")
+	wholeFile.Tags[policy.TagShape] = policy.ShapeDocument
+	untagged := policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "v1")
+	local := secrets.NewLocal(oneLine, wholeFile, untagged)
+	startSecretBroker(t, servedBy(local))
+	useAWS(t, local, testAccount, adaSignIn)
+
+	for _, tc := range []struct{ name, stored, printed string }{
+		{"TOKEN_KEY", policy.ShapeToken, policy.ShapeToken},
+		{"DOCUMENT_KEY", policy.ShapeDocument, policy.ShapeDocument},
+		{"PLAIN_KEY", "", "-"},
+	} {
+		stdout, stderr, code := runSecret("show", tc.name)
+		if code != 0 {
+			t.Fatalf("show %s: exit %d, stderr %q", tc.name, code, stderr)
+		}
+		if want := "shape: " + tc.printed + "\n"; !strings.Contains(stdout, want) {
+			t.Fatalf("show %s stdout %q must contain %q", tc.name, stdout, want)
+		}
+		jsonOut, stderr, code := runSecret("show", tc.name, "--json")
+		if code != 0 {
+			t.Fatalf("show %s --json: exit %d, stderr %q", tc.name, code, stderr)
+		}
+		var view struct {
+			Shape string `json:"shape"`
+		}
+		if err := json.Unmarshal([]byte(jsonOut), &view); err != nil {
+			t.Fatalf("show %s --json is not a secret: %v: %s", tc.name, err, jsonOut)
+		}
+		if view.Shape != tc.stored {
+			t.Fatalf("show %s --json shape = %q, want the tag the store holds, %q", tc.name, view.Shape, tc.stored)
+		}
+	}
+
+	stdout, stderr, code := runSecret("list")
+	if code != 0 {
+		t.Fatalf("list: exit %d, stderr %q; want 0", code, stderr)
+	}
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	header := strings.Fields(lines[0])
+	column := -1
+	for i, name := range header {
+		if name == "SHAPE" {
+			column = i
+		}
+	}
+	if column < 0 {
+		t.Fatalf("list header = %q, want a SHAPE column", lines[0])
+	}
+	shapes := map[string]string{}
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		shapes[fields[0]] = fields[column]
+	}
+	want := map[string]string{"TOKEN_KEY": policy.ShapeToken, "DOCUMENT_KEY": policy.ShapeDocument, "PLAIN_KEY": "-"}
+	if len(shapes) != len(want) {
+		t.Fatalf("list SHAPE column = %v, want exactly %v", shapes, want)
+	}
+	for name, shape := range want {
+		if shapes[name] != shape {
+			t.Fatalf("list %s SHAPE = %q, want %q", name, shapes[name], shape)
+		}
+	}
+
+	stdout, stderr, code = runSecret("list", "--json")
+	if code != 0 {
+		t.Fatalf("list --json: exit %d, stderr %q", code, stderr)
+	}
+	var views []struct {
+		Name  string `json:"name"`
+		Shape string `json:"shape"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &views); err != nil {
+		t.Fatalf("list --json is not a JSON array of secrets: %v: %s", err, stdout)
+	}
+	stored := map[string]string{"TOKEN_KEY": policy.ShapeToken, "DOCUMENT_KEY": policy.ShapeDocument, "PLAIN_KEY": ""}
+	if len(views) != len(stored) {
+		t.Fatalf("list --json = %s, want one row per secret", stdout)
+	}
+	for _, v := range views {
+		if v.Shape != stored[v.Name] {
+			t.Fatalf("list --json %s shape = %q, want the tag the store holds, %q", v.Name, v.Shape, stored[v.Name])
+		}
 	}
 }
 

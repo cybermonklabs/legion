@@ -73,6 +73,8 @@ var settingsEmitted = map[string]string{
 	"Config.LaunchFailureLimit":                      "launch_failure_limit",
 	"Config.PromptFailureLimit":                      "prompt_failure_limit",
 	"Config.PromptRetireLimit":                       "prompt_retire_limit",
+	"Config.WorkerWakesPerMinute":                    "worker_wakes_per_minute",
+	"Config.WorkerWakeBurst":                         "worker_wake_burst",
 	"Config.EnvoyURL":                                "envoy_url",
 	"Config.NatsURLs":                                "nats_urls",
 	"Config.DispatchURL":                             "dispatch_url",
@@ -83,12 +85,14 @@ var settingsEmitted = map[string]string{
 	"Config.ProductionCheckBound":                    "production_check_hours",
 	"Config.PodUpdateRetask":                         "pod_update_retask_hours",
 	"Config.PodUpdateNotice":                         "pod_update_notice_hours",
+	"Config.PodUpdateMaxOpenRounds":                  "pod_update_max_open_rounds",
+	"Config.PodUpdateRoundsPerMinute":                "pod_update_rounds_per_minute",
 	"Config.ReviewRoundCap":                          "review_round_cap",
-	"Config.MaxFixAttempts":                          "max_fix_attempts",
 	"Config.ControllerLaunch":                        "controller",
 	"Config.Capabilities":                            "capabilities",
 	"Config.WorkerBackends":                          "worker_backends",
 	"Config.RoleConfigFiles":                         "role_config_files",
+	"Config.WorkerStallBackstops":                    "worker_stall_backstop_hours",
 	"Config.RepositoryRenames":                       "repository_renames",
 	"Runtime.Name":                                   "runtime.name",
 	"Runtime.Kubernetes":                             "runtime.kubernetes",
@@ -106,8 +110,12 @@ var settingsEmitted = map[string]string{
 	"Kubernetes.SessionStore":                        "runtime.kubernetes.session_store (the kind alone: neither the Secret key nor the instance and login behind it is emitted)",
 	"Kubernetes.Plugins":                             "runtime.kubernetes.plugins",
 	"Kubernetes.Setup":                               "runtime.kubernetes.setup",
+	"Kubernetes.SkillsRepository":                    "runtime.kubernetes.skills_repository",
 	"Kubernetes.TestPostgres":                        "runtime.kubernetes.test_postgres",
 	"Kubernetes.RepositoryCache":                     "runtime.kubernetes.repository_cache",
+	"Kubernetes.IdleRelease":                         "runtime.kubernetes.idle_release",
+	"IdleReleaseConfig.IdleMinutes":                  "runtime.kubernetes.idle_release.idle_minutes",
+	"IdleReleaseConfig.BackstopMinutes":              "runtime.kubernetes.idle_release.backstop_minutes",
 	"RepositoryCacheConfig.Volume":                   "runtime.kubernetes.repository_cache.volume",
 	"RepositoryCacheConfig.RefreshMinutes":           "runtime.kubernetes.repository_cache.refresh_minutes",
 	"RepositoryCacheConfig.RetainHours":              "runtime.kubernetes.repository_cache.retain_hours",
@@ -136,10 +144,11 @@ var settingsEmitted = map[string]string{
 	"Project.MergeQueueRole":                         "projects.<KEY>.merge_queue_role",
 	"Project.Merge":                                  "projects.<KEY>.merge",
 	"Project.SlackChannels":                          "projects.<KEY>.slack_channels",
-	"Project.Deploys":                                "projects.<KEY>.deploys",
-	"Deploy.Repo":                                    "projects.<KEY>.deploys[].repo",
-	"Deploy.Workflow":                                "projects.<KEY>.deploys[].workflow",
-	"Deploy.Step":                                    "projects.<KEY>.deploys[].step",
+	"Project.Memory":                                 "projects.<KEY>.memory",
+	"Project.ProductionCheck":                        "projects.<KEY>.production_check",
+	"Memory.Mode":                                    "projects.<KEY>.memory.mode",
+	"Memory.ConfigFiles":                             "projects.<KEY>.memory.config_files",
+	"Memory.InstructionsPath":                        "projects.<KEY>.memory.instructions",
 	"MergeRules.ByHand":                              "projects.<KEY>.merge.by_hand",
 	"PathPattern.Expression":                         "projects.<KEY>.merge.by_hand[]",
 	"Gates.Design":                                   "gates.design",
@@ -148,33 +157,48 @@ var settingsEmitted = map[string]string{
 	"GitHubApp.AppID":                                "github_apps.<app>.app_id",
 	"GitHubApp.Installations":                        "github_apps.<app>.installations",
 	"Capabilities.Decided":                           "capabilities.decided",
+	"Config.Hooks":                                   "hooks",
+	"Hook.Name":                                      "hooks[].name",
+	"Hook.On":                                        "hooks[].on",
+	"Hook.Moves":                                     "hooks[].moves (`any` for a hook that selects every move back)",
+	"Hook.Every":                                     "hooks[].every",
+	"Hook.Roles":                                     "hooks[].roles",
+	"Hook.PromptFile":                                "hooks[].prompt_file (the path alone, never the words the file holds)",
 }
 
 // settingsExcluded is every config field SettingsOf leaves out, by `<Type>.<Field>`, and why: a
-// credential, the source of one, the path of a file holding one, the operator's pod pieces, or a
-// derived value that is no setting.
+// credential, the source of one, the path of a file holding one, the operator's pod pieces, a
+// deployment's own repositories, or a derived value that is no setting.
 var settingsExcluded = map[string]string{
-	"Config.PostgresDSN":            "a credential: a DSN carries its password",
-	"GitHubApp.PrivateKey":          "a credential: Config holds the PEM resolved whatever the file's source",
-	"GitHubApp.PrivateKeyCommand":   "the source of a credential",
-	"GitHubApp.PrivateKeySecret":    "the source of a credential",
-	"ProviderKey.Secret":            "the source of a credential: a secretsd key or a providers Secret key",
-	"ProviderKey.File":              "the path of a file holding a credential",
-	"Config.OperatorTokenFile":      "the path of a file holding a credential",
-	"Config.EnvoyTokenFile":         "the path of a file holding a credential",
-	"Config.NatsNkeySeedFile":       "the path of a file holding a credential",
-	"Config.NatsDaemonNkeySeedFile": "the path of a file holding a credential",
-	"Config.DispatchTokenFile":      "the path of a file holding a credential",
-	"AgentSecretsConfig.TokenFile":  "the path of a file holding a credential: the daemon's own broker login token",
-	"Kubernetes.Kubeconfig":         "the daemon's cluster credential file",
-	"Kubernetes.Context":            "the context inside the daemon's cluster credential file",
-	"Kubernetes.Pod":                "not a daemon setting: the operator's pod pieces, which every pod reads from its own spec and whose lists are Kubernetes API types with no legion.yaml-shaped rendering",
-	"PodConfig.Env":                 "runtime.kubernetes.pod: the operator's free text, delivered to every pod's spec",
-	"PodConfig.Volumes":             "runtime.kubernetes.pod: Kubernetes API types naming the operator's Secrets, ConfigMaps, claims and NFS exports",
-	"PodConfig.VolumeMounts":        "runtime.kubernetes.pod: Kubernetes API types",
-	"PodConfig.ServiceAccount":      "runtime.kubernetes.pod: the operator's ServiceAccount, which every pod runs as and reads from its own spec",
-	"Kubernetes.PluginsFromBinary":  "derived: where the settled plugins pair came from, not a setting",
-	"PathPattern.Regexp":            "compiled from Expression, not a setting",
+	"Config.PostgresDSN":              "a credential: a DSN carries its password",
+	"GitHubApp.PrivateKey":            "a credential: Config holds the PEM resolved whatever the file's source",
+	"GitHubApp.PrivateKeyCommand":     "the source of a credential",
+	"GitHubApp.PrivateKeySecret":      "the source of a credential",
+	"GitHubApp.TokenCommand":          "the source of a credential: the command that prints the App's installation tokens",
+	"ProviderKey.Secret":              "the source of a credential: a secretsd key or a providers Secret key",
+	"ProviderKey.File":                "the path of a file holding a credential",
+	"Config.OperatorTokenFile":        "the path of a file holding a credential",
+	"Config.EnvoyTokenFile":           "the path of a file holding a credential",
+	"Config.NatsNkeySeedFile":         "the path of a file holding a credential",
+	"Config.NatsDaemonNkeySeedFile":   "the path of a file holding a credential",
+	"Config.DispatchTokenFile":        "the path of a file holding a credential",
+	"AgentSecretsConfig.TokenFile":    "the path of a file holding a credential: the daemon's own broker login token",
+	"Kubernetes.Kubeconfig":           "the daemon's cluster credential file",
+	"Kubernetes.Context":              "the context inside the daemon's cluster credential file",
+	"Kubernetes.Pod":                  "not a daemon setting: the operator's pod pieces, which every pod reads from its own spec and whose lists are Kubernetes API types with no legion.yaml-shaped rendering",
+	"PodConfig.Env":                   "runtime.kubernetes.pod: the operator's free text, delivered to every pod's spec",
+	"PodConfig.Volumes":               "runtime.kubernetes.pod: Kubernetes API types naming the operator's Secrets, ConfigMaps, claims and NFS exports",
+	"PodConfig.VolumeMounts":          "runtime.kubernetes.pod: Kubernetes API types",
+	"PodConfig.ServiceAccount":        "runtime.kubernetes.pod: the operator's ServiceAccount, which every pod runs as and reads from its own spec",
+	"Kubernetes.PluginsFromBinary":    "derived: where the settled plugins pair came from, not a setting",
+	"PathPattern.Regexp":              "compiled from Expression, not a setting",
+	"Config.Warnings":                 "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `--check-config` prints",
+	"Project.CommitIssueTrailerRepos": "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
+	"Config.StallLimits":              "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
+	"StallLimits.CallBound":           "derived: LEGION_STALL_CALL_BOUND_MS in the daemon's environment, not a legion.yaml key",
+	"StallLimits.CallGrace":           "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",
+	"StallLimits.Step":                "derived: LEGION_STALL_STEP_MS in the daemon's environment, not a legion.yaml key",
+	"Hook.Prompt":                     "the words a hook puts in front of its roles, which the deployment writes for its own agents and no pod needs to read from a route that authenticates nobody; `hooks[].prompt_file` carries the path of the file the other form holds them in, as `instructions` carries a path and never its text",
 }
 
 // Every exported field of every struct the walk reaches (settingsConfigTypes) is named in exactly
@@ -249,8 +273,21 @@ var settingsFixturePlanted = []string{
 
 // settingsForbiddenKeys are the legion.yaml keys that never appear in `settings`, at any depth.
 var settingsForbiddenKeys = []string{
-	"postgres_dsn", "private_key", "private_key_command", "private_key_secret",
+	"postgres_dsn", "private_key", "private_key_command", "private_key_secret", "token_command",
 	"kubeconfig", "context", "session_dsn_secret", "session_database", "pod", "env", "volumes", "volume_mounts", "service_account",
+	// A hook's own words, which the settings leave out whichever key the file writes them in.
+	"prompt",
+}
+
+// settingsPathKeys are the `*_file` keys the settings do carry, each by the whole path it stands
+// under: a `_file` key is a credential's file by the loader's own naming everywhere else, and the
+// rule below reads the suffix, so each key that is a path of something else is named here with
+// the reason it is no credential. The path and not the key alone, so the exemption covers the one
+// block that earned it and a `prompt_file` grown anywhere else is still refused. The fixture
+// carries each of these paths, which the rule below holds it to: an exemption no document
+// exercises is an exemption nobody has read.
+var settingsPathKeys = map[string]string{
+	"settings.hooks[].prompt_file": "the file a hook's words are read from, the deployment's own prose for its agents, carried as a path exactly as `instructions` is",
 }
 
 // The maximal kubernetes file resolves to a settings block whose top-level, runtime.kubernetes and
@@ -271,21 +308,27 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 		"worker_boot_timeout_seconds", "worker_rpc_timeout_seconds", "worker_stop_timeout_seconds",
 		"tree_stop_timeout_seconds", "slow_command_timeout_seconds", "probe_interval_seconds",
 		"controller_wake_interval_seconds", "worker_boot_registration_deadline_intervals",
-		"launch_failure_limit", "prompt_failure_limit", "prompt_retire_limit", "envoy_url", "nats_urls",
+		"launch_failure_limit", "prompt_failure_limit", "prompt_retire_limit",
+		"worker_wakes_per_minute", "worker_wake_burst", "envoy_url", "nats_urls",
 		"dispatch_url", "projects", "gates", "github_apps", "linger_hours", "production_check_hours",
-		"pod_update_retask_hours", "pod_update_notice_hours", "review_round_cap",
-		"max_fix_attempts", "controller", "capabilities", "worker_backends", "role_config_files", "repository_renames",
+		"pod_update_retask_hours", "pod_update_notice_hours", "pod_update_max_open_rounds",
+		"pod_update_rounds_per_minute", "review_round_cap",
+		"controller", "capabilities", "worker_backends", "role_config_files", "repository_renames",
+		"hooks",
 	}
 	top := keysOf(t, encoded)
 	assertKeys(t, "settings", top, wantTop)
 
-	// (b) runtime.kubernetes, and one App.
+	// (b) runtime.kubernetes, one project, and one App.
 	runtimeKeys := keysOf(t, top["runtime"])
 	assertKeys(t, "settings.runtime", runtimeKeys, []string{"name", "kubernetes"})
 	kubernetesKeys := keysOf(t, runtimeKeys["kubernetes"])
 	assertKeys(t, "settings.runtime.kubernetes", kubernetesKeys, []string{
 		"namespace", "image", "storage_class", "issue_volume", "scheduling", "resources", "session_store",
-		"agent_secrets", "plugins", "setup", "test_postgres", "repository_cache",
+		"agent_secrets", "plugins", "setup", "skills_repository", "test_postgres", "repository_cache", "idle_release",
+	})
+	assertKeys(t, "settings.runtime.kubernetes.idle_release", keysOf(t, kubernetesKeys["idle_release"]), []string{
+		"idle_minutes", "backstop_minutes",
 	})
 	assertKeys(t, "settings.runtime.kubernetes.repository_cache", keysOf(t, kubernetesKeys["repository_cache"]), []string{
 		"volume", "refresh_minutes", "retain_hours", "resources",
@@ -293,6 +336,11 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	apps := keysOf(t, top["github_apps"])
 	assertKeys(t, "settings.github_apps", apps, []string{"implement", "review"})
 	assertKeys(t, "settings.github_apps.implement", keysOf(t, apps["implement"]), []string{"app_id", "installations"})
+	projects := keysOf(t, top["projects"])
+	assertKeys(t, "settings.projects", projects, []string{"LEGION", "WIDGETS"})
+	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
+		"merge_queue_role", "merge", "slack_channels", "memory", "production_check", "deploys",
+	})
 
 	// (c) Nothing planted reaches the wire, and no key of a credential's shape does either.
 	for _, planted := range settingsFixturePlanted {
@@ -307,14 +355,24 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	if err := json.Unmarshal(encoded, &document); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
+	exercised := map[string]bool{}
 	for _, key := range everyKey(document, "settings") {
+		if _, path := settingsPathKeys[key]; path {
+			exercised[key] = true
+			continue
+		}
 		name := key[strings.LastIndex(key, ".")+1:]
 		if slices.Contains(settingsForbiddenKeys, name) || strings.HasSuffix(name, "_file") {
 			t.Errorf("settings carry the key %s", key)
 		}
 	}
+	for path := range settingsPathKeys {
+		if !exercised[path] {
+			t.Errorf("the fixture carries no %s, so the exemption for it is never read: set the key in settingsFixtureFile or drop the exemption", path)
+		}
+	}
 
-	// (d) No null anywhere: the plugin's strict reader refuses one.
+	// (d) No null anywhere: the plugin's reader refuses one.
 	if bytes.Contains(encoded, []byte("null")) {
 		t.Errorf("settings carry null: %s", encoded)
 	}
@@ -333,6 +391,14 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	if settings.Projects["WIDGETS"].MergeQueueRole != "merge-queue" {
 		t.Errorf("projects = %+v, want WIDGETS's merge queue role", settings.Projects)
 	}
+	// The project that names no `production_check` shows the default role, and the one that turns
+	// the check off shows that word, never the empty string the role takes for off.
+	if got := settings.Projects["LEGION"].ProductionCheck; got != "tester" {
+		t.Errorf("projects.LEGION.production_check = %q, want tester, which a project that names no key gets", got)
+	}
+	if got := settings.Projects["WIDGETS"].ProductionCheck; got != "off" {
+		t.Errorf("projects.WIDGETS.production_check = %q, want the file's off as the word", got)
+	}
 	if settings.ProductionCheckHours != 240 {
 		t.Errorf("production_check_hours = %v, want the file's 240", settings.ProductionCheckHours)
 	}
@@ -344,6 +410,9 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	}
 	if want := []string{"/bin/sh", "-c", "echo fixture-setup"}; !slices.Equal(settings.Runtime.Kubernetes.Setup, want) {
 		t.Errorf("runtime.kubernetes.setup = %q, want %q", settings.Runtime.Kubernetes.Setup, want)
+	}
+	if got := settings.Runtime.Kubernetes.SkillsRepository; got != "acme/agent-skills" {
+		t.Errorf("runtime.kubernetes.skills_repository = %q, want the file's acme/agent-skills", got)
 	}
 	cache := settings.Runtime.Kubernetes.RepositoryCache
 	if cache.Volume != "40Gi" || cache.RefreshMinutes != 15 || cache.RetainHours != 48 || cache.Resources.CPU != "500m" || cache.Resources.CPURequest != "500m" || cache.Resources.Memory != "1Gi" || cache.Resources.EphemeralStorage != "2Gi" {
@@ -361,12 +430,6 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	}
 	if want := []string{"C0123ABCD", "C0123ABCE"}; !slices.Equal(settings.Projects["LEGION"].SlackChannels, want) {
 		t.Errorf("projects.LEGION.slack_channels = %q, want %q", settings.Projects["LEGION"].SlackChannels, want)
-	}
-	if want := []DeploySettings{{Repo: "sjawhar/legion", Workflow: ".github/workflows/release.yaml", Step: "Apply"}}; !slices.Equal(settings.Projects["LEGION"].Deploys, want) {
-		t.Errorf("projects.LEGION.deploys = %+v, want %+v", settings.Projects["LEGION"].Deploys, want)
-	}
-	if deploys := settings.Projects["WIDGETS"].Deploys; deploys == nil || len(deploys) != 0 {
-		t.Errorf("projects.WIDGETS.deploys = %#v, want the empty list a project with no deploy shows", deploys)
 	}
 	if want := map[string]string{"pool-capacity": "the pool is sized by hand for the admission cap"}; !maps.Equal(settings.Capabilities.Decided, want) {
 		t.Errorf("capabilities.decided = %q, want %q", settings.Capabilities.Decided, want)
@@ -425,14 +488,16 @@ func TestPluginSourceOfMasksOnlyTheURLForm(t *testing.T) {
 
 // A tmux file of the three required keys resolves to the defaults, with every optional block
 // absent and every collection empty rather than null; and a key the file sets is the file's.
+// The two pod-update round caps are the one exception: a file that names no limit carries them
+// as null, since an absent key is the one thing no number could say.
 func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 	settings := SettingsOf(minimalSettingsConfig(t))
 	encoded, err := json.Marshal(settings)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if settings.MaxFixAttempts != 3 || settings.WorkerBootTimeoutSeconds != 120 {
-		t.Errorf("max_fix_attempts %d, worker_boot_timeout_seconds %d; want the defaults 3 and 120", settings.MaxFixAttempts, settings.WorkerBootTimeoutSeconds)
+	if settings.ReviewRoundCap != 3 || settings.WorkerBootTimeoutSeconds != 120 {
+		t.Errorf("review_round_cap %d, worker_boot_timeout_seconds %d; want the defaults 3 and 120", settings.ReviewRoundCap, settings.WorkerBootTimeoutSeconds)
 	}
 	if settings.Runtime.Name != "tmux" || settings.Runtime.Kubernetes != nil {
 		t.Errorf("runtime = %+v, want tmux with no kubernetes block", settings.Runtime)
@@ -451,16 +516,165 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 			t.Errorf("%s = %s, want absent", absent, raw)
 		}
 	}
-	if bytes.Contains(encoded, []byte("null")) {
-		t.Errorf("settings carry null: %s", encoded)
+	var document any
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	wantNull := []string{"settings.pod_update_max_open_rounds", "settings.pod_update_rounds_per_minute"}
+	if got := slices.Sorted(slices.Values(nullKeys(document, "settings"))); !slices.Equal(got, wantNull) {
+		t.Errorf("settings carry the null keys %q, want %q and no other: %s", got, wantNull, encoded)
 	}
 	if bytes.Contains(encoded, []byte("postgres://")) || bytes.Contains(encoded, []byte("fixture-dsn-password")) {
 		t.Errorf("settings carry the DSN: %s", encoded)
 	}
 
-	set := SettingsOf(loadSettingsFile(t, minimalSettingsFile+"max_fix_attempts: 5\n"))
-	if set.MaxFixAttempts != 5 {
-		t.Errorf("max_fix_attempts = %d, want the file's 5", set.MaxFixAttempts)
+	set := SettingsOf(loadSettingsFile(t, minimalSettingsFile+"review_round_cap: 5\n"))
+	if set.ReviewRoundCap != 5 {
+		t.Errorf("review_round_cap = %d, want the file's 5", set.ReviewRoundCap)
+	}
+}
+
+// A project's commit_issue_trailer_repos reaches no `settings`, at any depth: the value names a
+// deployment's own repositories, and the route that carries the block authenticates nobody
+// (settingsExcluded). The census above only forces the choice; this pins it, so a later
+// ProjectSettings field would have to be decided here too.
+func TestSettingsOfLeavesOutTheCommitIssueTrailerRepositories(t *testing.T) {
+	const stamped = "acme/stamped"
+	body := strings.Replace(settingsFixtureFile, "  WIDGETS:\n", "  WIDGETS:\n    commit_issue_trailer_repos: ["+stamped+"]\n", 1)
+	if body == settingsFixtureFile {
+		t.Fatal("the fixture's WIDGETS project was not given the key")
+	}
+	cfg := loadSettingsFile(t, body)
+	if got := cfg.Projects["WIDGETS"].CommitIssueTrailerRepos; len(got) != 1 || got[0].String() != stamped {
+		t.Fatalf("the fixture's project carries %v, want %s: the assertions below would prove nothing", got, stamped)
+	}
+	encoded, err := json.Marshal(SettingsOf(cfg))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var document any
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, key := range everyKey(document, "settings") {
+		if strings.HasSuffix(key, ".commit_issue_trailer_repos") {
+			t.Errorf("settings carry the key %s: %s", key, encoded)
+		}
+	}
+	if bytes.Contains(encoded, []byte(stamped)) {
+		t.Errorf("settings carry the configured repository: %s", encoded)
+	}
+}
+
+// The two pod-update round caps ride the settings as the numbers the maximal file names, and as
+// null under the minimal one, which names neither: the key is always on the wire, and its null is
+// how a reader learns the deployment caps nothing. An omitted key would say only that the daemon
+// is too old to know the setting.
+func TestSettingsPodUpdateRounds(t *testing.T) {
+	maximal := SettingsOf(settingsFixtureConfig(t))
+	if maximal.PodUpdateMaxOpenRounds == nil || maximal.PodUpdateRoundsPerMinute == nil {
+		t.Fatalf("pod_update_max_open_rounds = %v, pod_update_rounds_per_minute = %v; want the file's two numbers",
+			maximal.PodUpdateMaxOpenRounds, maximal.PodUpdateRoundsPerMinute)
+	}
+	if *maximal.PodUpdateMaxOpenRounds != 6 || *maximal.PodUpdateRoundsPerMinute != 2 {
+		t.Errorf("pod_update_max_open_rounds = %d, pod_update_rounds_per_minute = %d; want the file's 6 and 2",
+			*maximal.PodUpdateMaxOpenRounds, *maximal.PodUpdateRoundsPerMinute)
+	}
+	encoded, err := json.Marshal(maximal)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for key, want := range map[string]string{"pod_update_max_open_rounds": "6", "pod_update_rounds_per_minute": "2"} {
+		if got := string(keysOf(t, encoded)[key]); got != want {
+			t.Errorf("%s = %s, want %s", key, got, want)
+		}
+	}
+
+	minimal := SettingsOf(minimalSettingsConfig(t))
+	if minimal.PodUpdateMaxOpenRounds != nil || minimal.PodUpdateRoundsPerMinute != nil {
+		t.Errorf("pod_update_max_open_rounds = %v, pod_update_rounds_per_minute = %v; want nil for both, since the file names no limit",
+			minimal.PodUpdateMaxOpenRounds, minimal.PodUpdateRoundsPerMinute)
+	}
+	encoded, err = json.Marshal(minimal)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	top := keysOf(t, encoded)
+	for _, key := range []string{"pod_update_max_open_rounds", "pod_update_rounds_per_minute"} {
+		raw, present := top[key]
+		if !present || string(raw) != "null" {
+			t.Errorf("%s = %s (present: %v), want null, the limit no file named", key, raw, present)
+		}
+	}
+}
+
+// The settings name every hook the daemon runs and no hook's words. A file that writes no
+// `hooks:` key — the minimal one, since the maximal file names a hook of its own — runs the one
+// default hook, which selects every move back: its `moves` is the one-element list `["any"]`,
+// the word the operator writes for that, never the empty list and never a null, and it carries
+// no `prompt_file`, since its words are the daemon's own. A file that names hooks carries each
+// as it wrote it, with `prompt_file` as the path the loader resolved and never the words of
+// either form.
+func TestSettingsOfTheHooksNamesEachHookAndNoWords(t *testing.T) {
+	byDefault := SettingsOf(minimalSettingsConfig(t))
+	want := []HookSettings{{
+		Name:  "work-back",
+		On:    config.HookEventWorkBack,
+		Moves: []string{"any"},
+		Every: 5,
+		Roles: []string{"implementer", "tester", "reviewer"},
+	}}
+	if !reflect.DeepEqual(byDefault.Hooks, want) {
+		t.Errorf("the hooks of a file naming none = %+v, want the one default hook %+v", byDefault.Hooks, want)
+	}
+
+	const promptFile = "/etc/legion/hooks/back-to-implementing.md"
+	const inline = "Read the reviewer's thread before you write anything."
+	named := SettingsOf(loadSettingsFile(t, minimalSettingsFile+`hooks:
+  - name: back-to-implementing
+    on: work_back
+    moves: [reviewing-implementing, testing-implementing]
+    every: 2
+    roles: [implementer]
+    prompt_file: `+promptFile+`
+  - name: stuck
+    on: work_back
+    every: 3
+    roles: [implementer, tester]
+    prompt: `+inline+`
+`))
+	wantNamed := []HookSettings{
+		{
+			Name: "back-to-implementing", On: config.HookEventWorkBack,
+			Moves: []string{"reviewing-implementing", "testing-implementing"}, Every: 2,
+			Roles: []string{"implementer"}, PromptFile: promptFile,
+		},
+		{
+			Name: "stuck", On: config.HookEventWorkBack, Moves: []string{"any"}, Every: 3,
+			Roles: []string{"implementer", "tester"},
+		},
+	}
+	if !reflect.DeepEqual(named.Hooks, wantNamed) {
+		t.Errorf("the hooks of the file = %+v, want %+v", named.Hooks, wantNamed)
+	}
+
+	encoded, err := json.Marshal(named)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	hooks := []json.RawMessage{}
+	if err := json.Unmarshal(keysOf(t, encoded)["hooks"], &hooks); err != nil {
+		t.Fatalf("read the hooks of %s: %v", encoded, err)
+	}
+	if len(hooks) != 2 {
+		t.Fatalf("the wire carries %d hooks, want the file's 2: %s", len(hooks), encoded)
+	}
+	assertKeys(t, "settings.hooks[0]", keysOf(t, hooks[0]), []string{"name", "on", "moves", "every", "roles", "prompt_file"})
+	assertKeys(t, "settings.hooks[1]", keysOf(t, hooks[1]), []string{"name", "on", "moves", "every", "roles"})
+	for _, words := range []string{inline, config.DefaultWorkBackPrompt} {
+		if bytes.Contains(encoded, []byte(words)) {
+			t.Errorf("settings carry a hook's words %q: %s", words, encoded)
+		}
 	}
 }
 
@@ -496,6 +710,27 @@ func everyKey(document any, prefix string) []string {
 	case []any:
 		for _, member := range value {
 			keys = append(keys, everyKey(member, prefix+"[]")...)
+		}
+	}
+	return keys
+}
+
+// nullKeys is every object key under document whose value is null, as a dotted path from prefix:
+// the keys a test holds to the short list the plugin's reader tolerates.
+func nullKeys(document any, prefix string) []string {
+	var keys []string
+	switch value := document.(type) {
+	case map[string]any:
+		for key, member := range value {
+			path := prefix + "." + key
+			if member == nil {
+				keys = append(keys, path)
+			}
+			keys = append(keys, nullKeys(member, path)...)
+		}
+	case []any:
+		for _, member := range value {
+			keys = append(keys, nullKeys(member, prefix+"[]")...)
 		}
 	}
 	return keys

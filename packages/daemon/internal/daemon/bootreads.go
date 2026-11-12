@@ -18,23 +18,26 @@ import (
 type bootReads struct {
 	project, operatorToken, dispatchToken string
 	secrets                               map[string]string
-	paneNatsUser                          string         // the pane seed's user's public key, "" with no pane seed
-	nats                                  natsConnection // the user the daemon's own NATS connection authenticates as
-	instructions                          []byte         // nil when the configuration names none
-	tmux                                  tmuxReads      // runtime: tmux
-	sandbox                               sandboxReads   // runtime: kubernetes
+	paneNatsUser                          string            // the pane seed's user's public key, "" with no pane seed
+	nats                                  natsConnection    // the user the daemon's own NATS connection authenticates as
+	instructions                          []byte            // nil when the configuration names none
+	memoryInstructions                    []byte            // nil when the project's memory block names no instructions file
+	hookPrompts                           map[string]string // the words of each hook whose prompt_file names a file, by hook name; nil while no hook names one
+	tmux                                  tmuxReads         // runtime: tmux
+	sandbox                               sandboxReads      // runtime: kubernetes
 }
 
 // readBoot is every refusal boot makes from the configuration, the daemon's environment (lookup,
 // and getenv for the OMP invocation) and the files they name, writing nothing: the project token,
 // the operator bearer's file, operator configuration colliding with Legion's own
 // (checkOperatorConfig), the launch secrets (readLaunchSecrets), the daemon's own NATS nkey seed
-// (natsauth.DaemonSeed), the instructions file, the Dispatch bearer's file, and the runtime's own
-// reads (readTmux, readSandbox).
+// (natsauth.DaemonSeed), the instructions file, the project's memory instructions file, the file
+// of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch bearer's
+// file, and the runtime's own reads (readTmux, readSandbox).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
 // runtime. prepare runs it first; CheckStart is it for `legion start --check-config`, so the check
 // refuses whatever boot refuses before its first write. What boot does after it is not a check's to
-// do: create the state directory, write the instructions copy and the Dispatch token file, read
+// do: create the state directory, write the instructions copies and the Dispatch token file, read
 // provider keys from secretsd, and run the plugin gate or the image probe.
 func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func(string) string, hostOMP bool, log *slog.Logger) (bootReads, error) {
 	var r bootReads
@@ -69,6 +72,31 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	}
 	if cfg.InstructionsPath != "" {
 		if r.instructions, err = config.ReadDeploymentInstructions(cfg.InstructionsPath); err != nil {
+			return bootReads{}, err
+		}
+	}
+	// Every hook that reads its words from a file rather than writing them in the key, read as
+	// the deployment's instructions are and refused the same way. The engine is given words and
+	// never a path, so a file a hook names is as much a part of boot as the instructions are: a
+	// missing one refuses boot, and `legion start --check-config` with it.
+	for _, hook := range cfg.Hooks {
+		if hook.PromptFile == "" {
+			continue
+		}
+		words, err := config.ReadHookPrompt(hook.Name, hook.PromptFile)
+		if err != nil {
+			return bootReads{}, err
+		}
+		if r.hookPrompts == nil {
+			r.hookPrompts = map[string]string{}
+		}
+		r.hookPrompts[hook.Name] = words
+	}
+	// The project's memory instructions, read as the deployment's are and refused the same way.
+	// The mode does not decide it: a tree already drawn into the memory group is given them
+	// whatever the mode is now, and only removing the key takes them away.
+	if memory := cfg.Projects[cfg.Project].Memory; memory.InstructionsPath != "" {
+		if r.memoryInstructions, err = config.ReadMemoryInstructions(memory.InstructionsPath); err != nil {
 			return bootReads{}, err
 		}
 	}
@@ -162,15 +190,26 @@ func readTmux(cfg config.Config, lookup func(string) (string, bool), getenv func
 	return r, nil
 }
 
-// checkRoleConfigFiles refuses an overlay of role_config_files that is not a file a pane of its
-// role could read, naming the role and the file: a pane's Oh My Pi refuses to start on an overlay
-// it cannot read, and every pane of the daemon runs on this host as this daemon's user. Under
-// kubernetes the files are the pods' mounts', which only the image probe reads.
+// checkRoleConfigFiles refuses an overlay of role_config_files, or of the project's `memory`
+// block, that is not a file a pane that names it could read, naming the key and the file: a
+// pane's Oh My Pi refuses to start on an overlay it cannot read, and every pane of the daemon
+// runs on this host as this daemon's user. Under kubernetes the files are the pods' mounts',
+// which only the image probe reads. The memory overlays are read whatever the project's mode is:
+// a tree already drawn into the memory group names them under any mode, and only removing them
+// from the block takes them away.
 func checkRoleConfigFiles(cfg config.Config) error {
 	for _, role := range config.RoleConfigRoles {
 		for _, file := range cfg.RoleConfigFiles[role] {
 			if err := podsafety.CheckOverlay(file); err != nil {
 				return fmt.Errorf("role_config_files.%s names %s, which the %s's Oh My Pi could not read: %w", role, file, role, err)
+			}
+		}
+	}
+	if memory := cfg.Projects[cfg.Project].Memory; len(memory.ConfigFiles) > 0 {
+		field := "projects." + cfg.Project + ".memory.config_files"
+		for _, file := range memory.ConfigFiles {
+			if err := podsafety.CheckOverlay(file); err != nil {
+				return fmt.Errorf("%s names %s, which a memory-group role's Oh My Pi could not read: %w", field, file, err)
 			}
 		}
 	}

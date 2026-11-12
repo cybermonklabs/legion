@@ -48,12 +48,12 @@ envoy_port=${CLAIMANT_E2E_ENVOY_PORT:-19053}
 
 # A Legion pane exports the real listener (ENVOY_URL), the real Dispatch (DISPATCH_URL,
 # DISPATCH_TOKEN_FILE) and an nkey for the real NATS; nothing this run starts inherits any of it.
-# psql reads PGHOSTADDR, which would replace the URL's host for the reset below while the server,
-# which never reads it, connects to the host the check admitted.
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with them: require_loopback_dsn in
+# scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in
-    DISPATCH_* | ENVOY_* | NATS_* | PGHOSTADDR) unset "$name" ;;
+    DISPATCH_* | ENVOY_* | NATS_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$name" ;;
   esac
 done
 
@@ -87,39 +87,17 @@ trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
 
-# port_answers PORT succeeds when something accepts a connection on 127.0.0.1:PORT.
-port_answers() {
-  (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
-}
-
 begin prerequisites
 [ -n "$database_url" ] ||
   fail "DATABASE_URL is required: it names a loopback PostgreSQL database this run resets (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable)"
-# The host of postgres://[user[:password]@]host[:port]/database[?params]: the run drops the
-# database's public schema, so it must be this machine's, as the dev sign-in the server runs with
-# also insists. A host given by a parameter, or several hosts, are refused rather than parsed.
+for tool in go bun curl psql openssl python3; do
+  command -v "$tool" >/dev/null || fail "$tool is not on PATH"
+done
 case "$database_url" in
   postgres://* | postgresql://*) ;;
   *) fail "DATABASE_URL must be a postgres:// or postgresql:// URL" ;;
 esac
-authority=${database_url#*://}
-authority=${authority%%[/?]*}
-hostport=${authority##*@}
-if [[ "$hostport" == \[* ]]; then
-  db_host=${hostport#\[}
-  db_host=${db_host%%\]*}
-else
-  db_host=${hostport%%:*}
-fi
-case "$db_host" in
-  127.0.0.1 | localhost | ::1) ;;
-  *) fail "DATABASE_URL must name 127.0.0.1, localhost or ::1, not '$db_host': this run resets the database" ;;
-esac
-[[ "$database_url" != *[?\&]host=* && "$database_url" != *[?\&]hostaddr=* ]] ||
-  fail "DATABASE_URL must not name its host in a parameter"
-for tool in go bun curl psql openssl; do
-  command -v "$tool" >/dev/null || fail "$tool is not on PATH"
-done
+require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
 if [ -n "$dispatch_bin" ]; then
   [ -x "$dispatch_bin" ] || fail "DISPATCH_BIN=$dispatch_bin is not an executable file"
 fi

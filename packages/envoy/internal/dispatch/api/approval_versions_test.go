@@ -928,7 +928,12 @@ func eventDeliveries(t *testing.T, database *store.Store, eventType, id string) 
 	go func() {
 		defer close(stopped)
 		outbox.New(outbox.Deps{
-			Store: database, Publisher: acceptingPublisher{}, Broker: events.NewBroker(), Listen: database.Pool.Listener,
+			Store: database, Publisher: acceptingPublisher{}, Broker: events.NewBroker(),
+			Listen: database.Pool.Listener,
+			// No role is claimed here, so a role route counts as reached with nothing sent and the
+			// role's topic is what the event records (unclaimedRoles). An outbox with no reader at
+			// all leaves every role route pending, which would leave a routed event unpublished.
+			RoleClaims: unclaimedRoles{}, Sessions: unclaimedRoles{},
 		}).Run(ctx)
 	}()
 	defer func() {
@@ -982,6 +987,12 @@ func (acceptingPublisher) PublishAsync(contracts.Envelope) <-chan error {
 }
 
 func (acceptingPublisher) Request(string, contracts.Envelope, bus.RequestOptions) <-chan error {
+	accepted := make(chan error, 1)
+	accepted <- nil
+	return accepted
+}
+
+func (acceptingPublisher) PublishStoredAsync(string, contracts.Envelope, string) <-chan error {
 	accepted := make(chan error, 1)
 	accepted <- nil
 	return accepted

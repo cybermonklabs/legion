@@ -101,8 +101,11 @@ func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener
 		return nil, fmt.Errorf("sandboxOptions: %w", err)
 	}
 	opts.Agent = controllerSweepKindStub
-	owners := func() []string { return nil }
-	return sandboxRuntime(rc, opts, owners, ghrepo.Renames{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
+	repos := func() []ghrepo.Repository { return nil }
+	// The proof maps no repository and configures no rename, so the mapping's rule
+	// (repositories.serving) answers every provisioning token's repository as it is recorded.
+	serving := newRepositories(cfg.Project, ghrepo.Renames{}).serving
+	return sandboxRuntime(rc, opts, repos, serving, ghrepo.Renames{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
 }
 
 // controllerSweepKindSpec is the project controller's launch as the proof makes it: the
@@ -126,7 +129,7 @@ func TestTheControllerSweepKindProofBuildsItsRuntimeFromItsConfiguration(t *test
 	t.Cleanup(func() { cancel(); server.Close() })
 	dir := t.TempDir()
 	path := writeControllerSweepKindConfig(t, dir, testDSN(t), "192.0.2.10",
-		"ghcr.io/sjawhar/legion-worker@sha256:"+strings.Repeat("a", 64), writeKubeconfig(t, server.URL, ""), "test")
+		"ghcr.io/cybermonklabs/legion-worker@sha256:"+strings.Repeat("a", 64), writeKubeconfig(t, server.URL, ""), "test")
 	cfg, err := config.LoadForValidation(path, nil)
 	if err != nil {
 		t.Fatalf("load %s: %v", path, err)

@@ -7,10 +7,6 @@
 //   bun scripts/e2e/lib/dispatch-session-settings.ts run <rig.json>
 //     the checks; rig.json is the setup the shell script wrote (no secret is in it: the provider
 //     keys reach each Oh My Pi from this process's environment, and nothing else)
-//   bun scripts/e2e/lib/dispatch-session-settings.ts db-create <name>
-//     creates database <name> in LEGION_TEST_PG_DSN's server and prints a DSN naming it
-//   bun scripts/e2e/lib/dispatch-session-settings.ts db-drop <name>
-//     drops database <name> there, with whatever is still connected to it
 //   bun scripts/e2e/lib/dispatch-session-settings.ts free-port
 //     prints a loopback TCP port nothing listens on
 //
@@ -732,8 +728,8 @@ async function agentTokenRefused({ A, B, main, page, S, services }: Context): Pr
     (answer.body as { code?: string; error?: { code?: string } } | null)?.code ??
     (answer.body as { error?: { code?: string } } | null)?.error?.code;
   expect(
-    answer.status === 403 && JSON.stringify(answer.body).includes("HUMAN_ONLY"),
-    `the agent bearer's switch answered ${answer.status} ${JSON.stringify(answer.body)}`
+    answer.status === 403 && JSON.stringify(answer.body).includes("OAUTH_SCOPE_REQUIRED"),
+    `the agent bearer's switch answered ${answer.status} ${JSON.stringify(answer.body)}, want 403 OAUTH_SCOPE_REQUIRED`
   );
   await sleep(3_000);
   const after = await oracle(main);
@@ -1229,43 +1225,7 @@ async function run(rigFile: string): Promise<void> {
   }
 }
 
-// ---- the database and a port ----------------------------------------------------------------------
-
-function serverDsn(): URL {
-  const dsn = process.env.LEGION_TEST_PG_DSN;
-  if (dsn === undefined || dsn === "") refuse("LEGION_TEST_PG_DSN is required");
-  return new URL(dsn);
-}
-
-function databaseName(name: string | undefined): string {
-  if (name === undefined || !/^[a-z][a-z0-9_]*$/.test(name))
-    refuse(`a database name of [a-z0-9_] is required, not ${name}`);
-  return name;
-}
-
-async function createDatabase(): Promise<void> {
-  const name = databaseName(args[0]);
-  const server = serverDsn();
-  const sql = new Bun.SQL(server.toString());
-  try {
-    await sql.unsafe(`create database "${name}"`);
-  } finally {
-    await sql.close();
-  }
-  const own = new URL(server.toString());
-  own.pathname = `/${name}`;
-  process.stdout.write(`${own.toString()}\n`);
-}
-
-async function dropDatabase(): Promise<void> {
-  const name = databaseName(args[0]);
-  const sql = new Bun.SQL(serverDsn().toString());
-  try {
-    await sql.unsafe(`drop database if exists "${name}" with (force)`);
-  } finally {
-    await sql.close();
-  }
-}
+// ---- a port ----------------------------------------------------------------------------------
 
 function freePort(): void {
   const server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
@@ -1279,7 +1239,5 @@ if (command === "run") {
   // A request's or a stop's deadline timer would otherwise hold the process for minutes after the
   // last check.
   process.exit(process.exitCode ?? 0);
-} else if (command === "db-create") await createDatabase();
-else if (command === "db-drop") await dropDatabase();
-else if (command === "free-port") freePort();
-else refuse(`unknown command ${command ?? "(none)"}: run, db-create, db-drop or free-port`);
+} else if (command === "free-port") freePort();
+else refuse(`unknown command ${command ?? "(none)"}: run or free-port`);

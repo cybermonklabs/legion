@@ -115,7 +115,7 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 			testCase.change(&cfg, &o)
 			want := strings.NewReplacer("{state}", cfg.StateDir, "{seed}", cfg.NatsNkeySeedFile).Replace(testCase.want)
 
-			err := run(context.Background(), cfg, Build{}, quietLogger(), o)
+			err := run(context.Background(), cfg, quietLogger(), o)
 
 			if err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("run = %v, want a refusal naming %q", err, want)
@@ -1196,6 +1196,12 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 		{stream.Hello{Claim: token, Generation: 3}, supervise.StreamHello{Claim: token, Generation: 3}},
 		{stream.TurnStart{Claim: token, DeliveryID: "d1"}, supervise.StreamTurnStart{Claim: token, DeliveryID: "d1"}},
 		{stream.TurnEnd{Claim: token}, supervise.StreamTurnEnd{Claim: token}},
+		{stream.ToolStep{Claim: token, Tool: "bash", CallID: "toolu_turn1_0",
+			ArgsBytes: 21, ArgsHash: "1eab1ef18bb109ae", ConnSequence: 4},
+			supervise.StreamToolStep{Claim: token, Tool: "bash", CallID: "toolu_turn1_0",
+				ArgsBytes: 21, ArgsHash: "1eab1ef18bb109ae", ConnSequence: 4}},
+		{stream.ToolStep{Claim: token, Tool: "bash", CallID: "toolu_turn1_0", End: true, ConnSequence: 4},
+			supervise.StreamToolStep{Claim: token, Tool: "bash", CallID: "toolu_turn1_0", End: true, ConnSequence: 4}},
 		{stream.PromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true},
 			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true}},
 		{stream.PromptResult{Claim: token, DeliveryID: "d1", Error: "no model"},

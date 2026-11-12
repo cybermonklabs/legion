@@ -158,6 +158,9 @@ func (d *postingDispatch) SetStatus(context.Context, string, string) (dispatch.I
 func (d *postingDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("postingDispatch takes no hand-over")
 }
+func (d *postingDispatch) ReleaseClaim(context.Context, string) error {
+	return errors.New("postingDispatch releases no claim")
+}
 func (d *postingDispatch) PostMessage(_ context.Context, key, body string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -176,7 +179,6 @@ func (d *postingDispatch) EventsAfter(context.Context, string, int64) ([]json.Ra
 func (d *postingDispatch) Approval(context.Context, string) (dispatch.Approval, error) {
 	return dispatch.Approval{}, nil
 }
-func (d *postingDispatch) BuildCommit(context.Context) (string, error) { return "", nil }
 func (d *postingDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
@@ -185,6 +187,12 @@ func (d *postingDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProj
 }
 func (d *postingDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
+}
+func (d *postingDispatch) PutGatedSteps(context.Context, string, []string) error {
+	return nil
+}
+func (d *postingDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
+	return nil
 }
 
 // postsTo is how many messages were posted on issue.
@@ -226,6 +234,9 @@ func (d *laneBoard) SetStatus(_ context.Context, _ string, status string) (dispa
 func (d *laneBoard) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("laneBoard takes no hand-over")
 }
+func (d *laneBoard) ReleaseClaim(context.Context, string) error {
+	return errors.New("laneBoard releases no claim")
+}
 func (d *laneBoard) PostMessage(context.Context, string, string) error { return nil }
 func (d *laneBoard) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
@@ -236,7 +247,6 @@ func (d *laneBoard) EventsAfter(context.Context, string, int64) ([]json.RawMessa
 func (d *laneBoard) Approval(context.Context, string) (dispatch.Approval, error) {
 	return dispatch.Approval{}, nil
 }
-func (d *laneBoard) BuildCommit(context.Context) (string, error) { return "", nil }
 func (d *laneBoard) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
@@ -244,6 +254,10 @@ func (d *laneBoard) ListRepoProjects(context.Context) ([]dispatch.RepoProject, e
 	return nil, nil
 }
 func (d *laneBoard) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
+func (d *laneBoard) PutGatedSteps(context.Context, string, []string) error     { return nil }
+func (d *laneBoard) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
+	return nil
+}
 
 // statuses is each status that landed, in order.
 func (d *laneBoard) statuses() []string {
@@ -539,7 +553,7 @@ func TestAReleasedNoticeRunsOnItsLaneWhenTheReleaseCommits(t *testing.T) {
 	runLanes(t, runner, clock)
 
 	commitRows(t, pool, runner.records, "held-notice", mustOutboxRow(t, "LEGION-2",
-		record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "max_fix_attempts"}, clock.Now().Add(time.Hour)))
+		record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, clock.Now().Add(time.Hour)))
 	testwait.Eventually(t, "the lane armed its wait for the hour", func() bool {
 		live, _ := clock.armed(time.Hour)
 		return live == 1
@@ -717,7 +731,7 @@ func TestANewerNoticeOnAnotherLaneWaitsBehindTheOlderAndFollowsItAfterOneBackoff
 	runner.records = wakingRecords(runner)
 	runLanes(t, runner, clock, publisher.gate.open)
 
-	notice := record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "max_fix_attempts"}
+	notice := record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}
 	commitRows(t, pool, runner.records, "older", mustOutboxRow(t, "LEGION-2", notice, clock.Now()))
 	testwait.Eventually(t, "the older notice reached the publisher", func() bool { return publisher.gate.entries() == 1 })
 	commitRows(t, pool, runner.records, "newer", mustOutboxRow(t, "LEGION-3", notice, clock.Now()))

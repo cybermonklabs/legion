@@ -86,7 +86,7 @@ func (s *server) inboxAssigneeFilter(ctx context.Context, raw string, caller mod
 }
 
 func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
-	caller, ok := s.requireHuman(w, r)
+	caller, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
@@ -99,20 +99,23 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	// waiting_on is askReadColumns' alias for the turn rule, 'human' or 'agent' on an open ask, so
 	// sorting it descending puts the human's turn first. ORDER BY can name an output column only
 	// bare, never inside an expression such as `waiting_on = 'agent'`, so the rule runs once a row.
+	//
+	// ?assignee= filters on the person the ask waits on (askedOfPersonExpression), not on the
+	// issue's assignee: an ask handed to somebody is in that person's list and out of the
+	// assignee's. The ask's issue is joined by askReadFrom, which that expression reads.
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select `+askReadColumns+`,
 		       i.key, i.title, i.assignee, i.priority, ar.project_key, ar.slug, ar.name,
 		       sn.snoozed_until
 		`+askReadFrom+`
-		left join issues i on i.key = a.issue_key
 		left join artifacts ar on ar.id = a.artifact_id
 		left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $4
 		where a.state = 'open'
 		  and (i.key is null or i.closed_at is null)
 		  and ($1 = '' or coalesce(i.project_key, ar.project_key) = $1)
 		  and ($2 = ''
-		       or ($2 = 'unassigned' and (i.key is null or i.assignee is null))
-		       or ($2 = 'login' and i.assignee = $3))
+		       or ($2 = 'unassigned' and `+askedOfPersonExpression+` is null)
+		       or ($2 = 'login' and `+askedOfPersonExpression+` = $3))
 		order by i.priority asc nulls last, waiting_on desc,
 		         coalesce(lr.created_at, a.created_at) desc, a.id desc
 	`, project, assigneeMode, assigneeLogin, model.CanonicalLogin(caller.ID))
@@ -155,11 +158,7 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		askPointers[index] = &asks[index].Ask
 		askIDs[index] = asks[index].ID
 	}
-	if err := s.attachOpenedEventIDs(r.Context(), s.deps.Store.Pool, askPointers); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := attachAskReadFields(r.Context(), s.deps.Store.Pool, askPointers); err != nil {
+	if err := loadAskDetails(r.Context(), s.deps.Store.Pool, askPointers); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

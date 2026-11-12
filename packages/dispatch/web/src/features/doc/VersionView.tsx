@@ -8,14 +8,15 @@ import type { Ask, BlockSchema } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { watchPicturePath } from "../refs/reference-target";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceOf } from "../refs/text-references";
 import { AskBlockCard } from "./AskBlockCard";
-import { installTypedBlocks } from "./ask-block";
 import { changeMarksAgainst } from "./change-marks";
 import { colorForLogin } from "./connection";
+import { DocumentReferences, useReferenceClick } from "./document-references";
 import { createDoc, type EditorHandle } from "./editor";
 import type { Highlight } from "./highlight";
 import { embedHighlight } from "./highlight";
-import { refocusAfterDiagrams } from "./refocus-after-diagrams";
+import { refocusWhenSettled } from "./refocus-when-settled";
 import { DocumentRuntime } from "./runtime";
 import type { AskBlockHost } from "./typed-block-drawing";
 
@@ -47,6 +48,9 @@ export function VersionView({
 }: VersionViewProps): ReactNode {
   const root = useRef<HTMLDivElement>(null);
   const [askBlockHosts, setAskBlockHosts] = useState<readonly AskBlockHost[]>([]);
+  // The handle the version's references are drawn through: the titles are a render of their
+  // own, so the surface that draws them re-renders with the editor it draws into.
+  const [editorHandle, setEditorHandle] = useState<EditorHandle | undefined>(undefined);
   const [highlightMissing, setHighlightMissing] = useState(false);
   const [renderError, setRenderError] = useState<string | undefined>(undefined);
   const { createEditor } = useContext(DocumentRuntime);
@@ -54,12 +58,22 @@ export function VersionView({
     queryKey: ["artifact", artifactId, "version", version],
     queryFn: () => api.getArtifactVersion(artifactId, version),
   });
-  const userQuery = useQuery(whoAmIQuery());
+  // The signed-in person reaches the editor as their login alone, and the effect below depends
+  // on that string rather than on the whoami answer: the answer carries `event_head`, so it is
+  // a new object after every committed event, and keyed on it the editor is destroyed and
+  // built again while the reader reads. This view reads the person at build time only, so the
+  // login - equal to itself across re-reads - is both what the editor needs and the signal
+  // that it has arrived.
+  const login = useQuery(whoAmIQuery()).data?.login;
   const queryClient = useQueryClient();
   const markdown =
     versionQuery.data !== undefined && "markdown" in versionQuery.data
       ? versionQuery.data.markdown
       : undefined;
+  // Where a `#id` in this version's text resolves: the document it is a version of, whose
+  // latest version's question blocks declare the asks it names, as the server reads them.
+  const textSource = useMemo(() => textSourceOf("artifact", artifactId), [artifactId]);
+  const followReference = useReferenceClick();
 
   // `ProofDocument` renders this view and forwards `highlight`; `ArtifactDocument` above it
   // builds that object afresh on every render. So the editor effect below keys on what the
@@ -80,11 +94,10 @@ export function VersionView({
   );
   useEffect(() => {
     const parent = root.current;
-    const user = userQuery.data;
     if (
       parent === null ||
       markdown === undefined ||
-      user === undefined ||
+      login === undefined ||
       blockSchema === undefined
     ) {
       return;
@@ -103,11 +116,13 @@ export function VersionView({
       }
       ydoc = doc;
       const editor = await createEditor(parent, {
+        access: "read",
         awareness: null,
         blockSchema,
         heatMapMode: "hidden",
-        readOnly: true,
-        user: { color: colorForLogin(user.login), name: user.login },
+        onAskBlockHosts: setAskBlockHosts,
+        user: { color: colorForLogin(login), name: login },
+        watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
         ydoc: doc,
       });
       handle = editor;
@@ -115,18 +130,20 @@ export function VersionView({
         editor.destroy();
         return;
       }
-      installTypedBlocks(editor.view, blockSchema, setAskBlockHosts, (route, onPicture) =>
-        watchPicturePath(queryClient, route, onPicture)
-      );
       const embedded =
         highlighted === undefined ? undefined : embedHighlight(markdown, highlighted);
       editor.setMarkdown(embedded ?? markdown);
       setHighlightMissing(highlighted !== undefined && embedded === undefined);
+      // Once the version's text is in: its references are drawn over what it reads now.
+      setEditorHandle(editor);
       if (embedded !== undefined && highlighted !== undefined) {
         editor.focusMark(highlighted.id);
-        // A diagram above the quote that draws after this focus pushes it down, so the focus
-        // runs again once the diagrams have drawn; the cleanup drops it once unmounted.
-        disposeRefocus = refocusAfterDiagrams(() => editor.focusMark(highlighted.id));
+        // A diagram or a card above the quote that draws after this focus pushes it down, so the
+        // focus runs again once the drawing has settled; the cleanup drops it once unmounted.
+        disposeRefocus = refocusWhenSettled(
+          () => editor.focusMark(highlighted.id),
+          editor.view.dom
+        );
       }
       if (changeBaseline === undefined) return;
       // The baseline is parsed by the shared headless engine, which the shell warms after the
@@ -141,6 +158,7 @@ export function VersionView({
       // empty document.
       handle?.destroy();
       handle = undefined;
+      setEditorHandle(undefined);
       if (mounted) {
         setRenderError(error instanceof Error ? error.message : String(error));
       }
@@ -151,16 +169,9 @@ export function VersionView({
       disposeRefocus();
       handle?.destroy();
       ydoc?.destroy();
+      setEditorHandle(undefined);
     };
-  }, [
-    blockSchema,
-    changeBaseline,
-    createEditor,
-    highlighted,
-    markdown,
-    queryClient,
-    userQuery.data,
-  ]);
+  }, [blockSchema, changeBaseline, createEditor, highlighted, login, markdown, queryClient]);
 
   if (versionQuery.isPending) {
     return <p>Loading version…</p>;
@@ -186,14 +197,23 @@ export function VersionView({
       {renderError === undefined ? null : (
         <p role="alert">This version could not be rendered: {renderError}</p>
       )}
-      <article aria-label="Document" className="dispatch-doc" data-read-only="true">
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: dispatch:// link clicks bubble here; the
+      editor already handles keyboard activation of its own links. */}
+      <article
+        aria-label="Document"
+        className="dispatch-doc"
+        data-read-only="true"
+        onClick={followReference}
+      >
         <div ref={root} />
+        <DocumentReferences editor={editorHandle} source={textSource} />
         {askBlockHosts.map((host) => {
           const blockId = String(host.node.attrs.blockId);
           return (
             <AskBlockCard
               ask={asks.find((candidate) => candidate.block_id === blockId)}
               host={host}
+              inBody={false}
               key={host.key}
               owner={owner}
               readOnly

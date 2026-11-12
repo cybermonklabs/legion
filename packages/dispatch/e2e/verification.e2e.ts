@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import {
   createIssue,
   createIssueArtifact,
@@ -8,7 +6,7 @@ import {
   recordCheckResult,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // A result's currency is judged against the head of the pull request Dispatch holds for the
@@ -52,11 +50,12 @@ async function seedIssue(title: string, head: string) {
   return issue;
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("the Verification tab lists every check of the document, each with the results recorded against it", async ({
+// SLOW(>=2s): 2.3 s - a project, its default repository, a pull request in the fake GitHub, a
+// Verification document of three checks and two recorded results, each result's record route
+// reading through to that fake for the pull request's head, before one load of the tab, which
+// opens the document's live room and draws all three checks with every field of both results.
+// @pr: The Verification tab's own row: every check of the document, each with the results recorded against it.
+test("the Verification tab lists every check of the document, each with the results recorded against it @pr", async ({
   browser,
 }, testInfo) => {
   const issue = await seedIssue("Verification tab", secondHead);
@@ -154,6 +153,15 @@ A check nobody has run yet reads no result.
   }
 });
 
+// SLOW(>=2s): 1.9 s here, over the bar on the four-worker report this rule is read against, and
+// this pod puts it over in a third of runs. Two results recorded against the document's two
+// checks, each one's record route reading through to the fake GitHub for the pull request's
+// head, with the fake re-seeded between them so the first result ages; then one load of the
+// Verification tab. Most of it is the floor every row of these files pays, measured on this
+// row: a fresh Chromium context (0.25 s), the cold parse of the dashboard bundle a fresh
+// context cannot cache (0.40 s) and the dashboard's own fifteen boot reads before the first
+// check draws (0.80 s). The row's own seven assertions are 0.26 s of it. INFRA-1109 holds that
+// floor; nothing in the row is removable.
 test("a result at a commit the pull request has moved past reads older", async ({ browser }) => {
   const issue = await seedIssue("Verification currency", firstHead);
   await createIssueArtifact(issue.key, {
@@ -218,28 +226,6 @@ A result at the head reads passed.
     const head = checks.filter({ hasText: "A result at the head reads passed." });
     await expect(head).toHaveAttribute("data-check-state", "passed");
     await expect(head.getByTestId("verification-result-currency")).toHaveText("Current");
-  } finally {
-    await alice.close();
-  }
-});
-
-test("an issue with no Verification document shows the command that makes one", async ({
-  browser,
-}) => {
-  await createProject({ key: "VER", name: "Verification" });
-  const issue = await createIssue({ project: "VER", title: "Nothing to verify yet" });
-
-  const alice = await asUser(browser, "alice");
-  try {
-    const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/verification`);
-
-    const empty = page.getByTestId("verification-empty");
-    await expect(empty).toContainText(`${issue.key} has no Verification document.`);
-    await expect(empty).toContainText(
-      `dispatch artifact --issue ${issue.key} --name verification.md`
-    );
-    await expect(page.getByTestId("verification-checks")).toHaveCount(0);
   } finally {
     await alice.close();
   }

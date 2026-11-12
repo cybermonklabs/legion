@@ -2,104 +2,46 @@ import {
   AUTH_NO_IDENTITY,
   answerNotKept,
   DISPATCH_LOGIN_HEADER,
+  everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_REPLAYED_HEADER,
   type IdempotencyLandedCode,
+  type InboxThreadKind,
 } from "@legion/contracts";
 
+import {
+  type Answer,
+  type Body,
+  type FormBody,
+  type Json200,
+  type Op,
+  type PathParams,
+  type PathsOf,
+  type Query,
+  type QueryParams,
+  type RequestBody,
+  repoParams,
+  routeUrl,
+} from "./paths";
 import { reachable, routeOf, unreachable } from "./reachability";
 
 import type {
-  Agent,
-  AgentToken,
-  AnswerAskInput,
-  ArchitectureSource,
-  ArchitectureTree,
-  Artifact,
-  ArtifactBlock,
-  ArtifactRebuildReport,
-  ArtifactReview,
-  ArtifactReviewState,
-  ArtifactText,
-  ArtifactUploadResponse,
   ArtifactVersionContent,
   ArtifactVersionText,
-  Ask,
-  AskRead,
-  AskSnooze,
   AuthenticatedUser,
   BlockSchema,
-  BroadcastCreated,
-  BroadcastRead,
-  BroadcastSummary,
-  Comment,
-  CommentDelivery,
-  CommentRead,
-  CreateAgentMessageInput,
   CreateArtifactInput,
-  CreateAskInput,
-  CreateBroadcastInput,
-  CreateCommentInput,
-  CreateDeliverySessionGroupInput,
-  CreatedAgentToken,
-  CreateIssueInput,
-  CreateMessageInput,
-  CreateProjectInput,
-  CreateVersionInput,
-  CredentialDecisionResponse,
-  CredentialGrantsResponse,
-  CredentialPendingResponse,
-  CredentialRecord,
-  DecisionKeep,
-  DeliveryRunDetail,
-  DeliverySessionGroup,
-  DeliverySettings,
-  DeliverySettingsInput,
+  DispatchEvent,
   DispatchUser,
-  DocumentRead,
-  DocumentReferenceSummary,
-  EditCommentInput,
-  Event,
-  GraphReferences,
-  Handoff,
-  HandoffSummary,
-  InboxRow,
-  Issue,
-  IssueAskRow,
+  DuplicateCandidate,
+  IDCandidate,
   IssueAskThreadRow,
-  IssueCheckResults,
-  IssueCoverage,
-  IssueDecisions,
-  IssueDetails,
-  IssueReferenceSummary,
-  IssueReferences,
-  IssueSummary,
-  ItemBlocks,
-  ListUsersResponse,
-  MachineLoginsResponse,
-  Message,
-  MessageDelivery,
-  MessageRead,
-  MyAnswersResponse,
-  MyRepliesResponse,
-  Project,
-  ProjectDefaultAssignee,
-  ProjectDefaultAssigneeInput,
-  RepoProject,
-  SearchResponse,
-  Subscriber,
-  Suggestions,
-  UpdateDeliverySessionGroupInput,
-  UpdateIssueInput,
-  UserAgentState,
-  UserAgentStateInput,
-  UserAgentStates,
+  NewIssueSettings,
+  TargetCandidate,
   UserIssueState,
-  UserState,
-  Version,
 } from "./types";
 
 export type FetchImplementation = (
@@ -131,16 +73,26 @@ export interface UploadProgress {
 const maxKeepaliveBodyBytes = 30 * 1024;
 const utf8 = new TextEncoder();
 
+/** One item a refusal lists for the caller to choose between: the items an ambiguous id prefix
+ *  names (`ID_AMBIGUOUS`), the issues a duplicate check found, or the positions an anchored
+ *  quote resolved at. Each refusal's own `code` says which of the three its list holds. */
+export type ErrorCandidate = IDCandidate | DuplicateCandidate | TargetCandidate;
+
 interface ErrorPayload {
   code?: string;
   error?: string;
   state?: UserIssueState;
+  candidates?: readonly ErrorCandidate[];
 }
 
 export class ApiError extends Error {
   readonly code: string | undefined;
   readonly status: number;
   readonly state: UserIssueState | undefined;
+  /** What the refusal listed for the caller to choose between, read by the page that shows the
+   *  choice; the shape of each entry follows `code` (`ErrorCandidate`). Undefined for a refusal
+   *  that listed nothing, which is almost all of them. */
+  readonly candidates: readonly ErrorCandidate[] | undefined;
   /** How long the server asked the caller to wait before trying again (`Retry-After` in
    *  delta-seconds, as Dispatch sends with a 503 refusing excess load), in milliseconds;
    *  undefined when the response carried none. */
@@ -152,6 +104,7 @@ export class ApiError extends Error {
     this.code = payload.code;
     this.status = status;
     this.state = payload.state;
+    this.candidates = payload.candidates;
     this.retryAfterMs = retryAfterMs;
   }
 }
@@ -181,6 +134,12 @@ export class UnreadableAnswerError extends Error {
     this.status = status;
   }
 }
+
+/** The kinds `GET /api/v1/references/questions` reads a reference source as, from the route's
+ *  own query schema: a document version, an ask, a comment or an issue message. */
+export type ReferenceSourceKind = NonNullable<
+  QueryParams<Op<"/api/v1/references/questions", "get">>["kind"]
+>;
 
 /** How long the page lets Dispatch go silent on a request - no response headers yet, no piece of
  *  its body, and for an upload no piece of the request body sent either - before it gives the
@@ -214,6 +173,18 @@ export interface RequestBounds {
 export const WRITE_METHODS = ["DELETE", "PATCH", "POST", "PUT"] as const;
 
 export type WriteMethod = (typeof WRITE_METHODS)[number];
+
+/** Whether a write of `method` goes under its key, which it sends as `Idempotency-Key`: a `POST`
+ *  or a `PATCH`, each of which Dispatch would do a second time when a dropped answer has the page
+ *  ask again. A `PUT` or a `DELETE` is the same change however often it is made, so it sends no
+ *  key and Dispatch keeps nothing under one for it. The one place that rule is written: `send`
+ *  reads it as it builds the headers, and `keySpent` reads it to decide whether a key's age
+ *  stops a write, which is how both the retry loop (`writeUnderKey`) and a kept refusal
+ *  (`refusalFrom`) reach it.
+ */
+export function goesUnderKey(method: WriteMethod): boolean {
+  return method === "POST" || method === "PATCH";
+}
 
 /** What a request is answered with, for the type checker alone: no request carries it. */
 declare const answeredWith: unique symbol;
@@ -349,10 +320,36 @@ export function isAnchorMissing(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.code === "ANCHOR_MISSING";
 }
 
+// The server refusing a write because its text passes a bound Dispatch holds it to: one block
+// too long, too many blocks, or an ask's question and options too long together. The refusal
+// names what passed which bound, so a page shows those words rather than wording of its own.
+export function isCapExceeded(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.code === "CAP_EXCEEDED";
+}
+
+// The server refusing a write because its text holds a decision block, which nobody can answer
+// where it stands (`itemblocks.DecisionBlock`, INFRA-1201). The refusal names the block and says
+// where the question belongs, so a page shows those words rather than wording of its own; a
+// retry of the same text is refused again, as it is for a bound.
+export function isDecisionBlockInBody(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.code === "DECISION_BLOCK_IN_BODY";
+}
+
 // A document whose stored history cannot load at all: the state a rebuild from its latest saved
 // version repairs, and retrying the read cannot.
 export function isDocumentUnloadable(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.code === "DOCUMENT_UNLOADABLE";
+}
+
+/** What every view says while Envoy's agent list refills: the server's own `ENVOY_REFILLING`
+ *  message, shown wherever a view would otherwise say an agent is absent. */
+export const AGENT_LIST_REFILLING = "The agent list is refilling. Try again in a moment.";
+
+// The agents list and the subscriber reads answer this 503 while the Envoy listener refills its
+// copy of the session registry: the list is not known yet, so nothing on it may be read as gone.
+// It is transient, so the shared retry policy keeps retrying it like any other 5xx.
+export function isAgentListRefilling(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 503 && error.code === "ENVOY_REFILLING";
 }
 
 // The retry policy every query in the app shares: an auth outcome (401), a missing architecture
@@ -400,35 +397,42 @@ export function apiErrorCodeIn(error: unknown, codes: ReadonlySet<string>): erro
   return error instanceof ApiError && error.code !== undefined && codes.has(error.code);
 }
 
-export interface ListIssuesOptions {
-  pinned?: boolean;
-  project?: string;
-  open?: boolean;
-  status?: string;
-  parent?: string;
-  updated_since?: string;
-  labels?: readonly string[];
-}
-
-export interface ListEventsOptions {
-  after?: number;
-  before?: number;
-  ids?: string[];
-  limit?: number;
-  order?: "desc";
-}
-
 /** Who an uploaded file belongs to: an issue, a project (its documents), or an agent's
  *  conversation, named by the agent's session id (direct messages on the Agents page). */
 export type ArtifactOwner = { issue: string } | { project: string } | { session: string };
 
-export interface CreateArtifactReviewInput {
-  state: ArtifactReviewState;
-  reason?: string;
+export type CreateArtifactReviewInput = Body<"/api/v1/artifacts/{id}/reviews", "post">;
+
+/** What a decline carries: the person's own note, which is optional. */
+export type DeclineAskInput = Body<"/api/v1/asks/{id}/decline", "post">;
+
+/** Every write verb, as the document names a route's operation; the request carries the method
+ *  it uppercases to, which is `WRITE_METHODS`' member of the same name. */
+type WriteVerb = Lowercase<WriteMethod>;
+
+/**
+ * One write as it goes to Dispatch, named by the route pattern the document holds it under: the
+ * URL built from `params` (`routeUrl`, which throws for a parameter the pattern does not hold or
+ * has no value for), the body the document gives that route, and - for the type checker alone -
+ * the body the document says it is answered with. Nothing here restates a wire shape.
+ */
+export function writeRequest<M extends WriteVerb, P extends PathsOf<M>>(
+  verb: M,
+  pattern: P,
+  params: PathParams<Op<P, M>>,
+  body?: RequestBody<Op<P, M>> | FormBody<Op<P, M>>
+): WriteRequest<Answer<Op<P, M>>> {
+  return {
+    ...(body === undefined ? {} : { body }),
+    method: verb.toUpperCase() as WriteMethod,
+    path: routeUrl(pattern, params),
+  };
 }
 
-function pathSegment(value: string): string {
-  return encodeURIComponent(value);
+/** The same-origin URL of one GET route, for a reader that makes no request of its own (an
+ *  `<img>` loading a stored version's bytes). */
+function readUrl<P extends PathsOf<"get">>(pattern: P, params: PathParams<Op<P, "get">>): string {
+  return routeUrl(pattern, params);
 }
 
 // The requests of the writes that wait their turn on a line (`WriteSpec.request`), each the exact
@@ -437,104 +441,132 @@ function pathSegment(value: string): string {
 // the very request that goes out, and nothing of it runs before its turn.
 
 /** `PATCH /api/v1/issues/{key}`: one change of an issue's fields (`patchIssue`). */
-export function issuePatchRequest(key: string, input: UpdateIssueInput): WriteRequest<Issue> {
-  return { body: input, method: "PATCH", path: `/api/v1/issues/${pathSegment(key)}` };
+export function issuePatchRequest(key: string, input: Body<"/api/v1/issues/{key}", "patch">) {
+  return writeRequest("patch", "/api/v1/issues/{key}", { key }, input);
 }
 
-/** `POST /api/v1/agents/{session}/messages`: a person's message to one session
+/** `POST /api/v1/agents/{session_id}/messages`: a person's message to one session
  *  (`createAgentMessage`). */
 export function agentMessageRequest(
   sessionID: string,
-  input: CreateAgentMessageInput
-): WriteRequest<Message> {
-  return { body: input, method: "POST", path: `/api/v1/agents/${pathSegment(sessionID)}/messages` };
+  input: Body<"/api/v1/agents/{session_id}/messages", "post">
+) {
+  return writeRequest(
+    "post",
+    "/api/v1/agents/{session_id}/messages",
+    { session_id: sessionID },
+    input
+  );
 }
 
 /** `PUT /api/v1/me/asks/{id}/snooze` (`snoozeAsk`). */
-export function askSnoozeRequest(id: string, snoozedUntil: string): WriteRequest<AskSnooze> {
-  return {
-    body: { snoozed_until: snoozedUntil },
-    method: "PUT",
-    path: `/api/v1/me/asks/${pathSegment(id)}/snooze`,
-  };
+export function askSnoozeRequest(id: string, snoozedUntil: string) {
+  return writeRequest(
+    "put",
+    "/api/v1/me/asks/{id}/snooze",
+    { id },
+    { snoozed_until: snoozedUntil }
+  );
 }
 
 /** `PUT /api/v1/me/threads/{id}/read`: a thread's read mark (`markThreadRead`). */
-export function threadReadRequest(threadId: string, readThrough: string): WriteRequest {
-  return {
-    body: { read_through: readThrough },
-    method: "PUT",
-    path: `/api/v1/me/threads/${pathSegment(threadId)}/read`,
-  };
+export function threadReadRequest(threadId: string, readThrough: string) {
+  return writeRequest(
+    "put",
+    "/api/v1/me/threads/{id}/read",
+    { id: threadId },
+    { read_through: readThrough }
+  );
+}
+
+/** `POST /api/v1/me/inbox/read`: the Inbox's **Mark all read** (`markInboxRead`). One request
+ *  marks every unread thread the list route would answer under the same narrowing whose newest
+ *  write is at or before `read_through`, which is that list read's own `as_of`. */
+export function markInboxReadRequest(body: Body<"/api/v1/me/inbox/read", "post">) {
+  return writeRequest("post", "/api/v1/me/inbox/read", {}, body);
+}
+
+/** `POST /api/v1/me/inbox/dismiss`: the Inbox's **Dismiss**, and the **Move to Inbox** that puts a
+ *  thread back (`restore`). One request names either the row ids it changes (`reply:<thread id>`
+ *  and `agent:<root message id>`, as `INBOX_DISMISS_ROW_PREFIXES` spells them) or the narrowing
+ *  the list is under with `dismiss_through`, that list read's own `as_of`; naming both is refused. */
+export function inboxDismissRequest(body: Body<"/api/v1/me/inbox/dismiss", "post">) {
+  return writeRequest("post", "/api/v1/me/inbox/dismiss", {}, body);
 }
 
 /** `PUT /api/v1/me/documents/{id}/read`: the person's last read version of a document
  *  (`putDocumentRead`). */
-export function documentReadRequest(id: string, version: number): WriteRequest<DocumentRead> {
-  return {
-    body: { version },
-    method: "PUT",
-    path: `/api/v1/me/documents/${pathSegment(id)}/read`,
-  };
+export function documentReadRequest(id: string, version: number) {
+  return writeRequest("put", "/api/v1/me/documents/{id}/read", { id }, { version });
 }
 
 /** `PUT /api/v1/me/issues/{key}/state`: the person's state of an issue (`putIssueState`). */
 export function issueStateRequest(
   key: string,
-  input: Partial<UserIssueState>
-): WriteRequest<UserIssueState> {
-  return { body: input, method: "PUT", path: `/api/v1/me/issues/${pathSegment(key)}/state` };
+  input: Body<"/api/v1/me/issues/{key}/state", "put">
+) {
+  return writeRequest("put", "/api/v1/me/issues/{key}/state", { key }, input);
 }
 
-/** `PUT /api/v1/me/agents/{session}/state`: the person's state of a session (`putAgentState`). */
+/** `PUT /api/v1/me/agents/{session_id}/state`: the person's state of a session (`putAgentState`) -
+ *  a Clear, a read mark, or the pin the rail's Agents list is drawn from (`pinned`). */
 export function agentStateRequest(
   sessionID: string,
-  input: UserAgentStateInput
-): WriteRequest<UserAgentState> {
-  return { body: input, method: "PUT", path: `/api/v1/me/agents/${pathSegment(sessionID)}/state` };
-}
-
-/** The owner's artifact list, the route an upload posts to. */
-function artifactsPath(owner: ArtifactOwner): string {
-  if ("issue" in owner) return `/api/v1/issues/${pathSegment(owner.issue)}/artifacts`;
-  if ("project" in owner) return `/api/v1/projects/${pathSegment(owner.project)}/artifacts`;
-  return `/api/v1/agents/${pathSegment(owner.session)}/artifacts`;
+  input: Body<"/api/v1/me/agents/{session_id}/state", "put">
+) {
+  return writeRequest(
+    "put",
+    "/api/v1/me/agents/{session_id}/state",
+    { session_id: sessionID },
+    input
+  );
 }
 
 /** The same-origin route of one stored version's bytes, addressed by the owner and the artifact's
  *  slug as a picture's `dispatch://` reference names it, so an `<img>` loads it with the reader's
  *  own cookie. A version never changes, so the server lets the browser keep it. */
 export function artifactVersionPath(owner: ArtifactOwner, slug: string, version: number): string {
-  return `${artifactsPath(owner)}/${pathSegment(slug)}/versions/${version}`;
+  const number = String(version);
+  if ("issue" in owner) {
+    return readUrl("/api/v1/issues/{key}/artifacts/{slug}/versions/{number}", {
+      key: owner.issue,
+      number,
+      slug,
+    });
+  }
+  if ("project" in owner) {
+    return readUrl("/api/v1/projects/{key}/artifacts/{slug}/versions/{number}", {
+      key: owner.project,
+      number,
+      slug,
+    });
+  }
+  return readUrl("/api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}", {
+    number,
+    session_id: owner.session,
+    slug,
+  });
 }
 
-function repoPath(repo: string): string {
-  const [owner, name, ...rest] = repo.split("/");
-  if (owner === "" || name === "" || rest.length !== 0) {
-    throw new Error("repository must be formatted as owner/repo");
+/** What an upload carries: the JSON body the document gives the three artifact routes for text
+ *  written in the browser, and a multipart form - the body those same routes take as
+ *  `multipart/form-data` - for a file picked, pasted or dropped. */
+function artifactUploadBody(
+  input: CreateArtifactInput
+): Body<"/api/v1/issues/{key}/artifacts", "post"> | FormData {
+  if ("content" in input) {
+    return { actor: input.actor, content: input.content, name: input.name, summary: input.summary };
   }
-  return `${pathSegment(owner)}/${pathSegment(name)}`;
-}
-
-function pathWithQuery(path: string, values: object): string {
-  const query = new URLSearchParams();
-
-  for (const [key, value] of Object.entries(values)) {
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        query.append(key, item);
-      }
-    } else if (
-      typeof value === "string" ||
-      typeof value === "number" ||
-      typeof value === "boolean"
-    ) {
-      query.set(key, String(value));
-    }
+  const form = new FormData();
+  form.set("name", input.name);
+  if (input.summary !== undefined) {
+    form.set("summary", input.summary);
   }
-
-  const search = query.toString();
-  return search ? `${path}?${search}` : path;
+  if (input.actor !== undefined) {
+    form.set("actor", JSON.stringify(input.actor));
+  }
+  form.set("file", input.file);
+  return form;
 }
 
 /** The wait `Retry-After` names, in milliseconds: its delta-seconds form, which is the one
@@ -761,23 +793,24 @@ export class DispatchApiClient {
    * person who pressed it. A JSON body goes as JSON and a multipart form as itself, through the
    * upload transport; `bounds.sent` is told the request as it goes out. Answers what Dispatch
    * answered (nothing for an empty body), as the request's builder names it (`WriteRequest`), or
-   * rejects with its refusal; a 2xx whose body is not JSON rejects with `UnreadableAnswerError`,
-   * and a replay of an answer Dispatch did not keep with `AnswerNotKeptError`.
+   * rejects with its refusal; a 2xx whose body is not JSON rejects with `UnreadableAnswerError`, a
+   * 2xx whose body stops part way with `NetworkError`, and a replay of an answer Dispatch did not
+   * keep with `AnswerNotKeptError`.
    */
   send<T>(
     request: WriteRequest<T>,
     { deadlineMs, key, login, progress, sent }: WriteBounds
   ): Promise<T> {
     const { body, method, path } = request;
-    const idempotent = method === "PUT" || method === "DELETE";
+    const keyed = goesUnderKey(method);
     const form = body instanceof FormData ? body : undefined;
     const json = body === undefined || form !== undefined ? undefined : JSON.stringify(body);
     const keepalive =
-      idempotent && (json === undefined || utf8.encode(json).byteLength < maxKeepaliveBodyBytes);
+      !keyed && (json === undefined || utf8.encode(json).byteLength < maxKeepaliveBodyBytes);
     const init: RequestInit = {
       ...(form !== undefined ? { body: form } : json !== undefined ? { body: json } : {}),
       headers: {
-        ...(idempotent ? {} : { [IDEMPOTENCY_KEY_HEADER]: key }),
+        ...(keyed ? { [IDEMPOTENCY_KEY_HEADER]: key } : {}),
         ...(login === undefined ? {} : { [DISPATCH_LOGIN_HEADER]: login }),
         ...(json === undefined ? {} : { "Content-Type": "application/json" }),
       },
@@ -786,7 +819,14 @@ export class DispatchApiClient {
     };
     sent?.(request);
     const read = async (response: Response): Promise<T> => {
-      const text = await response.text();
+      let text: string;
+      try {
+        text = await response.text();
+      } catch (error) {
+        // The connection dropped as the answer's body came down: the page knows nothing of what
+        // Dispatch did, as for one that never answered, so the write is made again under its key.
+        throw new NetworkError(path, error);
+      }
       let answer: unknown;
       try {
         answer = text === "" ? undefined : JSON.parse(text);
@@ -808,104 +848,140 @@ export class DispatchApiClient {
     return this.exchange(path, init, deadlineMs, read, progress);
   }
 
-  private post<T>(path: string, body: unknown, bounds: WriteBounds): Promise<T> {
-    return this.send<T>({ body, method: "POST", path }, bounds);
+  /** One read of a route the document holds, named by its own path pattern: `params` fills the
+   *  pattern's `{name}`s and `query` its query parameters, and what it answers is the document's
+   *  `200` body for that route. No read states a response shape of its own. */
+  private async read<P extends PathsOf<"get">>(
+    pattern: P,
+    params: PathParams<Op<P, "get">>,
+    query?: QueryParams<Op<P, "get">>,
+    init: RequestInit = {},
+    deadlineMs?: number | null
+  ): Promise<Json200<Op<P, "get">>> {
+    return this.json<Json200<Op<P, "get">>>(routeUrl(pattern, params, query), init, deadlineMs);
   }
 
-  private put<T>(path: string, body: unknown, bounds: WriteBounds): Promise<T> {
-    return this.send<T>({ body, method: "PUT", path }, bounds);
+  private async post<P extends PathsOf<"post">>(
+    pattern: P,
+    params: PathParams<Op<P, "post">>,
+    body: RequestBody<Op<P, "post">> | FormBody<Op<P, "post">>,
+    bounds: WriteBounds
+  ): Promise<Answer<Op<P, "post">>> {
+    return this.send<Answer<Op<P, "post">>>(writeRequest("post", pattern, params, body), bounds);
   }
 
-  private remove<T>(path: string, bounds: WriteBounds): Promise<T> {
-    return this.send<T>({ method: "DELETE", path }, bounds);
+  private async put<P extends PathsOf<"put">>(
+    pattern: P,
+    params: PathParams<Op<P, "put">>,
+    body: RequestBody<Op<P, "put">>,
+    bounds: WriteBounds
+  ): Promise<Answer<Op<P, "put">>> {
+    return this.send<Answer<Op<P, "put">>>(writeRequest("put", pattern, params, body), bounds);
   }
 
-  getBlockSchema(): Promise<BlockSchema> {
-    return this.json<BlockSchema>("/api/v1/schema/blocks");
+  private async patch<P extends PathsOf<"patch">>(
+    pattern: P,
+    params: PathParams<Op<P, "patch">>,
+    body: RequestBody<Op<P, "patch">>,
+    bounds: WriteBounds
+  ): Promise<Answer<Op<P, "patch">>> {
+    return this.send<Answer<Op<P, "patch">>>(writeRequest("patch", pattern, params, body), bounds);
   }
 
-  listProjects(): Promise<Project[]> {
-    return this.json<Project[]>("/api/v1/projects");
+  private async remove<P extends PathsOf<"delete">>(
+    pattern: P,
+    params: PathParams<Op<P, "delete">>,
+    bounds: WriteBounds
+  ): Promise<Answer<Op<P, "delete">>> {
+    return this.send<Answer<Op<P, "delete">>>(writeRequest("delete", pattern, params), bounds);
   }
 
-  createProject(input: CreateProjectInput, bounds: WriteBounds): Promise<Project> {
-    return this.post<Project>("/api/v1/projects", input, bounds);
+  /** The block schema. The route answers pre-rendered JSON bytes (`pmdoc.SchemaJSON`), so the
+   *  document gives its body no schema at all; `BlockSchema` is generated from the same source
+   *  those bytes are rendered from, so this one read names what it is answered with. */
+  async getBlockSchema(): Promise<BlockSchema> {
+    return this.json<BlockSchema>(routeUrl("/api/v1/schema/blocks", {}));
   }
 
-  listRepoProjects(): Promise<RepoProject[]> {
-    return this.json<RepoProject[]>("/api/v1/settings/repo-projects");
+  listProjects() {
+    return this.read("/api/v1/projects", {});
   }
 
-  putRepoProject(
+  createProject(input: Body<"/api/v1/projects", "post">, bounds: WriteBounds) {
+    return this.post("/api/v1/projects", {}, input, bounds);
+  }
+
+  listRepoProjects() {
+    return this.read("/api/v1/settings/repo-projects", {});
+  }
+
+  async putRepoProject(
     repo: string,
-    input: { project: string; default?: boolean },
+    input: Body<"/api/v1/settings/repo-projects/{owner}/{repo}", "put">,
     bounds: WriteBounds
-  ): Promise<RepoProject> {
-    return this.put<RepoProject>(`/api/v1/settings/repo-projects/${repoPath(repo)}`, input, bounds);
-  }
-
-  async deleteRepoProject(repo: string, bounds: WriteBounds): Promise<void> {
-    await this.remove(`/api/v1/settings/repo-projects/${repoPath(repo)}`, bounds);
-  }
-
-  /** Only the projects that name a default; a project left out names nobody. Human-only. */
-  listProjectDefaultAssignees(): Promise<ProjectDefaultAssignee[]> {
-    return this.json<ProjectDefaultAssignee[]>("/api/v1/settings/project-default-assignees");
-  }
-
-  /** Sets the person a project's unowned work lands on, or clears it with `{assignee: null}`.
-   *  Human-only, and a login nobody has signed in as is refused `400 ASSIGNEE_NOT_ALLOWED`. */
-  putProjectDefaultAssignee(
-    project: string,
-    input: ProjectDefaultAssigneeInput,
-    bounds: WriteBounds
-  ): Promise<ProjectDefaultAssignee> {
-    return this.put<ProjectDefaultAssignee>(
-      `/api/v1/projects/${pathSegment(project)}/default-assignee`,
+  ) {
+    return this.put(
+      "/api/v1/settings/repo-projects/{owner}/{repo}",
+      repoParams(repo),
       input,
       bounds
     );
   }
 
+  async deleteRepoProject(repo: string, bounds: WriteBounds): Promise<void> {
+    await this.remove("/api/v1/settings/repo-projects/{owner}/{repo}", repoParams(repo), bounds);
+  }
+
+  /** Only the projects that name a default; a project left out names nobody. Needs the
+   *  `person` scope. */
+  listProjectDefaultAssignees() {
+    return this.read("/api/v1/settings/project-default-assignees", {});
+  }
+
+  /** Sets the person a project's unowned work lands on, or clears it with `{assignee: null}`.
+   *  Needs the `person` scope, and a login nobody has signed in as is refused
+   *  `400 ASSIGNEE_NOT_ALLOWED`. */
+  putProjectDefaultAssignee(
+    project: string,
+    input: Body<"/api/v1/projects/{key}/default-assignee", "put">,
+    bounds: WriteBounds
+  ) {
+    return this.put("/api/v1/projects/{key}/default-assignee", { key: project }, input, bounds);
+  }
+
   /** Every project's architecture sources, by project and then in the order each was added. */
-  listArchitectureSources(): Promise<ArchitectureSource[]> {
-    return this.json<ArchitectureSource[]>("/api/v1/settings/architecture-sources");
+  listArchitectureSources() {
+    return this.read("/api/v1/settings/architecture-sources", {});
   }
 
   /** The project's sources, one per repository, in the order they were added; `[]` when it has
    *  none: having none is the common answer, not a failure. */
-  listProjectArchitectureSources(project: string): Promise<ArchitectureSource[]> {
-    return this.json<ArchitectureSource[]>(
-      `/api/v1/projects/${pathSegment(project)}/architecture-sources`
-    );
+  listProjectArchitectureSources(project: string) {
+    return this.read("/api/v1/projects/{key}/architecture-sources", { key: project });
   }
 
   /** Adds `repo` (`owner/name`) as a source of the project, or changes the branch of the source
    *  it already is. */
-  putArchitectureSource(
+  async putArchitectureSource(
     project: string,
     repo: string,
-    input: { branch: string },
+    input: Body<"/api/v1/projects/{key}/architecture-sources/{owner}/{repo}", "put">,
     bounds: WriteBounds
-  ): Promise<ArchitectureSource> {
-    return this.put<ArchitectureSource>(
-      `/api/v1/projects/${pathSegment(project)}/architecture-sources/${repoPath(repo)}`,
+  ) {
+    return this.put(
+      "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
+      { key: project, ...repoParams(repo) },
       input,
       bounds
     );
   }
 
   /** Imports one source's model now; the row's `last_error` says whether the import failed. */
-  syncArchitectureSource(
-    project: string,
-    repo: string,
-    bounds: WriteBounds
-  ): Promise<ArchitectureSource> {
-    return this.send<ArchitectureSource>(
-      {
-        method: "POST",
-        path: `/api/v1/projects/${pathSegment(project)}/architecture-sources/${repoPath(repo)}/sync`,
-      },
+  async syncArchitectureSource(project: string, repo: string, bounds: WriteBounds) {
+    return this.post(
+      "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync",
+      { key: project, ...repoParams(repo) },
+      undefined,
       bounds
     );
   }
@@ -916,42 +992,79 @@ export class DispatchApiClient {
     bounds: WriteBounds
   ): Promise<void> {
     await this.remove(
-      `/api/v1/projects/${pathSegment(project)}/architecture-sources/${repoPath(repo)}`,
+      "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
+      { key: project, ...repoParams(repo) },
       bounds
     );
   }
 
   /** The project's component tree with the work attached; 404 SOURCE_NOT_FOUND without a source. */
-  getArchitecture(project: string): Promise<ArchitectureTree> {
-    return this.json<ArchitectureTree>(`/api/v1/projects/${pathSegment(project)}/architecture`);
+  getArchitecture(project: string) {
+    return this.read("/api/v1/projects/{key}/architecture", { key: project });
   }
 
-  listAgentTokens(): Promise<AgentToken[]> {
-    return this.json<AgentToken[]>("/api/v1/me/agent-tokens");
+  listAgentTokens() {
+    return this.read("/api/v1/me/agent-tokens", {});
   }
 
-  createAgentToken(input: { name: string }, bounds: WriteBounds): Promise<CreatedAgentToken> {
-    return this.post<CreatedAgentToken>("/api/v1/me/agent-tokens", input, bounds);
+  createAgentToken(input: Body<"/api/v1/me/agent-tokens", "post">, bounds: WriteBounds) {
+    return this.post("/api/v1/me/agent-tokens", {}, input, bounds);
+  }
+
+  /** `PATCH /api/v1/me/agent-tokens/{id}`: the whole set of scopes the token is to hold, which
+   *  replaces the set it holds now, answering the updated token. A scope the caller does not hold
+   *  itself is refused, as it is at the mint. */
+  setAgentTokenScopes(
+    id: string,
+    scopes: NonNullable<Body<"/api/v1/me/agent-tokens/{id}", "patch">>["scopes"],
+    bounds: WriteBounds
+  ) {
+    return this.patch("/api/v1/me/agent-tokens/{id}", { id }, { scopes }, bounds);
   }
 
   async revokeAgentToken(id: string, bounds: WriteBounds): Promise<void> {
-    await this.remove(`/api/v1/me/agent-tokens/${pathSegment(id)}`, bounds);
+    await this.remove("/api/v1/me/agent-tokens/{id}", { id }, bounds);
   }
 
-  /** Everyone who has signed in, sorted by email: the assignee picker's options. */
+  /** Everyone who has signed in, sorted by email: the assignee picker's options. Dispatch
+   *  answers `null` for nobody, which is the empty list. */
   async listUsers(): Promise<DispatchUser[]> {
-    return (await this.json<ListUsersResponse>("/api/v1/users")).users;
+    return (await this.read("/api/v1/users", {})).users ?? [];
   }
 
-  listIssues(options: ListIssuesOptions = {}): Promise<IssueSummary[]> {
-    const { labels, ...query } = options;
-    return this.json<IssueSummary[]>(pathWithQuery("/api/v1/issues", { ...query, label: labels }));
+  /** The issue list's rows. The route answers the plain list, or a page object when the caller
+   *  asks for one (`limit`/`offset`); either arm is read here, so a caller sees rows whichever
+   *  it was answered with. */
+  async listIssues(query: Query<"/api/v1/issues", "get"> = {}) {
+    const answer = await this.read("/api/v1/issues", {}, query);
+    return Array.isArray(answer) ? answer : (answer.issues ?? []);
   }
+  /** `GET /api/v1/search/results`, or `GET /api/v1/search` for a request `everyBuildReadsSearch`
+   *  keeps there: the same search either way, from the same handler. `project`, `status`,
+   *  `author` (an actor id: a person's login or a session id) and `updated_since` (RFC 3339)
+   *  each narrow every leg of the search rather than striking rows out of the page it answers.
+   *  `number_project` narrows nothing: it is the project of the page the search was made from,
+   *  which a query that is a bare issue number is read in, and a request naming `project` too
+   *  reads the number in that project instead. `keywords_only` runs the keyword leg alone and
+   *  makes no embedding call, whatever embedder the deployment configured, which is what the
+   *  bar sends behind a keystroke; a request leaving it out searches by meaning too wherever an
+   *  embedder is configured. The route refuses a value it cannot read under its own code
+   *  (`INVALID_PROJECT`, `INVALID_NUMBER_PROJECT`, `INVALID_STATUS`, `INVALID_AUTHOR`,
+   *  `INVALID_UPDATED_SINCE`, `INVALID_KEYWORDS_ONLY`). The bar searches while a person types,
+   *  so it passes the `signal` of the search it is still interested in: an aborted request ends
+   *  the route's own work with it, the embedding a search by meaning had asked for included.
+   *  The path is `everyBuildReadsSearch`'s to pick, because a Dispatch released before the
+   *  results route refuses that path outright rather than answering `GET /api/v1/search` with
+   *  the member dropped, which is unnarrowed rows under the filters a person chose. */
   search(
     query: string,
-    options: { project?: string; limit?: number } = {}
-  ): Promise<SearchResponse> {
-    return this.json<SearchResponse>(pathWithQuery("/api/v1/search", { q: query, ...options }));
+    options: Omit<Query<"/api/v1/search/results", "get">, "q"> = {},
+    init: { signal?: AbortSignal } = {}
+  ) {
+    const request = { q: query, ...options };
+    return everyBuildReadsSearch(request)
+      ? this.read("/api/v1/search", {}, request, init)
+      : this.read("/api/v1/search/results", {}, request, init);
   }
 
   /**
@@ -959,129 +1072,156 @@ export class DispatchApiClient {
    * The create dialog asks while a person types, so a caller passes the `signal` of the check it
    * is still interested in and a superseded one is aborted rather than raced.
    */
-  relatedItems(
-    project: string,
-    title: string,
-    options: { signal?: AbortSignal } = {}
-  ): Promise<Suggestions> {
-    return this.json<Suggestions>(
-      pathWithQuery(`/api/v1/projects/${pathSegment(project)}/related`, { title }),
+  relatedItems(project: string, title: string, options: { signal?: AbortSignal } = {}) {
+    return this.read(
+      "/api/v1/projects/{key}/related",
+      { key: project },
+      { title },
       { signal: options.signal }
     );
   }
 
-  createIssue(input: CreateIssueInput, bounds: WriteBounds): Promise<Issue> {
-    return this.post<Issue>("/api/v1/issues", input, bounds);
+  createIssue(input: Body<"/api/v1/issues", "post">, bounds: WriteBounds) {
+    return this.post("/api/v1/issues", {}, input, bounds);
   }
 
-  getIssue(key: string): Promise<IssueDetails> {
-    return this.json<IssueDetails>(`/api/v1/issues/${pathSegment(key)}`);
+  getIssue(key: string) {
+    return this.read("/api/v1/issues/{key}", { key });
   }
 
   /** What a reference to the issue or one of its documents shows: title, status and each
    *  document's name, kind and latest version, without the full issue read. */
-  getIssueSummary(key: string): Promise<IssueReferenceSummary> {
-    return this.json<IssueReferenceSummary>(`/api/v1/issues/${pathSegment(key)}/summary`);
+  getIssueSummary(key: string) {
+    return this.read("/api/v1/issues/{key}/summary", { key });
   }
 
-  patchIssue(key: string, input: UpdateIssueInput, bounds: WriteBounds): Promise<Issue> {
-    return this.send<Issue>(issuePatchRequest(key, input), bounds);
+  async patchIssue(key: string, input: Body<"/api/v1/issues/{key}", "patch">, bounds: WriteBounds) {
+    return this.send(issuePatchRequest(key, input), bounds);
   }
 
   /** `DELETE /api/v1/issues/{key}/claim`: release the claim. A human may release any claim;
    *  the issue's status does not move. */
-  releaseIssueClaim(key: string, bounds: WriteBounds): Promise<Issue> {
-    return this.remove<Issue>(`/api/v1/issues/${pathSegment(key)}/claim`, bounds);
+  releaseIssueClaim(key: string, bounds: WriteBounds) {
+    return this.remove("/api/v1/issues/{key}/claim", { key }, bounds);
   }
 
-  getIssueEvents(key: string, options: ListEventsOptions = {}): Promise<Event[]> {
-    const { ids, ...query } = options;
-    return this.json<Event[]>(
-      pathWithQuery(`/api/v1/issues/${pathSegment(key)}/events`, { ...query, ids: ids?.join(",") })
-    );
+  /** `GET /api/v1/issues/{key}/events`: a page of the issue's event log. The document types every
+   *  event's `payload` as `unknown`, because Go carries it as the bytes it was written as and no
+   *  OpenAPI schema can say which payload belongs to which `type`; `DispatchEvent` is that union
+   *  over the same bytes, so this one response shape is named here rather than read. */
+  async getIssueEvents(
+    key: string,
+    query: Query<"/api/v1/issues/{key}/events", "get"> = {}
+  ): Promise<DispatchEvent[]> {
+    return this.json<DispatchEvent[]>(routeUrl("/api/v1/issues/{key}/events", { key }, query));
   }
 
   /** `GET /api/v1/issues/{key}/results`: the checks of the issue's Verification document in
    *  document order, each with every result recorded against it from any issue, newest first,
    *  and each result's currency as the server judged it against the repository. */
-  getIssueResults(key: string): Promise<IssueCheckResults> {
-    return this.json<IssueCheckResults>(`/api/v1/issues/${pathSegment(key)}/results`);
+  getIssueResults(key: string) {
+    return this.read("/api/v1/issues/{key}/results", { key });
   }
 
   /** `GET /api/v1/issues/{key}/coverage`: what each requirement of the issue's spec lacks. The
    *  server decides the gaps - a requirement with no plan task is no gap until the issue has a
    *  plan document - so a reader draws its answer rather than judging again. */
-  getIssueCoverage(key: string): Promise<IssueCoverage> {
-    return this.json<IssueCoverage>(`/api/v1/issues/${pathSegment(key)}/coverage`);
+  getIssueCoverage(key: string) {
+    return this.read("/api/v1/issues/{key}/coverage", { key });
   }
 
-  getInbox(project?: string): Promise<InboxRow[]> {
-    return this.json<InboxRow[]>(pathWithQuery("/api/v1/inbox", { project }));
+  getInbox(project?: string) {
+    return this.read("/api/v1/inbox", {}, { project });
   }
 
   /** `PUT /api/v1/me/asks/{id}/snooze`: fold this inbox row away for the caller until
-   *  `snoozedUntil` (RFC3339). Human-only, like the inbox itself. */
-  snoozeAsk(id: string, snoozedUntil: string, bounds: WriteBounds): Promise<AskSnooze> {
-    return this.send<AskSnooze>(askSnoozeRequest(id, snoozedUntil), bounds);
+   *  `snoozedUntil` (RFC3339). Needs the `person` scope, like the inbox itself. */
+  async snoozeAsk(id: string, snoozedUntil: string, bounds: WriteBounds) {
+    return this.send(askSnoozeRequest(id, snoozedUntil), bounds);
   }
 
   /** `DELETE /api/v1/me/asks/{id}/snooze`: bring the row back now. A row that is not snoozed
    *  answers the same 204. */
   async unsnoozeAsk(id: string, bounds: WriteBounds): Promise<void> {
-    await this.remove(`/api/v1/me/asks/${pathSegment(id)}/snooze`, bounds);
+    await this.remove("/api/v1/me/asks/{id}/snooze", { id }, bounds);
   }
 
-  listAgents(): Promise<Agent[]> {
-    return this.json<Agent[]>("/api/v1/agents");
+  /** `PUT /api/v1/asks/{id}/asked-of`: hand an open ask to `askedOf`, the email of somebody who
+   *  has signed in, so the ask waits on them wherever its issue goes and their Inbox lists it.
+   *  Naming the assignee of the ask's own issue empties the stored field, which hands the ask
+   *  back to whoever holds that issue. Needs the `person` scope: handing a question on is one
+   *  person asking another. */
+  handAskTo(id: string, askedOf: string, bounds: WriteBounds) {
+    return this.put("/api/v1/asks/{id}/asked-of", { id }, { asked_of: askedOf }, bounds);
   }
 
-  createAsk(key: string, input: CreateAskInput, bounds: WriteBounds): Promise<Ask> {
-    return this.post<Ask>(`/api/v1/issues/${pathSegment(key)}/asks`, input, bounds);
+  listAgents() {
+    return this.read("/api/v1/agents", {});
+  }
+
+  createAsk(key: string, input: Body<"/api/v1/issues/{key}/asks", "post">, bounds: WriteBounds) {
+    return this.post("/api/v1/issues/{key}/asks", { key }, input, bounds);
   }
 
   /** `GET /api/v1/issues/{key}/asks`: the issue's asks with their newest reply and no thread,
    *  for a reader that renders the ask itself. */
-  listIssueAsks(key: string, state: "all" | "open" | "answered" = "all"): Promise<IssueAskRow[]> {
-    return this.json<IssueAskRow[]>(
-      pathWithQuery(`/api/v1/issues/${pathSegment(key)}/asks`, { state })
-    );
+  listIssueAsks(key: string, state: "all" | "open" | "answered" = "all") {
+    return this.read("/api/v1/issues/{key}/asks", { key }, { state });
   }
 
   /** `GET /api/v1/issues/{key}/asks?thread=1`: the same rows carrying each ask's thread. The
-   *  list is unpaged, so only a reader that draws the threads asks for them. */
-  listIssueAskThreads(
+   *  list is unpaged, so only a reader that draws the threads asks for them. The response the
+   *  document gives the route leaves `thread` out, since asking for it is what makes it present,
+   *  so this one read names what it is answered with. */
+  async listIssueAskThreads(
     key: string,
     state: "all" | "open" | "answered" = "all"
   ): Promise<IssueAskThreadRow[]> {
     return this.json<IssueAskThreadRow[]>(
-      pathWithQuery(`/api/v1/issues/${pathSegment(key)}/asks`, { state, thread: 1 })
+      routeUrl("/api/v1/issues/{key}/asks", { key }, { state, thread: "1" })
     );
   }
 
-  answerAsk(id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<Ask> {
-    return this.post<Ask>(`/api/v1/asks/${pathSegment(id)}/answer`, input, bounds);
+  answerAsk(id: string, input: Body<"/api/v1/asks/{id}/answer", "post">, bounds: WriteBounds) {
+    return this.post("/api/v1/asks/{id}/answer", { id }, input, bounds);
   }
 
-  getAsk(id: string): Promise<AskRead> {
-    return this.json<AskRead>(`/api/v1/asks/${pathSegment(id)}`);
+  /** `POST /api/v1/asks/{id}/decline`: close an open question with no answer, keeping the
+   *  person's note. Needs the `person` scope, as the answer route does; an approval request is
+   *  refused `409 ASK_NOT_DECLINABLE`. */
+  declineAsk(id: string, input: DeclineAskInput, bounds: WriteBounds) {
+    return this.post("/api/v1/asks/{id}/decline", { id }, input, bounds);
+  }
+
+  getAsk(id: string) {
+    return this.read("/api/v1/asks/{id}", { id });
   }
 
   /** `GET /api/v1/me/answers`: the signed-in person's answers and ask replies, newest first,
-   *  one page at a time. Human-only. */
-  listMyAnswers(page: { limit: number; offset: number }): Promise<MyAnswersResponse> {
-    return this.json<MyAnswersResponse>(pathWithQuery("/api/v1/me/answers", page));
+   *  one page at a time. Needs the `person` scope. */
+  listMyAnswers(page: Query<"/api/v1/me/answers", "get">) {
+    return this.read("/api/v1/me/answers", {}, page);
   }
 
-  /** `GET /api/v1/me/replies`: the threads the signed-in person wrote in where someone else has
-   *  written since they last read it, newest reply first; `issue` or `artifact` narrows to one
-   *  owner. Human-only. */
-  listMyReplies(page: {
-    artifact?: string;
-    issue?: string;
-    limit: number;
-    offset?: number;
-  }): Promise<MyRepliesResponse> {
-    return this.json<MyRepliesResponse>(pathWithQuery("/api/v1/me/replies", page));
+  /** `GET /api/v1/me/replies`: the threads the signed-in person is reading, newest write first.
+   *  `kind` is the comma list the route takes (`reply` alone by default, `reply,agent` for the
+   *  Inbox's own rows), `state` is `unread` (the default), `inbox` - every row of their Inbox,
+   *  read or not - or `dismissed`, `issue` or `artifact` narrows to one owner, and an absent
+   *  `limit` asks for every matching row. `state=dismissed` answers `INBOX_DISMISSED_PAGE` rows
+   *  at a time, newest dismissal first, and `cursor` reads the next page from its `next_cursor`,
+   *  which is also what says whether another page follows, since that state's `total` is the page
+   *  it answers rather than the whole pile; `limit` or `offset` there, and `cursor` anywhere else,
+   *  are refused. Needs the `person` scope. */
+  listMyReplies(
+    page: Omit<Query<"/api/v1/me/replies", "get">, "kind"> & {
+      kind?: readonly InboxThreadKind[];
+    }
+  ) {
+    // The route reads `kind` as one comma list, not as the repeated parameter `routeUrl` writes
+    // an array as (`?label=`), so the one key the document types as that list is folded here.
+    // Spreading `page` keeps the caller's own key order, so the request reads as the route
+    // documents it.
+    return this.read("/api/v1/me/replies", {}, { ...page, kind: page.kind?.join(",") });
   }
 
   /** `PUT /api/v1/me/threads/{id}/read`: move the signed-in person's read mark on one thread
@@ -1093,52 +1233,54 @@ export class DispatchApiClient {
 
   async removeAskFollower(id: string, sessionId: string, bounds: WriteBounds): Promise<void> {
     await this.remove(
-      `/api/v1/asks/${pathSegment(id)}/followers/${pathSegment(sessionId)}`,
+      "/api/v1/asks/{id}/followers/{session_id}",
+      { id, session_id: sessionId },
       bounds
     );
   }
 
-  listComments(key: string, artifact?: string): Promise<Comment[]> {
-    return this.json<Comment[]>(
-      pathWithQuery(`/api/v1/issues/${pathSegment(key)}/comments`, { artifact })
-    );
+  listComments(key: string, artifact?: string) {
+    return this.read("/api/v1/issues/{key}/comments", { key }, { artifact });
   }
 
-  createComment(key: string, input: CreateCommentInput, bounds: WriteBounds): Promise<Comment> {
-    return this.post<Comment>(`/api/v1/issues/${pathSegment(key)}/comments`, input, bounds);
+  createComment(
+    key: string,
+    input: Body<"/api/v1/issues/{key}/comments", "post">,
+    bounds: WriteBounds
+  ) {
+    return this.post("/api/v1/issues/{key}/comments", { key }, input, bounds);
   }
 
-  getComment(id: string): Promise<CommentRead> {
-    return this.json<CommentRead>(`/api/v1/comments/${pathSegment(id)}`);
+  getComment(id: string) {
+    return this.read("/api/v1/comments/{id}", { id });
   }
 
-  resolveComment(id: string, bounds: WriteBounds): Promise<Comment> {
-    return this.post<Comment>(`/api/v1/comments/${pathSegment(id)}/resolve`, {}, bounds);
+  resolveComment(id: string, bounds: WriteBounds) {
+    return this.post("/api/v1/comments/{id}/resolve", { id }, {}, bounds);
   }
 
-  reopenComment(id: string, bounds: WriteBounds): Promise<Comment> {
-    return this.post<Comment>(`/api/v1/comments/${pathSegment(id)}/reopen`, {}, bounds);
+  reopenComment(id: string, bounds: WriteBounds) {
+    // The route takes no body at all: reopenComment resolves the person from the credential
+    // (comment_actions.go), which is why the document declares none.
+    return this.post("/api/v1/comments/{id}/reopen", { id }, undefined, bounds);
   }
 
-  editComment(id: string, input: EditCommentInput, bounds: WriteBounds): Promise<Comment> {
-    return this.send<Comment>(
-      { body: input, method: "PATCH", path: `/api/v1/comments/${pathSegment(id)}` },
-      bounds
-    );
+  editComment(id: string, input: Body<"/api/v1/comments/{id}", "patch">, bounds: WriteBounds) {
+    return this.patch("/api/v1/comments/{id}", { id }, input, bounds);
   }
 
   /** The comment's current blocks, each with its span in the stored body, and its revision: what
    *  the editor carries block ids from (`editComment`'s `blocks` and `base_revision`). */
-  commentBlocks(id: string): Promise<ItemBlocks> {
-    return this.json<ItemBlocks>(`/api/v1/comments/${pathSegment(id)}/blocks`);
+  commentBlocks(id: string) {
+    return this.read("/api/v1/comments/{id}/blocks", { id });
   }
 
-  acceptComment(id: string, bounds: WriteBounds): Promise<Comment> {
-    return this.post<Comment>(`/api/v1/comments/${pathSegment(id)}/accept`, {}, bounds);
+  acceptComment(id: string, bounds: WriteBounds) {
+    return this.post("/api/v1/comments/{id}/accept", { id }, {}, bounds);
   }
 
-  rejectComment(id: string, bounds: WriteBounds): Promise<Comment> {
-    return this.post<Comment>(`/api/v1/comments/${pathSegment(id)}/reject`, {}, bounds);
+  rejectComment(id: string, bounds: WriteBounds) {
+    return this.post("/api/v1/comments/{id}/reject", { id }, {}, bounds);
   }
 
   createCommentDelivery(
@@ -1146,188 +1288,163 @@ export class DispatchApiClient {
     target: string | undefined,
     delivery: "btw" | "aside" | "steer",
     bounds: WriteBounds
-  ): Promise<CommentDelivery> {
-    return this.post<CommentDelivery>(
-      `/api/v1/comments/${pathSegment(id)}/deliveries`,
+  ) {
+    return this.post(
+      "/api/v1/comments/{id}/deliveries",
+      { id },
       { delivery, ...(target === undefined ? {} : { target }) },
       bounds
     );
   }
 
-  createMessage(key: string, input: CreateMessageInput, bounds: WriteBounds): Promise<Message> {
-    return this.post<Message>(`/api/v1/issues/${pathSegment(key)}/messages`, input, bounds);
+  createMessage(
+    key: string,
+    input: Body<"/api/v1/issues/{key}/messages", "post">,
+    bounds: WriteBounds
+  ) {
+    return this.post("/api/v1/issues/{key}/messages", { key }, input, bounds);
   }
 
   /** A person's message to one session. */
-  createAgentMessage(
+  async createAgentMessage(
     sessionID: string,
-    input: CreateAgentMessageInput,
+    input: Body<"/api/v1/agents/{session_id}/messages", "post">,
     bounds: WriteBounds
-  ): Promise<Message> {
-    return this.send<Message>(agentMessageRequest(sessionID, input), bounds);
+  ) {
+    return this.send(agentMessageRequest(sessionID, input), bounds);
   }
 
-  listAgentMessages(sessionID: string): Promise<MessageRead[]> {
-    return this.json<MessageRead[]>(`/api/v1/agents/${pathSegment(sessionID)}/messages`);
+  listAgentMessages(sessionID: string) {
+    return this.read("/api/v1/agents/{session_id}/messages", { session_id: sessionID });
   }
 
   /** A person's message to many sessions. */
-  createBroadcast(input: CreateBroadcastInput, bounds: WriteBounds): Promise<BroadcastCreated> {
-    return this.post<BroadcastCreated>("/api/v1/broadcasts", input, bounds);
+  createBroadcast(input: Body<"/api/v1/broadcasts", "post">, bounds: WriteBounds) {
+    return this.post("/api/v1/broadcasts", {}, input, bounds);
   }
 
-  listBroadcasts(): Promise<BroadcastSummary[]> {
-    return this.json<BroadcastSummary[]>("/api/v1/broadcasts");
+  listBroadcasts() {
+    return this.read("/api/v1/broadcasts", {});
   }
 
-  getBroadcast(id: string): Promise<BroadcastRead> {
-    return this.json<BroadcastRead>(`/api/v1/broadcasts/${pathSegment(id)}`);
+  getBroadcast(id: string) {
+    return this.read("/api/v1/broadcasts/{id}", { id });
   }
 
-  createMessageDelivery(
-    id: string,
-    delivery: "btw" | "aside" | "steer",
-    bounds: WriteBounds
-  ): Promise<MessageDelivery> {
-    return this.post<MessageDelivery>(
-      `/api/v1/messages/${pathSegment(id)}/deliveries`,
-      { delivery },
-      bounds
-    );
+  createMessageDelivery(id: string, delivery: "btw" | "aside" | "steer", bounds: WriteBounds) {
+    return this.post("/api/v1/messages/{id}/deliveries", { id }, { delivery }, bounds);
   }
 
-  getMessage(key: string, id: string): Promise<MessageRead> {
-    return this.json<MessageRead>(`/api/v1/issues/${pathSegment(key)}/messages/${pathSegment(id)}`);
+  getMessage(key: string, id: string) {
+    return this.read("/api/v1/issues/{key}/messages/{id}", { id, key });
   }
 
   /** `GET /api/v1/issues/{key}/messages`: every root message of the issue, oldest first, each
    *  with its deliveries and its replies. */
-  listIssueMessages(key: string): Promise<MessageRead[]> {
-    return this.json<MessageRead[]>(`/api/v1/issues/${pathSegment(key)}/messages`);
+  listIssueMessages(key: string) {
+    return this.read("/api/v1/issues/{key}/messages", { key });
   }
 
   /** `GET /api/v1/issues/{key}/handoffs`: every phase handoff of the issue, newest first, without
    *  its body. */
-  listHandoffs(key: string): Promise<HandoffSummary[]> {
-    return this.json<HandoffSummary[]>(`/api/v1/issues/${pathSegment(key)}/handoffs`);
+  listHandoffs(key: string) {
+    return this.read("/api/v1/issues/{key}/handoffs", { key });
   }
 
   /** `GET /api/v1/handoffs/{id}`: one handoff with the body its session wrote. */
-  getHandoff(id: string): Promise<Handoff> {
-    return this.json<Handoff>(`/api/v1/handoffs/${pathSegment(id)}`);
+  getHandoff(id: string) {
+    return this.read("/api/v1/handoffs/{id}", { id });
   }
 
-  listArtifacts(key: string): Promise<Artifact[]> {
-    return this.json<Artifact[]>(`/api/v1/issues/${pathSegment(key)}/artifacts`);
+  listArtifacts(key: string) {
+    return this.read("/api/v1/issues/{key}/artifacts", { key });
   }
 
-  listProjectArtifacts(key: string, unlinked?: boolean): Promise<Artifact[]> {
-    return this.json<Artifact[]>(
-      pathWithQuery(`/api/v1/projects/${pathSegment(key)}/artifacts`, { unlinked })
+  listProjectArtifacts(key: string, unlinked?: boolean) {
+    return this.read("/api/v1/projects/{key}/artifacts", { key }, { unlinked });
+  }
+
+  uploadArtifact(owner: ArtifactOwner, input: CreateArtifactInput, bounds: WriteBounds) {
+    const body = artifactUploadBody(input);
+    if ("issue" in owner) {
+      return this.post("/api/v1/issues/{key}/artifacts", { key: owner.issue }, body, bounds);
+    }
+    if ("project" in owner) {
+      return this.post("/api/v1/projects/{key}/artifacts", { key: owner.project }, body, bounds);
+    }
+    return this.post(
+      "/api/v1/agents/{session_id}/artifacts",
+      { session_id: owner.session },
+      body,
+      bounds
     );
   }
 
-  uploadArtifact(
-    owner: ArtifactOwner,
-    input: CreateArtifactInput,
-    bounds: WriteBounds
-  ): Promise<ArtifactUploadResponse> {
-    const path = artifactsPath(owner);
-    if ("content" in input) {
-      return this.post<ArtifactUploadResponse>(
-        path,
-        { actor: input.actor, content: input.content, name: input.name, summary: input.summary },
-        bounds
-      );
-    }
-    const body = new FormData();
-    body.set("name", input.name);
-    if (input.summary !== undefined) {
-      body.set("summary", input.summary);
-    }
-    if (input.actor !== undefined) {
-      body.set("actor", JSON.stringify(input.actor));
-    }
-    body.set("file", input.file);
-
-    return this.post<ArtifactUploadResponse>(path, body, bounds);
+  getArtifact(id: string) {
+    return this.read("/api/v1/artifacts/{id}", { id });
   }
 
-  getArtifact(id: string): Promise<Artifact> {
-    return this.json<Artifact>(`/api/v1/artifacts/${pathSegment(id)}`);
-  }
-
-  getProjectArtifact(key: string, slug: string): Promise<Artifact> {
-    return this.json<Artifact>(
-      `/api/v1/projects/${pathSegment(key)}/artifacts/${pathSegment(slug)}`
-    );
+  getProjectArtifact(key: string, slug: string) {
+    return this.read("/api/v1/projects/{key}/artifacts/{slug}", { key, slug });
   }
 
   /** What a reference to a project document shows: name, kind and latest version, without its
    *  versions. */
-  getProjectDocumentSummary(key: string, slug: string): Promise<DocumentReferenceSummary> {
-    return this.json<DocumentReferenceSummary>(
-      `/api/v1/projects/${pathSegment(key)}/artifacts/${pathSegment(slug)}/summary`
-    );
+  getProjectDocumentSummary(key: string, slug: string) {
+    return this.read("/api/v1/projects/{key}/artifacts/{slug}/summary", { key, slug });
   }
 
   /** An artifact of an agent's conversation, with its versions. */
-  getAgentArtifact(sessionId: string, slug: string): Promise<Artifact> {
-    return this.json<Artifact>(
-      `/api/v1/agents/${pathSegment(sessionId)}/artifacts/${pathSegment(slug)}`
-    );
+  getAgentArtifact(sessionId: string, slug: string) {
+    return this.read("/api/v1/agents/{session_id}/artifacts/{slug}", {
+      session_id: sessionId,
+      slug,
+    });
   }
 
-  getArtifactText(id: string): Promise<ArtifactText> {
-    return this.json<ArtifactText>(`/api/v1/artifacts/${pathSegment(id)}/text`);
+  getArtifactText(id: string) {
+    return this.read("/api/v1/artifacts/{id}/text", { id });
   }
 
-  rebuildArtifact(
-    id: string,
-    markdown: string | undefined,
-    bounds: WriteBounds
-  ): Promise<ArtifactRebuildReport> {
-    return this.post<ArtifactRebuildReport>(
-      `/api/v1/artifacts/${pathSegment(id)}/rebuild`,
+  rebuildArtifact(id: string, markdown: string | undefined, bounds: WriteBounds) {
+    return this.post(
+      "/api/v1/artifacts/{id}/rebuild",
+      { id },
       markdown === undefined ? {} : { markdown },
       bounds
     );
   }
 
-  getArtifactBlocks(id: string): Promise<ArtifactBlock[]> {
-    return this.json<ArtifactBlock[]>(`/api/v1/artifacts/${pathSegment(id)}/blocks`);
+  getArtifactBlocks(id: string) {
+    return this.read("/api/v1/artifacts/{id}/blocks", { id });
   }
 
   /** An issue's decision records: its decisions.md, the open questions its spec holds, and each
    *  decision with the spec blocks it shaped. */
-  getIssueDecisions(key: string): Promise<IssueDecisions> {
-    return this.json<IssueDecisions>(`/api/v1/issues/${pathSegment(key)}/decisions`);
+  getIssueDecisions(key: string) {
+    return this.read("/api/v1/issues/{key}/decisions", { key });
   }
 
   /** Record that the caller agrees with the decision that heading block opens, as the text they
    *  read: `textSha256` is the decision's own `text_sha256`, and a decision that changed since
    *  is `409 DECISION_CHANGED`. */
-  keepDecision(
-    id: string,
-    blockId: string,
-    textSha256: string,
-    bounds: WriteBounds
-  ): Promise<DecisionKeep> {
-    return this.post<DecisionKeep>(
-      `/api/v1/artifacts/${pathSegment(id)}/blocks/${pathSegment(blockId)}/keep`,
+  keepDecision(id: string, blockId: string, textSha256: string, bounds: WriteBounds) {
+    return this.post(
+      "/api/v1/artifacts/{id}/blocks/{block_id}/keep",
+      { block_id: blockId, id },
       { text_sha256: textSha256 },
       bounds
     );
   }
 
   /** The caller's last read version of a document; its version is null when they have read none. */
-  getDocumentRead(id: string): Promise<DocumentRead> {
-    return this.json<DocumentRead>(`/api/v1/me/documents/${pathSegment(id)}/read`);
+  getDocumentRead(id: string) {
+    return this.read("/api/v1/me/documents/{id}/read", { id });
   }
 
   /** Record the caller's last read version of a document: the Spec tab marks each block that
    *  changed since it. */
-  putDocumentRead(id: string, version: number, bounds: WriteBounds): Promise<DocumentRead> {
+  async putDocumentRead(id: string, version: number, bounds: WriteBounds) {
     return this.send(documentReadRequest(id, version), bounds);
   }
 
@@ -1335,7 +1452,7 @@ export class DispatchApiClient {
    *  this GET carries none. */
   async getArtifactVersion(id: string, version: number): Promise<ArtifactVersionContent> {
     const response = await this.response(
-      `/api/v1/artifacts/${pathSegment(id)}/versions/${pathSegment(String(version))}`,
+      routeUrl("/api/v1/artifacts/{id}/versions/{number}", { id, number: String(version) }),
       {},
       null
     );
@@ -1350,46 +1467,46 @@ export class DispatchApiClient {
 
   createArtifactVersion(
     id: string,
-    input: CreateVersionInput,
+    input: Body<"/api/v1/artifacts/{id}/versions", "post">,
     bounds: WriteBounds
-  ): Promise<Version> {
-    return this.post<Version>(`/api/v1/artifacts/${pathSegment(id)}/versions`, input, bounds);
+  ) {
+    return this.post("/api/v1/artifacts/{id}/versions", { id }, input, bounds);
   }
 
-  listArtifactReviews(id: string): Promise<ArtifactReview[]> {
-    return this.json<ArtifactReview[]>(`/api/v1/artifacts/${pathSegment(id)}/reviews`);
+  listArtifactReviews(id: string) {
+    return this.read("/api/v1/artifacts/{id}/reviews", { id });
   }
 
-  createArtifactReview(
+  createArtifactReview(id: string, input: CreateArtifactReviewInput, bounds: WriteBounds) {
+    return this.post("/api/v1/artifacts/{id}/reviews", { id }, input, bounds);
+  }
+
+  listArtifactAsks(id: string, state: "all" | "open" | "answered" = "all") {
+    return this.read("/api/v1/artifacts/{id}/asks", { id }, { state });
+  }
+
+  createArtifactAsk(
     id: string,
-    input: CreateArtifactReviewInput,
+    input: Body<"/api/v1/artifacts/{id}/asks", "post">,
     bounds: WriteBounds
-  ): Promise<ArtifactReview> {
-    return this.post<ArtifactReview>(`/api/v1/artifacts/${pathSegment(id)}/reviews`, input, bounds);
+  ) {
+    return this.post("/api/v1/artifacts/{id}/asks", { id }, input, bounds);
   }
 
-  listArtifactAsks(id: string, state: "all" | "open" | "answered" = "all"): Promise<Ask[]> {
-    return this.json<Ask[]>(pathWithQuery(`/api/v1/artifacts/${pathSegment(id)}/asks`, { state }));
-  }
-
-  createArtifactAsk(id: string, input: CreateAskInput, bounds: WriteBounds): Promise<Ask> {
-    return this.post<Ask>(`/api/v1/artifacts/${pathSegment(id)}/asks`, input, bounds);
-  }
-
-  listArtifactComments(id: string): Promise<Comment[]> {
-    return this.json<Comment[]>(`/api/v1/artifacts/${pathSegment(id)}/comments`);
+  listArtifactComments(id: string) {
+    return this.read("/api/v1/artifacts/{id}/comments", { id });
   }
 
   createArtifactComment(
     id: string,
-    input: CreateCommentInput,
+    input: Body<"/api/v1/artifacts/{id}/comments", "post">,
     bounds: WriteBounds
-  ): Promise<Comment> {
-    return this.post<Comment>(`/api/v1/artifacts/${pathSegment(id)}/comments`, input, bounds);
+  ) {
+    return this.post("/api/v1/artifacts/{id}/comments", { id }, input, bounds);
   }
 
-  getArtifactSubscribers(id: string): Promise<Subscriber[]> {
-    return this.json<Subscriber[]>(`/api/v1/artifacts/${pathSegment(id)}/subscribers`);
+  getArtifactSubscribers(id: string) {
+    return this.read("/api/v1/artifacts/{id}/subscribers", { id });
   }
 
   async unsubscribeArtifactSession(
@@ -1398,74 +1515,78 @@ export class DispatchApiClient {
     bounds: WriteBounds
   ): Promise<void> {
     await this.remove(
-      `/api/v1/artifacts/${pathSegment(id)}/subscribers/${pathSegment(sessionId)}`,
+      "/api/v1/artifacts/{id}/subscribers/{session_id}",
+      { id, session_id: sessionId },
       bounds
     );
   }
 
-  getIssueReferences(key: string): Promise<IssueReferences> {
-    return this.json<IssueReferences>(`/api/v1/issues/${pathSegment(key)}/references`);
+  getIssueReferences(key: string) {
+    return this.read("/api/v1/issues/{key}/references", { key });
   }
+
+  /** Everyone who worked the issue, running or not: people, and agent sessions merged with the
+   *  listener's Legion agent registry - `legion_registry: "unavailable"` when it did not answer. */
+  getIssueCollaborators(key: string) {
+    return this.read("/api/v1/issues/{key}/collaborators", { key });
+  }
+
   /** The edges at a node; `kind` keeps those of one kind - `part_of` lists a document's blocks,
    *  which a document's read otherwise leaves out. */
-  getReferences(reference: string, options: { kind?: string } = {}): Promise<GraphReferences> {
-    return this.json<GraphReferences>(
-      pathWithQuery("/api/v1/references", { kind: options.kind, to: reference })
-    );
+  getReferences(reference: string, options: { kind?: string } = {}) {
+    return this.read("/api/v1/references", {}, { kind: options.kind, to: reference });
+  }
+
+  /** The question map of the document one reference source's text belongs to: every question
+   *  block that document's latest version declares, with the ask settled for it (for a copied
+   *  block, the ask it was copied from). `kind` is the source's own kind - artifact, ask,
+   *  comment or message - and `id` its id. A source whose text belongs to no document is 404. */
+  getReferenceQuestions(kind: ReferenceSourceKind, id: string) {
+    return this.read("/api/v1/references/questions", {}, { id, kind });
   }
 
   /** One deploy-repository run with every job it ran, for the drill-down's job lists. */
-  getDeliveryRun(id: number): Promise<DeliveryRunDetail> {
-    return this.json<DeliveryRunDetail>(`/api/v1/delivery/runs/${id}`);
+  getDeliveryRun(id: number) {
+    return this.read("/api/v1/delivery/runs/{id}", { id: String(id) });
   }
 
   /** The delivery timeline's configuration record, or `null` until someone sets it. */
-  getDeliverySettings(): Promise<DeliverySettings | null> {
-    return this.json<DeliverySettings | null>("/api/v1/settings/delivery");
+  getDeliverySettings() {
+    return this.read("/api/v1/settings/delivery", {});
   }
 
   /** Replaces the delivery timeline's configuration (human callers only). The server first proves
    *  the GitHub App can read `deploy_repo`, answering `409 DELIVERY_SETTINGS_ACCESS` when not. */
-  putDeliverySettings(
-    input: DeliverySettingsInput,
-    bounds: WriteBounds
-  ): Promise<DeliverySettings> {
-    return this.put<DeliverySettings>("/api/v1/settings/delivery", input, bounds);
+  putDeliverySettings(input: Body<"/api/v1/settings/delivery", "put">, bounds: WriteBounds) {
+    return this.put("/api/v1/settings/delivery", {}, input, bounds);
   }
 
   /** Creates a Delivery session group: its sessions' pull requests take it as their Parent agent.
    *  A session another group holds is `409 SESSION_IN_GROUP`; a name another group has, or that is
    *  the title of a session outside the group, is `409` as well, the message naming which. */
   createDeliverySessionGroup(
-    input: CreateDeliverySessionGroupInput,
+    input: Body<"/api/v1/delivery/session-groups", "post">,
     bounds: WriteBounds
-  ): Promise<DeliverySessionGroup> {
-    return this.post<DeliverySessionGroup>("/api/v1/delivery/session-groups", input, bounds);
+  ) {
+    return this.post("/api/v1/delivery/session-groups", {}, input, bounds);
   }
 
   /** Renames a session group, adds sessions to it or removes sessions from it. */
   updateDeliverySessionGroup(
     id: string,
-    input: UpdateDeliverySessionGroupInput,
+    input: Body<"/api/v1/delivery/session-groups/{id}", "patch">,
     bounds: WriteBounds
-  ): Promise<DeliverySessionGroup> {
-    return this.send<DeliverySessionGroup>(
-      {
-        body: input,
-        method: "PATCH",
-        path: `/api/v1/delivery/session-groups/${pathSegment(id)}`,
-      },
-      bounds
-    );
+  ) {
+    return this.patch("/api/v1/delivery/session-groups/{id}", { id }, input, bounds);
   }
 
   /** Deletes a session group; its sessions show as themselves again. */
   async deleteDeliverySessionGroup(id: string, bounds: WriteBounds): Promise<void> {
-    await this.remove(`/api/v1/delivery/session-groups/${pathSegment(id)}`, bounds);
+    await this.remove("/api/v1/delivery/session-groups/{id}", { id }, bounds);
   }
 
-  getIssueSubscribers(key: string): Promise<Subscriber[]> {
-    return this.json<Subscriber[]>(`/api/v1/issues/${pathSegment(key)}/subscribers`);
+  getIssueSubscribers(key: string) {
+    return this.read("/api/v1/issues/{key}/subscribers", { key });
   }
 
   async unsubscribeIssueSession(
@@ -1474,35 +1595,38 @@ export class DispatchApiClient {
     bounds: WriteBounds
   ): Promise<void> {
     await this.remove(
-      `/api/v1/issues/${pathSegment(key)}/subscribers/${pathSegment(sessionId)}`,
+      "/api/v1/issues/{key}/subscribers/{session_id}",
+      { key, session_id: sessionId },
       bounds
     );
   }
 
-  getMyState(): Promise<UserState> {
-    return this.json<UserState>("/api/v1/me/state");
+  getMyState() {
+    return this.read("/api/v1/me/state", {});
   }
 
-  putIssueState(
+  async putIssueState(
     key: string,
-    input: Partial<UserIssueState>,
+    input: Body<"/api/v1/me/issues/{key}/state", "put">,
     bounds: WriteBounds
-  ): Promise<UserIssueState> {
-    return this.send<UserIssueState>(issueStateRequest(key, input), bounds);
+  ) {
+    return this.send(issueStateRequest(key, input), bounds);
   }
 
-  getMyAgentState(): Promise<UserAgentStates> {
-    return this.json<UserAgentStates>("/api/v1/me/agents/state");
+  getMyAgentState() {
+    return this.read("/api/v1/me/agents/state", {});
   }
 
-  putAgentState(
+  async putAgentState(
     sessionID: string,
-    input: UserAgentStateInput,
+    input: Body<"/api/v1/me/agents/{session_id}/state", "put">,
     bounds: WriteBounds
-  ): Promise<UserAgentState> {
-    return this.send<UserAgentState>(agentStateRequest(sessionID, input), bounds);
+  ) {
+    return this.send(agentStateRequest(sessionID, input), bounds);
   }
 
+  /** The signed-in person. `/auth/*` sits outside the `/api/v1` route table the document is
+   *  rendered from, so this one read names its path and its answer itself. */
   whoAmI(): Promise<AuthenticatedUser> {
     return this.json<AuthenticatedUser>("/auth/whoami");
   }
@@ -1513,7 +1637,8 @@ export class DispatchApiClient {
     return this.json<{ ok: true }>("/auth/logout", { method: "POST" });
   }
 
-  /** A read through Dispatch's GitHub proxy; it makes no write. */
+  /** A read through Dispatch's GitHub proxy; it makes no write. The proxy carries any GitHub path
+   *  through, so the route table holds no route for what it answers. */
   githubRest(path: string, init: { readonly signal?: AbortSignal } = {}): Promise<Response> {
     return this.response(`/api/github/rest/${path.replace(/^\/+/, "")}`, init);
   }
@@ -1522,10 +1647,8 @@ export class DispatchApiClient {
    *  ones naming the viewer, and the ones any signed-in person may decide - as the Inbox's
    *  credential-requests section lists them, each secret request with the secrets broker's page
    *  where it is decided, or `null` when this Dispatch has no secrets broker. */
-  getCredentialPending(): Promise<CredentialPendingResponse | null> {
-    return this.json<CredentialPendingResponse | null>(
-      pathWithQuery("/api/v1/credential-requests", { approver: "me" })
-    );
+  getCredentialPending() {
+    return this.read("/api/v1/credential-requests", {}, { approver: "me" });
   }
 
   /** Approve a machine login as the signed-in viewer with the code the viewer typed: Dispatch
@@ -1534,67 +1657,81 @@ export class DispatchApiClient {
    *  here with 403 `DECIDE_ON_BROKER_PAGE`. */
   approveCredentialRecord(
     recordId: string,
-    body: { code?: string },
+    body: Body<"/api/v1/credential-requests/{id}/approve", "post">,
     bounds: WriteBounds
-  ): Promise<CredentialDecisionResponse> {
-    return this.post<CredentialDecisionResponse>(
-      `/api/v1/credential-requests/${pathSegment(recordId)}/approve`,
-      body,
-      bounds
-    );
+  ) {
+    return this.post("/api/v1/credential-requests/{id}/approve", { id: recordId }, body, bounds);
   }
 
   /** Deny a machine login as the signed-in viewer with the code the viewer typed. */
   denyCredentialRecord(
     recordId: string,
-    body: { code?: string },
+    body: Body<"/api/v1/credential-requests/{id}/deny", "post">,
     bounds: WriteBounds
-  ): Promise<CredentialDecisionResponse> {
-    return this.post<CredentialDecisionResponse>(
-      `/api/v1/credential-requests/${pathSegment(recordId)}/deny`,
-      body,
-      bounds
-    );
+  ) {
+    return this.post("/api/v1/credential-requests/{id}/deny", { id: recordId }, body, bounds);
   }
 
   /** A machine (`launcher_credential`) record is only ever selected through this route: the code
    *  the operator types in is what proves which pending login they mean, and deciding it takes
    *  the same code again. */
-  lookupMachineCredential(code: string, bounds: WriteBounds): Promise<CredentialRecord> {
-    return this.post<CredentialRecord>(
-      "/api/v1/credential-requests/machine-lookup",
-      { code },
-      bounds
-    );
+  lookupMachineCredential(code: string, bounds: WriteBounds) {
+    return this.post("/api/v1/credential-requests/machine-lookup", {}, { code }, bounds);
   }
 
   /** `GET /api/v1/credential-grants?approver=me`: every live grant of the viewer's sessions,
    *  automatic or approved, and every grant the viewer approved. */
-  getCredentialGrants(): Promise<CredentialGrantsResponse> {
-    return this.json<CredentialGrantsResponse>(
-      pathWithQuery("/api/v1/credential-grants", { approver: "me" })
-    );
+  getCredentialGrants() {
+    return this.read("/api/v1/credential-grants", {}, { approver: "me" });
   }
 
   /** Revoke a grant as the signed-in viewer, its approver or its enrollment's operator. The
    *  operator's revoke of an automatic grant also ends that session's other automatic grants of
    *  those secrets and makes it ask before it gets them again. */
   async revokeCredentialGrant(grantId: string, bounds: WriteBounds): Promise<void> {
-    await this.post(`/api/v1/credential-grants/${pathSegment(grantId)}/revoke`, {}, bounds);
+    await this.post("/api/v1/credential-grants/{id}/revoke", { id: grantId }, undefined, bounds);
   }
 
   /** `GET /api/v1/machine-logins`: the machine logins the viewer may revoke, their own machines'
    *  and every service's, whoever approved it, that are unexpired or expired with a session still
    *  running. */
-  getMachineLogins(): Promise<MachineLoginsResponse> {
-    return this.json<MachineLoginsResponse>("/api/v1/machine-logins");
+  getMachineLogins() {
+    return this.read("/api/v1/machine-logins", {});
   }
 
   /** Revoke a machine login, expired or not: a service's, or one of the viewer's machines'.
    *  Dispatch names the viewer as the person revoking, and every session the login enrolled ends
    *  with it. */
   async revokeMachineLogin(credentialId: string, bounds: WriteBounds): Promise<void> {
-    await this.post(`/api/v1/machine-logins/${pathSegment(credentialId)}/revoke`, {}, bounds);
+    await this.post("/api/v1/machine-logins/{id}/revoke", { id: credentialId }, undefined, bounds);
+  }
+
+  /** `GET /api/v1/signins`: the viewer's own sign-ins on their machines (`agent-secrets login`),
+   *  one per box key they have not revoked. Dispatch names the viewer, so nobody reads another
+   *  person's. */
+  getSignIns() {
+    return this.read("/api/v1/signins", {});
+  }
+
+  /** End one of the viewer's own sign-ins: that machine trades no token for them again and the
+   *  access tokens already minted under it end with it, while their sign-ins on other machines
+   *  keep working. */
+  async revokeSignIn(signInId: string, bounds: WriteBounds): Promise<void> {
+    await this.post("/api/v1/signins/{id}/revoke", { id: signInId }, undefined, bounds);
+  }
+
+  /** `GET /api/v1/credentials/capabilities`: what the credential pages may offer against this
+   *  deployment's secrets broker, which Dispatch relays from the broker's own RFC 8414 metadata
+   *  because a browser reaches no broker. */
+  getCredentialCapabilities() {
+    return this.read("/api/v1/credentials/capabilities", {});
+  }
+
+  /** `GET /api/v1/settings/new-issue`: the label an issue the bar files from a person's typed
+   *  words carries and the session it is routed to, as the deployment configured them; each
+   *  `""` where it configured none. */
+  getNewIssueSettings(): Promise<NewIssueSettings> {
+    return this.json<NewIssueSettings>("/api/v1/settings/new-issue");
   }
 }
 

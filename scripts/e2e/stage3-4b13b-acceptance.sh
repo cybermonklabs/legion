@@ -17,10 +17,16 @@
 # branch before any merge, and the scratch base is deleted at the end.
 #
 # Run it as `bash scripts/e2e/stage3-4b13b-acceptance.sh` from the operator's own Oh My Pi session,
-# with the Stage 3 proof's two required inputs, LEGION_E2E_MODEL_GATEWAY_URL and SMOKE_UPSTREAM_NATS
-# (scripts/e2e/README.md; Legion's two role Apps are this deployment's own unless the four
-# LEGION_E2E_*_APP_* inputs name another's, lib/github-apps.sh), and three of its own, since it
-# creates no Docker container:
+# with the Stage 3 proof's three required inputs, LEGION_E2E_MODEL_GATEWAY_URL, SMOKE_UPSTREAM_NATS
+# and LEGION_E2E_REVIEW_APP_KEY_COMMAND, shell text that prints the review App's PEM private key on
+# stdout, which prerequisites runs once, here on the driver, in this session's own environment (so
+# it may read the operator's HOME and their own configuration) into $work/app-key/review/key.pem,
+# the 0600 file whose `cat` is that App's private_key_command and from whose key the daemon mints
+# and renews that App's tokens; cleanup removes that directory on every exit
+# (scripts/e2e/README.md; the two role Apps' ids, LEGION_E2E_IMPLEMENT_APP_ID and
+# LEGION_E2E_REVIEW_APP_ID, and the name of the implement App's secrets broker github-app secret,
+# LEGION_E2E_IMPLEMENT_APP_SECRET, default to this deployment's own, lib/github-apps.sh), and three
+# of its own, since it creates no Docker container:
 # ACCEPT_PG_CONTAINER and ACCEPT_PG_PORT name a running Postgres container (user postgres, password
 # ci) in which the daemon and Dispatch take their own databases, and ACCEPT_NATS_BIN a nats-server
 # binary it runs natively. Its GitHub writes are the Stage 3 proof human's, the devbox gh acting as
@@ -134,6 +140,10 @@ cleanup() {
   # left as the checks set it. The warning names the line alone: inside a trap BASH_COMMAND is the
   # command the trap interrupted, not the cleanup command that failed.
   trap 'printf "cleanup warning: line %s exited %s\n" "$LINENO" "$?" >&2' ERR
+  # First, whatever the rest of the teardown does: the review App's private key, which
+  # prerequisites resolved the operator's key command into for the daemon to read. This run keeps
+  # $work for review, so the key must not be in it when the run ends.
+  rm -rf "$work/app-key" || true
   if [ -z "${ok:-}" ] && [ -z "$audited" ] && [ -n "$prod_baseline" ]; then
     printf 'production audit after failure:\n' >&2
     production_audit >&2
@@ -170,6 +180,10 @@ cleanup() {
     [ -z "${ok:-}" ] || { since=$first_soft_since failed=$first_soft_check; }
     [ -z "$failed" ] || bash "$unserved_reader" --notes "$evidence/model-gateway" "$since" "$failed" >&2 || true
   fi
+  # The review App's private key must be gone, whatever else the teardown did, and this run keeps
+  # $work: the lib's own check of the directory the removal above was to take (lib/github-apps.sh,
+  # app_key_left).
+  app_key_left "$work/app-key" || exit 1
   return 0
 }
 # github_cleanup closes every proof PR still open, deletes every proof head branch, and deletes the
@@ -233,8 +247,15 @@ start_dispatch() {
     curl -fsS "http://127.0.0.1:$port_dispatch/api/v1"
 }
 
-# The one difference from Stage 3's configuration: admission_cap 3 (three roots) and a merge queue
-# role on the project, so the daemon's READY publish is exercised.
+# The one difference from Stage 3's configuration: admission_cap 5 and a merge queue
+# role on the project, so the daemon's READY publish is exercised. Five is this lane's peak under
+# the slot rule of INFRA-1909, where an issue keeps the row the daemon gave it until it is done,
+# leaves the workflow or waits only for its merge. Its three roots hold a row each from their
+# admission on, the wait on the person at their gates included, and the two children of root 1
+# run beside them at rerun-a-closed-child: the parked child, rerun into planning, and the closed
+# child, reopened into it. 3 + 2 = 5. A cap of three, which this lane set while a waiting root
+# gave its row back, now leaves the first child waiting at the gates checkpoint, where the three
+# roots alone fill it.
 write_legion_config() {
   cat >"$work/legion.yaml" <<EOF
 project: $project
@@ -253,8 +274,11 @@ projects:
   $project: { merge_queue_role: merge-queue }
 gates:
   design: root-issues
-admission_cap: 3
+admission_cap: 5
 review_round_cap: 3
+# The wake pacing off (INFRA-976): this proof starts many roles and waits on bounded times, and at
+# the default of 8 wakes a minute every wake after the first would spend those waits queueing.
+worker_wakes_per_minute: 0
 instructions: $work/instructions.md
 $(<"$work/github-apps.yaml")
 EOF
@@ -361,35 +385,25 @@ report_unchecked_launches() { note "launched panes never endpoint-checked: $(unc
 rig_sessions_json() {
   jq -R -s -c 'split("\n") | map(fromjson? | select(.msg == "api: claim registered") | .session) | unique' "$evidence/logs/daemon.log"
 }
+# production_audit fails on any rig session on the production Envoy listener and, through
+# production_dispatch_audit, on any production Dispatch event a rig session authored or that names
+# the rig's project key, on a production project naming that key, or on an audit that cannot vouch
+# for production.
 production_audit() {
-  local sessions bearer events envoy found=0
+  local sessions envoy found=0
   audited=1
   sessions=$(rig_sessions_json)
   printf '%s\n' "$sessions" >"$evidence/rig-sessions.json"
-  envoy=$(curl -fsS --max-time 10 "$prod_envoy_url/v1/sessions" |
-    jq -c --argjson ids "$sessions" --arg work "$work" '[.[] | select((.session_id as $s | $ids | index($s)) or ((.dir // "") | startswith($work)))]')
+  # A non-200 (the refilling 503 included) is a list the audit could not read, never an empty one.
+  # include=unresponsive, because the default answers live sessions alone (dispatch://INFRA-392):
+  # a rig session that leaked and then stopped answering is the one this audit most needs to find,
+  # and without the parameter it would be absent from the list and the audit would pass over it.
+  envoy=$(curl -fsS --max-time 10 "$prod_envoy_url/v1/sessions?include=unresponsive") || { printf 'could not read %s/v1/sessions\n' "$prod_envoy_url"; return 1; }
+  envoy=$(jq -c --argjson ids "$sessions" --arg work "$work" '[.[] | select((.session_id as $s | $ids | index($s)) or ((.dir // "") | startswith($work)))]' <<<"$envoy")
   printf '%s\n' "$envoy" >"$evidence/production-envoy-rig-sessions.json"
   if [ "$envoy" != "[]" ]; then printf 'production Envoy listener holds rig sessions: %s\n' "$envoy"; found=1; fi
   if [ "$prod_baseline" = none ]; then printf 'no user-level Dispatch configuration\n'; return "$found"; fi
-  bearer=$work/production-dispatch-bearer
-  (umask 077 && printf '%s\n' "$prod_token" >"$bearer")
-  # A refusal of the feed is printed on stderr; the replay's close, resubscribe and duplicate lines
-  # carry no event and are not counted, so an event a redial repeats counts once. The probe takes
-  # its cursor from Dispatch's own events_start, so a --since the server clamps to its head leaves
-  # the events after that head counted, not written off as duplicates.
-  bun "$root/scripts/e2e/lib/dispatch-live-events.ts" \
-    --url "$prod_dispatch_url" --bearer-file "$bearer" --since "$((prod_baseline - 1))" --timeout 25 \
-    >"$work/production-events.jsonl" || true
-  rm -f "$bearer"
-  events=$(jq -s -c --argjson ids "$sessions" --arg project "$project" --argjson baseline "$prod_baseline" '
-    [.[] | .event | select(. != null)] |
-    {control: any(.[]; .id == $baseline), count: length,
-     rig: [.[] | select((.actor.id as $a | $ids | index($a)) or (tostring | contains($project))) | {id, issue_key, type, actor: .actor.id, created_at}]}' "$work/production-events.jsonl")
-  printf '%s\n' "$events" >"$evidence/production-dispatch-audit.json"
-  if ! jq -e '.control' >/dev/null <<<"$events"; then printf 'production Dispatch replay did not return its baseline event %s\n' "$prod_baseline"; return 1; fi
-  if ! jq -e '.rig == []' >/dev/null <<<"$events"; then printf 'production Dispatch has rig-authored events: %s\n' "$(jq -c .rig <<<"$events")"; found=1; fi
-  printf 'production audit: %s events replayed since %s, rig events %s, rig Envoy sessions %s\n' \
-    "$(jq -r .count <<<"$events")" "$prod_baseline" "$(jq -c .rig <<<"$events")" "$envoy"
+  production_dispatch_audit "$sessions" "$envoy" || found=1
   return "$found"
 }
 
@@ -427,17 +441,19 @@ gate_send() {
   gate_artifacts[$issue]=$(dispatch_get "issues/$issue" | jq -er .primary_artifact_id)
   architect_registers_gate "$issue" "$issue"
 }
-# gate_finish ISSUE: the root waits on a person at its closed gate without a slot while its
-# architect stays live (await_gate_wait); the proof human approves, the root takes a slot back
-# (await_answered_slot), and only then reaches planning. admission_cap 3 is the run's three roots
-# (the child takes none), so the slots every waiting root gave back stand free and the answered root takes one at once.
+# gate_finish ISSUE: the root waits on a person at its closed gate, keeping the slot it took at
+# its admission, while its architect stays live (await_gate_wait); the proof human approves, and
+# the root resumes on the pass that reads the answer (await_answered_resume), taking no further
+# slot, and only then reaches planning. admission_cap 5 counts the issues the daemon has started,
+# roots and children alike, so the three roots hold three of the five throughout and root 1's two
+# children take the rest.
 gate_finish() {
   local issue=$1 artifact=${gate_artifacts[$1]}
   until_true 600 "$issue architect to register primary artifact $artifact" sh -c \
     "'$work/legion' state --json --port '$port_daemon' | jq -e --arg issue '$issue' --arg artifact '$artifact' '.issues[\$issue].designGate.artifactId == \$artifact and .issues[\$issue].designGate.currentVersion > 0'"
   await_gate_wait "$issue" "$issue"
   dispatch_human POST "artifacts/$artifact/reviews" '{"state":"approved"}' >/dev/null
-  await_answered_slot "$issue" "$issue"
+  await_answered_resume "$issue" "$issue"
   wait_for_phase "$issue" planning
   wait_for_worker "$issue" planner
 }
@@ -573,13 +589,19 @@ until_true_quiet() {
 
 begin prerequisites
 for tool in go psql jq curl python3 tmux bun mise secrets agent-secrets gh jj hawk-token; do command -v "$tool" >/dev/null || fail "$tool is required"; done
-# Legion's two role Apps, this deployment's own unless the App inputs name another's, proved
+# Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
+# implement App's broker secret and the review App's key command behind them (the header), proved
 # against GitHub here, before the run writes anything (lib/github-apps.sh, which the lib sourced
-# from ACCEPT_ROOT must carry).
+# from ACCEPT_ROOT must carry). The key command runs once, here, in this shell's own environment,
+# into $work/app-key, which the daemon reads the key from and cleanup removes.
 declare -F require_app_inputs >/dev/null ||
   fail "ACCEPT_ROOT's scripts/e2e/lib/workflow.sh ($root) predates lib/github-apps.sh: point ACCEPT_ROOT at a checkout that has it"
+# A lib older than --key-dir reads the flag as a role instead, and dies naming a role no operator
+# wrote, so the flag is gated on its own before it is passed.
+[[ "$(declare -f write_github_apps)" == *--key-dir* ]] ||
+  fail "ACCEPT_ROOT's scripts/e2e/lib/github-apps.sh ($root) predates write_github_apps --key-dir: point ACCEPT_ROOT at a checkout that has it"
 require_app_inputs implement review
-write_github_apps implement review
+write_github_apps --key-dir "$work/app-key" implement review
 read_app_logins
 [ -x "$nats_bin" ] || fail "no native nats-server at $nats_bin"
 # The suspension waits are bounded by lib/workflow.sh's turn budget, and the lib sourced is ACCEPT_ROOT's.
@@ -1062,22 +1084,18 @@ note "merged $repo#${pr_of[$root2]} in merging: pr-merged $n, pr-closed-unmerged
 pass
 
 # ---- 7a. the merger's pane: no grant file, and no `legion` run from bash ----------------------------
-# utf16_len: stdin's length in UTF-16 code units, as Dispatch's len16 and MessageBodyLength count it.
-utf16_len() { python3 -c 'import sys; print(len(sys.stdin.read().encode("utf-16-le")) // 2)'; }
-cap_refusals() { tool_outcomes "$1" | jq -c '[.[] | select(.tool == "legion" and (.text | contains("READY_PACKET_TOO_LONG")))]'; }
 begin merger-pane-mints-no-grant
 # This check replaced ready-cap-refused-at-the-boundary, which drove the daemon's completion route
 # from this shell with a grant the merger's bash hook had minted into the pane's LEGION_GRANT_FILE
 # before a `legion state --json` command. Neither exists (LEGION-631): the `legion` tool mints its
 # grants in-process for its own daemon calls, no pane carries a grant file, no agent runs `legion`
-# from bash, and the CLI has no `handoff complete`. The READY cap at its exact boundary
-# (record.MessagePostLimit, one unit over) is the daemon's own test now (internal/api
-# handoff_test.go, the READY one unit over the limit, refused naming <limit+1>/<limit>), on the
-# Dispatch cap internal/daemon/outbox_scratch_dispatch_test.go measures; the merger's own over-cap
-# packet, refused READY_PACKET_TOO_LONG through the tool, is counted in
-# ready-posted-and-published-to-holder below. What stands here is the absence: the merger's pane
-# environment names no grant, its gh reads the role's files under GH_CONFIG_DIR, and no bash
-# command the merger has run invokes `legion`.
+# from bash, and the CLI has no `handoff complete`. The daemon carries no length of its own: it
+# holds a READY packet to the bounds Dispatch publishes, refusing one past them at
+# handoff_complete (READY_PACKET_TOO_LONG), which the daemon's own tests measure
+# (internal/api/handoff_test.go, and internal/daemon/outbox_scratch_dispatch_test.go for a
+# 40,000-character packet posted whole).
+# What stands here is the absence: the merger's pane environment names no grant, its gh reads the
+# role's files under GH_CONFIG_DIR, and no bash command the merger has run invokes `legion`.
 merger_omp=$(omp_descendant "$(claim_pane_pid "$root1" merger)") || fail "$root1's merger pane has no OMP process"
 for absent in LEGION_GRANT_FILE LEGION_GRANT; do
   ! tr '\0' '\n' <"/proc/$merger_omp/environ" | grep -q "^$absent=" || fail "$root1's merger pane still carries $absent"
@@ -1105,7 +1123,7 @@ if ! role_held_by merge-queue "$holder_session"; then
   until_true 300 "the holder session to claim merge-queue again" role_held_by merge-queue "$holder_session"
 fi
 [ "$(ready_messages "$root1" | jq length)" = 0 ] || soft "$root1 already had a READY message before its merger's completion"
-send_agent "$root1" merger "Acceptance READY operation: verify the merge gate as your instructions describe. Then, as a deliberate proof of the READY packet's length limit, first end the phase with the legion tool (op handoff_complete, ready true) using as the summary your READY packet followed by the pull request body quoted in full and then a padding paragraph of at least 2,500 characters; that first call is expected to be refused. Then do exactly what the refusal tells you, and end this phase with the legion tool: op handoff_complete, ready true, and a packet built exactly as your instructions describe as the summary. Then wait."
+send_agent "$root1" merger "Acceptance READY operation: verify the merge gate as your instructions describe, build your READY packet exactly as they describe, and end this phase with the legion tool: op handoff_complete, ready true, and the packet as the summary. Then wait."
 wait_for_phase "$root1" awaiting_merge 900
 until_true 180 "the daemon's READY message on $root1" ready_count_at_least "$root1" 1
 sleep 20
@@ -1124,15 +1142,6 @@ grep -F '"customType":"envoy-message"' "$(holder_file)" | grep -F -- "$first_lin
 [ -s "$evidence/holder-ready-delivery.jsonl" ] || soft "the holder saw the READY line, but not as an Envoy delivery"
 [ "$(no_holder_messages "$root1" | jq length)" = 0 ] || soft "$root1 was told merge-queue had no holder while one held it"
 note "READY on $root1 by $(jq -r '.[0].actor' "$evidence/ready-messages-$root1.json"): '$first_line' — the merger's summary verbatim; the merger itself posted/published nothing; the holder session received it as an Envoy delivery"
-f=$(claim_session_file "$root1" merger)
-cap_refusals "$f" >"$evidence/ready-cap-merger-refusals-$root1.json"
-posted_len=$(jq -j '.[0].body' "$evidence/ready-messages-$root1.json" | utf16_len)
-note "the merger's own over-cap attempt: $(jq length "$evidence/ready-cap-merger-refusals-$root1.json") READY_PACKET_TOO_LONG refusal(s) ($(jq -r '[.[].text | .[0:150]] | join(" | ")' "$evidence/ready-cap-merger-refusals-$root1.json")); the posted packet is $posted_len UTF-16 units"
-[ "$posted_len" -le 31956 ] || soft "$root1's posted READY is $posted_len units, over record.MessagePostLimit (31956)"
-# The tool's path through the READY cap, as measured: the census's claim that both completion
-# callers met the refusal live rests on this count, so it is a file, not only a log line.
-jq -n --arg issue "$root1" --argjson refusals "$(jq length "$evidence/ready-cap-merger-refusals-$root1.json")" --argjson posted "$posted_len" \
-  '{issue: $issue, tool_refusals: $refusals, posted_utf16: $posted}' >"$evidence/ready-cap-tool-path-$root1.json"
 pass
 
 begin merge-at-awaiting-merge-gives-no-pr-merged
@@ -1187,12 +1196,6 @@ jq -e --arg d "legion-daemon:$project" 'length == 1 and .[0].actor == $d' "$evid
 merger_self_posted "$root3" >"$evidence/merger-self-posts-$root3.json"
 [ "$(jq length "$evidence/merger-self-posts-$root3.json")" = 0 ] || soft "$root3's merger posted or published READY itself"
 note "approval advanced $root3 to awaiting_merge and the daemon posted the stored packet: '$(head -1 <<<"$packet3")'; then: '$(jq -r '.[0].body' "$evidence/no-holder-messages-$root3.json")'"
-posted_len3=$(jq -j '.[0].body' "$evidence/ready-messages-$root3.json" | utf16_len)
-[ "$posted_len3" -le 31956 ] || soft "$root3's posted READY is $posted_len3 units, over record.MessagePostLimit (31956)"
-cap_refusals "$(claim_session_file "$root3" merger)" >"$evidence/ready-cap-merger-refusals-$root3.json"
-jq -n --arg issue "$root3" --argjson refusals "$(jq length "$evidence/ready-cap-merger-refusals-$root3.json")" --argjson posted "$posted_len3" \
-  '{issue: $issue, tool_refusals: $refusals, posted_utf16: $posted}' >"$evidence/ready-cap-tool-path-$root3.json"
-note "$root3's posted READY is $posted_len3 UTF-16 units; its merger met $(jq length "$evidence/ready-cap-merger-refusals-$root3.json") READY_PACKET_TOO_LONG refusal(s)"
 pass
 
 begin production-untouched
@@ -1206,7 +1209,7 @@ cap_exceeded=$(grep -c 'CAP_EXCEEDED' "$evidence/logs/daemon.log" || true)
 printf '%s\n' "$cap_exceeded" >"$evidence/daemon-log-cap-exceeded-count.txt"
 [ "$cap_exceeded" = 0 ] || soft "the daemon log carries $cap_exceeded CAP_EXCEEDED line(s): Dispatch refused a message the daemon sent"
 note "daemon log CAP_EXCEEDED lines: $cap_exceeded (before the READY cap, the daemon logged the READY packet's refusal on every outbox attempt)"
-production_audit || fail "the rig touched production; see $evidence/production-dispatch-audit.json"
+production_audit || fail "the rig touched production, or the audit could not check it; the reason is above (see $evidence/production-dispatch-audit.json)"
 pass
 
 begin services-stopped

@@ -26,6 +26,8 @@ func TestTouchedTablesFindsEveryStatementFormTheMigrationsUse(t *testing.T) {
 		"drop table if exists old_a, old_b;":                                                                                      {"old_a", "old_b"},
 		"truncate table only t1, t2;":                                                                                             {"t1", "t2"},
 		"create trigger trg before insert on comments for each row execute function f();":                                         {"comments"},
+		"drop trigger comments_embeddings_enqueue on comments;":                                                                   {"comments"},
+		"DROP TRIGGER IF EXISTS asks_embeddings_enqueue ON \"asks\";":                                                             {"asks"},
 		"update events set payload = '{}' where type = 'x';":                                                                      {"events"},
 		"delete from refs where kind is null;":                                                                                    {"refs"},
 		"insert into user_agent_read (login) select login from users;":                                                            {"user_agent_read"},
@@ -198,7 +200,7 @@ func TestReportPrintsAnExemptMigrationsLargeTable(t *testing.T) {
 	}}}
 	var out strings.Builder
 	report.Write(&out)
-	want := "census: 0122_x.up.sql touches artifact_versions: 5.2 GiB, above the 1.0 GiB limit, from which the migration is exempt because its statements are only create function and create trigger, which change the catalog and read no row, so its rows were not counted; locks held by other sessions: none\n"
+	want := "census: 0122_x.up.sql touches artifact_versions: 5.2 GiB, above the 1.0 GiB limit, from which the migration is exempt because its statements are only create function and create trigger, which change the catalog or the transaction's own settings and read no row, so its rows were not counted; locks held by other sessions: none\n"
 	if !strings.Contains(out.String(), want) || !strings.HasSuffix(out.String(), "census: ok\n") {
 		t.Errorf("report:\n%s\nwant the line %q and census: ok", out.String(), want)
 	}
@@ -311,6 +313,29 @@ func TestMigrationLockTimeoutsReadsEveryBoundAMigrationWaitsUnder(t *testing.T) 
 	} {
 		if got := migrationLockTimeouts(sql); !slices.Equal(got, want) {
 			t.Errorf("migrationLockTimeouts(%q) = %q, want %q", sql, got, want)
+		}
+	}
+}
+
+// Postgres hides a session's query from a role that may not see it by answering the placeholder
+// <insufficient privilege> rather than null, as it does for every other column of that session,
+// so the diagnosis says the query is not visible for both - the three ways a statement can be
+// unreadable read alike. No value is involved: the placeholder holds no literal, number or
+// comment for the redactor to take out. A query that is visible is printed only as redactedQuery
+// leaves it, quoted.
+func TestHolderDiagnosisSaysAQueryItMayNotSeeIsNotVisible(t *testing.T) {
+	hidden := "<insufficient privilege>"
+	shown := "select 'ghp_SECRET' from asks where id = 42"
+	for name, tc := range map[string]struct {
+		query *string
+		want  string
+	}{
+		"null, as Postgres answers for a session that has ended": {nil, "not visible"},
+		"the placeholder, for a session the role may not see":    {&hidden, "not visible"},
+		"a query the role may see":                               {&shown, `"select ? from asks where id = ?"`},
+	} {
+		if got := visibleQuery(tc.query); got != tc.want {
+			t.Errorf("%s: visibleQuery() = %q, want %q", name, got, tc.want)
 		}
 	}
 }

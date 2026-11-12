@@ -19,7 +19,8 @@ import (
 )
 
 // childStarts counts what LEGION-209's first phase queued: its planner's starts, its branch rows
-// and the child-status notices its architect was told.
+// and the child-status notices its architect was told, one of which is the notice a child's own
+// start sends (workflow.ChildStartedNotice).
 func childStarts(t *testing.T, pool *pgxpool.Pool) (starts, branches, notices int) {
 	t.Helper()
 	for _, e := range effects(t, pool) {
@@ -51,7 +52,7 @@ func seedReleasedChild(t *testing.T, pool *pgxpool.Pool) {
 		Generation: 1, Status: "todo", Rank: "W", HandedOver: true})
 }
 
-// freeTheSlot finishes LEGION-300, the root that took the slot LEGION-208 returned.
+// freeTheSlot finishes LEGION-300, the root that waits behind LEGION-208 for a row of its own.
 func freeTheSlot(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	done := issue(t, pool, "LEGION-300")
@@ -60,11 +61,14 @@ func freeTheSlot(t *testing.T, pool *pgxpool.Pool) {
 }
 
 // The resume of a root whose wait a person's approval answered starts each child released under
-// its gate once: the resume advances the tree, and the pass's start of unblocked children reads the
-// child as the resume left it. (Round 1, standard P2 and adversarial P2-2.)
+// its gate once: the resume advances the tree, and the child takes the next free slot in the
+// same pass. The cap is 2 because the root's own first phase is an issue at work beside its
+// child's now — the gate's opening starts neither of them, and both wait in the line — so under
+// a cap of 1 the root would take the only slot and the child would start nowhere.
+// (Round 1, standard P2 and adversarial P2-2.)
 func TestAResumeStartsEachReleasedChildOnce(t *testing.T) {
 	pool := migratedPool(t)
-	admission := awaitingRig(t, pool)
+	admission := awaitingRig(t, pool, 2)
 	seedReleasedChild(t, pool)
 	seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3})
 	tick(t, pool, admission, "tick-1")
@@ -78,8 +82,8 @@ func TestAResumeStartsEachReleasedChildOnce(t *testing.T) {
 	if got := issue(t, pool, "LEGION-209").Phase; got != phase.Planning {
 		t.Fatalf("child phase = %s, want planning after its root's resume", got)
 	}
-	if starts, branches, notices := childStarts(t, pool); starts != 1 || branches != 1 || notices != 0 {
-		t.Fatalf("planner starts = %d, branch rows = %d, unblocked notices = %d; want 1, 1, 0", starts, branches, notices)
+	if starts, branches, notices := childStarts(t, pool); starts != 1 || branches != 1 || notices != 1 {
+		t.Fatalf("planner starts = %d, branch rows = %d, child-status notices = %d; want 1, 1, and the one notice its start sends", starts, branches, notices)
 	}
 }
 
@@ -146,7 +150,7 @@ func TestAnOpenGateAnswersAQuestionWaitWhateverOpenedIt(t *testing.T) {
 }
 
 // waitingRoot seeds LEGION-208 waiting on its question ask-q from hand-back seq 5, its gate v3
-// closed, with LEGION-300 holding the slot it returned.
+// closed, holding the row it keeps through that wait, with LEGION-300 waiting in line behind it.
 func waitingRoot(t *testing.T, policy config.DesignGate) (*pgxpool.Pool, *Admission) {
 	t.Helper()
 	pool := migratedPool(t)
@@ -183,6 +187,10 @@ func TestARegistrationsChangesReadOnAWaitingRootIsToldOnce(t *testing.T) {
 	for _, seq := range []int64{7, 0} {
 		t.Run(map[int64]string{7: "sequenced read", 0: "unsequenced read"}[seq], func(t *testing.T) {
 			pool, admission := waitingRoot(t, config.DesignGateRootIssues)
+			// The root keeps its row through the wait, so the pass that reads the answer would
+			// resume it at once and the reviews below would land on a running root. The boot
+			// catch-up's hold is what keeps that window open, and the release ends it.
+			admission.HoldForCatchUp("LEGION-208")
 			at := fixedNow.Add(-30 * time.Second)
 			applyFact(t, pool, admission, "register", intake.GateRegistered{Issue: "LEGION-208", ArtifactID: "artifact-208", Version: 3, DispatchVersion: 3,
 				ChangesRequestedVersion: 3, ChangesRequestedMark: record.EventMark{Seq: seq, At: at}, ChangesReason: "split it", Since: record.EventMark{Seq: 6}})
@@ -195,7 +203,7 @@ func TestARegistrationsChangesReadOnAWaitingRootIsToldOnce(t *testing.T) {
 			}
 			applyFact(t, pool, admission, "live", intake.DispatchArtifact{Key: "LEGION-208", ArtifactID: "artifact-208",
 				Kind: intake.DispatchArtifactChangesRequested, Version: 3, Reason: "split it", Mark: record.EventMark{Seq: 7, At: at}})
-			freeTheSlot(t, pool)
+			admission.ReleaseCatchUp("LEGION-208")
 			tick(t, pool, admission, "tick-2")
 			named := 0
 			resumes := architectResumes(t, pool)
@@ -214,6 +222,12 @@ func TestARegistrationsChangesReadOnAWaitingRootIsToldOnce(t *testing.T) {
 // named by the resume, never by a notice held beside it: when a later approval superseded it, the
 // resume's design-approved wake is the newest word and nothing asks for a revision; when none did,
 // the resume asks for the revision. (Round 3, adversarial P3-1.)
+//
+// The wait is answered by a person's answer to the architect's question ask-q, not by an
+// approval of the spec. A root the daemon started keeps its row through its wait, so the pass
+// that reads an answer resumes it there and then and every later review would land on a
+// running root. The window this case needs — answered, not yet resumed — is held open by the
+// boot catch-up's hold, which is the one thing that stops a pass promoting a root it could.
 func TestAChangesRequestOnAnAnsweredWaitIsNamedByTheResume(t *testing.T) {
 	at := fixedNow.Add(-30 * time.Second)
 	review := func(kind intake.DispatchArtifactKind, seq int64, reason string) intake.DispatchArtifact {
@@ -227,19 +241,20 @@ func TestAChangesRequestOnAnAnsweredWaitIsNamedByTheResume(t *testing.T) {
 		absent   []string
 	}{
 		{"a later approval superseded it",
-			[]intake.DispatchArtifact{review(intake.DispatchArtifactApproved, 7, ""), review(intake.DispatchArtifactChangesRequested, 8, "wait no"),
-				review(intake.DispatchArtifactApproved, 9, "")},
+			[]intake.DispatchArtifact{review(intake.DispatchArtifactChangesRequested, 8, "wait no"), review(intake.DispatchArtifactApproved, 9, "")},
 			[]string{workflow.DesignApprovedWake}, []string{"revise"}},
 		{"no approval followed it",
-			[]intake.DispatchArtifact{review(intake.DispatchArtifactApproved, 7, ""), review(intake.DispatchArtifactChangesRequested, 8, "wait no")},
-			[]string{"wait no", "revise the spec"}, []string{workflow.DesignApprovedWake}},
+			[]intake.DispatchArtifact{review(intake.DispatchArtifactChangesRequested, 8, "wait no")},
+			[]string{"wait no", "revise the primary document"}, []string{workflow.DesignApprovedWake}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, admission := waitingRoot(t, config.DesignGateRootIssues)
+			admission.HoldForCatchUp("LEGION-208")
+			answerWait(t, pool, "LEGION-208", record.AnsweredByAsk, "ask-q")
 			for i, fact := range tc.reviews {
 				applyFact(t, pool, admission, fmt.Sprintf("review-%d", i), fact)
 			}
-			freeTheSlot(t, pool)
+			admission.ReleaseCatchUp("LEGION-208")
 			tick(t, pool, admission, "tick-2")
 			if told := gateNotices(t, pool, "LEGION-208", "design-changes-requested"); len(told) != 0 {
 				t.Fatalf("changes notices = %+v, want the resume alone to name the request", told)
@@ -268,21 +283,22 @@ func TestAChangesRequestOnAnAnsweredWaitIsNamedByTheResume(t *testing.T) {
 // wording P3s.)
 func TestTheResumeUnderGateOffSaysNoPersonApproved(t *testing.T) {
 	pool, admission := waitingRoot(t, config.DesignGateOff)
+	admission.HoldForCatchUp("LEGION-208")
 	applyFact(t, pool, admission, "changes", intake.DispatchArtifact{Key: "LEGION-208", ArtifactID: "artifact-208",
 		Kind: intake.DispatchArtifactChangesRequested, Version: 3, Reason: "split it", Mark: record.EventMark{Seq: 7, At: fixedNow.Add(-time.Minute)}})
 	applyFact(t, pool, admission, "register", intake.GateRegistered{Issue: "LEGION-208", ArtifactID: "artifact-208", Version: 3, DispatchVersion: 3, Since: record.EventMark{Seq: 8}})
-	freeTheSlot(t, pool)
+	admission.ReleaseCatchUp("LEGION-208")
 	tick(t, pool, admission, "tick-2")
 	resumes := architectResumes(t, pool)
 	if len(resumes) != 1 {
 		t.Fatalf("architect starts = %q, want one resume", resumes)
 	}
-	for _, want := range []string{"revise the spec", workflow.DesignApprovedWake} {
+	for _, want := range []string{"revise the primary document", workflow.DesignApprovedWake} {
 		if !strings.Contains(resumes[0], want) {
 			t.Errorf("resume %q does not say %q", resumes[0], want)
 		}
 	}
-	for _, unwanted := range []string{"approved the spec", "is approved"} {
+	for _, unwanted := range []string{"approved the primary document", "is approved"} {
 		if strings.Contains(resumes[0], unwanted) {
 			t.Errorf("resume %q says %q under gates.design: off", resumes[0], unwanted)
 		}
@@ -325,7 +341,7 @@ func TestAGateWaitAnsweredByTheGateSwitchedOffResumesInThatPass(t *testing.T) {
 // standard P3-2 read this as missing; the run it carries already exempts it, and this pins that.
 func TestAnAnsweredRootIsNotReportedAsBlocked(t *testing.T) {
 	pool := migratedPool(t)
-	admission := awaitingRig(t, pool)
+	admission := awaitingRig(t, pool, 1)
 	tick(t, pool, admission, "tick-1")
 	answerWait(t, pool, "LEGION-208", record.AnsweredByAsk, "ask-q")
 	// A link added while it waited, on an issue Dispatch shows unfinished; LEGION-300 holds the one

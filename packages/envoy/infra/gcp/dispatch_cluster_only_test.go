@@ -127,6 +127,8 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		}},
 		{"agentSecretsUrl", func(a *gcp.DispatchArgs) { a.AgentSecretsUrl = "https://example-broker.internal.example" }},
 		{"agentSecretsAudience", func(a *gcp.DispatchArgs) { a.AgentSecretsAudience = "example-broker-audience" }},
+		{"oidcAudience", func(a *gcp.DispatchArgs) { a.OidcAudience = dispatchOidcAudience }},
+		{"oidcIssuer", func(a *gcp.DispatchArgs) { a.OidcIssuer = dispatchOidcIssuer }},
 		{"appClientId", func(a *gcp.DispatchArgs) { a.AppClientId = "example-app-client-id" }},
 		{"appId", func(a *gcp.DispatchArgs) { a.AppId = "123456" }},
 		{"appPrivateKeySecretName", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = "example-app-key" }},
@@ -165,6 +167,16 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"azureFederationAudience", func(a *gcp.DispatchArgs) {
 			a.AzureFederationAudience = pulumi.StringRef("api://AzureADTokenExchange")
 		}},
+		{"azureChatEndpoint", func(a *gcp.DispatchArgs) { a.AzureChatEndpoint = pulumi.String(azureChatEndpoint) }},
+		{"azureChatDeployment", func(a *gcp.DispatchArgs) { a.AzureChatDeployment = pulumi.String("example-chat-deployment") }},
+		{"azureChatApiVersion", func(a *gcp.DispatchArgs) { a.AzureChatApiVersion = pulumi.StringRef("2024-05-01-preview") }},
+		{"azureChatScope", func(a *gcp.DispatchArgs) {
+			a.AzureChatScope = pulumi.StringRef("https://cognitiveservices.azure.com/.default")
+		}},
+		{"azureChatTokensPerMinute", func(a *gcp.DispatchArgs) { a.AzureChatTokensPerMinute = pulumi.IntRef(120000) }},
+		{"chatEndpoint", func(a *gcp.DispatchArgs) { a.ChatEndpoint = pulumi.String(chatEndpointURL) }},
+		{"chatModel", func(a *gcp.DispatchArgs) { a.ChatModel = pulumi.StringRef("example-chat-model") }},
+		{"chatTokenSecret", func(a *gcp.DispatchArgs) { a.ChatTokenSecret = pulumi.String(chatTokenSecret) }},
 	})
 }
 

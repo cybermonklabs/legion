@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -331,7 +332,7 @@ func TestReleaseLeavesTheHoldIntactWhenItsOwnTransactionFails(t *testing.T) {
 	pool := migratedPool(t)
 	real := record.NewStore()
 	failing := &failingSlotsStore{Store: real}
-	engine := workflow.New(real, workflow.Config{Project: testProject, Repositories: testRepositories, Clock: func() time.Time { return fixedNow }}, nil)
+	engine := workflow.New(real, workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 	admission := New(failing, engine, 1, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	admission.now = func() time.Time { return fixedNow }
 	putIssue(t, pool, record.Issue{Key: "LEGION-EDGE", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "LEGION-EDGE", Tree: "LEGION-EDGE", Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: "A", HandedOver: true, LastDispatchSeq: 1})
@@ -432,7 +433,9 @@ func TestANewerEventThatCreatesNoRecordRefreshesTheHeldSummary(t *testing.T) {
 	assertSlots(t, pool, nil)
 }
 
-// A root held back from a boot's admission pass keeps its place at the front of the waiting line,
+// A root held back from a boot's admission pass keeps the place the line's own order gives it —
+// among the issues whose work came back, oldest first, where its work came back, and by its
+// tree's root's Dispatch rank where it never ran, as this one never did —
 // and nothing ranked behind it takes the slot it is waiting for: a hold says the daemon does not
 // yet know enough to decide that root, not that the root has lost its turn. Letting the next root
 // through would hand the cap's only slot to the lower-ranked one and leave the held root waiting

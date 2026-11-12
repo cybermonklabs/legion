@@ -1,17 +1,28 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the dialog form's own submit, which user-event has no form for
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { CreateIssueInput, Issue } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { CreateIssueDialog } from "./CreateIssueDialog";
 
 const projects = [
-  { created_at: "2026-09-10T00:00:00Z", key: "CORE", name: "Core", open_asks: 0 },
-  { created_at: "2026-09-10T00:00:00Z", key: "OPS", name: "Operations", open_asks: 0 },
+  { created_at: "2026-09-10T00:00:00Z", key: "CORE", name: "Core", open_asks: 0, gated_steps: [] },
+  {
+    created_at: "2026-09-10T00:00:00Z",
+    key: "OPS",
+    name: "Operations",
+    open_asks: 0,
+    gated_steps: [],
+  },
 ];
 
 function issue(input: CreateIssueInput, key: string): Issue {
@@ -37,7 +48,9 @@ function CurrentRoute(): ReactNode {
   return <output data-testid="current-route">{location.pathname}</output>;
 }
 
+/** The dialog, its project list and its related-item check answered here. */
 function renderDialog(
+  user: UserEvent,
   create: (input: CreateIssueInput) => Promise<Issue>,
   path = "/",
   onClose = () => {}
@@ -64,6 +77,7 @@ function renderDialog(
     </MemoryRouter>
   );
   return {
+    user,
     unmount: () => {
       view.unmount();
       queryClient.clear();
@@ -77,6 +91,7 @@ test("preselects the route's project, submits title and spec, and opens the crea
   const calls: CreateIssueInput[] = [];
   let closed = 0;
   const view = renderDialog(
+    userEvent.setup(),
     async (input) => {
       calls.push(input);
       return issue(input, "OPS-7");
@@ -88,16 +103,14 @@ test("preselects the route's project, submits title and spec, and opens the crea
     const select = await screen.findByRole<HTMLSelectElement>("combobox", { name: "Project" });
     await waitFor(() => expect(select.value).toBe("OPS"));
     const create = screen.getByRole("button", { name: "Create" });
-    expect(create.hasAttribute("disabled")).toBe(true);
+    expect(create).toHaveAttribute("disabled");
 
-    fireEvent.change(screen.getByRole("textbox", { name: "Title" }), {
-      target: { value: "  Ship the keymap  " },
-    });
-    expect(create.hasAttribute("disabled")).toBe(false);
-    fireEvent.change(screen.getByRole("textbox", { name: /Spec/ }), {
-      target: { value: "One line of spec." },
-    });
-    fireEvent.click(create);
+    await view.user.click(screen.getByRole("textbox", { name: "Title" }));
+    await view.user.paste("  Ship the keymap  ");
+    expect(create).not.toHaveAttribute("disabled");
+    await view.user.click(screen.getByRole("textbox", { name: /Spec/ }));
+    await view.user.paste("One line of spec.");
+    await view.user.click(create);
 
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe("/issues/OPS-7")
@@ -115,7 +128,7 @@ test("preselects the route's project, submits title and spec, and opens the crea
 // one, so the dialog keeps the draft, says why, and Retry asks again.
 test("a refused create keeps the dialog and draft, shows the server message, and retries", async () => {
   let attempts = 0;
-  const view = renderDialog(async (input) => {
+  const view = renderDialog(userEvent.setup(), async (input) => {
     attempts += 1;
     if (attempts === 1) {
       throw new ApiError(409, { code: "PROJECT_LOCKED", error: "the project is being moved" });
@@ -124,18 +137,18 @@ test("a refused create keeps the dialog and draft, shows the server message, and
   });
   try {
     await screen.findByRole("combobox", { name: "Project" });
-    fireEvent.change(screen.getByRole("textbox", { name: "Title" }), {
-      target: { value: "Flaky create" },
-    });
+    await view.user.click(screen.getByRole("textbox", { name: "Title" }));
+    await view.user.paste("Flaky create");
+    // The form's own submit: user-event has no form for it.
     fireEvent.submit(screen.getByRole("dialog", { name: "Create issue" }));
 
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("the project is being moved");
+    expect(alert).toHaveTextContent("the project is being moved");
     expect(screen.getByRole<HTMLInputElement>("textbox", { name: "Title" }).value).toBe(
       "Flaky create"
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await view.user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-3")
     );
@@ -149,9 +162,11 @@ test("a refused create keeps the dialog and draft, shows the server message, and
 // open, so it lets go of the draft and says what was made - and a second press, with the draft
 // gone, sends nothing, where the old draft would have made a second issue.
 test("a create answered KEY_COMMITTED drops the draft, says the issue was made, and a second press sends nothing", async () => {
+  jest.useFakeTimers();
   let attempts = 0;
   let closed = 0;
   const view = renderDialog(
+    userOnFakeClock(),
     async () => {
       attempts += 1;
       throw new ApiError(409, { code: "KEY_COMMITTED", error: "already made" });
@@ -164,7 +179,9 @@ test("a create answered KEY_COMMITTED drops the draft, says the issue was made, 
   try {
     await screen.findByRole("combobox", { name: "Project" });
     const title = screen.getByRole<HTMLInputElement>("textbox", { name: "Title" });
-    fireEvent.change(title, { target: { value: "Made once" } });
+    await view.user.click(title);
+    await view.user.paste("Made once");
+    // The form's own submit: user-event has no form for it.
     fireEvent.submit(screen.getByRole("dialog", { name: "Create issue" }));
 
     const made = await screen.findByTestId("landed-without-answer");
@@ -172,21 +189,23 @@ test("a create answered KEY_COMMITTED drops the draft, says the issue was made, 
       "The issue “Made once” was made, but Dispatch lost its answer, so it may take a moment to appear."
     );
     expect(title.value).toBe("");
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByTestId("current-route").textContent).toBe("/");
 
+    // The form's own submit again, with the draft gone: user-event has no form for it.
     fireEvent.submit(screen.getByRole("dialog", { name: "Create issue" }));
-    await Bun.sleep(20);
+    await tick(20);
     expect(attempts).toBe(1);
     expect(closed).toBe(0);
   } finally {
+    realClock();
     view.unmount();
   }
 });
 
 test("a possible duplicate names the candidate and Create anyway forces the create", async () => {
   const calls: CreateIssueInput[] = [];
-  const view = renderDialog(async (input) => {
+  const view = renderDialog(userEvent.setup(), async (input) => {
     calls.push(input);
     if (input.force !== true) {
       throw new ApiError(409, {
@@ -198,15 +217,14 @@ test("a possible duplicate names the candidate and Create anyway forces the crea
   });
   try {
     await screen.findByRole("combobox", { name: "Project" });
-    fireEvent.change(screen.getByRole("textbox", { name: "Title" }), {
-      target: { value: "Astrolabe calibration" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await view.user.click(screen.getByRole("textbox", { name: "Title" }));
+    await view.user.paste("Astrolabe calibration");
+    await view.user.click(screen.getByRole("button", { name: "Create" }));
 
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("CORE-1");
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Create anyway" }));
+    expect(alert).toHaveTextContent("CORE-1");
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    await view.user.click(screen.getByRole("button", { name: "Create anyway" }));
 
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-2")

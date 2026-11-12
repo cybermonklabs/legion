@@ -3,6 +3,7 @@ import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { keptTab } from "../../__tests__/kept-sends-harness";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { SEND_DEADLINE_MS, SendStoppedError } from "./keyed-write";
@@ -11,16 +12,6 @@ import { writesOf } from "./write-store";
 
 const refusal = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
 const verdict = new ApiError(422, { code: "KEY_REUSED", error: "the key names another write" });
-
-/** Moves the fake clock `ms` on in steps, letting each timer's continuation run as it fires. */
-async function tick(ms: number): Promise<void> {
-  for (let left = ms; left >= 0; left -= 500) {
-    await act(async () => {
-      jest.advanceTimersByTime(Math.min(500, left));
-      for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
-    });
-  }
-}
 
 /** A surface's write of an answer, as `AskCard`'s form makes it, over one app's queue. */
 function renderAnswerWrite() {
@@ -42,7 +33,7 @@ function renderAnswerWrite() {
   return { client, hook };
 }
 
-// Ruling 3: a write the reader stopped may have reached Dispatch, so its Retry - the surface making
+// Decision 3: a write the reader stopped may have reached Dispatch, so its Retry - the surface making
 // the very same press again - goes under its own key, and Dispatch answers it with what the first
 // did. After Dispatch's own refusal the Retry is a new press under a new key, since Dispatch would
 // answer the old one with that refusal for a day.
@@ -81,8 +72,7 @@ test("a surface's Retry keeps the key after Stop trying, and takes a new one aft
     hook.unmount();
     answerAsk.mockRestore();
     tab.close();
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
   }
 });
 
@@ -156,7 +146,6 @@ test("a write pressed offline is attempted and goes late", async () => {
     onlineManager.setOnline(online);
     hook.unmount();
     answerAsk.mockRestore();
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
   }
 });

@@ -7,10 +7,9 @@ description: Use when you are about to ask a human a question about a pattern, c
 
 If this skill disagrees with the code, a command's output or its `--help`, follow those and say which line of this skill is wrong.
 
-## When to research instead of asking
-
-- Research when the answer is a fact a file, command or document can show (a pattern, convention, solved problem or technical approach), because `docs/solutions/` records what past work learned and a human should not answer it twice.
-- Ask the human directly when the answer is a choice between options that each work (a preference, requirement, scope decision or judgment call), because no file can choose. Quote any earlier decision a file records (`file:line`), so the human can confirm it in one word.
+Which questions to research and which to put to a person, and what your answer must say about
+what you searched: `skill://dispatch-first`, "Research before you ask". The steps below are how
+you research in a Legion repository.
 
 ## Research steps
 
@@ -19,8 +18,10 @@ If the deployment instructions (the `# Deployment instructions` part of your sys
 `oracle` task agent), send your question to it first with
 `envoy_publish(topic="notifications.role.<name>", expects_reply="required")`, because that role may
 already hold the answer. Then end your turn: the reply arrives as a delivery that starts your next
-one, and research before it duplicates the role's work. If the publish returns an error (no session
-holds the role), put the error in your output and research at once.
+one, and research before it duplicates the role's work. If no session holds the role, the publish
+answers that Envoy kept the question for the session that claims the role next, which is handed it
+once within the hour. Nobody can answer you now, so put that kept answer in your output and
+research at once rather than wait for it.
 
 Run steps 1 and 2, in parallel if you choose, since neither needs the other's result. Run step 3
 when the question names a library, and step 4 when it asks for general practice, each only when
@@ -41,6 +42,5 @@ Before you rely on a step 1 hit, `grep` `docs/solutions/` for its path. If anoth
 
 ## Output
 
-- Found: the answer with its source (`file:line` or a URL), so the reader can check it.
-- Partly found: each part found with its source, then each part not found.
-- Not found: "Checked docs/solutions/ (queries: ...) and codebase (scout query: ...) - no file answers this", so the reader knows what was searched. Then ask the human the part no step answered.
+Report as `skill://dispatch-first` says, and name `docs/solutions/` and the codebase queries you
+ran, so the reader knows what was searched.

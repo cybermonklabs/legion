@@ -12,17 +12,18 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -174,11 +175,7 @@ func TestBootReconcileHoldsATodoUnderAnUnreleasedChildOfALiveTree(t *testing.T) 
 	const tree, parent, child = "CAPTURE-168", "CAPTURE-169", "CAPTURE-214"
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
-	conn, err := nats.Connect(workflowNATS(t), nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, workflowNATS(t))
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
@@ -197,7 +194,10 @@ func TestBootReconcileHoldsATodoUnderAnUnreleasedChildOfALiveTree(t *testing.T) 
 		if err := records.PutIssue(ctx, tx, running); err != nil {
 			return err
 		}
-		return records.PutSlot(ctx, tx, record.Slot{Issue: tree, Index: 0, AdmittedAt: time.Now()})
+		if err := records.PutSlot(ctx, tx, record.Slot{Issue: tree, Index: 0, AdmittedAt: time.Now()}); err != nil {
+			return err
+		}
+		return openTreeTx(ctx, tx, "CAPTURE", tree)
 	}); err != nil {
 		t.Fatalf("seed the running tree: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestBootReconcileHoldsATodoUnderAnUnreleasedChildOfALiveTree(t *testing.T) 
 			child:  {Key: child, ResolvedRepo: "sjawhar/legion", Title: child, Status: "todo", Parent: under(parent), Rank: "C", HandedOver: true},
 		},
 	}
-	engine := workflow.New(records, workflow.Config{Project: "CAPTURE", Repositories: testRepositories}, log)
+	engine := workflow.New(records, workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(records, engine, 2, "CAPTURE", log)
 	w := &workflowRuntime{
 		pool: pool, records: records, admission: admission, engine: engine, handlers: []intake.Handler{engine, admission}, repositories: newRepositories("CAPTURE", ghrepo.Renames{}),
@@ -238,8 +238,12 @@ func TestBootReconcileHoldsATodoUnderAnUnreleasedChildOfALiveTree(t *testing.T) 
 		if err != nil {
 			return err
 		}
-		for _, issue := range record.Waiting(issues, slots) {
-			waiting = append(waiting, issue.Key)
+		facts, err := record.ReadLineFacts(ctx, tx, records, "CAPTURE", issues, nil)
+		if err != nil {
+			return err
+		}
+		for _, issue := range record.Waiting(issues, slots, facts) {
+			waiting = append(waiting, issue.Issue.Key)
 		}
 		for _, slot := range slots {
 			slotted = append(slotted, slot.Issue)
@@ -276,9 +280,12 @@ func TestATodoHeldUnderAnUnreleasedChildQueuesOnceItsParentLeavesTheLiveTree(t *
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, recordedOn(tree, tree, "in_progress"))
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		return records.PutSlot(ctx, tx, record.Slot{Issue: tree, Index: 0, AdmittedAt: time.Now()})
+		if err := records.PutSlot(ctx, tx, record.Slot{Issue: tree, Index: 0, AdmittedAt: time.Now()}); err != nil {
+			return err
+		}
+		return openTreeTx(ctx, tx, "LEGION", tree)
 	}); err != nil {
-		t.Fatalf("seed the running tree's slot: %v", err)
+		t.Fatalf("seed the running tree: %v", err)
 	}
 	repos := newRepositories("LEGION", ghrepo.Renames{})
 	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}}, nil)
@@ -290,7 +297,7 @@ func TestATodoHeldUnderAnUnreleasedChildQueuesOnceItsParentLeavesTheLiveTree(t *
 		child:  shownUnder(child, "todo", parent, true),
 	}}
 	log := quietLogger()
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, log)
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(records, engine, 2, "LEGION", log)
 	w := &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: repos, defaultBranches: branches, log: log}
 	// deliver is the consumer's handling of one Dispatch event: its preparation, then its fact.
@@ -351,9 +358,12 @@ func newAncestryLine(t *testing.T, tree string, recorded ...record.Issue) *ances
 		putOutboxIssue(t, pool, records, issue)
 	}
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		return records.PutSlot(context.Background(), tx, record.Slot{Issue: tree, Index: 0, AdmittedAt: time.Now()})
+		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: tree, Index: 0, AdmittedAt: time.Now()}); err != nil {
+			return err
+		}
+		return openTreeTx(context.Background(), tx, "LEGION", tree)
 	}); err != nil {
-		t.Fatalf("seed the running tree's slot: %v", err)
+		t.Fatalf("seed the running tree: %v", err)
 	}
 	repos := newRepositories("LEGION", ghrepo.Renames{})
 	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}}, nil)
@@ -361,7 +371,7 @@ func newAncestryLine(t *testing.T, tree string, recorded ...record.Issue) *ances
 	branches.read["acme/widgets"] = defaultBranchRead{repository: ghbranch.Repository{Name: ghrepo.MustParse("acme/widgets"), DefaultBranch: "main"}, at: time.Now()}
 	client := &chainDispatch{issues: map[string]dispatch.Issue{tree: shownUnder(tree, "in_progress", "", true)}}
 	log := quietLogger()
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, log)
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	return &ancestryLine{t: t, pool: pool, records: records, client: client, engine: engine, admit: admit.New(records, engine, 2, "LEGION", log),
 		w: &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: repos, defaultBranches: branches, log: log}}
 }
@@ -414,7 +424,11 @@ func (l *ancestryLine) waiting(key string) bool {
 			return err
 		}
 		slots, err := l.records.Slots(context.Background(), tx)
-		waiting = slices.ContainsFunc(record.Waiting(issues, slots), func(issue record.Issue) bool { return issue.Key == key })
+		if err != nil {
+			return err
+		}
+		facts, err := record.ReadLineFacts(context.Background(), tx, l.records, "LEGION", issues, nil)
+		waiting = slices.ContainsFunc(record.Waiting(issues, slots, facts), func(entry record.LineEntry) bool { return entry.Issue.Key == key })
 		return err
 	}); err != nil {
 		l.t.Fatalf("read the waiting line: %v", err)
@@ -544,7 +558,10 @@ func TestAStaleEventOfAMovedAncestorBringsBackNoAncestryHold(t *testing.T) {
 	const tree, other, member, parent, child = "LEGION-168", "LEGION-190", "LEGION-170", "LEGION-169", "LEGION-214"
 	line := newAncestryLine(t, tree, parkedIn(member, tree), recordedOn(other, other, "in_progress"))
 	if err := pgx.BeginFunc(context.Background(), line.pool, func(tx pgx.Tx) error {
-		return line.records.PutSlot(context.Background(), tx, record.Slot{Issue: other, Index: 1, AdmittedAt: time.Now()})
+		if err := line.records.PutSlot(context.Background(), tx, record.Slot{Issue: other, Index: 1, AdmittedAt: time.Now()}); err != nil {
+			return err
+		}
+		return openTreeTx(context.Background(), tx, "LEGION", other)
 	}); err != nil {
 		t.Fatalf("fill the second slot: %v", err)
 	}

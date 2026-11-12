@@ -3,6 +3,7 @@ package fake
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -28,6 +29,18 @@ type Adoption struct {
 	Timeout  time.Duration
 }
 
+// Bundling is one workspace bundle the daemon asked the agent's side to build.
+type Bundling struct {
+	Issue   string
+	Timeout time.Duration
+}
+
+// Compaction is one compaction the daemon asked Oh My Pi for.
+type Compaction struct {
+	CustomInstructions string
+	Bound              time.Duration
+}
+
 // Conn is one agent's connection as a double: it records what was asked of the agent and answers
 // what the test told it to. The zero value is not usable; call NewConn.
 type Conn struct {
@@ -35,6 +48,10 @@ type Conn struct {
 	mu          sync.Mutex
 	prompts     []Prompt
 	adoptions   []Adoption
+	bundled     []Bundling
+	compactions []Compaction
+	compactGate chan struct{}
+	bundle      *runtime.WorkspaceBundle
 	enrollments []string
 	podToken    string
 	tokenReads  int
@@ -109,6 +126,98 @@ func (c *Conn) AdoptWorkingCopy(_ context.Context, id runtime.GitIdentity, timeo
 	c.adoptions = append(c.adoptions, Adoption{Identity: id, Timeout: timeout})
 	return c.failures["AdoptWorkingCopy"]
 }
+
+// Compact answers the daemon asking Oh My Pi to compact the session, recording what it asked
+// for. A gate HoldCompact opened makes the answer wait for the test to open it, or for the
+// caller's context: that is a compaction that takes its time, which the caller must still get
+// the real answer of.
+func (c *Conn) Compact(ctx context.Context, customInstructions string, bound time.Duration) error {
+	c.mu.Lock()
+	c.compactions = append(c.compactions, Compaction{CustomInstructions: customInstructions, Bound: bound})
+	gate, err := c.compactGate, c.failures["Compact"]
+	c.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return err
+}
+
+// Compactions is every compaction asked over this connection, in order.
+func (c *Conn) Compactions() []Compaction {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.compactions)
+}
+
+// HoldCompact makes every later Compact wait before it answers, and returns the call that lets
+// each of them through.
+func (c *Conn) HoldCompact() func() {
+	gate := make(chan struct{})
+	c.mu.Lock()
+	c.compactGate = gate
+	c.mu.Unlock()
+	return sync.OnceFunc(func() { close(gate) })
+}
+
+// RefuseCompact makes every later Compact Oh My Pi refusing the compaction with reason — a
+// session too small, one already compacted — as the stream's connection answers `success:
+// false`; RefuseCompact("") clears it.
+func (c *Conn) RefuseCompact(reason string) {
+	if reason == "" {
+		c.fail("Compact", nil)
+		return
+	}
+	c.fail("Compact", compactRefusal{reason: reason})
+}
+
+// compactRefusal is the fake agent's `success: false` answer to a compaction, as
+// stream.RefusedError is the real one's.
+type compactRefusal struct{ reason string }
+
+func (r compactRefusal) Error() string         { return "compact: " + r.reason }
+func (r compactRefusal) RefusalReason() string { return r.reason }
+
+// FailCompact makes every later Compact return err: the transport failing under the frame, or
+// the wait for Oh My Pi's answer running out.
+func (c *Conn) FailCompact(err error) { c.fail("Compact", err) }
+
+// BundleWorkspace answers the daemon asking the agent's side for its workspace's unpushed work:
+// the bundle SetWorkspaceBundle gave it, recorded with the issue asked about. With none given it
+// fails, so a test that never expected a release to bundle sees the request go unanswered rather
+// than an empty bundle.
+func (c *Conn) BundleWorkspace(_ context.Context, issue string, timeout time.Duration) (runtime.WorkspaceBundle, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.bundled = append(c.bundled, Bundling{Issue: issue, Timeout: timeout})
+	if err := c.failures["BundleWorkspace"]; err != nil {
+		return runtime.WorkspaceBundle{}, err
+	}
+	if c.bundle == nil {
+		return runtime.WorkspaceBundle{}, errors.New("fake: the shim was asked to bundle its workspace, and the test set none (SetWorkspaceBundle)")
+	}
+	return *c.bundle, nil
+}
+
+// SetWorkspaceBundle is the bundle the agent's side builds from now on.
+func (c *Conn) SetWorkspaceBundle(b runtime.WorkspaceBundle) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.bundle = &b
+}
+
+// Bundlings is every workspace bundle asked over this connection, in order.
+func (c *Conn) Bundlings() []Bundling {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.bundled)
+}
+
+// FailBundleWorkspace makes every later BundleWorkspace return err; nil clears it.
+func (c *Conn) FailBundleWorkspace(err error) { c.fail("BundleWorkspace", err) }
 
 // RescueUnpushed answers a disk with no workspace on it: the daemon asks the push check through
 // its runtime (runtime.Runtime.RescueUnpushed), whose fake answers what a test scripts there.

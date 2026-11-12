@@ -101,24 +101,87 @@ machine's Application Default Credentials are its own identity, and so does ever
   labels, so they never collide with a label someone else applies.
 - **`--tier agent`** lets the owner's own sessions use it without asking, and **`--tier human`**
   sends every use to a person for approval. Both flags are required.
-- **`--kind`** is optional. Use `github-app` for a GitHub App key and `google-login` for an
-  authorized-user Google login. Use `none`, or omit the flag, for a stored secret. A kind also
+- **`--kind`** is optional. Use `github-app` for a GitHub App key, `google-login` for an
+  authorized-user Google login, and `google-service-account` for one Google service account the
+  broker mints an access token as, whose stored value names that account:
+  `{"service_account": "<id>@<project>.iam.gserviceaccount.com"}`. That last one is an
+  administrator's to write and to set a new value for, not a self-service step, even for the
+  person who owns it: which account the broker mints for is the deployment's choice, bound to the
+  secret's name in `BROKER_SERVICE_ACCOUNT_SECRETS`, and a secret the deployment has bound to
+  nothing releases no token at all, however good its value. Ask whoever runs your deployment to
+  create it and bind it.
+  Use `none`, or omit the flag, for a stored secret. A kind also
   writes `mint-service-account: kind-secret`, which makes an earlier broker refuse the secret
   rather than serve its stored key.
 - **`--github-owners`** is required with `--kind github-app`, and refused with any other kind. It
   lists the GitHub accounts the broker mints installation tokens for, separated by spaces, so the
   shell quotes it: `--github-owners "acme-org ada"`. A comma is refused before anything is written.
-- **`--max-grant`** is optional. It is the longest `--ttl` a request for this secret may use.
+- **`--requesters`** is optional. It lists who may ask for this secret at all — people by their
+  lowercase sign-in email, services by the name the deployment registers them under — separated
+  by spaces, so the shell quotes it: `--requesters "ada@example.com legion-daemon"`. Nobody else
+  may ask, whatever the owner and tier allow. The list bounds no grant by itself: an ordinary
+  secret keeps whatever `--max-grant` you give it, or none, so your own mail and Drive logins
+  stay at their tier and are capped by nothing. A `google-service-account` secret is served to
+  the one person who owns it, so the administrator who writes it gives it that person's own
+  address: `--owner <their email> --requesters <their email>`. With `--tier human` it may name
+  registered services beside that owner, so a service's pod can ask and the owner approves each
+  request; with `--tier agent` it may not, and neither may a secret the deployment binds to a
+  `dev-<name>` account, whose token is that one person's own. A comma, an email with a
+  capital letter and a list that names nobody are refused
+  before anything is written. Whether an entry naming a service is one your deployment registers
+  is the broker's to say
+  ([what the broker answers after a write](#what-the-broker-answers-after-a-write)).
+- **`--scopes`** is optional, and read with `--kind google-service-account` alone; with any other
+  kind it is refused before anything is written. It lists the OAuth scopes the minted token
+  carries, each the part of a Google scope after `https://www.googleapis.com/auth/`, separated by
+  spaces, so the shell quotes it: `--scopes "cloud-platform bigquery"`. Without it the token
+  carries `cloud-platform` alone. The short names keep the list inside an AWS tag value's 256
+  characters. A comma, a whole scope URL, a capital letter, and a scope named twice are each
+  refused before anything is written.
+- **`--admin true`** is optional. It marks a secret whose grant is an administrator's, which the
+  broker cannot read off the kind: an admin console password and a personal API key are both
+  stored strings. Such a secret is `--tier human`, names its `--requesters`, and takes a
+  `--max-grant` of an hour or less, so a person approves every release, only someone it names may
+  ask, and the grant is short enough to review while it is live. A person approves every release
+  of one even where a deployment runs a model judge: the judge refuses an administrator's
+  secret, so no airlock rules entry can move one of its requests off the person who approves it
+  ([The model judge](/legion/broker/concepts/#the-model-judge)). Any value but `true` is refused.
+- **`--shape`** is optional. It says what the stored value is, so the broker knows what it may do
+  to that value before it spends it. **`--shape token`** is a one-line credential, an API key or a
+  bearer token: the broker removes the whole trailing run of carriage returns and line feeds
+  before it hands the value over, unless the value is nothing but line endings, which it leaves as
+  it is. **`--shape document`** is a value whose every byte is part of it, a PEM key or a JSON
+  file: the broker removes nothing. A secret with no tag is read by the broker's own reading of
+  the value: that trailing run goes only where the rest of the value is not empty and holds no
+  carriage return and no line feed, so a PEM document keeps the line feed that ends it. Any word
+  but `token` and `document` is refused before anything is written.
+- **`--max-grant`** is optional, except with `--admin true` and with
+  `--kind google-service-account`, where each needs it, of an hour or less. It is the longest
+  `--ttl` a request for this secret may use.
   It must be a duration of at least one second.
 - **`--default-grant session`** is optional. A request with no `--ttl` for secrets that all carry it
-  gets a grant that lasts until its session ends, instead of 12 hours.
+  gets a grant that lasts until its session ends, instead of the default: 15 minutes when any
+  secret the request names is human tier, and 12 hours otherwise.
 - **The value.** At a terminal the CLI reads one hidden line. Enter or Ctrl-D ends it; Backspace,
   Ctrl-W and the terminal's kill-line character edit it. An unhandled control byte, including
   Ctrl-S, Ctrl-Q, and Ctrl-C, Ctrl-\\ or Ctrl-Z inside a bracketed paste, refuses the value. The
   prompt keeps discarding through Enter or Ctrl-D and the paste's end before reporting the error
   and naming the pipe command. Anywhere
-  else the CLI reads standard input to its end, less one trailing newline. Empty values and
+  else the CLI reads standard input to its end. The CLI then reads what it stores by the same rule
+  the broker spends a value under, the secret's `--shape` above: a token loses its whole trailing
+  run of carriage returns and line feeds, a document loses nothing, and a value whose secret
+  carries no shape tag loses that run only where the rest of it is not empty and holds no carriage
+  return and no line feed. Where that rule removes nothing, one final line feed goes, so `echo`
+  and a file that ends in a newline store the value without one. `secret set` reads the secret's
+  own shape tag first, so a document's owner stores a document. Empty values and
   invalid UTF-8 are refused (exit 2) and write nothing.
+
+**Keeping a value's final line ending.** Tag the secret `--shape document`, and the broker removes
+nothing from its value. The CLI still removes one final line feed wherever the rule removes
+nothing, which covers a document and a value holding a line ending inside it, so pipe one more line
+ending than the value needs. For a value the rule trims, a one-line credential under
+`--shape token` or under no shape tag at all, no number of piped endings survives, so
+`--shape document` is the only way to keep one.
 
 The CLI checks your sign-in before it asks for the value, so a refused sign-in never has you type a
 secret for nothing. The secret is created on the broker's key with its tags, and the broker serves
@@ -237,10 +300,10 @@ form makes.
 
 ```console
 $ agent-secrets secret list
-NAME               OWNER            TIER   KIND          MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
-DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -          -              yes    -        -
-DEMO_GITHUB_APP    ada@example.com  agent  github-app    -          -              yes    -        -
-DEMO_LOGIN         ada@example.com  human  google-login  1h         -              yes    -        -
+NAME               OWNER            TIER   KIND          SHAPE  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
+DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -      -          -              yes    -        -
+DEMO_GITHUB_APP    ada@example.com  agent  github-app    -      -          -              yes    -        -
+DEMO_LOGIN         ada@example.com  human  google-login  -      1h         -              yes    -        -
 Every row is a secret in AWS Secrets Manager account 111122223333 in us-east-1.
 ```
 
@@ -258,6 +321,11 @@ secret_name: example/agent-secrets/demo-deploy-token
 owner: ada@example.com
 tier: agent
 kind: -
+github_owners: -
+requesters: -
+scopes: -
+admin: -
+shape: -
 max_grant: -
 default_grant: -
 created: 2026-10-06T20:31:08Z
@@ -281,7 +349,7 @@ input, which is how a value of more than one line goes in. The broker never keep
 reads it from Secrets Manager each time a session reads a grant, so the next read of a live grant
 gets the new one.
 
-## Change its owner, tier, kind or max grant
+## Change its owner, tier, kind, requesters or max grant
 
 ```console
 $ agent-secrets secret retag DEMO_DEPLOY_TOKEN --tier human
@@ -289,17 +357,23 @@ retagged DEMO_DEPLOY_TOKEN in AWS Secrets Manager account 111122223333 in us-eas
 broker: serving DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 in us-east-1
 ```
 
-Name `--owner`, `--tier`, `--kind`, `--github-owners`, `--max-grant`, `--default-grant` or a combination. A retag that
+Name `--owner`, `--tier`, `--kind`, `--github-owners`, `--requesters`, `--scopes`, `--admin`, `--shape`, `--max-grant`, `--default-grant` or a combination. A retag that
 sets tags reads the owner and tier tags the secret holds and sends both in one request. On AWS,
 this lets an IAM condition inspect both tags. Every other tag or annotation stays as it is. For a
 secret missing an owner or tier tag, name that tag too.
 
 `--kind none` removes the kind tag and the `mint-service-account` tag written with it,
-`--github-owners none` removes the GitHub owners and `--max-grant none` removes the max grant, and `--default-grant none` removes the opt-out. A
+`--github-owners none` removes the GitHub owners, `--requesters none` removes the list of who may
+ask, `--scopes none` removes the scopes, so the token carries `cloud-platform` alone again,
+`--admin none` removes the administrator's mark, `--shape none` removes the shape, so the broker
+reads the value for itself again, `--max-grant none` removes the max grant, and
+`--default-grant none` removes the opt-out. A
 removal is a retag of its own: it changes no other tag, so the cloud refusing it leaves the secret
 as it was. A retag that names `none` beside another change is refused before it writes anything.
 So is a retag that would leave a `github-app` secret without `--github-owners`, as the broker would
-then refuse to serve it, and one that names `--github-owners` on a secret of another kind.
+then refuse to serve it, one that names `--github-owners` on a secret of another kind, one that
+names `--scopes` on a secret of another kind, and one that would leave an `admin` or
+`google-service-account` secret without a `--max-grant` of an hour or less.
 Run the removal and the other change as two retags:
 
 ```console
@@ -414,10 +488,10 @@ that moment is both), and the **earliest** it can be purged:
 
 ```console
 $ agent-secrets secret list
-NAME               OWNER            TIER   KIND  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
-DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -          -              yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
-DEMO_EMPTY_KEY     ada@example.com  human  -     -          -              yes    -                     -
-DEMO_SHARED_KEY    shared           human  -     -          -              yes    -                     -
+NAME               OWNER            TIER   KIND  SHAPE  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
+DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -      -          -              yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
+DEMO_EMPTY_KEY     ada@example.com  human  -     -      -          -              yes    -                     -
+DEMO_SHARED_KEY    shared           human  -     -      -          -              yes    -                     -
 EARLIEST_PURGE is the deletion plus Secrets Manager's 7-day minimum recovery window: restore works at least until then; the window the delete chose may be longer.
 ```
 
@@ -463,6 +537,22 @@ agent-secrets secret retag: the broker at secrets.internal.example refuses DEMO_
 ```
 
 Here the secret has no value; `secret set DEMO_EMPTY_KEY` gives it one, and the broker serves it.
+
+A `requesters` entry naming a service is answered the same way. This CLI holds no list of the
+services a deployment registers, so it checks such an entry's shape and nothing more; the broker
+is what knows the names, and it refuses a secret naming one it does not register with
+`reason=requesters-malformed`, after the write, with the list already in the store. Retag the
+secret with the name the deployment registers, and the broker serves it:
+
+```console
+$ agent-secrets secret retag DEMO_DEPLOY_TOKEN --requesters "ada@example.com legion-daemn"
+retagged DEMO_DEPLOY_TOKEN in AWS Secrets Manager account 111122223333 in us-east-1 (owner=ada@example.com, tier=agent)
+broker: refusing DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 in us-east-1 (reason=requesters-malformed)
+agent-secrets secret retag: the broker at secrets.internal.example refuses DEMO_DEPLOY_TOKEN after the write to AWS Secrets Manager account 111122223333 in us-east-1 (reason=requesters-malformed)
+$ agent-secrets secret retag DEMO_DEPLOY_TOKEN --requesters "ada@example.com legion-daemon"
+retagged DEMO_DEPLOY_TOKEN in AWS Secrets Manager account 111122223333 in us-east-1 (owner=ada@example.com, tier=agent)
+broker: serving DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 in us-east-1
+```
 
 When the broker cannot be asked at all (it is unreachable, or its
 [reread limit](/legion/broker/operate/#network-and-trust) refuses the call), the write still stands

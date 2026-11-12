@@ -3,6 +3,8 @@ package stream
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,10 +37,12 @@ var (
 // a shim's failed adoption, enrollment or token read. The connection is fine; the agent said no.
 //
 // A refused prompt is runtime.ErrPromptRefused, which is what the supervisor charges a prompt
-// budget on unless Reason is OMP's busy answer (runtime.RefusalReason), and a refused token
-// request is runtime.ErrTokenRefused. No other refusal is either — a refused negotiation ahead of
-// the prompt, a refused get_state or adoption — so the match is on the command rather than an
-// unconditional Unwrap.
+// budget on unless Reason is OMP's busy answer (runtime.RefusalReason); a refused adoption is
+// runtime.ErrAdoptRefused, charged to that same budget with no such exemption (the busy answer is
+// OMP's about a turn, not the shim's about a working copy); and a refused token request is
+// runtime.ErrTokenRefused. No other refusal is any of them — a refused negotiation ahead of the
+// prompt, a refused get_state — so the match is on the command rather than an unconditional
+// Unwrap.
 type RefusedError struct {
 	Claim   claim.Token
 	Command string
@@ -59,6 +63,8 @@ func (e *RefusedError) Is(target error) bool {
 	switch target {
 	case runtime.ErrPromptRefused:
 		return e.Command == shimwire.TypePrompt
+	case runtime.ErrAdoptRefused:
+		return e.Command == shimwire.TypeAdoptWorkingCopy
 	case runtime.ErrTokenRefused:
 		return e.Command == shimwire.TypeAgentSecretsToken
 	}
@@ -210,6 +216,25 @@ func (c *Conn) GetState(ctx context.Context) (runtime.ConnState, error) {
 	return runtime.ConnState{IsStreaming: *data.IsStreaming}, nil
 }
 
+// Compact asks Oh My Pi to compact its session's context. The shim answers nothing of it and
+// forwards it as it forwards a prompt, so the answer is Oh My Pi's own `response` to the
+// command: success for a session compacted, and `success: false` with Oh My Pi's reason for a
+// compaction it refused or skipped, which is a *RefusedError here (runtime.RefusalReason reads
+// the words). The wait is the request's own bound rather than the RPC timeout: Oh My Pi
+// answers only once the summary is written, which is a model call over the whole transcript.
+func (c *Conn) Compact(ctx context.Context, customInstructions string, bound time.Duration) error {
+	if err := c.Negotiate(ctx); err != nil {
+		return err
+	}
+	id := rand.Text()
+	frame := shimwire.Compact{ID: id, CustomInstructions: customInstructions}
+	if err := frame.Validate(); err != nil {
+		return fmt.Errorf("worker-stream: %s: %w", c.claim, err)
+	}
+	_, err := c.callWithin(ctx, frame, id, "", bound)
+	return err
+}
+
 // Shutdown asks the shim to end OMP: SIGTERM, then SIGKILL once the shim's grace runs out. The
 // shim acts on the frame itself and answers nothing (internal/shim); whether the process ended is
 // the runtime's to observe.
@@ -253,6 +278,43 @@ func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentit
 		}
 	}
 	return fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeAdoptWorkingCopy, answer.FrameType())
+}
+
+// BundleWorkspace asks the shim to bundle the unpushed work of the workspace it runs in. The shim
+// runs its jj reads and its `git bundle create` within timeout; the answer is awaited for that
+// plus the RPC timeout, the round trip, and crosses as an rpc_chunk sequence when the bundle is
+// larger than one line.
+func (c *Conn) BundleWorkspace(ctx context.Context, issue string, timeout time.Duration) (runtime.WorkspaceBundle, error) {
+	id := rand.Text()
+	frame := shimwire.BundleWorkspace{
+		ID: id, Issue: issue, MaxBytes: runtime.MaxWorkspaceBundleBytes, TimeoutMs: int(timeout.Milliseconds()),
+	}
+	if err := frame.Validate(); err != nil {
+		return runtime.WorkspaceBundle{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
+	}
+	answer, err := c.request(ctx, frame, id, "", timeout+c.rpcTimeout)
+	if err != nil {
+		return runtime.WorkspaceBundle{}, err
+	}
+	switch answer := answer.(type) {
+	case shimwire.BundleWorkspaceResult:
+		if err := answer.Validate(); err != nil {
+			return runtime.WorkspaceBundle{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
+		}
+		if !answer.OK {
+			return runtime.WorkspaceBundle{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeBundleWorkspace, Reason: answer.Error}
+		}
+		return runtime.WorkspaceBundle{
+			Bundle: answer.Bundle, Head: answer.Head, Tips: answer.Tips, Bookmarks: answer.Bookmarks, At: answer.At,
+		}, nil
+	case shimwire.Response:
+		// A shim that does not answer the frame itself forwards it, and OMP refuses a command
+		// it does not know.
+		if !answer.Success {
+			return runtime.WorkspaceBundle{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeBundleWorkspace, Reason: answer.Error}
+		}
+	}
+	return runtime.WorkspaceBundle{}, fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeBundleWorkspace, answer.FrameType())
 }
 
 // RescueUnpushed asks the shim to check every workspace on its pod's disk for work the remote
@@ -335,9 +397,16 @@ func (c *Conn) AgentSecretsToken(ctx context.Context) (string, error) {
 	return "", fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeAgentSecretsToken, answer.FrameType())
 }
 
-// call is a request OMP answers with a response to the same command, successful.
+// call is a request OMP answers with a response to the same command, successful, within the RPC
+// timeout.
 func (c *Conn) call(ctx context.Context, frame shimwire.Frame, id, deliveryID string) (shimwire.Response, error) {
-	answer, err := c.request(ctx, frame, id, deliveryID, c.rpcTimeout)
+	return c.callWithin(ctx, frame, id, deliveryID, c.rpcTimeout)
+}
+
+// callWithin is call bounded by the request's own wait rather than the RPC timeout: the bound a
+// command whose work is not a frame the far side answers at once carries (Compact).
+func (c *Conn) callWithin(ctx context.Context, frame shimwire.Frame, id, deliveryID string, bound time.Duration) (shimwire.Response, error) {
+	answer, err := c.request(ctx, frame, id, deliveryID, bound)
 	if err != nil {
 		return shimwire.Response{}, err
 	}
@@ -453,10 +522,14 @@ func (c *Conn) logNotAFrame(line []byte, err error) {
 	c.log.Warn("worker-stream: ignoring a malformed frame", "claim", c.claim, "error", err)
 }
 
-// dispatch acts on one whole frame. OMP's other events — tool calls, message updates, errors —
-// are not facts the daemon supervises on, and are dropped here, except an extension's failure,
-// which leaves the agent running without what the extension gives it (the Legion plugin's tool,
-// when its session_start fails) and is on no other record the daemon reads, so it is logged.
+// dispatch acts on one whole frame. A tool call starting or ending is pushed as the length and
+// the fingerprint of its arguments (ToolStep), which is everything the supervisor records of
+// them and the only thing computed here: their text stops at this reader, so no queue of the
+// daemon's holds a credential a shell command carried. OMP's other events — message updates,
+// errors — are not facts the daemon supervises on, and are dropped, except an extension's
+// failure, which leaves the agent running without what the extension gives it (the Legion
+// plugin's tool, when its session_start fails) and is on no other record the daemon reads, so it
+// is logged.
 //
 // A prompt_result whose request id names no delivery is dropped: every prompt this daemon sends
 // carries one (Prompt), so such a frame answers a `prompt` command something else wrote.
@@ -469,11 +542,26 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 		c.acked = nil
 		c.mu.Unlock()
 		c.events.push(TurnEnd{Claim: c.claim})
+	case shimwire.ToolExecutionStart:
+		c.events.push(ToolStep{Claim: c.claim, Tool: frame.ToolName, CallID: frame.ToolCallID,
+			ArgsBytes: len(frame.Args), ArgsHash: stepArgsHash(frame.Args), ConnSequence: c.seq})
+	case shimwire.ToolExecutionEnd:
+		c.events.push(ToolStep{Claim: c.claim, Tool: frame.ToolName, CallID: frame.ToolCallID,
+			End: true, ConnSequence: c.seq})
 	case shimwire.PromptResult:
 		if delivery := promptDelivery(frame.ID); delivery != "" {
-			c.events.push(PromptResult{
+			event := PromptResult{
 				Claim: c.claim, DeliveryID: delivery, AgentInvoked: frame.AgentInvoked, Error: frame.Reason(),
-			})
+			}
+			if frame.Error != nil {
+				// The whole of Oh My Pi's error object, not the message alone: the structured
+				// members are what a failure is judged on.
+				event.Retryable = frame.Error.Retryable
+				event.HTTPStatus = frame.Error.HTTPStatus
+				event.Provider = frame.Error.Provider
+				event.Model = frame.Error.Model
+			}
+			c.events.push(event)
 		}
 	case shimwire.Response:
 		c.answer(frame)
@@ -496,7 +584,22 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 		c.answerShim(frame.ID, frame)
 	case shimwire.AgentSecretsTokenResult:
 		c.answerShim(frame.ID, frame)
+	case shimwire.BundleWorkspaceResult:
+		c.answerShim(frame.ID, frame)
 	}
+}
+
+// stepArgsHash is the fingerprint of a call's arguments: the first eight bytes of their SHA-256,
+// hex. It is what tells two calls of one tool with different arguments apart in the record,
+// where their text can never be — a shell command routinely holds a credential
+// (supervise.StepRecord) — and eight bytes are a fingerprint for a human reading two rows, not a
+// proof of anything. Arguments nobody sent hash to nothing at all.
+func stepArgsHash(args []byte) string {
+	if len(args) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(args)
+	return hex.EncodeToString(sum[:8])
 }
 
 // answerShim hands a frame the shim answered itself to the request waiting on its id; one nobody

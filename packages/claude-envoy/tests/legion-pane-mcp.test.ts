@@ -7,6 +7,7 @@ import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { legion } from "../package.json" with { type: "json" }
+import { PHASE_HOOK_TOOL_NAME } from "../src/legion-phase-hook"
 import { waitFor } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 
@@ -45,6 +46,8 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
   })
   const roles: unknown[] = []
   const advertised: unknown[] = []
+  /** The client instance each registration carried: the process the pane's claim must name. */
+  const instances: Array<string | undefined> = []
   const holders = new Map<string, string>()
   const listener = Bun.serve({
     port: 0,
@@ -52,8 +55,12 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
       const url = new URL(request.url)
       const interest = { session_id: SESSION, machine_id: "test", dir: root, topics: [] }
       if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
-        const registration = (await request.json()) as { readonly capabilities?: unknown }
+        const registration = (await request.json()) as {
+          readonly capabilities?: unknown
+          readonly client_instance_id?: string
+        }
         advertised.push(registration.capabilities)
+        instances.push(registration.client_instance_id)
         return Response.json(interest)
       }
       if (request.method === "POST" && url.pathname === "/v1/roles/set") {
@@ -108,6 +115,9 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
       LEGION_BOOT_TOKEN_FILE: tokenFile,
       LEGION_DAEMON_URL: `http://127.0.0.1:${daemon.port}`,
       LEGION_CLAUDE_INBOX: inboxPath,
+      // Ten minutes, so the role below can only have been claimed by the turn this case
+      // submits and never by the claim's own bound (INFRA-1573).
+      LEGION_CLAIM_FIRST_TURN_BOUND_MS: "600000",
     },
     stderr: "pipe",
   })
@@ -124,7 +134,14 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
       client.callTool({ name: "legion", arguments: { op: "read_record", issue: "LEGION-208" } }),
     ).rejects.toThrow("this session has no Legion claim yet")
 
-    // The bridge's /rename seed writes the transcript; only then does the pane register.
+    // The bridge's /rename seed, as a fresh pane's Claude Code submits it: a prompt before any
+    // claim exists, since the seed is what writes the transcript the pane registers with. It
+    // says a turn started, and the server has no step to run for it yet (INFRA-1573).
+    const seed = await client.callTool({
+      name: PHASE_HOOK_TOOL_NAME,
+      arguments: { event: "UserPromptSubmit", prompt: "/rename legion" },
+    })
+    expect(seed.content).toEqual([{ type: "text", text: "{}" }])
     const transcript = join(configDir, "projects", "-work", `${SESSION}.jsonl`)
     await mkdir(join(configDir, "projects", "-work"), { recursive: true })
     await writeFile(transcript, "{}\n")
@@ -153,7 +170,25 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
         },
       },
     ])
-    expect(roles).toEqual([{ session_id: SESSION, role: claimToken, soft: true }])
+    // The seed is behind the pane and it holds no name: the registration and its ready have
+    // run, and only a turn after them takes the Envoy name, so a message the listener kept for
+    // the role is handed over inside a running turn rather than ahead of the daemon's task
+    // (INFRA-1573).
+    expect(roles).toEqual([])
+    const turn = await client.callTool({
+      name: PHASE_HOOK_TOOL_NAME,
+      arguments: { event: "UserPromptSubmit", prompt: "Start implementing" },
+    })
+    expect(turn.content).toEqual([{ type: "text", text: "{}" }])
+    await waitFor(async () => roles.length > 0, "the pane to claim its role at its first turn")
+    // The claim names the process that made it — the one id this server minted and registers
+    // with — so the listener holds the role for this `claude` alone (dispatch://INFRA-783).
+    const instance = instances[0]
+    expect(instance).toMatch(/^[0-9a-f]{32}$/)
+    expect([...new Set(instances)]).toEqual([instance])
+    expect(roles).toEqual([
+      { session_id: SESSION, role: claimToken, soft: true, client_instance_id: instance },
+    ])
     // Dispatch refuses a mode the session does not advertise, and sends a Send by default: every
     // registration of the session carries both modes the bridge serves.
     expect(advertised.length).toBeGreaterThan(0)

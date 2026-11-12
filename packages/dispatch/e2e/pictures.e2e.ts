@@ -1,7 +1,8 @@
-import { expect, type Locator, type Page, type Response, test } from "@playwright/test";
-
 import type { ArtifactUploadResponse } from "../web/src/api/types";
-import { REF_PREVIEW_OPEN_DELAY_MS } from "../web/src/features/refs/ref-preview-timing";
+import {
+  REF_PREVIEW_CLOSE_DELAY_MS,
+  REF_PREVIEW_OPEN_DELAY_MS,
+} from "../web/src/features/refs/ref-preview-timing";
 import { agentRow, setLiveSessions } from "./agents";
 import {
   createAsk,
@@ -15,9 +16,9 @@ import {
   getIssueArtifactText,
 } from "./api";
 import { documentEditor, openSpec, typeAtEnd } from "./editor";
-import { resetDatabase } from "./seed";
 import { ONE_PIXEL_PNG, pastePicture } from "./sends";
 import { sessionIds } from "./session-ids";
+import { expect, type Locator, type Page, type Response, test } from "./test";
 import { asUser } from "./users";
 
 // A picture pasted into a message, an ask's answer or a direct message is uploaded and written as
@@ -30,10 +31,6 @@ const agentSession = {
   actor: { kind: "session" as const, id: "e2e-pictures" },
   as: "agent" as const,
 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** Waits for `picture` to have loaded real pixels: scrolled to first, since it loads lazily. */
 async function expectDrawn(picture: Locator, src: string): Promise<void> {
@@ -74,7 +71,8 @@ async function expectSucceeded(answer: Promise<Response>): Promise<Response> {
   return response;
 }
 
-test("a picture pasted into an issue message shows inline in the conversation", async ({
+// @pr: Upload and download: a picture pasted into a message is uploaded and drawn inline in the conversation.
+test("a picture pasted into an issue message shows inline in the conversation @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -177,11 +175,7 @@ test("a picture pasted into a direct message on the Agents page shows inline and
   try {
     const page = await alice.newPage();
     await page.goto("/agents");
-    // A session with no Dispatch activity yet is listed under its fold.
-    await page
-      .getByRole("region", { name: "Agents" })
-      .getByRole("button", { name: "No Dispatch activity (1)" })
-      .click();
+    // A session with no Dispatch activity yet is listed under `Idle`, which is open.
     const row = agentRow(page, planner.session_id);
     await row.getByRole("button", { exact: true, name: "Planner" }).click();
     const field = row.getByRole("textbox", { name: "Comment" });
@@ -274,7 +268,9 @@ test("a picture written into a spec draws in the editor and in a past version, w
     );
     const newestVersion = async () =>
       Math.max(
-        ...(await getArtifact(issue.primary_artifact_id)).versions.map(({ number }) => number)
+        ...((await getArtifact(issue.primary_artifact_id)).versions ?? []).map(
+          ({ number }) => number
+        )
       );
     await expect.poll(newestVersion).toBeGreaterThan(1);
     const pictured = await newestVersion();
@@ -409,9 +405,9 @@ test("a picture line the browser cannot draw, at a version or not, shows a link;
 // version's bytes and opens its document's dashboard page. The same document's page URL or
 // `dispatch://` reference left as text (bare, in angle brackets, or a link whose words are its
 // target) is text, which the server cites only within those bytes, so it stays the plain link it is.
-test("a long-named picture in a comment draws, its link to a long-named document opens it, and the bare page URL stays a plain link @phone", async ({
+test("a long-named picture in a comment draws, its link to a long-named document opens it, and the bare page URL stays a plain link", async ({
   browser,
-}, testInfo) => {
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Long names" });
   const alice = await asUser(browser, "alice");
@@ -451,11 +447,12 @@ test("a long-named picture in a comment draws, its link to a long-named document
       body: `![shot](dispatch://${issue.key}/artifact/${pictureSlug}@v1)\n\nSee [design](${designTarget}).\n\nBare: ${bareUrl}\n\nAngle: <${designTarget}>\n\nSelf: [${designTarget}](${designTarget})\n\nBlock: <${blockTarget}>`,
     });
 
+    // The hover card's open delay below is a page timer (`REF_PREVIEW_OPEN_DELAY_MS`), so the
+    // page's own clock is what spends it.
+    await page.clock.install();
     await page.goto(`/issues/${issue.key}/conversation`);
-    const turn = page.locator(`[data-turn="comment:${comment.id}"]`);
-    await turn.getByRole("button", { name: "Expand thread" }).click();
-    const thread =
-      testInfo.project.name === "iphone" ? page.getByRole("dialog", { name: "Thread" }) : turn;
+    const thread = page.locator(`[data-turn="comment:${comment.id}"]`);
+    await thread.getByRole("button", { name: "Expand thread" }).click();
 
     // The source is asserted before the picture is waited on: one the browser cannot fetch
     // (`dispatch://…`) would fail as an image that never loads rather than naming its source.
@@ -469,6 +466,10 @@ test("a long-named picture in a comment draws, its link to a long-named document
       .locator("p", { hasText: "See" })
       .locator(`a[data-dispatch-href="${designTarget}"]`);
     await expect(link).toHaveAttribute("href", path);
+    // The link's words are the document's name, which a portal fills in after the body painted.
+    // Waited for before the loop: that late growth slides the link under a pointer resting on a
+    // paragraph, which opens a card over the paragraph hovered next.
+    await expect(link).toContainText("design design");
     // Asserted once the author's link is drawn, in the same pass: the bare URL's words are the URL
     // and it keeps its href, never the document's name and route a reference link would show.
     const bare = thread.locator("p", { hasText: "Bare:" }).getByRole("link");
@@ -486,13 +487,18 @@ test("a long-named picture in a comment draws, its link to a long-named document
       await expect(paragraph).toHaveText(`${label} ${words}`);
       await expect(paragraph.getByRole("link")).toHaveCount(0);
       await expect(paragraph.locator("[data-dispatch-href],[data-dispatch-ref]")).toHaveCount(0);
-      if (testInfo.project.name !== "iphone") {
-        await paragraph.hover();
-        await page.waitForTimeout(2 * REF_PREVIEW_OPEN_DELAY_MS);
-        await expect(page.getByRole("tooltip")).toHaveCount(0);
-      }
+      // `RefPreview` keeps an open card under a pointer that has not moved
+      // (`keptUnderAStillPointer`): it arms no close while the page moves beneath it, so only
+      // this park arms one, and the clock run after it is what spends the close delay. A clock
+      // run before the park spends nothing.
+      await page.mouse.move(0, 0);
+      await page.clock.runFor(2 * REF_PREVIEW_CLOSE_DELAY_MS);
+      await paragraph.hover();
+      await page.clock.runFor(2 * REF_PREVIEW_OPEN_DELAY_MS);
+      await expect(page.getByRole("tooltip")).toHaveCount(0);
     }
     await page.mouse.move(0, 0);
+    await page.clock.runFor(2 * REF_PREVIEW_CLOSE_DELAY_MS);
     // The link reads as the document's name, so it wraps past the window's height; the click lands
     // on its last line, clear of the composer pinned above the conversation.
     const lastLine = await link.evaluate((anchor) => {

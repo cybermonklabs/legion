@@ -46,7 +46,7 @@ func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, _ := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Comment mentions", "before")
 
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
@@ -76,8 +76,12 @@ func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
 		t.Fatalf("created mentions = %#v, want the resolved default-steer session mention", created.Mentions)
 	}
 	if len(created.Deliveries) != 1 || created.Deliveries[0].Target != "session:s1" ||
-		created.Deliveries[0].State != "sent" {
-		t.Fatalf("created deliveries = %#v, want one sent session:s1 attempt", created.Deliveries)
+		created.Deliveries[0].State != "pending" {
+		t.Fatalf("created deliveries = %#v, want one pending session:s1 attempt", created.Deliveries)
+	}
+	if settled := settledCommentDeliveries(t, database, created.ID); len(settled) != 1 ||
+		settled[0].Target != "session:s1" || settled[0].State != "sent" {
+		t.Fatalf("settled deliveries = %#v, want one sent session:s1 attempt", settled)
 	}
 	if len(sent) != 1 {
 		t.Fatalf("listener sends = %#v, want exactly one mention delivery", sent)
@@ -202,8 +206,8 @@ func TestReopenCommentClearsResolutionAndReprojects(t *testing.T) {
 	}
 
 	forbidden := sessionRequest(t, handler, http.MethodPost, "/api/v1/comments/"+root.ID+"/reopen", map[string]any{"actor": sessionActor()})
-	if forbidden.Code != http.StatusForbidden || !strings.Contains(forbidden.Body.String(), `"code":"HUMAN_ONLY"`) {
-		t.Fatalf("session reopen: status=%d body=%s", forbidden.Code, forbidden.Body.String())
+	if forbidden.Code != http.StatusForbidden || !strings.Contains(forbidden.Body.String(), `"code":"`+codeScopeRequired+`"`) {
+		t.Fatalf("the shared token's reopen: status=%d body=%s, want 403 %s", forbidden.Code, forbidden.Body.String(), codeScopeRequired)
 	}
 	reopened := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+root.ID+"/reopen", nil, "bob")
 	if reopened.Code != http.StatusOK {
@@ -504,8 +508,8 @@ func TestEditCommentIsAuthorOnly(t *testing.T) {
 	bearer := sessionRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+comment.ID, map[string]any{
 		"body": "agent edit", "actor": sessionActor(),
 	})
-	if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), `"code":"HUMAN_ONLY"`) {
-		t.Fatalf("bearer edit: status=%d body=%s", bearer.Code, bearer.Body.String())
+	if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), `"code":"`+codeScopeRequired+`"`) {
+		t.Fatalf("the shared token's edit: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), codeScopeRequired)
 	}
 	stored := readThreadComment(t, handler, comment.ID)
 	if stored.Body != "after edit" {

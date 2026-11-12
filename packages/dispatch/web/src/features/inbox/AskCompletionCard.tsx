@@ -1,3 +1,4 @@
+import { actorActText } from "@legion/contracts";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
@@ -21,6 +22,7 @@ import { askResolutionBadge, askResolutionReason } from "../refs/actor";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceOf } from "../refs/text-references";
 import type { DwellRef } from "../shell/useDwell";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
@@ -46,9 +48,12 @@ export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEdit[] }): 
             {edits.map((edit) => (
               <div key={edit.at}>
                 <div className={`font-medium ${textPrimaryOnSurface}`}>
-                  <MarkdownBody markdown={edit.previous.question} />
+                  <MarkdownBody
+                    markdown={edit.previous.question}
+                    source={textSourceOf("ask", ask.id)}
+                  />
                 </div>
-                <AskOptionList options={edit.previous.options} selected={[]} />
+                <AskOptionList options={edit.previous.options ?? []} selected={[]} />
                 <p className="mt-1">
                   Reworded by <AgentName actor={edit.edited_by} inline /> ·{" "}
                   <Timestamp at={edit.at} />
@@ -79,17 +84,20 @@ export function AskAnswerHistory({ answers }: { answers: AskAnswer[] }): ReactNo
             : `Show ${earlier.length} earlier answers`}
         </summary>
         <div className="mt-2 space-y-3">
-          {earlier.map((previous) => (
-            <div key={previous.at}>
-              {previous.selected.length === 0 ? null : <p>{previous.selected.join(", ")}</p>}
-              {previous.text === null || previous.text === "" ? null : (
-                <MarkdownBody markdown={previous.text} />
-              )}
-              <p className="mt-1">
-                {previous.user} · <Timestamp at={previous.at} />
-              </p>
-            </div>
-          ))}
+          {earlier.map((previous) => {
+            const selected = previous.selected ?? [];
+            return (
+              <div key={previous.at}>
+                {selected.length === 0 ? null : <p>{selected.join(", ")}</p>}
+                {previous.text === null || previous.text === "" ? null : (
+                  <MarkdownBody markdown={previous.text} />
+                )}
+                <p className="mt-1">
+                  {actorActText(previous.user, previous.act)} · <Timestamp at={previous.at} />
+                </p>
+              </div>
+            );
+          })}
         </div>
       </details>
     </div>
@@ -152,7 +160,9 @@ function AnsweredAsk({
   // unlabeled addendum. An ask with no options at all has no Other row to have chosen, so its
   // free text is always the plain answer instead.
   const otherText =
-    ask.options.length > 0 && answer !== null && answer.selected.length === 0 ? answer.text : null;
+    (ask.options ?? []).length > 0 && answer !== null && (answer.selected ?? []).length === 0
+      ? answer.text
+      : null;
   return (
     <article
       className={`rounded-xl p-4 text-sm ${frame === "block" ? "mt-3" : ""} ${calloutSuccessBorder} ${calloutSuccessBg} ${calloutSuccessText}`}
@@ -163,7 +173,7 @@ function AnsweredAsk({
       <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={ask} />
       {frame === "block" ? null : (
         <div className={`font-medium ${textPrimaryOnSuccessCallout}`}>
-          <MarkdownBody markdown={ask.question} />
+          <MarkdownBody markdown={ask.question} source={textSourceOf("ask", ask.id)} />
         </div>
       )}
       <p className={`mt-1 text-xs ${calloutSuccessTimestampText}`}>
@@ -175,17 +185,17 @@ function AnsweredAsk({
         </p>
       ) : null}
       <AskEditHistory ask={ask} edits={edits} />
-      <AskOptionList options={ask.options} selected={answer?.selected ?? []} />
+      <AskOptionList options={ask.options ?? []} selected={answer?.selected ?? []} />
       {otherText !== null && otherText !== "" ? (
         <div className="mt-2">
           <p className={`text-sm font-medium ${textPrimaryOnSuccessCallout}`}>Other</p>
           <div className="mt-1">
-            <MarkdownBody markdown={otherText} />
+            <MarkdownBody markdown={otherText} source={textSourceOf("ask", ask.id)} />
           </div>
         </div>
       ) : answer === null || answer.text === null || answer.text === "" ? null : (
         <div className="mt-1">
-          <MarkdownBody markdown={answer.text} />
+          <MarkdownBody markdown={answer.text} source={textSourceOf("ask", ask.id)} />
         </div>
       )}
       {answer === null ? (
@@ -195,7 +205,8 @@ function AnsweredAsk({
       ) : (
         <p className={`mt-2 text-xs ${calloutSuccessTimestampText}`}>
           Asked <Timestamp at={ask.created_at} /> · Answered by{" "}
-          <span className="font-semibold">{answer.user}</span> <Timestamp at={answer.at} />
+          <span className="font-semibold">{actorActText(answer.user, answer.act)}</span>{" "}
+          <Timestamp at={answer.at} />
         </p>
       )}
       <AskAnswerHistory answers={answers} />
@@ -233,7 +244,7 @@ function ResolvedAsk({
       <AskAnchorHeader ask={ask} inBlock={frame === "block"} tone="surface" />
       {frame === "block" ? null : (
         <div className={`font-medium ${textPrimaryOnSurface}`}>
-          <MarkdownBody markdown={ask.question} />
+          <MarkdownBody markdown={ask.question} source={textSourceOf("ask", ask.id)} />
         </div>
       )}
       <span
@@ -250,14 +261,15 @@ function ResolvedAsk({
           <AskApprovalLink ask={ask} />
         </p>
       ) : null}
-      <AskOptionList options={ask.options} selected={[]} />
+      <AskOptionList options={ask.options ?? []} selected={[]} />
       <AskEditHistory ask={ask} edits={edits} />
       <p className={`mt-2 text-xs ${textMutedOnSurface}`}>
         Asked <Timestamp at={ask.created_at} /> · <AskResolutionLine resolution={resolution} />
         {reason === undefined ? null : (
           <>
             {" "}
-            - <MarkdownBody markdown={reason} variant="inline" />
+            -{" "}
+            <MarkdownBody markdown={reason} source={textSourceOf("ask", ask.id)} variant="inline" />
           </>
         )}
       </p>
@@ -278,8 +290,8 @@ interface AskCompletionCardProps {
   documentLink?: boolean;
   edits: AskEdit[];
   frame?: AskFrame;
-  /** The Replies page's mark for the ask (`AskCard`), placed on an answered record when its answer
-   *  is the newest write the card shows. */
+  /** The shared thread read mark for the ask (`AskCard`, `useMarkThreadRead`), placed on an
+   *  answered record when its answer is the newest write the card shows. */
   markRef?: DwellRef;
   /** Shown only to the person who gave the current, non-approval answer. */
   onChangeAnswer?: () => void;

@@ -25,8 +25,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -122,11 +124,12 @@ func podQOS(spec corev1.PodSpec) corev1.PodQOSClass {
 // and memory and bursts past neither: each has a non-zero request for both, equal to its limit,
 // which is the kubelet's rule for the Guaranteed class — judged over every container of the pod,
 // the init containers included — and each is bounded on the node's disk, an ephemeral-storage
-// request under its limit. An issue pod's one container and its two init containers carry the
-// issue pod's reservation, whichever role's launch creates it; the controller's pod carries the
-// controller's on its one container; and the image probe's one container carries the probe's own,
-// which the daemon hands it. A deployment with no `resources` block therefore runs only Guaranteed
-// pods.
+// request under its limit. An issue pod's one container and its two init containers — three where
+// the deployment names a `skills_repository`, which TestASkillsRepositoryAddsTheSkillsInitContainer
+// proves — carry the issue pod's reservation, whichever role's launch creates it; the controller's
+// pod carries the controller's on its one container; and the image probe's one container carries
+// the probe's own, which the daemon hands it. A deployment with no `resources` block therefore runs
+// only Guaranteed pods.
 func TestEveryContainerOfEveryPodIsGuaranteed(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
@@ -717,19 +720,11 @@ func TestEveryRolesGitStartsNoPlantedFsmonitorOrHook(t *testing.T) {
 		"GIT_AUTHOR_NAME=a", "GIT_AUTHOR_EMAIL=a@example.invalid", "GIT_COMMITTER_NAME=a", "GIT_COMMITTER_EMAIL=a@example.invalid"}
 	run := func(env []string, args ...string) {
 		t.Helper()
-		cmd := exec.Command(git, args...)
-		cmd.Dir, cmd.Env = clone, env
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, output)
-		}
+		fixturegit.Runner{TB: t, Env: env}.Run(clone, append([]string{git}, args...)...)
 	}
-	initialise := exec.Command(git, "init", "--quiet", clone)
 	// The init creates the clone, so it runs in the directory holding it rather than in the one
 	// the test process happens to have; every later command runs in the clone itself.
-	initialise.Dir = dir
-	if output, err := initialise.CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v\n%s", err, output)
-	}
+	fixturegit.Isolated(t, home).Run(dir, append([]string{git}, fixturegit.InitWorkTree(clone, "")[1:]...)...)
 	if err := os.WriteFile(filepath.Join(clone, ".git", "config"), append(mustRead(t, filepath.Join(clone, ".git", "config")), planted...), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -902,6 +897,35 @@ func TestTheIssuesRolesShareOneScratchAndOneGoCachePair(t *testing.T) {
 	}
 }
 
+// Every role of every pod is told the shared public leak check its own pod installs, at one path:
+// the installer's constant (leakguard.InstalledCheck), under the scratch the roles of the pod
+// share. The runtime names the path and the shim's install writes it, so a constant of the
+// installer's is what keeps the two from drifting into a role told a check nothing ever put
+// there — every write path of that role resolves PUBLIC_LEAK_CHECK first and refuses when the
+// file is not there. It is under the scratch because that is the place of the pod's disk every
+// role is told the same of and nothing outlives the pod: a check that publishes as often as this
+// one is fetched per pod and never cached past it. The controller's pod is in the cases here
+// too: it writes to GitHub as a role does, and its one container mounts the same volume at
+// TreeRoot.
+func TestEveryRoleIsToldTheLeakCheckItsPodInstalls(t *testing.T) {
+	r, err := configure(goldenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(leakguard.InstalledCheck, scratchRoot+"/") {
+		t.Errorf("the install puts the check at %s, want it under the issue's scratch %s", leakguard.InstalledCheck, scratchRoot)
+	}
+	for name, tc := range manifestCases(t) {
+		main := workerOf(t, r, tc.spec)
+		if told := envOf(main)["PUBLIC_LEAK_CHECK"]; told != leakguard.InstalledCheck {
+			t.Errorf("%s is told PUBLIC_LEAK_CHECK=%q, want the installed check %q", name, told, leakguard.InstalledCheck)
+		}
+		if mount := mountHolding(main, leakguard.InstallDir); mount == nil || mount.Name != issueVolume || mount.SubPath != "" {
+			t.Errorf("%s: the install directory %q is on mount %+v, want the pod's own volume mounted at %s", name, leakguard.InstallDir, mount, TreeRoot)
+		}
+	}
+}
+
 // Every directory the runtime tells a role to write in is one the shim makes, and every directory
 // the shim makes is one the runtime names. The shim reads its list from podsafety.ScratchVariables
 // and the runtime renders roleEnvironment, so without this the two could drift silently: a role
@@ -926,14 +950,17 @@ func TestTheRuntimeTellsTheShimEveryScratchDirectoryItMakes(t *testing.T) {
 			t.Errorf("the shim makes %s, which the runtime sets to %q; want an absolute path under %s", name, dir, TreeRoot)
 		}
 	}
-	// The runtime names these three on the issue's volume for a reason of their own and does not
-	// ask the shim to make them: LEGION_WORKSPACE is the issue's checkout, which workspace-init
-	// provisions before the pod's launcher container starts, and UV_PYTHON_INSTALL_DIR and UV_CACHE_DIR are
-	// uv's own, which uv makes and the tree's pods share by design
-	// (TestUvKeepsItsPythonsAndCacheOnTheIssueVolume). Every other path the runtime names there is
-	// a directory it tells the role to write in, so a fourth exemption has to be argued for rather
-	// than slipped in.
-	theirOwn := []string{"LEGION_WORKSPACE", "UV_PYTHON_INSTALL_DIR", "UV_CACHE_DIR"}
+	// The runtime names these four on the issue's volume for a reason of their own and does not
+	// ask the shim's EnsureScratch to make them: LEGION_WORKSPACE is the issue's checkout, which
+	// workspace-init provisions before the pod's launcher container starts; UV_PYTHON_INSTALL_DIR and
+	// UV_CACHE_DIR are uv's own, which uv makes and the tree's pods share by design
+	// (TestUvKeepsItsPythonsAndCacheOnTheIssueVolume); and PUBLIC_LEAK_CHECK is no directory a
+	// role writes in at all but a file the shim itself installs there, under its own lease and
+	// before it starts the agent (leakguard.Install), so a shim that could not make it fails the
+	// launch rather than leaving a role to meet it missing. Every other path the runtime names
+	// there is a directory it tells the role to write in, so a fifth exemption has to be argued
+	// for rather than slipped in.
+	theirOwn := []string{"LEGION_WORKSPACE", "UV_PYTHON_INSTALL_DIR", "UV_CACHE_DIR", "PUBLIC_LEAK_CHECK"}
 	for name, value := range env {
 		if !strings.HasPrefix(value, TreeRoot+"/") || slices.Contains(made, name) || slices.Contains(theirOwn, name) {
 			continue
@@ -1016,132 +1043,264 @@ func TestTheManifestCarriesADNSNamedStreamAndDaemonURL(t *testing.T) {
 }
 
 // The provisioning token never shares a process with anything a tree agent can write (Stage 4b
-// Task 4b.6b): the claim's Secret projects it into workspace-fetch alone, the only container told
-// where it is, and no other container can write a volume workspace-fetch mounts — the feed it
-// fills is read-only in workspace-init, and its TMPDIR, where its one-shot credential goes, is an
-// in-memory volume no other container mounts. So workspace-fetch mounts neither the tree volume
-// nor the config home. Every pod's manifest holds to it, by every route Kubernetes offers into a
-// Secret, the worker's container included; the controller's pod has no workspace-fetch, so none of
-// its containers reaches the token at all.
+// Task 4b.6b), and it reaches the containers that hold it as a file, never as an environment
+// value (INFRA-1254). Two rules, counted apart:
+//
+//   - The volume route — the claim's Secret as a Secret volume, or projected — belongs to the
+//     pod's token-holding init containers alone: workspace-fetch, and skills-fetch where the
+//     deployment names a skills repository. It is required for each of them, the only containers
+//     told where the token is, and forbidden for every other container, the worker's included.
+//     Each holder's mount of that volume carries an empty subPath, because the daemon rewrites
+//     the claim's Secret as the lease is renewed and the kubelet rewrites a whole-volume Secret
+//     projection in place, never a subPath copy, which is taken once when the container starts.
+//   - The environment route — an env entry whose secretKeyRef names the claim Secret's
+//     provisioning-token key, or an envFrom of that Secret — is forbidden everywhere, the
+//     holders included: an environment value is fixed for the container's life, so a container
+//     holding one serves the token the pod started with however often the Secret is rewritten.
+//
+// Beside them, no other container can write a volume a holder mounts. The feed workspace-fetch
+// fills is read-only in workspace-init; the skills volume skills-fetch clones into is read-only
+// in the roles container; and each holder's TMPDIR, where its one-shot credential goes, is an
+// in-memory volume of its own that no other container mounts, the sibling holder included. So
+// neither holder mounts the tree volume or the config home, and neither carries an operator's
+// mount (runtime.kubernetes.pod), which reaches the launcher containers and the image probe's
+// and no init container. Every pod's manifest holds to it, by every route Kubernetes offers into
+// a Secret, the worker's container included; the controller's pod has no workspace-fetch and no
+// skills-fetch, so none of its containers reaches the token at all.
 //
 // What the boundary protects is identity, not a repository-write token kept off the tree volume:
-// an implement role now holds the implement App's token — the same lease as the
-// provisioning token — read-only in its own gh directory (GHConfigDir), and a review role the
-// review App's. What the fetch container's boundary still keeps is that no review role ever holds
-// the implement App's token, which is what lets the daemon's fix-attempt counting read a push's App
-// from the App that made it.
+// an implement role now holds the implement App's token — for the issue's owner the App's own
+// installation token, which writes, where the provisioning token is that same App narrowed to
+// reading, so the two are no longer one lease (INFRA-1254) — read-only in its own gh directory
+// (GHConfigDir), and a review role the review App's. What the fetch container's boundary still
+// keeps is that no review role ever holds the implement App's token, which is what lets the
+// daemon read a push's App from the App that made it, and so tell the review App's red tests
+// from the implementer's code.
 func TestTheProvisionTokenSharesNoContainerWithAnythingTheTreeCanWrite(t *testing.T) {
-	r, err := configure(goldenOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, tc := range manifestCases(t) {
-		t.Run(name, func(t *testing.T) {
-			l, err := r.prepare(tc.spec)
+	for options, skills := range map[string]bool{"no skills repository": false, "a skills repository": true} {
+		t.Run(options, func(t *testing.T) {
+			opts := goldenOptions()
+			// An operator pod with volumes and mounts of its own, so the no-operator-mount
+			// assertion below has something to find: with none configured, that check would pass
+			// on a manifest that handed every one of them to the token-holding containers.
+			opts.Pod = operatorPod()
+			if skills {
+				opts.SkillsRepository = testSkillsRepository(t)
+			}
+			r, err := configure(opts)
 			if err != nil {
 				t.Fatal(err)
 			}
-			template := r.podTemplate(l)
-			pod := template.Spec
-			claimSecret := secretName(l.name)
-			volumes := map[string]corev1.Volume{}
-			for _, volume := range pod.Volumes {
-				volumes[volume.Name] = volume
-			}
-			// A Secret source that maps no keys maps every key.
-			maps := func(items []corev1.KeyToPath) bool {
-				return len(items) == 0 || slices.ContainsFunc(items, func(item corev1.KeyToPath) bool { return item.Key == provisionTokenKey })
-			}
-			reaches := func(c corev1.Container) []string {
-				var routes []string
-				for _, mount := range c.VolumeMounts {
-					volume := volumes[mount.Name]
-					if secret := volume.Secret; secret != nil && secret.SecretName == claimSecret && maps(secret.Items) {
-						routes = append(routes, "secret volume "+mount.Name)
+			for name, tc := range manifestCases(t) {
+				t.Run(name, func(t *testing.T) {
+					l, err := r.prepare(tc.spec)
+					if err != nil {
+						t.Fatal(err)
 					}
-					if projected := volume.Projected; projected != nil {
-						for _, source := range projected.Sources {
-							if secret := source.Secret; secret != nil && secret.Name == claimSecret && maps(secret.Items) {
-								routes = append(routes, "projected volume "+mount.Name)
+					template := r.podTemplate(l)
+					pod := template.Spec
+					claimSecret := secretName(l.name)
+					volumes := map[string]corev1.Volume{}
+					for _, volume := range pod.Volumes {
+						volumes[volume.Name] = volume
+					}
+					// A Secret source that maps no keys maps every key.
+					maps := func(items []corev1.KeyToPath) bool {
+						return len(items) == 0 || slices.ContainsFunc(items, func(item corev1.KeyToPath) bool { return item.Key == provisionTokenKey })
+					}
+					// The volume route is the token as a file the kubelet rewrites in place when
+					// the Secret changes. Each one carries the mount it came by, since a mount
+					// with a subPath is a copy taken when the container starts that no rewrite
+					// reaches.
+					type route struct {
+						mount corev1.VolumeMount
+						named string
+					}
+					volumeRoutes := func(c corev1.Container) []route {
+						var routes []route
+						for _, mount := range c.VolumeMounts {
+							volume := volumes[mount.Name]
+							if secret := volume.Secret; secret != nil && secret.SecretName == claimSecret && maps(secret.Items) {
+								routes = append(routes, route{mount, "secret volume " + mount.Name})
+							}
+							if projected := volume.Projected; projected != nil {
+								for _, source := range projected.Sources {
+									if secret := source.Secret; secret != nil && secret.Name == claimSecret && maps(secret.Items) {
+										routes = append(routes, route{mount, "projected volume " + mount.Name})
+									}
+								}
+							}
+						}
+						return routes
+					}
+					// The environment route is a copy fixed for the container's life, which no
+					// container may hold, the token holders included.
+					envRoutes := func(c corev1.Container) []string {
+						var routes []string
+						for _, v := range c.Env {
+							if from := v.ValueFrom; from != nil && from.SecretKeyRef != nil && from.SecretKeyRef.Name == claimSecret && from.SecretKeyRef.Key == provisionTokenKey {
+								routes = append(routes, "env "+v.Name)
+							}
+						}
+						for _, from := range c.EnvFrom {
+							if from.SecretRef != nil && from.SecretRef.Name == claimSecret {
+								routes = append(routes, "envFrom "+from.SecretRef.Name)
+							}
+						}
+						return routes
+					}
+					containers := slices.Concat(pod.InitContainers, pod.Containers)
+					holderNames := []string{fetchContainer, skillsContainer}
+					for _, c := range containers {
+						_, pointed := envOf(c)["LEGION_PROVISION_TOKEN_FILE"]
+						holds := slices.Contains(holderNames, c.Name)
+						mounted := volumeRoutes(c)
+						var named []string
+						for _, r := range mounted {
+							named = append(named, r.named)
+						}
+						if (len(mounted) > 0) != holds || pointed != holds {
+							t.Errorf("%s reaches the provisioning token's file by %v, pointed at %t; want %t for both", c.Name, named, pointed, holds)
+						}
+						for _, r := range mounted {
+							if r.mount.SubPath != "" {
+								t.Errorf("%s takes the provisioning token from %s with subPath %q, want the whole volume: the kubelet rewrites a whole-volume Secret projection in place when the Secret changes and never a subPath copy, so a renewed token would not reach the file",
+									c.Name, r.named, r.mount.SubPath)
+							}
+						}
+						if routes := envRoutes(c); len(routes) > 0 {
+							t.Errorf("%s reaches the provisioning token through the environment by %v, which no container may, %v included: an environment value is fixed for the container's life, so a renewed token never reaches it",
+								c.Name, routes, holderNames)
+						}
+					}
+					kind, err := podKindOf(template.Metadata.Labels)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if kind == (controllerPod{}) {
+						for _, name := range holderNames {
+							if slices.ContainsFunc(containers, func(c corev1.Container) bool { return c.Name == name }) {
+								t.Errorf("the controller's pod runs %s", name)
+							}
+						}
+						return
+					}
+					in := func(c corev1.Container, path string) string {
+						for _, mount := range c.VolumeMounts {
+							if mount.MountPath == path {
+								return mount.Name
+							}
+						}
+						return ""
+					}
+					// Every container that holds the token: no other container may write what it
+					// mounts. The feed, a subPath of the issue volume, is reachable through another
+					// container's read-write mount of the volume (or of a subPath above the feed)
+					// unless that container mounts the feed read-only over exactly the path the
+					// read-write mount reaches it at; the skills volume is reachable only through a
+					// whole-volume mount, so a read-only one there is the same rule with no subPath.
+					var holders []corev1.Container
+					for _, name := range holderNames {
+						if c := slices.IndexFunc(containers, func(c corev1.Container) bool { return c.Name == name }); c >= 0 {
+							holders = append(holders, containers[c])
+						}
+					}
+					if want := 1 + boolToInt(skills); len(holders) != want {
+						t.Fatalf("the issue pod runs %d token-holding containers (%v), want %d", len(holders), holderNames, want)
+					}
+					for _, holder := range holders {
+						for _, mount := range holder.VolumeMounts {
+							for _, other := range containers {
+								if other.Name == holder.Name {
+									continue
+								}
+								for _, theirs := range other.VolumeMounts {
+									if theirs.Name != mount.Name || theirs.ReadOnly {
+										continue
+									}
+									below, ok := strings.CutPrefix(mount.SubPath, theirs.SubPath)
+									if !ok || (theirs.SubPath != "" && below != "" && !strings.HasPrefix(below, "/")) {
+										continue
+									}
+									reached := path.Join(theirs.MountPath, below)
+									shadowed := slices.ContainsFunc(other.VolumeMounts, func(m corev1.VolumeMount) bool {
+										return m.Name == mount.Name && m.ReadOnly && m.SubPath == mount.SubPath && m.MountPath == reached
+									})
+									if !shadowed {
+										t.Errorf("%s can write volume %s at %s, which %s mounts at %s", other.Name, mount.Name, reached, holder.Name, mount.MountPath)
+									}
+								}
+							}
+						}
+						// Each holder's TMPDIR is an in-memory volume of its own: a TMPDIR two
+						// holders shared would be one each could read the other's one-shot
+						// credential in.
+						temp := envOf(holder)["TMPDIR"]
+						volume := in(holder, temp)
+						if dir := volumes[volume].EmptyDir; temp == "" || dir == nil || dir.Medium != corev1.StorageMediumMemory {
+							t.Errorf("%s's TMPDIR %q is not an in-memory volume of its own", holder.Name, temp)
+						}
+						// "Of its own" is about the volume, not the path: another container that
+						// mounted the same volume read-only somewhere else would read the
+						// credential just as well, and the write-overlap check above passes a
+						// read-only mount by design. So compare by volume name across every mount
+						// of every other container, whatever its path and whether it is read-only.
+						for _, other := range containers {
+							if other.Name == holder.Name {
+								continue
+							}
+							for _, mount := range other.VolumeMounts {
+								if mount.Name == volume {
+									t.Errorf("%s mounts %s's TMPDIR volume %s at %s (readOnly %t)",
+										other.Name, holder.Name, volume, mount.MountPath, mount.ReadOnly)
+								}
+							}
+						}
+						// No operator mount reaches a token holder: the operator's pod block
+						// (runtime.kubernetes.pod) names volumes of its own, and one of them in a
+						// container holding the token would share the token with whatever the
+						// operator put there.
+						if len(r.pod.VolumeMounts) == 0 {
+							t.Fatal("the operator's pod carries no mount, so this check would pass on a manifest that gave the token holders every one of them")
+						}
+						for _, mount := range holder.VolumeMounts {
+							if slices.ContainsFunc(r.pod.VolumeMounts, func(m corev1.VolumeMount) bool { return m.Name == mount.Name }) {
+								t.Errorf("%s carries the operator's mount %s at %s", holder.Name, mount.Name, mount.MountPath)
 							}
 						}
 					}
-				}
-				for _, v := range c.Env {
-					if from := v.ValueFrom; from != nil && from.SecretKeyRef != nil && from.SecretKeyRef.Name == claimSecret && from.SecretKeyRef.Key == provisionTokenKey {
-						routes = append(routes, "env "+v.Name)
+					fetch := containerNamed(t, pod, fetchContainer)
+					if feed := in(containerNamed(t, pod, initContainer), FeedDir); feed == "" || feed != in(fetch, FeedDir) {
+						t.Errorf("workspace-init reads the feed from %q, and %s fills %q", feed, fetch.Name, in(fetch, FeedDir))
 					}
-				}
-				for _, from := range c.EnvFrom {
-					if from.SecretRef != nil && from.SecretRef.Name == claimSecret {
-						routes = append(routes, "envFrom")
-					}
-				}
-				return routes
-			}
-			containers := slices.Concat(pod.InitContainers, pod.Containers)
-			for _, c := range containers {
-				_, pointed := envOf(c)["LEGION_PROVISION_TOKEN_FILE"]
-				routes := reaches(c)
-				if holds := c.Name == fetchContainer; (len(routes) > 0) != holds || pointed != holds {
-					t.Errorf("%s reaches the provisioning token by %v, pointed at %t; want %t for both", c.Name, routes, pointed, holds)
-				}
-			}
-			kind, err := podKindOf(template.Metadata.Labels)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if kind == (controllerPod{}) {
-				if slices.ContainsFunc(containers, func(c corev1.Container) bool { return c.Name == fetchContainer }) {
-					t.Errorf("the controller's pod runs %s", fetchContainer)
-				}
-				return
-			}
-			// No other container may write what workspace-fetch mounts: the feed, a subPath of the issue
-			// volume, is reachable through another container's read-write mount of the volume (or of a
-			// subPath above the feed) unless that container mounts the feed read-only over exactly the
-			// path the read-write mount reaches it at.
-			fetch := containerNamed(t, pod, fetchContainer)
-			for _, mount := range fetch.VolumeMounts {
-				for _, other := range containers {
-					if other.Name == fetch.Name {
-						continue
-					}
-					for _, theirs := range other.VolumeMounts {
-						if theirs.Name != mount.Name || theirs.ReadOnly {
-							continue
+					if !skills {
+						if _, held := volumes[skillsVolume]; held {
+							t.Errorf("a pod of a deployment with no skills repository carries the %s volume", skillsVolume)
 						}
-						below, ok := strings.CutPrefix(mount.SubPath, theirs.SubPath)
-						if !ok || (theirs.SubPath != "" && below != "" && !strings.HasPrefix(below, "/")) {
-							continue
-						}
-						reached := path.Join(theirs.MountPath, below)
-						shadowed := slices.ContainsFunc(other.VolumeMounts, func(m corev1.VolumeMount) bool {
-							return m.Name == mount.Name && m.ReadOnly && m.SubPath == mount.SubPath && m.MountPath == reached
-						})
-						if !shadowed {
-							t.Errorf("%s can write volume %s at %s, which %s mounts at %s", other.Name, mount.Name, reached, fetch.Name, mount.MountPath)
-						}
+						return
 					}
-				}
-			}
-			temp := envOf(fetch)["TMPDIR"]
-			in := func(c corev1.Container, path string) string {
-				for _, mount := range c.VolumeMounts {
-					if mount.MountPath == path {
-						return mount.Name
+					// The roles container reads the skills volume and never writes it, at the one
+					// path every role of the pod sees it at.
+					roles := containerNamed(t, pod, kind.container())
+					mounted := slices.IndexFunc(roles.VolumeMounts, func(m corev1.VolumeMount) bool { return m.Name == skillsVolume })
+					if mounted < 0 {
+						t.Fatalf("%s does not mount the skills volume", roles.Name)
 					}
-				}
-				return ""
-			}
-			if dir := volumes[in(fetch, temp)].EmptyDir; temp == "" || dir == nil || dir.Medium != corev1.StorageMediumMemory {
-				t.Errorf("%s's TMPDIR %q is not an in-memory volume of its own", fetch.Name, temp)
-			}
-			if feed := in(containerNamed(t, pod, initContainer), FeedDir); feed == "" || feed != in(fetch, FeedDir) {
-				t.Errorf("workspace-init reads the feed from %q, and %s fills %q", feed, fetch.Name, in(fetch, FeedDir))
+					if mount := roles.VolumeMounts[mounted]; !mount.ReadOnly || mount.MountPath != SkillsDir {
+						t.Errorf("%s mounts the skills volume %+v, want it read-only at %s", roles.Name, mount, SkillsDir)
+					}
+				})
 			}
 		})
 	}
+}
+
+// boolToInt is 1 for true and 0 for false, for a count a case's shape decides.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // A launch the runtime cannot honour exactly is refused before any API call.
@@ -1154,9 +1313,11 @@ func TestALaunchItCannotHonourIsRefused(t *testing.T) {
 		edit func(*runtime.SpawnSpec)
 		want string
 	}{
-		"no repository":       {func(s *runtime.SpawnSpec) { s.Repository = ghrepo.Repository{} }, "no repository"},
-		"no default branch":   {func(s *runtime.SpawnSpec) { s.DefaultBranch = "" }, "no default branch for repository sjawhar/legion-smoke"},
-		"runtime-owned env":   {func(s *runtime.SpawnSpec) { s.Env["PATH"] = "/bin" }, "Env sets PATH"},
+		"no repository":     {func(s *runtime.SpawnSpec) { s.Repository = ghrepo.Repository{} }, "no repository"},
+		"no default branch": {func(s *runtime.SpawnSpec) { s.DefaultBranch = "" }, "no default branch for repository sjawhar/legion-smoke"},
+		"runtime-owned env": {func(s *runtime.SpawnSpec) { s.Env["PATH"] = "/bin" }, "Env sets PATH"},
+		"composed env": {func(s *runtime.SpawnSpec) { s.Env[runtime.SpendAttributesVariable] = "legion.issue=OTHER-1" },
+			"Env sets " + runtime.SpendAttributesVariable},
 		"credential in env":   {func(s *runtime.SpawnSpec) { s.Env["ANTHROPIC_API_KEY"] = "x" }, "credential-shaped"},
 		"gh token in env":     {func(s *runtime.SpawnSpec) { s.Env["GH_TOKEN"] = "x" }, "Env sets GH_TOKEN"},
 		"boot token secret":   {func(s *runtime.SpawnSpec) { s.Secrets[bootTokenKey] = "x" }, "is a variable the runtime sets itself"},
@@ -1187,7 +1348,7 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 		edit func(*Options)
 		want string
 	}{
-		"tag image":                 {func(o *Options) { o.Image = "ghcr.io/sjawhar/legion-worker:latest" }, "not pinned by digest"},
+		"tag image":                 {func(o *Options) { o.Image = "ghcr.io/cybermonklabs/legion-worker:latest" }, "not pinned by digest"},
 		"no class":                  {func(o *Options) { o.StorageClass = "" }, "no storage class"},
 		"no volume size":            {func(o *Options) { o.IssueVolume = resource.Quantity{} }, "no issue volume size"},
 		"unix stream":               {func(o *Options) { o.StreamURL = "unix:///run/legion.sock" }, "is not tcp://host:port"},
@@ -1199,6 +1360,7 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 		"the pool restated":         {func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: poolValue} }, "legion.dev/pool is the runtime's"},
 		"no tokens":                 {func(o *Options) { o.Tokens = nil }, "no provisioning token source"},
 		"no gh credential":          {func(o *Options) { o.GitHubCredential = nil }, "no github credential function"},
+		"no gh dirs":                {func(o *Options) { o.GitHubDirs = nil }, "no github directories function"},
 		"no repository mapping":     {func(o *Options) { o.Mapped = nil }, "no repository mapping for the repository caches"},
 		"no cache volume":           {func(o *Options) { o.RepositoryCache.Volume = resource.Quantity{} }, "repository cache volume 0 is not a positive quantity"},
 		"no cache retention":        {func(o *Options) { o.RepositoryCache.Retain = 0 }, "repository cache retention 0s is not positive"},
@@ -1259,11 +1421,16 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 	}
 }
 
-// runtimeOwned is exactly what the worker container is told by the runtime itself, a tree agent's,
-// a Claude Code worker's and the controller's together: every name mainEnvironment sets with Env
-// empty and no secret of the spec's, every optional value configured. A name added to the
-// environment and not to runtimeOwned is one a spec could override; a name left in runtimeOwned
-// that the environment no longer sets is one a spec is refused for nothing.
+// runtimeOwned and the composed names together are exactly what the worker container is told by
+// the runtime itself, a tree agent's, a Claude Code worker's and the controller's together: every
+// name mainEnvironment sets with Env empty and no secret of the spec's, every optional value
+// configured — the tree agent works a repository the project names, so it is told the issue key
+// it stamps its commits with. A name added to the environment and in neither set is one a spec
+// could override; a name left in one of them that the environment no longer sets is one a spec is
+// refused for nothing. The two sets are kept apart by what an operator may do with a name, not by
+// who writes the value the container carries: a composed name reaches the container with the
+// operator's own value inside it (roleOperatorEnv), and every launch has a role, so the spend
+// attributes are in every one of these environments.
 func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 	opts := testOptions()
 	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal", "dispatch-bearer"
@@ -1273,42 +1440,97 @@ func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stamping := workerSpec(t)
+	stamping.IssueTrailer = stamping.Issue
 	told := map[string]bool{}
-	for _, spec := range []runtime.SpawnSpec{workerSpec(t), claudeWorkerSpec(t), controllerSpec(t)} {
+	for _, spec := range []runtime.SpawnSpec{stamping, claudeWorkerSpec(t), controllerSpec(t)} {
 		spec.Env, spec.Secrets = nil, nil
 		for name := range envOf(workerOf(t, r, spec)) {
 			told[name] = true
 		}
 	}
-	if !maps.Equal(told, runtimeOwned) {
-		t.Errorf("the worker container is told %v by the runtime, and runtimeOwned is %v",
-			slices.Sorted(maps.Keys(told)), slices.Sorted(maps.Keys(runtimeOwned)))
+	if !maps.Equal(told, runtimeOwnedOrComposed) {
+		t.Errorf("the worker container is told %v by the runtime, and runtimeOwned with composed is %v",
+			slices.Sorted(maps.Keys(told)), slices.Sorted(maps.Keys(runtimeOwnedOrComposed)))
 	}
 }
 
-// The four stall limits a phase worker's reminder runs on reach a pod as ordinary entries of the
+// A pane stamps `Dispatch: <KEY>` into its commits where the project names its repository
+// (projects.<KEY>.commit_issue_trailer_repos, which internal/daemon's specs reads into
+// runtime.SpawnSpec.IssueTrailer), and the key reaches its jj overlay as LEGION_ISSUE_TRAILER.
+// The runtime sets it itself, from the spec's own field and never from its Env, beside the issue
+// every pane is told: a launch of any harness is told it by the one environment the pod's kind
+// builds for every role (issuePod.agentEnv under mainEnvironment), so a Claude Code worker
+// carries it as an Oh My Pi one does. A launch that stamps nothing carries no such variable
+// rather than an empty one, and the controller's pod, which works no repository and no issue,
+// carries none under any spec (validateControllerShape refuses one that asks).
+func TestAPodIsToldTheIssueKeyItStampsItsCommitsWith(t *testing.T) {
+	r, err := configure(goldenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamping := workerSpec(t)
+	stamping.IssueTrailer = stamping.Issue
+	env := envOf(workerOf(t, r, stamping))
+	for name, expect := range map[string]struct {
+		want  string
+		owned bool
+	}{
+		"LEGION_ISSUE":         {want: stamping.Issue, owned: true},
+		"LEGION_ISSUE_TRAILER": {want: stamping.Issue, owned: true},
+	} {
+		if env[name] != expect.want {
+			t.Errorf("a pane whose repository the project names is told %s=%q, want %q", name, env[name], expect.want)
+		}
+		if owned := runtimeOwned[name]; owned != expect.owned {
+			t.Errorf("runtimeOwned[%s] = %t, want %t: the runtime owns the names it sets and no other", name, owned, expect.owned)
+		}
+	}
+	claude := stamping
+	claude.Backend = runtime.BackendClaude
+	if got := envOf(workerOf(t, r, claude))["LEGION_ISSUE_TRAILER"]; got != stamping.Issue {
+		t.Errorf("a Claude Code worker of the same claim is told LEGION_ISSUE_TRAILER=%q, want %q", got, stamping.Issue)
+	}
+	for name, spec := range map[string]runtime.SpawnSpec{
+		"a worker whose repository the project does not name": workerSpec(t),
+		"the controller": controllerSpec(t),
+	} {
+		if value, set := envOf(workerOf(t, r, spec))["LEGION_ISSUE_TRAILER"]; set {
+			t.Errorf("%s is told LEGION_ISSUE_TRAILER=%q, want no such variable", name, value)
+		}
+	}
+}
+
+// The seven stall limits a Legion session's turn runs on reach a pod as ordinary entries of the
 // worker process's environment: the daemon merges the ones it holds into the spec's Env (the
-// daemon package's workerSpawnSpec), and Env travels verbatim as plain pairs of the generation's
-// start command (launchEnvironment), so nothing of them is this runtime's own — they are no part
-// of runtimeOwned, which a spec may not set.
+// daemon package's SpawnSpec, after its fork), and Env travels verbatim as plain pairs of the
+// generation's start command (launchEnvironment), so nothing of them is this runtime's own — they
+// are no part of runtimeOwned, which a spec may not set — and the controller's pod is told them
+// exactly as a phase worker's is.
 func TestTheWorkerContainersEnvCarriesTheStallLimits(t *testing.T) {
 	r, err := configure(testOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
 	limits := map[string]string{
-		"LEGION_STALL_REMINDER_MS":     "45000",
-		"LEGION_STALL_WAITING_MS":      "900000",
-		"LEGION_STALL_RESUME_MS":       "15000",
 		"LEGION_STALL_ARCHITECT_AFTER": "3",
+		"LEGION_STALL_CALL_BOUND_MS":   "3600000",
+		"LEGION_STALL_CALL_GRACE_MS":   "300000",
+		"LEGION_STALL_REMINDER_MS":     "45000",
+		"LEGION_STALL_RESUME_MS":       "15000",
+		"LEGION_STALL_STEP_MS":         "120000",
+		"LEGION_STALL_WAITING_MS":      "900000",
 	}
-	spec := workerSpec(t)
-	maps.Copy(spec.Env, limits)
-	env := envOf(workerOf(t, r, spec))
-	for name, want := range limits {
-		if env[name] != want {
-			t.Errorf("the worker container's %s = %q, want %q", name, env[name], want)
-		}
+	for kind, spec := range map[string]runtime.SpawnSpec{"a phase worker": workerSpec(t), "the controller": controllerSpec(t)} {
+		t.Run(kind, func(t *testing.T) {
+			maps.Copy(spec.Env, limits)
+			env := envOf(workerOf(t, r, spec))
+			for name, want := range limits {
+				if env[name] != want {
+					t.Errorf("%s's container is told %s=%q, want %q", kind, name, env[name], want)
+				}
+			}
+		})
 	}
 }
 
@@ -1800,21 +2022,25 @@ func TestNewRefusesAProvidersSecretThatIsNoLaunchSecret(t *testing.T) {
 	}
 }
 
-// legionVolumeNames, legionMountPaths, and runtimeOwned — what CheckPod refuses in the operator's
-// pod — are exactly what Legion's own pods carry: every volume of every pod a launch or
+// legionVolumeNames, legionMountPaths, and runtimeOwned with the composed names — what CheckPod
+// knows of as Legion's in the operator's pod — are exactly what Legion's own pods carry: every
+// volume of every pod a launch or
 // the image probe runs, and every mount and variable of the containers the operator's pieces join
 // (the agent's and the probe's), with every optional piece the runtime adds configured and nothing
 // of a spec's or the operator's. Among the goldens' cases is a Claude Code worker, which alone is
-// told three of the variables. A piece added to a pod and not to its list is one an
-// operator could collide with unrefused; one left in a list that no pod carries is refused for
-// nothing.
+// told three of the variables; none of them works a repository the project names, so the worker
+// below, which does, is built here for the one variable such a pod alone carries. A piece added
+// to a pod and not to its list is one an operator could collide with unrefused; one left in a
+// list that no pod carries is refused for nothing.
 func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 	opts := goldenOptions()
 	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal", "dispatch-bearer"
 	opts.ProviderKeys = map[string]string{"ANTHROPIC_API_KEY": "anthropic"}
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-	// With every optional piece configured: the pod's own test database is one (testPGVolume).
+	// With every optional piece configured: the pod's own test database is one (testPGVolume), and
+	// the skills marketplace is another (skillsVolume, skillsTempVolume and SkillsDir).
 	opts.TestPostgres = true
+	opts.SkillsRepository = testSkillsRepository(t)
 	r, err := configure(opts)
 	if err != nil {
 		t.Fatal(err)
@@ -1848,6 +2074,12 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 		pod := podOf(t, r, spec)
 		carry(pod, workerOf(t, r, spec))
 	}
+	// A pane whose repository the project names is told the issue key it stamps its commits with
+	// (LEGION_ISSUE_TRAILER), and no golden case works such a repository.
+	stamping := workerSpec(t)
+	stamping.Env, stamping.Secrets = nil, nil
+	stamping.IssueTrailer = stamping.Issue
+	carry(podOf(t, r, stamping), workerOf(t, r, stamping))
 	probe := r.probeManifest("legion-probe", ImageProbe{Contract: 5}, time.Time{}).Spec.PodTemplate.Spec
 	carry(probe, containerNamed(t, probe, probeContainer))
 	for _, list := range []struct {
@@ -1857,7 +2089,7 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 	}{
 		{"legionVolumeNames", legionVolumeNames(), volumes},
 		{"legionMountPaths", legionMountPaths(), mounts},
-		{"runtimeOwned", slices.Collect(maps.Keys(runtimeOwned)), env},
+		{"runtimeOwned with composed", slices.Collect(maps.Keys(runtimeOwnedOrComposed)), env},
 	} {
 		listed := map[string]bool{}
 		for _, entry := range list.got {
@@ -2119,6 +2351,7 @@ func TestAClaudePodsAgentCommandIsClaudeCodeUnderTheBridge(t *testing.T) {
 		"/opt/legion/bin/legion", "claude-bridge", "--", claude(spec.Generation),
 		"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
 		"--replay-user-messages",
+		"--thinking-display", "summarized",
 		"--permission-mode", "bypassPermissions",
 		"--strict-mcp-config", "--mcp-config", generationDir(spec.Generation) + "/claude-mcp.json",
 		"--plugin-dir", "/opt/legion/claude-envoy",
@@ -2249,5 +2482,43 @@ func TestARecordedSessionIsHeldToItsHarnesssRule(t *testing.T) {
 	if _, err := resuming(named); err == nil ||
 		!strings.Contains(err.Error(), "not named for a Claude Code session id") {
 		t.Errorf("prepare of a Claude claim resuming %s = %v, want it refused as no session id", named, err)
+	}
+}
+
+// Every Oh My Pi launch names the model the pod's overlay puts on the `default` role, resuming or
+// not: @default is Oh My Pi's own name for that role, and without the flag a resumed session runs
+// the model its first launch saved for ever. The flag rides the launch that starts a session too,
+// because a launch under it records no model of its own: the session file keeps the pin its first
+// launch wrote, so a later launch without the flag would read that pin again
+// (TestTheResumedAgentRunsTheConfiguredModel measures both on the real binary). Its place in the
+// argv is fixed here, after the two extension roots and before `--resume`. A Claude role's command
+// is claudelaunch's and names no model at all.
+func TestAgentArgvCarriesTheConfiguredModel(t *testing.T) {
+	r, err := configure(goldenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := launchOf(t, r, workerSpec(t))
+	resuming := workerSpec(t)
+	resuming.Generation, resuming.BootToken, resuming.ResumeSessionFile = 2, "boot-g2", resumeSession
+	resumed := launchOf(t, r, resuming)
+	for _, tc := range []struct {
+		name string
+		l    launch
+		want []string
+	}{
+		{"a launch that starts a session", fresh, append(slices.Clone(r.agent),
+			"--extension", envoyPlugin, "--extension", legionPlugin, "--model", "@default",
+			"--mode", "rpc", "--append-system-prompt", fresh.prompt)},
+		{"a launch that resumes one", resumed, append(slices.Clone(r.agent),
+			"--extension", envoyPlugin, "--extension", legionPlugin, "--model", "@default",
+			"--resume="+resumeSession, "--mode", "rpc", "--append-system-prompt", resumed.prompt)},
+	} {
+		if got := tc.l.agentArgv(r.agent); !slices.Equal(got, tc.want) {
+			t.Errorf("%s runs %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	if claude := launchOf(t, r, claudeWorkerSpec(t)).agentArgv(r.agent); slices.Contains(claude, "--model") {
+		t.Errorf("the Claude pod's command %q names a model, want claudelaunch's own command", claude)
 	}
 }

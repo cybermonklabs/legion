@@ -39,11 +39,12 @@ func parseIssueParent(raw json.RawMessage) (parent *string, provided bool, err e
 // parentDepthCap is the most links an issue may sit below its root: a create or reparent that
 // would put an issue deeper is refused (refuseParentTooDeep), so it bounds every recursive issue
 // walk — the ancestor walk (refs.IssueAncestors, the one issueAncestors and the cycle refusal
-// below read), the children subtree walk, the components and repository laterals' owner
-// searches, the architecture tree's containment walks, and the legion-label walk below
-// (legionManagedStatusSQL) — like refs.Closure's depth cap: the queries terminate even if a
-// raced reparent ever commits a cycle. It is refs.IssueDepthCap, where the ancestor walk lives
-// so that docs and refs can read it too: one bound for every issue walk in the server.
+// below read), the children subtree walk, the components and repository walks that climb a
+// whole read's chains together, the architecture tree's containment walks, and the legion-label
+// walk below (legionManagedStatusSQL) — like refs.Closure's depth cap: the queries terminate
+// even if a raced reparent ever commits a cycle. It is refs.IssueDepthCap, where the ancestor
+// walk lives so that docs and refs can read it too: one bound for every issue walk in the
+// server.
 // parentDepthCapSQL is the same number spliced into the walks built as SQL text.
 const parentDepthCap = refs.IssueDepthCap
 
@@ -52,8 +53,9 @@ var parentDepthCapSQL = strconv.Itoa(parentDepthCap)
 // legionLabel is the label that hands an issue's status to the Legion daemon. The daemon holds
 // its own copy of the spelling (packages/daemon/internal/dispatch/types.go, LegionLabel): the two
 // are separate constants in separate Go modules that have to be changed together, not one shared
-// value. packages/envoy otherwise knows nothing about Legion, so this is the one Legion-specific
-// rule Dispatch itself carries.
+// value. packages/envoy knows two Legion-specific rules in all, and this is one: the other is the
+// design-gate record the daemon publishes onto an issue (design_gates, issue_design_gates.go),
+// which the superseded-approval advice reads to name the gates a document write made stale.
 const legionLabel = "legion"
 
 // legionManagedStatusSQL answers whether the Legion daemon owns the status of the issue keyed by

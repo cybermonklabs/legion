@@ -593,14 +593,165 @@ func TestCensusExemptsAMigrationOfOnlyCatalogStatementsFromTheTableLimit(t *test
 		t.Errorf("pending = %+v, want 0122 alone, exempt as a function and a trigger", report.Pending)
 	}
 	if out := reportText(report); !strings.Contains(out, "touches artifact_versions: ") ||
-		!strings.Contains(out, ", above the 1 bytes limit, from which the migration is exempt because its statements are only create function and create trigger, which change the catalog and read no row, so its rows were not counted;") {
+		!strings.Contains(out, ", above the 1 bytes limit, from which the migration is exempt because its statements are only create function and create trigger, which change the catalog or the transaction's own settings and read no row, so its rows were not counted;") {
 		t.Errorf("report:\n%s", out)
+	}
+}
+
+// The four shipped migrations that drop an embedding trigger and the function only that trigger
+// ran are exempt from the table limit whatever their tables hold. Over a database at
+// 20261102122400, the version production's schema_migrations records before this release, the
+// census of the whole shipped set runs with the limit at one byte: no table in the database is
+// under it, so a migration the census does not refuse on a table's size is one the limit never
+// applies to, at any size. Their later neighbour 20261105084017 is catalog-only too: nullable
+// text columns, unvalidated CHECK constraints, functions and triggers read no existing row.
+func TestCensusExemptsTheShippedEmbeddingTriggerDropsAtAnyTableSize(t *testing.T) {
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, 20261102122400)
+	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261105084017), pgmigrate.CensusOptions{TableLimit: 1})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	pending := map[int]*pgmigrate.MigrationCensus{}
+	for i := range report.Pending {
+		pending[report.Pending[i].Migration.Version] = &report.Pending[i]
+	}
+	for _, version := range []int{20261102233626, 20261102233627, 20261102233628, 20261102233629} {
+		entry := pending[version]
+		if entry == nil {
+			t.Fatalf("%d is not pending; report:\n%s", version, reportText(report))
+		}
+		if entry.TableSizeExemption != "drop trigger and drop function" {
+			t.Errorf("%s: TableSizeExemption = %q, want %q", entry.Migration.Name, entry.TableSizeExemption, "drop trigger and drop function")
+		}
+		if len(entry.Refusals) != 0 {
+			t.Errorf("%s refused: %v", entry.Migration.Name, entry.Refusals)
+		}
+	}
+	entry := pending[20261105084017]
+	if entry == nil || entry.TableSizeExemption != "create function and alter table and create trigger" || len(entry.Refusals) != 0 {
+		t.Fatalf("catalog-only review migration not exempt: %+v", entry)
+	}
+}
+
+// The one-byte limit is the existing size fixture: every nonempty table is over it, so admission
+// proves the rule is independent of size, including a production embeddings table over 1 GiB.
+func TestCensusAdmitsSplitWindowMigrationsAndRefusesTheOldIndexShape(t *testing.T) {
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, 20261102122400)
+	set := migrationsThrough(t, 20261102233630)
+	for _, oldShape := range []bool{false, true} {
+		candidate := make(fstest.MapFS, len(set))
+		for name, file := range set {
+			candidate[name] = file
+		}
+		if oldShape {
+			name := "migrations/20261102233625_block_embedding_windows.up.sql"
+			candidate[name] = &fstest.MapFile{Data: append(append([]byte(nil), set[name].Data...), []byte("\ncreate index embeddings_window_owner on embeddings (kind, split_part(id, '#', 1)) where kind in ('document_block', 'comment_block', 'message_block', 'ask_part');")...)}
+		}
+		report, err := census(context.Background(), store.Pool.Config().ConnString(), candidate, pgmigrate.CensusOptions{TableLimit: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Refused() != oldShape {
+			t.Fatalf("old shape %v: unexpected verdict:\n%s", oldShape, reportText(report))
+		}
+		found := map[int]bool{20261102233625: false, 20261102233630: false}
+		for _, entry := range report.Pending {
+			if _, wanted := found[entry.Migration.Version]; wanted {
+				found[entry.Migration.Version] = true
+			}
+			switch entry.Migration.Version {
+			case 20261102233625:
+				if oldShape {
+					if len(entry.Refusals) != 1 || !strings.Contains(entry.Refusals[0], "embeddings is ") {
+						t.Fatalf("old index did not refuse embeddings on size: %+v", entry)
+					}
+				} else if entry.TableSizeExemption != "alter table and create function" {
+					t.Fatalf("catalog migration not exempt: %+v", entry)
+				}
+			case 20261102233630:
+				if !entry.ConcurrentIndex || len(entry.Refusals) != 0 {
+					t.Fatalf("concurrent migration not admitted: %+v", entry)
+				}
+			}
+		}
+		for version, present := range found {
+			if !present {
+				t.Fatalf("migration %d was not exercised by the census", version)
+			}
+		}
+	}
+}
+
+// The same pair, one release later: the column and the index it is read through. 20261109120000
+// adds embeddings.project_key and replaces the two functions that write the table, every
+// statement of it catalog-only; 20261110155257 builds the index concurrently, marked
+// non-transactional, which has the size exception of its own. Together they pass over a database
+// at 20261108070100 with the limit at one byte, where embeddings is far over it.
+//
+// The old shape is the index back inside 20261109120000, which is where it was written first:
+// a plain build inside that migration's transaction, under the ACCESS EXCLUSIVE lock its ALTER
+// holds to the commit. It is not catalog-only, so the exemption goes and the census refuses the
+// migration on embeddings' size - which is a refused deploy (cmd/dispatch/README.md). That is
+// the whole reason the index is a migration of its own.
+func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *testing.T) {
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, 20261108070100)
+	set := migrationsThrough(t, 20261110155257)
+	for _, oldShape := range []bool{false, true} {
+		candidate := make(fstest.MapFS, len(set))
+		for name, file := range set {
+			candidate[name] = file
+		}
+		if oldShape {
+			name := "migrations/20261109120000_embeddings_project_key.up.sql"
+			candidate[name] = &fstest.MapFile{Data: append(append([]byte(nil), set[name].Data...),
+				[]byte("\ncreate index embeddings_kind_project on embeddings (kind, project_key) where kind in ('issue', 'document_block', 'comment_block', 'message_block', 'ask_part');")...)}
+		}
+		report, err := census(context.Background(), store.Pool.Config().ConnString(), candidate, pgmigrate.CensusOptions{TableLimit: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The verdict of the whole set is not this test's subject and must not be asserted: the
+		// set holds every pending migration, and under a TableLimit of one byte any of them may
+		// refuse for a table of its own - 20261110004829_drop_default_branch_commits does, where
+		// default_branch_commits already exists (measured in CI at d656b570, which is why this
+		// assertion is gone). What this test is about is the two entries below, each read on its
+		// own.
+		found := map[int]bool{20261109120000: false, 20261110155257: false}
+		for _, entry := range report.Pending {
+			if _, wanted := found[entry.Migration.Version]; wanted {
+				found[entry.Migration.Version] = true
+			}
+			switch entry.Migration.Version {
+			case 20261109120000:
+				if oldShape {
+					if len(entry.Refusals) != 1 || !strings.Contains(entry.Refusals[0], "embeddings is ") {
+						t.Fatalf("the index inside the column's migration did not refuse embeddings on size: %+v", entry)
+					}
+				} else if entry.TableSizeExemption != "alter table and create function" {
+					t.Fatalf("the column's migration is not exempt: %+v", entry)
+				}
+			case 20261110155257:
+				if !entry.ConcurrentIndex || len(entry.Refusals) != 0 {
+					t.Fatalf("the concurrent index migration was not admitted: %+v", entry)
+				}
+			}
+		}
+		for version, present := range found {
+			if !present {
+				t.Fatalf("migration %d was not exercised by the census", version)
+			}
+		}
 	}
 }
 
 // An enabled event trigger on create trigger runs code of its own when the migration runs, so a
 // migration of only a trigger is not exempt while one exists, and the size refusal names it. A
-// disabled one changes nothing.
+// disabled one changes nothing. A drop fires sql_drop as well as ddl_command_start and
+// ddl_command_end, so an event trigger on that event takes a migration of only drops out of the
+// exemption exactly as one on create trigger does.
 func TestCensusDoesNotExemptACatalogMigrationAnEventTriggerRunsOn(t *testing.T) {
 	ctx := context.Background()
 	store, url := migratedToOne(t)
@@ -634,6 +785,32 @@ func TestCensusDoesNotExemptACatalogMigrationAnEventTriggerRunsOn(t *testing.T) 
 	if report.Refused() {
 		t.Errorf("a disabled event trigger kept the exemption off: %v", refusals(report))
 	}
+	// A drop of the trigger the migration above created: an event trigger on sql_drop runs on it,
+	// so the drop's own exemption goes the same way.
+	if _, err := store.Pool.Exec(ctx, "create event trigger on_drop_trigger on sql_drop when tag in ('DROP TRIGGER') execute function noop_event()"); err != nil {
+		t.Fatal(err)
+	}
+	drops := fstest.MapFS{
+		"migrations/0001_things.up.sql": censusBase["migrations/0001_things.up.sql"],
+		"migrations/0002_owed.up.sql":   {Data: []byte("drop trigger things_owed on things")},
+	}
+	report, err = census(ctx, url, drops, pgmigrate.CensusOptions{TableLimit: 1})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	if got := refusals(report); len(got) != 1 || !strings.Contains(got[0], "above the 1 bytes a table a migration touches may be; its statements are only drop trigger, which would exempt it from the limit, but the enabled event triggers on_drop_trigger run code of their own on them") {
+		t.Errorf("refusals = %v, want things refused on its size, naming the event trigger on sql_drop", got)
+	}
+	if _, err := store.Pool.Exec(ctx, "alter event trigger on_drop_trigger disable"); err != nil {
+		t.Fatal(err)
+	}
+	report, err = census(ctx, url, drops, pgmigrate.CensusOptions{TableLimit: 1})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	if report.Refused() {
+		t.Errorf("a disabled event trigger on sql_drop kept the drop's exemption off: %v", refusals(report))
+	}
 }
 
 // A migration holding any statement outside the catalog-only kinds still refuses a table above
@@ -641,11 +818,16 @@ func TestCensusDoesNotExemptACatalogMigrationAnEventTriggerRunsOn(t *testing.T) 
 // index. A trigger only a comment or a string literal names exempts nothing.
 func TestCensusStillRefusesAnIndexOrAColumnDefaultOnATableAboveTheLimit(t *testing.T) {
 	for name, migration := range map[string]string{
-		"an index":                    "create index things_kind on things (kind)",
-		"a column with a default":     "alter table things add column note text default 'x'",
-		"a default set on a column":   "alter table things alter column kind set default 'x'",
-		"a trigger beside an index":   "create function owe() returns trigger language plpgsql as $$ begin return null; end $$; create trigger things_owed after insert on things for each row execute function owe(); create index things_kind on things (kind);",
-		"a trigger only in a comment": "-- create trigger things_owed after insert on things for each row execute function owe();\ncreate index things_kind on things (kind)",
+		"an index":                         "create index things_kind on things (kind)",
+		"a column with a default":          "alter table things add column note text default 'x'",
+		"a not-null column with a default": "alter table things add column note text not null default 'x'",
+		"a volatile column default":        "alter table things add column token uuid default gen_random_uuid()",
+		"a validated check":                "alter table things add constraint c check (kind <> '')",
+		"an altered column type":           "alter table things alter column kind type varchar",
+		"constraint validation":            "alter table things validate constraint things_kind_check",
+		"a default set on a column":        "alter table things alter column kind set default 'x'",
+		"a trigger beside an index":        "create function owe() returns trigger language plpgsql as $$ begin return null; end $$; create trigger things_owed after insert on things for each row execute function owe(); create index things_kind on things (kind);",
+		"a trigger only in a comment":      "-- create trigger things_owed after insert on things for each row execute function owe();\ncreate index things_kind on things (kind)",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, url := migratedToOne(t)

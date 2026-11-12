@@ -1,14 +1,8 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { answerAsk, createComment, createIssue, createProject } from "./api";
-import { conversationThreadScope, documentEditor, indexedBlockAsk } from "./editor";
-import { resetDatabase } from "./seed";
+import { documentEditor, indexedBlockAsk } from "./editor";
+import { expect, type Locator, type Page, test } from "./test";
 import { centerOf } from "./touch";
 import { withAlice } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** The innermost list item in `scope` holding `text`: the task item itself, not a turn or a reply
  *  row that is a list item around it. */
@@ -211,7 +205,6 @@ async function seedChecklist(): Promise<{ commentId: string; issueKey: string }>
 /** Opens the issue's Conversation, expands the comment's thread and returns where it shows. */
 async function openChecklistThread(
   page: Page,
-  project: string,
   { commentId, issueKey }: { commentId: string; issueKey: string }
 ): Promise<Locator> {
   await page.goto(`/issues/${issueKey}/conversation`);
@@ -220,17 +213,17 @@ async function openChecklistThread(
   await expect(turn.getByText("Tag the build")).toBeVisible();
   // A comment's turn shows a one-line preview until the reader expands its thread.
   await turn.getByRole("button", { name: "Expand thread" }).click();
-  return conversationThreadScope(page, project, turn);
+  return turn;
 }
 
 for (const colorScheme of ["light", "dark"] as const) {
-  test(`a comment's ticked and unticked task items show a ticked and an unticked checkbox (${colorScheme}) @phone`, async ({
+  test(`a comment's ticked and unticked task items show a ticked and an unticked checkbox (${colorScheme})`, async ({
     browser,
   }, testInfo) => {
     const checklist = await seedChecklist();
     await withAlice(browser, async (page) => {
       await page.emulateMedia({ colorScheme });
-      const thread = await openChecklistThread(page, testInfo.project.name, checklist);
+      const thread = await openChecklistThread(page, checklist);
       const { ticked, tickedBox, unticked, untickedBox } = await expectTaskBoxes(
         thread,
         "Tag the build",
@@ -255,13 +248,13 @@ for (const colorScheme of ["light", "dark"] as const) {
 
   // Windows High Contrast forces every fill and border to the system colours, so a box drawn by
   // the page alone could lose what tells a ticked one from an unticked one.
-  test(`under forced colors a comment's ticked and unticked task items still look different (${colorScheme}) @phone`, async ({
+  test(`under forced colors a comment's ticked and unticked task items still look different (${colorScheme})`, async ({
     browser,
   }, testInfo) => {
     const checklist = await seedChecklist();
     await withAlice(browser, async (page) => {
       await page.emulateMedia({ colorScheme, forcedColors: "active" });
-      const thread = await openChecklistThread(page, testInfo.project.name, checklist);
+      const thread = await openChecklistThread(page, checklist);
       const { tickedBox, untickedBox } = await expectTaskBoxes(
         thread,
         "Tag the build",
@@ -277,7 +270,8 @@ for (const colorScheme of ["light", "dark"] as const) {
   });
 }
 
-test("a reply under a decision inside a document shows the checkboxes with no bullet", async ({
+// @pr: The task-item family's one row on the lane: a reply under a document's decision draws its checkboxes with no bullet.
+test("a reply under a decision inside a document shows the checkboxes with no bullet @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });

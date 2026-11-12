@@ -24,7 +24,8 @@ func TestKindSecretsAreServed(t *testing.T) {
 	githubApp := kindSecret("GITHUB_APP_KEY", policy.KindGitHubApp, "github-app-value")
 	googleLogin := kindSecret("GOOGLE_LOGIN_KEY", policy.KindGoogleLogin, "google-login-value")
 	googleLogin.Tags[policy.TagMaxGrant] = "1h"
-	store := secrets.NewLocal(githubApp, googleLogin)
+	azureLogin := kindSecret("AZURE_LOGIN_KEY", "azure-login", `{"tenant_id":"tenant","client_id":"client"}`)
+	store := secrets.NewLocal(githubApp, googleLogin, azureLogin)
 
 	set, err := policytest.Loader(store).Load(context.Background())
 	if err != nil {
@@ -34,6 +35,7 @@ func TestKindSecretsAreServed(t *testing.T) {
 	for name, kind := range map[string]string{
 		"GITHUB_APP_KEY":   policy.KindGitHubApp,
 		"GOOGLE_LOGIN_KEY": policy.KindGoogleLogin,
+		"AZURE_LOGIN_KEY":  "azure-login",
 	} {
 		secret, ok := set.Secrets[name]
 		if !ok {
@@ -76,6 +78,38 @@ func TestParseMaxGrant(t *testing.T) {
 	for _, raw := range []string{"", "soon", "0s", "500ms", "-1h"} {
 		if _, err := policy.ParseMaxGrant(raw); !errors.Is(err, policy.ErrMaxGrantMalformed) {
 			t.Errorf("ParseMaxGrant(%q) = %v; want ErrMaxGrantMalformed", raw, err)
+		}
+	}
+}
+
+// TestParseScopes pins the scopes tag's reading at its boundaries: a list of scope names is
+// answered sorted and joined by single spaces, so two spellings of one list are one policy and
+// the value fits an AWS tag; and each way of writing one wrong has an error of its own, whose
+// own words are what the CLI prints behind `--scopes:` (checkScopes wraps them) and what lets
+// this test say which mistake lands where, the loader collapsing all four into
+// ReasonScopesMalformed.
+// A whole https://www.googleapis.com/auth/ URL and an upper-case name are the two mistakes a
+// reader makes here, and both land on ErrScopesEntry rather than being trimmed or lowercased.
+func TestParseScopes(t *testing.T) {
+	for raw, want := range map[string]string{
+		"admin.directory.group apps.groups.settings":        "admin.directory.group apps.groups.settings",
+		" apps.groups.settings\tcloud-platform \n bigquery": "apps.groups.settings bigquery cloud-platform",
+	} {
+		if got, err := policy.ParseScopes(raw); err != nil || got != want {
+			t.Errorf("ParseScopes(%q) = %q, %v; want %q", raw, got, err, want)
+		}
+	}
+	for raw, want := range map[string]error{
+		"":                                 policy.ErrScopesMissing,
+		" \t\n ":                           policy.ErrScopesMissing,
+		"cloud-platform,bigquery":          policy.ErrScopesComma,
+		"cloud-platform bigquery,":         policy.ErrScopesComma,
+		"bigquery cloud-platform bigquery": policy.ErrScopesDuplicate,
+		"https://www.googleapis.com/auth/cloud-platform": policy.ErrScopesEntry,
+		"Cloud-Platform": policy.ErrScopesEntry,
+	} {
+		if got, err := policy.ParseScopes(raw); got != "" || !errors.Is(err, want) {
+			t.Errorf("ParseScopes(%q) = %q, %v; want %v", raw, got, err, want)
 		}
 	}
 }

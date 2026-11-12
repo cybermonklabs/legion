@@ -9,15 +9,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -226,11 +227,7 @@ func TestBootReconcileReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) 
 	const unrecorded, recorded, unlabelled, child = "CAPTURE-755", "CAPTURE-589", "CAPTURE-526", "CAPTURE-756"
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
-	conn, err := nats.Connect(workflowNATS(t), nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, workflowNATS(t))
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
@@ -259,7 +256,7 @@ func TestBootReconcileReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) 
 		{Key: unlabelled, ResolvedRepo: "acme/widgets", Title: unlabelled, Status: "triage", Rank: "C", LastSeq: 2},
 		{Key: child, ResolvedRepo: "acme/widgets", Title: child, Status: "triage", Rank: "D", Parent: under(unrecorded), HandedOver: true, LastSeq: 2},
 	}
-	engine := workflow.New(records, workflow.Config{Project: "CAPTURE", Repositories: testRepositories}, log)
+	engine := workflow.New(records, workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(records, engine, 2, "CAPTURE", log)
 	w := &workflowRuntime{
 		pool: pool, records: records, admission: admission, engine: engine, handlers: []intake.Handler{engine, admission}, repositories: newRepositories("CAPTURE", ghrepo.Renames{}),

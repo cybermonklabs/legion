@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -408,7 +409,7 @@ func TestLiveSetupIgnoresARepositoryAboveItsDirectory(t *testing.T) {
 				w.WriteHeader(http.StatusUnauthorized)
 			}))
 			defer server.Close()
-			r.git("init", "--quiet", r.tmp)
+			r.git(fixturegit.InitWorkTree(r.tmp, "")[1:]...)
 			r.git("-C", r.tmp, "config", "url."+server.URL+"/.insteadOf", "https://github.com/")
 
 			attacked := r.probe(r.start)
@@ -691,9 +692,9 @@ func TestGitCredentialHelperURLForms(t *testing.T) {
 // does not resolve, or on a GitHub 5xx. Each fake call records its environment, its HOME's
 // emptiness and its directory under the rig's audit directory.
 type setupRig struct {
-	t                                    *testing.T
-	root, start, bin, audit, owners, tmp string
-	marker, realGit                      string
+	t                                          *testing.T
+	root, start, bin, audit, owners, tmp, home string
+	marker, realGit                            string
 }
 
 // setupNetwork is how the rig's fake ls-remote ends when nothing authenticates it. The three
@@ -798,9 +799,9 @@ func newSetupRig(t *testing.T, network setupNetwork) *setupRig {
 	r := &setupRig{
 		t: t, root: root, start: filepath.Join(root, "start"), bin: filepath.Join(root, "bin"),
 		audit: filepath.Join(root, "audit"), owners: filepath.Join(root, "owners"), tmp: filepath.Join(root, "tmp"),
-		marker: filepath.Join(root, "marker"), realGit: realGit,
+		marker: filepath.Join(root, "marker"), realGit: realGit, home: filepath.Join(root, "home"),
 	}
-	for _, dir := range []string{r.start, r.bin, r.owners, r.tmp} {
+	for _, dir := range []string{r.start, r.bin, r.owners, r.tmp, r.home} {
 		if err := os.Mkdir(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -844,7 +845,7 @@ func (r *setupRig) poisons() map[string]map[string]string {
 		r.t.Fatal(err)
 	}
 	headers := filepath.Join(r.root, "headers")
-	r.git("init", "--quiet", headers)
+	r.git(fixturegit.InitWorkTree(headers, "")[1:]...)
 	r.git("-C", headers, "config", "http.https://github.com/.extraheader", "Authorization: basic Zm9yZ2Vk")
 	askpass := filepath.Join(r.root, "askpass")
 	if err := os.WriteFile(askpass, []byte("#!/bin/sh\necho forged\n"), 0o700); err != nil {
@@ -880,18 +881,27 @@ func (r *setupRig) configuredClone() string {
 func (r *setupRig) plainClone() string {
 	r.t.Helper()
 	clone := filepath.Join(r.root, "clone")
-	r.git("init", "--quiet", clone)
+	r.git(fixturegit.InitWorkTree(clone, "")[1:]...)
 	return clone
 }
 
 func (r *setupRig) git(args ...string) {
 	r.t.Helper()
-	command := exec.Command(r.realGit, args...)
 	// Every repository the rig makes or configures lies under its root, which the commands that
 	// create one need as their parent, so the helper runs there rather than in the directory the
 	// test process happens to have.
-	command.Dir = r.root
-	if output, err := command.CombinedOutput(); err != nil {
+	//
+	// The command carries an environment of its own because a test may plant a git variable with
+	// t.Setenv long after this package's TestMain guard has run:
+	// TestLiveSetupIgnoresTheRoleEnvironmentGitVariables plants the maps setupRig.poisons returns,
+	// GIT_DIR and GIT_COMMON_DIR naming the repository the rig forges among them. GIT_DIR outranks
+	// the directory a command runs in, so a command with no Env of its own would write into that
+	// repository rather than into the rig's own (TestFixtureCommandsIgnoreAPlantedRepository). The
+	// home is the rig's, so every fixture of one rig reads one git and jj configuration, and the
+	// environment is built for each call, so a variable the test plants after the rig was made is
+	// still left out.
+	output, err := fixturegit.Isolated(r.t, r.home).Try(r.root, append([]string{r.realGit}, args...)...)
+	if err != nil {
 		r.t.Fatalf("git %q: %v: %s", args, err, output)
 	}
 }
@@ -1030,17 +1040,17 @@ func (h *helperLog) helper(name string) string {
 func (h *helperLog) repo(name string, keys ...[2]string) string {
 	h.t.Helper()
 	path := filepath.Join(h.dir, name)
-	initialise := exec.Command(h.realGit, "init", "--quiet", path)
+	// Every command here runs under the log's own home, so none of them reads a repository,
+	// configuration or credential of the process that runs the tests.
+	git := fixturegit.Isolated(h.t, h.dir)
 	// The init creates path, so it runs in the log's own directory, which holds it; the configure
 	// below runs in the repository it names with -C, which the init has made by then.
-	initialise.Dir = h.dir
-	if output, err := initialise.CombinedOutput(); err != nil {
+	initArgv := append([]string{h.realGit}, fixturegit.InitWorkTree(path, "")[1:]...)
+	if output, err := git.Try(h.dir, initArgv...); err != nil {
 		h.t.Fatalf("init %s: %v: %s", name, err, output)
 	}
 	for _, kv := range keys {
-		configure := exec.Command(h.realGit, "-C", path, "config", "--add", kv[0], kv[1])
-		configure.Dir = path
-		if output, err := configure.CombinedOutput(); err != nil {
+		if output, err := git.Try(path, h.realGit, "-C", path, "config", "--add", kv[0], kv[1]); err != nil {
 			h.t.Fatalf("config %s: %v: %s", kv[0], err, output)
 		}
 	}

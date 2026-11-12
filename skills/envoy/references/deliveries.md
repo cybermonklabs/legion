@@ -43,11 +43,11 @@ envoy:
 - `id`: the delivery id; pass it as `in_reply_to` when you reply.
 - `by`: the expiry deadline, when the sender set one.
 - `urgency`: how soon the sender asks you to act: `low`, `med`, `high` or `blocking`. It is for you to read only: it does not change when a delivery reaches you, or its place among others.
-- `expects_reply`: `none`, `optional` or `required`.
+- `expects_reply`: what the sender wants back. `false` means nothing: do not reply, and do not acknowledge. `optional` means a reply is welcome and nothing waits on it. `required` means the sender waits on your answer.
 - `re`: the delivery this one replies to. A Dispatch frame names it as a `dispatch://` ref: the ask (`dispatch://KEY/ask/<id>`, or `dispatch://PROJECT/artifact/<slug>/ask/<id>` for a document ask) or the message (`dispatch://KEY/message/<id>`), never the quoted text. On an ask, `dispatch.question` holds the start of the question's text; `dispatch read` gives the whole.
 - `supersedes`: an earlier delivery this one replaces; act on this one in its place.
-- `reply_with`: the direct-reply call to the sender. On a Dispatch frame it is `command:`, the `dispatch` command line that answers it, with `...` where your text goes.
-- `reply_role`: the role-publish reply call, when the sender holds a role.
+- `reply_with`: the direct-reply call to the sender. On a Dispatch frame it is `command:`, the `dispatch` command line that answers it, with `...` where your text goes. It is absent when `expects_reply` is `false`: a delivery that wants nothing back offers no way to send something. Where you answer one anyway, the card still names what you need — a Dispatch frame names its comment, message or ask, and an agent's delivery names its `id` and its sender.
+- `reply_role`: the role-publish reply call, when the sender holds a role. It is absent under `false` for the same reason.
 - `summary`: the one-line source summary.
 - `message`: the complete payload; it can hold several paragraphs.
 - `note`: the payload names another session; never use that quoted id as the recipient.
@@ -59,7 +59,7 @@ It depends on where a session takes its deliveries, not on whether the topic is 
 
 - An Oh My Pi or Claude Code session takes its messages from a durable consumer the listener keeps for it on Envoy's stream and relays to it in order, acknowledging each one only once the session wrote it. So every message the stream keeps — your inbox, and each topic you follow with `envoy_subscribe` — reaches you once, whoever sent it: your own publish included, and a subagent's publish to a topic its parent follows. One published while you were restarting, disconnected or not running reaches you when you are back, up to 72 hours later. A session does not take its messages from a NATS subscription of its own; `packages/envoy/AGENTS.md`, "Session consumers", is the rule.
 - A team or other ad-hoc topic is the exception: the stream keeps none, so such a topic reaches only the sessions connected and subscribed when it is published, and nothing recovers it. The listener also forwards the message to the inbox of every other session registered on the topic with `envoy_subscribe`, and the stream keeps that copy, so a session that registered it gets it once after a restart too. What a team topic you subscribed to without registering carried meanwhile is gone.
-- A role is not a subject its holder subscribes to: the listener finds the live holder and forwards the message to it, and drops the message when that holder is the message's source session. The stream keeps the forward on the holder's inbox, so the holder's session gets it once, also after a restart.
+- A role is not a subject its holder subscribes to: the listener finds the live holder and forwards the message to it, and drops the message when that holder is the message's source session. The stream keeps the forward on the holder's inbox, so the holder's session gets it once, also after a restart. A role message no live holder can take is kept for the session that claims the role next, which is handed it once, within one hour of the keep.
 - A session whose plugin, or whose listener, is of an earlier release falls back to the core path while the rollout lasts (dispatch://INFRA-771 removes it): there it receives live on its own NATS subscriptions, and recovers what the stream stored for it itself, marked as published while its connection was down. It does not recover a role message that way.
 
 ## Listener API errors

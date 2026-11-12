@@ -4,7 +4,7 @@ import { useSearchParams } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
 import { useCappedSearchParam } from "../../lib/query-param";
 import { useRepeatableSearchParams, useSearchParamsUpdate } from "../../lib/url-array-params";
-import { claimHasLapsed } from "../issue/ClaimChip";
+import { claimIsTakeable } from "../issue/ClaimChip";
 import { useAgentRegistry } from "../refs/agent-registry";
 import { issueIsUnread } from "./UnreadDot";
 
@@ -15,32 +15,37 @@ export interface ActiveFilter {
 }
 
 export interface IssueFiltersState {
+  /** The project's `?label=` values (every one required, case-insensitively). */
   readonly labels: string[];
-  /** The List's `?status=` values (OR across them). Not folded into `activeFilters` or
-   *  `matches`: the Board ignores it - its columns are the statuses - so the strip counts and
-   *  chips it only while the List is showing. */
-  readonly statuses: string[];
   readonly search: string;
   readonly needsYou: boolean;
   readonly unread: boolean;
-  /** Only issues an agent could pick up: nobody has claimed them, or the session that did is
-   *  no longer running (`claimHasLapsed`), which is exactly when the server hands the claim
-   *  to the next agent that asks. */
+  /** Only issues an agent could pick up: nobody has claimed them, or the server would hand the
+   *  claim to the next agent that asks (`claimIsTakeable`) - its holder has gone, or has missed
+   *  its heartbeats for longer than the claim's grace. A holder that has missed its heartbeats
+   *  inside that grace keeps the issue, and the server refuses the take, so it stays out of
+   *  this list (dispatch://INFRA-392). */
   readonly unclaimed: boolean;
+  /** Why the Unclaimed filter cannot tell which claims are takeable while it is on: the agent
+   *  list is `refilling`, or its read failed (`unreachable`). Until it can, every session's
+   *  claim counts as held - no claim is called free from a list that did not answer - and the
+   *  strip says so. `undefined` while the filter is off or the list is current or loading. */
+  readonly unclaimedUnchecked: "refilling" | "unreachable" | undefined;
   readonly activeFilterCount: number;
   readonly activeFilters: ActiveFilter[];
   readonly setLabels: (next: string[]) => void;
-  readonly setStatuses: (next: string[]) => void;
   readonly setSearch: (next: string) => void;
   readonly setNeedsYou: (next: boolean) => void;
   readonly setUnclaimed: (next: boolean) => void;
   readonly setUnread: (next: boolean) => void;
-  /** Whether `issue` passes every active filter but status (see `statuses`). */
+  /** Whether `issue` passes every active filter. */
   readonly matches: (issue: IssueSummary, lastReadSequence: number) => boolean;
 }
 
 /** The one query key for a project's issue list: the plain list, or the server-filtered list
- *  when labels are active. List and Board build their keys here so the caches are shared. */
+ *  when labels are active. List and Board build their keys here, so one set of labels is one
+ *  key in both; `api/queries.ts` then forks on `open`, so the open-only read of a view that
+ *  hides closed issues is a key of its own under the same prefix. */
 export function projectIssuesQueryKey(
   project: string,
   labels: readonly string[]
@@ -50,19 +55,20 @@ export function projectIssuesQueryKey(
     : ["issues", "project", project, "labels", labels];
 }
 
-/** The two repeatable params `useIssueFilters` reads; passed to `useRepeatableSearchParams`,
- *  whose memo depends on this array's own identity, so it is a module-level constant. */
-const ISSUE_ARRAY_PARAM_KEYS = ["label", "status"] as const;
+/** The repeatable param `useIssueFilters` reads; passed to `useRepeatableSearchParams`, whose
+ *  memo depends on this array's own identity, so it is a module-level constant. */
+const ISSUE_ARRAY_PARAM_KEYS = ["label"] as const;
 
 /**
- * The project page's issue filters, read from and written to the URL - `?label=` and `?status=`
- * (both repeatable), `?q=`, `?needs-you=1`, `?unread=1` - so List and Board share one filter
- * state and a filtered view survives a reload. Every write replaces the history entry, as the
- * label filter always has.
+ * The project page's issue filters, read from and written to the URL - `?label=` (repeatable),
+ * `?q=`, `?needs-you=1`, `?unread=1`, `?unclaimed=1` - so the strip and the issues table share
+ * one filter state and a filtered view survives a reload. Every write replaces the history
+ * entry, as the label filter always has. The table's own `?status=` column filter is its
+ * business, not this hook's.
  */
 export function useIssueFilters(): IssueFiltersState {
   const [searchParams] = useSearchParams();
-  const { label: labels, status: statuses } = useRepeatableSearchParams(ISSUE_ARRAY_PARAM_KEYS);
+  const { label: labels } = useRepeatableSearchParams(ISSUE_ARRAY_PARAM_KEYS);
   const [search, setSearch] = useCappedSearchParam("q");
   const needsYou = searchParams.get("needs-you") === "1";
   const unread = searchParams.get("unread") === "1";
@@ -71,18 +77,16 @@ export function useIssueFilters(): IssueFiltersState {
   // while the filter that needs it is on.
   const registry = useAgentRegistry(unclaimed);
   const update = useSearchParamsUpdate();
-  const setAll = useCallback(
-    (name: "label" | "status", next: string[]) =>
+  const setLabels = useCallback(
+    (next: string[]) =>
       update((params) => {
-        params.delete(name);
+        params.delete("label");
         for (const value of next) {
-          params.append(name, value);
+          params.append("label", value);
         }
       }),
     [update]
   );
-  const setLabels = useCallback((next: string[]) => setAll("label", next), [setAll]);
-  const setStatuses = useCallback((next: string[]) => setAll("status", next), [setAll]);
   const setFlag = useCallback(
     (name: "needs-you" | "unread" | "unclaimed", next: boolean) =>
       update((params) => {
@@ -103,7 +107,7 @@ export function useIssueFilters(): IssueFiltersState {
       return (
         (!needsYou || issue.open_asks > 0) &&
         (!unread || issueIsUnread(issue, lastReadSequence)) &&
-        (!unclaimed || issue.claim === null || claimHasLapsed(issue.claim, registry)) &&
+        (!unclaimed || issue.claim === null || claimIsTakeable(issue.claim, registry)) &&
         (query === "" ||
           issue.key.toLocaleLowerCase().includes(query) ||
           issue.title.toLocaleLowerCase().includes(query))
@@ -139,11 +143,15 @@ export function useIssueFilters(): IssueFiltersState {
     setLabels,
     setNeedsYou,
     setSearch,
-    setStatuses,
     setUnclaimed,
     setUnread,
-    statuses,
     unclaimed,
+    unclaimedUnchecked:
+      unclaimed && registry.isError
+        ? registry.refilling
+          ? "refilling"
+          : "unreachable"
+        : undefined,
     unread,
   };
 }

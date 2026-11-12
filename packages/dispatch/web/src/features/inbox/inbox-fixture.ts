@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, type Mock, spyOn } from "bun:test";
 
+import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type { InboxRow } from "../../api/types";
 
@@ -33,7 +34,7 @@ export function installInboxApiMocks(): InboxApiMocks {
     mocks.getArtifactSubscribers = spyOn(api, "getArtifactSubscribers").mockResolvedValue([]);
     mocks.getReferences = spyOn(api, "getReferences").mockResolvedValue({
       edges: [],
-      node: { id: "", kind: "ask" },
+      node: graphNode({ id: "", kind: "ask" }),
     });
   });
   afterEach(() => {
@@ -46,18 +47,39 @@ export function installInboxApiMocks(): InboxApiMocks {
   return mocks;
 }
 
-/** A single open ask on an issue, overridable per test. */
+/** Resolves a fixture row's `waiting_on_person` the way the server resolves it
+ *  (`coalesce(a.asked_of, i.assignee)`): whoever the ask was handed to, else the assignee of its
+ *  issue, and absent where that leaves nobody. A row that names the field itself is left alone,
+ *  so a test can say who waits on it outright. Every Inbox row a test builds goes through this,
+ *  so no fixture waits on somebody the server would not name.
+ */
+export function withWaitingOnPerson(row: InboxRow): InboxRow {
+  if (row.waiting_on_person !== undefined) return row;
+  const person = row.asked_of ?? row.issue?.assignee ?? null;
+  return person === null ? row : { ...row, waiting_on_person: person };
+}
+
+/** A single open ask on an issue, overridable per test. The person the row waits on is resolved
+ *  as the server resolves it (`coalesce(a.asked_of, i.assignee)`), so an override that moves the
+ *  issue's assignee, or hands the ask to somebody, moves that person with it; an override naming
+ *  `waiting_on_person` itself wins. */
 export function issueAsk(overrides: Partial<InboxRow> = {}): InboxRow {
-  return {
+  const row: InboxRow = {
     anchor: null,
     answer: null,
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
     author: { id: "session-1", kind: "session" },
+    block_id: null,
     created_at: "2026-09-11T00:00:00Z",
     edited_at: null,
     id: "ask-a",
     issue: { assignee: "alice", key: "CORE-1", title: "Fix the thing" },
     issue_key: "CORE-1",
     kind: "question",
+    last_reply: null,
     multiple: false,
     opened_event_id: 1,
     options: [],
@@ -70,6 +92,7 @@ export function issueAsk(overrides: Partial<InboxRow> = {}): InboxRow {
       route: null,
       route_status: null,
       route_holder: null,
+      route_status_reason: null,
     },
     question: "Which approach?",
     state: "open",
@@ -79,6 +102,7 @@ export function issueAsk(overrides: Partial<InboxRow> = {}): InboxRow {
     urgency: "med",
     ...overrides,
   };
+  return withWaitingOnPerson(row);
 }
 
 /** Resolves `getAsk` for each row's full thread from the same fixtures `getInbox` already seeded. */
@@ -96,6 +120,7 @@ export function mockAskReads(rows: readonly InboxRow[]) {
       route: null,
       route_status: null,
       route_holder: null,
+      route_status_reason: null,
     };
   });
 }
