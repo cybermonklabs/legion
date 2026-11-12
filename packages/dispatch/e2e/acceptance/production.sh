@@ -281,6 +281,10 @@ elif ((commit_failed > 0)); then
     refuse waiting "state the time of the next look" \
       "date could not add $next_look_seconds seconds to now"
   printf 'next look: %s\n' "$next_look"
+  printf "report that time as wake_at on every look but the last. The final look, which starts at\n"
+  printf "the check's own bound, takes a pending with no wake_at, and a time there is refused\n"
+  printf "CHECK_WAKE_UNEXPECTED. This driver cannot tell which look it is; the task that opened\n"
+  printf "the look says so.\n"
   printf 'verdict: waiting (exit 3), the commit comparison is the only failed assertion\n'
   exit 3
 else
