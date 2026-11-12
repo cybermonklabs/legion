@@ -83,10 +83,11 @@ of the person's own decisions holds a request-changes rate under 5 percent — t
 the best is many-shot with all three models agreeing, coverage 0.824 at a bound of 0.229, where
 approving everything on those same cases disagrees at 0.184.
 
-**Retrieval is the one thing that helped.** The many-shot recipe, which puts the nearest past
-decisions in front of the model, is worth 0.116 more agreement than the bare recipe on the same
-model: 0.772 against 0.656. That is the positive result about the information, and the step below is
-how you get it.
+**Retrieval is the one thing that helped, and the measurement that says so is of stateless calls
+rather than of an agent.** The many-shot recipe, which puts the nearest past decisions in front of
+the model, is worth 0.116 more agreement than the bare recipe on the same model: 0.772 against
+0.656. Both of those arms are one model call with no tools, so what the number supports is the
+information and not a way of working. The step below is how you get it.
 
 **The written distillation made agreement worse, and the error it adds has one direction.** The
 errors of the two distilled arms are lopsided: `distilled-opus-5-5` made 105 false requests for
@@ -102,6 +103,32 @@ beats it.
 One rule was validated: the never-decide rule above held 60 of 60 cases of a set written blind and
 met once, against 15 of 60 for the pattern-matching version it replaced, and it decided every
 ordinary document rather than holding them too.
+
+**What this text is worth depends on whether the agent reading it can retrieve, and both numbers
+were measured.** A fresh agent was given this skill and nothing else and judged 250 of the
+person's approval decisions; the same agent with no skill at all judged the same 250. The run was
+made twice, and the two shapes differ in one thing.
+
+- **With no past decisions put in front of either arm**, which is this skill and nothing else
+  against nothing: the skill arm reached **0.668 (167 of 250)** in [0.616, 0.717] and the control
+  0.588 (147 of 250) in [0.534, 0.640], a paired difference of **+0.080 in [+0.040, +0.109]**,
+  exact McNemar p 0.001. **That 0.668 is the number this skill records for an agent reading it**:
+  one fresh agent on `claude-opus-5-5`, one judgement per case, over the 250 approval cases of the
+  report slice named above, with no retrieval of any kind.
+- **With the nearest past decisions placed in a file beside each case and both arms told of it**:
+  both reached 0.784 (196 of 250), a paired difference of **+0.000 in [−0.024, +0.024]**, p 1.000.
+  The agent without this skill read that file unprompted in every case it was watched on, so both
+  arms performed the retrieval recipe and the comparison is of this text on top of behaviour the
+  model already has.
+
+Neither shape measures the 0.116 above: the first gives the recipe to neither arm and the second
+to both, and no agent on that machine could retrieve live. What the pair says is that this text
+carries an agent that cannot retrieve about 8 points of the way, and adds nothing measurable to
+one that is already doing what the text describes.
+
+Read the numbers together before you quote any of them. The never-decide rule has its own evidence
+and it is strong. The retrieval recipe's 0.116 is real and is of stateless calls. This text's own
+gain is +0.080 against nothing and zero against an agent already retrieving.
 
 ## The retrieval step
 
