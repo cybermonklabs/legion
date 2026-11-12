@@ -103,7 +103,7 @@ function setup(
   options: {
     readonly clock?: { now: number };
     readonly ledger?: Pick<DeliveryLedger, "delivered">;
-    /** The give-up's own render, for the row driving a frame whose bytes cannot be read. */
+    /** The give-up's own render, for the row driving a defect inside the renderer. */
     readonly render?: ConsumerDeliveryOptions["render"];
   } = {}
 ) {
@@ -418,10 +418,11 @@ describe("replies", () => {
     );
   });
 
-  // Round 40's loss by its most likely door: the host fails a frame by rendering it, so a frame
-  // whose bytes its render throws on throws in the give-up too. Read as a deliberate drop, that
-  // frame would be acked away under a line saying it names no envelope, and the message would be
-  // nowhere. It goes back to the stream instead, under its own line.
+  // `renderInbound` answers bytes it cannot read with no envelope, so only a defect inside the
+  // renderer throws, and the host, which renders the frame too, would throw on it on every
+  // delivery. Read as a deliberate drop, such a frame would be acked away under a line saying it
+  // names no envelope, and the message would be nowhere. It goes back to the stream instead,
+  // under its own line.
   test("a give-up whose render throws goes back to the stream, named as what it is", async () => {
     const { delivery, logs, replies, failed, state, settled } = setup({
       render: () => {

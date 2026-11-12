@@ -507,9 +507,11 @@ mock.module("@legion/envoy-client/tmux-place", () => ({
 // was relayed to (`DeliveryLedgerHost.showFailureNotice`). Everything passes straight through;
 // `beforeFailureNotice` is the one seam: the ledger binds the give-up to that session before it
 // calls, so the session the notice names and the conversation the host has open can part company
-// only inside the call, and a row that drives that moves the host from this hook. The ledger
-// awaits the host's answer, and pi-envoy's own call awaits before it hands the card, so this
-// widens a window the running process has rather than making one up. The module is read here,
+// only inside the call, and a row that drives that moves the host from this hook. The running
+// process has no such wait: pi-envoy hands the card in the same run as the ledger's call, and
+// what holds a notice to its session there is the hand itself, `UnwrittenFrames.sendCard` asking
+// `hostIsOn` of the session the notice names. The hook makes the host already moved when that
+// hand runs, which is the case `sendCard` decides. The module is read here,
 // and not imported at the top, because the mock below replaces it: this is the real one it
 // passes through to, copied out as the tmux reader above is.
 const realDeliveryLedger = await import("@legion/envoy-client/delivery-ledger");

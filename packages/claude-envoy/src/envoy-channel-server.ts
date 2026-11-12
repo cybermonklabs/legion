@@ -273,8 +273,14 @@ export interface ChannelDelivery {
  * notifier as a live frame: the mod's write into the conversation, or the Legion bridge's inbox.
  */
 export interface ChannelDeliveryPath extends ChannelDelivery {
-  /** Shows a notice of Envoy's own; a rejection says it was not shown. */
-  notice(content: string): Promise<void>
+  /**
+   * Shows a notice of Envoy's own; a rejection says it was not shown. `addressed` names the
+   * session the notice is for: the notice waits its turn behind every frame queued before it,
+   * and a `/clear` can move this process to another id while it waits, so the id is compared
+   * when the notice's turn comes, and a notice for an id this process no longer serves is
+   * refused rather than shown to the conversation it moved to.
+   */
+  notice(content: string, addressed?: string): Promise<void>
 }
 
 export interface ChannelSession {
@@ -500,9 +506,6 @@ export function createChannelDelivery(input: {
     return run
   }
 
-  const write = (notification: ChannelNotification): Promise<void> =>
-    queued(() => input.notifier.notification(notification))
-
   /** Lists a rendered frame in the inbox, naming one Envoy event once: the server is
    *  at-least-once, so the copy Envoy sends after an unanswered frame is written to the session
    *  again — where the mod's record keeps it from reaching the engine twice (`./mod-session`) —
@@ -596,8 +599,15 @@ export function createChannelDelivery(input: {
         return true
       })
     },
-    notice(content) {
-      return write({ content })
+    notice(content, addressed) {
+      return queued(async () => {
+        if (addressed !== undefined && addressed !== input.identity.id) {
+          throw new Error(
+            `the notice names session ${addressed}, and this process serves ${input.identity.id}`,
+          )
+        }
+        await input.notifier.notification({ content })
+      })
     },
     inbox() {
       return [...inbox]
@@ -727,18 +737,13 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // What the ledger persists, so a restart follows it again (`replayFollowedSubjects`).
       followedSubjects: () => replayFollowedSubjects(directSubject, userTopics),
       // The notice goes to the session the ledger addresses it to. This process serves one
-      // session at a time, and `delivery.notice` cards whichever that is, so the test is made
-      // here rather than taken for granted: a notice naming another session is refused, which
-      // the ledger reports as a notice that could not be shown, and nothing is carded to a
-      // conversation the message was never sent to.
-      showFailureNotice: (addressed, notice) => {
-        if (addressed !== identity.id) {
-          throw new Error(
-            `the notice names session ${addressed}, and this process serves ${identity.id}`,
-          )
-        }
-        return delivery.notice(envoyNoticeText(failureNoticeFields(notice)))
-      },
+      // session at a time, so `delivery.notice` compares the addressed id with the one it
+      // serves when the notice's queued turn comes, which is after any `/clear` that landed
+      // while it waited: a notice naming another session is refused, which the ledger reports
+      // as a notice that could not be shown, and nothing is carded to a conversation the
+      // message was never sent to.
+      showFailureNotice: (addressed, notice) =>
+        delivery.notice(envoyNoticeText(failureNoticeFields(notice)), addressed),
       failureNoticeFailed: (notice, error) => {
         process.stderr.write(
           `envoy-channel: message ${notice.eventId} from ${notice.sender} was not shown, nor was the notice naming it — ${messageFor(error)}\n`,

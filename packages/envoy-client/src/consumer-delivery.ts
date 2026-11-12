@@ -245,9 +245,9 @@ export interface ConsumerDeliveryOptions {
   /** Runs `callback` every `ms` until the returned stop runs; `setInterval` by default. */
   readonly every?: (ms: number, callback: () => void) => () => void;
   /**
-   * How a give-up reads the frame it is about to report (`renderInbound` by default). The host
-   * renders the frame itself when it takes it, so a frame whose bytes its render throws on
-   * throws here too; a test gives a render that throws to drive what that frame is answered.
+   * How a give-up reads the frame it is about to report (`renderInbound` by default). No host
+   * sets it: `renderInbound` answers unreadable bytes with no envelope rather than a throw, so a
+   * test gives a render that throws to drive what a defect inside the renderer is answered.
    */
   readonly render?: typeof renderInbound;
 }
@@ -508,10 +508,11 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
       log(`frame ${entry.frame.streamSeq} ${why}; it goes back to the stream`, thrown);
       settle(entry, "nak");
     };
-    // The render is read in its own try: a throw here is no deliberate drop. The host's own
-    // `deliver` renders the frame too, so a frame that fails because its bytes cannot be read
-    // throws here on every delivery, and acking it would lose the message with nothing that
-    // names it - round 40's loss by another door.
+    // The render is read in its own try: a throw here is no deliberate drop. `renderInbound`
+    // catches bytes it cannot read and answers no envelope (the branch below), so only a defect
+    // inside the renderer throws here; no host sets `render`, which a test replaces to drive this
+    // branch. Such a throw would come again on every delivery, and acking it would lose the
+    // message with nothing that names it, so the frame goes back to the stream instead.
     let envelope: InboundEnvelope | undefined;
     try {
       envelope = render(entry.frame.data, sessionID, entry.frame.subject).envelope;

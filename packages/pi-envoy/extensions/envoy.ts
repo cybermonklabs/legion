@@ -1359,16 +1359,13 @@ export default function envoyExtension(pi: PiApi): void {
   // delivering now is that path's to show and record, and one whose card waits already is that
   // card's. A frame the dedupe let go of that the open session's ledger does not hold (one
   // shown before the host moved to this session, say) is handed with no claim, and waits on
-  // its card's write all the same: nothing records it until the host writes it. `beforeHandOff`
-  // runs only after that claim has excluded a live or already queued copy, and before the card
-  // can start its own run.
-  const showReplayCard = async (
+  // its card's write all the same: nothing records it until the host writes it.
+  const showReplayCard = (
     session: string,
     content: string,
     envelope: unknown,
-    deliverAs: CardDelivery = "card",
-    beforeHandOff?: () => Promise<void>
-  ): Promise<"shown" | "queued" | "failed"> => {
+    deliverAs: CardDelivery = "card"
+  ): "shown" | "queued" | "failed" => {
     const parsed = ClaimIdentitySchema.safeParse(envelope);
     const identity = parsed.success ? parsed.data : undefined;
     const claim = delivered.claim(identity);
@@ -1379,7 +1376,6 @@ export default function envoyExtension(pi: PiApi): void {
     ) {
       return "queued";
     }
-    await beforeHandOff?.();
     const outcome = unwritten.sendCard(session, content, deliverAs, identity, claim);
     return outcome === "closed" ? "failed" : outcome;
   };
@@ -2341,7 +2337,7 @@ export default function envoyExtension(pi: PiApi): void {
             // thrown back at the ledger, which reports it as a notice that could not be shown
             // (`failureNoticeFailed`), as it does for a notice the host refused.
             showFailureNotice: async (addressed, notice) => {
-              const outcome = await showReplayCard(
+              const outcome = showReplayCard(
                 addressed,
                 envoyNoticeText(failureNoticeFields(notice)),
                 notice.envelope,
