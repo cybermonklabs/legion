@@ -389,10 +389,10 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 					return
 				}
 				comment.Anchor.Orphaned = true
-				// Only the orphaned key is written, as the anchor refresh writes its keys: the
-				// anchor was read with no row lock, and a whole-anchor write would drop a block_id
-				// the anchor-block backfill pinned since (docs.BackfillAnchorBlocks), which takes
-				// no owner lock.
+				// Only the orphaned key is written, the one key this refusal decides: writing the
+				// whole anchor would write back every other key of the column as this transaction
+				// read it, which is not what orphaning an anchor means. The narrow write says what
+				// it changes.
 				if err := queueExec(ledger, `
 					update comments set anchor = jsonb_set(anchor, '{orphaned}', to_jsonb(true)) where id = $1
 				`, comment.ID); err != nil {

@@ -41,19 +41,28 @@ var (
 	writeKeywordTail = regexp.MustCompile(`\b(?:insert into|update|delete from)\s+$`)
 )
 
-// itemOwnerLockRule is what an unlisted writer is told, and the whole of what this census holds.
+// itemOwnerLockRule is what an unlisted writer is told: the rule it broke, and where the rule is
+// proved, since this census proves only that the writer was named.
 const itemOwnerLockRule = "Every writer of a comment, a message, an ask or one of their block-state rows takes that item's\n" +
 	"owner lock first - its issue's, or the document a comment or an ask on a document hangs on\n" +
 	"(store.LockOwner, through refs.LockItemOwner, api's lockedComment and lockCommentOwner, docs'\n" +
 	"lockArtifactOwner) - and reads what it writes in a statement after that lock, never in the same\n" +
 	"one. The lock is advisory, so it excludes exactly the writers that take it: main's row lock on\n" +
 	"the item row also excluded a writer that took no owner lock, and this one does not.\n" +
-	"Take the owner's lock, then add the function below with the lock it takes."
+	"Take the owner's lock, then add the function below with the lock it takes - and, where the\n" +
+	"writer is one a server runs, add a row to the table that holds it behind a lock somebody else\n" +
+	"holds (TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites,\n" +
+	"item_row_owner_lock_test.go). This census reads names; that test reads locks."
 
 // itemRowWriters is the census: every function of this module that writes an item row, or that
 // writes a table this scan cannot read, with the owner lock it takes before the write. A writer
 // the scan finds and this map does not name reds the test; an entry no writer answers reds it
 // too, since a census that keeps a function it no longer covers stops saying anything.
+//
+// The reason beside each entry is for the reader, not for the test: nothing here compares it
+// with the lock the function takes, or with any lock at all. It is how one writer of this module
+// tells the next why their write is safe, and whoever adds an entry writes the reason the entry
+// above theirs is written in - the lock named, and the caller or helper that takes it.
 //
 // The two exceptions take no owner lock, and each says why. Everything else on the list holds
 // the item's owner, which is what makes the advisory lock at refs.LockItemOwner enough.
@@ -165,11 +174,18 @@ var itemRowWriters = map[string]map[string]string{
 	},
 }
 
-// seedLoaderException is the reason the seed's three loaders take no owner lock: cmd/dispatch-seed
-// fills a database for the load harness, where it is the only writer and no server is serving, so
-// there is nothing for a lock to serialise it against.
-const seedLoaderException = "none, and none to take: cmd/dispatch-seed loads a harness database " +
-	"it is the only writer of, with no server serving it"
+// seedLoaderException is why the seed's three loaders are on the census with no lock, written so
+// that a reader of the allowlist can weigh the exception without leaving the file. An owner lock
+// serialises writers of one owner against each other, and cmd/dispatch-seed is a command a person
+// runs from a shell against an empty, migrated database, filling it before any server is started
+// on it (cmd/dispatch-seed/main.go): while it writes there is no second writer for a lock to
+// serialise it against. Run instead against a database a server serves, these three would write
+// comment, ask and message rows beside the routes, and each would need the owner lock every
+// serving writer takes; that is the line this exception sits on.
+const seedLoaderException = "none, and none to take: cmd/dispatch-seed is a command run from a " +
+	"shell, filling an empty database before any server is started on it, so while it writes " +
+	"there is no other writer for a lock to serialise it against; pointed at a database a " +
+	"server serves it would take the owner lock like every serving writer"
 
 // TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus holds the invariant the advisory owner lock
 // rests on: every writer of a comment, a message, an ask or one of their block-state rows takes
@@ -182,6 +198,20 @@ const seedLoaderException = "none, and none to take: cmd/dispatch-seed loads a h
 // without taking its owner. No such writer exists, and this test is what keeps it so: a
 // `delete from comments` added tomorrow (dispatch://INFRA-1523) reds here until its function is
 // on the census with the lock it takes.
+//
+// What it catches is a missing name, in either direction: a writer the scan finds that no entry
+// names, and an entry whose function no longer exists. What it does not catch is the lock. The
+// reason beside an entry is prose, and nothing here reads it: an entry may name a helper the
+// module renamed long ago, or a route whose lock was taken out and whose read moved to the pool,
+// and this test stays green either way, because the function is still there and still writes the
+// row. A green census says who writes an item row. It does not say that any of them still locks,
+// and reading it as if it did is how a change that dropped a lock would walk through this gate.
+//
+// The lock is proved by holding it. In item_row_owner_lock_test.go,
+// TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites takes an item's owner lock in
+// a transaction of its own and requires the writer to wait for it, over a table of the serving
+// writers of these rows. That table is the other half of this one - names here, locks there -
+// and it covers the writers it lists, with the gap named in its own text.
 //
 // Its reach is the statement as this scan can assemble it, which is the reach the lock-level
 // guard documents (TestNoForUpdateOnOwnerTables): a literal, or a chain of literals and
