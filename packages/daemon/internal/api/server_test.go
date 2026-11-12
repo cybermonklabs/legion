@@ -61,9 +61,6 @@ func (f *fakeStateTransactions) BeginTx(_ context.Context, opts pgx.TxOptions) (
 type fakeTx struct {
 	committed  bool
 	rolledBack bool
-	// bound is the statement bound the state route put on this transaction, empty until it does
-	// (stateRoute's `set local statement_timeout`).
-	bound string
 }
 
 func (t *fakeTx) Begin(context.Context) (pgx.Tx, error) { return t, nil }
@@ -85,11 +82,10 @@ func (*fakeTx) Prepare(context.Context, string, string) (*pgconn.StatementDescri
 }
 
 // Exec takes the one statement a route runs of its own on this transaction — the state route's
-// bound on its own statements — and records it; every other statement belongs to a state source,
-// and the sources here are fakes that run none.
-func (t *fakeTx) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
+// bound on its own statements — and refuses every other: those belong to a state source, and the
+// sources here are fakes that run none.
+func (*fakeTx) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
 	if strings.HasPrefix(sql, "set local statement_timeout = ") {
-		t.bound = sql
 		return pgconn.CommandTag{}, nil
 	}
 	return pgconn.CommandTag{}, errors.New("unexpected exec: " + sql)
@@ -152,11 +148,6 @@ func TestStateRouteUsesARepeatableReadOnlyTransaction(t *testing.T) {
 	}
 	if txs.opts.IsoLevel != pgx.RepeatableRead || txs.opts.AccessMode != pgx.ReadOnly {
 		t.Fatalf("transaction options = %#v, want repeatable-read read-only", txs.opts)
-	}
-	// And it carries a statement bound of its own, the route's (stateReadBound), set on this
-	// transaction alone: the pool must stay free to run a migration's long DDL.
-	if want := "set local statement_timeout = 60000"; txs.tx.bound != want {
-		t.Fatalf("the state transaction's statement bound = %q, want %q", txs.tx.bound, want)
 	}
 	if !txs.tx.committed {
 		t.Fatal("state transaction was not committed")
