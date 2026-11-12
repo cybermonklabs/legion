@@ -2245,7 +2245,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if err != nil {
 		return api.State{}, nil, err
 	}
-	resumes, err := strandedReleaseWakes(ctx, s.store, s.projectToken, claims, now)
+	resumes, err := strandedReleaseWakes(ctx, s.store, tx, s.projectToken, claims, now)
 	if err != nil {
 		return api.State{}, nil, err
 	}

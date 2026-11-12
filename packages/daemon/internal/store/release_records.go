@@ -152,7 +152,7 @@ func (s *Store) MarkPodResumeStuck(ctx context.Context, id int64) error {
 // stuck mark yet: the ones the daemon warns about and counts, read once per pass so each warns
 // once. The stranded report reads UnfinishedPodResumes instead, which keeps a marked row.
 func (s *Store) StuckPodResumes(ctx context.Context, project string, before time.Time) ([]PodResume, error) {
-	return s.podResumesWithoutAFirstTurn(ctx, project, before, true)
+	return podResumesWithoutAFirstTurn(ctx, s.pool, project, before, true)
 }
 
 // UnfinishedPodResumes are the resumes of project the stranded report judges R6 on: those of
@@ -175,11 +175,35 @@ func (s *Store) StuckPodResumes(ctx context.Context, project string, before time
 // turn, which is the stranded claim this read is for, and counting either as the pod's newest
 // release would drop exactly those rows from the report's released-claim arm. So the filter is
 // of what a release did and never of which rule wrote it.
+//
+// It is read on the pool by the caller that holds no transaction of it: the stuck pass's own
+// read of the same rows (StuckPodResumes) and nothing else. Every caller that is already inside
+// a transaction of this pool reads it through UnfinishedPodResumesTx, since asking the pool for
+// a second connection while holding one of its own is how a pool of a busy deployment deadlocks
+// (INFRA-3169).
 func (s *Store) UnfinishedPodResumes(ctx context.Context, project string, before time.Time) ([]PodResume, error) {
-	return s.podResumesWithoutAFirstTurn(ctx, project, before, false)
+	return podResumesWithoutAFirstTurn(ctx, s.pool, project, before, false)
 }
 
-func (s *Store) podResumesWithoutAFirstTurn(ctx context.Context, project string, before time.Time, unmarked bool) ([]PodResume, error) {
+// UnfinishedPodResumesTx is UnfinishedPodResumes through tx's snapshot. The stranded report and
+// the state route both read it beside the claims they judge it against, in the transaction they
+// have already begun, so the wakes and the released claims they belong to come from one moment
+// and neither caller waits on its own pool for a second connection.
+func (s *Store) UnfinishedPodResumesTx(ctx context.Context, tx pgx.Tx, project string, before time.Time) ([]PodResume, error) {
+	return podResumesWithoutAFirstTurn(ctx, tx, project, before, false)
+}
+
+// resumeQuerier is the part of a pool and of a transaction this read runs on. It is its own
+// interface rather than store.go's queryRower, which carries QueryRow alone and so cannot carry
+// a read of many rows; claims.go's claimQuerier is the same shape under a name that says claims,
+// and a read of resumes should not have to call itself one.
+type resumeQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// podResumesWithoutAFirstTurn is both reads, on whichever querier the caller runs it on: the
+// pool, or the caller's own transaction.
+func podResumesWithoutAFirstTurn(ctx context.Context, q resumeQuerier, project string, before time.Time, unmarked bool) ([]PodResume, error) {
 	query := `select id, release_id, project, issue, role, kind, at, stuck
 		from pod_resumes r where project = $1 and first_turn_at is null and at <= $2`
 	if unmarked {
@@ -188,7 +212,7 @@ func (s *Store) podResumesWithoutAFirstTurn(ctx context.Context, project string,
 		query += ` and release_id = (select max(id) from pod_releases
 			where project = r.project and issue = r.issue and roles <> '')`
 	}
-	rows, err := s.pool.Query(ctx, query+` order by id`, project, before)
+	rows, err := q.Query(ctx, query+` order by id`, project, before)
 	if err != nil {
 		return nil, fmt.Errorf("read the unfinished resumes of %s: %w", project, err)
 	}
