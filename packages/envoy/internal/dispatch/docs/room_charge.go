@@ -1,9 +1,16 @@
 package docs
 
+import (
+	"log/slog"
+
+	"github.com/reearth/ygo/crdt"
+)
+
 // This file holds one loaded room's charge against the budget (roomCharge): the one weight it
-// carries, and the two writes that move it - the drain that adds each committed update's bytes
+// carries, the two writes that move it - the drain that adds each committed update's bytes
 // to the room's tracked state, and the re-base that replaces the tracked state with a figure
-// read from bytes already in hand.
+// read from bytes already in hand - and the anchor the two paths that carry no report weigh
+// their own reading of the room against (anchorStructs).
 
 // roomCharge is one loaded room's charge against the budget: one weight, the larger of its
 // tracked state at bytesOfHeapAStateByte and its structs at bytesOfHeapAStruct in each of its
@@ -43,4 +50,31 @@ func (c *roomCharge) weigh(stateBytes, structs int64) {
 	c.budget.mu.Lock()
 	defer c.budget.unlock()
 	c.budget.reweighLocked(c, roomWeight(stateBytes, structs))
+}
+
+// anchorStructs is how many structs live holds, read from the document itself, for the two
+// paths that weigh a room with no report to read: the room's load from its stored state, whose
+// decode runs before the document is given the report at all, and a compaction's re-base,
+// which is no apply (chargeLoadedRoom, Service.rebaseRoomState). Every other reader takes the
+// figure the room's last committed apply reported (roomApplies.structsHeld).
+//
+// Those two readings are the anchor on the reports. Each is of the same quantity a report
+// carries - the store's structs with the pending queue's beside them, each counted once
+// (heldStructs, crdt.ApplyReport.Structs) - so where the room already holds a reported figure
+// the two can be held against each other, and a difference is logged with the room and both
+// figures. The reading is then taken as the truth: it is of the document, where a report is of
+// the document as some earlier apply left it, and only a reading sees what no remote apply
+// made - a server write in the room's own transaction, which reports nothing.
+//
+// It logs at Warn and refuses nothing. A difference is an accounting fault, not a document
+// fault: the room is charged and bounded from the reading either way, and what the line is for
+// is an operator or a drive that can then say which path left the figure behind
+// (dispatch://INFRA-179).
+func anchorStructs(room string, applies *roomApplies, live *crdt.Doc) uint64 {
+	read := heldStructs(live)
+	if reported, ok := applies.reportedStructs(); ok && reported != read {
+		slog.Warn("dispatch: a room's reported structs differ from the count read at the anchor",
+			"room", room, "reported", reported, "read", read)
+	}
+	return read
 }

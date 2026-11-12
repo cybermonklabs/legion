@@ -74,10 +74,11 @@ const roomCopies = 2
 // two copies by 336.6 MB (dispatch://INFRA-179, review 5891480448). The decode cap refuses that
 // exact room now, the apply's allowance counting the splits it would make
 // (crdt.ApplyBudget.Split, peerApplyAllowance), but every such delete short of the cap stands,
-// and the struct term is what answers it: structs is the room's ceiling, ygo's own count of the
-// structs its store holds with what it has parked beside them, which the decode cap reads on
-// every write too (structCeiling, crdt.Doc.StructCount), a walk of the handful of client slices
-// with neither an encode nor a decode in it, so the second term costs nothing to read. The
+// and the struct term is what answers it: structs is what the room holds, as the library
+// reports it at the end of each apply that commits - the structs its store holds with those
+// parked in its pending queue beside them (crdt.ApplyReport.Structs, roomApplies.structsHeld),
+// read off the room's own record with neither an encode nor a walk, so the second term costs
+// nothing to read. The
 // parked structs are counted because the room stores them and its next load decodes them, so a
 // room holding a backlog costs the pod what that backlog costs it.
 //

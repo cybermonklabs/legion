@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"weak"
 
 	"github.com/reearth/ygo/crdt"
@@ -30,8 +31,9 @@ import (
 // a whole further copy of the document, with the render about 160 ms (AGENTS.md:563-602,
 // :780-781) - against a keystroke on such a document that already takes between half a second and
 // a second. What it does instead is hand ygo an allowance built from what it can see without
-// reading the update at all - the update's own length, the structs the room's next load meets
-// (structCeiling), the room's last published rendering (renderedReplica.publishSize) and
+// reading the update at all - the update's own length, the structs the room's last committed
+// apply reported it holding (crdt.ApplyReport.Structs, roomApplies.structsHeld), the room's
+// last published rendering (renderedReplica.publishSize) and
 // its tracked state bytes - and let the apply itself count what the update decodes, integrates
 // and adds against that allowance, rolling the whole apply back where it passes
 // (crdt.WithApplyBudget). For a keystroke that is a handful of comparisons; nothing here is
@@ -58,8 +60,9 @@ import (
 // load that reads it, so a room whose state holds more could never be loaded again once its
 // updates were folded. A browser can get there without passing the byte bound - a frame of GC
 // structs is two bytes a struct and renders nothing - so the apply's allowance of structs comes
-// out of what is left of the cap above the structs the room's next load meets (structCeiling,
-// which counts the pending queue beside the store), and an apply that would integrate more is
+// out of what is left of the cap above the structs the room holds, as the room's last
+// committed apply reported them (roomApplies.structsHeld, which counts what the room has
+// parked beside what its store holds), and an apply that would integrate more is
 // refused with DocumentTooLargeCloseCode and taken back out whole.
 //
 // It can get there without integrating a struct at all. A delete inside a run cuts the item it
@@ -237,8 +240,8 @@ type peerAllowance struct {
 	structsLimit, bytesLimit int64
 }
 
-// peerApplyAllowance is the allowance an update of update bytes applies under in a room whose
-// next load's decode meets structs structs (structCeiling) and which holds stateBytes bytes of
+// peerApplyAllowance is the allowance an update of update bytes applies under in a room holding
+// structs structs (roomApplies.structsHeld) and which holds stateBytes bytes of
 // tracked state, whose last published rendering measures rendering bytes (measured false for a
 // room with none), while the budget is full or not.
 //
@@ -378,8 +381,8 @@ const pressureSplits = 8
 // (peerApplyAllowance, TestAPeerUpdateIsWeighedAgainstTheRoomsLastMeasurement's row for it).
 const pressureGrowth = 256
 
-// capHeadroom is what is left of the decode cap above a room whose next load's decode meets
-// structs structs (structCeiling), never below nothing: a room already at or past the cap may
+// capHeadroom is what is left of the decode cap above a room holding structs structs
+// (roomApplies.structsHeld), never below nothing: a room already at or past the cap may
 // add no struct, and a field below zero would read as no limit at all (crdt.ApplyBudget). It is
 // what the apply's structs and splits divide between them (peerApplyAllowance).
 func capHeadroom(structs uint64) int {
@@ -426,6 +429,11 @@ var peerRefusedContent = []crdt.ContentKind{crdt.ContentKindEmbed, crdt.ContentK
 // lock as each remote apply begins, so none may call the document; all take nothing but mu, which
 // nothing holds across a call into the document.
 //
+// It is also where the room keeps what the library answers back: as each apply commits, ygo
+// reports what the document then holds, and that figure is the room's from then on - its
+// charge, the copies it is weighed for and the next update's allowance all read it rather than
+// the document (crdt.WithApplyReport, structs, structsHeld).
+//
 // An apply of any other origin is the server's own - an API write's publish, an injected update,
 // settlement's repair - and is bounded by nothing here, allowed every root and refused no kind of
 // content: each of those weighs what it leaves by its own rules (growth.go), a repair that could
@@ -440,25 +448,89 @@ type roomApplies struct {
 	// draining (backlogStalled, refusedStuckBacklog).
 	parkedFloor int
 	parkedSeen  bool
-	// pressureMark is the room's struct ceiling as the budget's pressure first weighed one of
+	// pressureMark is the room's struct total as the budget's pressure first weighed one of
 	// its updates, and pressureMarked whether the room carries such a mark: what bounds the
 	// room's growth across the whole of one pressure rather than within one update
 	// (splitsUnderPressure). The end of the pressure clears both, so a room that has waited one
 	// out starts the next afresh.
 	pressureMark   uint64
 	pressureMarked bool
+	// structs is what the last apply that committed in this room reported the document then
+	// held, those parked in its pending queue included (crdt.ApplyReport.Structs), and
+	// reported whether one has reported at all. They are the room's own record of the
+	// library's figure: every reader that weighs the room takes it from here rather than
+	// reading the document again (structsHeld), and the room's load and a compaction, which
+	// have no report to read, hold their own reading against it (anchorStructs).
+	//
+	// Each is written by the report callback alone, under the document's lock as the apply
+	// commits, and read without one by the budget's drains, the copy heap and the hook on the
+	// peer's read loop, so they are atomics rather than fields of mu: the figure is written
+	// before the flag, and every value either carries is a total the document stood at.
+	structs  atomic.Int64
+	reported atomic.Bool
 }
 
 // newRoomApplies sets live, a room's document, to apply every browser's update under the
 // allowance the hook reserved for it, to refuse one naming any root but the fragment and the
-// margin, and to refuse one carrying a kind of content the editor never sends, as newRoomScans
-// sets its scan budget. From here live applies every remote update whole or not at all.
+// margin, to refuse one carrying a kind of content the editor never sends, and to report what
+// each apply that commits leaves it holding, as newRoomScans sets its scan budget. From here
+// live applies every remote update whole or not at all.
+//
+// The report is what makes the library and not this package the authority on what a room holds
+// (crdt.WithApplyReport, dispatch://INFRA-179): ygo reads the two counters that answer it - the
+// store's structs and the pending queue's - as each apply commits, under the lock that apply
+// held, and hands them over, where this package used to walk the client slices again at each
+// drain, each copy and each update weighed. It costs the room less than the readings it
+// replaces: one reading an apply, against one a drain plus one an update weighed plus one a
+// copy taken (the fork's measurement is 13.4 µs for the pair of counters,
+// crdt/doc.go:446-448).
 func newRoomApplies(live *crdt.Doc) *roomApplies {
 	applies := &roomApplies{}
 	live.SetApplyBudget(applies.budget)
 	live.SetAllowedRoots(applies.roots)
 	live.SetRefusedContent(applies.refusedContent)
+	live.SetApplyReport(applies.noteApply)
 	return applies
+}
+
+// noteApply keeps what an apply that has just committed in this room reported the document now
+// holds. ygo calls it with the apply's origin, which nothing here reads - what the room holds
+// is the room's, whoever wrote the update - under the document's lock and inside the
+// transaction that applied it, so it takes no lock of this package's and calls nothing back
+// into the document (crdt.WithApplyReport).
+//
+// A refused or rolled-back apply reports nothing, so what is kept here is always a total the
+// document stood at. An apply of a local transaction reports nothing either - the report is of
+// remote applies - so a server write made in the room's own transaction leaves this figure
+// behind the document until the next remote apply reports again or the anchor reads the
+// document itself (anchorStructs, which logs the difference).
+func (a *roomApplies) noteApply(_ any, report crdt.ApplyReport) {
+	a.structs.Store(int64(report.Structs))
+	a.reported.Store(true)
+}
+
+// reportedStructs is the structs the last apply that committed in the room reported it holding,
+// and whether any apply has reported: nothing for a document no room's load listed, and nothing
+// for a room between its load and its first remote apply.
+func (a *roomApplies) reportedStructs() (uint64, bool) {
+	if a == nil || !a.reported.Load() {
+		return 0, false
+	}
+	return uint64(max(a.structs.Load(), 0)), true
+}
+
+// structsHeld is how many structs the room holding live holds now: the figure its last
+// committed apply reported (reportedStructs), and a reading of the document itself where no
+// apply has reported one yet - a room's first update after a load, and a document no room's
+// load listed, a test's (heldStructs). It is what every reader that weighs a room takes: the
+// room's charge as each drain raises it (renderedReplica.chargeAdded), what a whole copy of the
+// room costs the pod's load concurrency (Service.copyOfRoom) and the allowance of each
+// browser's update (Service.weighPeerUpdate).
+func (a *roomApplies) structsHeld(live *crdt.Doc) uint64 {
+	if structs, reported := a.reportedStructs(); reported {
+		return structs
+	}
+	return heldStructs(live)
 }
 
 // budget is ygo's per-apply allowance: the one reserved for the hook's apply with this origin,
@@ -548,17 +620,17 @@ func (a *roomApplies) backlogStalled(parked int) bool {
 // not, where the splits' half of the decode cap's headroom bounds the apply instead
 // (peerApplyAllowance).
 //
-// structs is the room's struct ceiling as this update arrives (structCeiling). The first update
+// structs is the structs the room holds as this update arrives (structsHeld). The first update
 // weighed under a pressure marks it: that update is already refused its structs and its bytes by
 // the pressure, so the mark is the room as the pressure first refused it something, and what the
 // room may reach is that mark and pressureGrowth above it. Each later update is allowed what is
-// left between the ceiling and that reach, so the splits an update may make fall to nothing as
+// left between the room's structs and that reach, so the splits an update may make fall to nothing as
 // the room nears it and no mix of updates passes it, where eight an update bounded one update
 // alone (TestR6Finding3PressureSplitsHaveNoCumulativeBound).
 //
 // The end of the pressure clears the mark, so a room that has waited one out starts the next
 // afresh and a person who could not cut inside a word can again. Nothing else clears it: a room
-// whose ceiling falls under its mark - a rebuild's, which writes a history without the
+// whose structs fall under its mark - a rebuild's, which writes a history without the
 // tombstones - is read against the mark as it stands and is allowed the whole of pressureSplits.
 //
 // A room no load listed carries no record to mark and is allowed pressureSplits by each update,
@@ -668,21 +740,22 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	if refusal := s.refusedBeforeApply(info, weighing); refusal != nil {
 		return refusal
 	}
-	// The room's structs as the next load's decode meets them, read once: what is left of the
-	// decode cap above them is both the apply's allowance of structs and splits and the
-	// headroom a drain of the room's backlog would have to come out of.
+	// The structs the room holds, read once: what is left of the decode cap above them is both
+	// the apply's allowance of structs and splits and the headroom a drain of the room's
+	// backlog would have to come out of.
 	//
-	// It is the ceiling and not ygo's count of the store (structCeiling,
-	// crdt.Doc.StructCount), because what the room stores is what its next load decodes, and
-	// that is the store with the pending queue beside it: a frame whose structs park behind a
-	// clock gap adds nothing the store counts, so the count left the whole queue outside the
-	// cap. Two frames of 448,568 structs each parked behind a gap were admitted over a room of
-	// 600,000 structs, which the count read as 600,000 throughout, and the room's stored state,
-	// 2,994,565 bytes holding 897,136 parked structs, no longer decoded
+	// It is the figure the room's last committed apply reported (roomApplies.structsHeld,
+	// crdt.ApplyReport.Structs), and a reading of the document only for a room's first update
+	// after a load, which no apply has reported on yet. The report counts the pending queue
+	// beside the store, which is what this hook has to weigh: a frame whose structs park
+	// behind a clock gap adds nothing the store's own count sees, so that count left the whole
+	// queue outside the cap, and two frames of 448,568 structs each parked behind a gap were
+	// admitted over a room of 600,000 structs whose count read 600,000 throughout, leaving a
+	// stored state of 2,994,565 bytes holding 897,136 parked structs that no longer decoded
 	// (TestR6Finding2ParkedStructsEscapeTheDecodeCap, dispatch://INFRA-179, review 6's
-	// finding 2). The ceiling counts each parked struct twice over, for the skip over the gap
-	// it waits behind, so a room that parks such a frame has no headroom left for a second.
-	structs := structCeiling(info.Doc)
+	// finding 2). The library counts both as each apply commits, so the room is weighed on
+	// what it holds rather than on what this package could read of it between applies.
+	structs := weighing.applies().structsHeld(info.Doc)
 	if refusal := s.refusedStuckBacklog(info, weighing, structs); refusal != nil {
 		return refusal
 	}
@@ -887,10 +960,11 @@ func (s *Service) refusedByApply(info websocket.PeerUpdateInfo, allowance peerAl
 		// The honest long session's updates scan 12 items at most, so a refusal is worth a line,
 		// with the budget's figures and the room's scan total as the refusal leaves them.
 		used, limit := s.budget.figures()
-		scanned, left := s.roomWeighingOf(info.Doc).roomScans().figures()
+		weighing := s.roomWeighingOf(info.Doc)
+		scanned, left := weighing.roomScans().figures()
 		slog.Warn("dispatch: refused a browser's update its room could not merge within its scan allowance",
 			"room", info.Room, "update_bytes", len(info.Update), "charged", used, "limit", limit,
-			"structs", info.Doc.StructCount(), "allowance", scanning.limit(),
+			"structs", weighing.applies().structsHeld(info.Doc), "allowance", scanning.limit(),
 			"scan_total", scanned, "scans_left", left)
 		if scanning.roomUsedUp() {
 			return documentNeedsRebuild()

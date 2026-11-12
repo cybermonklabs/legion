@@ -118,9 +118,9 @@ type renderedReplica struct {
 	waiting atomic.Int32
 	// live is the room's own document, the other of the two copies a room is charged for: the
 	// document this replica follows, which keepReplica is given. The replica holds it so that
-	// each drain can charge the room the structs the room holds as well as the bytes it is
-	// tracked at (chargeAdded, roomWeight), which is a read of ygo's own count with what the
-	// room has parked and costs neither an encode nor a decode (structCeiling). It is held
+	// each drain can read the structs the room holds for the room's charge (chargeAdded,
+	// roomWeight), which is a read of what the room's last committed apply reported
+	// (roomApplies.structsHeld) and of the document itself only before the first of them. It is held
 	// strongly and not weakly: a keystroke must make no weak pointer strong (roomWeighing says
 	// what that costs), and the reference closes no cycle anything else holds - live's update
 	// observer holds this replica already, the service's listing holds the replica weakly
@@ -854,9 +854,9 @@ func (r *renderedReplica) drainedSeq(room string) (seq uint64, settles bool) {
 // again from that sum and the structs the room holds (roomWeight), whoever wrote the update: a
 // browser's the peer hook admitted, an API write's publish, an injected update, settlement's
 // repair, any other write of the server's own. It is the budget's one writer while a room
-// stands, and it reads nothing of the document but its struct ceiling, ygo's own count with what
-// the room has parked beside it, a walk of the handful of client slices and two pending
-// counters (structCeiling): an update's own length is in hand, where an encode of the room's
+// stands, and it reads nothing of the document at all: the structs are the figure the room's
+// last committed apply reported (roomApplies.structsHeld, crdt.ApplyReport.Structs), read off
+// the room's own record, and an update's own length is in hand, where an encode of the room's
 // state costs 18.7 ms and 5,495,143 bytes allocated on a mebibyte of prose and so can sit on no
 // keystroke's path (bytesOfHeapAStateByte).
 //
@@ -889,19 +889,23 @@ func (r *renderedReplica) chargeAdded(updates []crdt.LoggedUpdate) {
 	if added == 0 {
 		return
 	}
-	// The struct count is read after the drain took the room's updates off its log and so holds
-	// every commit this drain is charging, and more where the room has committed since: a
-	// commit the next drain charges is one this room already holds, which is the safe side for
-	// a budget. It is the room's ceiling and not ygo's count of the store (structCeiling), so
-	// what the room parks is weighed too: the room stores its pending queue and its next load
-	// decodes it, and a room that parked 897,136 structs behind a clock gap was charged for
-	// none of them while its stored state grew to 2,994,565 bytes
-	// (TestR6Finding2ParkedStructsEscapeTheDecodeCap, dispatch://INFRA-179, review 6's
-	// finding 2). A replica of a room no load gave a document - a test's - charges by its state
-	// alone.
+	// The structs are what the apply that committed these updates reported the room holding:
+	// ygo reports under the lock of the transaction that applied them and before this
+	// observer runs (sjawhar/ygo v1.55.1-sami.10, crdt/doc.go:1395-1410), so the drain is
+	// charged against the room the commits it is charging left, and against more where the
+	// room has committed since - a commit the next drain charges is one this room already
+	// holds, which is the safe side for a budget.
+	//
+	// What the room parks is in that figure, as the library counts it: the room stores its
+	// pending queue and its next load decodes it, and a room that parked 897,136 structs
+	// behind a clock gap was charged for none of them while its stored state grew to
+	// 2,994,565 bytes (TestR6Finding2ParkedStructsEscapeTheDecodeCap, dispatch://INFRA-179,
+	// review 6's finding 2). A room between its load and its first remote apply has no report
+	// yet and is read from its document instead, and a replica of a room no load gave a
+	// document - a test's - charges by its state alone.
 	var structs int64
 	if r.live != nil {
-		structs = int64(structCeiling(r.live))
+		structs = int64(r.applies().structsHeld(r.live))
 	}
 	charge.weigh(r.state.Add(added), structs)
 }
@@ -936,8 +940,11 @@ func (r *renderedReplica) chargeAdded(updates []crdt.LoggedUpdate) {
 // The rendering is the room's first measurement either way (publishSize), which the hook weighs
 // the room's first peer update against. The load also reads the clients live's history retires
 // (retiredClientsOf), which the hook refuses a browser's replaced history against; it sets
-// live's apply budget and allowed roots (newRoomApplies), so from here every browser's update
-// applies under the allowance the hook builds for it and may name no other root; and it sets
+// live's apply budget, its allowed roots and its apply report (newRoomApplies), so from here
+// every browser's update applies under the allowance the hook builds for it, may name no other
+// root, and every apply that commits leaves the room's record holding what the document then
+// holds (crdt.WithApplyReport), which is what the room's charge and the next update's
+// allowance are built from; and it sets
 // live's scan budget (newRoomScans), so from here every remote apply on live is bounded, with
 // nothing of the room's scan total used until the load records its re-scan
 // (roomScans.rescanned).

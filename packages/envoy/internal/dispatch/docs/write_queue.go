@@ -1,8 +1,11 @@
 package docs
 
-// This file holds the two sizes of what one browser's socket may carry: the message floor every
-// frame it sends is read under (maxMessageBytes) and the budget of frames the server queues for
-// it before ygo closes it (peerWriteQueueBytes).
+import "time"
+
+// This file holds the three sizes of what one browser's socket may carry: the message floor
+// every frame it sends is read under (maxMessageBytes), the budget of frames the server queues
+// for it before ygo closes it (peerWriteQueueBytes) and the deadline one write to it is given
+// (peerWriteTimeout).
 
 // maxMessageBytes is the most one websocket message a browser sends may carry, ygo's
 // Server.MaxMessageBytes, whose own default is this same 64 MiB (sjawhar/ygo v1.55.1-sami.6,
@@ -149,3 +152,48 @@ const syncFrameTargetBytes = 64 << 10
 // the flood, and why the budget's claim is about what one socket can make the server hold rather
 // than about never closing a slow reader in a flooded room.
 const peerWriteQueueFrames = peerWriteQueueBytes/syncFrameTargetBytes + 1
+
+// peerWriteTimeout is ygo's Server.PeerWriteTimeout: the deadline on one write to a browser's
+// socket - each frame the writer goroutine takes off that socket's queue, and the close frame a
+// disconnect sends. A write that passes it closes the connection, which the browser sees as
+// 1006 with no close frame to say why (sjawhar/ygo v1.55.1-sami.10,
+// provider/websocket/server.go:1157-1177).
+//
+// It is set from the write queue's own budget because ygo's own 10 s contradicts it. The queue
+// admits a reader holding peerWriteQueueBytes, 73,400,320 bytes, and asks only that the reader
+// drain: a reader draining within that budget is making the progress the budget asks for, and a
+// deadline that drops it anyway closes an honest browser the budget has already admitted.
+// Measured in Dispatch's own drive, a reader at one frame every 250 ms holding 1.5 MB of its
+// 70 MiB budget was dropped as 1006 while the server was keeping it fed, which is what put this
+// field in the fork.
+//
+// The slowest reader the budget admits is the throttled reader the budget is written to keep,
+// slowestReaderBytesASecond: one taking a sync frame every 250 ms, 262,144 bytes a second. The
+// deadline is what that reader needs for the whole of the budget:
+//
+//	73,400,320 / 262,144 = 280 s
+//
+// and the frame count says the same, 1,121 frames at 250 ms each being 280.25 s.
+//
+// The whole budget, and not one frame, because the budget is what one reader may be holding
+// when the deadline starts, and because no frame is larger than it: the budget clears the
+// largest frame a room can send one socket - a whole state ygo relays from another browser,
+// which the message floor holds to maxMessageBytes, 67,108,864 bytes, with Hocuspocus's framing
+// of the room name and the two tags under 64 bytes - by 6,291,456 bytes, so one write of even
+// that frame takes 256 s at this reader's rate and fits inside the deadline with 24 s over.
+// ygo's 10 s clears 2,621,440 bytes at the same rate, a twenty-eighth of the budget.
+//
+// It buys a silent socket no memory. What one socket can make the server hold is the budget and
+// the frame its writer is in the middle of, whatever the deadline (peerWriteQueueBytes weighs
+// twenty such sockets against the pod); the deadline says only how long a socket that has
+// stopped taking bytes at all is held before the write gives up on it, and the budget closes
+// that socket first wherever its room has another frame for it.
+const peerWriteTimeout = peerWriteQueueBytes / slowestReaderBytesASecond * time.Second
+
+// slowestReaderBytesASecond is the slowest reader the write queue's budget admits, in bytes a
+// second: one taking a frame of the sync target every 250 ms, four a second, which is the
+// throttled reader TestAThrottledReaderIsNotClosedByTheWriteQueueBudget drives over a real
+// socket and the reader peerWriteQueueBytes and peerWriteQueueFrames are both written to keep.
+// A reader slower than this is one the deadline drops mid-frame; a reader at it or above it is
+// held only by the budget, as the budget intends (peerWriteTimeout).
+const slowestReaderBytesASecond = syncFrameTargetBytes * 4

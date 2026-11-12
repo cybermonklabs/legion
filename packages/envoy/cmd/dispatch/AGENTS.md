@@ -934,10 +934,15 @@ between them, with the server's peak 1,552 to 2,093 MiB of the pod's 4,096 and 1
 readings; and an honest browser reading one frame every 250 ms through a burst of 200 keystrokes
 and the relayed whole-state handoff that ends it is never closed, ends holding the document byte
 for byte, and was 3,008,506 to 3,009,102 bytes behind at its furthest. Those twenty
-rooms hold a mebibyte of words in one run rather than `proseMarkdown`'s sections, because ygo
-closes a peer whose write has been blocked for ten seconds whatever any budget says, and twenty
+rooms hold a mebibyte of words in one run rather than `proseMarkdown`'s sections, because ygo's
+own per-write deadline was ten seconds when the drive was written and closes a peer whose write
+has been blocked that long whatever any budget says, and twenty
 queues of prose, whose whole state is tens of thousands of structs to walk, do not reach 70 MiB
 inside that window on a two-processor pod.
+The service now sets that deadline from the queue budget instead (`Server.PeerWriteTimeout`,
+280 s, `internal/dispatch/docs/write_queue.go`'s `peerWriteTimeout`), so a reader draining
+within its byte budget is no longer dropped by it; the drives keep their shape, which is what
+their figures were measured with.
 The figures above were measured while a socket's budget was 60 MiB, and no assertion reads them;
 what holds each drive is its arithmetic against the constant.
 Each drive fails with the budget at zero: no socket is

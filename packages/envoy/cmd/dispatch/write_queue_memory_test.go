@@ -17,6 +17,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 	ygsync "github.com/reearth/ygo/sync"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
@@ -427,14 +428,18 @@ func runOfWords(t *testing.T, size int) string {
 // so what this drive weighs is the queues.
 //
 // Their mebibyte is one run of words (runOfWords) rather than proseMarkdown's sections, because
-// what a socket's budget must fill against is ygo's ten-second per-write timeout (writeTimeout,
-// sjawhar/ygo provider/websocket/server.go:50-53): the writer of a socket that never reads blocks
-// once the connection's buffers are full, and ten seconds later that write fails and ygo closes
-// the peer without weighing any budget. Twenty rooms of prose, whose whole state is 3,005,633
-// bytes of 77,600 structs to walk, leave this two-processor pod answering far too slowly for
-// twenty queues to reach 60 MiB inside that window - run that way the drive was closed by the
-// write timeout on sixteen of its twenty sockets - and twenty rooms of a mebibyte each also park
-// the server at its Go memory limit, where the collector takes half of what processors there are.
+// of ygo's per-write timeout as it stood when this drive was written: ten seconds
+// (defaultPeerWriteTimeout, sjawhar/ygo provider/websocket/server.go:50-54), under which the
+// writer of a socket that never reads blocks once the connection's buffers are full and ten
+// seconds later that write fails and ygo closes the peer without weighing any budget. Twenty
+// rooms of prose, whose whole state is 3,005,633 bytes of 77,600 structs to walk, left this
+// two-processor pod answering far too slowly for twenty queues to reach 60 MiB inside that
+// window - run that way the drive was closed by the write timeout on sixteen of its twenty
+// sockets - and twenty rooms of a mebibyte each also park the server at its Go memory limit,
+// where the collector takes half of what processors there are. The service now sets that
+// deadline from the queue budget itself, 280 s (internal/dispatch/docs/write_queue.go's
+// peerWriteTimeout), so it is no longer what the fill races; the shape is kept for the second
+// reason and because the figures below were measured with it.
 //
 // Measured on 2026-10-31 over four runs, of 25 to 32 s, the last under sjawhar/ygo
 // v1.54.1-sami.3: the twenty sockets asked for 1,920 whole states between them and held
@@ -757,7 +762,7 @@ func TestAThrottledReaderIsNotClosedByTheWriteQueueBudget(t *testing.T) {
 			starved := hostStarved(server, drainFrom, frames, time.Since(drainBegan))
 			if starved.hostDroppedIt() {
 				t.Skipf("the host dropped the browser on a slow link after %d frames and %d bytes, within ygo's %s message deadline and no refusal of this change's - %s: %v",
-					frames, read, 10*time.Second, starved, ended)
+					frames, read, docs.PeerWriteTimeoutForTest(), starved, ended)
 			}
 			t.Fatalf("the browser on a slow link stopped reading after %d frames and %d bytes while this machine was keeping it fed - %s: %v:\n%s",
 				frames, read, starved, ended, server.output.tail())
@@ -779,7 +784,7 @@ func TestAThrottledReaderIsNotClosedByTheWriteQueueBudget(t *testing.T) {
 			starved := hostStarved(server, drainFrom, after, time.Since(drainBegan))
 			if starved.hostDroppedIt() {
 				t.Skipf("the host dropped the browser on a slow link after %d frames and %d bytes as its stream drained, within ygo's %s message deadline - %s: %v",
-					after, readSoFar, 10*time.Second, starved, ended)
+					after, readSoFar, docs.PeerWriteTimeoutForTest(), starved, ended)
 			}
 			t.Fatalf("the browser on a slow link stopped reading while its stream drained, with this machine keeping it fed - %s: %v:\n%s",
 				starved, ended, server.output.tail())
@@ -840,7 +845,7 @@ func TestAThrottledReaderIsNotClosedByTheWriteQueueBudget(t *testing.T) {
 	// close that is not coming.
 	silent := server.openSilent(t, source)
 	sent, asked := silent.flood(floodFramesPerSocket)
-	if closed, found := writeQueueCloseWithin(t, server, source, 10*time.Second); found {
+	if closed, found := writeQueueCloseWithin(t, server, source, docs.PeerWriteTimeoutForTest()); found {
 		requireBudgetFigures(t, closed, "the socket that never reads", int64(silent.handoff))
 		t.Logf("the socket that never reads asked for %d whole states of %d (%v) and was closed on the %s path with %d bytes queued and a %d-byte frame refused, against its %d-byte budget",
 			sent, floodFramesPerSocket, asked, closed.path, closed.queued, closed.frame, closed.budget)
@@ -867,8 +872,9 @@ func TestAThrottledReaderIsNotClosedByTheWriteQueueBudget(t *testing.T) {
 // browser lost under ordinary load would be recorded as weather, which is the one thing this
 // drive exists to catch (dispatch://INFRA-179, the architect's condition of 2026-11-11).
 //
-// The line is ygo's: the host could not put a message on the wire within the ten seconds its
-// writer allows one (writeTimeout, provider/websocket/server.go), so it dropped the connection
+// The line is ygo's: the host could not put a message on the wire within the deadline the
+// service gives one write (Server.PeerWriteTimeout, 280 s, internal/dispatch/docs/
+// write_queue.go's peerWriteTimeout), so it dropped the connection
 // with no close frame and the reader read 1006. Every refusal this change makes carries its own
 // code and reason instead, and the write-queue budget closes only a socket whose own queue is
 // over it, which the server names when it does (writeQueueCloses).

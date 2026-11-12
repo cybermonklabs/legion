@@ -951,6 +951,10 @@ func New(deps Deps) *Service {
 	// The budget bounds those queued bytes, and closes a socket a frame reaches while the budget
 	// or more waits (MemoryBounds.PeerWriteQueue, peerWriteQueueBytes).
 	srv.PeerWriteQueueBytes = bounds.PeerWriteQueue
+	// And the deadline on one write to a socket is what that budget allows a reader draining it
+	// (peerWriteTimeout): ygo's own 10 s would drop a reader the budget has admitted and is
+	// keeping fed, which is what the field exists for.
+	srv.PeerWriteTimeout = peerWriteTimeout
 	// A room forgets an awareness client it has not heard from in awarenessExpiry: a reader
 	// relayed from another process that died without removing it goes once its heartbeats stop.
 	srv.AwarenessExpiry = awarenessExpiry

@@ -833,9 +833,11 @@ func canonicalState(t *testing.T, state []byte) []byte {
 
 // scanRefusalLine is the line the server logs for each update its room refuses past its scan
 // allowance, with the budget's figures, the structs the room's document holds and its scan total
-// as the refusal leaves them, and the allowance it was refused at (Service.refusedByApply,
-// internal/dispatch/docs/peer_update.go). The count of structs is ygo's own
-// (crdt.Doc.StructCount) where it was the room's running struct total before the cut.
+// as the refusal leaves them, and the allowance it was refused at
+// (Service.refusedByApply, internal/dispatch/docs/peer_update.go). The count of structs is what
+// the room's last committed apply reported it holding, the store's structs with the pending
+// queue's (crdt.ApplyReport.Structs), where it was the room's running struct total before the
+// cut.
 var scanRefusalLine = regexp.MustCompile(`msg="dispatch: refused a browser's update its room could not merge within its scan allowance" room=(\S+) update_bytes=\d+ charged=(\d+) limit=(\d+) structs=(\d+) allowance=(\d+) scan_total=(\d+) scans_left=(-?\d+)`)
 
 // setRoomBudget sets the server's room budget to bytes through its test-only route, so a drive of
@@ -3132,7 +3134,8 @@ const liveWriteDeadline = 60 * time.Second
 //     lines.
 //   - A person typing in a small resident room is answered through the whole burst, the worst
 //     keystroke included: the drive logs every percentile and the worst of them, and holds both
-//     under 5 s, well inside the ten seconds ygo allows one message.
+//     under 5 s, well inside the deadline the service gives one write to a browser
+//     (Server.PeerWriteTimeout, internal/dispatch/docs/write_queue.go's peerWriteTimeout).
 //   - An ordinary read is answered beside that typing: a GET of a document's text, timed the
 //     way the keystrokes are, through the same burst. It is the other half of what the write
 //     limit buys - sixty connections held by writes would starve a reader as surely as they
@@ -3293,8 +3296,10 @@ func TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory(t *testing.T) {
 			len(keys), contracts.DocumentBusyCloseCode, contracts.DocumentBusyCloseReason, typingErr)
 	case strings.Contains(window, "write to peer failed; closing"):
 		// Not one of this change's refusals: the host could not put the server's bytes on that
-		// socket within the ten seconds ygo's own writer allows a message (writeTimeout,
-		// provider/websocket/server.go), so ygo dropped the connection with no close frame and
+		// socket within the deadline the service gives one write to a browser
+		// (Server.PeerWriteTimeout, internal/dispatch/docs/write_queue.go's peerWriteTimeout,
+		// which was ygo's own ten seconds when the run below was measured), so ygo dropped the
+		// connection with no close frame and
 		// the editor read 1006. It is the host, not a bound of ours: every refusal this change
 		// makes carries its own code and reason, the budget's close is 4503, and the write-queue
 		// budget closes only a socket whose own queue is over it, which this drive's other arms
@@ -3303,8 +3308,8 @@ func TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory(t *testing.T) {
 		// took 8.47 s of the ten; the same code on an idle two-processor pod answers the person's
 		// 260th keystroke with a p99 of 581 ms. The server's own line is the evidence, so it is
 		// quoted rather than counted.
-		t.Logf("the person's socket was dropped after %d keystrokes because the host could not write to it within ygo's %s message deadline, which is no refusal of this change's: %v",
-			len(keys), 10*time.Second, typingErr)
+		t.Logf("the person's socket was dropped after %d keystrokes because the host could not write to it within the %s this deployment gives one write to a socket, which is no refusal of this change's: %v",
+			len(keys), docs.PeerWriteTimeoutForTest(), typingErr)
 	default:
 		t.Errorf("the person typing in an ordinary room through the burst stopped before it ended: %v", typingErr)
 	}

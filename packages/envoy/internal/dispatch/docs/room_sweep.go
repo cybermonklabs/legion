@@ -13,13 +13,17 @@ import (
 // decoded, and at the structs the room's stored state holds, and hands the replica the charge
 // its drains raise from then on (renderedReplica.chargeAdded). Both figures are in hand: the
 // load read the state, decoded it into the room and decoded it again into the replica, and the
-// struct figure is the room's ceiling, ygo's own walk of the handful of client slices with what
-// the load parked beside it (structCeiling, crdt.Doc.StructCount), so the budget charges the
-// room what its two copies were built from without encoding either (roomWeight). The ceiling
-// and not the store's count alone: a load parks what its stored history parked, and those
-// structs are in both copies and in the state the next load decodes.
+// struct figure is read from the room itself (anchorStructs), so the budget charges the room
+// what its two copies were built from without encoding either (roomWeight).
+//
+// It is one of the two paths with no report to read, and so one of the two anchors on the
+// reports: the load's own decode of the stored state runs before the room's document is given
+// the report at all (bootstrapLoadedState, keepReplica), so the structs the room starts at are
+// this reading and no apply's. What the load parks is counted with what its store holds, as a
+// report counts it: a load parks what its stored history parked, and those structs are in both
+// copies and in the state the next load decodes.
 func (s *Service) chargeLoadedRoom(room string, replica *renderedReplica, stateBytes int64) *roomCharge {
-	charge := s.budget.load(room, stateBytes, int64(structCeiling(replica.live)))
+	charge := s.budget.load(room, stateBytes, int64(anchorStructs(room, replica.applies(), replica.live)))
 	replica.state.Store(stateBytes)
 	replica.charge.Store(charge)
 	return charge
@@ -35,6 +39,10 @@ func (s *Service) chargeLoadedRoom(room string, replica *renderedReplica, stateB
 // A drain landing between the compaction's fold and this one is lost to the re-base, which
 // under-states the room by that one update until its next drain adds more. That is accounting
 // and not a refusal, the window is one update long, and the room's next load re-bases it exactly.
+//
+// It is the second anchor on the reports (anchorStructs): a compaction is no apply and reports
+// nothing, so the structs it charges the room at are read from the document, held against what
+// the room's applies have reported, and taken as the truth.
 func (s *Service) rebaseRoomState(room string, stateBytes int64) {
 	live := s.srv.GetDoc(room)
 	if live == nil {
@@ -45,7 +53,7 @@ func (s *Service) rebaseRoomState(room string, stateBytes int64) {
 		return
 	}
 	weighing.state.Store(stateBytes)
-	weighing.roomCharge().weigh(stateBytes, int64(structCeiling(live)))
+	weighing.roomCharge().weigh(stateBytes, int64(anchorStructs(room, weighing.applies(), live)))
 }
 
 // sweepRooms is the budget's sweep (roomBudget.sweep): while the budget is over its limit

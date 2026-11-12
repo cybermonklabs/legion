@@ -393,20 +393,21 @@ func holdFreeLoad(bytes int64) func() {
 // live write's fork of it, cloned or decoded (warmFork), and the decode-cap count's copy
 // (structsAfter). It is the room's tracked state bytes and the structs the room holds at
 // copyWeight - the bytes of the stored state the room's load decoded plus the updates its
-// observer has drained (roomStateBytes), which the service already holds and reads off the
-// room's listing without a lock, an encode or a read of the store, and the room's struct
-// ceiling (structCeiling), ygo's own count of the structs live holds with what it has parked,
-// which a split-dense copy is as heavy in the pool by as it is in the budget. The ceiling and
-// not the store's count alone: a copy carries the room's pending queue with its store, so a
-// room holding a parked backlog costs the pool what that backlog costs it.
+// observer has drained (roomStateBytes), and the structs the room's last committed apply
+// reported it holding (roomApplies.structsHeld, crdt.ApplyReport.Structs), which a split-dense
+// copy is as heavy in the pool by as it is in the budget. Both are read off the room's own
+// listing without a lock, an encode or a walk of the document. The report counts what the room
+// has parked with what its store holds: a copy carries the room's pending queue with its
+// store, so a room holding a parked backlog costs the pool what that backlog costs it.
 //
 // A document no room's load listed is tracked at nothing, and nothing here can name its size
 // without encoding it, so a copy of one takes a whole slot: the writes that reach this on such a
 // document are a test's own forks and a server write on a document whose room has just been
 // evicted, and one slot is what every taker took before this was weighed at all.
 func (s *Service) copyOfRoom(live *crdt.Doc) int64 {
-	if tracked := s.roomStateBytes(live); tracked > 0 {
-		return copyWeight(int64(tracked), int64(structCeiling(live)))
+	weighing := s.roomWeighingOf(live)
+	if tracked := weighing.roomStateBytes(); tracked > 0 {
+		return copyWeight(tracked, int64(weighing.applies().structsHeld(live)))
 	}
 	return loadSlotBytes
 }

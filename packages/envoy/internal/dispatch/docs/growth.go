@@ -490,9 +490,34 @@ func plusCapped(a, b uint64) uint64 {
 // the struct its apply can leave split. A room may park up to maxUpdateItems structs
 // (Server.MaxPendingItems, which New sets), none of which the store holds yet. Every sum here
 // is capped rather than wrapped, for the reason clockSum gives.
+//
+// It stays the decode cap's own measure, of the state a load would decode rather than of the
+// document in memory, and is read where nothing reports: a live write's fork, the copy a
+// server write's count is taken on (structsAfter), the room that count compares with that copy
+// (leavesPastDecodeCap, which must weigh the two alike) and the document a rebuild judges
+// (rebuild.go). What a resident room weighs and is charged is the library's to say, as each
+// apply that commits says it (crdt.ApplyReport.Structs, heldStructs), so no charge and no
+// browser's allowance reads this (dispatch://INFRA-179).
 func structCeiling(doc *crdt.Doc) uint64 {
 	parked := doc.PendingStats()
 	return plusCapped(uint64(doc.StructCount()), 2*uint64(parked.Items)+uint64(parked.DeleteRanges))
+}
+
+// heldStructs is how many structs doc holds now, read the way an apply's report counts them:
+// the structs its store holds (crdt.Doc.StructCount) and those parked in its pending queue,
+// each once. It is crdt.ApplyReport.Structs read from outside - ygo reports
+// store.Count() + pending.heldStructs() (sjawhar/ygo v1.55.1-sami.10,
+// crdt/apply_rollback.go:429), and crdt.Doc.PendingStats answers that same queue count as
+// Items (crdt/doc.go:1814-1830) - so the two are one figure and a reading can be held against a
+// report (anchorStructs).
+//
+// A room reads it only where no apply has reported one: the room's load from its stored state
+// and a compaction's re-base, which are the anchor, and the room's first update after a load
+// (roomWeighing.heldOrRead). It is not the ceiling the decode cap is asked of (structCeiling):
+// the ceiling counts a parked struct twice, for the skip the encoded state carries it behind,
+// and a report counts what the document holds.
+func heldStructs(doc *crdt.Doc) uint64 {
+	return plusCapped(uint64(doc.StructCount()), uint64(doc.PendingStats().Items))
 }
 
 // serverWrite is one of the server's writes into a room's live document outside applyLive - the

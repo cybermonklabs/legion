@@ -621,3 +621,9 @@ func RescanForTest(state []byte) (int64, error) {
 func (s *Service) RoomCapsForTest() (rooms, connections int) {
 	return s.roomCap, s.connectionCap
 }
+
+// PeerWriteTimeoutForTest is the deadline one write to a browser's socket gets, which the drives
+// of cmd/dispatch quote where a socket the host could not write to is dropped (peerWriteTimeout).
+func PeerWriteTimeoutForTest() time.Duration {
+	return peerWriteTimeout
+}
