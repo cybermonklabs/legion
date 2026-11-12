@@ -1,0 +1,62 @@
+{
+  "comment": [
+    "Every source this reading rests on, pinned. check.sh reads this file, clones what is",
+    "missing under the directory IOC_CLONES names (default $TMPDIR/ioc-clones) and resolves",
+    "every citation from the clone at the commit below, never from a live branch and never",
+    "through gh, which in a Legion pod is scoped to this project's owners and refuses",
+    "ioc-project. A published document is read from the committed copy this file names, and",
+    "the live address is read only to report whether it still carries the sentence quoted."
+  ],
+  "clone_root_env": "IOC_CLONES",
+  "default_clone_root": "$TMPDIR/ioc-clones",
+  "repositories": [
+    {
+      "name": "mas-lab",
+      "url": "https://github.com/ioc-project/mas-lab",
+      "commit": "477441ddb82d1b07c76c36f1426d8a5be0b6194b",
+      "licence": "Apache-2.0",
+      "read": "2026-11-12"
+    },
+    {
+      "name": "scope",
+      "url": "https://github.com/ioc-project/scope",
+      "commit": "6f3e758623da6b4a3ae462813001c545bb15a9e6",
+      "licence": "Apache-2.0",
+      "read": "2026-11-12"
+    },
+    {
+      "name": "cognition-protocols",
+      "url": "https://github.com/ioc-project/cognition-protocols",
+      "commit": "e3c7bf10f676de37ac08d2fe97e7de982f74629a",
+      "licence": "Apache-2.0",
+      "read": "2026-11-12"
+    }
+  ],
+  "our_repository": {
+    "name": "legion",
+    "url": "https://github.com/cybermonklabs/legion",
+    "commit": "9542c6fbbecd184ccee73523ab3defa39d6cf23a",
+    "comment": "The commit this issue's branch starts from, and the commit every our-code claim was read at."
+  },
+  "records_under_check": [
+    {
+      "ref": "dispatch://INFRA-3134/artifact/ioc-design-2026-11-12-md",
+      "label": "d",
+      "comment": "The answer already on the issue. citations.py labels its citations d-1, d-2 and so on."
+    },
+    {
+      "ref": "dispatch://INFRA-3134/comment/326a044a-db33-4779-a98e-8271e29e710f",
+      "label": "r",
+      "comment": "The reconciliation of that answer with the authors' own public account."
+    }
+  ],
+  "published": [
+    {
+      "id": "interview",
+      "address": "https://www.cognitiverevolution.ai/agents-that-think-together-cisco-s-vijoy-pandey-on-semantic-alignment-scope-accord-concord/",
+      "fetched": "2026-11-12",
+      "copy": "interview/transcript.md",
+      "comment": "The authors' own account of 2026-11-11. The copy is committed because a page served from a content system changes its bytes between any two fetches."
+    }
+  ]
+}
