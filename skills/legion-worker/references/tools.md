@@ -212,21 +212,24 @@ back to the low mark, 70 per cent by default, and it deletes only these:
   `legion-claude-code`;
 - an immediate child of the bun install cache, `/legion/scratch/bun/install/cache`.
 
-It deletes nothing a role put anywhere else: not your workspace, not the clone, not the feed,
-not a role's state home, not the data home, not the Go module cache, not uv's cache or its
-Pythons, and no clone, toolchain or database you wrote under `$TMPDIR`.
+An ordinary sweep deletes nothing a role put anywhere else: not your workspace, not the clone,
+not the feed, not a role's state home, not the data home, not the Go module cache, not uv's
+cache or its Pythons, and no clone, toolchain or database you wrote under `$TMPDIR`.
 It skips anything a process of the pod has open, anything touched inside the minimum age,
 fifteen minutes by default, and anything that is not the kind of file its row names.
-It opens every directory one name at a time, refusing a symbolic link at that name, and it
-makes its deletions in a mount namespace of its own where the other roles' private directories
-are not there to reach.
-So a link you leave in one of those directories takes it nowhere another role's files are, and
-a link of your own leads it only where you could already delete yourself.
 A `-a` or `-d` entry of the Go build cache has an hour more than that: Go moves such an entry's
 modification time on use at most once an hour, so one a build used a minute ago can read
 fifty-nine minutes old, and the trimmer takes it only once it is older than the minimum age and
 that hour together.
-So it frees caches and it never frees your work.
+It opens every directory one name at a time and refuses a symbolic link at that name, so it
+deletes what it listed and not what a name came to mean later.
+Those guards are what keep it off your work, and they are guards rather than a wall: every role
+of this pod runs as one uid, and `/legion` is wholly visible to the process that deletes, so a
+link left in one of those cache directories at the wrong moment leads it only where the role
+that left the link could already delete itself by its own path.
+What it cannot be led to at all is another role's private, state and agent-secrets directories,
+its launcher token, the pod's shared configuration home and the home every role's own is built
+over: the deletions are made in a mount namespace where each of those is an empty filesystem.
 
 That cuts both ways: **`$TMPDIR` is yours to clean.** What you leave there lives as long as the
 pod does and counts against the volume for every role. Delete the paths you made, each by its

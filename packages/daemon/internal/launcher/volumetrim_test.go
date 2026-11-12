@@ -907,9 +907,10 @@ func TestAnAgeWhoseCutoffWouldOverflowNeverSweepsAnEntryWrittenMomentsAgo(t *tes
 // The minutes are written out rather than read off shimwire.VolumeMinAgeMax, because a case
 // staged from the constant moves with it: with the maximum lowered, these settings are refused,
 // the trimmer stays off for the life of its launcher process and the week-old entry below is
-// still there, which is what turns this case red (refusedTrimSettings). The far side of the
-// same bound is the overflow above, where the cutoff wraps past the sweep's own start
-// (TestAnAgeWhoseCutoffWouldOverflowNeverSweepsAnEntryWrittenMomentsAgo).
+// still there, which is what turns this case red (refusedTrimSettings). It holds the maximum
+// from below alone: a maximum raised rather than lowered is held by the case below
+// (TestAnAgeAMinutePastTheGreatestIsRefusedAndSweepsNothing), since the overflow case above is
+// written at 2147483647 and says nothing until the maximum reaches 153,722,868.
 //
 // It is the launcher's half of one bound: the loader reads the same constant for
 // min_age_minutes (config's readVolumeTrim) and its own cases are written from it (config's
@@ -963,6 +964,100 @@ func TestASweepAtTheGreatestMinimumAgeDeletesPastItAndKeepsInsideIt(t *testing.T
 	if !f.exists(younger.path) {
 		t.Errorf("the sweep deleted %s, which read %s old under a minimum age of %d minutes: an entry inside the age the settings asked for is one a role may still be using",
 			younger.path, f.clock.at.Sub(younger.at), greatest)
+	}
+	f.assertProtected()
+	f.assertPrefixed()
+}
+
+// The age a minute past the greatest an operator may ask for is refused: the trimmer stays off,
+// reads the volume not once, and the entry older than that age is still on the volume
+// afterwards.
+//
+// 10081 is written out — seven days and a minute — rather than read off
+// shimwire.VolumeMinAgeMax + 1, because a case staged from the constant moves with it: raised,
+// the constant takes the case's value up with it and the case goes on passing. This is the
+// maximum held from above, as the case before it holds it from below, and nothing held it: the
+// one other case past the maximum sends 2147483647
+// (TestAnAgeWhoseCutoffWouldOverflowNeverSweepsAnEntryWrittenMomentsAgo) and every other value
+// in this package is derived from the constant, so with shimwire.VolumeMinAgeMax raised to
+// 200000000 — past 153,722,868, where the sweep's cutoff wraps into the future and every entry
+// of every root becomes eligible however recently it was written (list; INFRA-2009, review
+// round 5) — the whole package was green (measured on 2026-11-12; INFRA-2009, review rounds 7
+// and 8).
+//
+// The loader bounds the same key by the same constant (config's readVolumeTrim, and "an age
+// past the maximum" in its volume_trim_test.go), so one value is refused on both sides of the
+// wire: a maximum widened on one side alone would load cleanly and then be refused by every
+// pod's trimmer, which stays off for the life of its launcher process.
+func TestAnAgeAMinutePastTheGreatestIsRefusedAndSweepsNothing(t *testing.T) {
+	// Seven days and a minute: shimwire.VolumeMinAgeMax + 1 written out.
+	const pastGreatest = 10081
+	f := newTrimFixture(t, 2)
+	// At the high mark and never falling, so a trimmer that ran by these settings would sweep
+	// and would go on deleting until nothing eligible was left.
+	f.useVolume(steady(99))
+
+	// The entry such a sweep would take: older than the age the settings ask for, in bun's
+	// install cache, whose entries are its immediate children. It is retimed by hand, every
+	// path of it together, because addTree ages an entry by the fixture's own permutation —
+	// the entry's age is the newest time anywhere in it.
+	root := f.roots[3]
+	stale := f.addTree(filepath.Join(root.Path, "tool-past-the-week"), root.Entry)
+	aged := f.clock.at.Add(-(pastGreatest + 1) * time.Minute)
+	for _, path := range []string{filepath.Join(stale.path, "b1", "out"), filepath.Join(stale.path, "b1"), stale.path} {
+		if err := os.Chtimes(path, aged, aged); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stale.at = aged
+
+	// What the case rests on, counted before the trimmer runs: the entries a sweep would list,
+	// and the staged one past the age these settings name.
+	if len(f.entries) == 0 || !f.exists(stale.path) {
+		t.Fatalf("the fixture holds %d entries and the staged one at %s is there: %v — the case would read a behaviour nothing staged", len(f.entries), stale.path, f.exists(stale.path))
+	}
+	if age := f.clock.at.Sub(stale.at); age <= pastGreatest*time.Minute {
+		t.Fatalf("the staged entry reads %s old, want more than the %d minutes these settings ask for: a sweep running by them must have it to delete", age, pastGreatest)
+	}
+
+	// The refusal itself, asked of the value and not of the constant.
+	refusals := refusedTrimSettings(shimwire.LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: pastGreatest, IntervalSeconds: 30})
+	if !slices.ContainsFunc(refusals, func(refusal string) bool { return strings.Contains(refusal, "min_age_minutes is 10081") }) {
+		t.Errorf("refusedTrimSettings answered %v for a minimum age of %d minutes, want the key named with its value: seven days is the greatest age an operator may ask for", refusals, pastGreatest)
+	}
+
+	set := trimSettings()
+	set.MinAgeMinutes = pastGreatest
+	f.setSettings(set)
+	f.start(f.trimmer())
+
+	// The trimmer is given every chance to sweep: a tick is offered for as long as it has an
+	// interval clock to take one on. A trimmer that refuses these settings makes no such clock
+	// — only the one it asks for settings on again — so nothing is offered and the wait ends
+	// at the refusal instead.
+	deadline := time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second))
+	for time.Now().Before(deadline) && f.logged("stays off") == 0 && f.logged("the sweep ended") == 0 {
+		if at, running := f.ticks.live(settingsInterval(*set)); running {
+			f.ticks.offer(t, at, 200*time.Millisecond)
+			continue
+		}
+		time.Sleep(testwait.Poll)
+	}
+
+	if !f.exists(stale.path) {
+		t.Errorf("the trimmer deleted %s under a minimum age of %d minutes, which is past the greatest an operator may ask for: settings outside the trimmer's own ranges are refused and the trimmer stays off", stale.path, pastGreatest)
+	}
+	if gone := f.gone(); len(gone) > 0 {
+		t.Errorf("the trimmer deleted %d of the %d entries under an age it must refuse: %v", len(gone), len(f.entries), gone)
+	}
+	if f.logged(fmt.Sprintf("min_age_minutes is %d", pastGreatest)) == 0 {
+		t.Errorf("the trimmer refused the settings without naming the key and the value; it wrote %q", f.linesWritten())
+	}
+	if f.logged("stays off") == 0 {
+		t.Errorf("the trimmer did not refuse the settings and stay off; it wrote %q", f.linesWritten())
+	}
+	if reads := f.readCount(); reads != 0 {
+		t.Errorf("the trimmer read the volume %d times on refused settings, want none", reads)
 	}
 	f.assertProtected()
 	f.assertPrefixed()

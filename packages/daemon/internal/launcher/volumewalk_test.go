@@ -344,6 +344,108 @@ func TestTheWalkMeasuresNothingThroughAChildSwappedForALink(t *testing.T) {
 	}
 }
 
+// The link shape that tells the open the walk makes now from the one it replaced: `scratch ->
+// zz/sh` beside `zz -> /bait`, a relative link that stays lexically inside the volume root
+// crossing an absolute one that leaves it.
+//
+// The case above swaps in an absolute link, which os.Root refused for a final element on its
+// own, so it reads the same against the walk this change replaced and against this one. This
+// one does not: os.Root followed a final element whose link stayed lexically inside the root
+// and then resolved that link's own elements with the `openat(dirfd, name,
+// O_RDONLY|O_DIRECTORY|O_NOFOLLOW)` this kernel follows a link under, so the walk landed in
+// /bait/sh and measured a tree that is not on the volume (volumedir.go, where both are
+// measured; TestAShardSwappedForARelativeLinkCrossingAnAbsoluteOneIsSkipped drives the same
+// shape for the sweep's shards). The open each level of the walk makes now carries O_NOFOLLOW
+// and no O_DIRECTORY and reads the kind off the descriptor's own fstat, so a child that is a
+// link is refused whatever it names and whatever it crosses (dirHandle.open).
+func TestTheWalkMeasuresNothingThroughAChildSwappedForARelativeLinkCrossingAnAbsoluteOne(t *testing.T) {
+	clock := &fakeClock{at: time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)}
+	root := walkTree(t, clock.at.Add(-2*time.Hour))
+	// The absolute link the relative one crosses, left in the volume root as a role can leave
+	// one: the root's own listing reads it as the link it is and opens it never, so it is the
+	// relative link's crossing of it that has to be refused.
+	bait := t.TempDir()
+	if err := os.Symlink(bait, filepath.Join(root, "zz")); err != nil {
+		t.Fatal(err)
+	}
+	// The tree under the name the relative link crosses into, whose directories carry the names
+	// the walk has just listed under scratch, so that every target the walk is holding resolves
+	// into it the moment the link is in place. A role names both trees, so matching them costs
+	// it nothing.
+	const baitFileBytes = 64 * 1024
+	baitBytes := int64(0)
+	for _, name := range []string{"bun", "cache", "tmp"} {
+		under := filepath.Join(bait, "sh", name)
+		mkdirFixture(t, under)
+		if err := os.WriteFile(filepath.Join(under, "secrets.json"), make([]byte, baitFileBytes), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		baitBytes += baitFileBytes
+	}
+	if baitBytes == 0 {
+		t.Fatal("the bait tree holds no bytes at all, so a walk that read it whole would look like one that read none of it")
+	}
+
+	// The swap is made at the first measurement, as it is above: the walk has read the root and
+	// the root's scratch by then and holds the names it will measure, and nothing it does
+	// afterwards may resolve one of them through the link.
+	swapped := filepath.Join(root, volumeScratchDir)
+	swaps := 0
+	measure := func(ctx context.Context, dir *dirHandle, name string, at time.Time) measured {
+		if swaps == 0 {
+			swaps++
+			if err := os.Rename(swapped, swapped+".moved"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join("zz", "sh"), swapped); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return measureTree(ctx, dir, name, at)
+	}
+
+	result := walkOf(root, clock, &fakeTicks{}, measure).run(context.Background())
+
+	if swaps != 1 {
+		t.Fatalf("the swap was made %d times, want the one the walk's first measurement makes: the case staged nothing", swaps)
+	}
+	// Every target of the swapped child is accounted for, and no byte and no name of the tree
+	// the two links lead to is in the report.
+	accounted, inside := 0, swapped+string(filepath.Separator)
+	var measured int64
+	for _, size := range result.Sizes {
+		measured += size.Bytes
+		if strings.HasPrefix(size.Path, inside) {
+			accounted++
+		}
+		if strings.HasPrefix(size.Path, bait) {
+			t.Errorf("the walk names %s in its sizes, which is outside the volume root %s", size.Path, root)
+		}
+		if size.Bytes >= baitFileBytes {
+			t.Errorf("the walk measured %s at %d B, and no directory of this volume holds a file over one byte: it read through the relative link and across the absolute one, into %s", size.Path, size.Bytes, bait)
+		}
+	}
+	for _, missing := range result.Missing {
+		if strings.HasPrefix(missing, inside) {
+			accounted++
+		}
+		if strings.HasPrefix(missing, bait) {
+			t.Errorf("the walk names %s as missing, which is outside the volume root %s", missing, root)
+		}
+	}
+	if accounted == 0 {
+		t.Fatalf("the walk neither measured nor missed one directory under %s, so the link stood in front of nothing it did: %+v, missing %v",
+			swapped, result.Sizes, result.Missing)
+	}
+	if measured >= baitFileBytes {
+		t.Errorf("the walk measured %d B over %d directories, and every file the volume itself holds is one byte: it read the %d B tree the links lead to",
+			measured, len(result.Sizes), baitBytes)
+	}
+	if !result.Partial {
+		t.Error("a walk whose targets it could no longer reach is not marked partial")
+	}
+}
+
 // The walk is made at most once an hour, and a report between walks carries the last walk's
 // numbers with the time they were read: the walk stats every file on the volume, and a pod that
 // is full sweeps every interval.

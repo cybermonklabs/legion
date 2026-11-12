@@ -349,6 +349,117 @@ func writeAged(t *testing.T, path string, at time.Time) {
 	}
 }
 
+// The guard walk reads nothing through a child of an entry that became a symbolic link after
+// the listing read it as a directory, and the link it is given is the shape the walk this one
+// replaced did follow: `scratch -> zz/sh` is relative and stays lexically inside the directory
+// it sits in, so os.Root read it and went on to resolve its own elements, and `zz -> /bait` is
+// the absolute escape it would have refused, which it never saw, because the open it resolves a
+// non-final element with is the one this kernel follows a link under (volumedir.go, where it is
+// measured). fs.WalkDir over a Root's FS, which both guards walked with, named every level
+// below the entry by a path and so resolved exactly such names: the age of a cache entry could
+// be read off a tree of the role's own, and the sweep's budget spent walking one. The same
+// shape is driven for the sweep's shards and for the size walk's children
+// (TestAShardSwappedForARelativeLinkCrossingAnAbsoluteOneIsSkipped,
+// TestTheWalkMeasuresNothingThroughAChildSwappedForARelativeLinkCrossingAnAbsoluteOne).
+//
+// A link already in place when a directory is listed is read as the link it is and is never
+// opened at all — every listing reads the kind with an lstat through the directory's own
+// descriptor (dirHandle.ReadDir) — so the only shape that reaches the open is a child swapped
+// for one after the listing. The swap is staged from the walk's own visit, which is the one
+// moment inside that window: a directory's listing and the open of a child of it are a single
+// call of the walk apart (walkEntries, volumeguard.go). The visit is the age guard's own — the
+// newest time anywhere in the entry — so what the case reads back is the answer newestModTime
+// would have given, and newerThan walks the same way. A refused level is the error the guard
+// answers with, and the listing passes the entry over and names it (list, volumetrim.go).
+func TestTheGuardWalkReadsNothingThroughAChildSwappedForARelativeLinkCrossingAnAbsoluteOne(t *testing.T) {
+	old := time.Now().Add(-48 * time.Hour)
+	fresh := time.Now().Add(-time.Minute)
+	dir := t.TempDir()
+	held, err := openVolumeDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+
+	// The bait: a tree outside the entry whose one file was written far more recently than
+	// anything in it, so a walk that read it carries a time the entry does not have — and the
+	// file is a role's own, which the age of a cache is no reason for this trimmer to read.
+	bait := t.TempDir()
+	baitFile := filepath.Join(bait, "sh", "TOKEN")
+	mkdirFixture(t, filepath.Dir(baitFile))
+	writeAged(t, baitFile, fresh)
+
+	// The entry as the listing reads it: a `go-build` tree of a cache root, every time in it
+	// old, with a directory the swap will take the place of and the absolute link that swap
+	// crosses standing beside it.
+	tree := filepath.Join(dir, "go-build2026")
+	swapped := filepath.Join(tree, "scratch")
+	mkdirFixture(t, filepath.Join(tree, "aa"))
+	mkdirFixture(t, swapped)
+	writeAged(t, filepath.Join(tree, "aa", "out"), old)
+	writeAged(t, filepath.Join(swapped, "out"), old)
+	if err := os.Symlink(bait, filepath.Join(tree, "zz")); err != nil {
+		t.Fatal(err)
+	}
+	for _, aged := range []string{filepath.Join(tree, "aa"), swapped, tree} {
+		if err := os.Chtimes(aged, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// What the case rests on, read before the walk runs: the bait is there to be read and is
+	// newer than everything the entry holds, so a walk that reached it answers with its time
+	// rather than with the entry's.
+	switch info, err := os.Lstat(baitFile); {
+	case err != nil:
+		t.Fatalf("the bait %s: %v — the case would read a behaviour nothing staged", baitFile, err)
+	case !info.ModTime().After(old):
+		t.Fatalf("the bait %s reads %s old, want it newer than the %s of the entry: the case could not tell a walk that read it from one that did not", baitFile, info.ModTime(), old)
+	}
+
+	// The swap is made from the visit of `aa`, which the walk reads before `scratch` — the
+	// names come back in the order they sort — and so after the listing of the entry that
+	// recorded `scratch` as the directory it then was.
+	swaps := 0
+	newest := time.Time{}
+	var visited []string
+	walked := walkEntries(held, "go-build2026", func(info os.FileInfo) error {
+		visited = append(visited, info.Name())
+		if at := info.ModTime(); at.After(newest) {
+			newest = at
+		}
+		if info.Name() != "aa" || swaps > 0 {
+			return nil
+		}
+		swaps++
+		if err := os.Rename(swapped, swapped+".real"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join("zz", "sh"), swapped); err != nil {
+			t.Fatal(err)
+		}
+		return nil
+	})
+
+	if swaps != 1 {
+		t.Fatalf("the swap was made %d times, want the one the visit of the entry's first child makes: the case staged nothing; the walk read %v", swaps, visited)
+	}
+	if walked == nil {
+		t.Errorf("the walk read the whole of %s with a child of it swapped for a link: a level it may not open is the error the guard answers with", tree)
+	} else if !strings.Contains(walked.Error(), swapped) {
+		t.Errorf("the walk answered %v, want an error naming %s: the pod's log is read by a person", walked, swapped)
+	}
+	for _, name := range visited {
+		if name == "TOKEN" || name == "sh" {
+			t.Errorf("the walk read %s of the tree the links lead to; it read %v", name, visited)
+		}
+	}
+	if !newest.Before(fresh) {
+		t.Errorf("the walk answered %s as the newest time in %s, want a time of its own files at %s: the file written at %s is in %s and not on the volume",
+			newest, tree, old, fresh, bait)
+	}
+}
+
 // The kind guard reads every entry with lstat and follows no symbolic link, so what the trimmer
 // deletes is what it looked at: a regular file where a cache directory belongs — what an
 // interrupted `flock` leaves — is passed over and reported, and so is a link into a workspace,

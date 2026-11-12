@@ -78,14 +78,6 @@ func (d *dirHandle) Close() error {
 	return err
 }
 
-// Stat is the directory the handle holds, read through the descriptor: os.SameFile of two of
-// these answers whether a handle still names the directory a listing opened it on
-// (sameDirectory, volumetrim.go).
-func (d *dirHandle) Stat() (os.FileInfo, error) {
-	info, err := d.file.Stat()
-	return info, d.named(err, "")
-}
-
 // Lstat is one name in this directory, read through the descriptor and following no link: the
 // kind, the mode and the time every guard judges by (volumeguard.go). Root.Lstat of a name with
 // no separator in it is an fstatat of that descriptor and opens nothing, so it neither follows

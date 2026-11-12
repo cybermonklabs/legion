@@ -230,6 +230,91 @@ func TestAReclaimableRootUnderALinkedElementIsSkippedAndTheRestAreSwept(t *testi
 	f.assertPrefixed()
 }
 
+// The same rename a moment earlier: a reclaimable root a role had already replaced with a
+// symbolic link when the sweep opened it is skipped, and the tree that link names is untouched.
+// Here the link stands at the root's own last element rather than above it, which is the element
+// os.OpenRoot resolved itself and the one the lstat of the root's path agreed with, so this is
+// the half of the swap the deleted path check was the only guard against (INFRA-2009, review
+// round 7): both review agents replaced that comparison with `if false` and the package stayed
+// green. What refuses it now is the open itself — one element at a time, O_NOFOLLOW and no
+// O_DIRECTORY, with the kind read off the descriptor's own fstat (volumedir_linux.go) — so
+// there is nothing left to compare a path against.
+//
+// The bait is aimed as a role would aim it: the launcher runs as the roles' own uid in the
+// container's mount namespace, where /var/run/legion/roles holds every role's private, state and
+// agent-secrets directories, and /legion/scratch is writable by that uid (`drwx--S--- legion
+// legion`, measured in an issue pod of this deployment at 2026-11-11T08:05Z).
+//
+// The three roots the case leaves alone are swept as usual, so a trimmer that skipped
+// everything fails here (TestAReclaimableRootUnderALinkedElementIsSkippedAndTheRestAreSwept
+// reads the same half for an element above the root).
+func TestARootAlreadyALinkWhenTheSweepOpensItIsSkippedAndItsBaitUntouched(t *testing.T) {
+	f := newTrimFixture(t, 4)
+	swapped := f.roots[3] // bun's install cache: no protected path lies under it
+	if swapped.Entry != ImmediateChildren {
+		t.Fatalf("the fourth reclaimable root is %+v, want bun's install cache, whose entries are its immediate children", swapped)
+	}
+	bait := t.TempDir() // a sibling of the volume root, outside every reclaimable root
+	at := f.clock.at.Add(-24 * time.Hour)
+	// What a sweep listing through the link would meet: entries of the kind that root's rule
+	// names, aged well past any minimum age, each holding a file the role may not reach.
+	planted := plantBait(t, bait, at,
+		filepath.Join("tool-000000001", "TOKEN"),
+		filepath.Join("tool-000000002", "TOKEN"),
+	)
+
+	// The role's swap, made before the sweep opens anything: the cache root is renamed away and
+	// a link to the bait is left standing under its name.
+	renamed := swapped.Path + ".real"
+	if err := os.Rename(swapped.Path, renamed); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(bait, swapped.Path); err != nil {
+		t.Fatal(err)
+	}
+	// The entries that went with the renamed root, which a skipped root keeps, and the entries
+	// of the three roots still in place, which the sweep must take.
+	var hidden, kept []string
+	for _, entry := range f.entries {
+		if strings.HasPrefix(entry.path, swapped.Path+"/") {
+			hidden = append(hidden, filepath.Join(renamed, filepath.Base(entry.path)))
+			continue
+		}
+		kept = append(kept, entry.path)
+	}
+	if len(hidden) == 0 || len(kept) == 0 {
+		t.Fatalf("the case staged %d entries under the renamed root and %d to sweep, want some of each: a sweep that deleted nothing at all would pass it", len(hidden), len(kept))
+	}
+
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+	tr := f.trimmer()
+	out := tr.sweep(context.Background(), *trimSettings(), steady(90)(0))
+
+	assertBaitHeld(t, planted, "the sweep opened a reclaimable root a role had already replaced with a link to it")
+	if out.deletions != len(kept) {
+		t.Errorf("the sweep deleted %d entries, want the %d of the three roots still in place: %s", out.deletions, len(kept), out.reason)
+	}
+	for _, path := range kept {
+		if f.exists(path) {
+			t.Errorf("%s is still there, want the roots no link stands at swept as usual", path)
+		}
+	}
+	for _, path := range hidden {
+		if !f.exists(path) {
+			t.Errorf("%s of the renamed root is gone: a root the sweep skips is one it deletes nothing of", path)
+		}
+	}
+	if f.logged(fmt.Sprintf("the reclaimable root %s could not be opened and is skipped", swapped.Path)) == 0 {
+		t.Errorf("the root the role had replaced with a link was not reported as skipped; the trimmer wrote %q", f.linesWritten())
+	}
+	if !f.exists(swapped.Path) {
+		t.Errorf("%s is gone: a root the sweep skips is never unlinked, whatever a role left under its name", swapped.Path)
+	}
+	f.assertProtected()
+	f.assertPrefixed()
+}
+
 // A shard of the Go build cache is a directory of a root a role owns, so between the root's
 // listing and the shard's own open a role can rename the shard away and leave a link in its
 // place. The link this case leaves is the shape os.Root followed: `0f -> zz/sh` is relative and
