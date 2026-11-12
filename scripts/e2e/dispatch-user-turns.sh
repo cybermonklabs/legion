@@ -31,7 +31,7 @@
 # (lib/install-model-gateway.sh), so LEGION_E2E_MODEL_GATEWAY_URL is required and the keyring must be
 # unlocked; `key-file` reads the 0600 file LEGION_E2E_ANTHROPIC_KEY_FILE names on every call
 # (lib/install-key-file-model-route.sh), for a devbox with no Hawk gateway. DISPATCH_USER_TURNS_OMP
-# names another Oh My Pi (a mise tool spec such as github:sjawhar/oh-my-pi@<version>) in place of the
+# names another Oh My Pi (a mise tool spec such as github:cybermonklabs/oh-my-pi@<version>) in place of the
 # pinned one. DISPATCH_USER_TURNS_ONLY=spec-edit runs `session-registers` and the two spec-edit
 # checks alone, then ends: the spec-edit live check, which needs none of the others;
 # DISPATCH_USER_TURNS_ONLY=spec-edit-card stops after the first of them, the card's arrival.

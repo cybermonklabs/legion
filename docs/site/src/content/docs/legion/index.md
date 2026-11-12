@@ -12,7 +12,7 @@ daemon admits it and starts an **architect**, an agent that owns the issue from 
 architect turns your issue into a spec and asks you the questions only you can answer. Once you
 approve the spec, the daemon runs **phase workers** one after another: a planner, an implementer
 that writes the change and opens a pull request, a tester, a reviewer and a merger. Each agent is an
-[Oh My Pi](https://github.com/sjawhar/oh-my-pi) session in a Kubernetes pod of its own.
+[Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session in a Kubernetes pod of its own.
 
 When the change is tested, reviewed and approved, the merger posts `READY` on the Dispatch issue
 and submits the pull request for merge under the repository's own branch protection. The architect

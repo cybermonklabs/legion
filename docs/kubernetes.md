@@ -21,7 +21,7 @@ Every Legion agent process under `runtime: kubernetes` — architect, planner, i
 It carries:
 
 - the pinned OMP fork build the daemon's default `omp_invocation` names
-  — resolved at build time with the same `mise x github:sjawhar/oh-my-pi@<pin>` mechanism a tmux host uses, from the single pin source `.omp-pin`;
+  — resolved at build time with the same `mise x github:cybermonklabs/oh-my-pi@<pin>` mechanism a tmux host uses, from the single pin source `.omp-pin`;
   installed at `/opt/omp/bin/omp` (`LEGION_OMP_PATH`);
 
 - `legion` (`packages/daemon`), compiled from the same commit at `go.work`'s Go version, static, at `/opt/legion/bin/legion` — the `legion` on `PATH` and the image's `ENTRYPOINT` — with the `agent-secrets` client beside it at `/opt/legion/bin/agent-secrets`.

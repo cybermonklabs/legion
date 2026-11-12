@@ -414,13 +414,13 @@ the five priced options with their measurements, and what the clients cost the i
 
 ## Before you measure Oh My Pi's binary
 
-Read Oh My Pi's source first, from the fork (`sjawhar/oh-my-pi`) at the tag `.omp-pin` names, not
-from upstream's version tag: the fork's release carries code upstream's does not. `.omp-pin` reads
-`github:sjawhar/oh-my-pi@<version>`, and the git tag adds a `v` in front of that text, so find it
-rather than type it:
+Read Oh My Pi's source first, from the fork (`cybermonklabs/oh-my-pi`) at the tag `.omp-pin`
+names, not from upstream's version tag: the fork's release carries code upstream's does not.
+`.omp-pin` reads `github:cybermonklabs/oh-my-pi@<version>`, and the git tag adds a `v` in front of
+that text, so find it rather than type it:
 
 ```text
-$ git ls-remote --tags https://github.com/sjawhar/oh-my-pi.git 'v<version>'
+$ git ls-remote --tags https://github.com/cybermonklabs/oh-my-pi.git 'v<version>'
 ```
 
 Search that source by the name of a construct or a setting, never by its value: one value is
