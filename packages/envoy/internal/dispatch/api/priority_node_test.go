@@ -251,6 +251,41 @@ func TestPriorityNode(t *testing.T) {
 	refuseScopedCredentials(t)
 }
 
+// TestPriorityGoneTakesNoWrite reads that a deleted priority is no priority to a write (R4: "A
+// priority whose state is gone is no priority"). Its page answers that no priority of the id is
+// written, the listing leaves it out and a relation to it is refused, so a rename or a second
+// delete answered as a success writes history nobody can see and tells the caller a deleted
+// priority was changed.
+func TestPriorityGoneTakesNoWrite(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	createTestPriority(t, handler, map[string]any{"id": "retired-goal", "title": "Retired goal"}, "alice")
+	if deleted := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/priorities/retired-goal", nil, "alice"); deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete a priority: status=%d body=%s", deleted.Code, deleted.Body.String())
+	}
+
+	renamed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/priorities/retired-goal", map[string]any{"title": "Revived"}, "alice")
+	if renamed.Code < 400 || renamed.Code >= 500 {
+		t.Fatalf("rename a deleted priority: status=%d body=%s, want a refusal", renamed.Code, renamed.Body.String())
+	}
+	titles, err := prioritystore.History(ctx, database.Pool, prioritystore.KindPriority, "retired-goal", prioritystore.AttributeTitle)
+	if err != nil {
+		t.Fatalf("read the deleted priority's title history: %v", err)
+	}
+	if len(titles) != 1 {
+		t.Fatalf("the deleted priority's title history = %+v, want the one title it was made with", titles)
+	}
+
+	again := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/priorities/retired-goal", nil, "alice")
+	states, err := prioritystore.History(ctx, database.Pool, prioritystore.KindPriority, "retired-goal", prioritystore.AttributeState)
+	if err != nil {
+		t.Fatalf("read the deleted priority's state history: %v", err)
+	}
+	if len(states) != 2 {
+		t.Fatalf("a second delete (status=%d) left the state history %+v, want live then one gone", again.Code, states)
+	}
+}
+
 // refuseScopedCredentials reads the two refusals a priority write answers a broker-issued
 // credential with, on a rig of its own, since each needs a broker the package's plain test
 // server has none of (broker_token_test.go).
