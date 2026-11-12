@@ -141,6 +141,10 @@ function coverage(requirements: readonly RequirementCoverage[]): IssueCoverage {
   };
 }
 
+/** The commit the fixture's results ran at, which is also the head their check compares them
+ *  with, so each recorded pass stands at what the check compared with. */
+const RESULT_COMMIT = "c".repeat(40);
+
 /** One result recorded against a check, with the negative control it recorded; `""` is a result
  *  that recorded none, which is what the page draws the gap for (R8). */
 function recorded(id: string, negativeControl: string): CheckResult {
@@ -151,9 +155,10 @@ function recorded(id: string, negativeControl: string): CheckResult {
     check_issue_key: KEY,
     check_sha256: "sum",
     check_version: 1,
-    commit_sha: "",
+    check_words_moved: false,
+    commit_sha: RESULT_COMMIT,
+    commit_stands: { answer: "at_basis" },
     created_at: "2026-11-05T00:00:00Z",
-    currency: "current",
     excluded: 0,
     failed: 0,
     id,
@@ -178,8 +183,10 @@ function checkedResults(
   const checks: CheckBlock[] = blocks.map((one) => ({
     artifact_id: "artifact-verification",
     block_id: one.blockId,
+    compared_with: [{ commit: RESULT_COMMIT, kind: "pull_request", pull_request: 7 }],
     issue_key: KEY,
     negative_control: "",
+    pass_stands: { answer: "yes", roles: ["tester"] },
     ref: `dispatch://${KEY}/artifact/${VERIFICATION}#b-${one.blockId}`,
     results: [...one.results],
     run: "bun test",

@@ -9,6 +9,7 @@ import {
   createProject,
   putRepoProject,
   recordCheckResult,
+  retractCheckResult,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
@@ -35,13 +36,13 @@ import { asUser } from "./users";
 // "verification-check"]`), which drew every check a second time under the document; the tree
 // replaced both the tab and its list, so every row below reads the same facts off the tree.
 //
-// A result's currency is judged against the head of the pull request Dispatch holds for the
-// check's issue. The browser harness runs with NATS disabled, so no `pull_request` envelope can
-// reach the server to teach it that head; the record route's own read-through does it instead
+// A result is compared with the head of the pull request Dispatch holds for the check's
+// issue. The browser harness runs with NATS disabled, so no `pull_request` envelope can reach
+// the server to teach it that head; the record route's own read-through does it instead
 // (`readThroughPullRequests`), asking the fake GitHub which pull requests name the result's
 // commit and storing that pull request's head. Re-seeding the fake with a later head and
-// recording another result moves the head exactly as a push does, which is how the row below
-// ages a result that is no longer at it.
+// recording another result moves the head exactly as a push does, which is how a row below
+// leaves a result behind at a commit the head has moved past.
 const repository = "acme/widgets";
 const firstHead = "1".repeat(40);
 const secondHead = "2".repeat(40);
@@ -56,7 +57,7 @@ Every check of the Verification document is listed.
 :::
 
 :::requirement{#r2}
-A check says how its newest result stands.
+A check says whether a pass of it stands.
 :::
 `;
 
@@ -125,7 +126,7 @@ The tab lists every check of the document.
 :::
 
 :::check{#c-failed serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Record no result and the check reads no result."}
-A check whose newest result failed reads failed.
+A check whose one result failed holds no pass that stands.
 :::
 
 :::check{#c-none serves="dispatch://${issue.key}/spec#b-r2" surface="api" run="curl the results route" negative_control="Record a result and the check stops reading no result."}
@@ -165,7 +166,7 @@ A check nobody has run yet reads no result.
     // fold shut, and the preset then draws every check of the document.
     await unfoldEveryBranch(page);
 
-    // Every check of the document, each drawn once, with the state the newest result gives it.
+    // Every check of the document, each drawn once, with the state its results give it.
     await expect(rowsOfType(page, "check")).toHaveCount(3);
     const checks = (await drawnRows(page)).filter((row) => row.type === "check");
     expect(checks.map((row) => row.id)).toEqual([
@@ -193,7 +194,8 @@ A check nobody has run yet reads no result.
     expect(results.map((row) => row.firstLine)).toEqual(["3 checks listed", "2 failed"]);
     const current = await bodyOf(page, results[0]?.id ?? "");
     expect(current).toContain("Pass");
-    // The commit the result ran at is the pull request's head, so the result still stands.
+    // The commit the result ran at is the pull request's head, which is what the check
+    // compared with, so the result still stands; the page draws that commit whole.
     expect(current).toContain("Current");
     expect(current).toContain("tester");
     expect(current).toContain("browser");
@@ -215,8 +217,8 @@ A check nobody has run yet reads no result.
       ).not.toContain(label);
     }
 
-    // A check whose newest result failed reads failed, and the result counts what that run
-    // counted: the count is the `dd` after the `dt` that reads "failed", and not the "2
+    // A check that holds one fail holds no pass that stands, and the result counts what that
+    // run counted: the count is the `dd` after the `dt` that reads "failed", and not the "2
     // failed" the result's own observed text says.
     const failed = await bodyOf(page, results[1]?.id ?? "");
     expect(failed).toContain("Fail");
@@ -241,30 +243,32 @@ A check nobody has run yet reads no result.
 // SLOW(>=2s): 1.9 s here, over the bar on the four-worker report this rule is read against, and
 // this pod puts it over in a third of runs. Two results recorded against the document's two
 // checks, each one's record route reading through to the fake GitHub for the pull request's
-// head, with the fake re-seeded between them so the first result ages; then one load of the
-// issue page. Most of it is the floor every row of these files pays, measured on this
+// head, with the fake re-seeded between them so the first result is left behind; then one load
+// of the issue page. Most of it is the floor every row of these files pays, measured on this
 // row: a fresh Chromium context (0.25 s), the cold parse of the dashboard bundle a fresh
 // context cannot cache (0.40 s) and the dashboard's own fifteen boot reads before the first
 // check draws (0.80 s). INFRA-1109 holds that floor; nothing in the row is removable.
-test("a result at a commit the pull request has moved past reads older", async ({ browser }) => {
-  const issue = await seedIssue("Verification currency", firstHead);
+test("a result the pull request has moved past stands at no commit the check compared with", async ({
+  browser,
+}) => {
+  const issue = await seedIssue("Verification comparison", firstHead);
   await createIssueArtifact(issue.key, {
     content: `How ${issue.key} is proved.
 
-:::check{#c-older serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Keep the head and the result stays current."}
-A result the head has moved past reads older.
+:::check{#c-past serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Keep the head and the result stands at it."}
+A result the head has moved past stands at another commit.
 :::
 
-:::check{#c-head serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Move the head again and this one ages too."}
-A result at the head reads passed.
+:::check{#c-head serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Move the head again and this one is left behind too."}
+A result at the head is a pass that stands.
 :::
 `,
     name: "verification.md",
   });
   // Recorded at the head as it stands, so the read-through stores that head and the result is
-  // current the moment it is written.
+  // at what the check compares with the moment it is written.
   await recordCheckResult(issue.key, {
-    check: "c-older",
+    check: "c-past",
     commit: firstHead,
     observed: "41 passed",
     role: "tester",
@@ -297,14 +301,14 @@ A result at the head reads passed.
     // The check that passed at the head is behind the fold, as the row above this one says.
     await unfoldEveryBranch(page);
     const checks = (await drawnRows(page)).filter((row) => row.type === "check");
-    const older = checks.find((row) => row.id === blockNodeId(verification, "c-older"));
-    expect(older?.state).toBe("older");
-    expect(older?.stateWord).toBe(NODE_STATE_WORDS.check.older);
+    const past = checks.find((row) => row.id === blockNodeId(verification, "c-past"));
+    expect(past?.state).toBe("older");
+    expect(past?.stateWord).toBe(NODE_STATE_WORDS.check.older);
     const head = checks.find((row) => row.id === blockNodeId(verification, "c-head"));
     expect(head?.state).toBe("passed");
 
-    // The result itself still says it passed; what changed is that it no longer speaks for the
-    // work as it stands.
+    // The result itself still says it passed; what changed is that its commit is not one of
+    // the commits the check compared with, so it no longer speaks for the work as it stands.
     await openResults(page);
     const results = (await drawnRows(page)).filter((row) => row.type === "result");
     const aged = await bodyOf(page, results[0]?.id ?? "");
@@ -313,6 +317,98 @@ A result at the head reads passed.
     expect(aged).toContain(firstHead);
     const atHead = await bodyOf(page, results[1]?.id ?? "");
     expect(atHead).toContain("Current");
+    expect(atHead).toContain(secondHead);
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): 2.1 s - a project, its default repository, a pull request in the fake GitHub, a
+// Verification document of two checks, three recorded results and one retraction, each record
+// route reading through to that fake for the pull request's head, before one load of the page.
+// The floor the row above measures is most of it.
+test("a check is read over every result of it, never over its newest result alone", async ({
+  browser,
+}) => {
+  const issue = await seedIssue("Every result", secondHead);
+  await createIssueArtifact(issue.key, {
+    content: `How ${issue.key} is proved.
+
+:::check{#c-both serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Record the fail alone and no pass stands."}
+A pass at the head stands under a later fail at the same head.
+:::
+
+:::check{#c-retracted serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Leave the pass alone and it stands."}
+A retracted pass stands for nothing.
+:::
+`,
+    name: "verification.md",
+  });
+  // The tester's pass, then the reviewer's fail at the same commit. The fail is the newest
+  // result of the check, and the tester's pass stands at the head all the same.
+  await recordCheckResult(issue.key, {
+    check: "c-both",
+    commit: secondHead,
+    observed: "41 passed, 0 failed",
+    role: "tester",
+    verdict: "pass",
+  });
+  await recordCheckResult(issue.key, {
+    check: "c-both",
+    commit: secondHead,
+    failed: 1,
+    observed: "40 passed, 1 failed",
+    role: "reviewer",
+    verdict: "fail",
+  });
+  const retract = await recordCheckResult(issue.key, {
+    check: "c-retracted",
+    commit: secondHead,
+    observed: "41 passed",
+    role: "tester",
+    verdict: "pass",
+  });
+  await retractCheckResult(retract.result.id, {
+    reason: "The run was against the wrong branch.",
+  });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await gotoIssue(page, `/issues/${issue.key}/verification`);
+    await openResults(page);
+    const rows = await drawnRows(page);
+
+    // Both results are nodes under their check, newest first, each saying what its run saw.
+    // The check's own state is read over both of them: the tester's pass stands at the head,
+    // and the reviewer's later fail takes nothing away from it.
+    const both = rows.find((row) => row.id === blockNodeId(verification, "c-both"));
+    expect(both?.state).toBe("passed");
+    expect(both?.stateWord).toBe(NODE_STATE_WORDS.check.passed);
+    const results = rows.filter((row) => row.type === "result");
+    expect(results.map((row) => row.firstLine)).toEqual([
+      "40 passed, 1 failed",
+      "41 passed, 0 failed",
+      "41 passed",
+    ]);
+    expect(
+      (await factsIn(page, results[0]?.id ?? "")).filter(
+        (fact) => fact.label === NODE_FACT_LABELS.role
+      )
+    ).toEqual([{ label: NODE_FACT_LABELS.role, value: "reviewer" }]);
+    expect(
+      (await factsIn(page, results[1]?.id ?? "")).filter(
+        (fact) => fact.label === NODE_FACT_LABELS.role
+      )
+    ).toEqual([{ label: NODE_FACT_LABELS.role, value: "tester" }]);
+
+    // The one pass of the other check is retracted, so no pass of it stands and the check is
+    // not drawn as passed. The result is neither changed nor hidden: it is still a node under
+    // its check, still saying it passed. What the retraction itself says - the mark and the
+    // reason the run was wrong (`e98fc56ef8`) - the preset has nowhere to draw yet.
+    const gone = rows.find((row) => row.id === blockNodeId(verification, "c-retracted"));
+    expect(gone?.state).not.toBe("passed");
+    expect(await bodyOf(page, results[2]?.id ?? "")).toContain("Pass");
   } finally {
     await alice.close();
   }

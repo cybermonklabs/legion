@@ -1,6 +1,6 @@
 import { parseBlockPointerValue } from "@legion/contracts";
 
-import type { Actor, ArtifactBlock, Ask, Decision } from "../../api/types";
+import type { Actor, ArtifactBlock, Ask, CheckBlock, Decision } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { buildDispatchReference, parseNodeReference } from "../refs/routes";
 import { checkFacts, resultFacts, resultGaps } from "./check-facts";
@@ -653,7 +653,7 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
     draft.parents = held?.parents ?? [slug];
     draft.pointers = held?.pointers ?? {};
     draft.reference = check.ref;
-    draft.state = checkState(check.results ?? []);
+    draft.state = checkState(check);
     draft.text = check.text;
     (check.results ?? []).forEach((result, index) => {
       const row = add(drafts, blank(result.id, "result", index));
@@ -670,18 +670,24 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
 }
 
 /**
- * How a check stands, from the newest result recorded against it, in the states
- * `NODE_STATE_WORDS.check` names: `older` and `unmarked` are about the result's currency rather
- * than its verdict, and a currency the server left out reads as `unmarked` because nothing
- * judged it. It is the one reading of a check's state the page has: the Checks preset draws
- * the node, and the five states are told apart by a word and a shape (R15, R21).
+ * How a check stands, in the states `NODE_STATE_WORDS.check` names. Whether it passed is the
+ * server's own answer over every result of the check (`pass_stands`, main's e98fc56ef8): a pass
+ * recorded before a later fail still stands, while a retracted pass, a pass recorded against an
+ * older wording of the check and a pass at a commit the check no longer compares with stand for
+ * nothing. The other three states read what no pass standing is: no result at all; a newest
+ * result that no longer speaks for the work as it stands, whatever it found, because its commit
+ * is not one the check compared with or the check's own words have moved under it (`older`); and
+ * `unmarked` where nothing could be judged, which is a repository Dispatch cannot read or a
+ * commit it cannot place. It is the one reading of a check's state the page has: the Checks
+ * preset draws the node, and the five states are told apart by a word and a shape (R15, R21).
  */
-function checkState(results: readonly { currency?: string; verdict: string }[]): CheckState {
-  const latest = results[0];
+function checkState(check: Pick<CheckBlock, "pass_stands" | "results">): CheckState {
+  const latest = (check.results ?? [])[0];
   if (latest === undefined) return "no-result";
-  if (latest.currency === undefined || latest.currency === "unknown") return "unmarked";
-  if (latest.currency === "older") return "older";
-  return latest.verdict === "pass" ? "passed" : "failed";
+  if (check.pass_stands.answer === "yes") return "passed";
+  if (check.pass_stands.answer === "unknown") return "unmarked";
+  if (latest.check_words_moved === true) return "older";
+  return latest.commit_stands?.answer === "other_commit" ? "older" : "failed";
 }
 
 /**

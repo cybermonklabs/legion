@@ -18,7 +18,7 @@ import { seedFakeGithub } from "./fake-github-helpers";
 import {
   asPlanner,
   awaitBlockAsk,
-  awaitSeededCurrencies,
+  awaitSeededCheckStates,
   BASELINE_REPO,
   PLANNER,
   PROJECT,
@@ -82,14 +82,16 @@ import { ONE_PIXEL_PNG } from "./sends";
  *   2026-11-05), so a tree below an issue reaches exactly two levels today: the issue, its
  *   documents, and each document's blocks. `seedFrontierDeep` puts its open question at that
  *   depth, **two** levels, not the four `c-tree` names: that seed waits on INFRA-1098 item 19.
- * - **The five result states on one issue.** A before-merge result reads `older` when its commit
- *   is not a stored pull-request head and the check's issue resolves to a repository Dispatch can
- *   read, and `unknown` only when it cannot read one
- *   (`packages/envoy/internal/dispatch/api/results_currency.go:65-79`, read 2026-11-05). So
- *   `seedWholeIssue` records its results while the fake GitHub serves the repository and the pull
- *   request and then seeds the fake with no repository: the head results stay `current`, the
- *   reworded check's goes `older`, and the one at a commit no pull request names reads `unknown`,
- *   the `unmarked` state of `NODE_STATE_WORDS.check`, which the page draws as `Not judged`.
+ * - **The five result states on one issue.** A before-merge result stands at another commit when
+ *   its commit is not a stored pull-request head and the check's issue resolves to a repository
+ *   Dispatch can read, and is not known only when it cannot read one
+ *   (`packages/envoy/internal/dispatch/api/results_comparison.go`'s `commitStands`, read
+ *   2026-11-12). So `seedWholeIssue` records its results while the fake GitHub serves the
+ *   repository and the pull request and then seeds the fake with no repository: the head results
+ *   go on standing at that head, the reworded check's result speaks for words that have moved
+ *   and reads `older`, and the one at a commit no pull request names is not known, so no pass of
+ *   its check stands and the page draws the `unmarked` state of `NODE_STATE_WORDS.check` as
+ *   `Not judged`.
  *   `seedRequestBaseline` keeps the repository installed, because its three GitHub reads are
  *   part of the measured baseline, so only four of the five states appear there.
  * - **The reply that answers a reply.** `threadHeadOf` in
@@ -215,7 +217,7 @@ export async function seedWholeIssue(): Promise<WholeIssueSeed> {
   // With the App installed on nothing, the result at a commit no pull request names is the one
   // the page draws as `Not judged`: see this module's doc comment on the five result states.
   await seedFakeGithub({});
-  await awaitSeededCurrencies(seeded.key, 6, false);
+  await awaitSeededCheckStates(seeded.key, 6, false);
 
   return {
     answeredAskId: seeded.answeredAskId,
@@ -569,7 +571,7 @@ async function seedBaseline(multiplier: 1 | 2): Promise<BaselineSeed> {
     });
     references.push(cited.artifact.slug);
   }
-  await awaitSeededCurrencies(seeded.key, 6 * multiplier, true);
+  await awaitSeededCheckStates(seeded.key, 6 * multiplier, true);
   return {
     checks: seeded.checks,
     children: seeded.children,

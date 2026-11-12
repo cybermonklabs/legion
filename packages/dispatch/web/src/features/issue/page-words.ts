@@ -108,12 +108,13 @@ export const NODE_STATE_WORDS = freeze({
   check: {
     failed: "Failed",
     "no-result": "No result",
-    /** The newest result was recorded against work older than the work as it stands, so it no
-     *  longer speaks for it, whatever it found. */
+    /** The newest result was recorded against work the check no longer compares its results
+     *  with, so it no longer speaks for the work as it stands, whatever it found. */
     older: "Out of date",
     passed: "Passed",
-    /** There is a result, and nothing judged whether it still speaks for the work, so the page
-     *  will not say that it passed. */
+    /** There is a result, and nothing could judge whether a pass of the check stands - the
+     *  repository is unreadable, or a commit could not be placed - so the page will not say
+     *  that it passed. */
     unmarked: "Not judged",
   },
   decision: {
@@ -126,7 +127,7 @@ export const NODE_STATE_WORDS = freeze({
 /** How an ask stands, by the `state` the server writes into its block. */
 export type AskState = keyof typeof NODE_STATE_WORDS.ask;
 
-/** How a check stands, from the newest result recorded against it. */
+/** How a check stands, over every result recorded against it (`tree-drafts.ts`'s `checkState`). */
 export type CheckState = keyof typeof NODE_STATE_WORDS.check;
 
 /** How a decision stands with the reader, from the decisions read. */
@@ -376,8 +377,8 @@ export const CHECK_WHEN_WORDS = freeze({
 } as const);
 
 /** What a recorded result says about itself beside its verdict: whether it still speaks for the
- *  work as it stands. A result whose currency Dispatch could not judge draws no word at all, so
- *  `unknown` has none. */
+ *  work as it stands, from where its commit stands against what its check compared its results
+ *  with (`check-facts.ts`). A commit Dispatch could not place draws no word at all. */
 export const RESULT_CURRENCY_WORDS = freeze({
   current: "Current",
   older: "Older",

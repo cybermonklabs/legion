@@ -72,47 +72,51 @@ export async function pause(milliseconds: number): Promise<void> {
   await tick.promise;
 }
 
-/** How a check's newest result stands, by the rule the page reads it with (`checkState` in
- *  `web/src/features/issue/tree-drafts.ts`): `none`
- *  for a check nobody has run, and a result whose currency the server left out is `unknown` for
- *  the reason the page calls it unmarked - nothing judged it. */
-function currencyOf(check: CheckBlock): string {
+/** How a check stands, by the rule the page reads it with (`checkState` in
+ *  `web/src/features/issue/tree-drafts.ts`): the server's own answer over every result of the
+ *  check (`pass_stands`), and where the newest result's commit stands against what the check
+ *  compared with (`commit_stands`) for the rest. */
+function stateOf(check: CheckBlock): string {
   const latest = (check.results ?? [])[0];
-  return latest === undefined ? "none" : (latest.currency ?? "unknown");
+  if (latest === undefined) return "no-result";
+  if (check.pass_stands.answer === "yes") return "passed";
+  if (check.pass_stands.answer === "unknown") return "unmarked";
+  if (latest.check_words_moved === true) return "older";
+  return latest.commit_stands?.answer === "other_commit" ? "older" : "failed";
 }
 
-/** The currency a check seeded in `state` must read. `unmarked` reads `unknown` only while the
- *  App is installed on no repository that covers the check's issue; with one installed, a result
- *  at a commit no pull request names reads `older` instead (results_currency.go:65-79). */
-function wantedCurrency(state: SeededCheckState, repositoryInstalled: boolean): string {
+/** The state a check seeded in `state` must read. `unmarked` reads itself only while the App is
+ *  installed on no repository that covers the check's issue, since a check whose repository
+ *  Dispatch cannot read is the one it can judge nothing of; with one installed, a result at a
+ *  commit no pull request names stands at another commit and reads `older` instead
+ *  (results_comparison.go's `passStandsOf`). `no-control` is a pass like any other. */
+function wantedState(state: SeededCheckState, repositoryInstalled: boolean): string {
   switch (state) {
-    case "no-result":
-      return "none";
-    case "older":
-      return "older";
+    case "no-control":
+      return "passed";
     case "unmarked":
-      return repositoryInstalled ? "older" : "unknown";
+      return repositoryInstalled ? "older" : "unmarked";
     default:
-      return "current";
+      return state;
   }
 }
 
-/** Waits until every check of the issue reads the currency its seeded state implies, so a fixture
- *  that came out in four states fails here and not inside the test that reads the fifth. */
-export async function awaitSeededCurrencies(
+/** Waits until every check of the issue reads the state its seeding implies, so a fixture that
+ *  came out in four states fails here and not inside the test that reads the fifth. */
+export async function awaitSeededCheckStates(
   issueKey: string,
   checks: number,
   repositoryInstalled: boolean
 ): Promise<void> {
   const wanted = new Map<string, string>();
   for (let index = 1; index <= checks; index += 1) {
-    wanted.set(checkBlockId(index), wantedCurrency(checkStateOf(index), repositoryInstalled));
+    wanted.set(checkBlockId(index), wantedState(checkStateOf(index), repositoryInstalled));
   }
   const deadline = Date.now() + 20_000;
   for (;;) {
     const read = await getIssueResults(issueKey);
-    const seen = new Map((read.checks ?? []).map((check) => [check.block_id, currencyOf(check)]));
-    if ([...wanted].every(([block, currency]) => seen.get(block) === currency)) return;
+    const seen = new Map((read.checks ?? []).map((check) => [check.block_id, stateOf(check)]));
+    if ([...wanted].every(([block, state]) => seen.get(block) === state)) return;
     if (Date.now() > deadline) {
       throw new Error(
         `${issueKey}'s checks read ${JSON.stringify([...seen])}, want ${JSON.stringify([...wanted])}`

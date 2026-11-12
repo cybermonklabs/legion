@@ -19,7 +19,7 @@ import {
  * - **A result draws only what it recorded.** `Failed 0`, `Skipped 0` and `Excluded 0` took
  *   three rows under every pass on the old tab
  *   (`dispatch://INFRA-1196/artifact/design-notes-md` section 5, fault 9), so a count is drawn
- *   when it counts something, and a currency Dispatch could not judge is drawn not at all.
+ *   when it counts something, and a commit Dispatch could not place is drawn not at all.
  *
  * A `when` reads as words, a `run` as a command with its own copy control, and a screenshot as
  * a picture through the bytes route the page already serves.
@@ -36,12 +36,21 @@ export function checkFacts(check: CheckBlock): NodeFact[] {
   ];
 }
 
+/** Where one result's commit stands against what its check compared its results with, in the
+ *  two words the page draws for it (`RESULT_CURRENCY_WORDS`): a commit the check compared with
+ *  speaks for the work as it stands, any other commit is older work, and an answer Dispatch
+ *  could not give draws no word at all. The server reads this per result
+ *  (`results_comparison.go`), where it read a result's own currency before main's e98fc56ef8. */
+const RESULT_STANDS_WORDS: Readonly<Record<string, string>> = {
+  at_basis: RESULT_CURRENCY_WORDS.current,
+  other_commit: RESULT_CURRENCY_WORDS.older,
+};
+
 /** What one recorded result says of itself: its verdict, whether it still speaks for the work,
  *  who ran it where and how, the commit it ran at, what it counted, and its screenshots. The
  *  result's own `observed` is the node's text and is no fact of its own. */
 export function resultFacts(result: CheckResult): NodeFact[] {
-  const currency: Readonly<Record<string, string>> = RESULT_CURRENCY_WORDS;
-  const stands = currency[result.currency ?? ""];
+  const stands = RESULT_STANDS_WORDS[result.commit_stands?.answer ?? ""];
   const verdicts: Readonly<Record<string, string>> = RESULT_VERDICT_WORDS;
   const facts: NodeFact[] = [
     { draw: "word", name: "verdict", value: verdicts[result.verdict] ?? result.verdict },
