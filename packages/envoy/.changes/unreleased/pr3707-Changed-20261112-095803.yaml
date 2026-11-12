@@ -1,0 +1,5 @@
+kind: Changed
+body: Every project names a default assignee, and the person a question reaches is the person it was handed to, else the issue's assignee, else that default, so no question reaches nobody. Creating a project takes a person and no write clears one, a new issue always has an assignee, and the write that opens a question answers the person it reached.
+time: 2026-11-12T09:58:03.195651381Z
+custom:
+    Issue: pr3707

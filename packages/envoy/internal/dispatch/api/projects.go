@@ -100,32 +100,29 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	// Every project names a person. The column refuses nothing
 	// (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql) because the
 	// chain that decides who an issue's question reaches ends here, so the default is resolved
-	// in three steps: the login the call names, then the person creating the project, then the
-	// person the creating credential acts for. The last two are the first two steps of
-	// defaultAssignee (issue_assignee.go), read off the same actor.
+	// in two steps: the login the call names, then the person the creating credential acts for,
+	// which is actorPerson (issue_assignee.go), the step defaultAssignee opens with, read off
+	// the same actor.
 	//
-	// actingPerson is deliberately not called for them: it refuses a caller holding no `person`
+	// actingPerson is deliberately not called for it: it refuses a caller holding no `person`
 	// scope (server.go), and this route is scopeDeployment (routes_table.go) — the deployment's
 	// own token creates projects, and that token holds no scope at all. Such a caller acts for
 	// nobody, so it must name the person itself, which is the refusal below. A named login is
 	// held to somebody who has signed in (allowedLogin), as PUT
 	// /api/v1/projects/{key}/default-assignee holds one, so a typo never becomes a stored
 	// default.
-	defaultAssignee := ""
-	switch {
-	case strings.TrimSpace(input.DefaultAssignee) != "":
+	projectDefault := ""
+	if strings.TrimSpace(input.DefaultAssignee) != "" {
 		canonical, err := s.allowedLogin(r.Context(), input.DefaultAssignee)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		defaultAssignee = canonical
-	case actor.Kind == "user":
-		defaultAssignee = model.CanonicalLogin(actor.ID)
-	case actor.Owner != nil:
-		defaultAssignee = model.CanonicalLogin(*actor.Owner)
+		projectDefault = canonical
+	} else if login, acts := actorPerson(actor); acts {
+		projectDefault = login
 	}
-	if defaultAssignee == "" {
+	if projectDefault == "" {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest,
 			"default_assignee is required: this credential acts for no person, so the call must name "+
 				"the person a project's unowned work lands on")
@@ -141,7 +138,7 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	if err := tx.QueryRow(r.Context(), `
 		insert into projects (key, name, default_assignee) values ($1, $2, $3)
 		returning key, name, gated_steps, default_assignee, created_at
-	`, input.Key, input.Name, defaultAssignee).Scan(
+	`, input.Key, input.Name, projectDefault).Scan(
 		&project.Key, &project.Name, &project.GatedSteps, &project.DefaultAssignee, &project.CreatedAt); err != nil {
 		if isUniqueViolation(err) {
 			writeError(w, "PROJECT_EXISTS", http.StatusConflict, "a project with this key already exists")

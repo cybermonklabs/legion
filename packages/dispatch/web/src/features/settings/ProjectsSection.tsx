@@ -57,12 +57,9 @@ export function ProjectsSection(): ReactNode {
     write: (input, bounds) => api.createProject(input, bounds),
     onSettled: () => projectSubmitGuard.release(),
     // Made either way, so the form empties; with no answer to give, it says what was made
-    // (`createProject.unanswered`). The new project names a person from the moment it exists, so
-    // the defaults read is asked again with the project list: its row would otherwise sit at
-    // `Loading…` until something else moved that read.
+    // (`createProject.unanswered`).
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: projectsQuery().queryKey });
-      void queryClient.invalidateQueries({ queryKey: projectDefaultAssigneesQuery().queryKey });
       setProjectKey("");
       setProjectName("");
       setProjectAssignee(null);
@@ -234,10 +231,11 @@ export function ProjectsSection(): ReactNode {
                 value={newProjectAssignee}
               >
                 {/* The viewer is a person who has signed in, so they are in the list once it is
-                    read; until it is, they are the only option. */}
-                {(newProjectAssignee === "" || logins.includes(newProjectAssignee)
-                  ? logins
-                  : [newProjectAssignee, ...logins]
+                    read; until it is, they are the only option. An empty value is nobody picked
+                    yet, which is the page before the viewer resolves. */}
+                {assigneeOptions(
+                  newProjectAssignee === "" ? undefined : newProjectAssignee,
+                  logins
                 ).map((login) => (
                   <option key={login} value={login}>
                     {login}
@@ -271,6 +269,19 @@ export function ProjectsSection(): ReactNode {
       ) : null}
     </section>
   );
+}
+
+/** The options a default-assignee picker offers: everyone who has signed in, with the selected
+ *  login ahead of them when the list does not hold it, so a control never shows a value its
+ *  options lack - a stored default whose person the people list has not read, or has not
+ *  fetched yet, still holds its project. `undefined` is nobody selected, and the list stands as
+ *  it is. Both pickers of this section read this one rule: the create form's and
+ *  `DefaultAssigneeSelect`'s. */
+function assigneeOptions(
+  selected: string | undefined,
+  logins: readonly string[]
+): readonly string[] {
+  return selected === undefined || logins.includes(selected) ? logins : [selected, ...logins];
 }
 
 /** One project's default-assignee cell: the picker and, under it, the error of this project's
@@ -465,10 +476,7 @@ function DefaultAssigneeSelect({
   project: string;
   unread: string | null;
 }): ReactNode {
-  // A stored default whose person the list does not carry still holds the project; keep it
-  // selectable so the control never shows a value its options lack.
-  const options =
-    assignee === undefined || logins.includes(assignee) ? logins : [assignee, ...logins];
+  const options = assigneeOptions(assignee, logins);
   return (
     <select
       aria-label={`Default assignee of ${project}`}

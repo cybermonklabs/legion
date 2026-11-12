@@ -275,20 +275,6 @@ const ALLOWED: readonly (readonly [string, string])[] = [
     "(an id holding a NUL, which a hand-built client can set and no ask row or anchor can store,",
   ],
   ["packages/envoy/AGENTS.md", "since the id repair would hand the held ask's row and answer to"],
-  // This change's own sentences: the rule itself, which an agent must read. The shared one
-  // (ASK_WAITS_ON_THE_ASSIGNEE) stands in both ask descriptions and in the dispatch skill.
-  [
-    "skills/dispatch/SKILL.md",
-    "An ask waits on the person it was handed to, else the issue's assignee, else the project's default assignee",
-  ],
-  [
-    "dispatch_ask description",
-    "An ask waits on the person it was handed to, else the issue's assignee, else the project's default assignee",
-  ],
-  [
-    "dispatch_edit_ask description",
-    "An ask waits on the person it was handed to, else the issue's assignee, else the project's default assignee",
-  ],
   [
     "dispatch_issue_update description",
     "this issue's asks, and every ask on it waits on them until a person hands that ask on",

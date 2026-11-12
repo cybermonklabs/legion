@@ -90,13 +90,34 @@ end`
 // no document row and one owned by a document has no issue row, so the project is reached
 // through coalesce(i.project_key, ar.project_key). A query that reads the expression without
 // those joins fails at run time rather than at compile time, which is what
-// TestOneExpressionDecidesWhoWaits drives every one of the five reads for.
+// TestOneExpressionDecidesWhoWaits drives every one of the five reads for; the joins themselves
+// are askedOfPersonJoins below, which all five build their FROM clause from.
 //
 // It compares with = rather than wrapping either column in lower(btrim(...)): asks.asked_of,
 // issues.assignee and projects.default_assignee all hold what model.CanonicalLogin returns, so
 // the sides match as they are stored. The expression spans three tables, so no index on
 // issues.assignee (store/migrations/0034_issue_assignee.up.sql:6) serves a filter on it.
 const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee, p.default_assignee)`
+
+// askedOfPersonJoins are the three tables askedOfPersonExpression reads beside the ask aliased
+// a: its issue as i, its own document as ar, and the project of whichever of the two owns it as
+// p. The five reads that share the expression each write these joins into a FROM clause of
+// their own - askReadFrom and askWaitingOnPerson below, the active CTE of listOpenAsks
+// (api/asks.go), the not-exists subquery of myRepliesOwner (api/replies.go) and the read
+// putAskAskedOf takes before it writes (api/ask_asked_of.go) - and each builds it from this one
+// text, so the rule and the tables it names move together. TestOneExpressionDecidesWhoWaits
+// holds them to this one spelling as it holds the expression to its own.
+//
+// Each is an outer join: a question owned by an issue has no document row and one owned by a
+// document has no issue row, and the constraint asks_one_owner (migration 0009) guarantees
+// exactly one of the two, so the coalesce names the project either way - the shape this
+// repository already reads a question's project through (api/inbox.go, api/asks.go,
+// projectListQuery in api/projects.go). The leading newline makes it a block a caller appends
+// to its own `from <table> a`, whatever that caller indents its statement by.
+const askedOfPersonJoins = `
+	left join issues i on i.key = a.issue_key
+	left join artifacts ar on ar.id = a.artifact_id
+	left join projects p on p.key = coalesce(i.project_key, ar.project_key)`
 
 // askItemRefExpression is the SPA item route of the ask aliased a, whose issue is aliased i and
 // whose project document is aliased ar: an issue ask's `/issues/<key>/asks/<id>`, which lands an
@@ -133,10 +154,7 @@ func askWaitingOn(ctx context.Context, q queryer, askID string) (string, error) 
 func askWaitingOnPerson(ctx context.Context, q queryer, askID string) (string, error) {
 	var person *string
 	if err := q.QueryRow(ctx, `select `+askedOfPersonExpression+`
-		from asks a
-		left join issues i on i.key = a.issue_key
-		left join artifacts ar on ar.id = a.artifact_id
-		left join projects p on p.key = coalesce(i.project_key, ar.project_key)
+		from asks a`+askedOfPersonJoins+`
 		where a.id = $1`, askID).Scan(&person); err != nil {
 		return "", fmt.Errorf("read ask waiting_on_person: %w", err)
 	}
@@ -157,18 +175,11 @@ func askWaitingOnPerson(ctx context.Context, q queryer, askID string) (string, e
 const askReadColumns = askRowColumns + `, lr.author, lr.created_at, ` + waitingOnExpression +
 	` as waiting_on, ` + askedOfPersonExpression + ` as waiting_on_person`
 
-// askReadFrom joins the three tables askedOfPersonExpression reads beside the ask: its issue as
-// i, its own document as ar, and the project of whichever of the two owns it as p. A query over
-// it that wants the issue's or the document's own columns reads them from these joins rather
-// than joining either table again, as the Inbox read does. Each is an outer join: a question
-// owned by an issue has no document row and one owned by a document has no issue row, and the
-// constraint asks_one_owner (migration 0009) guarantees exactly one of the two, so the coalesce
-// below names the project either way - the shape this repository already reads a question's
-// project through (api/inbox.go, api/asks.go, projectListQuery in api/projects.go).
-var askReadFrom = askRowFrom + `
-	left join issues i on i.key = a.issue_key
-	left join artifacts ar on ar.id = a.artifact_id
-	left join projects p on p.key = coalesce(i.project_key, ar.project_key)` + lastReplyJoin
+// askReadFrom is askRowFrom with the three joins askedOfPersonExpression reads beside the ask
+// (askedOfPersonJoins) and the ask's newest reply. A query over it that wants the issue's or
+// the document's own columns reads them from those joins rather than joining either table
+// again, as the Inbox read does.
+var askReadFrom = askRowFrom + askedOfPersonJoins + lastReplyJoin
 
 // nullableAskArtifactRef holds the nullable columns of one optional document an ask names - a
 // quoted anchor's or an approval request's artifact_id, both resolved through a left join that

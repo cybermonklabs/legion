@@ -90,16 +90,14 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Whom the ask waited on before this write, read under the two locks through the expression
-	// every reader of that person shares - so its joins are that expression's, the ask's issue,
-	// its own document and their project - and the assignee of its issue beside it (null for a
-	// document ask, which has none, and for an issue nobody holds).
+	// every reader of that person shares - so its joins are that expression's own
+	// (askedOfPersonJoins): the ask's issue, its own document and their project - and the
+	// assignee of its issue beside it (null for a document ask, which has none, and for an issue
+	// nobody holds).
 	var waitedOn, assignee *string
 	if err := tx.QueryRow(r.Context(), `
 		select `+askedOfPersonExpression+`, i.assignee
-		from asks a
-		left join issues i on i.key = a.issue_key
-		left join artifacts ar on ar.id = a.artifact_id
-		left join projects p on p.key = coalesce(i.project_key, ar.project_key)
+		from asks a`+askedOfPersonJoins+`
 		where a.id = $1
 	`, ask.ID).Scan(&waitedOn, &assignee); err != nil {
 		s.writeHandlerError(w, err)

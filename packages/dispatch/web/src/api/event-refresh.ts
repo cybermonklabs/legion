@@ -523,13 +523,14 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
 
 /**
  * What an `issue.created`, `issue.updated` or `issue.closed` of `key` refreshes beyond what every
- * event of the issue does.
+ * event of the issue does. `movesThreads` is what `movesInboxThreads` said of this event for this
+ * viewer, evaluated once by the caller, which already asked it for the viewer's Reply rows.
  */
 function issueWriteTargets(
   event: DispatchEvent,
   key: string,
   project: string | undefined,
-  viewer: string | undefined
+  movesThreads: boolean
 ): RefreshTarget[] {
   const changes = issueChanges(event);
   const moved = (field: string) => changes === undefined || changes.has(field);
@@ -602,7 +603,7 @@ function issueWriteTargets(
   // (`movesInboxThreads`, over `thread_logins` - the assignee on each side of the write, a null
   // side resolved through the issue's project default) and refreshes their whole Inbox. Nobody
   // else's: a reader the write did not name sends no read.
-  if (!created && moved("assignee") && movesInboxThreads(event, viewer)) {
+  if (!created && moved("assignee") && movesThreads) {
     targets.push({ queryKey: inboxKey });
   }
 
@@ -875,7 +876,10 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // Every event an issue owns moves its `last_seq`, which a project list's unread dot reads.
     { queryKey: project === undefined ? ["issues", "project"] : ["issues", "project", project] },
   ];
-  if (movesInboxThreads(event, viewer)) {
+  // Asked once for this event and this viewer: the issue-write branch below reads the same
+  // answer rather than evaluating the rule over the payload a second time.
+  const movesThreads = movesInboxThreads(event, viewer);
+  if (movesThreads) {
     targets.push({ queryKey: myRepliesKey });
   }
   if (changesReferenceGraph(event)) {
@@ -902,7 +906,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     event.type === "issue.updated" ||
     event.type === "issue.closed"
   ) {
-    targets.push(...issueWriteTargets(event, key, project, viewer));
+    targets.push(...issueWriteTargets(event, key, project, movesThreads));
     return targets;
   }
   if (

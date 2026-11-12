@@ -2139,7 +2139,8 @@ join people person on person.email = creator.login
 where p.key = creator.project_key and p.default_assignee is null;
 ```
 
-A project left with no default after both statements is one to name a person on by hand, `PUT /api/v1/projects/<key>/default-assignee` with `{"assignee": "<the person's email>"}`, which is what the migration's refusal says too.
+A project left with no default after both statements is one to name a person on by hand, `PUT /api/v1/projects/<key>/default-assignee` with `{"assignee": "<the person's email>"}`, which this release still serves.
+Reaching the migration with one left stops it, and its refusal names the repair that works from there: nothing is serving by then, so it is `update projects set default_assignee = '<the person''s email>' where key = '<KEY>';` on the database itself.
 
 **`20261111210103` is a stop-the-world migration: deploy it with no server of the earlier release running.**
 The narrowing ships in the same release as the fill, where the rule above splits a narrowing across two releases, because the deployment runs one replica under a Kubernetes Deployment's `strategy: Recreate` (`packages/envoy/infra/README.md`):

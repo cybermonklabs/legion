@@ -33,7 +33,8 @@ type projectDefaultAssignee struct {
 // other's, exactly as handing one question on moves a single row (api/ask_asked_of.go, which
 // names its pair through movedLogins). ThreadLogins is the previous default and the new one,
 // sorted and named once, and never null: a write that moved nothing between two people - a PUT
-// naming the person the project already defaults to - says so as [].
+// naming the person the project already defaults to - names that one person once, since
+// movedLogins carries each login no more than once.
 type projectDefaultAssigneeUpdated struct {
 	projectDefaultAssignee
 	ThreadLogins []string `json:"thread_logins"`

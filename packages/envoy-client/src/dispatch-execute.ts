@@ -2925,10 +2925,11 @@ function openAskAge(ageSeconds: number): string {
  *  so the server names a person for every ask, an ask on a project document included. The word
  *  is the ask card's own, `asked of`, rather than `waiting on`, because a row under `Waiting on
  *  agent (N):` waits on the agent - the next move there is the agent's, and naming the person
- *  must not claim otherwise. */
+ *  must not claim otherwise. A Dispatch older than that rule answers no person, and the row
+ *  then says nobody rather than printing an empty name (`waitsOnPerson`). */
 function openAskLine(ask: OpenAsk, baseUrl: string): string {
   const priority = ask.priority === null ? "" : `P${ask.priority} · `;
-  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${ask.waiting_on_person} · ${ask.question} · ${new URL(ask.ref, baseUrl).toString()}`;
+  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${waitsOnPerson(ask) ?? "nobody"} · ${ask.question} · ${new URL(ask.ref, baseUrl).toString()}`;
 }
 
 export function formatOpenAsksSummary(response: OpenAsksResponse, baseUrl: string): string {

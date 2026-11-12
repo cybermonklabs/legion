@@ -701,10 +701,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 				) end as last_reply,
 				`+waitingOnExpression+` as waiting_on,
 				`+askedOfPersonExpression+` as waiting_on_person
-			from mine a
-			left join issues i on i.key = a.issue_key
-			left join artifacts ar on ar.id = a.artifact_id
-			left join projects p on p.key = coalesce(i.project_key, ar.project_key)`+lastReplyJoin+`
+			from mine a`+askedOfPersonJoins+lastReplyJoin+`
 			where a.state = 'open' and (i.key is null or i.closed_at is null)
 		)
 		select

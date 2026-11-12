@@ -31,9 +31,13 @@
 -- be reached. The logins are lowercased, the form people.email and 0116's check both require.
 --
 -- A project neither source names stops the migration with its key in the message, because a
--- `select` cannot raise: the test lives inside a DO block, which can. The repair is to name a
--- person on the release running now, PUT /api/v1/projects/<key>/default-assignee with
--- {"assignee": "<the person's email>"}, and then deploy again.
+-- `select` cannot raise: the test lives inside a DO block, which can. The repair the message
+-- names is one the operator can run at the moment it fires: this deploy is stop-the-world
+-- (below), so no server of either release is up and no route can be called. It is a write to
+-- the column itself, `update projects set default_assignee = '<the person''s email>' where
+-- key = '<KEY>';` on this database, and then the deploy again. The census refuses the deploy
+-- earlier than this, while the old release still serves, so the repair it names is the route
+-- (the .census.sql beside this file, and cmd/dispatch/README.md).
 --
 -- **Stop-the-world.** The narrowing ships with the fill in one release, which the expand-then-
 -- contract rule (cmd/dispatch/README.md, "Database migrations") otherwise splits across two:
@@ -106,8 +110,9 @@ begin
 			message = format(
 				'20261111210103 refuses: no issue of these project(s), and no person who created them, '
 				'names somebody who has signed in, so they name no default assignee: %s. '
-				'Name one on the release running now, PUT /api/v1/projects/<key>/default-assignee with '
-				'{"assignee": "<the person''s email>"}; then deploy again.',
+				'Nothing is serving while this migration runs, so name one in the database itself: '
+				'update projects set default_assignee = ''<the person''''s email>'' where key = ''<KEY>''; '
+				'then deploy again.',
 				stranded);
 	end if;
 end $$;

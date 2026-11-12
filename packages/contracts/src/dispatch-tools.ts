@@ -79,7 +79,7 @@ export const ASK_IS_FOR_A_PERSON =
  *  `packages/envoy/internal/dispatch/api/ask_rows.go`). Every project names a default assignee,
  *  so the third step always names a person and no ask reaches nobody. */
 export const ASK_WAITS_ON_THE_ASSIGNEE =
-  "An ask waits on the person it was handed to, else the issue's assignee, else the project's default assignee, so every ask reaches a person. No agent can hand one on.";
+  "An ask waits on its asked-of person, else the issue's assignee, else the project's default assignee; no agent hands one on.";
 
 const HUMAN_AGREED_TO_DOCUMENT = "the human has agreed to every point in the document";
 

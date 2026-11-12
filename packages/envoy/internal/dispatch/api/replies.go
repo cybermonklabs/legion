@@ -61,10 +61,7 @@ const myRepliesOwner = `
 	  and ($2::text = '' or u.issue_key = $2::text)
 	  and ($3::uuid is null or u.artifact_id = $3::uuid)
 	  and not exists (
-		select 1 from asks a
-		left join issues i on i.key = a.issue_key
-		left join artifacts ar on ar.id = a.artifact_id
-		left join projects p on p.key = coalesce(i.project_key, ar.project_key)
+		select 1 from asks a` + askedOfPersonJoins + `
 		where a.id = u.thread_id and a.state = 'open' and i.closed_at is null
 		  and ` + askedOfPersonExpression + ` = $1
 	  )`

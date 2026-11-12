@@ -379,8 +379,8 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 	})
 
 	// No read holds a copy of the rule: each of the five names the one constant, and the SQL it
-	// holds is spelled once in the module. The precedent for reading the source rather than the
-	// behaviour is api/lock_level_test.go.
+	// holds - the expression and the three joins it reads over - is spelled once in the module.
+	// The precedent for reading the source rather than the behaviour is api/lock_level_test.go.
 	t.Run("the five reads share one expression", func(t *testing.T) {
 		sources := moduleSources(t, "../../..")
 		declarations := map[string]ast.Node{}
@@ -419,19 +419,39 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 			}
 		}
 
+		// Two spellings are each counted across the module, with _test.go files skipped by
+		// moduleSources, so the needles below are not found in this file's own literals.
+		//
+		// The rule's needle is the prefix `coalesce(a.asked_of` rather than the whole
+		// expression: a read that reintroduced the two-step `coalesce(a.asked_of, i.assignee)`,
+		// the spelling that sends a question standing on an issue nobody holds to nobody, is
+		// what this count exists to catch, and the whole expression would count it zero times
+		// and pass.
+		//
+		// The joins the rule needs are counted by the one that makes them its own, the project
+		// reached through either owner: the other two left joins are ordinary beside any ask.
 		copies := []string{}
+		joins := []string{}
 		for _, source := range sources {
 			text, err := os.ReadFile(source.path)
 			if err != nil {
 				t.Fatalf("read %s: %v", source.path, err)
 			}
-			if spelled := strings.Count(string(text), "coalesce(a.asked_of, i.assignee, p.default_assignee)"); spelled > 0 {
+			if spelled := strings.Count(string(text), "coalesce(a.asked_of"); spelled > 0 {
 				copies = append(copies, fmt.Sprintf("%s (%d)", filepath.ToSlash(source.path), spelled))
+			}
+			joined := strings.Count(string(text), "left join projects p on p.key = coalesce(i.project_key, ar.project_key)")
+			if joined > 0 {
+				joins = append(joins, fmt.Sprintf("%s (%d)", filepath.ToSlash(source.path), joined))
 			}
 		}
 		slices.Sort(copies)
+		slices.Sort(joins)
 		if want := []string{"../../../internal/dispatch/api/ask_rows.go (1)"}; !slices.Equal(copies, want) {
 			t.Fatalf("the rule is spelled in %v, want it written once, in %v", copies, want)
+		}
+		if want := []string{"../../../internal/dispatch/api/ask_rows.go (1)"}; !slices.Equal(joins, want) {
+			t.Fatalf("the joins the rule reads are spelled in %v, want them written once, in %v", joins, want)
 		}
 	})
 

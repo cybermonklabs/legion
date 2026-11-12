@@ -153,6 +153,35 @@ const server = Bun.serve({
         { status: 201 }
       );
     }
+    if (pathname === "/api/v1/asks/open" && request.method === "GET") {
+      // A Dispatch older than the three-step rule carries no waiting_on_person on its rows:
+      // the field is absent here, as that server leaves it.
+      return Response.json({
+        session_id: "ses-1",
+        as_of: "2026-11-12T00:00:00Z",
+        opened_since: false,
+        count: 1,
+        waiting_on_human: 1,
+        waiting_on_agent: 0,
+        asks: [
+          {
+            id: "ask-7",
+            issue_key: "DSP-1",
+            ref: "/issues/DSP-1/asks/ask-7",
+            kind: "question",
+            urgency: "med",
+            question: QUESTION,
+            created_at: "2026-11-12T00:00:00Z",
+            age_seconds: 3600,
+            priority: 1,
+            owner: { issue: { key: "DSP-1", title: "Native workspace" } },
+            human_replied: false,
+            last_reply: null,
+            waiting_on: "human",
+          },
+        ],
+      });
+    }
     return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
   },
 });
@@ -325,6 +354,18 @@ test("dispatch project prints the person it could not name, as the refusal's own
   expect(stdout).toContain(`INVALID_PROJECT: ${projectRefusal}`);
 });
 
+test("dispatch open-asks prints the person each row is asked of, and nobody where the server named none", async () => {
+  const { code, stdout, stderr } = await run(["open-asks"]);
+
+  expect(stderr).toBe("");
+  expect(code).toBe(0);
+  // The server this stub stands for is older than the three-step rule and names no person, so
+  // the row says nobody rather than printing an empty name or `undefined`.
+  expect(stdout).toContain("· asked of nobody ·");
+  expect(stdout).not.toContain("asked of undefined");
+  expect(stdout).not.toContain("asked of  ·");
+});
+
 // The texts that state the rule. Each is read as literal words, never as the constant the code
 // under test defines, so a reworded constant that drops a step fails here rather than passing by
 // comparing with itself. NO_PERSON_PHRASES are the ways a text says a question can reach nobody:
@@ -348,8 +389,8 @@ async function help(command: string): Promise<string> {
 }
 
 test.each([
-  ["ask", [THE_CHAIN, "so every ask reaches a person"]],
-  ["edit-ask", [THE_CHAIN, "so every ask reaches a person"]],
+  ["ask", [THE_CHAIN, "no agent hands one on"]],
+  ["edit-ask", [THE_CHAIN, "no agent hands one on"]],
   ["request-approval", [THE_CHAIN, "so it always reaches a person"]],
   ["issue-update", [THE_CHAIN, "waits on the project's default assignee"]],
   ["issue", [THE_CHAIN, "a new issue always has one"]],
@@ -370,13 +411,15 @@ function page(name: string): string {
 }
 
 // The pages say the rule in their own words, for a person rather than for an agent, so each row
-// reads the words its page uses.
+// reads the words its page uses. The page's whitespace is collapsed to single blanks before
+// either check reads it, so a phrase is written as one line here and re-wrapping a paragraph
+// moves no check about meaning; the no-person scan runs over that same collapsed text.
 test.each([
   [
     "inbox-and-asks.md",
     [
-      "whoever it was handed to, else the assignee of its issue, else the\nproject's default assignee",
-      "Every project names a default assignee, so every ask reaches\nsomebody",
+      "whoever it was handed to, else the assignee of its issue, else the project's default assignee",
+      "Every project names a default assignee, so every ask reaches somebody",
     ],
   ],
   [
@@ -389,12 +432,12 @@ test.each([
   [
     "issues-and-projects.md",
     [
-      "An issue nobody holds leaves its asks on the\nproject's default assignee, so every ask reaches somebody.",
-      "Every project\nnames one, so every new issue has an assignee.",
+      "An issue nobody holds leaves its asks on the project's default assignee, so every ask reaches somebody.",
+      "Every project names one, so every new issue has an assignee.",
     ],
   ],
 ])("dispatch/%s states the rule: a question reaches the project's default assignee", (name, phrases) => {
-  const text = page(name);
+  const text = page(name).replace(/\s+/g, " ");
 
   for (const phrase of phrases) expect(text).toContain(phrase);
   for (const phrase of NO_PERSON_PHRASES) expect(text).not.toContain(phrase);
