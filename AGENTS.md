@@ -898,7 +898,7 @@ When the root that held it closes, the tree's linger hands that child to Legion 
 A parent with children puts the work into them, and its own pull request joins and proves their merged work.
 
 **Acceptance:** the reviewer's approval moves the issue to `accepting` (Dispatch status `needs_review`), where no worker runs:
-the tree's architect reads the tester's handoff, each `check` block of the issue's Verification document with its latest result (`dispatch results`), and the reviewer's approval of the head by SHA, then accepts with the `legion` tool's `sign_off` (→ `retro`;
+the tree's architect reads the tester's handoff, each `check` block of the issue's Verification document with the results recorded against it (`dispatch results --issue <issue>`), and the reviewer's approval of the head by SHA, then accepts with the `legion` tool's `sign_off` (→ `retro`;
 refused in every other phase, `SIGNOFF_OUTSIDE_ACCEPTING`;
 refused too while an issue beneath it is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW` naming each one, since a parent's head proves its children's merged work) or sends the issue back to `implementing` or `testing` with `request_backward_move`, which counts a review round, or a conflict round that `review_round_cap` does not count when the record holds the pull request's head as conflicting with its base.
 An architect's `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`); CI red there returns the issue to `implementing`.
