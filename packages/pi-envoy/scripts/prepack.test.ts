@@ -49,7 +49,7 @@ describe("omp.skills / prepack manifest contract", () => {
       if (staged !== "") rmSync(path.dirname(staged), { recursive: true, force: true });
     });
 
-    test("are exactly this plugin's partition: the Dispatch and Envoy skills every session uses", () => {
+    test("are exactly this plugin's partition: the skills every session with Dispatch uses", () => {
       expect(readdirSync(staged).sort()).toEqual([
         "agent-secrets",
         "asd-ste100",
@@ -57,6 +57,7 @@ describe("omp.skills / prepack manifest contract", () => {
         "dispatch-first",
         "dispatch-writing-specs",
         "envoy",
+        "following-best-practices",
         "outside-message",
         "plain-words",
         "thermonuclear-code-quality",

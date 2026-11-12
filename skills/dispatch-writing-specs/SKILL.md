@@ -14,6 +14,8 @@ Reach shared understanding at the least cost of the person's time. A spec is a c
 3. Write each part only after the answers it rests on.
 4. A wrong premise or a changed request changes the request first.
 
+Before choosing a design, writing options or requesting approval: `skill://following-best-practices`.
+
 ## The outline
 
 Find the issue's project with `dispatch projects` or `search`, never the environment. The spec's `##` parts, in order:
@@ -38,7 +40,7 @@ For each spec, ask, comment and message:
 - Write about the current design, never the person or how people reached it, and never quote or upload their words.
 - Link each source where the person wrote it. With no link, state the design.
 - Treat a person's stated preference or past answer as evidence of their taste, never as a decision that settles the question: an answer given once is not a standing rule. A commit attributed to a person is not their decision, because agents commit the work.
-- In a spec, cite code by file and symbol, never a line number: it goes stale at the next edit.
+- In a spec, cite code by file and symbol, never line numbers, which go stale.
 - A sentence citing a gate passing (test, review, check) also says what the pass does not show: "Tests pass: a wrong verdict, not a missing one."
 - Keep only text a reader needs to understand, decide, build or check, and say what each issue you name does for them (`skill://plain-words`).
 - In an ask, ask block, comment or message, name a requirement or check by what it is, never its number.
@@ -54,7 +56,7 @@ For each spec, ask, comment and message:
 
 ## Each version
 
-1. After a person's answer, comment or edit, reread the problem and rewrite what the answer touches, deleting what it contradicts: an answer is integrated, never appended. Answer each comment in its thread. Never narrate an edit: versions and comments hold the history.
+1. After a person's answer, comment or edit, reread the problem and rewrite what the answer touches, deleting what it contradicts. Answer each comment in its thread. Never narrate an edit: versions and comments hold the history.
 2. Before each spec write, paste the whole spec, never a path, into a fresh subagent to list gaps, conflicts, uncheckable requirements, unclear text and needless questions. Fix or record each.
 3. Before each approval request, `wait` for a read-only fact check: `task(agent="scout")`.
 4. Name each version with `dispatch doc-edit --summary`.

@@ -144,7 +144,28 @@ phase unless Dispatch shows an open child under it. One approval request covers 
 and the `spec` step together (step 4), and each of them is registered on its own document
 (step 5); the `decisions` step is a request of its own.
 
-1. Extend the primary document in place:
+1. Write the extension of the primary document as a local draft, its decision blocks included,
+   and publish nothing yet: `skill://following-best-practices` keeps a proposal and its decision
+   asks unpublished until its reviews clear.
+2. Run these reviews in order on that draft. Give the gap and claim reviewers the current root
+   spec, the code and command output it relies on, and the human's words. Each review runs as a
+   job of its own, so `wait` for its result and read it before you act on it:
+
+   1. `task(agent="plan-gap-analyst")` finds gaps in the current root spec. Resolve every finding.
+   2. `task(agent="plan-reviewer")`, told the document is a spec and that the best-practice and
+      world-class reviews have not run yet, checks every factual claim against the code, the docs
+      or a read-only command. Resolve every finding; check each claim it marks unverified, fixing
+      it when false or taking it out.
+   3. Run the two reviews in step 2 of `skill://following-best-practices`. In each first-round
+      reviewer's first message, send only the problem; send the root spec only as that skill's
+      follow-up. Fix or record each finding in the spec's `### Best practice and world-class` entry
+      with the fact or cost that requires it.
+   4. Run `task(agent="plan-reviewer")` again on the final root spec, told it is a spec, so its
+      check 2 sees that entry with both final verdicts. It is final only once it approves; resolve
+      every finding and check or remove each factual claim it leaves unverified.
+   5. Run the process cross-review in step 2 of `skill://following-best-practices` on the final
+      root spec, last. Publish nothing until it clears.
+3. Publish the reviewed draft by extending the primary document in place:
 
    ```bash
    dispatch doc-edit --issue <root issue> --ops-json-file - <<'EOF'
@@ -152,23 +173,18 @@ and the `spec` step together (step 4), and each of them is registered on its own
    EOF
    ```
 
-2. Settle every decision block as
+   Then settle every decision block as
    [Approval](skill://dispatch-writing-specs/SKILL.md#approval) says;
    `dispatch request-approval` refuses while one is open. Each answer reaches you, since you follow
-   every ask you open.
-3. Before every approval request, give two fresh reviewers the current root spec, the code and
-   command output it relies on, and the human's words: `task(agent="plan-gap-analyst")` finds its
-   gaps, and `task(agent="plan-reviewer")`, told the document is a spec, checks each factual claim
-   against the code, the docs or a read-only command it runs. Each runs as a job of its own, so
-   `wait` for its result and read what it found before you act on it. Resolve every finding in the
-   root spec. Check with a command each claim either reviewer marks unverified: fix it when it is
-   false, or take it out.
+   every ask you open. When an answer changes the design, the problem, its constraints or the
+   evidence, write the rewrite it needs as a local draft, run step 2 on that draft and publish it
+   as this step says, before step 4.
 4. Request approval only once the human has agreed to every point in the spec, because the human
    approves what they already agreed to and a point new in the request has no decision block for
    them to answer: give such a point its own decision block first, or take it out of the spec.
 
    ```bash
-   dispatch request-approval --issue <root issue> --include-verification --summary '<what the human is approving> Reviews: <gap result>, <claim result>; <what they do not show>.'
+   dispatch request-approval --issue <root issue> --include-verification --summary '<what the human is approving> Reviews: <gap result>, <claim result>, <best-practice verdict>, <world-class verdict>; <what they do not show>.'
    ```
 
    `--include-verification` asks for the spec and the Verification document in one request, each
@@ -181,14 +197,15 @@ and the `spec` step together (step 4), and each of them is registered on its own
    spec alone and any other document is refused `NOT_SPEC_DOCUMENT`:
 
    ```bash
-   dispatch request-approval --issue <root issue> --artifact decisions.md --summary '<what the human is approving> Reviews: <gap result>, <claim result>; <what they do not show>.'
+   dispatch request-approval --issue <root issue> --artifact decisions.md --summary '<what the human is approving> Reviews: <gap result>, <claim result>, <best-practice verdict>, <world-class verdict>; <what they do not show>.'
    ```
 
    `--summary` says in one to three sentences what the human is approving and nothing else (no
-   commentary and no open question), then one sentence with both reviews' results and what they do
-   not show, for example `Reviews: no open gap, 14 of 14 claims verified; neither shows that the
-   design works once built.` The primary document is the default; the
-   command prints `Approval requested for spec.md (document id <UUID>) at version <N> (ask <id>)`.
+   commentary and no open question), then one sentence with the gap review, claim review,
+   best-practice verdict and world-class verdict, and what the reviews do not show, for example
+   `Reviews: no open gap, 14 of 14 claims verified, FOLLOWS BEST PRACTICE, WORLD-CLASS; none shows
+   that the design works once built.` The primary document is the default; the command prints
+   `Approval requested for spec.md (document id <UUID>) at version <N> (ask <id>)`.
 5. Register each gated step's document and version with the daemon, one call for each step:
 
    ```ts
@@ -273,9 +290,11 @@ Release no child until every gated step is open: a delivered wake shows
 `design-approved` on the root, or a task says its design gate is open, and under more than one
 step `gatedSteps` in your record shows each one `approved`. The daemon sends a root waiting on a
 person no `design-approved` notice, and "this resume is your design-approved wake" is that wake.
-On `design-changes-requested`: revise the document that step records as the human's reason asks,
-run step 3's two reviews on the new version, resolve every finding, request approval again and
-end your turn. A
+On `design-changes-requested`: revise a local draft of the document that step records as the
+human's reason asks, run the complete step 2 review sequence on it — gap review, claim review, the
+best-practice and world-class reviews, the final `plan-reviewer` review, then the process
+cross-review — resolve every finding, publish it as step 3 says, request approval again and end
+your turn. A
 `design-changes-requested` may name a version below the latest, or arrive after another for the
 same version: it is a request the human made that reached the daemon late, and no approval came
 after it. Each request arrives once. The gate is as the newest review left it; still read the
@@ -293,12 +312,13 @@ since, such as an accidental edit undone exactly: for either, Dispatch records a
 review in their name at the new version and emits `artifact.approved`, and the daemon reopens the
 gate and sends `design-approved`. Undo an accidental edit of an approved root spec exactly. When
 the spec then reads Approved at the new version, request nothing; when it does not (a block in
-it was decided since), request approval again with steps 3 to 5.
+it was decided since), run step 2 on it and request approval again with steps 4 and 5.
 
 So edit an approved root spec only when its Summary, a requirement it marks, a check of its
 Verification document, the tree's scope or a settled decision changes. Such a change is a point
 the human has not agreed to: put the problem behind it to them as its own decision block, with
-its evidence, at the end of the section it changes, and add nothing else. If you edit the block before
+its evidence, at the end of the section it changes, and add nothing else. Write it as a local
+draft and run step 2 on it, then publish it as step 3 says. If you edit the block before
 the human answers, the gate closes like any new version, but their answer still carries the approval
 to the version it writes. Once they have answered:
 
@@ -306,8 +326,9 @@ to the version it writes. Once they have answered:
   new version and the `design-approved` the daemon sent opens nothing new. Carry on; release no
   child because of it.
 - When the answer changes the Summary, a requirement, a check or the tree's scope, rewrite that
-  text and repeat steps 3 to 5 on the new version, with a one-sentence `--summary` naming what
-  changed since the earlier approval, then the reviews' sentence (the card shows `Approved at
+  text in a local draft and repeat steps 2 to 5 on it, with a one-sentence `--summary` naming what
+  changed since the earlier approval, then the sentence with the four review results and what they
+  do not show (the card shows `Approved at
   version N on <date> by <who>.`, and its `Show diff` control carries the detail). The rewrite
   closes the gate until they approve. Release no further child until the `design-approved` after
   it; work already in flight, including what the daemon started at the answer, continues. Every

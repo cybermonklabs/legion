@@ -436,6 +436,8 @@ The Envoy plugin ships these skills in its `dist/skills`:
 
 - `envoy`
 
+- `following-best-practices`
+
 - `outside-message`
 
 - `plain-words`

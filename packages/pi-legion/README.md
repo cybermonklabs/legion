@@ -46,11 +46,12 @@ the task agents Legion's prompts and skills dispatch (`oracle`; the reviewer's p
 `design-outsider`, which reads no file of the repository, and `goal-red-team`, which judges a
 change against its issue's goal and requirements; the planner's
 `plan-gap-analyst` and `plan-reviewer`, which also review a root spec before every approval
-request, `plan-reviewer` checking each of its factual claims), each
-declaring its model as a role the operator maps (`docs/kubernetes.md`, "Model roles"). The Dispatch
-and Envoy skills, the text skills and the secrets broker's client (`agent-secrets`, `asd-ste100`,
-`dispatch`, `dispatch-first`, `dispatch-writing-specs`, `envoy`, `outside-message` and
-`plain-words`) ship in `@sjawhar/pi-envoy`; a link from a Legion skill into one of them is written
+request, `plan-reviewer` checking each factual claim and that its `### Best practice and
+world-class` entry is present and complete), each declaring its model as a role the operator maps
+(`docs/kubernetes.md`, "Model roles"). The Dispatch and Envoy skills, the text skills and the
+secrets broker's client (`agent-secrets`, `asd-ste100`, `dispatch`, `dispatch-first`,
+`dispatch-writing-specs`, `envoy`, `outside-message` and `plain-words`) ship in
+`@sjawhar/pi-envoy`; a link from a Legion skill into one of them is written
 `skill://dispatch/...`, which resolves by name once both are installed.
 
 `scripts/pi-plugin-prepack.sh` at the repository root is both plugins' `prepack`: it builds the one
