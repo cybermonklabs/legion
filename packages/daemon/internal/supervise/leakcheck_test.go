@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -202,4 +203,53 @@ func TestALaunchTheLeakCheckRefusedCarriesItsCause(t *testing.T) {
 				got.Failure, got.FailureCause, got.LeakCheckCause, "launch failures ran out", CauseDied)
 		}
 	})
+}
+
+// A start cut short by its own context — a suspension that stops it, or the daemon's own stop —
+// was refused by nothing, so it leaves the claim no leak-check cause even where the runtime's
+// answer was a LeakCheckRefusal: the sandbox runtime answers a read or a push of the check that
+// its start context ended with one (launchers.serveLeakCheck, leakguard.Source.Get), and its
+// sentence ends in that context's cancellation, not in anything wrong with the pod's check. A
+// claim suspended in the middle of that push that carried the sentence would tell an operator
+// reading `legion claims list` or the state that the pod's check could not be installed, when
+// all that happened is that the start was stopped.
+func TestAStartCutShortByItsContextLeavesNoLeakCheckCause(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateIdle)
+	started, cut := make(chan struct{}), make(chan error, 1)
+	h.rt.OnResume = func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done() // the push of the check waits in the runtime until something ends its context
+		cut <- ctx.Err()
+		return fmt.Errorf("launch %s: start through its authenticated launcher: %w", h.token, runtime.LeakCheckRefusal{
+			Cause: "the shared public leak check could not be installed: the start stopped waiting for the daemon's read of theorem-labs/agent-infra at leak-check-v3: " + ctx.Err().Error(),
+		})
+	}
+
+	dying := make(chan error, 1)
+	go func() {
+		dying <- h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}})
+	}()
+	<-started
+	suspended := make(chan error, 1)
+	go func() {
+		suspended <- h.handle(RequestSuspend{Claim: h.token, Reason: "the operator suspended it", By: SuspendedByOperator})
+	}()
+	if err := <-cut; err == nil {
+		t.Fatal("the start ran to completion, want it cut short by the suspension")
+	}
+	<-dying
+	if err := <-suspended; err != nil {
+		t.Fatalf("the suspend answered %v, want the claim suspended", err)
+	}
+	h.rt.OnResume = nil
+
+	h.wantState(StateSuspended)
+	if got := h.claim().LeakCheckCause; got != "" {
+		t.Errorf("the suspended claim carries the leak-check cause %q, want none: its start was stopped, not refused", got)
+	}
+	history := h.store.history()
+	if got := history[len(history)-1].LeakCheckCause; got != "" {
+		t.Errorf("the suspended claim was written with the leak-check cause %q, want none: its start was stopped, not refused", got)
+	}
 }
