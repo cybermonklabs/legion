@@ -399,19 +399,32 @@ func (c Claim) openRoundHoldsTask() bool {
 // delivery's — except for a root architect's task of a run, which no turn of the agent's own is
 // ever taken for, since it may be a task nobody has sent at all (asksRoot).
 //
-// Three states hand the claim nothing and hold the task instead of dropping it: a claim holding a
+// Four states hand the claim nothing and hold the task instead of dropping it: a claim holding a
 // suspension (holdSuspension), a claim that has answered its open update round
-// (answeredOpenRound, opened by openPodUpdate), and a claim whose launch waits its turn in the
-// wake pacing over the process this send would reach (launchWaits). Starting the worker of an
-// answered round on a task it is about to lose would waste both the turn and the work, and so
-// would starting the worker of a process the next turn replaces: that launch lets the process go
-// (launchNow), and the task it had just begun would be retired as served at the turn it never
-// finished (settle, retirePending). Such a claim is decided as a claim whose launch is in flight,
-// which is what it is — the gate left its state alone only so that a restart would not find a
-// live process recorded launching — so its deliveries wait here exactly as a launching claim's
-// are queued (deliverLater), and go at the ready of the process the launch starts.
+// (answeredOpenRound, opened by openPodUpdate), a claim whose launch waits its turn in the
+// wake pacing over the process this send would reach (launchWaits), and a claim whose plugin is
+// stale enough that this daemon refuses its every `legion` call (staleRefusesClaim). Starting
+// the worker of an answered round on a task it is about to lose would waste both the turn and
+// the work, and so would starting the worker of a process the next turn replaces: that launch
+// lets the process go (launchNow), and the task it had just begun would be retired as served at
+// the turn it never finished (settle, retirePending). Such a claim is decided as a claim whose
+// launch is in flight, which is what it is — the gate left its state alone only so that a
+// restart would not find a live process recorded launching — so its deliveries wait here exactly
+// as a launching claim's are queued (deliverLater), and go at the ready of the process the
+// launch starts.
 // PodUpdateEnded releases the round's held task once the round is over (endPodUpdate), and the
 // wake's turn is where the launch takes the other back.
+//
+// The fourth is the same waste a wake earlier: a stale claim's relaunch is often not even
+// reserved yet — the refresh gate holds the lane to one minute of the pacing, so a fleet's
+// worth of claims wait sweeps for their credit (dispatch://INFRA-2712 R1, R2) — and through
+// all of it the daemon answers that claim's own routes 409 (internal/api's staleClaim). A task
+// sent there buys a model turn the worker can finish nothing in, and worse, it puts the claim
+// in a turn, which is exactly what postpones the relaunch it is waiting for (refreshPlugin's
+// holdStaleRelaunch). So the task waits, and it goes when the replacement process registers on
+// this daemon's contract and says it is ready, where every task held for a launch goes
+// (finishReady, table.go). Nothing else is needed to release it: the registration records the
+// daemon's own contract, which takes the claim out of the set this hold reads.
 //
 // One task never waits on that third hold: an operator's own, which runs the launch the pacing
 // holds before the row that queues it is reached (runParkedLaunchNow). A person is waiting on
@@ -422,6 +435,12 @@ func (c Claim) openRoundHoldsTask() bool {
 // answers it "a delivery is already pending" and no launch runs for it (queue) — and the send
 // this refusal makes first reaches the hold with the launch still waiting, so the task the claim
 // is holding stays for that turn.
+//
+// It waits on the fourth all the same, and that is the spec as written (dispatch://INFRA-2712
+// P6): a stale claim whose credit the gate has not granted holds no parked launch for that task
+// to run, and the process it would reach refuses the operator's task every `legion` call it
+// could be worked with. So such a task waits for the credit and then for the replacement
+// process's ready, which is the same wait every other task of that claim is already in.
 //
 // An ask the claim can no longer answer is dropped here rather than sent, and there are two of
 // them: an ask of a round another round has replaced, and an ask of a round whose pod the
@@ -446,6 +465,14 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	}
 	p := m.claim.Pending
 	if p == nil || !p.ConfirmedAt.IsZero() || m.send != nil {
+		return nil
+	}
+	// Nor is a claim whose every `legion` call this daemon refuses for a stale plugin handed its
+	// task: it waits for the process the refresh lane's relaunch starts (staleRefusesClaim). It is
+	// asked below the three above and below the question of whether there is a task at all,
+	// because it is the costliest of the four — Deps.NoPluginInstall reads the daemon's
+	// configuration — and every send of a claim holding nothing would otherwise pay for it.
+	if m.staleRefusesClaim() {
 		return nil
 	}
 	if _, awaiting := m.timers[TimerTurn]; awaiting {

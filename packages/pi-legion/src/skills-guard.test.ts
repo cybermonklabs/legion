@@ -514,7 +514,7 @@ test("the worker skill tells a role to read the pull request's head after its ow
     "about ten seconds after your push, again about ten seconds later, and a last time about thirty seconds after that, with a read that gives the pushed commit ending the step there and only the last read deciding a mismatch",
     "This read is of the pull request's own head and of no check, so the wait it makes is not a wait on CI",
     "an empty one when your work is complete",
-    "A new head makes every result recorded at the old head older, so record each `before_merge` check again at the new head.",
+    "A new head is a different commit, so record each `before_merge` check again at the new head.",
     "tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
     "The push you make to answer an update task is the exception: that task has you answer the daemon and end the turn at once, so make this read in your next turn, before your phase completes.",
     "The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
@@ -578,4 +578,95 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
     retired.filter((phrase) => text.includes(phrase)).map((phrase) => `${file}: ${phrase}`)
   );
   expect(carried).toEqual([]);
+});
+
+// dispatch://INFRA-3116's rule, beside the rules above: where a tree builds or changes a surface a
+// person opens, the architect shows that person the surface and gets their answer before it asks
+// them to approve the root spec. The rule is one bullet of section 1 and the section of the
+// design-gate reference that bullet sends the architect to, and each pin here is one of its
+// sentences, read from the staged partition. A pin fails when a later edit drops or rewords the
+// sentence, so the rule cannot leave the text a Legion pane loads in silence; none of them shows
+// that an architect in a live tree runs the round, which only that tree's own spec, its pictures
+// and the person's answer show.
+test("the architect shows a person the surface before it asks them to approve the spec", () => {
+  const skill = collapsed(path.join(staged, "legion-architect", "SKILL.md"));
+  const gate = collapsed(path.join(staged, "legion-architect", "references", "design-gate.md"));
+  expect(skill).toContain(
+    '**Show the surface before you ask.** Where this tree builds or changes a surface a person opens — a page, a screen, a dashboard — that person sees it and answers before you ask them to approve the spec, because they refuse a spec for a surface they have not seen. Whether a change needs that is your judgement, and a large visual change wants a page they can click rather than a picture. The readings, the round and where the pictures end up: `skill://legion-architect/references/design-gate.md`, "Show the surface before you ask". A change whose only reader surface is text carries that literal text in the spec instead; a change with no reader surface carries neither.'
+  );
+  expect(gate).toContain("## Show the surface before you ask");
+  expect(gate).toContain(
+    "Where this tree builds or changes a surface a person opens — a page, a screen, a dashboard — that person sees it and answers before you ask them to approve the spec. A spec for a surface they have not seen is refused, and the refusal costs a spec version, a closed gate, a second request and their time twice."
+  );
+  // The four readings that inform the judgement, each whole: a reading that lost its carve-out
+  // would send a round for every label change, or none for a new page.
+  expect(gate).toContain(
+    "Whether a change needs the round is your judgement. These readings inform it:"
+  );
+  expect(gate).toContain(
+    "A new surface a person opens, and a large visual change to one, need it. The larger the visual change, the more a page the person can click is worth over a picture: a person judges a layout from a picture, and judges a flow only by acting on it."
+  );
+  expect(gate).toContain(
+    "A small change inside a shape that stands — a label, a copy change, a style fix, a bug fix — does not, unless you are unsure what the person wants, which is itself a reason to show them."
+  );
+  expect(gate).toContain(
+    "A change whose only reader surface is text — an alert message, a report, a command's printed output — carries that literal text in the spec, at the values it will carry, and needs no round. The person reads the spec before the build; a pull request body reaches a reviewer after it."
+  );
+  expect(gate).toContain(
+    "A change with no surface a person reads needs nothing, and nothing in this section applies to it."
+  );
+  // The round and its five steps. A step's collapsed string carries the fenced block inside it,
+  // so the `chromium` recipe, the `dispatch artifact` upload and the picture-link form of a
+  // caption are pinned with the prose that introduces them.
+  expect(gate).toContain(
+    "The round is standard user research run on one reader: show the surface rather than describe it, let them act on it where the flow is the question, ask what they expected rather than whether they approve, and show another round on an answer that asks for changes (https://www.nngroup.com/articles/ux-prototype-hi-lo-fidelity)."
+  );
+  expect(gate).toContain("Before you first ask the person to approve the spec:");
+  expect(gate).toContain(
+    "Build the surface as a page, from real readings of the real system. Draw the empty state and the worst realistic data, or say which states you did not draw. Mark every invented figure in the picture itself, the way a check names its negative control: a picture whose figures are all plausible is the hardest one to judge. Where the surface exists already, draw it as it is now beside the new one: a picture a person cannot place is a round spent for nothing."
+  );
+  expect(gate).toContain(
+    "Take the picture with the pod's own Chromium, then put each one on the issue: ```bash chromium --headless --disable-gpu --no-sandbox --window-size=1440,900 \\ --screenshot=<file.png> file://<page.html> dispatch artifact --issue <KEY> --name <name>.png --path <file.png> ``` The upload stores it as an `image` artifact and prints its slug."
+  );
+  expect(gate).toContain(
+    "For a large visual change, or where the question is about a flow rather than a layout, build the page so the person can click it, put that one file up beside the pictures as a `file` artifact, and say in your question what works in it and what does not."
+  );
+  expect(gate).toContain(
+    "Ask one question with two to four answers, one of which says this is the wrong surface. Write no code on the branch for the round, and end your turn as for any question to a person."
+  );
+  expect(gate).toContain(
+    "The agreed pictures go in the spec, in line, each with a line of prose under it saying what it shows and which of its readings are real: ```md ![the priorities page with no priority set](dispatch://<KEY>/artifact/<slug>) The page as a reader opens it. The 529 issues and their ages are read from this deployment; the two ranks on the right are invented. ```"
+  );
+  expect(gate).toContain(
+    "One further line says what the pictures do not show: the states you did not draw."
+  );
+  expect(gate).toContain(
+    "The words of the spec still govern the build, because a reader on the command line gets the link text and not the picture."
+  );
+  expect(gate).toContain(
+    "You end the round, not the person: when their answer is carried into the pictures or into the spec, go on to the approval request with the pictures as they then stand. A person who stops answering holds nothing up."
+  );
+  expect(gate).toContain(
+    "The picture is the cheapest thing that answers the question. A labelled sketch is enough where it answers it. Where the real surface, built read-only, costs no more than the mock-up, build that and show that."
+  );
+  // The six ordering lines, each whole: they are what keeps the rule from closing an open gate or
+  // writing a spec version of its own, so a dropped one costs a tree its phase in flight.
+  expect(gate).toContain(
+    "A spec written before the picture is fine. What may not happen is reaching the gate with no picture."
+  );
+  expect(gate).toContain(
+    'A tree whose gate is already open starts no round for the work in flight and writes no spec version for a picture: a new version closes the gate and stops the phase under it ("After approval").'
+  );
+  expect(gate).toContain(
+    "The round writes no spec version of its own. The agreed pictures go into the version you first submit for approval."
+  );
+  expect(gate).toContain(
+    'A picture that must change after approval follows "After approval": it is a new version only when what is built changes, and then you request approval again.'
+  );
+  expect(gate).toContain(
+    "Where the `Design gate steps` sentence of your `Legion addressing` line says `none`, nobody approves the spec. Make the picture, put it in the spec for whoever builds it, and ask nobody."
+  );
+  expect(gate).toContain(
+    "The surfaces this tree's children build are yours. Their pictures go in the root spec, and a sub-architect that finds a surface the root spec never drew tells the root architect."
+  );
 });
