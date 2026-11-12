@@ -26,3 +26,32 @@ resume unsafe. Holding no slot is by itself no fault: a root in `awaiting_merge`
 in the line and a child its architect has not released yet hold none while their tree runs. The
 wake is live only, so a controller that starts later finds such a root by the last row, as its
 start procedure does.
+
+## `admission.held`: what nothing starts
+
+`admission.held` is every issue the daemon's record holds in the workflow that stands in neither
+`admission.active` nor `admission.waiting`. Each row carries the issue, one word for why nothing
+of it runs, and `heldBy`, the issues that hold it, which is absent where no issue holds it. The
+daemon reads the words in the order of the table below and takes the first that is true, so one
+issue reads one word, and that word is the same in `read_state` and in the `tick` notice. The
+list names no issue `admission.active` or `admission.waiting` names, so the three lists together
+are every issue of the workflow and what each one is doing. `admission.blocked` keeps its own
+rows beside them: it names Dispatch links and children-first waits alone, and the same issues
+read `dispatch_blocker` or `children_first` here.
+
+The daemon starts none of these issues by itself. Name them in the day's report and take nothing
+for them, except where the row's last column names an act of yours.
+
+| Word | What it means | What ends the hold |
+|---|---|---|
+| `tree_closed` | The issue's tree root carries the Dispatch status `done`, or the tree lingers after its close. `heldBy` names that root | An architect's `release_children` of the live tree whose Dispatch parent the issue reaches: the daemon records it in that tree at `admitted`, with its repository kept and its generation raised by one. The row alone does not say whether that release would be accepted: a member of a tree still in its linger reads this word too, and the daemon refuses a release of one |
+| `tree_parked` | The issue's tree root left the workflow to `backlog` or `icebox`, because a person parked that tree. `heldBy` names that root | A person's `todo` on the root, which re-admits the tree. Where the park is your own hold, the parked-root walk decides it (`skill://legion-controller/references/parked-decisions.md`) |
+| `label_off` | The issue is a root the admission queue does not carry, because the record says the `legion` label is off. A person took it out of Legion | A person's label. Take no issue back yourself: the intake rule in your deployment instructions keeps such a root out |
+| `ancestry` | The root's Dispatch chain reaches another live root, so the issue is that tree's unreleased work. `heldBy` names the live roots on that chain | That tree's architect releasing the issue, or releasing the parent above it; or every live root leaving that chain, after which it queues as a root of its own |
+| `root_awaiting_person` | The issue's tree root waits on a person's answer or on a review of its spec, so nothing of the tree starts. `heldBy` names that root | The person's answer or review. The daemon then resumes the root's architect, and the tree's issues start with it |
+| `design_gate` | The design gate of the issue's tree root is not open at every step the deployment gates. `heldBy` names that root | A person's approval of each gated step's document at its current version |
+| `dispatch_blocker` | A Dispatch `blocked_by` link of the issue names an issue that is not `done`, and holds the issue where it stands. `heldBy` names the unfinished blockers | Each blocker reaching `done` (a person's close, or the blocker's own merge), or the link taken off by a person or by the tree's architect. The issue is in `admission.blocked` as well |
+| `children_first` | Dispatch shows an open child under the issue, so its own first phase waits for the children. `heldBy` names the open children | The last open child leaving the workflow, which is the tree architect's work. The issue is in `admission.blocked` as well |
+| `accepted_ancestor` | The daemon has accepted the reviewed head of an issue above this one, so this one starts at that ancestor's close. `heldBy` names that ancestor | The ancestor's close, which the merge of its pull request writes |
+| `at_work` | The issue stands in a phase that holds no admission slot and that the line does not carry, which is `awaiting_merge`. Its workers run as they did, and the word says nothing about them | The merge of the issue's pull request, which closes the issue. No `heldBy`: no other issue holds it |
+| `unclassified` | No word above is true of the issue. The daemon logs it once for that issue and run | Nothing of yours. Name it in the day's report with its `phase` and `status`, so a person can read what the daemon could not say |

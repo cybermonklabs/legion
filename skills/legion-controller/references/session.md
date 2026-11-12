@@ -29,7 +29,11 @@ answer to your ask, a mention), Envoy or Slack. No `legion controller start` can
   `issues.<KEY>.holdReason`, `issues.<KEY>.architect`, `issues.<KEY>.tree` (the root of the
   issue's tree), `admission.cap`, `admission.active` (the issues holding a slot, roots and
   children), `admission.waiting` (the issues in the line, in its order), `admission.trees` (the
-  roots of the live trees), `admission.blocked`, `capabilities[]`, `daemon.project`, and
+  roots of the live trees), `admission.blocked`, `admission.held` (every issue the record holds
+  in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with
+  one word for why nothing of it runs and the issues that hold it;
+  `skill://legion-controller/references/admission.md` gives the word for each row and what ends
+  it), `capabilities[]`, `daemon.project`, and
   `settings` (the daemon's resolved `legion.yaml`, with no credential in it).
 - `op: "set_status"` with `issue` and `status` (`todo`, `backlog` or `icebox`) moves an issue. Each
   call mints its grant in-process from the secret the session registered with, so a stale secret

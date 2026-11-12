@@ -507,12 +507,13 @@ const legionBlockedIssue = z.object({
   blockedBy: z.array(issueKey),
 });
 
-/** `api.HeldIssue` (`record.HeldIssue`) — one issue the daemon's record holds in the workflow
- * that stands in neither `active` nor `waiting`: the daemon runs nothing of it and queues it
- * nowhere, and the row says in one word why (`reason`, the closed list one ladder reads in one
- * order) and which issues hold it (`heldBy`). A row names no issue of `active` or `waiting`: the
- * three lists are one partition of the issues the record holds in the workflow, so a reader with
- * all three has every issue and what each is doing. `heldBy` is absent, never empty, where no
+/** `api.HeldIssue` (`record.HeldIssue`) — one row of `admission.held`: an issue the daemon's
+ * record holds in the workflow that stands in neither `active` nor `waiting`. The daemon runs
+ * nothing of it and queues it nowhere, and the row says in one word why (`reason`, the closed
+ * list one ladder reads in one order) and which issues hold it (`heldBy`). A row names no issue
+ * of `active` or `waiting`: the three lists are one partition of the issues the record holds in
+ * the workflow, so a reader with all three has every issue and what each is doing. `heldBy` is
+ * absent, never empty, where no
  * issue holds the one that waits — a root whose Legion label is off, an issue whose own work is
  * finished and whose merge is what is left — and a key it names may be one the state's `issues`
  * does not hold, as `blockedBy` may today, since an issue the daemon has not observed holds work

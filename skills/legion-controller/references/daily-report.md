@@ -67,6 +67,13 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own
   merge) or its link is taken off (by a person or the tree's architect), and a children-first wait
   ends when the last open child leaves the workflow, so take nothing for them.
+- **What nothing starts.** Each issue in `admission.held`, grouped by its `reason`, with the
+  issues `heldBy` names. Give each group's count and name its issues; where a group is long, name
+  its issues of `--priority 0` and `--priority 1` and give the count of the rest. Say for each
+  group what ends the hold, from the table in
+  `skill://legion-controller/references/admission.md`, so a reader sees whose act the work waits
+  on. An issue whose `reason` is `unclassified` goes in the report with its `phase` and its
+  `status`: the daemon could give it no word, and a person reads it.
 - **Free slots.** Counted as the skill's "Free slots" says, in issues rather than trees; each
   stays free until an issue in the line takes it.
 - **Open capabilities.** Each row of `read_state`'s `capabilities` whose `status` is `open`: its
