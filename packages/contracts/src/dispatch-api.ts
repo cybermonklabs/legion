@@ -141,6 +141,16 @@ export type IssueRouteStatus = (typeof ISSUE_ROUTE_STATUSES)[number];
 export const MAX_ISSUE_BLOCKERS = 20;
 
 /**
+ * Maximum entries in an issue's `advances` input, before duplicate ids are removed: the most
+ * priorities one issue states it advances. It counts the issue's own relations alone, never what
+ * a child inherits from the issues above it, which is read-side: an issue five deep would
+ * otherwise pass the cap without writing anything. Generated into Go as
+ * `contracts.MaxIssueAdvances`, which `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}`
+ * enforce as `400 ADVANCES_INPUT` naming the limit.
+ */
+export const MAX_ISSUE_ADVANCES = 20;
+
+/**
  * The longest issue title, in UTF-16 units, counted after the trim `POST /api/v1/issues` and
  * `PATCH /api/v1/issues/{key}` apply; a longer one is `400 CAP_EXCEEDED`. Production's longest
  * title was 326 characters when this was set. It bounds the duplicate-title check, which compares

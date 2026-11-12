@@ -49,10 +49,14 @@ type createIssueInput struct {
 	// Project and Title are not required of a caller: a create that names an external
 	// owner/repo#n takes the project from that repository's mapping and the title from the
 	// external issue (:92-127, :169-170), and only a create that names neither is refused.
-	Project    string          `json:"project"`
-	Title      string          `json:"title"`
-	Parent     *string         `json:"parent"`
-	BlockedBy  []string        `json:"blocked_by"`
+	Project   string   `json:"project"`
+	Title     string   `json:"title"`
+	Parent    *string  `json:"parent"`
+	BlockedBy []string `json:"blocked_by"`
+	// Advances is the priorities the new issue advances, a list of priority ids. A create
+	// carries the whole list and no revision, and is never refused for it: the issue holds no
+	// relation yet, so there is no read to be answering (refuseAdvancesRevision).
+	Advances   []string        `json:"advances"`
 	External   string          `json:"external"`
 	Force      bool            `json:"force"`
 	Spec       *string         `json:"spec"`
@@ -78,6 +82,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	blockers, err := normalizeIssueBlockers(input.BlockedBy)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	advances, err := normalizeIssueAdvances(input.Advances)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -354,6 +363,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if err := writeBlockedBy(r.Context(), tx, key, input.Project, blockers); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// The new issue holds no relation, so every id it names is stated and none is retracted.
+	if len(advances) > 0 {
+		if err := writeIssueAdvances(r.Context(), tx, key, nil, advances, actor, time.Now().UTC()); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if componentsProvided {
 		if err := writeIssueComponents(r.Context(), tx, key, input.Project, *components); err != nil {

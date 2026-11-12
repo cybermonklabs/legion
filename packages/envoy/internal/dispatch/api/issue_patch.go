@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -39,9 +40,15 @@ type updateIssueInput struct {
 	Assignee      json.RawMessage       `json:"assignee"`
 	Parent        json.RawMessage       `json:"parent"`
 	BlockedBy     *[]string             `json:"blocked_by"`
-	Components    json.RawMessage       `json:"components"`
-	Repo          json.RawMessage       `json:"repo"`
-	Actor         *model.Actor          `json:"actor"`
+	// Advances is the replacement list of priority ids this issue advances ([] clears it), and
+	// AdvancesRevision the revision the read this write is answering returned. A write that
+	// carries the revision is a whole-set write; one that carries none writes single acts and
+	// may change at most one relation (refuseAdvancesRevision).
+	Advances         *[]string       `json:"advances"`
+	AdvancesRevision *int64          `json:"advances_revision"`
+	Components       json.RawMessage `json:"components"`
+	Repo             json.RawMessage `json:"repo"`
+	Actor            *model.Actor    `json:"actor"`
 }
 
 func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
@@ -58,6 +65,15 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if input.BlockedBy != nil {
 		var err error
 		blockers, err = normalizeIssueBlockers(*input.BlockedBy)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	var advances []string
+	if input.Advances != nil {
+		var err error
+		advances, err = normalizeIssueAdvances(*input.Advances)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -234,7 +250,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		// reopening status; every other field, its repository included, and closing it again,
 		// waits for a reopen.
 		addsLink := input.ExternalLinks != nil && !isExternalLinksSubset(*input.ExternalLinks, before.ExternalLinks)
-		others := input.Title != nil || input.Labels != nil || input.LabelsAdd != nil || priorityProvided || input.Route != nil || addsLink || assigneeProvided || parentProvided || input.BlockedBy != nil || repoProvided
+		others := input.Title != nil || input.Labels != nil || input.LabelsAdd != nil || priorityProvided || input.Route != nil || addsLink || assigneeProvided || parentProvided || input.BlockedBy != nil || input.Advances != nil || repoProvided
 		if others || (input.Status != nil && !reopening) || (input.Status == nil && input.Rank == nil && !componentsProvided && input.ExternalLinks == nil) {
 			writeError(w, "ISSUE_CLOSED", http.StatusConflict, "issue is closed")
 			return
@@ -316,7 +332,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if repoProvided {
 		set("repo", repo)
 	}
-	changed := len(sets) > 0 || componentsProvided || input.BlockedBy != nil
+	changed := len(sets) > 0 || componentsProvided || input.BlockedBy != nil || input.Advances != nil
 	if changed {
 		sets = append(sets, "updated_at = "+issueUpdatedNow)
 		if _, err := tx.Exec(r.Context(), `update issues set `+strings.Join(sets, ", ")+` where key = $1`, args...); err != nil {
@@ -339,6 +355,19 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.BlockedBy != nil {
 		if err := writeBlockedBy(r.Context(), tx, key, before.Project, blockers); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	if input.Advances != nil {
+		// The held set and the revision are the issue as this write's own row lock read it, so
+		// two writes of one issue decide the rule one after the other rather than together.
+		held := ownAdvances(before.Advances)
+		if err := refuseAdvancesRevision(held, before.AdvancesRevision, input.AdvancesRevision, advances); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err := writeIssueAdvances(r.Context(), tx, key, held, advances, actor, time.Now().UTC()); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -130,9 +131,39 @@ const issueProgressLateral = `
 		from issues c where c.parent_key = i.key
 	) progress on true`
 
+// issueAdvancesColumns are the two values every issue read answers for its `advances` relations,
+// in advancesScan's order: the priority ids the issue states now, and the revision a whole-set
+// write of them carries. An issue that states none reads as the empty list and revision 0.
+const issueAdvancesColumns = `coalesce(advances.ids, '{}'), coalesce(advances.revision, 0)`
+
+// issueAdvancesTerm is the current `advances` relations of every issue of `subjects`, keyed on
+// the issue, which both the listing and the single-issue read join to. The inner `distinct on`
+// is prioritystore.CurrentOut's reading of the log for many issues at once, over the same
+// priority_tuples_current index: the newest tuple per (issue, priority), asserted or not. The
+// ids are the asserted ones alone, since a relation whose last word is a retraction is no
+// relation now; the revision is the greatest seq of the whole set, retractions counted, because
+// it is what the store holds for the issue rather than what it answers, and a retraction a
+// writer did not see must move it too. A tuple that is the greatest of the issue is the newest
+// of its own pair as well, so the max over these rows is the max over every tuple.
+const issueAdvancesTerm = `left join (
+		select newest.from_id as issue_key,
+		       coalesce(array_agg(newest.to_id order by newest.to_id) filter (where newest.asserted), '{}') as ids,
+		       max(newest.seq) as revision
+		from (
+			select distinct on (t.from_id, t.to_id) t.from_id, t.to_id, t.seq, t.asserted
+			from priority_tuples t
+			where t.from_kind = '` + prioritystore.KindIssue + `' and t.kind = '` + prioritystore.RelationAdvances + `'
+				and t.to_kind <> '` + prioritystore.KindValue + `'
+				and t.from_id in (select key from subjects)
+			order by t.from_id, t.to_id, t.seq desc
+		) newest
+		group by newest.from_id
+	) advances on advances.issue_key = i.key`
+
 // issueSummaryColumns are the columns a listing row scans, in issueSummaryRow's order.
 const issueSummaryColumns = `i.key, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
 	       coalesce(blockers.keys, '{}'),
+	       ` + issueAdvancesColumns + `,
 	       i.assignee, i.route, i.updated_at, i.last_seq, i.created_by, i.created_at,
 	       coalesce(spec.id, ''),
 	       ` + issueClaimColumns + `,
@@ -141,9 +172,9 @@ const issueSummaryColumns = `i.key, i.title, i.status, i.priority, i.rank, i.lab
 	       ` + issueComponentsColumns + `,
 	       ` + refs.IssueRepoColumns
 
-// issueSummaryJoins resolve the six values a listing row carries beside the issue's own columns,
-// each for every issue of `subjects` at once rather than for one row at a time. The open-ask
-// read keeps the state filter in its own where clause, so it matches the partial
+// issueSummaryJoins resolve the seven values a listing row carries beside the issue's own
+// columns, each for every issue of `subjects` at once rather than for one row at a time. The
+// open-ask read keeps the state filter in its own where clause, so it matches the partial
 // asks_open(issue_key) where state = 'open' index instead of scanning asks, and the closed-issue
 // rule stays in the select list: a closed issue reports 0 open asks however many it has.
 var issueSummaryJoins = `left join (
@@ -169,6 +200,7 @@ var issueSummaryJoins = `left join (
 		where c.parent_key in (select key from subjects)
 		group by c.parent_key
 	) progress on progress.parent_key = i.key
+	` + issueAdvancesTerm + `
 	` + issueComponentsJoin + `
 	` + refs.IssueRepoJoin
 
@@ -241,6 +273,25 @@ func (p *progressScan) resolve() model.IssueProgress {
 		progress.Children = &model.ProgressCount{Done: p.childrenDone, Total: p.childrenTotal}
 	}
 	return progress
+}
+
+// advancesScan reads issueAdvancesColumns for one issue: the priority ids of its own current
+// `advances` relations, and the revision the store holds for them. Every entry it resolves is
+// the issue's own, so none is inherited; the inheritance walk, which answers an entry the issue
+// does not state itself, is the slice after this one.
+type advancesScan struct {
+	ids      []string
+	revision int64
+}
+
+func (a *advancesScan) targets() []any { return []any{&a.ids, &a.revision} }
+
+func (a *advancesScan) resolve() []model.IssueAdvance {
+	entries := make([]model.IssueAdvance, 0, len(a.ids))
+	for _, id := range a.ids {
+		entries = append(entries, model.IssueAdvance{ID: id, Inherited: false})
+	}
+	return entries
 }
 
 func normalizeIssueLabels(values []string) ([]string, error) {
@@ -395,6 +446,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 // says why), and resolving that row would refuse a page over a parent chain of its own.
 type issueSummaryRow struct {
 	issue      model.IssueSummary
+	advances   advancesScan
 	claim      claimScan
 	progress   progressScan
 	components componentsScan
@@ -404,7 +456,9 @@ type issueSummaryRow struct {
 // targets are the row's scan targets, after leading, which a paged read fills with the columns
 // it carries ahead of the issue's own.
 func (r *issueSummaryRow) targets(leading ...any) []any {
-	targets := append(leading, &r.issue.Key, &r.issue.Title, &r.issue.Status, &r.issue.Priority, &r.issue.Rank, &r.issue.Labels, &r.issue.Parent, &r.issue.BlockedBy, &r.issue.Assignee, &r.issue.Route, &r.issue.UpdatedAt, &r.issue.LastSeq, &r.issue.CreatedBy, &r.issue.CreatedAt, &r.issue.PrimaryArtifactID)
+	targets := append(leading, &r.issue.Key, &r.issue.Title, &r.issue.Status, &r.issue.Priority, &r.issue.Rank, &r.issue.Labels, &r.issue.Parent, &r.issue.BlockedBy)
+	targets = append(targets, r.advances.targets()...)
+	targets = append(targets, &r.issue.Assignee, &r.issue.Route, &r.issue.UpdatedAt, &r.issue.LastSeq, &r.issue.CreatedBy, &r.issue.CreatedAt, &r.issue.PrimaryArtifactID)
 	targets = append(targets, r.claim.targets()...)
 	targets = append(targets, &r.issue.OpenAsks)
 	targets = append(targets, r.progress.targets()...)
@@ -425,6 +479,8 @@ func (r *issueSummaryRow) resolve() (model.IssueSummary, error) {
 		return model.IssueSummary{}, err
 	}
 	issue.Claim = claim
+	issue.Advances = r.advances.resolve()
+	issue.AdvancesRevision = r.advances.revision
 	issue.Progress = r.progress.resolve()
 	issue.Components = r.components.resolve(issue.Key)
 	return issue, nil
@@ -681,6 +737,7 @@ var issueRowStatement = `
 		` + refs.IssueRepoTerms + `
 		select i.key, i.project_key, i.number, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
 		       coalesce((select array_agg(l.target_key order by l.target_key) from issue_links l where l.issue_key = i.key and l.kind = 'blocked_by'), '{}'),
+		       ` + issueAdvancesColumns + `,
 		       i.assignee, i.route, i.created_by, i.created_at, i.updated_at, i.closed_at,
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and a.is_primary), ''),
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedVerificationRole + `), ''),
@@ -692,6 +749,7 @@ var issueRowStatement = `
 		       ` + refs.IssueRepoColumns + `
 		from issues i
 		` + issueProgressLateral + `
+		` + issueAdvancesTerm + `
 		` + issueComponentsJoin + `
 		` + refs.IssueRepoJoin + `
 		where i.key = $1
@@ -711,11 +769,16 @@ func scanIssueRow(row pgx.Row) (model.Issue, model.IssueProgress, error) {
 	var claim claimScan
 	var progress progressScan
 	var repo repoScan
+	var advances advancesScan
 	targets := []any{
 		&issue.Key, &issue.Project, &issue.Number, &issue.Title, &issue.Status, &issue.Priority, &issue.Rank, &issue.Labels,
-		&issue.Parent, &issue.BlockedBy, &issue.Assignee, &issue.Route, &createdBy, &issue.CreatedAt, &issue.UpdatedAt, &issue.ClosedAt,
-		&issue.PrimaryArtifactID, &issue.VerificationArtifactID, &issue.PlanArtifactID, &issue.DecisionsArtifactID, &issue.LastSeq,
+		&issue.Parent, &issue.BlockedBy,
 	}
+	targets = append(targets, advances.targets()...)
+	targets = append(targets,
+		&issue.Assignee, &issue.Route, &createdBy, &issue.CreatedAt, &issue.UpdatedAt, &issue.ClosedAt,
+		&issue.PrimaryArtifactID, &issue.VerificationArtifactID, &issue.PlanArtifactID, &issue.DecisionsArtifactID, &issue.LastSeq,
+	)
 	targets = append(targets, claim.targets()...)
 	targets = append(targets, progress.targets()...)
 	targets = append(targets, components.targets()...)
@@ -727,6 +790,8 @@ func scanIssueRow(row pgx.Row) (model.Issue, model.IssueProgress, error) {
 		return model.Issue{}, model.IssueProgress{}, err
 	}
 	issue.Repo, issue.ResolvedRepo = own, resolvedRepo
+	issue.Advances = advances.resolve()
+	issue.AdvancesRevision = advances.revision
 	issue.Components = components.resolve(issue.Key)
 	resolved, err := claim.resolve(issue.Key)
 	if err != nil {

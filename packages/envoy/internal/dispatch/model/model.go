@@ -403,23 +403,40 @@ type IssueProgress struct {
 	Children *ProgressCount `json:"children"`
 }
 
+// IssueAdvance is one `advances` relation of an issue as a read answers it: the priority the
+// work advances, and whether the issue states the relation itself or inherits it from an issue
+// above it. Every read answers entries rather than bare ids, because the two cannot be told
+// apart by an id alone and only an own relation is a write's to retract. A write carries the
+// other shape, a bare list of priority ids, which states the issue's own relations and nothing
+// else (internal/dispatch/api/issue_advances.go).
+type IssueAdvance struct {
+	ID        string `json:"id"`
+	Inherited bool   `json:"inherited"`
+}
+
 // Issue is the complete native issue record.
 type Issue struct {
-	Key           string          `json:"key"`
-	Project       string          `json:"project"`
-	Number        int             `json:"number"`
-	Title         string          `json:"title"`
-	Status        string          `json:"status"`
-	Priority      *int            `json:"priority"`
-	Rank          string          `json:"rank"`
-	Labels        []string        `json:"labels"`
-	Parent        *string         `json:"parent"`
-	BlockedBy     []string        `json:"blocked_by"`
-	Assignee      *string         `json:"assignee"`
-	Claim         *IssueClaim     `json:"claim"`
-	Components    IssueComponents `json:"components"`
-	ExternalLinks []ExternalLink  `json:"external_links"`
-	Route         *string         `json:"route"`
+	Key       string   `json:"key"`
+	Project   string   `json:"project"`
+	Number    int      `json:"number"`
+	Title     string   `json:"title"`
+	Status    string   `json:"status"`
+	Priority  *int     `json:"priority"`
+	Rank      string   `json:"rank"`
+	Labels    []string `json:"labels"`
+	Parent    *string  `json:"parent"`
+	BlockedBy []string `json:"blocked_by"`
+	// Advances is the priorities this issue advances, its own relations and the ones it
+	// inherits, and AdvancesRevision the seq of the newest tuple the store holds for its own
+	// `advances` relations, 0 when it holds none. A whole-set write carries the revision the
+	// read it is answering returned.
+	Advances         []IssueAdvance  `json:"advances"`
+	AdvancesRevision int64           `json:"advances_revision"`
+	Assignee         *string         `json:"assignee"`
+	Claim            *IssueClaim     `json:"claim"`
+	Components       IssueComponents `json:"components"`
+	ExternalLinks    []ExternalLink  `json:"external_links"`
+	Route            *string         `json:"route"`
 	// Repo is the issue's own repository, owner/name, a mapping of its project; nil when it inherits.
 	Repo *string `json:"repo"`
 	// ResolvedRepo is the repository the issue targets, resolved on read: its own Repo, else its
@@ -506,18 +523,22 @@ type IssueClaimLiveness struct {
 
 // IssueSummary is the lightweight issue listing representation.
 type IssueSummary struct {
-	Key        string          `json:"key"`
-	Title      string          `json:"title"`
-	Status     string          `json:"status"`
-	Priority   *int            `json:"priority"`
-	Rank       string          `json:"rank"`
-	Labels     []string        `json:"labels"`
-	Parent     *string         `json:"parent"`
-	BlockedBy  []string        `json:"blocked_by"`
-	Assignee   *string         `json:"assignee"`
-	Claim      *IssueClaim     `json:"claim"`
-	Components IssueComponents `json:"components"`
-	Route      *string         `json:"route"`
+	Key       string   `json:"key"`
+	Title     string   `json:"title"`
+	Status    string   `json:"status"`
+	Priority  *int     `json:"priority"`
+	Rank      string   `json:"rank"`
+	Labels    []string `json:"labels"`
+	Parent    *string  `json:"parent"`
+	BlockedBy []string `json:"blocked_by"`
+	// Advances and AdvancesRevision are Issue's: every listing row answers the same entries and
+	// the same revision the issue's own read answers.
+	Advances         []IssueAdvance  `json:"advances"`
+	AdvancesRevision int64           `json:"advances_revision"`
+	Assignee         *string         `json:"assignee"`
+	Claim            *IssueClaim     `json:"claim"`
+	Components       IssueComponents `json:"components"`
+	Route            *string         `json:"route"`
 	// Repo and ResolvedRepo are Issue's.
 	Repo         *string `json:"repo"`
 	ResolvedRepo *string `json:"resolved_repo"`

@@ -29,6 +29,7 @@ import {
   LIVE_SOCKET_MAX_SUBSCRIPTIONS,
   LIVE_SOCKET_MIN_AGE_MS,
   MAX_BROADCAST_RECIPIENTS,
+  MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
@@ -302,6 +303,12 @@ const GoingRequestTTL = ${GOING_REQUEST_TTL_MS} * time.Millisecond
 // MaxIssueBlockers bounds blocked_by input before deduplication. Generated from
 // MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.
 const MaxIssueBlockers = ${MAX_ISSUE_BLOCKERS}
+
+// MaxIssueAdvances bounds the \`advances\` input of an issue write before deduplication: the most
+// priorities one issue states it advances, its own relations alone. Generated from
+// MAX_ISSUE_ADVANCES in packages/contracts so the server's refusal and every client's bound are
+// one number.
+const MaxIssueAdvances = ${MAX_ISSUE_ADVANCES}
 
 // MaxIssuePageLimit is the most issues one page of GET /api/v1/issues holds, and
 // DefaultIssuePageLimit the page size when a caller pages with offset alone. Generated from
