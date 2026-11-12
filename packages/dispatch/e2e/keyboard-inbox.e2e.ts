@@ -1,6 +1,7 @@
 import { setLiveSessions } from "./agents";
 import { createAsk, createComment, createIssue, createProject, getInbox, patchIssue } from "./api";
 import { recordClipboard } from "./clipboard";
+import { nextFrames } from "./frames";
 import { clearAssigneeFilter, closeAssigneeFilter, pickAssignee } from "./inbox-filter";
 import {
   hasReadingPane,
@@ -325,21 +326,32 @@ test.describe("inbox selection", () => {
       await markFromKeyboard(page, 2);
       // Let go of the row: one under the reader's hand is held on screen whatever the list does,
       // and this test is about the write, not that mechanism. With the reading column on the
-      // hand is the selection, which has nowhere to be put down, so the row the column is
-      // showing is the one row the list keeps.
+      // hand is the selection, which has nowhere to be put down; the row the column is showing
+      // is not held (`Inbox.tsx`), so it goes with the rest.
       if (!hasReadingPane(page)) {
         await page.keyboard.press("Escape");
       }
       await page.mouse.move(0, 0);
       const bar = page.getByRole("group", { name: "Selected rows" });
       await expect(bar).toContainText("2 selected");
+      // The Inbox read the other ask's landed snooze asks for, which still lists the refused ask.
+      const readAgain = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === "/api/v1/inbox" &&
+          response.request().method() === "GET"
+      );
       await bar.getByRole("combobox", { name: "Snooze selected asks" }).selectOption("tomorrow");
 
-      // Both rows go at once; the bar stays while its write is in the air, and counts the pick
-      // it is waiting on rather than the selection the optimistic move has just emptied. The
-      // list itself empties where the reader's hand was let go of above; where the hand is the
-      // selection, the row the column is showing is the one the list keeps.
-      await expect(rows).toHaveCount(hasReadingPane(page) ? 1 : 0);
+      // Both rows go at once, and stay gone while the write is out: the other ask's snooze lands
+      // first and the Inbox reads again, and that answer still lists the refused ask, whose PUT
+      // is held here, but the live write shows its own change again over it (R7 of
+      // dispatch://INFRA-299, which this row read the other way until 2026-11-12, when that answer
+      // put the refused row back before its refusal). The bar stays while its write is in the
+      // air, and counts the pick it is waiting on rather than the selection the optimistic move
+      // has just emptied.
+      await readAgain;
+      await nextFrames(page);
+      await expect(rows).toHaveCount(0);
       await expect(bar).toHaveCount(1);
       await expect(bar).toContainText("Snoozing 2…");
       await expect(bar).not.toContainText("0 selected");
