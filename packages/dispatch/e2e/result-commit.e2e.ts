@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import {
   createIssue,
   createIssueArtifact,
@@ -8,7 +6,7 @@ import {
   recordCheckResult,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // Dispatch stored a result at a mistyped commit once, and a reader could not tell it from the
@@ -31,10 +29,6 @@ A recorded result names the commit it ran at, whole.
 :::
 `;
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // Two pages print a result's line as plain text, where no title attribute can carry the commit
 // the line cut: the Activity tab, through `activity-model.ts`, and the review margin's Pinned
 // tab, which is the only place `event-description.ts` draws an event's own line (`EventBody`).
@@ -47,7 +41,8 @@ test.beforeEach(async () => {
 // document's one check, each result's record route reading through to the fake for the commit
 // it holds and the pull request's head; then one load of the Activity tab, two pin writes and
 // the margin's Pinned tab, which draws each pinned event's own line.
-test("a result's line names the whole commit, so a result at a mistyped commit is told from one at the head", async ({
+// @pr: The verification-result surface's own row: a result's line names the whole commit, so a mistyped one is told from the head.
+test("a result's line names the whole commit, so a result at a mistyped commit is told from one at the head @pr", async ({
   browser,
 }) => {
   await createProject({ key: "VER", name: "Verification" });

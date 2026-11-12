@@ -316,10 +316,11 @@ func (p *Pool) HealthyWithin(ctx context.Context, bound time.Duration) (int, err
 }
 
 // listenerPoolSize bounds the pool Listener and Dedicated take their connections from. Five
-// permanent connections dial through it - the delivery hub's, the event stream relay's and the
-// events outbox's listeners, the process's shared listener hub (pglisten.Hub, on which the
-// document rooms' room sync and cmd/dispatch's woken background loops are registered, one
-// connection for all of their channels) and the document rooms' NOTIFY sender - and a sixth, the
+// connections dial through it - the delivery hub's and the event stream relay's listeners, each
+// held only while something subscribes to them, the events outbox's listener, the process's shared
+// listener hub (pglisten.Hub, on which the document rooms' room sync and cmd/dispatch's woken
+// background loops are registered, one connection for all of their channels) and the document
+// rooms' NOTIFY sender - and a sixth, the
 // test hooks' (api/test_hooks_fanout.go), under DISPATCH_TEST_HOOKS alone, which production never
 // sets. Each connection is hijacked as soon as it is opened, so it leaves with its caller and the
 // pool holds none between dials: what one bounds is dials in flight, not connections held. A
@@ -330,11 +331,12 @@ const listenerPoolSize = 1
 
 // Listener returns one connection of its own for LISTEN, from a one-connection pool opened from the
 // shared pool's configuration and hijacked, so it holds no shared connection. The caller closes it.
-// The delivery hub (api/delivery_live_hub.go), the event stream relay (api/event_stream_relay.go),
-// the events outbox (outbox/lease.go) and, under the test hooks, their fan-out
-// (api/test_hooks_fanout.go) each hold one for as long as they wait for notifications, which is
-// the life of the process: a connection of the shared pool held that long would be one fewer for
-// every request, and a LISTEN on a pooled connection would end when the pool recycled it.
+// The events outbox (outbox/lease.go) holds one for the life of the process, as does the test
+// hooks' fan-out (api/test_hooks_fanout.go) under DISPATCH_TEST_HOOKS; the delivery hub
+// (api/delivery_live_hub.go) and the event stream relay (api/event_stream_relay.go) each hold one
+// while something subscribes to them, and close it when the last subscriber leaves. A connection
+// of the shared pool held that long would be one fewer for every request, and a LISTEN on a
+// pooled connection would end when the pool recycled it.
 func (p *Pool) Listener(ctx context.Context) (*pgx.Conn, error) {
 	listen, err := p.separate(&p.listen, listenerPoolSize, "listener", "")
 	if err != nil {
@@ -375,7 +377,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // (duty.Exclusive). One connection per caller that can be inside Exclusive at the same moment is
 // the whole requirement, and it is a caller and not a lease that needs one: Exclusive takes its
 // connection before it learns whether the lease is held, so a pass that skips because the other
-// process holds the lease holds a connection for that round trip too. Fifteen names are leased -
+// process holds the lease holds a connection for that round trip too. Sixteen names are leased -
 // the document compaction, the keyed writes' maintenance sweep (api.RunMaintenanceSweep, which
 // keeps the lease name suggestion-outcomes the suggestion sweep carried that work under), the
 // reference-excerpt reconciliation, the block-index reconciliation, the term-statistics refresh,
@@ -383,21 +385,27 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // reconcile (cireconcile.Lease), the edit-notice sweep, the document settlement resumption
 // (docs.RunSettlementResumption), the repair of closed and reopened issues' asks
 // (api.RunIssueAskRepair), one per delivery durable for the consumers' reconciliation
-// (delivery.consumerLease, a name each for delivery-events and delivery-jobs) and the server
-// process registry's prune (processes.RunPrune) - taken by fifteen callers, since each delivery
-// intake takes its own durable's name from a bind poll of its own, so fifteen callers can be
-// inside Exclusive at once. The suggestion outcome sweep is not among them: it takes no lease,
-// since the cursor row each of its pages holds for update serialises two processes by itself
-// (api/suggestion_outcomes.go). Fifteen connections are exactly those fifteen: the headroom is
-// zero, not one, and the next leased loop added here makes a sixteenth caller that waits for a
-// connection rather than failing, for as long as the longest pass then holding one - which is
-// why cmd/dispatch counts its leased callers against this number
+// (delivery.consumerLease, a name each for delivery-events and delivery-jobs), the server
+// process registry's prune (processes.RunPrune) and the embeddings project_key fill
+// (api.RunEmbeddingProjectKeyFill) - taken by sixteen callers, since each delivery intake takes
+// its own durable's name from a bind poll of its own, so sixteen callers can be inside Exclusive
+// at once. The fill is the one that is no loop of a cadence: it labels in a single pass of one to
+// two hours and holds a connection for the whole of it, tries for its lease again every five
+// minutes while another process is making that pass, and gives its connection back for good once
+// the rows stored before migration 20261109120000 are labelled - which is why it is counted here
+// like any other caller, since the hours it holds one are exactly the window in which every other
+// caller must still find a connection of its own. The suggestion outcome sweep is not among them: it
+// takes no lease, since the cursor row each of its pages holds for update serialises two
+// processes by itself (api/suggestion_outcomes.go). Sixteen connections are exactly those
+// sixteen: the headroom is zero, not one, and the next leased loop added here makes a
+// seventeenth caller that waits for a connection rather than failing, for as long as the longest
+// pass then holding one - which is why cmd/dispatch counts its leased callers against this number
 // (TestTheLeasePoolHoldsAConnectionForEveryLeasedCaller), so that caller fails a test instead.
 // They cannot come from the shared pool: a lease is held for the whole pass, which is minutes
 // for the compaction, and the shared pool's sharedPoolSize connections are what every request
 // reads through. The document compaction holds only its lease here: each document it compacts
 // reads and writes on the compaction pool (Pool.Compaction).
-const LeasePoolSize = 15
+const LeasePoolSize = 16
 
 // Leases is where a periodic maintenance loop takes the connection it holds its lease on, so that
 // only one process runs each pass (duty.Exclusive). The lease is a session-level advisory lock, so
@@ -422,22 +430,27 @@ const outboxPoolSize = 2
 // pools above, so it is counted here rather than by a method of Pool.
 const registryPoolSize = 1
 
-// permanentListeners is how many connections the listener pool dials and hands off for the life
-// of the process: the delivery hub's, the event stream relay's and the events outbox's listeners
-// (Listener), and the document rooms' two (Dedicated): the shared listener hub that room sync and
-// cmd/dispatch's woken background loops are registered on, and the NOTIFY sender, which opens at
-// the first send and then stays open. The outbox's LISTEN on dispatch_events and
-// dispatch_duty_holds is its own rather than a registration on the hub, as the delivery hub's and
-// the relay's are: cmd/dispatch builds the outbox only with NATS, and the LISTEN starts and stops
-// inside outbox.Outbox.Run, while the hub takes no registration once it runs.
-const permanentListeners = 5
+// listenerConnections is how many connections the listener pool dials and hands off at once in
+// production: the events outbox's LISTEN on dispatch_events and dispatch_duty_holds
+// (outbox/lease.go) and the document rooms' two (Dedicated) - the shared listener hub that room
+// sync and cmd/dispatch's woken background loops are registered on, and the NOTIFY sender, which
+// opens at the first send and then stays open - each held for the life of the process, and the
+// delivery hub's and the event stream relay's, each held only while something subscribes to them.
+// A process nobody streams from and no Delivery page is open on holds three of the five; the
+// count is what it may hold at once, which is why it is no longer named for permanence. The
+// outbox's LISTEN is its own rather than a registration on the hub, as the delivery hub's and the
+// relay's are: cmd/dispatch builds the outbox only with NATS, and the LISTEN starts and stops
+// inside outbox.Outbox.Run, while the hub takes no registration once it runs. The test hooks'
+// fan-out (api/test_hooks_fanout.go) holds a sixth under DISPATCH_TEST_HOOKS alone, which
+// production never sets, so it is not counted here.
+const listenerConnections = 5
 
 // ConnectionsPerProcess is the most connections one Dispatch server process opens to Postgres:
 // every pool's size - the shared, rooms, room-appends, health, lease, outbox and compaction pools,
 // the registry's own pool (processes.Register) and the event horizon's (Horizon) - and one
-// connection per permanent listener, which the listener pool dials and hands off rather than
-// holds.
-const ConnectionsPerProcess = sharedPoolSize + RoomsPoolSize + roomAppendsPoolSize + healthPoolSize + LeasePoolSize + outboxPoolSize + compactionPoolSize + registryPoolSize + horizonPoolSize + permanentListeners
+// connection per listener it may hold at once, which the listener pool dials and hands off rather
+// than holds.
+const ConnectionsPerProcess = sharedPoolSize + RoomsPoolSize + roomAppendsPoolSize + healthPoolSize + LeasePoolSize + outboxPoolSize + compactionPoolSize + registryPoolSize + horizonPoolSize + listenerConnections
 
 // Outbox is the pool the events outbox reads and records events through, reads the
 // followers and authors a publish routes to, and holds its publisher hold on. Under load the API's

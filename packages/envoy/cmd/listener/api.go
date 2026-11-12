@@ -540,6 +540,23 @@ func expectsReplyAnswer(requested json.RawMessage) json.RawMessage {
 // follows, which meets the same silent bus itself and is answered as the named 503. The roles come
 // from the registry's watched view of the claims, with no bucket call, and a view that is not
 // complete (store.ErrRoleViewNotReady) leaves them out rather than refusing the send.
+//
+// The title is read the same way and within that same one window, so the two read-throughs of one
+// stamp cannot cost the message more than the window the budget allots it (senderStampReadTimeout)
+// and a silent bus still leaves the publish its 1.5 s. session.SessionRegistry.Get answers this
+// listener's in-process cache alone, with one error for every row it does not hold
+// (nats.ErrKeyNotFound), and exactly that error is read through to the bucket with
+// session.SessionRegistry.Refresh: so a sender that registered a moment ago through another
+// listener, and any sender while the session cache refills after a reconnect, carries the title
+// the bucket holds. The read is made for a sender this cache misses, once per request, and nothing
+// remembers the miss - neither a negative cache nor a rate limit
+// (dispatch://INFRA-1368/artifact/decisions-md).
+//
+// Two senders still give a message with no title, and no read answers either. A row the bucket
+// dropped at its maximum age is gone from the bucket too, because a cached row's deadline is that
+// same drop point (session.SessionRegistry.Get), so a row this cache calls expired is one the
+// bucket no longer holds. A registration that carries no title is a hit with an empty value rather
+// than a miss, so it reaches the bucket not at all.
 func senderStamp(ctx context.Context, registry *store.Registry, sessions *session.SessionRegistry, sourceSession string) *contracts.EnvelopeSender {
 	if sourceSession == "" {
 		return nil
@@ -556,6 +573,10 @@ func senderStamp(ctx context.Context, registry *store.Registry, sessions *sessio
 	}
 	if entry, err := sessions.Get(sourceSession); err == nil {
 		sender.Title = entry.Title
+	} else if errors.Is(err, nats.ErrKeyNotFound) {
+		if refreshed, err := sessions.Refresh(readCtx, sourceSession); err == nil {
+			sender.Title = refreshed.Title
+		}
 	}
 	return sender
 }
@@ -708,10 +729,11 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, message, field)
 			return
 		}
-		dedupeKey := "agent." + targetSession + "." + id.New()
-		if body.IdempotencyKey != "" {
-			dedupeKey = "agent." + targetSession + "." + body.IdempotencyKey
+		idempotencyKey := body.IdempotencyKey
+		if idempotencyKey == "" {
+			idempotencyKey = id.New()
 		}
+		dedupeKey := contracts.AgentSendDedupeKey(targetSession, idempotencyKey)
 		item := messageEnvelope(body, contracts.AgentSubject(targetSession), dedupeKey, bodyExpectsReply)
 		record.item = &item
 		if err := item.Validate(); err != nil {
@@ -795,11 +817,37 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 // one the bus does not answer is the bus-unavailable 503 with Retry-After: 1 inside the caller's
 // attempt (writeStoreError).
 //
+// A registration this route removed takes its session consumer with it
+// (sessionDelivery.deleteAfterAnswer), so the consumer holds a slot of the stream's consumer
+// cap no longer: after the unconditional delete, and after a conditional one answered
+// session.EntryDeleted. The answer is written first and that delete runs after it, off this
+// handler's goroutine, because a handler holds its written response until it returns: the
+// delete waits on the session's lock with no bound of its own and then makes up to four calls
+// under a budget of its own, after a KV delete that may already have spent sendRequestBudget,
+// so a deregistration that succeeded would read as failed to a caller whose attempt ends at 5 s
+// (LISTENER_CALL_TIMEOUT_MS). The shutdown waits for a delete still running before it drains
+// the connection it runs on, and one the listener was too late to start is logged and left to
+// the sweep (sessionDelivery.awaitDeletes).
+//
+// Which consumer that delete removes is settled under the session's lock rather than by the
+// outcome above: it reads the session bucket again there, from the leader of that bucket's
+// stream, and deletes only where the bucket holds no record at all
+// (sessionDelivery.deleteConsumer). So an outcome that keeps the entry keeps the consumer, a
+// live registration standing behind it — another client instance's, a later one's, or the one a
+// lost race read — and so does a registration that landed between this route's own delete and
+// that lock: the relaunch behind an if_not_registered_after stop, whose entry this route read
+// before the relaunch wrote its own. That registration's own write is what the read must see,
+// which is why it is the leader's: a direct get of a replicated bucket is answered by any copy
+// near enough to current, and one that has not applied the write yet would answer not found for
+// a session that is live. The request answers exactly as it did before whether that delete ran,
+// stood down or failed: the entry is gone, which is what the caller asked for, and the
+// listener's sweep and the server's inactivity threshold each reach a consumer left behind.
+//
 // A request presenting a broker access token may remove only the registration of the session
 // that token names, and is refused 403 for any other (sessionNotBound): this route acts as the
 // session it names. The Claude Code /clear handoff still deregisters its predecessor, since it
 // does so while it is still that session.
-func deleteSessionHandler(sessions *session.SessionRegistry, logger *logging.Logger) http.HandlerFunc {
+func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -826,15 +874,24 @@ func deleteSessionHandler(sessions *session.SessionRegistry, logger *logging.Log
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
+		// The consumer's delete is made outside the request's own context, and after the
+		// answer: the entry is gone whatever the caller does next, a plugin that goes away as
+		// its deregistration answers - the shutdown this route mostly serves - must not leave
+		// the consumer behind for the sweep, and no caller waits on it.
+		deleting := context.WithoutCancel(r.Context())
 		if conditions == (session.DeleteConditions{}) {
-			if err := sessions.Delete(ctx, sessionID); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
+			// A session the registry no longer holds (nats.ErrKeyNotFound) is the success this
+			// route has always answered, and it leaves no registration standing either, so its
+			// consumer goes too.
+			if err := d.sessions.Delete(ctx, sessionID); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
 				writeStoreError(ctx, w, err, http.StatusInternalServerError)
 				return
 			}
 			w.WriteHeader(http.StatusOK)
+			d.consumers.deleteAfterAnswer(deleting, d.sessions, sessionID)
 			return
 		}
-		outcome, err := sessions.DeleteIf(ctx, sessionID, conditions)
+		outcome, err := d.sessions.DeleteIf(ctx, sessionID, conditions)
 		if err != nil {
 			writeStoreError(ctx, w, err, http.StatusInternalServerError)
 			return
@@ -842,6 +899,7 @@ func deleteSessionHandler(sessions *session.SessionRegistry, logger *logging.Log
 		switch outcome {
 		case session.EntryDeleted:
 			writeJSON(w, http.StatusOK, deleteSessionResponse{Deleted: true})
+			d.consumers.deleteAfterAnswer(deleting, d.sessions, sessionID)
 		case session.EntryKeptForAnotherInstance:
 			writeJSON(w, http.StatusOK, deleteSessionResponse{
 				Reason: "the registration belongs to another client instance",
@@ -873,7 +931,8 @@ type deleteSessionResponse struct {
 }
 
 // publishHandler rejects agent-targeted topics (must use /v1/messages/send
-// instead) and the listener's own kept lane, and sends the envelope. A role
+// instead) and the listener's own lanes, the kept one and the session resume one, and sends the
+// envelope. A role
 // topic is forwarded to its holder and
 // an ad-hoc topic confirmed with each self-subscribed recipient, both answered
 // once confirmed or when publishDeliveryWindow from the request's arrival has
@@ -951,8 +1010,19 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 				"cannot publish to "+bus.LegionWakeTopic+"; the listener alone reports a Legion pod wake", "topic")
 			return
 		}
-		if strings.HasPrefix(request.Topic, bus.KeptTopicPrefix) {
-			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "cannot publish to "+bus.KeptTopicPrefix+" topics; that lane is the listener's own, holding the copies it keeps for a role's next holder and the cursors of its drains")
+		// A lane of the listener's own is refused, and named in the refusal as the stream itself
+		// spells it, by the one call that covers every one of them (bus.ListenerOwnLaneOf), so a
+		// lane the stream gains is refused and named here with
+		// nothing written out a second time. What each holds says why: the kept lane holds the
+		// copies the listener keeps for a role's next holder and the cursors of its drains, so
+		// a bearer publishing there could rewind a role's drain or put a copy of its own on the
+		// lane; the resume lane holds its record of where a deleted session consumer stopped,
+		// which is where that session's consumer is created again, so one publishing there
+		// would choose where another session's delivery resumes and make it miss every message
+		// stored before that floor or read again what it has read.
+		if lane := bus.ListenerOwnLaneOf(request.Topic); lane != "" {
+			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest,
+				"cannot publish to "+lane+" topics; that lane is the listener's own, holding the copies it keeps for a role's next holder with the cursors of its drains, or its record of where a deleted session consumer stopped, and the listener alone writes it", "topic")
 			return
 		}
 		message, field, bodyExpectsReply := validateMessageBody(request.messageBody)
@@ -1055,6 +1125,15 @@ type sessionInfo struct {
 	// predates the fields.
 	Plugin        string `json:"plugin,omitempty"`
 	PluginVersion string `json:"plugin_version,omitempty"`
+	// ClientInstanceID names the client process whose registration this is
+	// (session.SessionEntry.ClientInstanceID): one Oh My Pi Envoy extension instance, one
+	// Claude Code channel-server process, each minting the id at its own start, so it tells
+	// one process's registration from its successor's under the same session id. It is left
+	// out where the entry carries none - a client predating it, or one that states no
+	// instance - as GET /v1/roles/<role> leaves its own client_instance_id out
+	// (roleGetHandler), so a client reads an absent field as "this registration names no
+	// process" rather than as the empty string.
+	ClientInstanceID string `json:"client_instance_id,omitempty"`
 }
 
 // sessionInterestReadTimeout bounds sessionInfoFor's read of one session's interest record from
@@ -1105,21 +1184,22 @@ func sessionInfoFor(ctx context.Context, registry *store.Registry, entry session
 // from one that has stopped without comparing timestamps itself.
 func sessionInfoWith(entry session.ListEntry, held []string) sessionInfo {
 	return sessionInfo{
-		SessionID:      entry.SessionID,
-		State:          entry.State,
-		MachineID:      entry.MachineID,
-		Host:           entry.HostOrMachine(),
-		TmuxPlace:      entry.TmuxPlace,
-		Dir:            entry.Dir,
-		Port:           entry.Port,
-		Title:          entry.Title,
-		Capabilities:   append([]string{}, entry.Capabilities...),
-		SelfSubscribed: entry.SelfSubscribed,
-		Roles:          held,
-		UpdatedAt:      entry.UpdatedAt,
-		LastSeen:       entry.UpdatedAt,
-		Plugin:         entry.Plugin,
-		PluginVersion:  entry.PluginVersion,
+		SessionID:        entry.SessionID,
+		State:            entry.State,
+		MachineID:        entry.MachineID,
+		Host:             entry.HostOrMachine(),
+		TmuxPlace:        entry.TmuxPlace,
+		Dir:              entry.Dir,
+		Port:             entry.Port,
+		Title:            entry.Title,
+		Capabilities:     append([]string{}, entry.Capabilities...),
+		SelfSubscribed:   entry.SelfSubscribed,
+		Roles:            held,
+		UpdatedAt:        entry.UpdatedAt,
+		LastSeen:         entry.UpdatedAt,
+		Plugin:           entry.Plugin,
+		PluginVersion:    entry.PluginVersion,
+		ClientInstanceID: entry.ClientInstanceID,
 	}
 }
 
@@ -1262,6 +1342,85 @@ func sessionsHandler(registry *store.Registry, sessions *session.SessionRegistry
 	}
 }
 
+// sessionRegistrationView is the one value the view selector of GET /v1/registry/<session_id>
+// takes: the registration-only answer writeSessionRegistration writes. Any other value is
+// refused 400 naming the selector, as if_not_registered_after refuses a value it cannot read
+// (deleteSessionHandler), because a caller whose selector was silently dropped would be handed
+// the heavy answer it asked not to have and would read that answer's 503 as its own session's.
+const sessionRegistrationView = "registration"
+
+// sessionRegistration is what GET /v1/registry/<session_id>?view=registration answers: what the
+// session bucket holds for that id, with nothing joined to it. It is a type of its own rather
+// than a sessionInfo because this view reads neither the session's interest record nor the role
+// claims, and a sessionInfo with empty topics and roles would be indistinguishable from a
+// session that holds none. It therefore carries none of the full answer's other fields - no
+// topics, roles, machine_id, host, tmux_place, dir, port, title, capabilities, self_subscribed,
+// plugin or plugin_version - and says only what the registration itself says: which session it
+// is, the state that registration puts it in, when it was written, and which client process
+// wrote it.
+type sessionRegistration struct {
+	SessionID string        `json:"session_id"`
+	State     session.State `json:"state"`
+	// LastSeen and UpdatedAt are both the registration's own write
+	// (session.SessionEntry.UpdatedAt), under the two names the full answer gives it
+	// (sessionInfoWith), so a caller reads this view with the reader it already has for that
+	// one.
+	LastSeen  int64 `json:"last_seen"`
+	UpdatedAt int64 `json:"updated_at"`
+	// ClientInstanceID names the client process whose registration this is
+	// (session.SessionEntry.ClientInstanceID), and is what this view exists to answer. It is
+	// left out where the entry carries none - a client predating the field, or one that states
+	// no instance - as sessionInfo leaves it out, so a reader takes an absent field for "this
+	// registration names no process" rather than for the empty string.
+	ClientInstanceID string `json:"client_instance_id,omitempty"`
+}
+
+// writeSessionRegistration answers GET /v1/registry/<session_id>?view=registration: the stored
+// registration alone, for the caller that names its client instance in a delete that follows
+// (the Legion daemon's clean stop of a dead role). It answers whenever the session bucket
+// answers, because it makes no other read: no claims view is read and no interest record, where
+// the full answer reads both (sessionInfoFor) and so turns a claims view that is still refilling
+// into a 503 and a record this build cannot decode into a 500.
+//
+// The entry is read from the session bucket itself and never from this listener's cache
+// (bucketSessionEntry), for the reason that function's own comment gives: a cached entry can
+// carry a client instance id the session has since replaced, or none where the bucket has one,
+// and the one caller of this view decides a delete on that id. A replaced id would have the
+// listener keep the stop as another client instance's, which is the symptom this view is here to
+// end.
+//
+// No state filter applies: every entry the bucket holds is answered 200 with the state its own
+// record puts it in, gone included, so include=unresponsive decides nothing under this view. The
+// caller is deciding whether to remove a registration, and a registration that exists is one it
+// may remove whatever state it reads; a filter here would withhold exactly the records a stop is
+// owed for.
+//
+// A key NATS refuses (bus.ErrRefused) is tested first, as the full view tests it first and for
+// the same reason: Refresh reports a refused key as a missing one too, and an id NATS will never
+// hold is the caller's own input, answered as the 413 or 400 writeBusUnavailable gives it. The
+// bucket's word that it holds no record is the 404 the full view writes (noLiveSession), with
+// session.Gone as the state a session with no record is in. Every other error is a read that did
+// not answer, the bus-unavailable 503 with Retry-After: 1.
+func writeSessionRegistration(ctx context.Context, w http.ResponseWriter, d *listenerDeps, sessionID string) {
+	entry, err := bucketSessionEntry(ctx, d.sessions, sessionID, roleHolderReadTimeout)
+	switch {
+	case errors.Is(err, bus.ErrRefused):
+		writeBusUnavailable(w, err)
+	case errors.Is(err, nats.ErrKeyNotFound):
+		writeJSON(w, http.StatusNotFound, noLiveSession(d.sessions, sessionID, entry, session.Gone))
+	case err != nil:
+		writeBusUnavailable(w, err)
+	default:
+		writeJSON(w, http.StatusOK, sessionRegistration{
+			SessionID:        sessionID,
+			State:            d.sessions.EntryState(entry),
+			LastSeen:         entry.UpdatedAt,
+			UpdatedAt:        entry.UpdatedAt,
+			ClientInstanceID: entry.ClientInstanceID,
+		})
+	}
+}
+
 // sessionEntryHandler answers GET /v1/registry/<session_id>, the one question a caller holding a
 // session id asks before it addresses that session: is this session live, and how is it named? The
 // read goes through liveSessionEntry, so a session this listener's cache does not hold yet — the
@@ -1285,6 +1444,10 @@ func sessionsHandler(registry *store.Registry, sessions *session.SessionRegistry
 // within sendRequestBudget — is a 503 to retry: never a session a caller may take for ended, nor
 // one with no topics or roles. An interest record this build cannot decode is the 500
 // writeInterestRecordUnreadable writes: the bus answered it.
+//
+// view=registration is answered by writeSessionRegistration, whose comment says what it reads
+// and answers; any other value of view is refused 400 naming the selector, and no view at all is
+// this route's own answer, unchanged in every respect.
 func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -1294,6 +1457,18 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 		sessionID := strings.TrimPrefix(r.URL.Path, "/v1/registry/")
 		if sessionID == "" {
 			writeJSONError(w, http.StatusBadRequest, "session_id is required", "session_id")
+			return
+		}
+		switch r.URL.Query().Get("view") {
+		case sessionRegistrationView:
+			ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+			defer cancel()
+			writeSessionRegistration(ctx, w, d, sessionID)
+			return
+		case "":
+			// No selector is the full answer this route has always given, built below.
+		default:
+			writeJSONError(w, http.StatusBadRequest, "view must be "+sessionRegistrationView, "view")
 			return
 		}
 		accept := sessionIsLive
@@ -2124,14 +2299,34 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// set to the stored topics, this registration's included, before the registration answers,
 		// so a message published on a newly followed stored topic after the answer is the
 		// consumer's to deliver.
-		delivery := d.consumers.register(r.Context(), body, d.registry)
+		//
+		// A registration answered consumer holds the session's lock from that consumer call
+		// (bus.SessionConsumers.Ensure) until its entry is written (PutWithin), and releases it
+		// here (sessionDelivery.register): a consumer delete of this listener's takes the same
+		// lock and deletes only where the session bucket holds no record, so this
+		// registration's entry is either not written yet and the delete not started, or
+		// written by the time that read is made. Both halves are needed, the lock and the read
+		// the delete makes under it, which is the bucket's leader's answer rather than a
+		// direct get: a copy that has not applied this write yet would answer the delete not
+		// found for the session this registration has just made live
+		// (sessionDelivery.deleteConsumer). Without them a clean stop that read the entry this
+		// registration replaces would delete the consumer of a session that is live again, and
+		// its relay would pause until the session registered anew. A registration left on the
+		// core path releases nothing (noUnlock).
+		delivery, unlock := d.consumers.register(r.Context(), body, d.registry)
+		// Released where it is meant to be, right after the entry is written, and deferred
+		// here as the backstop: the release is idempotent, so a path that leaves this handler
+		// without reaching that line still frees the session's lock.
+		defer unlock()
 		if body.SelfSubscribed || delivery.relayed() {
 			epochChanged := false
 			if delivery.relayed() {
 				previous, err := d.sessions.Get(body.SessionID)
 				epochChanged = err != nil || previous.Delivery != session.DeliveryConsumer || previous.Epoch != delivery.epoch
 			}
-			if err := d.sessions.PutWithin(ctx, body.SessionID, sessionEntryFromSubscribe(body, machineID, delivery)); err != nil {
+			err := d.sessions.PutWithin(ctx, body.SessionID, sessionEntryFromSubscribe(body, machineID, delivery))
+			unlock()
+			if err != nil {
 				logger.Error("listener session registry put failed", slog.String("session_id", body.SessionID), slog.String("error", err.Error()))
 				writeStoreError(ctx, w, fmt.Errorf("session registry unavailable: %w", err), http.StatusServiceUnavailable)
 				return
@@ -2272,7 +2467,7 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 		d.consumers.refollow(ctx, d, sessionID)
 	}, logger))
 	v1.Handle("/v1/sessions", sessionsHandler(d.registry, d.sessions))
-	v1.Handle("/v1/sessions/", deleteSessionHandler(d.sessions, logger))
+	v1.Handle("/v1/sessions/", deleteSessionHandler(d, logger))
 	v1.HandleFunc("/v1/messages/send", sendHandler(d, logger))
 	v1.HandleFunc("/v1/messages/publish", publishHandler(d, logger))
 	v1.HandleFunc("/v1/replay", replayHandler(d, logger))

@@ -1,0 +1,11 @@
+{
+  "causes": [
+    "launch_refused",
+    "died",
+    "never_registered",
+    "stale_plugin",
+    "prompt_retires_exhausted",
+    "provider_error",
+    "unrecorded"
+  ]
+}

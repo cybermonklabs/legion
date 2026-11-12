@@ -70,6 +70,10 @@ const ask: Ask = {
     origin: { session_title: "Architect for CORE-1" },
     owner: "sjawhar",
   },
+  artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
   block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
   block_id: "b-1",
   created_at: new Date(Date.now() - 3 * 60_000).toISOString(),
@@ -195,6 +199,7 @@ function renderCard({
         <AskBlockCard
           ask={hasIndexedAsk ? indexed : undefined}
           host={host}
+          inBody={false}
           onAnswered={onAnswered}
           owner={owner}
           readOnly={readOnly}
@@ -432,7 +437,7 @@ test("the hosted card offers the options as the shared choice rows, plus Other, 
     ...ask,
     answer: {
       at: new Date().toISOString(),
-      selected: input.selected,
+      selected: input.selected ?? null,
       text: input.text ?? "",
       user: "alice",
     },

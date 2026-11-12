@@ -216,6 +216,29 @@ export type AgentStreamFrame =
       readonly kind: "commands";
       readonly seq: number;
       readonly commands: readonly AgentStreamCommand[];
+    }
+  /**
+   * How much of its context window the session fills now, as the host's own `getContextUsage()`
+   * reports it (INFRA-812). The publisher sends it after each message of a turn, at each turn
+   * start and after a compaction, at most one time in each of its own intervals, and keeps the
+   * newest one in every replay. The frame carries the two figures alone; the share they make is
+   * the viewer's to draw.
+   *
+   * They travel in a frame of their own rather than beside the model on `settings` because a
+   * viewer drops a whole frame whose fields do not validate, and a bad figure here would take
+   * the model picker and the thinking level down with it.
+   */
+  | {
+      readonly v: typeof AGENT_STREAM_PROTOCOL;
+      readonly kind: "context";
+      readonly seq: number;
+      /** Context tokens the conversation holds now, as the host estimates them. */
+      readonly tokens: number;
+      /**
+       * The current model's context window, in tokens. Always above zero: a session whose host
+       * reports no window publishes no frame at all.
+       */
+      readonly contextWindow: number;
     };
 
 /** What the relay asks a session for, and the ping that keeps it publishing. */
@@ -250,4 +273,24 @@ export interface AgentStreamReplay {
 export function capAgentStreamText(text: string, limit: number): string {
   if (text.length <= limit) return text;
   return text.slice(0, limit) + AGENT_STREAM_TRUNCATION_SUFFIX;
+}
+
+/**
+ * What a `!command`'s report puts between the person's own line and the rest of it: the output,
+ * fenced, and how the command ended (dispatch://INFRA-812, R4). The session writes the report
+ * (`shellCommandReport` in `packages/pi-envoy/src/typed-shell.ts`) and publishes it as the
+ * person's own user message, because they ran the line and the host wrote nothing; the Agents
+ * page reads it back to show the pair once rather than one under the other. The rule is spelt
+ * here so neither side can drift from the other.
+ */
+export const SHELL_COMMAND_REPORT_SEPARATOR = "\n\n";
+
+/**
+ * Whether `text`, a streamed user turn's text, is the report of the `!command` message whose
+ * stored body is `body`: the body is a command, and the report opens with that whole body and
+ * the separator above. Anything else is some other text under the message's tag, which the bus
+ * is open to any client to publish.
+ */
+export function isShellCommandReport(text: string, body: string): boolean {
+  return body.startsWith("!") && text.startsWith(`${body}${SHELL_COMMAND_REPORT_SEPARATOR}`);
 }

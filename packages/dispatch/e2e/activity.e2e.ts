@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import {
   answerAsk,
   claimIssue,
@@ -15,7 +13,8 @@ import {
   resolveAsk,
   resolveComment,
 } from "./api";
-import { resetDatabase, setEventCreatedAt } from "./seed";
+import { setEventCreatedAt } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 const agent = {
@@ -23,13 +22,10 @@ const agent = {
   as: "agent" as const,
 };
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // The other half of `e2e/conversation.e2e.ts`'s "one card per conversation and no event row":
 // the rows the Conversation leaves out are all here, on an issue seeded exactly the same way.
-test("the Activity tab lists the event rows the Conversation does not draw", async ({
+// @pr: The issue's event history, which no other row reads whole.
+test("the Activity tab lists the event rows the Conversation does not draw @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -188,6 +184,42 @@ test("an Activity row pins into the review margin and unpins from it", async ({ 
     await margin.getByRole("button", { name: "Unpin" }).click();
     await expect(margin.getByText("No pinned items.")).toBeVisible();
     await expect(row.getByRole("button", { name: "Pin" })).toHaveAttribute("aria-pressed", "false");
+  } finally {
+    await alice.close();
+  }
+});
+
+// The fake listener holds no record of `ghost`, so the mention is refused as `no live session
+// ghost` and its receipt settles `failed`: the row must not read as a delivery.
+test("an Activity row says a mention that could not be delivered was not delivered", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Mention of a missing session" });
+  await createComment(
+    issue.key,
+    { body: "Look at this, @session:ghost.", mentions: [{ target: "session:ghost" }] },
+    { login: "alice" }
+  );
+  await expect
+    .poll(async () =>
+      (await getIssueEvents(issue.key, { limit: 100 })).flatMap((event) =>
+        event.type === "comment.delivery" ? [event.payload.state] : []
+      )
+    )
+    .toEqual(["failed"]);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}/activity`);
+    const list = page.getByRole("list", { name: "Issue activity" });
+    await expect(
+      list
+        .getByRole("listitem")
+        .filter({ hasText: "could not deliver a comment mention to session:ghost" })
+    ).toHaveCount(1);
+    await expect(list).not.toContainText("delivered a comment mention");
   } finally {
     await alice.close();
   }

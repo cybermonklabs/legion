@@ -155,6 +155,10 @@ func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T
 	ctx := context.Background()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, issue)
+	// The issue is at work, so it holds one of the cap's slots: a phase worker's start is one
+	// row, which carries the task and runs when the issue holds a slot (workflow.StartOrOwe).
+	// This test runs no admission pass of its own, so the slot is seeded here.
+	holdSlot(t, pool, issue.Key)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds // exactly what the daemon wires
 	planner, err := claim.NewToken("legion", issue.Key, claim.RolePlanner)
@@ -536,7 +540,9 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-	sup.OnDurableState((&workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger()}).claimDurableState)
+	// The terminal hook carries the deployment's limits into the fact, as the boot's attach does
+	// (workflowRuntime.attach), so the notice below names each count against its own limit.
+	sup.OnDurableState((&workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger(), limits: sup.deps.Limits}).claimDurableState)
 	planner, err := claim.NewToken("legion", issue.Key, claim.RolePlanner)
 	if err != nil {
 		t.Fatal(err)
@@ -589,11 +595,20 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 	if err := die(); err == nil {
 		t.Fatal("the death whose relaunch the runtime refused answered nil, want the refusal")
 	}
-	if got := machine.Claim().State; got != supervise.StateFailed {
-		t.Fatalf("after its relaunches ran out the planner is %s, want failed", got)
+	failed := machine.Claim()
+	if failed.State != supervise.StateFailed {
+		t.Fatalf("after its relaunches ran out the planner is %s, want failed", failed.State)
 	}
+	// The worker-died carries the failure with it: the cause the relaunch of the death recorded,
+	// the sentence the supervisor wrote beside it, and the counts that failure left against the
+	// deployment's limits (record.NoticeFailure, workflow's noticeFailure). The deaths are not
+	// counted here — a parked agent holding no task dies uncounted — which the record says in
+	// as many words.
 	died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Implementing,
-		Reason: "the planner does not work LEGION-208's phase implementing; nothing is held"}
+		Reason: "the planner does not work LEGION-208's phase implementing; nothing is held",
+		Failure: &record.NoticeFailure{Cause: string(supervise.CauseDied), Detail: failed.Failure,
+			LaunchFailures: record.FailureBudget{Count: 2, Limit: 2}, Deaths: record.FailureBudget{Limit: 2},
+			PromptFailures: record.FailureBudget{Limit: 2}, PromptRetires: record.FailureBudget{Limit: 2}}}
 	var notices []record.OutboxPayload
 	testwait.Eventually(t, "the architect to be told of the finished planner's failure", func() bool {
 		notices = nil
@@ -658,7 +673,7 @@ func TestAReadmittedTreeKeepsItsOpenPullRequest(t *testing.T) {
 			return err
 		}
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: "acme/widgets", Number: 86, Branch: "legion/" + key, HeadSHA: "sha-1",
-			HeadUpdatedAt: time.Now(), Failing: []string{}, CheckRuns: []record.AttemptRun{}, FixAttempts: 2})
+			HeadUpdatedAt: time.Now(), Failing: []string{}, CheckRuns: []record.AttemptRun{}, CheckedHead: "sha-1"})
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -687,12 +702,12 @@ func TestAReadmittedTreeKeepsItsOpenPullRequest(t *testing.T) {
 	if current != phase.Testing || generation != 2 {
 		t.Fatalf("generation %d is in %s after its implementer completed, want generation 2 in testing on the open pull request #86", generation, current)
 	}
-	var fixAttempts int
-	if err := pool.QueryRow(ctx, "select fix_attempts from pull_requests where issue = $1 and number = 86", key).Scan(&fixAttempts); err != nil {
+	var checkedHead string
+	if err := pool.QueryRow(ctx, "select checked_head from pull_requests where issue = $1 and number = 86", key).Scan(&checkedHead); err != nil {
 		t.Fatalf("read the kept pull request: %v", err)
 	}
-	if fixAttempts != 0 {
-		t.Fatalf("kept pull request fix attempts = %d, want generation 1's count reset", fixAttempts)
+	if checkedHead != "" {
+		t.Fatalf("kept pull request checked head = %q, want generation 1's reading cleared", checkedHead)
 	}
 }
 

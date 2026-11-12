@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  The CI reconcile pass now writes a head's CI record only when GitHub's answer about that head
+  has changed. A GraphQL answer carries no ETag, so the batched pass recorded every completed
+  check run and check suite of every head at every pass -- for 833 heads of about 39 checks
+  each, some 30,000 record updates, each a read from NATS, an unmarshal and a hash, inside the
+  same five-minute bound that holds about 178 seconds of GitHub's own time. The pass now keeps
+  a fingerprint of the objects it mapped for each head a query answered whole, which is what an
+  ETag is to a REST read: a head whose next answer fingerprints the same costs the one existence
+  read the record guard already makes and no write at all. The fingerprint follows the ETags'
+  rules -- it is kept only when every observation of the head was recorded, and dropped when a
+  write of the head failed, when its record has gone, or when a cycle no longer lists the head,
+  while a head a deadline or a rate limit cut short keeps what it had. The pass line adds
+  heads_unchanged, the heads a query answered the objects already recorded for.

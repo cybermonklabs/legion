@@ -1,4 +1,4 @@
-import { GATED_STEPS, type LegionRole } from "@legion/contracts";
+import { GATED_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
 import {
   LegionGateRegisterRequest,
   type LegionGrant,
@@ -18,6 +18,7 @@ import {
   mintClaimGrant,
   PHASE_OP_SENTENCES,
   phaseOpParameters,
+  unknownFieldsRefusal,
 } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext, ToolResult } from "@legion/pi-shared/pi-types";
 import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
@@ -64,20 +65,22 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "handoff_complete",
     "ready_for_update",
   ],
-  controller: ["read_state", "set_status"],
+  controller: ["read_state", "set_status", "fresh_session", "compact"],
 };
 
 /** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'. */
 const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   register_gate: ["issue", "artifactId", "version", "step"],
   release_children: ["issues"],
-  retry_or_escalate: ["issue", "decision"],
+  retry_or_escalate: ["issue", "decision", "reason"],
   sign_off: ["issue"],
   close_root: ["issue", "reason"],
   park_child: ["issue"],
   rerun_child: ["issue"],
   read_state: [],
   set_status: ["issue", "status"],
+  fresh_session: ["issue", "role"],
+  compact: ["issue", "role"],
 };
 
 const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
@@ -113,7 +116,15 @@ function toolSchema(pi: PiApi): unknown {
       .optional(),
     issues: z.array(z.string()).optional(),
     to: phase.to,
-    reason: phase.reason,
+    // The why of the two operations that take one, a string as the phase op's own `reason` is.
+    // Agents sent it to park_child too, whose daemon route keeps no why, so the field says where
+    // that why goes.
+    reason: z
+      .string()
+      .describe(
+        "close_root's and request_backward_move's why; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it"
+      )
+      .optional(),
     decision: z.enum(["retry", "escalate"]).optional(),
     summary: phase.summary,
     verdict: phase.verdict,
@@ -121,6 +132,7 @@ function toolSchema(pi: PiApi): unknown {
     wake_at: phase.wake_at,
     round: phase.round,
     status: z.enum(ISSUE_STATUSES).optional(),
+    role: z.enum(LEGION_ROLES).optional(),
   });
 }
 
@@ -135,14 +147,21 @@ function requiredString(
   return value;
 }
 
+/** Refuses every field `operation` does not take, in the phase ops' wording
+ * (`unknownFieldsRefusal`). A `reason` refused on park_child or rerun_child also says where its
+ * why goes: agents send one there, and the daemon keeps no why for either. */
 function assertOperationInput(parameters: Record<string, unknown>, operation: string): void {
   const fields = OPERATION_FIELDS[operation];
   if (fields === undefined) throw new Error(`Unsupported legion operation: ${operation}`);
-  for (const name of Object.keys(parameters)) {
-    if (name !== "op" && !fields.includes(name)) {
-      throw new Error(`${operation} does not accept field "${name}"`);
-    }
-  }
+  const refused = Object.keys(parameters).filter((name) => name !== "op" && !fields.includes(name));
+  if (refused.length === 0) return;
+  const refusal = unknownFieldsRefusal(operation, refused, fields);
+  const childOperation = operation === "park_child" || operation === "rerun_child";
+  throw new Error(
+    childOperation && refused.includes("reason")
+      ? `${refusal}. Say why in a dispatch comment on the child`
+      : refusal
+  );
 }
 
 /** The daemon's role-local workflow surface: no operation can schedule a worker. Every operation
@@ -193,17 +212,22 @@ export function createLegionTool(deps: {
   return {
     name: "legion",
     label: "legion",
-    // No sentence on read_record, whose name says what it reads; the shared sentence on
-    // read_release_records before handoff_complete's contract, since the records it answers are
-    // not read from its name; after that contract the shared sentence on request_backward_move
-    // (an architect's names the issue it returns from accepting), then the architect's sign_off
-    // and the controller's operations: the exact text tools.test.ts pins, so a change to the
-    // shared template cannot reach an Oh My Pi agent unnoticed.
+    // The shared sentence on read_record, since its name does not say that it reads the caller's
+    // own issue when the call names none; the shared sentence on read_release_records before
+    // handoff_complete's contract, since the records it answers are not read from its name;
+    // after that contract the shared sentence on request_backward_move (an architect's names the
+    // issue it returns from accepting), then the architect's retry_or_escalate, its sign_off and
+    // the controller's operations: the exact text tools.test.ts pins, so a change to the shared
+    // template cannot reach an Oh My Pi agent unnoticed.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
-      before: PHASE_OP_SENTENCES.readReleaseRecords,
+      before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
       after:
         PHASE_OP_SENTENCES.requestBackwardMove +
+        "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
+        "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
+        "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
+        "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
         "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
         "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
         "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: take each one " +
@@ -212,7 +236,37 @@ export function createLegionTool(deps: {
         "release_children and rerun_child are refused for a child whose ancestor is in retro, merging or awaiting_merge " +
         "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
         "under it now: wait for the ancestor to close, then release it. " +
-        "The controller's read_state returns the daemon's whole state and set_status moves an issue to todo, backlog or icebox. ",
+        "The controller's read_state returns the daemon's whole state and set_status moves an issue to todo, backlog or icebox. " +
+        "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
+        "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
+        "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
+        "The answer is empty when the claim came back and nothing else is to be said, and names why nothing restarted the " +
+        "phase (phaseNotRestarted) when the claim came back owing no task and the workflow refused that restart: the claim is " +
+        "running, and no work was handed to it. " +
+        "The daemon refuses it for a claim it records as working, which may be in a turn " +
+        "(CLAIM_IN_A_TURN), for a claim left working over a process the daemon's last report " +
+        "of it found gone, where no turn is running (CLAIM_IN_A_TURN as well), for a claim a " +
+        "suspension is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
+        "the claim is working, CLAIM_UNSETTLED where it is not), for a claim between states — " +
+        "one queued, one whose launch is in flight, and one left working under a relaunch the " +
+        "wake pacing parked (CLAIM_UNSETTLED) — and for role controller. " +
+        "compact (issue, role) shortens one claim's session instead: the daemon has Oh My Pi write a text summary of the " +
+        "session so far, and the claim keeps its session, its workspace and everything it knows of its issue and is sent " +
+        "whatever task it owes again. Try compact before fresh_session for a claim that stays stuck. The answer says " +
+        "whether the session was compacted and, when it was not, why; the claim is back either way. The daemon refuses " +
+        "it for a claim that is suspended, failed or retired (CLAIM_NOT_RUNNING: fresh_session " +
+        "reaches that one), for a claim it records as working, which may be in a turn " +
+        "(CLAIM_IN_A_TURN), for a claim left working over a process the daemon's last report " +
+        "of it found gone, where no turn is running (CLAIM_IN_A_TURN), for a claim a " +
+        "suspension is held over (CLAIM_IN_A_TURN where the claim is working, CLAIM_UNSETTLED " +
+        "where it is not), for a claim between states — one queued, one whose launch is in " +
+        "flight, one whose agent has registered and is not ready yet, which fresh_session " +
+        "reaches, and one left working under a relaunch the wake pacing parked " +
+        "(CLAIM_UNSETTLED) — for a claim whose role runs on Claude Code (CLAIM_NOT_ON_OMP) " +
+        "and for role controller. " +
+        "Each refusal says what the claim does now and which operation reaches each state. It " +
+        "names no moment to come back at: ask again later, and read the claim's state in " +
+        "read_state. ",
     }),
     defaultInactive: true,
     parameters: toolSchema(pi),
@@ -258,8 +312,24 @@ export function createLegionTool(deps: {
         const client = daemon();
         if (active.kind === "controller") {
           if (operation === "read_state") return jsonSuccess(await client.state());
-          // set_status, the controller's one write: validated whole before its grant is minted.
+          // The controller's three writes: each validated whole before its grant is minted.
           const issue = requiredString(parameters, operation, "issue");
+          if (operation === "fresh_session" || operation === "compact") {
+            const role = LEGION_ROLES.find((candidate) => candidate === parameters.role);
+            if (role === undefined) {
+              throw new Error(`${operation} requires role ${LEGION_ROLES.join(", ")}`);
+            }
+            const { grantId } = await controllerGrant(active.sessionID);
+            if (operation === "compact") {
+              // The answer is the daemon's own: a compaction Oh My Pi refused or skipped says so
+              // and names why, and the claim is back whatever it says.
+              return jsonSuccess(await client.compact({ grantId, issue, role }));
+            }
+            // The daemon's answer again: empty for a claim whose phase was restarted or needed
+            // no restart, and naming the refusal where the claim came back owing no task and
+            // the workflow refused the restart that would have handed it one.
+            return jsonSuccess(await client.freshSession({ grantId, issue, role }));
+          }
           const status = ISSUE_STATUSES.find((candidate) => candidate === parameters.status);
           if (status === undefined) {
             throw new Error(`set_status requires status ${ISSUE_STATUSES.join(", ")}`);
@@ -330,11 +400,19 @@ export function createLegionTool(deps: {
             if (decision !== "retry" && decision !== "escalate") {
               throw new Error("retry_or_escalate requires decision retry or escalate");
             }
+            // The reason is optional: one given is written into the task the restarted role is
+            // given and into the daemon's own log line for the release, and a call that names
+            // none is unchanged.
+            const reason =
+              parameters.reason === undefined
+                ? {}
+                : { reason: requiredString(parameters, operation, "reason") };
             const grantId = await mintClaimGrant(client, active);
             await client.phaseRetry({
               grantId,
               issue: requiredString(parameters, operation, "issue"),
               decision,
+              ...reason,
             });
             return jsonSuccess({});
           }

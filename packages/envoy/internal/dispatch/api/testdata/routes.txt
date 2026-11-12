@@ -31,6 +31,8 @@ GET /api/v1/asks/open any
 GET /api/v1/asks/{id} any
 PATCH /api/v1/asks/{id} any
 POST /api/v1/asks/{id}/answer any
+PUT /api/v1/asks/{id}/asked-of any
+POST /api/v1/asks/{id}/decline any
 GET /api/v1/asks/{id}/followers any
 DELETE /api/v1/asks/{id}/followers/{session_id} any
 PUT /api/v1/asks/{id}/followers/{session_id} any
@@ -39,6 +41,7 @@ GET /api/v1/block-links any
 GET /api/v1/broadcasts any
 POST /api/v1/broadcasts any
 GET /api/v1/broadcasts/{id} any
+GET /api/v1/ci-reconcile/passes any
 GET /api/v1/comments/{id} any
 PATCH /api/v1/comments/{id} any
 POST /api/v1/comments/{id}/accept any
@@ -63,8 +66,10 @@ POST /api/v1/delivery/session-groups any
 DELETE /api/v1/delivery/session-groups/{id} any
 PATCH /api/v1/delivery/session-groups/{id} any
 GET /api/v1/delivery/timeline any
+GET /api/v1/events/log any
 GET /api/v1/github/app-installation/{owner}/{repo} any
 GET /api/v1/going/capability any
+GET /api/v1/going/catalogue any
 POST /api/v1/going/requests any
 GET /api/v1/going/requests/{id}/stream any
 GET /api/v1/handoffs/{id} any
@@ -91,6 +96,7 @@ GET /api/v1/issues/{key}/comments any
 POST /api/v1/issues/{key}/comments any
 GET /api/v1/issues/{key}/coverage any
 GET /api/v1/issues/{key}/decisions any
+PUT /api/v1/issues/{key}/design-gates any
 GET /api/v1/issues/{key}/events any
 GET /api/v1/issues/{key}/handoffs any
 POST /api/v1/issues/{key}/handoffs/{phase} bearer
@@ -107,6 +113,7 @@ GET /api/v1/issues/{key}/summary any
 GET /api/v1/limits any
 GET /api/v1/machine-logins any
 POST /api/v1/machine-logins/{id}/revoke any
+POST /api/v1/markdown/round-trip any
 GET /api/v1/me/agent-tokens any
 POST /api/v1/me/agent-tokens any
 DELETE /api/v1/me/agent-tokens/{id} any
@@ -155,12 +162,15 @@ POST /api/v1/projects/{key}/related any
 GET /api/v1/references any
 GET /api/v1/references/questions any
 GET /api/v1/related-checks any
+POST /api/v1/results/{id}/retract any
 GET /api/v1/schema/blocks public
 GET /api/v1/search any
 GET /api/v1/search/coverage any
+GET /api/v1/search/results any
 GET /api/v1/settings/architecture-sources any
 GET /api/v1/settings/delivery any
 PUT /api/v1/settings/delivery any
+GET /api/v1/settings/new-issue any
 GET /api/v1/settings/project-default-assignees any
 GET /api/v1/settings/repo-projects any
 DELETE /api/v1/settings/repo-projects/{owner}/{repo} any

@@ -9,15 +9,20 @@
  * the selection and the row itself all ask the same seven questions of whichever row they hold.
  */
 
+import { inboxThreadRow } from "@legion/contracts";
+
 import type {
+  Ask,
   AskUrgency,
   InboxRow,
   IssuePriority,
   MyReplyRow,
   OpenAskOwner,
 } from "../../api/types";
+import { issuePriority } from "../issue/issue-priority";
 import type { DispatchReferenceRoute } from "../refs/routes";
 import { isDecisionAsk } from "./ask-decision";
+import { askUrgency } from "./ask-urgency";
 
 /** One row of the Inbox list: an open ask, or a thread of the reader's own. */
 export type InboxListRow = { kind: "ask"; ask: InboxRow } | { kind: "thread"; thread: MyReplyRow };
@@ -45,14 +50,15 @@ export function rowLastActivityAt(row: InboxListRow): string {
 /** The owning issue's coarse priority, or null where there is none to show: a thread with no
  *  issue, an issue with no priority set, and every Agent row. */
 export function rowPriority(row: InboxListRow): IssuePriority | null {
-  if (row.kind === "ask") return row.ask.priority;
-  return row.thread.kind === "agent" ? null : (row.thread.priority ?? null);
+  if (row.kind === "ask") return issuePriority(row.ask.priority);
+  const thread = inboxThreadRow(row.thread);
+  return thread.kind === "agent" ? null : issuePriority(thread.priority);
 }
 
 /** The ask's urgency. A thread has none at all - urgency is a property of a question - so the
  *  Urgency filter and grouping put every thread row under `none`. */
 export function rowUrgency(row: InboxListRow): AskUrgency | null {
-  return row.kind === "ask" ? row.ask.urgency : null;
+  return row.kind === "ask" ? askUrgency(row.ask.urgency) : null;
 }
 
 /** Which project the row belongs to, or null for a row that belongs to none: the thread's own
@@ -61,7 +67,8 @@ export function rowUrgency(row: InboxListRow): AskUrgency | null {
  *  one is its project: `CORE-12` belongs to `CORE`. */
 export function rowProject(row: InboxListRow): string | null {
   if (row.kind === "thread") {
-    return row.thread.kind === "agent" ? null : (row.thread.project ?? null);
+    const thread = inboxThreadRow(row.thread);
+    return thread.kind === "agent" ? null : (thread.project ?? null);
   }
   const issue = row.ask.issue?.key ?? row.ask.issue_key;
   if (issue !== null && issue !== undefined) return issue.split("-")[0] ?? issue;
@@ -69,14 +76,31 @@ export function rowProject(row: InboxListRow): string | null {
 }
 
 /**
- * Who holds the row. An ask's holder is its issue's assignee, and a document ask has none (a
- * document has no assignee). A thread is the reader's own - the route answers nobody else's -
- * so it is held by whoever is reading, which is why the viewer is an argument here rather than
- * something this module could look up: the Inbox has it already, and a helper that read it
- * again would be a second answer to the same question.
+ * The person an ask waits on, as the server resolved it (`waiting_on_person`, the one
+ * expression `coalesce(a.asked_of, i.assignee)` every list reading an ask shares): whoever the
+ * ask was handed to, and the assignee of its issue until somebody hands it on. Null where
+ * nobody waits on it - an ask on a project document or on an issue nobody holds that nobody
+ * was handed - which the server sends as an absent field rather than an empty one.
+ *
+ * The web app does not work this out again: handing an ask on moves it between people without
+ * touching the issue, so a second rule here would put the row in the wrong person's list. It
+ * takes any ask, not just a row of the Inbox list, because the ask card asks the same question
+ * of the asks the other reads answer with.
+ */
+export function askWaitingOnPerson(ask: Ask): string | null {
+  const person = ask.waiting_on_person;
+  return person === undefined || person === "" ? null : person;
+}
+
+/**
+ * Who holds the row. An ask is held by the person it waits on (`askWaitingOnPerson`, the
+ * server's own answer), and a document ask is held by nobody. A thread is the reader's own -
+ * the route answers nobody else's - so it is held by whoever is reading, which is why the
+ * viewer is an argument here rather than something this module could look up: the Inbox has it
+ * already, and a helper that read it again would be a second answer to the same question.
  */
 export function rowAssignee(row: InboxListRow, viewer: string): string | null {
-  return row.kind === "ask" ? (row.ask.issue?.assignee ?? null) : viewer;
+  return row.kind === "ask" ? askWaitingOnPerson(row.ask) : viewer;
 }
 
 /** What kind of row this is. An ask is a decision when it was written as a document's typed
@@ -103,7 +127,8 @@ export function threadOwner(thread: MyReplyRow): OpenAskOwner | null {
  * `y` does nothing on it. A message thread on a project document has none either: only asks and
  * comments are referenced under a document.
  */
-export function threadReferenceRoute(thread: MyReplyRow): DispatchReferenceRoute | undefined {
+export function threadReferenceRoute(row: MyReplyRow): DispatchReferenceRoute | undefined {
+  const thread = inboxThreadRow(row);
   if (thread.kind === "agent") return undefined;
   const key = thread.issue?.key;
   if (key !== undefined) return { id: thread.thread_id, key, kind: thread.kind };

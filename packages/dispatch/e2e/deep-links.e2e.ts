@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import {
   createArtifactComment,
   createAsk,
@@ -24,8 +22,8 @@ import {
   markSpan,
   selectEditorText,
 } from "./editor";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // What this file's init scripts keep on the page's window.
@@ -53,10 +51,6 @@ const longDocument = [
   ),
   "Unique faraway quotation.",
 ].join("\n\n");
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 async function seedIssue() {
   await createProject({ key: "CORE", name: "Core" });
@@ -304,7 +298,10 @@ async function expectSelectedMarginItem(page: Page, id: string) {
 
 // SLOW(>=2s): four anchored writes, each seeded on its own transaction, and the four links the
 // row lands on in turn, in WebKit.
-test("emitted document item hrefs select and scroll their anchored thread", async ({ browser }) => {
+// @pr: The deep-link family's one row on the lane: an emitted document item href selects and scrolls its anchored thread.
+test("emitted document item hrefs select and scroll their anchored thread @pr", async ({
+  browser,
+}) => {
   const { issue } = await seedIssue();
   // Anchored writes are seeded one at a time. Each holds its transaction across the document
   // work that stamps the mark, so concurrent ones queue on the server's connection pool
@@ -999,10 +996,9 @@ test("a linked card's placement ignores the margin's own scroll @webkit @firefox
   }
 });
 
-test("an iPhone document item link brings its far-away mark above the closed review sheet @phone", async ({
+test("an iPhone document item link brings its far-away mark above the closed review sheet @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the closed sheet is phone-only");
+}) => {
   const { comment, issue, markId } = await seedLongDocument();
   const context = await asUser(browser, "alice");
 
@@ -1030,10 +1026,9 @@ test("an iPhone document item link brings its far-away mark above the closed rev
   }
 });
 
-test("an iPhone secondary-document link scrolls its selected card after opening the review sheet @phone", async ({
+test("an iPhone secondary-document link scrolls its selected card after opening the review sheet @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the bottom-sheet viewport is phone-only");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",
@@ -1261,7 +1256,7 @@ test("every item link lands on exactly one marked card, and a reply link marks i
 
     // A search hit opens the very path the palette's row carries.
     const hits = await search("quadrant");
-    const hit = hits.results.find((result) => result.id === found.id);
+    const hit = (hits.results ?? []).find((result) => result.id === found.id);
     expect(hit?.href).toBe(`/issues/${issue.key}/comments/${found.id}`);
     await navigateInApp(page, hit?.href ?? "");
     if (isPhone) {

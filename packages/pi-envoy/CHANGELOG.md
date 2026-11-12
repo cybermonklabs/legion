@@ -1315,7 +1315,7 @@ releases, one per `pi-envoy-v*` tag.
   dispatch issues reference, name no one by first name: every literal `Sami` reference becomes
   `the human` or `the operator`, matching each file's own existing convention for the person an
   agent asks for a decision or finds at the controller's tmux pane, and the two provenance-quoted
-  rulings keep their rule stated plainly, with the quote and attribution dropped. The shipped
+  decisions keep their rule stated plainly, with the quote and attribution dropped. The shipped
   skill reaches every installed user of this package, not only its author.
 - **Breaking:** the package is renamed `@sjawhar/pi-envoy` and carries the Envoy entry alone
   (LEGION-247). `@sjawhar/pi-legion-envoy` gets no further release. What stays here is

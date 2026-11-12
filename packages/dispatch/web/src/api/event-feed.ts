@@ -11,7 +11,7 @@ import { askThreadsIssue, eventRefreshTargets } from "./event-refresh";
 import { liveSocketFor } from "./live-socket";
 import { inboxQuery } from "./queries";
 import { type RefreshTarget, refreshQueries, trackQueryFetches } from "./query-refresh";
-import type { AuthenticatedUser, Event, EventType } from "./types";
+import type { AuthenticatedUser, DispatchEvent, EventType } from "./types";
 
 const knownEventTypes: Record<EventType, true> = {
   "project.created": true,
@@ -41,6 +41,7 @@ const knownEventTypes: Record<EventType, true> = {
   "ask.anchor_refreshed": true,
   "ask.edited": true,
   "ask.handed_back": true,
+  "ask.asked_of": true,
   "ask.answered": true,
   "ask.resolved": true,
   "ask.follower_added": true,
@@ -48,6 +49,8 @@ const knownEventTypes: Record<EventType, true> = {
   "block.repaired": true,
   "block.invalid": true,
   "result.recorded": true,
+  "result.retracted": true,
+  "issue.pull_request_attribution_changed": true,
   "comment.created": true,
   "comment.anchor_refreshed": true,
   "comment.delivery": true,
@@ -72,7 +75,7 @@ const inboxQueryKey = inboxQuery().queryKey;
 
 export interface EventPages {
   pageParams: unknown[];
-  pages: Event[][];
+  pages: DispatchEvent[][];
 }
 
 /**
@@ -97,7 +100,7 @@ export function mergeEventPages(current: EventPages | undefined, incoming: Event
   return { ...incoming, pages: [[...newer, ...fetched], ...incoming.pages.slice(1)] };
 }
 
-export function prependEventToLog(queryClient: QueryClient, event: Event): void {
+export function prependEventToLog(queryClient: QueryClient, event: DispatchEvent): void {
   if (event.issue_key === null) {
     return;
   }
@@ -325,7 +328,10 @@ export function useEventFeed({
           return;
         }
         // The socket hands the event over as the JSON Dispatch sent, whose type is now known.
-        const event = raw as Event;
+        // `DispatchEvent`, not the route table's `Event`: the log this page keeps and every
+        // reader of it (`activity-model`, `event-refresh`) narrows on the type to read the
+        // payload, which the route table carries as `unknown`.
+        const event = raw as DispatchEvent;
         try {
           prependEventToLog(queryClient, event);
           const targets = eventRefreshTargets(

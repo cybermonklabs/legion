@@ -1,15 +1,13 @@
 import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
+import { type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ComponentProps, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import {
-  type IntersectionControl,
-  installIntersectionObserver,
-} from "../../__tests__/intersection-observer";
+import { graphNode } from "../../__tests__/graph-fixture";
+import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerThreadReads } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
@@ -298,7 +296,7 @@ test("the author can edit a comment and an edited comment carries its marker", a
   const commentBlocks = spyOn(api, "commentBlocks").mockResolvedValue({
     blocks: [],
     indexed: false,
-    item: { id: root.id, issue_key: "CORE-1", kind: "comment" },
+    item: graphNode({ id: root.id, issue_key: "CORE-1", kind: "comment" }),
   });
   const onEdit = spyOn({ call: async () => undefined }, "call");
   const view = renderCard(undefined, { onEdit: onEdit });
@@ -672,14 +670,6 @@ function renderUnreadCard(expanded: boolean) {
   };
 }
 
-async function dwellOn(element: Element, screen: IntersectionControl) {
-  act(() => screen.show(element));
-  act(() => {
-    jest.advanceTimersByTime(1_000);
-  });
-  for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
-}
-
 test("an expanded thread is marked read once its newest reply has been on screen", async () => {
   const card = renderUnreadCard(true);
   try {
@@ -687,7 +677,7 @@ test("an expanded thread is marked read once its newest reply has been on screen
     if (newest === null) throw new Error("expected the newest reply's item");
     // The watched element is the newest reply's own, not the card around the whole thread.
     expect(card.screen.observed()).toEqual([newest]);
-    await dwellOn(newest, card.screen);
+    await dwellOn(card.screen, newest);
     expect(card.mark.mock.calls).toEqual([
       [root.id, { read_through: reply.created_at }, keyedAttempt],
     ]);
@@ -700,7 +690,7 @@ test("a collapsed thread shows no reply and marks nothing", async () => {
   const card = renderUnreadCard(false);
   try {
     expect(card.screen.observed()).toEqual([]);
-    await dwellOn(screen.getByTestId(`margin-comment-${root.id}`), card.screen);
+    await dwellOn(card.screen, screen.getByTestId(`margin-comment-${root.id}`));
     expect(card.mark).not.toHaveBeenCalled();
   } finally {
     card.cleanup();

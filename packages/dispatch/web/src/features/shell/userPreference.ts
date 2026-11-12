@@ -3,13 +3,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { whoAmIQuery } from "../../api/queries";
 
-/** Every browser-kept choice, one per signed-in identity. The Inbox's three are the ones that
- *  are the person's rather than the list's: how a thread's replies are ordered, how wide the
- *  reading pane is, and which bands they folded shut (`inbox.folded-groups`, one set per
- *  grouping). Its filters, sort, grouping and the switch between the Inbox and what they have
- *  dismissed out of it are in the address instead, so a link carries them. */
+/** A name a browser keeps something under for one signed-in person: a choice they made, and the
+ *  bar's recent items (`features/search/recents.ts`), which are theirs the same way. The Inbox's
+ *  three are the ones that are the person's rather than the list's: how a thread's replies are
+ *  ordered, how wide the reading pane is, and which bands they folded shut
+ *  (`inbox.folded-groups`, one set per grouping). Its filters, sort, grouping and the switch
+ *  between the Inbox and what they have dismissed out of it are in the address instead, so a
+ *  link carries them. */
 export type UserPreference =
-  | "agents.pinned"
   | "inbox.folded-groups"
   | "inbox.pane-width"
   | "inbox.thread-order"
@@ -17,13 +18,24 @@ export type UserPreference =
   | "project.board-lanes"
   | "project.issue-filters"
   | "project.issue-view"
+  | "search.recents"
   | "shell.margin"
   | "shell.margin-width"
   | "shell.sidebar";
 
-/** Browser-only preferences are private to the signed-in Dispatch identity. */
+/** Browser-only values are private to the signed-in Dispatch identity. */
 export function userPreferenceStorageKey(login: string, preference: UserPreference): string {
   return `dispatch.${preference}:${login}`;
+}
+
+/**
+ * Where this browser kept the Agents page's pins before they became the person's own, held by
+ * Dispatch (INFRA-812). Nothing writes it any more, so it is no `UserPreference`: the shell
+ * reads it once at the first load after the change, writes each id it holds as a pin and
+ * removes it. The format is the one `userPreferenceStorageKey` wrote, frozen as it was written.
+ */
+export function legacyPinnedAgentsKey(login: string): string {
+  return `dispatch.agents.pinned:${login}`;
 }
 
 type UserPreferenceIdentity = "failed" | "pending" | "resolved";

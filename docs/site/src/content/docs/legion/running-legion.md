@@ -108,8 +108,8 @@ implement and review Apps' permissions bound what Legion's agents can do on GitH
 
 | App | Write | Read |
 | --- | --- | --- |
-| **review** (planner, tester, reviewer, architect) | contents, pull requests, checks, actions, issues | metadata, packages |
-| **implement** (implementer, merger) | contents, pull requests, issues, actions, statuses, workflows | checks, metadata, packages |
+| **review** (planner, tester, reviewer, architect) | contents, pull requests, checks, actions, issues, code scanning alerts | metadata, packages |
+| **implement** (implementer, merger) | contents, pull requests, issues, actions, statuses, workflows | checks, metadata, packages, code scanning alerts |
 
 The implement App cannot create a check run, and a review never comes from the App that wrote the
 change. `gh api /apps/<app slug> --jq .permissions` shows what an App asks accounts for, and
@@ -265,8 +265,9 @@ Dispatch read them, delete the files, then install every App from
   adds nodes under the pool's limits. Concurrent issue pods are bounded by what the pool's
   `limits.cpu` and `limits.memory` leave for pods of that sum (two per 8-vCPU floor node, about 80
   at `limits.cpu: 256`, or `limits.memory` / 19 GiB when that is smaller) once the probe pod and,
-  under `controller: daemon`, the controller's pod are counted; `admission_cap` bounds the issues
-  at work rather than the pods, since an issue that only waits keeps its pod and holds no slot,
+  under `controller: daemon`, the controller's pod are counted; `admission_cap` counts the issues
+  the daemon has started rather than the pods, since an issue keeps its pod past the slot — on to
+  its own close — and an issue that only waits keeps both,
   and an issue pod the pool cannot place stays `Pending` until
   the daemon reads it dead and, once its launch failures run out, fails the claim.
 - **A namespace and a storage class.** Each issue pod's disk (`issue_volume`, 50Gi by default,
@@ -499,8 +500,53 @@ What each part is for:
 - **`instructions`** (optional) names a Markdown file of your standing rules (required checks,
   deploy and smoke commands, scope) that is appended to every agent's system prompt. It must hold no
   secret.
+- **`hooks`** (optional) is the list of prompts the daemon puts in front of the workers of an
+  issue whose work keeps going back. Each entry carries `name`, its own and named once in the
+  file; `on`, the event, and `work_back`, a move to an earlier phase, is the one event the daemon
+  has; `every`, a positive whole number of those moves; `roles`, the roles the words are written
+  to, one or more of `implementer`, `tester`, `reviewer`, `planner` and `merger` (`architect` is
+  refused: the daemon's own wake to an architect is a notice); and the words, as `prompt` in the
+  key or as `prompt_file`, a path, never both and never neither. On `work_back` a hook may also
+  name `moves`, the moves it counts, each written `<from>-<to>` with two workflow phases
+  (`testing-implementing`, `reviewing-implementing`, `awaiting_merge-implementing`, and the 19
+  other pairs the daemon counts), or the word `any`, which is also what a hook that leaves the
+  key out takes. A hook fires when the move is one it counts and the counts of the moves it
+  counts, added up, are then a whole multiple of its `every`
+  ([what it writes](/legion/legion/concepts/#review-signalling)). Each refusal at load names the
+  hook by its place in the list and the key at fault, as `hooks[0].every`. The daemon reads every
+  `prompt_file` at boot, as it reads `instructions`, so an edited file reaches the workers at the
+  next start of the daemon and the daemon does not come up while one of them is missing,
+  unreadable or blank. A file that names no `hooks:` key runs one shipped hook: `work-back`, over
+  any move, every 5 of them, to the implementer, the tester and the reviewer. `hooks: []` runs
+  none.
 - **`provider_keys`** (optional) maps a variable Oh My Pi reads to a key of the providers Secret
   ([below](#secrets-and-files)); each pod gets those keys alone, in Oh My Pi's environment.
+- **`runtime.kubernetes.pod.env`** (and **`runtime.tmux.pane_env`** under the tmux runtime) holds
+  your own variables for every agent, and `OTEL_RESOURCE_ATTRIBUTES` is composed rather than
+  refused. Under Kubernetes it is the second such name beside `PI_CONFIG_FILES`, whose overlays
+  each role's own are added after; under tmux `PI_CONFIG_FILES` is the runtime's own and refused
+  in `pane_env` — the overlays there are `runtime.tmux.pi_config_files` — so the attributes are
+  the one composed name. Set the OpenTelemetry resource attributes your deployment's spend is
+  billed under (`theorem.project=widgets`), and each launch carries them with its own
+  `legion.issue` and `legion.role` after them, so each launch's attributes name the issue it
+  serves. The agent takes the last value a key is given, which is why Legion's two pairs come
+  last. Both keys reach the spend collector today, and its keep-list of six `theorem.*`
+  attributes drops every other key, so no spend row names an issue yet. A spend row grouped by
+  issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list.
+  The project controller serves no issue and carries the role alone. The image probe's container
+  runs no role and keeps your value exactly as you wrote it; the tmux boot gate's probe runs no
+  role either and keeps it with its trailing commas and whitespace dropped and nothing added.
+  Legion reads that value for its content as well as its name, and refuses a member the agent's
+  OpenTelemetry detector would throw on: one that does not split on `=` into one key and one
+  value, one with an empty key, one whose key or value does not percent-decode or runs past 255
+  characters once decoded, and one naming `legion.issue` or `legion.role`, which
+  Legion writes itself. The refusal names that one member and what is wrong with it, never the
+  rest of your value, and `legion start --check-config` gives boot's verdict before a restart.
+  One such member would cost a launch every attribute of the variable, your own
+  `theorem.project` among them, because the detector's caller catches the throw with an empty
+  hand. Like every other variable here, the attributes reach a role with the start command of its
+  next launch and travel in no pod specification, so no pod is replaced and a role already
+  running keeps what it started with.
 - **`runtime.kubernetes.session_store`** is required, and must name a store that keeps every
   pod's Oh My Pi conversation in a database, with that store's key. There are two:
   `postgres`, whose `session_dsn_secret` names the key of the providers Secret
@@ -547,7 +593,7 @@ What each part is for:
   an update round runs before the controller is told it is not finishing, decimals allowed),
   `pod_update_max_open_rounds` (how many issues may hold an open pod-update round at once) and
   `pod_update_rounds_per_minute` (how many rounds one sweep opens), each a positive integer whose
-  absent key is no limit at all, `review_round_cap` (3), `max_fix_attempts` (3),
+  absent key is no limit at all, `review_round_cap` (3),
   `controller_wake_interval_seconds` (3600), and the supervision budgets `launch_failure_limit`
   (3), `prompt_failure_limit` (3) and `prompt_retire_limit` (2).
   `controller_wake_interval_seconds` also sets the period of the daemon's status repair, which
@@ -925,6 +971,11 @@ Closing the terminal leaves the project without one, and the daemon logs
    `legion stop --config legion.yaml`) and start it again. `legion restart <PROJECT>` does both in
    the shell it runs in, from the configuration the stopped daemon recorded. The new daemon probes
    the new image before it serves.
+
+   **After the first upgrade to a release that counts the moves back by kind,** every issue starts
+   at no counts: the migration fills none in from the past. An issue already in flight therefore
+   reads counts that add up to less than its `rounds`, and a hook of `hooks:` counts from the
+   first move back after the upgrade.
 4. **Running agents carry on.** The restarted daemon re-adopts every running pod and its session. A
    pod keeps the image it started with; every pod the daemon starts afterwards, for the next phase
    or a resumed worker, runs the new one. To move a long-running agent over now, suspend and resume
@@ -1006,10 +1057,13 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   ```text
   legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
-  admission: 3 issues hold a slot, cap 4, 1 waiting; 2 live trees; 9 issues
+  admission: 3 issues hold a slot, cap 4, 2 waiting; 2 live trees; 9 issues
+  waiting line: 2
+    WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back, and it takes the free slots first.
+    WIDGETS-15 2 of 2, starting: It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them.
   blocked on Dispatch links: none
   memory: none
-  roots waiting on a person: 1, 0 answered and waiting for a slot — WIDGETS-9 waits on ask 7f3c2a10, unanswered
+  roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
   open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z
   open update rounds: none
   agents in a tool call: 1 — WIDGETS-12 implementer "bash toolu_01F3 since 2026-10-03T10:41:07Z"
@@ -1022,16 +1076,39 @@ Closing the terminal leaves the project without one, and the daemon logs
   consumer legion-go-WIDGETS-wake: 0 waiting
   ```
 
-  The `admission` line counts the issues that hold a slot, a root or a child, against the cap: a
-  slot is one issue with work, so a tree of four working issues holds four of them, and the `live
+  The `admission` line counts the issues that hold a slot, a root or a child, against the cap: an
+  issue takes a slot when the daemon starts it and keeps it
+  until it is done, leaves the workflow or waits only for its merge,
+  so a tree of four started issues holds four of them, and the `live
   trees` count is the trees that run whether or not any issue of theirs holds one.
 
-  The `roots waiting on a person` line counts the roots that gave their admission slot back to
-  wait on a person (phase `awaiting_person`), how many have been answered — each first in line,
-  and each resuming at once and taking no slot once its design gate has opened — and each by key
-  with what it waits on (`none` when no root waits). An
-  unanswered one is in neither admission list, only among the live trees, so without this line the
-  capacity it freed looks idle.
+  The `waiting line` block under it names the issues of `admission.waiting`, in the order the
+  daemon promotes them: the issues whose work came back first, oldest first by the moment it
+  came back, and then the issues that have not started, by the Dispatch rank of each issue's
+  tree root and then its own. Each line gives the issue's key, its place in the line, the part
+  it stands in (`returned` or `starting`) and the daemon's own sentence for that place: what put
+  the issue in the line and when, where it stands among the issues of its own part, and whether
+  it waits for a free slot or already holds its admission slot and resumes whatever the cap
+  says. The block names ten issues at most and then `and <N> more`, because a busy deployment
+  queues hundreds of them; `--json` carries the sentence of every waiting issue. It reads
+  `waiting line: none` while nothing waits, and
+  `waiting line: the daemon sent no reasons at this caller's contract` where the daemon served
+  this caller no sentence at all, which is what a daemon older than the sentence serves.
+
+  The `roots waiting on a person` line counts the roots in phase `awaiting_person`, each holding
+  the slot it took when the daemon started it, how many of them a person
+  answered and the published line still names — each standing
+  among the issues whose work came back, oldest first, until the pass that resumes it — and each by key
+  with what it waits on (`none` when no root waits). A daemon older than contract 58 serves no
+  `waitingLine`, so that count reads 0 against one, which is the true answer for a caller that
+  cannot see the line, and a root of another Dispatch project, whose line this daemon does not
+  publish, is counted by nobody. An
+  unanswered one is in `admission.active` and in no line; an answered one is in both lists until
+  the pass that reads the answer resumes it, so this line is where the wait itself is named.
+  While an answered root stands in the line, nothing is sent to its architect about the wait:
+  the `waitingLine` of the root's own issue, with the daemon's sentence in it, is the whole of
+  what is recorded, and the daemon resumes
+  the architect itself on the pass that reads the answer, taking no further slot for it.
 
   The `open production checks` line counts the closed issues whose production check is still
   open and names the oldest: its pull request, merge commit, the role working it, which look it
@@ -1061,13 +1138,24 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   The `wakes waiting` line appears only while the daemon's pacing is holding a wake
   (`worker_wakes_per_minute`, above): how many wait, and each by claim token with the kind of wake
-  it is — `launch`, a role process about to start; `plugin-task`, the update task a stale-plugin
-  round queues to a session that already runs; `catch-up`, the notice a start writes to an
+  it is — `launch`, a role process about to start; `plugin-refresh`, the relaunch of a session
+  whose plugin speaks an earlier daemon contract, which the daemon replaces at that one wake and
+  asks nothing of first; `catch-up`, the notice a start writes to an
   architect that is already running — and the moment the pacing gave it (`wakes waiting: 2 —
-  legion-widgets-widgets-12-implementer launch due 2026-10-03T09:13:08Z; …`). Nothing waits
-  outside a restart, a re-admission or a plugin wave, which is why an ordinary read has no such
-  line. It is what says whether a wave is still going out, and the last `due` on it is when the
-  last of that wave goes.
+  legion-widgets-widgets-12-implementer launch due 2026-10-03T09:13:08Z; …`).
+  Nothing waits outside a restart, a re-admission or a stale-plugin wave, which is why an
+  ordinary read has no such line.
+  It is what says whether a wave is still going out, and the last `due` on it is when
+  the last of that wave goes.
+
+  The plain line does not say how much of a stale-plugin wave is still to come, and the JSON body
+  does: `legion state --json | jq .claimsToRefresh` is how many sessions the lane still has to
+  relaunch onto this daemon's plugin.
+  The lane holds at most one minute of the pacing at a time, so its `plugin-refresh` wakes are the
+  share of that count the pacing holds now, not a second number beside it: a claim keeps its place
+  in the count until the wake it is reserved for has run.
+  It is 0 whenever no session is on an earlier plugin, which is every moment but the minutes
+  after a boot onto a new plugin contract.
 
   The `consumer` lines are the lag of the daemon's durable consumers on the
   `ENVOY_NOTIFICATIONS` stream: `legion-go-<project>-dispatch` (Dispatch's issue events and the
@@ -1088,12 +1176,32 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
   issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), `repo` and `defaultBranch`, `holdReason`,
-  `architect` and `workers` (each claim's `state`), `pullRequest` (`repo`, `head`, `checksVerdict`,
-  `fixAttempts`), `designGate` (`currentVersion`, `approvedVersion`) with `gatedSteps` beside it
+  `architect` and `workers` (each claim's `state`, and on the implementer `backwardMoves`, one count for each kind of move back the issue has made, keyed `<from>-<to>`, left out where it has made none), `pullRequest` (`repo`, `head`, `checksVerdict`),
+  `designGate` (`currentVersion`, `approvedVersion`) with `gatedSteps` beside it
   (one entry per gated step: `step`, `artifactId`, `currentVersion`, `approvedVersion`, `status`
   — `unregistered`, `waiting`, `approved` or `changes_requested` — and `changesReason`), for a root in `awaiting_person`
   `waitingOn` (`kind` `ask` with its `ask`, or `gate` with `gateVersion` and `artifactId`; `since`; and
-  `answeredAt` with `answeredBy` once it was answered) and, for a closed
+  `answeredAt` with `answeredBy` once it was answered), for an issue `admission.waiting` names
+  `waitingLine` (`place`, 1 being first in the line, and `length`, the line's length at this
+  read; a daemon below contract 58 serves none), beside which the line's own members say where
+  that place came from and what it means for the slot the issue waits for:
+  `part`, `returned` for an issue whose work came back or `starting` for one that has not
+  started; `kind`, `returning`, `answered`, `queued_root` or `first_phase`; `partPlace` and
+  `partLength`, its place among the issues of its own part and how many they are; `holdsSlot`,
+  true for an issue that already holds its admission slot and so takes no free one; `since`,
+  the moment a `returned` issue's work came back; `rootRank`, `ownRank` and `rootKey`, the two
+  Dispatch ranks that placed a `starting` issue and the key of its tree root; and `reason`, the
+  sentence the block above prints. Beside them, on every issue that is not working now,
+  `why`, one answer with a `state` — `claim_stopped`, a claim nothing will wake; `waiting`, the
+  line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue the record
+  holds in the workflow that stands in none of the three lists — and a `reason` sentence; an
+  issue holding an admission slot carries no `why` unless it also stands in `admission.waiting`
+  or `admission.blocked`, or a stranded claim names it: an answered root reads `waiting`, a root
+  whose open children hold its own first phase reads `blocked`, and an issue at work whose
+  worker runs, one `held` and a root whose ask a person has not answered yet, which `waitingOn`
+  answers for, read nothing. Neither does an issue the record does not hold in the workflow. A caller from a pod whose claims record a contract below 85 is
+  served every issue without `why`, and the `waitingLine` of each member of the line with its
+  `place` and its `length` alone, and no `partPlace`. Then, for a closed
   issue whose
   production check is open, `check` (`repo`, `pullRequest`, `mergeCommit`, `openedAt`, `role` —
   the role the check recorded as the one that works it — `looks`,
@@ -1111,8 +1219,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   stream time of the oldest waiting message and its age in whole seconds, both null when nothing
   waits or that message could not be read; `lastHandledAt`, null before the first; `stalled`; and
   `unavailable`, present only when a NATS read failed),
-  `settings` (the daemon's resolved `legion.yaml` — `max_fix_attempts`, `worker_boot_timeout_seconds`
-  and the rest as the daemon runs them — with every credential, credential source and credential
+  `settings` (the daemon's resolved `legion.yaml` — `review_round_cap`, `worker_boot_timeout_seconds`,
+  `hooks` with each hook's `name`, `on`, `moves`, `every`, `roles` and `prompt_file` but never its
+  words, and the rest as the daemon runs them — with every credential, credential source and credential
   file path left out, and a URL's userinfo masked as `xxxxx@`), and `agentSecretsLogin` when the
   broker is configured:
 

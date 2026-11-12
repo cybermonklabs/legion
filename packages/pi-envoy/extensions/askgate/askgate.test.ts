@@ -464,7 +464,16 @@ function dispatchServing(
     const doc = documents.find((held) => held.id === read?.[1]);
     if (doc === undefined) return body({ code: "NOT_FOUND", error: "not found" }, 404);
     if (read?.[2] === "text")
-      return body({ markdown: doc.markdown, version: 1, token: "sha256:d" });
+      return body({
+        markdown: doc.markdown,
+        version: 1,
+        token: "sha256:d",
+        // The text route carries the blocks when the caller asks for them, as Dispatch does:
+        // one answer holds the markdown and the blocks whose ranges index it.
+        ...(url.searchParams.get("blocks") === "true"
+          ? { blocks: documentBlocks(doc.markdown) }
+          : {}),
+      });
     return body(documentBlocks(doc.markdown));
   }) as typeof fetch;
   const session = (_directory: string, signal: AbortSignal): DispatchSession => ({
@@ -917,10 +926,10 @@ describe("untrusted text (security)", () => {
     );
   });
   test("the recorded reason is exactly what the agent saw, so a check for it finds a reason quoting markup", async () => {
-    const reason = "Failure 7: the ruling says <b>use option B</b> && keep > 2 lines";
+    const reason = "Failure 7: the decision says <b>use option B</b> && keep > 2 lines";
     const g = bind({ complete: reviseWith(reason) });
     const context = (await g.device("t1", "dispatch_comment", COMMENT))?.additionalContext ?? "";
-    const delivered = "Failure 7: the ruling says &lt;b>use option B&lt;/b> && keep > 2 lines";
+    const delivered = "Failure 7: the decision says &lt;b>use option B&lt;/b> && keep > 2 lines";
     expect(g.entries[0].deliveredReason).toBe(delivered);
     expect(context).toContain(delivered);
     expect(context).not.toContain("<b>");
@@ -3673,8 +3682,8 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
         getProjectArtifact: () => Promise.reject(NO_DOCUMENT),
         projectArtifact: async () => ({ artifact: { id: "doc-1" } }),
         docEdit: async (_id, input) => {
-          for (const op of input.ops) appended.push(op.markdown ?? "");
-          return { applied: input.ops.length };
+          for (const op of input.ops ?? []) appended.push(op.markdown ?? "");
+          return { applied: (input.ops ?? []).length };
         },
       } satisfies RecordClient;
       const g = bind({
@@ -3713,8 +3722,8 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
         getProjectArtifact: () => Promise.reject(NO_DOCUMENT),
         projectArtifact: async () => ({ artifact: { id: "doc-1" } }),
         docEdit: async (_id, input) => {
-          for (const op of input.ops) appended.push(op.markdown ?? "");
-          return { applied: input.ops.length };
+          for (const op of input.ops ?? []) appended.push(op.markdown ?? "");
+          return { applied: (input.ops ?? []).length };
         },
       } satisfies RecordClient;
       const g = bind({
@@ -3788,7 +3797,9 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
           return Promise.reject(NO_DOCUMENT);
         },
         projectArtifact: async () => ({ artifact: { id: "doc-1" } }),
-        docEdit: async (_id: string, input: { ops: unknown[] }) => ({ applied: input.ops.length }),
+        docEdit: async (_id: string, input: { ops?: unknown[] | null }) => ({
+          applied: (input.ops ?? []).length,
+        }),
       } satisfies RecordClient;
       const g = bind({
         env: { ...STUB, OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
@@ -4616,7 +4627,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
   });
 });
 
-// The round at cf3f1e021, ruling item 2: the literal grammar takes every form whose words bash
+// The round at cf3f1e021, decision item 2: the literal grammar takes every form whose words bash
 // passes as written, with no expansion, and a call outside it gets a note that names its cause.
 describe("the literal grammar, widened to forms with no expansion", () => {
   // A stand-in `dispatch` that prints the argv it gets as one JSON line, so real bash shows what
@@ -4948,7 +4959,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
     ).toBeUndefined();
   });
 
-  // Ruling item 3: each skill example of a gated write is one the gate reads as literal, as
+  // Decision item 3: each skill example of a gated write is one the gate reads as literal, as
   // written (placeholders included), so an agent that copies it gets a marker.
   const REPO = path.resolve(import.meta.dir, "../../../..");
   /** The example in `file` that starts with the line `first`, up to its block's closing fence,
@@ -6061,6 +6072,11 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       const request =
         url instanceof Request ? new Request(url, init) : new Request(url.toString(), init);
       const route = new URL(request.url).pathname;
+      // What the issue holds, which the upload reads to refuse a name that exists: DSP-1 holds
+      // no document here, so the upload below writes a first version.
+      if (route.endsWith("/artifacts") && request.method === "GET") {
+        return Response.json([]);
+      }
       if (route.endsWith("/artifacts")) {
         const file = (await request.formData()).get("file") as Blob;
         sent.push({ path: route, body: await file.text() });
@@ -7009,7 +7025,7 @@ describe("rules check", () => {
           new Promise<{ artifact: { id: string } }>((resolve) =>
             setTimeout(() => resolve({ artifact: { id: "doc-1" } }), 800)
           ),
-        docEdit: async (_id, input) => ({ applied: input.ops.length }),
+        docEdit: async (_id, input) => ({ applied: (input.ops ?? []).length }),
       } satisfies RecordClient;
       const signals: AbortSignal[] = [];
       const both = Promise.withResolvers<void>();
@@ -7096,7 +7112,7 @@ describe("rules check", () => {
               once: true,
             });
           }),
-        docEdit: async (_id, input) => ({ applied: input.ops.length }),
+        docEdit: async (_id, input) => ({ applied: (input.ops ?? []).length }),
       } satisfies RecordClient;
       const g = bind({
         now: () => clock,
@@ -7252,12 +7268,8 @@ describe("rules check", () => {
     );
     expect(g.entries).toMatchObject([{ rule: "no_change", ruleOutcome: "match" }]);
     expect(g.entries[0].ruleTextMissing).toBeUndefined();
-    expect(served.requests).toEqual([
-      "/api/v1/issues/X-1",
-      "/api/v1/artifacts/doc-spec/text",
-      "/api/v1/artifacts/doc-spec/blocks",
-      "/api/v1/artifacts/doc-spec/text",
-    ]);
+    // One read of the document: the text route carries the blocks it indexes.
+    expect(served.requests).toEqual(["/api/v1/issues/X-1", "/api/v1/artifacts/doc-spec/text"]);
     expect(g.dispatchReads.map((read) => read.directory)).toEqual(["/work"]);
   });
   test("a doc-edit retype after a leading cd reads its document through the Dispatch the cd's directory configures", async () => {
@@ -7791,8 +7803,8 @@ describe("the Dispatch decision record (A5)", () => {
         return answer;
       },
       docEdit: async (id, input) => {
-        for (const op of input.ops) edits.push({ id, markdown: op.markdown ?? "" });
-        return { applied: input.ops.length };
+        for (const op of input.ops ?? []) edits.push({ id, markdown: op.markdown ?? "" });
+        return { applied: (input.ops ?? []).length };
       },
     } satisfies RecordClient;
     // The gate's dependency hands back the host's own client; the record calls these three of it.
@@ -8137,12 +8149,7 @@ describe("the Dispatch decision record (A5)", () => {
     }
     expect(g.recordEntries).toEqual([]);
     // Only the upload's read of its stored version reached Dispatch: no record was posted.
-    expect(served.requests).toEqual([
-      "/api/v1/issues/X-1",
-      "/api/v1/artifacts/doc-brief/text",
-      "/api/v1/artifacts/doc-brief/blocks",
-      "/api/v1/artifacts/doc-brief/text",
-    ]);
+    expect(served.requests).toEqual(["/api/v1/issues/X-1", "/api/v1/artifacts/doc-brief/text"]);
   });
 });
 // Runs last: the gate reads each file in place, so no gated call of an earlier test left a copy of

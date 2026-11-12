@@ -1,10 +1,12 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the form's own submit
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { DocumentList } from "./DocumentList";
@@ -19,6 +21,8 @@ function document(overrides: Partial<Artifact> = {}): Artifact {
     name: "Design notes",
     primary: false,
     project: "CORE",
+    ref_key: "CORE/design-notes",
+    session_id: null,
     slug: "design-notes",
     versions: [
       {
@@ -39,7 +43,7 @@ function Location() {
 
 function uploadResponse() {
   const artifact = document();
-  const version = artifact.versions.at(0);
+  const version = artifact.versions?.at(0);
   if (version === undefined) {
     throw new Error("document fixture requires a version");
   }
@@ -79,7 +83,11 @@ test("Documents requests unlinked project artifacts and links a document to its 
 });
 
 test("a document's row names its latest version's stored size", async () => {
-  const latest = { ...document().versions[0], number: 2, size: 1_048_475 };
+  const [first] = document().versions ?? [];
+  if (first === undefined) {
+    throw new Error("document fixture requires a version");
+  }
+  const latest = { ...first, number: 2, size: 1_048_475 };
   const { listProjectArtifacts, view } = renderList([
     document({ versions: [{ ...latest, number: 1, size: 12 }, latest] }),
   ]);
@@ -127,7 +135,8 @@ test("New document opens its document page", async () => {
 // to open, so the form closes, says what was made and the list is read again - and the form opened
 // again starts empty, so a second press makes no second document.
 test("New document answered KEY_COMMITTED closes the form, says it was made, and a second press sends nothing", async () => {
-  const user = userEvent.setup();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   const { listProjectArtifacts, view } = renderList([]);
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
     new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
@@ -153,9 +162,10 @@ test("New document answered KEY_COMMITTED closes the form, says it was made, and
     expect(screen.getByRole<HTMLInputElement>("textbox", { name: "Title" }).value).toBe("");
     // An empty form submitted on its own, which no control of it offers: Create is disabled.
     fireEvent.submit(screen.getByRole("form", { name: "New document" }));
-    await Bun.sleep(20);
+    await tick(20);
     expect(uploadArtifact).toHaveBeenCalledTimes(1);
   } finally {
+    realClock();
     view.unmount();
     listProjectArtifacts.mockRestore();
     uploadArtifact.mockRestore();

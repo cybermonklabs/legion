@@ -1,31 +1,60 @@
+import { useCallback, useMemo } from "react";
+
 import type { Agent, InboxRow } from "../../api/types";
 import { useCappedSearchParam } from "../../lib/query-param";
 import { AGENTS_MACHINE_PARAM } from "../refs/routes";
+import type { AgentGroup } from "./agent-groups";
 
 /**
- * What narrows the agent list, mirroring the `envoy broadcast` script's own selectors: one
- * machine, one role, and a free-text search. An empty field matches everything.
+ * What narrows the agent list: any number of groups, machines and roles, and a free-text
+ * search. An empty list matches every session, as an empty search box does, and a list of two
+ * keeps the rows of either (INFRA-812, R7: each of the three is a multi-select).
  */
 export interface AgentFilters {
-  readonly machine: string;
-  readonly role: string;
+  readonly groups: readonly AgentGroup[];
+  readonly machines: readonly string[];
+  readonly roles: readonly string[];
   readonly search: string;
 }
 
 /** The page's two URL-backed filter fields, each through the same capped, history-`replace`d
- *  hook `useIssueFilters` uses: the free-text query (`?q=`) and the machine (`?machine=`).
- *  `role` stays plain component state, as it was before this box. Both parameters live here
- *  rather than in the page, so the control around them can be rebuilt without moving them. */
+ *  hook `useIssueFilters` uses: the free-text query (`?q=`) and the machines (`?machine=`).
+ *  `groups` and `roles` stay plain component state, as `role` was before this box. Both
+ *  parameters live here rather than in the page, so the control around them can be rebuilt
+ *  without moving them. */
 export function useAgentSearch(): readonly [string, (next: string) => void] {
   return useCappedSearchParam("q");
 }
 
-/** The machine filter, which is the address's own `?machine=` rather than part of `?q=`: the
- *  free-text query matches the directory as well as the machine, so `?q=<host>` would also find
- *  a session whose directory holds the machine's name, while `/machines/<machine>`'s link to
- *  `/agents?machine=<host>` must name exactly the sessions on that machine. */
-export function useAgentMachine(): readonly [string, (next: string) => void] {
-  return useCappedSearchParam(AGENTS_MACHINE_PARAM);
+/** One frozen empty list, so an address naming no machine gives the page the same value every
+ *  render rather than new filter state. */
+const NO_MACHINES: readonly string[] = [];
+
+/**
+ * The machine filter, which is the address's own `?machine=` rather than part of `?q=`: the
+ * free-text query matches the directory as well as the machine, so `?q=<host>` would also find
+ * a session whose directory holds the machine's name, while `/machines/<machine>`'s link to
+ * `/agents?machine=<host>` must name exactly the sessions on that machine.
+ *
+ * The control is a multi-select, so the parameter carries the picked machines as a
+ * comma-separated list: `?machine=relay-1` is the one machine that link has always meant, and
+ * two picked machines read `?machine=relay-1,relay-2`. Unticking the last one deletes the
+ * parameter, so a reload does not bring the filter back.
+ */
+export function useAgentMachines(): readonly [
+  readonly string[],
+  (next: readonly string[]) => void,
+] {
+  const [value, setValue] = useCappedSearchParam(AGENTS_MACHINE_PARAM);
+  const machines = useMemo(() => {
+    const picked = value.split(",").filter((machine) => machine !== "");
+    return picked.length === 0 ? NO_MACHINES : picked;
+  }, [value]);
+  const setMachines = useCallback(
+    (next: readonly string[]) => setValue(next.join(",")),
+    [setValue]
+  );
+  return [machines, setMachines] as const;
 }
 
 /** Every word `search` names, lowercased; an empty query has none. The page splits this once per
@@ -47,50 +76,57 @@ function searchHaystack(agent: Agent, issueKeys: readonly string[]): string {
 }
 
 /** `words` is `searchWords(filters.search)`, split once by the caller rather than once per agent
- *  (the page's `matches` closure runs this for every row). `issueKeys` is every issue key an open
- *  ask by this session names (`sessionIssueKeys`, below), the free-text search's only field
- *  beyond what `Agent` itself carries. */
+ *  (the page's `matches` closure runs this for every row). `group` is the row's own state
+ *  (`agent-groups.ts`), which the page has already worked out to place the row. `issueKeys` is
+ *  every issue key an open ask by this session names (`sessionIssueKeys`, below), the free-text
+ *  search's only field beyond what `Agent` itself carries. */
 export function matchesFilters(
   agent: Agent,
-  filters: Pick<AgentFilters, "machine" | "role">,
+  group: AgentGroup,
+  filters: Pick<AgentFilters, "groups" | "machines" | "roles">,
   words: readonly string[],
   issueKeys: readonly string[]
 ): boolean {
-  if (filters.machine !== "" && agent.host !== filters.machine) return false;
-  if (filters.role !== "" && !agent.roles.includes(filters.role)) return false;
+  if (filters.groups.length > 0 && !filters.groups.includes(group)) return false;
+  if (filters.machines.length > 0 && !filters.machines.includes(agent.host)) return false;
+  if (
+    filters.roles.length > 0 &&
+    !filters.roles.some((role) => (agent.roles ?? []).includes(role))
+  ) {
+    return false;
+  }
   if (words.length === 0) return true;
   const haystack = searchHaystack(agent, issueKeys);
   return words.every((word) => haystack.includes(word));
 }
 
 /**
- * The machines and roles the filter control offers: the ones the live sessions occupy, and the
+ * The machines and roles the filter control offers: the ones the live sessions occupy, and every
  * machine the filter already names wherever no live session reports it.
  *
  * That last one is the whole of this rule. `?machine=` can name a host nothing live reports —
  * an old link, a machine whose sessions have ended, or `/machines/<machine>`'s own "Agents on
  * this machine" link, which that page shows even when it draws nothing. The list is then
  * honestly empty, which is the filter doing its job; but with the live hosts alone for options
- * the control would show no value, read `All machines` while every row was hidden, and fire no
- * change when the reader picked `All machines` — the one control that seems to show the filter
- * could not clear it. Offering the named machine keeps the control showing the filter in force,
- * so a stale option can never hide every agent with no way back.
+ * the control would offer no row for the picked machine, read as though nothing were picked
+ * while every row was hidden, and leave the reader nothing to untick — the one control that
+ * seems to show the filter could not clear it. Offering the picked machines keeps the control
+ * showing the filter in force, so a stale option can never hide every agent with no way back.
  */
 export function filterOptions(
   agents: readonly Agent[],
-  machine: string
+  machines: readonly string[]
 ): {
   machines: string[];
   roles: string[];
 } {
-  const machines = new Set<string>();
+  const hosts = new Set<string>(machines.filter((machine) => machine !== ""));
   const roles = new Set<string>();
-  if (machine !== "") machines.add(machine);
   for (const agent of agents) {
-    if (agent.host !== "") machines.add(agent.host);
-    for (const role of agent.roles) roles.add(role);
+    if (agent.host !== "") hosts.add(agent.host);
+    for (const role of agent.roles ?? []) roles.add(role);
   }
-  return { machines: [...machines].sort(), roles: [...roles].sort() };
+  return { machines: [...hosts].sort(), roles: [...roles].sort() };
 }
 
 /** Every issue key an OPEN ask by each session names, keyed by session id - the search box's

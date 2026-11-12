@@ -25,24 +25,27 @@ import (
 // column backwards either.
 const issueUpdatedNow = "greatest(updated_at, clock_timestamp())"
 
+// updateIssueInput is the body of PATCH /api/v1/issues/{key}.
+type updateIssueInput struct {
+	Title         *string               `json:"title"`
+	Status        *string               `json:"status"`
+	Rank          *rankInput            `json:"rank"`
+	Labels        *[]string             `json:"labels"`
+	LabelsAdd     *[]string             `json:"labels_add"`
+	ExpectedSeq   *int64                `json:"expected_sequence"`
+	Priority      json.RawMessage       `json:"priority"`
+	Route         *string               `json:"route"`
+	ExternalLinks *[]model.ExternalLink `json:"external_links"`
+	Assignee      json.RawMessage       `json:"assignee"`
+	Parent        json.RawMessage       `json:"parent"`
+	BlockedBy     *[]string             `json:"blocked_by"`
+	Components    json.RawMessage       `json:"components"`
+	Repo          json.RawMessage       `json:"repo"`
+	Actor         *model.Actor          `json:"actor"`
+}
+
 func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Title         *string               `json:"title"`
-		Status        *string               `json:"status"`
-		Rank          *rankInput            `json:"rank"`
-		Labels        *[]string             `json:"labels"`
-		LabelsAdd     *[]string             `json:"labels_add"`
-		ExpectedSeq   *int64                `json:"expected_sequence"`
-		Priority      json.RawMessage       `json:"priority"`
-		Route         *string               `json:"route"`
-		ExternalLinks *[]model.ExternalLink `json:"external_links"`
-		Assignee      json.RawMessage       `json:"assignee"`
-		Parent        json.RawMessage       `json:"parent"`
-		BlockedBy     *[]string             `json:"blocked_by"`
-		Components    json.RawMessage       `json:"components"`
-		Repo          json.RawMessage       `json:"repo"`
-		Actor         *model.Actor          `json:"actor"`
-	}
+	var input updateIssueInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -387,7 +390,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if !changed {
 		advice := s.writeAdvice(
-			r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", before.Status,
+			r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", before.Status, false,
 		)
 		if err := ledger.Commit(r.Context()); err != nil {
 			s.writeHandlerError(w, err)
@@ -532,7 +535,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	advice := s.writeAdvice(
-		r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", after.Status,
+		r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", after.Status, false,
 	)
 	if closing {
 		// The close's last statement before its commit stamps closed_at again, at the moment it

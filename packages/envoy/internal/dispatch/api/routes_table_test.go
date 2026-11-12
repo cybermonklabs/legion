@@ -18,11 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-type routeIndex struct {
-	Routes []routeIndexEntry `json:"routes"`
-	Docs   string            `json:"docs"`
-}
-
 // routeIndexGolden is the committed index of the table: one route per line, sorted by path then
 // method, as `METHOD path auth`. It is what catches a route added or removed by accident, and
 // what a hand-kept count could not do — two branches that each add a route are each wrong about
@@ -209,8 +204,8 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
 	}
-	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+12 {
-		t.Fatalf("test hooks add twelve routes: got %d, want %d", got, len(routes)+12)
+	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+13 {
+		t.Fatalf("test hooks add thirteen routes: got %d, want %d", got, len(routes)+13)
 	}
 }
 
@@ -524,6 +519,13 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"GET /api/v1/broadcasts",
 		"GET /api/v1/broadcasts/{id}",
 		"POST /api/v1/asks/{id}/answer",
+		// A decline is the person's own word that they will not answer, which nobody may give
+		// for them: no agent and no deployment credential declines a question on their behalf.
+		"POST /api/v1/asks/{id}/decline",
+		// Handing an ask to another person is this change's own row, and it is the person's as
+		// the answer above it is: Dispatch takes who hands the question on from the credential,
+		// and a credential the deployment configured is nobody to hand one on.
+		"PUT /api/v1/asks/{id}/asked-of",
 		"POST /api/v1/comments/{id}/reopen",
 		"POST /api/v1/comments/{id}/accept",
 		"PATCH /api/v1/comments/{id}",

@@ -1,5 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import {
   createProject,
   createProjectDocument,
@@ -17,14 +15,10 @@ import {
   typeAtEnd,
 } from "./editor";
 import { askCard as inboxAskCard, inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, type Page, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // SLOW(>=2s): two browser contexts, two mounted editors on one live document, the reload the
 // row proves the text and the version picker survive, and a full-page screenshot.
@@ -71,7 +65,7 @@ test("documentCollaborationLive", async ({ browser }, testInfo) => {
           getArtifact(artifact.id),
           alicePage.getByRole("combobox", { name: "Version" }).locator("option").count(),
         ]);
-        const versions = current.versions.length;
+        const versions = (current.versions ?? []).length;
         return versions > 1 && options === versions + 1
           ? "one option per settled version, and one for the live document"
           : `${options} options for ${versions} settled versions`;
@@ -87,7 +81,10 @@ test("documentCollaborationLive", async ({ browser }, testInfo) => {
   }
 });
 
-test("picking a file on the Documents tab uploads it at once and lists it", async ({ browser }) => {
+// @pr: Upload and download: a file picked on the Documents tab is uploaded at once and listed.
+test("picking a file on the Documents tab uploads it at once and lists it @pr", async ({
+  browser,
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const alice = await asUser(browser, "alice");
 
@@ -120,7 +117,8 @@ test("picking a file on the Documents tab uploads it at once and lists it", asyn
 // SLOW(>=2s): two browser contexts, two mounted editors on one live document, a comment, a
 // suggestion accepted into a named version, an ask answered from bob's Inbox, and a full-page
 // screenshot.
-test("comment, suggest, and ask anchor marks on a project document; accept edits the text; the ask flows through the Inbox", async ({
+// @pr: The live document on a project document: a comment, a suggestion accepted into a named version, and an ask answered from the other person's Inbox.
+test("comment, suggest, and ask anchor marks on a project document; accept edits the text; the ask flows through the Inbox @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -172,7 +170,7 @@ test("comment, suggest, and ask anchor marks on a project document; accept edits
     await expect
       .poll(() =>
         getArtifact(created.artifact.id).then((artifact) =>
-          artifact.versions.some(({ named }) => named)
+          (artifact.versions ?? []).some(({ named }) => named)
         )
       )
       .toBe(true);
@@ -202,7 +200,7 @@ test("comment, suggest, and ask anchor marks on a project document; accept edits
     await expect(inboxDocumentRow.getByRole("link", { name: /CORE.*Design notes/ })).toBeVisible();
     const inboxAsk = await inboxAskCard(bobPage, askId);
     await inboxAsk.getByLabel("Your answer").fill("Yes, publish it.");
-    await inboxAsk.getByRole("button", { name: "Answer" }).click();
+    await inboxAsk.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect
       .poll(() => getAsk(askId))
       .toMatchObject({
@@ -264,10 +262,9 @@ test("a document's connection dot stays on the line with its version actions", a
 // The narrow-screen half of the row above, at the two widths the comment on `expectDotBeside`
 // names: the project's own, where at 390 px the picker, Name version and the dot are wider than
 // the header card, and 320 px, where a version view's two buttons and the dot are.
-test("a document's connection dot stays beside its version actions on a narrow screen @phone", async ({
+test("a document's connection dot stays beside its version actions on a narrow screen @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the row above makes the same check at 1280 px");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   await createProjectDocument("CORE", {
     content: "# Ask blocks design\n\nThe ask is a node.\n",

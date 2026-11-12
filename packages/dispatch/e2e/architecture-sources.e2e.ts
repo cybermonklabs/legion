@@ -1,10 +1,9 @@
 import { createHash } from "node:crypto";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { createIssue, createProject, getIssue } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // A project imports its component model from two repositories, each its own source, and the
@@ -54,13 +53,10 @@ async function addSource(page: Page, repo: string): Promise<void> {
   await saved;
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // SLOW(>=2s): the row crosses four surfaces - Settings, the Architecture page, the issue's
 // Components picker and a reload for persistence - over two source saves and two imports.
-test("a project with two architecture sources shows both in Settings, on its Architecture page and in an issue's Components picker", async ({
+// @pr: The Architecture-sources surface's only row: two sources read in Settings, on the Architecture page and in an issue's Components picker.
+test("a project with two architecture sources shows both in Settings, on its Architecture page and in an issue's Components picker @pr", async ({
   browser,
 }) => {
   // Step 1: project CORE and two repositories, each with its own component files.
@@ -159,7 +155,7 @@ test("a project with two architecture sources shows both in Settings, on its Arc
     await expect
       .poll(() =>
         getIssue(issue.key).then(({ components }) => ({
-          ids: [...components.ids].sort(),
+          ids: [...(components.ids ?? [])].sort(),
           mode: components.mode,
         }))
       )

@@ -9,6 +9,7 @@
  * placed, fall back to the thread alone with the text it is anchored to.
  */
 
+import { inboxThreadRow } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
@@ -104,6 +105,7 @@ function ThreadDocumentBody({
         <ThreadPaneHead sectionBlockId={document.sectionBlockId} thread={thread} />
       )}
       issueKey={issueKey}
+      item={thread.thread_id}
       label="Selected thread"
       loadingName={thread.document?.name ?? "the document"}
       onAskAnswered={noAnswer}
@@ -136,15 +138,16 @@ function AskThreadPane({ thread }: { thread: MyReplyThreadRow }): ReactNode {
 
 /** The reading column for a Reply or an Agent row: one body per shape the thread comes in. */
 export function ThreadPane({ thread }: { thread: MyReplyRow }): ReactNode {
-  if (thread.kind === "agent") {
-    return <ThreadBodyPane body="agent" quote={false} thread={thread} />;
+  const row = inboxThreadRow(thread);
+  if (row.kind === "agent") {
+    return <ThreadBodyPane body="agent" quote={false} thread={row} />;
   }
-  if (thread.kind === "ask") {
-    return <AskThreadPane thread={thread} />;
+  if (row.kind === "ask") {
+    return <AskThreadPane thread={row} />;
   }
-  const anchor = thread.anchor;
+  const anchor = row.anchor;
   const blockId = anchor?.block_id;
-  const inDocument = thread.kind === "comment" && thread.document !== undefined;
+  const inDocument = row.kind === "comment" && row.document !== undefined;
   if (
     inDocument &&
     anchor !== undefined &&
@@ -156,14 +159,20 @@ export function ThreadPane({ thread }: { thread: MyReplyRow }): ReactNode {
       <ThreadDocumentBody
         anchoredThread={{
           blockId,
-          children: <ThreadBody openAtFirstUnread thread={thread} />,
+          // The column this thread is drawn in is the document's, which the pane places at the
+          // anchored block. So this thread does not open at its first unread message: bounded,
+          // the later of two writers would win, and the opening of the row would be decided by
+          // when its replies are drawn. A thread the pane shows on its own, and the fall-back
+          // it draws where the document holds no such block, open at theirs as they do today
+          // (`ThreadBodyContent`).
+          children: <ThreadBody thread={thread} />,
           markId: anchor.mark_id,
         }}
         artifactId={anchor.artifact_id}
         blockId={blockId}
         body="document"
         issueKey={null}
-        thread={thread}
+        thread={row}
       />
     );
   }
@@ -174,7 +183,7 @@ export function ThreadPane({ thread }: { thread: MyReplyRow }): ReactNode {
       body={inDocument ? "document" : "issue"}
       fallback={inDocument}
       quote={inDocument}
-      thread={thread}
+      thread={row}
     />
   );
 }

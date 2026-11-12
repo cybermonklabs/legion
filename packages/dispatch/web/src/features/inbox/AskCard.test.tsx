@@ -8,7 +8,8 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { installIntersectionObserver } from "../../__tests__/intersection-observer";
+import { graphNode } from "../../__tests__/graph-fixture";
+import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerThreadReads } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
@@ -18,6 +19,7 @@ import { userPreferenceStorageKey } from "../shell/userPreference";
 import { replyRow, seedUnread } from "../threads/replies-fixture";
 import { AskCard } from "./AskCard";
 import { answerDraft } from "./answer-drafts";
+import { ThreadBody } from "./ThreadBody";
 
 let whoAmI: Mock<typeof api.whoAmI>;
 let getReferences: Mock<typeof api.getReferences>;
@@ -31,7 +33,7 @@ beforeEach(() => {
   });
   getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: [],
-    node: { id: "ask-1", kind: "ask" },
+    node: graphNode({ id: "ask-1", kind: "ask" }),
   });
   // Every card with an issue names who the ask reaches, which reads the issue's subscribers;
   // nobody is subscribed here, so the card lists its followers alone.
@@ -56,7 +58,12 @@ function answeredAsk(overrides: Partial<Ask> = {}): Ask {
   return {
     anchor: null,
     answer: firstAnswer,
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
     author: { id: "session-1", kind: "session" },
+    block_id: null,
     created_at: "2026-10-08T00:00:00Z",
     edited_at: null,
     id: "ask-1",
@@ -325,7 +332,6 @@ test("Change answer then Cancel leaves the recorded answer alone and no draft be
 function askReply(id: string, createdAt: string): Comment {
   return {
     anchor: null,
-    artifact_id: null,
     ask_id: "ask-1",
     author: { id: "session-1", kind: "session" },
     body: `Reply ${id}`,
@@ -398,11 +404,7 @@ for (const shape of ["inline", "collapsed"] as const) {
       const newest = (await card.view.findByText("Reply reply-2")).closest("li");
       if (newest === null) throw new Error("expected the newest reply's item");
       expect(card.screen.observed()).toEqual([newest]);
-      act(() => card.screen.show(newest));
-      act(() => {
-        jest.advanceTimersByTime(1_000);
-      });
-      for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
+      await dwellOn(card.screen, newest);
       expect(card.mark.mock.calls).toEqual([
         ["ask-1", { read_through: "2026-10-08T04:00:00.5Z" }, keyedAttempt],
       ]);
@@ -437,11 +439,7 @@ test("an answer given after every reply is what the mark watches and reads throu
     const record = await card.view.findByTestId("ask-ask-1");
     await card.view.findByText("Reply reply-2");
     expect(card.screen.observed()).toEqual([record]);
-    act(() => card.screen.show(record));
-    act(() => {
-      jest.advanceTimersByTime(1_000);
-    });
-    for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
+    await dwellOn(card.screen, record);
     expect(card.mark.mock.calls).toEqual([["ask-1", { read_through: answer.at }, keyedAttempt]]);
   } finally {
     card.cleanup();
@@ -466,6 +464,7 @@ function approvalAsk(approval: Partial<NonNullable<Ask["approval"]>> = {}): Ask 
     answer: null,
     approval: {
       artifact_id: "artifact-1",
+      documents: null,
       name: "spec.md",
       requested_version: 12,
       version: 12,
@@ -639,6 +638,109 @@ test("a question closed under the reader keeps their unsent answer, out of the f
     expect(card.getByTestId("ask-unsent-answer")).toHaveTextContent(typed);
   } finally {
     view.unmount();
+  }
+});
+
+// Handing a question to somebody else is a move on a question still waiting for an answer, so
+// the control is part of an open card and of no record: an answered, a resolved or a withdrawn
+// question waits on nobody.
+test("the hand-on control is on an open question and on no closed one", async () => {
+  const open = answeredAsk({ answer: null, state: "open" });
+  const { view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
+  try {
+    expect(
+      await within(view.container).findByLabelText("Hand this question to")
+    ).toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+
+  const closedBy = (kind: "resolved" | "withdrawn"): Ask =>
+    answeredAsk({
+      answer: null,
+      resolution: {
+        actor: { id: "session-1", kind: "session" },
+        at: "2026-10-08T03:00:00Z",
+        kind,
+        reason: "Settled elsewhere.",
+      },
+      state: "resolved",
+    });
+  for (const closed of [answeredAsk(), closedBy("resolved"), closedBy("withdrawn")]) {
+    const card = renderCard(<AskCard ask={closed} initialThread={thread(closed)} />);
+    try {
+      // The record the card draws instead of the open question, which is what carries the
+      // control: the open card's own article (`data-ask-card`) is not on screen at all.
+      await waitFor(() => expect(card.view.getByTestId(`ask-${closed.id}`)).toBeInTheDocument());
+      expect(card.view.container.querySelector("[data-ask-card]")).toBeNull();
+      expect(
+        within(card.view.container).queryByLabelText("Hand this question to")
+      ).not.toBeInTheDocument();
+    } finally {
+      card.view.unmount();
+    }
+  }
+});
+
+// A hand-on moves whom the ask waits on, and the Inbox's Reply-thread card reads that person
+// from the ask's own thread (`ThreadBody`, `askThreadQuery`), which is kept for the session and
+// never goes stale of itself: without this read its picker would show the person from before
+// the hand-on until the `ask.asked_of` event landed. Drawn through `ThreadBody`, because that
+// is what hands the thread's own ask to the card: a card draws the `ask` it is given while the
+// question is open (`useAskAnswerForm`), so one given a fixed ask could not show the write at
+// all and the read alone would prove nothing.
+test("a hand-on reads the ask's thread again, so a card reading that thread follows the write", async () => {
+  const user = userEvent.setup();
+  const open = answeredAsk({ answer: null, state: "open" });
+  const handedOn: Ask = {
+    ...open,
+    asked_of: "bob",
+    asked_of_at: "2026-10-08T04:00:00Z",
+    asked_of_by: "alice",
+    waiting_on_person: "bob",
+  };
+  let threadReads = 0;
+  let handed = false;
+  const getAsk = spyOn(api, "getAsk").mockImplementation(async () => {
+    threadReads += 1;
+    return thread(handed ? handedOn : open, []);
+  });
+  const handAskTo = spyOn(api, "handAskTo").mockImplementation(async () => {
+    handed = true;
+    return handedOn;
+  });
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
+    { login: "alice" },
+    { login: "bob" },
+  ]);
+  // The card marks the thread read off its owner's unread set, which holds nothing here.
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+    as_of: "2026-10-08T00:00:00Z",
+    limit: 200,
+    offset: 0,
+    rows: [],
+    total: 0,
+  });
+  const { view } = renderCard(<ThreadBody thread={replyRow(open.id, { kind: "ask" })} />);
+  const card = within(view.container);
+  try {
+    const control = await card.findByLabelText<HTMLSelectElement>("Hand this question to");
+    expect(control.value).toBe("");
+    // The people are read only once the reader reaches for the control (`AskHandOn`).
+    await user.click(control);
+    await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeTruthy());
+    const before = threadReads;
+    await user.selectOptions(control, "bob");
+    await waitFor(() => expect(handAskTo).toHaveBeenCalled());
+    await waitFor(() => expect(threadReads).toBeGreaterThan(before));
+    // What that read is for: the person the write moved the ask to is on the screen.
+    await waitFor(() => expect(control.value).toBe("bob"));
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    handAskTo.mockRestore();
+    listMyReplies.mockRestore();
+    listUsers.mockRestore();
   }
 });
 

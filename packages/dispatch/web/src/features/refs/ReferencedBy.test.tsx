@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-
+import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type { GraphEdge, GraphReferences } from "../../api/types";
 import type { BlockItemKind } from "./block-reference";
@@ -24,6 +24,7 @@ function blockEdge(
     excerpt: { block_id: blockId, text },
     kind: "mentions",
     node: {
+      ...graphNodeFields(),
       block_id: blockId,
       document,
       id: `${document.slice("dispatch://".length)}#${blockId}`,
@@ -63,6 +64,7 @@ test("an answers edge is labelled Answer", async () => {
         direction: "in",
         kind: "answers",
         node: {
+          ...graphNodeFields(),
           id: "11111111-1111-4111-8111-111111111111",
           issue_key: "OPS-1",
           kind: "comment",
@@ -72,7 +74,13 @@ test("an answers edge is labelled Answer", async () => {
         source_seq: null,
       },
     ],
-    node: { id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: "dispatch://CORE-1" },
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
   });
   restore = () => {
     getReferences.mockRestore();
@@ -90,7 +98,13 @@ test("two blocks of one document version citing the node are two rows under that
       blockEdge(notes, "OPS-1", "ship_it", "ship%5Fit", "Ship it as dispatch://CORE-1 says."),
       blockEdge(notes, "OPS-1", "p2", "p2", "And hold the rest for dispatch://CORE-1."),
     ],
-    node: { id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: "dispatch://CORE-1" },
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
   });
   restore = () => {
     getReferences.mockRestore();
@@ -136,6 +150,7 @@ test("a source of one citing node links to where its mention is: a block at the 
         excerpt: { block_id: "hold_it", text: "Hold it." },
         kind: "mentions",
         node: {
+          ...graphNodeFields(),
           id: "CORE/handbook-md",
           kind: "artifact",
           project: "CORE",
@@ -144,7 +159,13 @@ test("a source of one citing node links to where its mention is: a block at the 
         source_seq: 8,
       },
     ],
-    node: { id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: "dispatch://CORE-1" },
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
   });
   restore = () => {
     getReferences.mockRestore();
@@ -171,6 +192,7 @@ test("one source citing two blocks of the shown document is two rows, each linke
   const citing = (blockId: string) =>
     ({
       block: {
+        ...graphNodeFields(),
         block_id: blockId,
         document: spec,
         id: `CORE-1/spec#${blockId}`,
@@ -185,6 +207,7 @@ test("one source citing two blocks of the shown document is two rows, each linke
       excerpt: { text: `Both of these hold: ${"the plan stands as written. ".repeat(12)}` },
       kind: "mentions",
       node: {
+        ...graphNodeFields(),
         id: "c1",
         issue_key: "OPS-1",
         kind: "comment",
@@ -193,7 +216,13 @@ test("one source citing two blocks of the shown document is two rows, each linke
       },
       source_seq: 9,
     }) satisfies GraphEdge;
-  const node = { id: "CORE-1/spec", issue_key: "CORE-1", kind: "artifact", ref: spec } as const;
+  const node = {
+    ...graphNodeFields(),
+    id: "CORE-1/spec",
+    issue_key: "CORE-1",
+    kind: "artifact",
+    ref: spec,
+  } as const;
   const consoleError = spyOn(console, "error");
   const { client, getReferences, view } = renderPanel(
     { edges: [citing("a"), citing("b")], node },
@@ -246,6 +275,7 @@ function itemBlockEdge(kind: BlockItemKind, id: string, blockId: string, text: s
     excerpt: { block_id: blockId, text },
     kind: "mentions",
     node: {
+      ...graphNodeFields(),
       block_id: blockId,
       id: `${kind}/${id}#${blockId}`,
       issue_key: "OPS-1",
@@ -267,7 +297,13 @@ test("blocks of one comment citing the node are rows under that comment, labelle
       itemBlockEdge("comment", comment, "b2", "Beta cites it too."),
       itemBlockEdge("message", message, "b1", "The message cites dispatch://CORE-1."),
     ],
-    node: { id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: "dispatch://CORE-1" },
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
   });
   restore = () => {
     getReferences.mockRestore();
@@ -310,7 +346,13 @@ test("parts of one ask citing the node are rows under that ask, named as the ask
       itemBlockEdge("ask", ask, "b1", "Ship it once dispatch://CORE-1 lands?"),
       itemBlockEdge("ask", ask, "b3", "Hold — dispatch://CORE-1 is not ready."),
     ],
-    node: { id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: "dispatch://CORE-1" },
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
   });
   restore = () => {
     getReferences.mockRestore();
@@ -353,6 +395,7 @@ test("a block of a project document's comment links to its comment, with no frag
         excerpt: { block_id: "b2", text: "Beta cites dispatch://CORE-1." },
         kind: "mentions",
         node: {
+          ...graphNodeFields(),
           block_id: "b2",
           id: `comment/${comment}#b2`,
           kind: "block",
@@ -363,7 +406,13 @@ test("a block of a project document's comment links to its comment, with no frag
         source_seq: 10,
       },
     ],
-    node: { id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: "dispatch://CORE-1" },
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
   });
   restore = () => {
     getReferences.mockRestore();
@@ -391,6 +440,7 @@ test("a serves edge reads as served by and a needs edge as needed by", async () 
         { ...blockEdge(plan, "CORE-1", "t1", "t1", "Write the panel."), kind: "needs" },
       ],
       node: {
+        ...graphNodeFields(),
         block_id: "r1",
         document: "dispatch://CORE-1/spec",
         id: "CORE-1/spec#r1",

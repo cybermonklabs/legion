@@ -7,6 +7,9 @@ import { useEventFeed } from "./api/event-feed";
 import { useLiveSocketPill } from "./api/live-socket";
 import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
 import type { AuthenticatedUser } from "./api/types";
+import { useLiveViews } from "./features/agent-view/live-views";
+import { LiveViewRoute, MountedLiveViews } from "./features/agent-view/MountedLiveViews";
+import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/agents/pins";
 import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
@@ -27,6 +30,7 @@ import {
   ANSWERS_PATH,
   buildInboxPath,
   buildProjectPath,
+  liveViewSessionOf,
   parseIssuePath,
   parseProjectPath,
   routeFillsViewport,
@@ -34,7 +38,8 @@ import {
   routeIsInbox,
   routeProjectOf,
 } from "./features/refs/routes";
-import { type PaletteMode, SearchPalette } from "./features/search/SearchPalette";
+import { useRecordRecents } from "./features/search/recents";
+import { SearchPalette } from "./features/search/SearchPalette";
 import { ErrorBoundary } from "./features/shell/ErrorBoundary";
 import { KeymapProvider } from "./features/shell/KeymapProvider";
 import {
@@ -59,7 +64,7 @@ import {
 } from "./features/shell/useDialog";
 import { useDocumentTitle } from "./features/shell/useDocumentTitle";
 import { useKeyboardFit } from "./features/shell/useKeyboardFit";
-import { useUserPreference } from "./features/shell/userPreference";
+import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userPreference";
 import { Sidebar } from "./features/sidebar/Sidebar";
 import "./features/writes/kinds";
 import { KeptWrites } from "./features/writes/KeptWrites";
@@ -123,12 +128,6 @@ const MachinesPage = lazy(() =>
 
 const MachinePage = lazy(() =>
   import("./features/machines/MachinePage").then((module) => ({ default: module.MachinePage }))
-);
-
-const AgentConversationPage = lazy(() =>
-  import("./features/agent-view/AgentConversationPage").then((module) => ({
-    default: module.AgentConversationPage,
-  }))
 );
 
 const AgentArtifactPage = lazy(() =>
@@ -412,9 +411,14 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [inboxDrawerOpen, setInboxDrawerOpen] = useState(false);
-  // Which palette is open, and `null` for none: `$mod+k` and the rail's Search control list this
-  // page's actions and the hits, `/` searches only, and `g p` lists projects.
-  const [paletteMode, setPaletteMode] = useState<PaletteMode | null>(null);
+  // Whether the bar is open. `$mod+k`, `/`, `g p` and the rail's Search control open the one
+  // bar: this page's actions, the person's recent items, the projects a query names and the
+  // hits, with a chip saying what it will act on.
+  const [barOpen, setBarOpen] = useState(false);
+  // What the person opened, for the bar to list back while its box is empty. It is recorded in
+  // the shell rather than on each page, so every way into an item - a link, the bar itself, a
+  // reload - records it.
+  useRecordRecents();
   const [sidebarHidden, setSidebarHidden] = useUserPreference(
     "shell.sidebar",
     (stored) => stored === "hidden",
@@ -464,6 +468,46 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const readingPaneShown = useMediaQuery(READING_PANE_QUERY);
   const fillsViewport =
     routeFillsViewport(location.pathname) || (routeIsInbox(location.pathname) && readingPaneShown);
+  // The session whose live view the address names, or `null` on every other page. The shell
+  // mounts that view and the one the person left (`MountedLiveViews`, below `<Routes>`), so it
+  // is the one thing about the live view the router still decides.
+  const frontLiveView = liveViewSessionOf(location.pathname) ?? null;
+  // The person's pins, which the shell owns rather than the rail: the registry keeps a sleeping
+  // pinned view and discards a sleeping unpinned one (`live-views.ts`, D8), and the rail is not
+  // on the page while the sidebar is collapsed or its sheet is closed.
+  const liveViews = useLiveViews();
+  const pinnedAgents = usePinnedAgents();
+  useEffect(() => {
+    liveViews.setPinned(pinnedAgents);
+  }, [liveViews, pinnedAgents]);
+  // The pins were this browser's until INFRA-812 made them the person's. At the first load
+  // after the change each id the old key holds is written as a pin, so this runs once per
+  // browser and Dispatch ends up holding the union of what each of the person's browsers had
+  // kept.
+  //
+  // One write at a time, in the order the key kept them, because Dispatch stamps each pin as it
+  // arrives and `pinned_at` is the order the rail draws; and the key is removed only once every
+  // one of them has landed, since a write Dispatch refuses is the reader's to retry or discard
+  // and a key removed before that would be the person's pins gone. A refusal stops the run and
+  // leaves the key whole, so the next load writes the lot again, in the same order. The key the
+  // run began under is held here rather than read back from storage, because the key outlives
+  // the first write now: an effect that runs again - React runs it twice under StrictMode -
+  // would otherwise write every id a second time.
+  const writePin = useAgentPinWrite();
+  const migrated = useRef<string | null>(null);
+  useEffect(() => {
+    const key = legacyPinnedAgentsKey(user.login);
+    if (migrated.current === key) return;
+    const kept = window.localStorage.getItem(key);
+    if (kept === null) return;
+    migrated.current = key;
+    void (async () => {
+      for (const sessionId of legacyPinnedIds(kept)) {
+        if (!(await writePin(sessionId, true))) return;
+      }
+      window.localStorage.removeItem(key);
+    })();
+  }, [user.login, writePin]);
   const connection = useLiveSocketPill();
   // One number for the Inbox, composed in one place (`useInboxCount.ts`): the work
   // waiting on the reader plus the threads they have not read.
@@ -494,22 +538,24 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const routeProject = routeProjectOf(location.pathname);
   useKeymap("global", [
     {
-      // Opens only: while the palette is open the `dialog` scope is the only one consulted, and
-      // the palette's own `$mod+k` binding closes it.
+      // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
+      // the bar's own `$mod+k` binding closes it. It fires while the reader is writing, so
+      // the key reaches the bar from inside a document's editor too.
       id: "search",
       inEditable: true,
       keys: "$mod+k",
       label: "Search and actions",
-      run: () => setPaletteMode("all"),
+      run: () => setBarOpen(true),
     },
     {
-      // No row: chosen from `$mod+k`'s palette it would only reopen that palette with its actions
-      // taken away.
+      // The same bar. No row: chosen from the bar it would only reopen the bar. Not
+      // `inEditable`, so a slash typed into a document stays a slash, and the Agents page
+      // shadows it with its own filter box.
       id: "search-only",
       keys: "/",
-      label: "Search only",
+      label: "Search",
       palette: false,
-      run: () => setPaletteMode("search"),
+      run: () => setBarOpen(true),
     },
     {
       id: "help",
@@ -533,10 +579,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       when: () => routeProject !== undefined,
     },
     {
+      // The same bar again, where a reader after a project types its name: its projects are
+      // rows of the one list. No row, for `/`'s reason.
       id: "go-project",
       keys: "g p",
       label: "Go to project…",
-      run: () => setPaletteMode("projects"),
+      palette: false,
+      run: () => setBarOpen(true),
     },
     {
       id: "inbox-drawer",
@@ -629,7 +678,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       onCreateIssue={() => setCreateOpen(true)}
       onHideSidebar={() => setSidebarHidden(true)}
       onOpenInboxDrawer={() => setInboxDrawerOpen(true)}
-      onSearch={() => setPaletteMode("all")}
+      onSearch={() => setBarOpen(true)}
       onSignOut={() => {
         // Signing out discards the person's own writes in every tab of this browser, so it asks
         // first while any is unsent, naming each once - this tab's, and every other tab's, which
@@ -835,7 +884,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<AgentsPage />} path="/agents" />
                 <Route element={<BroadcastsPage />} path="/agents/broadcasts" />
                 <Route element={<BroadcastPage />} path="/agents/broadcasts/:id" />
-                <Route element={<AgentConversationPage />} path={AGENT_LIVE_PATH} />
+                <Route element={<LiveViewRoute />} path={AGENT_LIVE_PATH} />
                 <Route element={<AgentArtifactPage />} path={AGENT_ARTIFACT_PATH} />
                 <Route element={<MachinesPage />} path="/machines" />
                 <Route element={<MachinePage />} path="/machines/:machine" />
@@ -854,6 +903,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
               </Routes>
             </Suspense>
           </ErrorBoundary>
+          {/* The live views the person has open, inside `<main>` so each takes the layout and
+              the iOS keyboard fit the live route already has, and beside the routes rather than
+              under them: a view outlives the address that opened it, so neither leaving the
+              live route, nor another page's throw, nor a lazy page suspending may unmount it.
+              The live route's own element renders nothing. */}
+          <MountedLiveViews front={frontLiveView} />
         </main>
         <ErrorBoundary region="the margin" resetKey={location.pathname}>
           <MarginColumn
@@ -863,7 +918,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             width={marginWidth}
           />
         </ErrorBoundary>
-        <SearchPalette mode={paletteMode} onClose={() => setPaletteMode(null)} />
+        <SearchPalette onClose={() => setBarOpen(false)} open={barOpen} />
         <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
         {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}

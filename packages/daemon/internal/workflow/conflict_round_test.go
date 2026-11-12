@@ -30,7 +30,7 @@ const (
 func conflictRoundEngine() *Engine {
 	return New(record.NewStore(), Config{
 		Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), MergeQueueRole: "merge-queue",
-		ReviewRoundCap: 3, MaxFixAttempts: 3, Linger: time.Hour, ProductionCheckRole: claim.RoleTester,
+		ReviewRoundCap: 3, Linger: time.Hour, ProductionCheckRole: claim.RoleTester,
 		ReviewAppLogin: testReviewApp, Repositories: testRepositories,
 		Clock: func() time.Time { return time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC) },
 	}, nil)
@@ -104,8 +104,9 @@ func standsIn(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string) {
 // The issue then stands at the cap, where a conflict round still counts in no way: it posts no
 // second message and no second pr-blocked notice, since a notice is how a round counts - the
 // architect is woken to decide it - and the counted number the round leaves is the one the
-// message already on the issue names. The counted round after it posts the cap again, with the
-// numbers as they stand then.
+// message already on the issue names. The counted round after it posts nothing either, though
+// it is counted: the cap's message and its notice go once for each value review_round_cap holds
+// (recordRound, record.PhaseRow.CapTold), and this row told the value 3 when it reached it.
 func TestAConflictRoundCountsAgainstNoCap(t *testing.T) {
 	pool := migratedPool(t)
 	engine := conflictRoundEngine()
@@ -224,7 +225,9 @@ func TestAConflictRoundCountsAgainstNoCap(t *testing.T) {
 		t.Fatalf("the conflict round made at the cap posted %q and %d pr-blocked notices, want only the one message and the one notice the counted round before it wrote", messages, blocked)
 	}
 
-	// The next counted round posts the cap again, naming both numbers as they stand then.
+	// The next counted round is counted and tells the architect nothing: the cap's message and
+	// its pr-blocked notice go once for each value review_round_cap holds, and this row told the
+	// value 3 on the round that reached it. The numbers below are what reads the round as counted.
 	if result := apply("forward-merge:LEGION-208:"+remergedHead, intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42,
 		Branch: "legion/LEGION-208", Before: mergedHead, Sender: "implementer", HeadSHA: remergedHead,
 		UpdatedAt: time.Date(2026, 9, 24, 1, 0, 0, 0, time.UTC)}); result.Refusal != nil {
@@ -239,10 +242,9 @@ func TestAConflictRoundCountsAgainstNoCap(t *testing.T) {
 	if rounds, conflicts := implementerRounds(t, pool), implementerConflictRounds(t, pool); rounds != 9 || conflicts != 5 {
 		t.Fatalf("rounds = %d of which %d conflict rounds, want 9 and the same 5: the reviewer's round is counted", rounds, conflicts)
 	}
-	again := "Issue reached review_round_cap=3: 4 rounds counted, 5 conflict rounds not counted."
 	messages, blocked = capPosts(t, pool)
-	if len(messages) != 2 || messages[1] != again || blocked != 2 {
-		t.Fatalf("the counted round after the conflict round posted %q and %d pr-blocked notices, want a second message %q and a second notice", messages, blocked, again)
+	if len(messages) != 1 || messages[0] != want || blocked != 1 {
+		t.Fatalf("the counted round after the conflict round posted %q and %d pr-blocked notices, want still the one message %q and the one notice the round that reached the cap wrote: the cap is told once for each value it holds", messages, blocked, want)
 	}
 }
 

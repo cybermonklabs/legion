@@ -7,9 +7,18 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { jump, realClock, tick } from "../../__tests__/fake-clock";
+import { graphNode } from "../../__tests__/graph-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
-import type { Agent, Comment, ItemBlock, ItemBlocks, Message } from "../../api/types";
+import type {
+  Agent,
+  Comment,
+  IssueCollaborators,
+  ItemBlock,
+  ItemBlocks,
+  Message,
+} from "../../api/types";
 import { useSending } from "../../hooks/useSending";
 import type { AgentText } from "../refs/AgentName";
 import {
@@ -36,6 +45,7 @@ const commentRefused = new ApiError(400, { code: "COMMENT_INPUT", error: COMMENT
 
 const planner: Agent = {
   capabilities: ["btw"],
+  state: "live",
   dir: "/workspaces/planner",
   host: "host-a",
   last_activity: null,
@@ -49,6 +59,7 @@ const planner: Agent = {
 
 const worker: Agent = {
   capabilities: [],
+  state: "live",
   dir: "/workspaces/worker",
   host: "host-b",
   last_activity: null,
@@ -66,7 +77,10 @@ const plannerAuthor = { id: "Planner", kind: "user" } as const;
 
 const createdComment: Comment = {
   anchor: null,
+  answers: null,
+  artifact_id: null,
   ask_id: null,
+  reply_block: null,
   author: { id: "alice", kind: "user" },
   body: "sent",
   created_at: "2026-09-18T00:00:00Z",
@@ -377,20 +391,20 @@ function sendRefusal(): SendRefusal {
   };
 }
 
-/** Presses Send both ways a reader can - the button, and Ctrl+Enter in the box - then waits a
- *  task. TanStack awaits `onMutate` before it calls the mutation function, so an API spy read
- *  straight after the press shows no call whether or not Send refused. */
+/** Presses Send both ways a reader can - the button, and Ctrl+Enter in the box - then moves the
+ *  fake clock a task on. TanStack awaits `onMutate` before it calls the mutation function, so an
+ *  API spy read straight after the press shows no call whether or not Send refused. Each test
+ *  that presses this way installs the fake clock before it renders. */
 async function pressSend(user: UserEvent, field: HTMLElement): Promise<void> {
   await user.click(screen.getByRole("button", { name: "Send" }));
   field.focus();
   await user.keyboard("{Control>}{Enter}{/Control}");
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, 20);
-  await promise;
+  await tick(20);
 }
 
 test("a token-only direct-session draft cannot submit an empty message, and Send says why", async () => {
-  const user = userEvent.setup();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   const createAgentMessage = spyOn(api, "createAgentMessage").mockResolvedValue(createdMessage);
   const { view } = renderComposer({ owner: { kind: "session", sessionId: "A" } });
 
@@ -411,6 +425,7 @@ test("a token-only direct-session draft cannot submit an empty message, and Send
     await user.paste("/btw status?");
     expect(sendRefusal()).toEqual({ description: null, disabled: null, title: null });
   } finally {
+    realClock();
     view.unmount();
     createAgentMessage.mockRestore();
   }
@@ -564,7 +579,8 @@ test("a command on a plain legacy reply stays verbatim and sends no delivery", a
 });
 
 test("a token-only targeted legacy reply cannot submit, and Send says why", async () => {
-  const user = userEvent.setup();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   const createMessage = spyOn(api, "createMessage").mockResolvedValue({} as never);
   const { view } = renderComposer({
     replyTo: {
@@ -587,6 +603,7 @@ test("a token-only targeted legacy reply cannot submit, and Send says why", asyn
     expect(createMessage).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Sending…" })).not.toBeInTheDocument();
   } finally {
+    realClock();
     view.unmount();
     createMessage.mockRestore();
   }
@@ -859,7 +876,7 @@ test("the mention picker draws each agent with its state and no link", async () 
  *  agents by role in workflow order and then newest first, then the rest newest first) - the
  *  planner, the reviewer role's newest session and the one it replaced, then a session with no
  *  registry entry. */
-const collaboratorsAnswer = {
+const collaboratorsAnswer: IssueCollaborators = {
   agents: [
     {
       kind: "session",
@@ -915,7 +932,7 @@ const collaboratorsAnswer = {
   issue_key: "CORE-1",
   legion_registry: "ok",
   people: [],
-} as const;
+};
 
 /** The naming the picker does outside React: no stopped session is in the registry cache, so each
  *  name falls back to the title the collaborators read stamped on it. */
@@ -997,7 +1014,8 @@ test("a picker holding only stopped roles does not say no agent matches", async 
 // (never offered twice), and a role is offered once by its newest session whatever replaced it.
 // A live list whose state is unknown is the caller's case, which the picker test below proves.
 test("stopped role options leave out held roles and name each role once", () => {
-  const reviewerOnly = stoppedRoleOptions([planner], collaboratorsAnswer.agents, storedNames);
+  const answerAgents = collaboratorsAnswer.agents ?? [];
+  const reviewerOnly = stoppedRoleOptions([planner], answerAgents, storedNames);
   expect(reviewerOnly.map((option) => [option.target, option.sessionId, option.detail])).toEqual([
     ["role:legion-p-core-1-reviewer", "new-reviewer", "reviewer · not running"],
   ]);
@@ -1005,18 +1023,14 @@ test("stopped role options leave out held roles and name each role once", () => 
   expect(reviewerOnly.map((option) => option.holder)).toEqual(["New reviewer"]);
   // Nobody live holds either role: both, in the order the server sent them (planner, reviewer).
   expect(
-    stoppedRoleOptions([worker], collaboratorsAnswer.agents, storedNames).map(
-      (option) => option.target
-    )
+    stoppedRoleOptions([worker], answerAgents, storedNames).map((option) => option.target)
   ).toEqual(["role:legion-planner", "role:legion-p-core-1-reviewer"]);
   // A session the live list names is no stopped option, whatever roles it claims: offered here it
   // would draw its own `Running` mark inside the "Not running" group.
   expect(
-    stoppedRoleOptions(
-      [{ ...worker, session_id: "new-reviewer" }],
-      collaboratorsAnswer.agents,
-      storedNames
-    ).map((option) => option.target)
+    stoppedRoleOptions([{ ...worker, session_id: "new-reviewer" }], answerAgents, storedNames).map(
+      (option) => option.target
+    )
   ).toEqual(["role:legion-planner"]);
 });
 
@@ -1169,13 +1183,13 @@ test("editing a comment patches only its body and never creates a delivery", asy
 /** The blocks route's answer for a two-paragraph comment, `Alpha` and `Beta`. */
 function alphaBetaBlocks(indexed: boolean): ItemBlocks {
   const blocks: ItemBlock[] = [
-    { from: 0, id: "b1", text: "Alpha", to: 5, type: "paragraph" },
-    { from: 7, id: "b2", text: "Beta", to: 11, type: "paragraph" },
+    { embedding: "embedded", from: 0, id: "b1", text: "Alpha", to: 5, type: "paragraph" },
+    { embedding: "embedded", from: 7, id: "b2", text: "Beta", to: 11, type: "paragraph" },
   ];
   return {
     blocks: indexed ? blocks : [],
     indexed,
-    item: { id: "comment-1", issue_key: "CORE-1", kind: "comment" },
+    item: graphNode({ id: "comment-1", issue_key: "CORE-1", kind: "comment" }),
     revision: 3,
   };
 }
@@ -1257,11 +1271,11 @@ test("an unchanged edit of a comment stored with CR LF carries each block's id",
   });
   const commentBlocks = spyOn(api, "commentBlocks").mockResolvedValue({
     blocks: [
-      { from: 0, id: "b1", text: "Alpha", to: 5, type: "paragraph" },
-      { from: 9, id: "b2", text: "Beta", to: 13, type: "paragraph" },
+      { embedding: "embedded", from: 0, id: "b1", text: "Alpha", to: 5, type: "paragraph" },
+      { embedding: "embedded", from: 9, id: "b2", text: "Beta", to: 13, type: "paragraph" },
     ],
     indexed: true,
-    item: { id: "comment-1", issue_key: "CORE-1", kind: "comment" },
+    item: graphNode({ id: "comment-1", issue_key: "CORE-1", kind: "comment" }),
     revision: 3,
   });
   const editComment = spyOn(api, "editComment").mockResolvedValue(createdComment);
@@ -1655,6 +1669,8 @@ const plannerMention = { target: "session:A", title: "Planner" };
 const createdMessage: Message = {
   author: { id: "alice", kind: "user" },
   body: "sent",
+  broadcast_id: null,
+  reply_block: null,
   created_at: "2026-09-18T00:00:00Z",
   deliveries: [],
   id: "message-1",
@@ -2397,7 +2413,7 @@ test("a send the server answers at 35 s posts once: the deadline offers no Retry
     expect(refreshed).toContain(JSON.stringify(["comments", "CORE-1"]));
     expect(refreshed).toContain(JSON.stringify(["events", "CORE-1"]));
   } finally {
-    jest.useRealTimers();
+    realClock();
     view.unmount();
     createComment.mockRestore();
   }
@@ -2433,7 +2449,7 @@ test("a refusal after the deadline hands the draft back with Retry", async () =>
     expect(holdControls().disabled).toBe(false);
     expect(screen.getByTestId("host-holds").textContent).toBe("Reply free, Back free");
   } finally {
-    jest.useRealTimers();
+    realClock();
     view.unmount();
     createComment.mockRestore();
   }
@@ -2618,27 +2634,18 @@ test("a send to one session past its deadline says it keeps trying, and lands on
     expect(field.value).toBe("");
     expect(screen.queryByText(KEYED_SEND_LATE_TEXT)).not.toBeInTheDocument();
   } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
     view.unmount();
     createAgentMessage.mockRestore();
   }
 });
 
-/** Moves the fake clock `ms` on and lets every promise the move released run. */
-async function tick(ms: number): Promise<void> {
-  await act(async () => {
-    jest.advanceTimersByTime(ms);
-    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
-  });
-}
-
 /** A send that keeps failing, from its press to its 30 s deadline: five attempts, at 0, 1, 3, 7
  *  and 15 s. */
 async function failToTheDeadline(): Promise<void> {
-  for (const wait of [1_000, 2_000, 4_000, 8_000]) await tick(wait);
+  for (const wait of [1_000, 2_000, 4_000, 8_000]) await jump(wait);
   expect(screen.queryByRole("button", { name: "Stop trying" })).not.toBeInTheDocument();
-  await tick(15_000);
+  await jump(15_000);
 }
 
 const stoppedText = new SendStoppedError().message;
@@ -2672,7 +2679,7 @@ test("a send kept failing shows Stop trying once late, which stops it for Retry 
     expect(field.value).toBe("Status please");
     expect(holdControls().disabled).toBe(false);
     expect(screen.getByRole("button", { name: "Discard draft" })).toBeTruthy();
-    await tick(30 * 60_000);
+    await jump(30 * 60_000);
     expect(createAgentMessage).toHaveBeenCalledTimes(5);
 
     // Retry: the same message, under the same key.
@@ -2690,11 +2697,10 @@ test("a send kept failing shows Stop trying once late, which stops it for Retry 
     expect(field.value).toBe("");
     expect(screen.queryByText(stoppedText)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
-    await tick(30 * 60_000);
+    await jump(30 * 60_000);
     expect(createAgentMessage).toHaveBeenCalledTimes(tried);
   } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
     view.unmount();
     createAgentMessage.mockRestore();
   }
@@ -2728,7 +2734,8 @@ test("a stopped send the reader comes back to a day later says its key has run o
     await tick(0);
     const tried = createAgentMessage.mock.calls.length;
 
-    await tick(IDEMPOTENCY_KEY_TTL_MS);
+    // One jump of the key's whole life: the stopped send leaves no timer in it to step to.
+    await jump(IDEMPOTENCY_KEY_TTL_MS);
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await tick(0);
     expect(createAgentMessage).toHaveBeenCalledTimes(tried);
@@ -2737,8 +2744,7 @@ test("a stopped send the reader comes back to a day later says its key has run o
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Discard draft" })).toBeTruthy();
   } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
     view.unmount();
     createAgentMessage.mockRestore();
   }
@@ -2861,10 +2867,11 @@ test("a pick in the paste's own task cannot move the upload", async () => {
 // name, so nothing is written into the draft, nothing shows as refused, and the composer says the
 // file was stored and its reference not added - the upload is not made a second time.
 test("a pasted file answered KEY_COMMITTED says it was stored and adds no reference", async () => {
+  jest.useFakeTimers();
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
     new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
   );
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const { view } = renderComposer();
 
   try {
@@ -2882,9 +2889,10 @@ test("a pasted file answered KEY_COMMITTED says it was stored and adds no refere
     );
     expect(field.value).toBe("See ");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    await Bun.sleep(20);
+    await tick(20);
     expect(uploadArtifact).toHaveBeenCalledTimes(1);
   } finally {
+    realClock();
     view.unmount();
     uploadArtifact.mockRestore();
   }
@@ -2931,13 +2939,14 @@ test("a pasted picture is written as an inline picture of its version", async ()
 // names the upload and takes no press, Ctrl+Enter sends nothing, and the send once it lands
 // carries the picture.
 test("a send waits for a pasted picture still uploading, by Send and by Ctrl+Enter", async () => {
+  jest.useFakeTimers();
   const { promise: landed, resolve: land } = Promise.withResolvers<void>();
   const uploadArtifact = spyOn(api, "uploadArtifact").mockImplementation(async () => {
     await landed;
     return uploaded("shot-png", "shot.png", 1);
   });
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
-  const user = userEvent.setup();
+  const user = userOnFakeClock();
   const { view } = renderComposer();
 
   try {
@@ -2955,9 +2964,7 @@ test("a send waits for a pasted picture still uploading, by Send and by Ctrl+Ent
     field.focus();
     await user.keyboard("{Control>}{Enter}{/Control}");
     // A send's mutation function runs a task after the press (`pressSend`).
-    const { promise: settled, resolve: settle } = Promise.withResolvers<void>();
-    setTimeout(settle, 20);
-    await settled;
+    await tick(20);
     expect(createComment).not.toHaveBeenCalled();
 
     land();
@@ -2969,6 +2976,7 @@ test("a send waits for a pasted picture still uploading, by Send and by Ctrl+Ent
       expect(createComment).toHaveBeenCalledWith("CORE-1", { body }, keyedAttempt)
     );
   } finally {
+    realClock();
     view.unmount();
     uploadArtifact.mockRestore();
     createComment.mockRestore();

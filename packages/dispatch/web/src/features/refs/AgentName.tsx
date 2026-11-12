@@ -36,7 +36,14 @@ import { relativeTimeLabel, Timestamp } from "./Timestamp";
  * `packages/dispatch/AGENTS.md` ("How an agent is shown") catches that member use.
  */
 
-type SessionActor = Extract<Actor, { kind: "session" }>;
+type SessionActor = Actor & { kind: "session" };
+
+/** Whether an actor is a session's. An actor's kind reaches the browser as the string the route
+ *  table declares, and `session` is the one word that names a session; every surface that needs
+ *  the session itself narrows here. */
+function isSessionActor(actor: Actor): actor is SessionActor {
+  return actor.kind === "session";
+}
 
 /** An agent to name: an actor, or a bare session id with the title stamped where it was
  *  recorded. */
@@ -66,7 +73,7 @@ function resolveAgent(ref: AgentRef, registry: AgentRegistry): ResolvedAgent {
     return {
       attribution: actorAttribution(actor),
       name: actorName(actor, registry.titles),
-      sessionId: actor.kind === "session" ? actor.id : undefined,
+      sessionId: isSessionActor(actor) ? actor.id : undefined,
     };
   }
   return {
@@ -81,12 +88,26 @@ type AgentSubject =
   | { actor?: never; sessionId: string; storedTitle: string | undefined };
 
 type AgentVariant =
-  /** `link` (default): the name links to the live conversation. `static`: no link, for the
-   *  places a link cannot sit (a tooltip, a listbox option, the live page's own header). */
-  | { kind?: "link" | "static"; control?: never }
+  /** `link` (default): the name links to the live conversation, pushing the address, so Back
+   *   walks the pages the reader came from. `replace` is the rail's pinned rows alone
+   *   (INFRA-812): a move from one pinned agent to another replaces the live view the reader is
+   *   in rather than stacking it. `onNavigate` is told the link was followed, which is how the
+   *   rail's sheet closes behind it. `static`: no link, for the places a link cannot sit (a
+   *   tooltip, a listbox option, the live page's own header). */
+  | {
+      kind?: "link" | "static";
+      control?: never;
+      onNavigate?: () => void;
+      replace?: boolean;
+    }
   /** `control`: the host keeps its own control around the name, and the live link renders
    *  beside it, outside the host control. */
-  | { kind: "control"; control: (name: ReactNode) => ReactNode };
+  | {
+      kind: "control";
+      control: (name: ReactNode) => ReactNode;
+      onNavigate?: never;
+      replace?: never;
+    };
 
 type AgentNameProps = AgentSubject &
   AgentVariant & {
@@ -203,7 +224,7 @@ export function AgentName(props: AgentNameProps): ReactNode {
     );
   }
   const { actor } = props;
-  if (actor.kind !== "session") {
+  if (!isSessionActor(actor)) {
     // An act an agent made for its person is recorded as the person's, so the person's name
     // carries the agent beside it, by the one rule every reader of an act follows.
     const text = actor.kind === "user" ? actorActText(actor.id, actor.act) : actor.id;
@@ -256,6 +277,8 @@ function SessionAgentName({
     named = (
       <Link
         className={inline ? `${LINK_CLASS} dispatch-inline-link underline` : LINK_CLASS}
+        onClick={variant.onNavigate}
+        replace={variant.replace === true}
         to={to}
       >
         {name}
@@ -334,17 +357,18 @@ export function useAgentText(): AgentText {
 }
 
 /** The text before and after a resolution's actor. A withdrawal is the close of the ask's issue,
- *  so it names the closer: `Withdrawn when <agent> closed the issue`; else `<Verb> by <agent>`. */
+ *  so it names the closer: `Withdrawn when <agent> closed the issue`. A decline is the person's
+ *  own act, so it says what they did: `<agent> declined to answer`. Else `<Verb> by <agent>`. */
 function resolutionFrame(resolution: AskResolution): readonly [before: string, after: string] {
-  return resolution.kind === "withdrawn"
-    ? ["Withdrawn when ", " closed the issue"]
-    : [`${askResolutionBadge(resolution)} by `, ""];
+  if (resolution.kind === "withdrawn") return ["Withdrawn when ", " closed the issue"];
+  if (resolution.kind === "declined") return ["", " declined to answer"];
+  return [`${askResolutionBadge(resolution)} by `, ""];
 }
 
-/** `Resolved by <agent>` / `Retracted by <agent>` / `Withdrawn when <agent> closed the issue`:
- *  the actor sentence of a resolution, for callers that render its reason (`askResolutionReason`)
- *  with their own markup. `agent="static"` names the agent without its link, for a host that is
- *  itself one control (a listbox option). */
+/** `Resolved by <agent>` / `Retracted by <agent>` / `Withdrawn when <agent> closed the issue` /
+ *  `<agent> declined to answer`: the actor sentence of a resolution, for callers that render its
+ *  reason (`askResolutionReason`) with their own markup. `agent="static"` names the agent
+ *  without its link, for a host that is itself one control (a listbox option). */
 export function AskResolutionLine({
   agent,
   resolution,

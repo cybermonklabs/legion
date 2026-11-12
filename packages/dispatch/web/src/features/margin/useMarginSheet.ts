@@ -37,14 +37,16 @@ import {
 } from "./useMarginItems";
 import { useMarginListeners } from "./useMarginListeners";
 
-/** A retracted ask was taken back by its asker, and a withdrawn one by its issue's close: neither
- *  is a live question or a decision to read, so the margin folds both away with the resolved
- *  threads until a reader asks for them. Reopening the issue opens a withdrawn ask again, and an
- *  open ask never folds. */
+/** A retracted ask was taken back by its asker, a withdrawn one by its issue's close, and a
+ *  declined one by the person who chose not to answer it: none is a live question or a decision
+ *  to read, so the margin folds all three away with the resolved threads until a reader asks for
+ *  them. A declined ask among the answered decisions would read as a decision nobody made.
+ *  Reopening the issue opens a withdrawn ask again, and an open ask never folds. */
 export function isFoldedAsk(ask: Pick<Ask, "state" | "resolution">): boolean {
+  const kind = ask.resolution?.kind;
   return (
     ask.state === "resolved" &&
-    (ask.resolution?.kind === "retracted" || ask.resolution?.kind === "withdrawn")
+    (kind === "retracted" || kind === "withdrawn" || kind === "declined")
   );
 }
 
@@ -153,7 +155,7 @@ export function useMarginSheet(): MarginSheetModel {
     documentRoute === undefined
       ? routeArtifactSlug === undefined
         ? primarySpec(issue.data)
-        : issue.data?.artifacts.find((artifact) => artifact.slug === routeArtifactSlug)
+        : issue.data?.artifacts?.find((artifact) => artifact.slug === routeArtifactSlug)
       : documentArtifact.data;
   const visibleArtifactId = visibleArtifact?.id;
   const removePin = useCallback(

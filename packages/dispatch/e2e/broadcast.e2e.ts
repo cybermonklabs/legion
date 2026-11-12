@@ -1,5 +1,4 @@
 import { shortSessionId } from "@legion/contracts";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { AGENT_REGISTRY_POLL_MS } from "../web/src/features/refs/agent-registry";
 import {
@@ -20,16 +19,16 @@ import {
   listBroadcasts,
   replyToMessageDelivery,
 } from "./api";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
 import { sessionIds } from "./session-ids";
+import { expect, type Locator, type Page, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
 // No `last_seen`: the fixture answers every read of the session with the current time. A literal
-// computed when this module is imported ages with the whole suite, and a session ten minutes "old"
-// folds under Inactive rather than under the fold this spec opens - which is how long a full run
-// takes to reach here.
+// computed when this module is imported ages with the whole suite, and a session ten minutes
+// "old" falls under `Quiet` rather than under the group this spec reads - which is how long a
+// full run takes to reach here.
 const planner: FakeSession = {
   capabilities: ["aside", "btw", "steer"],
   dir: "/workspaces/planner",
@@ -66,16 +65,11 @@ const observer: FakeSession = {
   title: "Observer",
 };
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // SLOW(>=2s): the whole broadcast flow in a real browser - the fold, four ticks, the send, a live
 // answer and the list that follows it.
 test("a broadcast lists recipient cards in the non-alphabetical order the sender ticked them", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the broadcast flow");
   await setLiveSessions([planner, tester, reviewer, observer]);
 
   const alice = await asUser(browser, "alice");
@@ -83,11 +77,9 @@ test("a broadcast lists recipient cards in the non-alphabetical order the sender
     const page = await alice.newPage();
     await page.goto("/agents");
     const agents = page.getByRole("region", { name: "Agents" });
-    // Sessions Dispatch has never heard from sit under the page's collapsed fold; broadcasting
-    // is mostly aimed at exactly those, so the fold is the flow's first step.
-    const quiet = agents.getByRole("button", { name: "No Dispatch activity (4)" });
-    await expect(quiet).toBeVisible();
-    await quiet.click();
+    // Sessions Dispatch has never heard from sit under `Idle`, which is open with every other
+    // group when the page loads (INFRA-812, R7); broadcasting is mostly aimed at exactly those.
+    await expect(agents.getByTestId("agents-group-toggle-idle")).toHaveAccessibleName("Idle (4)");
 
     for (const title of ["Tester", "Observer", "Planner", "Reviewer"]) {
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
@@ -134,7 +126,7 @@ test("a broadcast lists recipient cards in the non-alphabetical order the sender
     const [summary] = await listBroadcasts();
     if (summary === undefined) throw new Error("the broadcast was not recorded");
     const stored = await getBroadcast(summary.id);
-    const plannerMessage = stored.recipients.find(
+    const plannerMessage = (stored.recipients ?? []).find(
       (recipient) => recipient.session_id === planner.session_id
     );
     if (plannerMessage === undefined) throw new Error("the planner received no message");
@@ -179,8 +171,6 @@ test("a broadcast written as a numbered list renders as a list on the broadcast 
   try {
     const page = await alice.newPage();
     await page.goto("/agents");
-    const agents = page.getByRole("region", { name: "Agents" });
-    await agents.getByRole("button", { name: "No Dispatch activity (2)" }).click();
     for (const title of ["Planner", "Tester"]) {
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
@@ -217,10 +207,11 @@ test("a broadcast written as a numbered list renders as a list on the broadcast 
       .toEqual([body, body]);
 
     // The recipient's copy on the Agents page renders the same way. A broadcast is the viewer's
-    // own send, not a signal from the session, so both recipients still sit under the fold.
+    // own send, not a signal from the session, so both recipients are still Idle.
     await navigateInApp(page, "/agents");
-    const agentsAgain = page.getByRole("region", { name: "Agents" });
-    await agentsAgain.getByRole("button", { name: "No Dispatch activity (2)" }).click();
+    await expect(
+      page.getByRole("region", { name: "Agents" }).getByTestId("agents-group-toggle-idle")
+    ).toHaveAccessibleName("Idle (2)");
     const plannerRow = agentRow(page, "Planner");
     await plannerRow.getByRole("button", { exact: true, name: "Planner" }).click();
     const conversation = plannerRow.getByRole("list", { name: "Conversation with Planner" });
@@ -274,10 +265,9 @@ test("a broadcast written as a numbered list renders as a list on the broadcast 
 // centred items (styles.css's touch rule), so a Broadcasts row has to stack its sender above
 // its link itself; and the row's one-line preview is the widest thing on the page, so a row
 // that widens the page widens it here.
-test("a Broadcasts row keeps its sender above its link and fits the screen @phone", async ({
+test("a Broadcasts row keeps its sender above its link and fits the screen @phone @phone-only", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "the row stacks, and the page fits, only below xl");
   await setLiveSessions([planner]);
   // Longer than the row is wide on any project's viewport, so the preview has something to cut.
   await createBroadcast({
@@ -314,7 +304,6 @@ test("a Broadcasts row keeps its sender above its link and fits the screen @phon
 test("a session that goes away before the send is excluded by the server and named on the broadcast, and a failed recipient can be retried there", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the broadcast flow");
   await setLiveSessions([planner, tester, observer]);
   await setSessionSendStatus(tester.session_id, 404);
 
@@ -322,8 +311,6 @@ test("a session that goes away before the send is excluded by the server and nam
   try {
     const page = await alice.newPage();
     await page.goto("/agents");
-    const agents = page.getByRole("region", { name: "Agents" });
-    await agents.getByRole("button", { name: "No Dispatch activity (3)" }).click();
     for (const title of ["Planner", "Tester", "Observer"]) {
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
@@ -372,18 +359,13 @@ test("a session that goes away before the send is excluded by the server and nam
 // against the store instead, so a broadcast the human already composed still reaches them.
 test("a broadcast reaches sessions the listener's list has dropped while their records stand", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the broadcast flow");
+}) => {
   await setLiveSessions([planner, tester]);
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
     await page.goto("/agents");
-    await page
-      .getByRole("region", { name: "Agents" })
-      .getByRole("button", { name: "No Dispatch activity (2)" })
-      .click();
     for (const title of ["Planner", "Tester"]) {
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
@@ -418,10 +400,10 @@ test("a broadcast reaches sessions the listener's list has dropped while their r
 
 // LEGION-446. The browser drops a same-tick double press itself, so the repeat here is the one a
 // proxy or a flaky connection makes: the same request, the same key, the same human.
-test("a second identical send of one composition is answered the original broadcast, so every agent hears it once", async ({
+// @pr: An idempotent repeat: the same composition sent twice is answered the original broadcast, so every agent hears it once.
+test("a second identical send of one composition is answered the original broadcast, so every agent hears it once @pr", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the broadcast flow");
+}) => {
   await setLiveSessions([planner, tester]);
 
   const alice = await asUser(browser, "alice");
@@ -429,10 +411,6 @@ test("a second identical send of one composition is answered the original broadc
     const page = await alice.newPage();
     const posted = broadcastSends(page);
     await page.goto("/agents");
-    await page
-      .getByRole("region", { name: "Agents" })
-      .getByRole("button", { name: "No Dispatch activity (2)" })
-      .click();
     for (const title of ["Planner", "Tester"]) {
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
@@ -452,8 +430,8 @@ test("a second identical send of one composition is answered the original broadc
     expect((await listBroadcasts()).map((summary) => summary.id)).toEqual([first]);
     await expect
       .poll(async () =>
-        (await getBroadcast(replay.id)).recipients.every((recipient) =>
-          recipient.message.deliveries.every((attempt) => attempt.state !== "pending")
+        ((await getBroadcast(replay.id)).recipients ?? []).every((recipient) =>
+          (recipient.message.deliveries ?? []).every((attempt) => attempt.state !== "pending")
         )
       )
       .toBe(true);
@@ -471,8 +449,7 @@ test("a second identical send of one composition is answered the original broadc
 // departed session as the request does, and the server excludes it against its own registry.
 test("a session that leaves between a refused send and its restore is still in the restored request, and the server names it excluded", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the broadcast flow");
+}) => {
   // The page learns of a departure on its 15 s agent poll, which the page's own clock spends.
   await setLiveSessions([planner, observer]);
 
@@ -483,10 +460,6 @@ test("a session that leaves between a refused send and its restore is still in t
     const posted = broadcastSends(page);
     const refusal = await refuseBroadcasts(page);
     await page.goto("/agents");
-    await page
-      .getByRole("region", { name: "Agents" })
-      .getByRole("button", { name: "No Dispatch activity (2)" })
-      .click();
     for (const title of ["Planner", "Observer"]) {
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
@@ -547,7 +520,7 @@ async function answeredBroadcast(sessions: readonly string[]): Promise<string> {
     session_ids: [...sessions],
   });
   expect(sent.excluded).toEqual([]);
-  for (const recipient of sent.recipients) {
+  for (const recipient of sent.recipients ?? []) {
     await replyToMessageDelivery(
       recipient.message.id,
       { attempt: 1, body: `${recipient.session_id} reporting.` },
@@ -571,7 +544,6 @@ function agentRow(page: Page, title: string): Locator {
 test("opening a broadcast reads the answers it shows, on the badge, every agent's row and the viewer's other tabs", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the broadcast flow");
   await setLiveSessions([planner, tester, observer]);
   const id = await answeredBroadcast([tester.session_id, observer.session_id, planner.session_id]);
 
@@ -612,7 +584,6 @@ test("opening a broadcast reads the answers it shows, on the badge, every agent'
 test("opening a broadcast leaves unread the answers it does not show, older and newer", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "one browser proves the broadcast flow");
   await setLiveSessions([planner, tester, observer]);
   const older = await createAgentMessage(planner.session_id, {
     body: "Where is the dashboard?",

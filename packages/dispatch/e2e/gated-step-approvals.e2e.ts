@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import {
   createIssue,
   createIssueArtifact,
@@ -11,7 +9,7 @@ import {
   reviewArtifact,
   setGatedSteps,
 } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -47,11 +45,8 @@ function stateActions(page: Page): Locator {
   return page.getByTestId("issue-state-actions");
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("a root issue of a project gating three steps reads each step's own document: approved, approved and changed since, and awaiting", async ({
+// @pr: An approval: a gated project's root issue reads each step's own document as approved, approved and changed since, or awaiting.
+test("a root issue of a project gating three steps reads each step's own document: approved, approved and changed since, and awaiting @pr", async ({
   browser,
 }) => {
   await createProject({ key: "GATETHREE", name: "Three steps" });
@@ -255,6 +250,7 @@ test("one request over two documents reads the same on both steps, and one Reque
     { include_verification: true },
     session
   );
+  if (opened.ask === null) throw new Error("the approval request opened no ask");
   expect(opened.ask.question).toBe("Approve spec.md (version 1) and verification.md (version 1)?");
 
   const alice = await asUser(browser, "alice");

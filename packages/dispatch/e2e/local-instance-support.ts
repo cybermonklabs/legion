@@ -2,18 +2,24 @@
  *  stop, the refusal of a database the command must not truncate, and the quoting of the commands
  *  it prints. Nothing here runs on import, so `e2e/__tests__/local-instance-support.test.ts`
  *  drives it without a server. */
-import type { Subprocess } from "bun";
+import { type ChildProcess, spawn } from "node:child_process";
+import type { Readable } from "node:stream";
 
 export class Interrupted extends Error {}
 
 interface Running {
   readonly name: string;
-  readonly child: Subprocess;
+  readonly child: ChildProcess;
+  /** Settles with the child's exit code, or with null when a signal ended it, and rejects when
+   *  the process could not be started at all. Node's `ChildProcess` has no promise of its own,
+   *  and a listener attached after the exit would never fire, so it is made here, the moment the
+   *  process starts. */
+  readonly exited: Promise<number | null>;
 }
 
 /** A process started by `startPiped`: its output is the caller's to read. */
 export interface PipedRunning extends Running {
-  readonly child: Subprocess<"ignore", "pipe", "pipe">;
+  readonly child: ChildProcess & { readonly stdout: Readable; readonly stderr: Readable };
 }
 
 /** Every process the command starts, as the leader of a process group of its own, and the one
@@ -61,10 +67,15 @@ export class Supervisor {
     cwd: string,
     env: Record<string, string | undefined>
   ): PipedRunning {
-    return this.#spawn(name, argv, cwd, env, "pipe");
+    // `spawn` types `stdout` and `stderr` as nullable, since what they are depends on the stdio
+    // it was given; with "pipe" for both, the process always has the two streams.
+    return this.#spawn(name, argv, cwd, env, "pipe") as PipedRunning;
   }
 
-  /** Spawns `argv` detached, with no stdin and both output streams `output`, and tracks it. */
+  /** Spawns `argv` detached, with no stdin and both output streams `output`, and tracks it. The
+   *  spawn is `node:child_process`'s rather than Bun's, because this runs under both runtimes:
+   *  `bun run dispatch:local` and the docs media harness are bun's, and Playwright's own runner,
+   *  which starts the harness from `globalSetup` (`e2e/harness-pool.ts`), is node's. */
   #spawn<const Output extends "inherit" | "pipe">(
     name: string,
     argv: readonly string[],
@@ -72,15 +83,22 @@ export class Supervisor {
     env: Record<string, string | undefined>,
     output: Output
   ) {
-    const child = Bun.spawn([...argv], {
+    const [command, ...rest] = argv;
+    const child = spawn(command, rest, {
       cwd,
       detached: true,
       env,
-      stderr: output,
-      stdin: "ignore",
-      stdout: output,
+      stdio: ["ignore", output, output],
     });
-    const running = { child, name };
+    const ended = Promise.withResolvers<number | null>();
+    child.once("exit", (code) => ended.resolve(code));
+    // A command that cannot be started at all - no such binary - never exits, since it never
+    // ran; `error` is where Node says so, and the rejection is the caller's to see wherever it
+    // awaits this process. The handler below keeps that rejection from being reported as
+    // unhandled before then.
+    child.once("error", (error) => ended.reject(error));
+    ended.promise.catch(() => {});
+    const running = { child, exited: ended.promise, name };
     this.#children.push(running);
     return running;
   }
@@ -89,7 +107,7 @@ export class Supervisor {
    *  reaches the command's one catch (and `stop`) like every other failure. */
   async run(argv: readonly string[], cwd: string): Promise<void> {
     const step = this.start(argv.join(" "), argv, cwd);
-    const code = await this.untilInterrupted(step.child.exited);
+    const code = await this.untilInterrupted(step.exited);
     this.#children.splice(this.#children.indexOf(step), 1);
     if (code !== 0) throw new Error(`${step.name} exited ${code}`);
   }
@@ -97,8 +115,8 @@ export class Supervisor {
   /** Rejects as soon as any process started so far exits by itself, naming it. */
   firstExit(): Promise<never> {
     return Promise.race(
-      this.#children.map(async ({ child, name }): Promise<never> => {
-        const code = await child.exited;
+      this.#children.map(async ({ child, exited, name }): Promise<never> => {
+        const code = await exited;
         throw new Error(`${name} exited ${code ?? child.signalCode} while the harness was up`);
       })
     );
@@ -113,6 +131,8 @@ export class Supervisor {
     const running = this.#children.splice(0);
     const signalGroups = (signal: NodeJS.Signals) => {
       for (const { child } of running) {
+        // A process that never started has no pid, and there is no group to signal.
+        if (child.pid === undefined) continue;
         try {
           process.kill(-child.pid, signal);
         } catch {
@@ -122,7 +142,7 @@ export class Supervisor {
     };
     signalGroups("SIGTERM");
     const forceKill = setTimeout(() => signalGroups("SIGKILL"), forceAfterMs);
-    await Promise.all(running.map(({ child }) => child.exited));
+    await Promise.allSettled(running.map(({ exited }) => exited));
     clearTimeout(forceKill);
   }
 }

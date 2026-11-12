@@ -4,12 +4,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-
+import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { ArtifactDetails } from "./ArtifactDetails";
 
-const artifact: Artifact = {
+const artifact = {
   created_at: "2026-09-09T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
   id: "artifact-1",
@@ -18,6 +18,8 @@ const artifact: Artifact = {
   kind: "image",
   name: "diagram.png",
   primary: false,
+  ref_key: "CORE-1/diagram-png",
+  session_id: null,
   slug: "diagram-png",
   versions: [
     {
@@ -41,7 +43,9 @@ const artifact: Artifact = {
       summary: null,
     },
   ],
-};
+  // `satisfies`, not an annotation: the tests below map over `artifact.versions`, which the
+  // route table's `Version[] | null` would not let them.
+} satisfies Artifact;
 
 function renderDetails(target: Artifact) {
   const queryClient = new QueryClient({
@@ -63,13 +67,13 @@ function noReferences(target: Artifact) {
   const owner = target.issue_key ?? target.project;
   return spyOn(api, "getReferences").mockResolvedValue({
     edges: [],
-    node: {
+    node: graphNode({
       id: target.id,
       issue_key: target.issue_key ?? undefined,
       kind: "artifact",
       project: target.project,
       ref: `dispatch://${owner}/artifact/${target.slug}`,
-    },
+    }),
   });
 }
 
@@ -150,13 +154,13 @@ test("ArtifactDetails links each inbound source to the record that cites it", as
         direction: "in",
         excerpt: { text: "See dispatch://CORE-1/artifact/diagram-png before deciding." },
         kind: "mentions",
-        node: {
+        node: graphNode({
           id: "comment-1",
           issue_key: "CORE-1",
           kind: "comment",
           project: "CORE",
           ref: "dispatch://CORE-1/comment/comment-1",
-        },
+        }),
         source_seq: 1,
       },
       {
@@ -164,23 +168,23 @@ test("ArtifactDetails links each inbound source to the record that cites it", as
         direction: "in",
         excerpt: { text: "Source artifact" },
         kind: "mentions",
-        node: {
+        node: graphNode({
           id: "artifact-source",
           issue_key: "CORE-1",
           kind: "artifact",
           project: "CORE",
           ref: "dispatch://CORE-1/artifact/source-doc",
-        },
+        }),
         source_seq: 2,
       },
     ],
-    node: {
+    node: graphNode({
       id: "artifact-1",
       issue_key: "CORE-1",
       kind: "artifact",
       project: "CORE",
       ref: "dispatch://CORE-1/artifact/diagram-png",
-    },
+    }),
   });
 
   try {
@@ -209,13 +213,13 @@ test("ArtifactDetails groups a source's edges into one card and expands its clam
         direction: "in",
         excerpt: { block_id: "b-1", text: long },
         kind: "mentions",
-        node: {
+        node: graphNode({
           id: "artifact-source",
           issue_key: "CORE-1",
           kind: "artifact",
           project: "CORE",
           ref: "dispatch://CORE-1/artifact/source-doc",
-        },
+        }),
         source_seq: 3,
       },
       {
@@ -223,23 +227,23 @@ test("ArtifactDetails groups a source's edges into one card and expands its clam
         direction: "in",
         excerpt: { text: "spec.md" },
         kind: "anchored_to",
-        node: {
+        node: graphNode({
           id: "artifact-source",
           issue_key: "CORE-1",
           kind: "artifact",
           project: "CORE",
           ref: "dispatch://CORE-1/artifact/source-doc",
-        },
+        }),
         source_seq: null,
       },
     ],
-    node: {
+    node: graphNode({
       id: "artifact-1",
       issue_key: "CORE-1",
       kind: "artifact",
       project: "CORE",
       ref: "dispatch://CORE-1/artifact/diagram-png",
-    },
+    }),
   });
 
   try {
@@ -318,23 +322,23 @@ test("ArtifactDetails encodes an author-set block id in the source deep link", a
         direction: "in",
         excerpt: { block_id: "two words%", text: "A decision block cites this." },
         kind: "mentions",
-        node: {
+        node: graphNode({
           id: "artifact-source",
           issue_key: "CORE-1",
           kind: "artifact",
           project: "CORE",
           ref: "dispatch://CORE-1/artifact/source-doc",
-        },
+        }),
         source_seq: 3,
       },
     ],
-    node: {
+    node: graphNode({
       id: "artifact-1",
       issue_key: "CORE-1",
       kind: "artifact",
       project: "CORE",
       ref: "dispatch://CORE-1/artifact/diagram-png",
-    },
+    }),
   });
 
   try {

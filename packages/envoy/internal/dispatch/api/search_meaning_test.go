@@ -17,11 +17,14 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embed/embedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -129,11 +132,16 @@ func processAllPending(t *testing.T, database *store.Store, embedder embed.Embed
 
 // windowTexts is the text each window of the owner whose key is ownerKey holds, of kind kind, by
 // the window's id suffix: the first block it covers, or "<block id>/p<n>" for one piece of a
-// block too long to hold in one window. A test reads what the indexers built
+// block too long to hold in one window. A test reads what the writers of windows built
 // (itemblocks.Windows: the owner's context, then its blocks' text) rather than spelling it out,
 // and maps the text it finds to the vector the fake embedder should answer for it.
+//
+// It windows every item the block-index tick's window arm is owed first (windowOwedItems): a
+// write records an item's blocks and leaves their windows to that tick (INFRA-988), so a test
+// reading an item's windows straight after the write stands where the tick has not yet run.
 func windowTexts(t *testing.T, database *store.Store, kind, ownerKey string) map[string]string {
 	t.Helper()
+	windowOwedItems(t, database)
 	rows, err := database.Pool.Query(context.Background(),
 		`select id, text_snapshot from embeddings where kind = $1 and split_part(id, '#', 1) = $2`, kind, ownerKey)
 	if err != nil {
@@ -155,6 +163,62 @@ func windowTexts(t *testing.T, database *store.Store, kind, ownerKey string) map
 		t.Fatalf("%s %s holds no window; its blocks are not indexed", kind, ownerKey)
 	}
 	return texts
+}
+
+// windowOwedItems writes the windows of every comment, message and ask the block-index tick's
+// window arm is owed, as that arm writes them (docs.windowItem, refs.WriteItemWindows), each
+// in a transaction of its own. A write of an item records its blocks alone and leaves the
+// windows that stand for them to the tick (INFRA-988); a test that reads those windows is
+// standing after a tick, and this is that tick's window arm over the items.
+func windowOwedItems(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	for _, kind := range []refs.ItemKind{refs.ItemComment, refs.ItemMessage, refs.ItemAsk} {
+		owed, err := refs.ItemsOwedWindows(ctx, database.Pool, kind, "", 500)
+		if err != nil {
+			t.Fatalf("list the %ss owed their windows: %v", kind, err)
+		}
+		for _, id := range owed {
+			tx, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the window arm's transaction: %v", err)
+			}
+			written, err := refs.WriteItemWindows(ctx, tx, kind, id)
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				t.Fatalf("window %s %s: %v", kind, id, err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatalf("commit the window arm's transaction: %v", err)
+			}
+			if !written {
+				t.Fatalf("the window arm wrote no window for %s %s", kind, id)
+			}
+		}
+	}
+}
+
+// windowOwedOwners runs the block-index tick until its window arm is owed nothing, which is
+// what gives every owner the windows no write writes any more (INFRA-988): an item's and a
+// document's alike, the latter needing the document service the arm reads the stored version
+// through (docs.windowDocument). A test whose subject is what meaning search finds after a
+// write stands one tick after that write, and this is the tick.
+func windowOwedOwners(t *testing.T, deps Deps) {
+	t.Helper()
+	service, ok := deps.Docs.(*docs.Service)
+	if !ok {
+		t.Fatal("the test server holds no document service to run the block-index tick with")
+	}
+	for range 10 {
+		tick, err := service.ReconcileBlockIndex(context.Background(), docs.BlockIndexCursors{}, nil)
+		if err != nil {
+			t.Fatalf("one pass of the block-index reconciliation: %v", err)
+		}
+		if tick.Windows == 0 {
+			return
+		}
+	}
+	t.Fatal("ten passes of the block-index reconciliation still had owners to window")
 }
 
 // embedWindowsAs maps every window of owner ownerKey to vector, so the fake embedder answers it
@@ -414,15 +478,15 @@ func TestSearchSkipsTheEmbedderForAStopWordOnlyQuery(t *testing.T) {
 	}
 }
 
-// TestSearchFusesAnItemFoundByBothListsAboveOneFoundOnlyByMeaning exercises the two-list
-// reciprocal rank fusion search.go's "fused" CTE now sums (grouped by (kind, id), the invariant
-// Round 3's review of PR #1764 flagged a second per-kind list must preserve): an issue the query
-// both keyword-matches and whose embedding cosine-matches at 0.9 sits at position 1 of each list,
-// scoring the sum of two 1/(60+1) terms; an issue the query shares no word with (so it never
+// TestSearchFusesAnItemFoundByBothListsAboveOneFoundOnlyByMeaning exercises the two-leg score
+// search.go's "fused" CTE sums (grouped by (kind, id), the invariant Round 3's review of PR #1764
+// flagged a second per-kind list must preserve): an issue the query both keyword-matches and
+// whose embedding cosine-matches at 0.9 is on both lists, and scores its own weighted
+// ts_rank_cd plus its own weighted cosine; an issue the query shares no word with (so it never
 // enters the keyword list at all) and whose embedding cosine-matches at a weaker 0.4 (above
-// searchMeaningFloor, so it still reaches legs) sits at position 2 of the meaning list alone,
-// scoring one 1/(60+2) term - under half as much. Fusion summing, not taking the better list's
-// score alone, is what makes that gap as large as it is.
+// searchMeaningFloor, so it still reaches legs) is on the meaning list alone and scores that leg
+// alone. Summing the legs, rather than taking the better one, is what puts an item both legs
+// found above the same item one leg found - asserted here against each of its own two terms.
 func TestSearchFusesAnItemFoundByBothListsAboveOneFoundOnlyByMeaning(t *testing.T) {
 	const bothTitle, bothSpec = "Harbor lantern inspection report", "Body text one."
 	const meaningOnlyTitle, meaningOnlySpec = "Unrelated maintenance budget request", "Body text two."
@@ -453,18 +517,38 @@ func TestSearchFusesAnItemFoundByBothListsAboveOneFoundOnlyByMeaning(t *testing.
 	if !sawBoth || !sawMeaningOnly {
 		t.Fatalf("expected both issues in the results; got %+v", response.Results)
 	}
-	const k = 60.0
-	wantBoth := 1.0/(k+1) + 1.0/(k+1)
-	wantMeaningOnly := 1.0 / (k + 2)
-	if math.Abs(scoreBoth-wantBoth) > 1e-9 {
-		t.Errorf("score for the both-lists issue = %v, want %v (position 1 of each list, summed)", scoreBoth, wantBoth)
+	// The keyword term is the issue's own rank, read from the same vector the keyword leg ranks,
+	// rather than a number guessed from the title's shape.
+	keywordAlone := searchKeywordWeight * issueKeywordRank(t, database, "lantern inspection", both.Key) / (searchFusionK + 1)
+	meaningAlone := searchMeaningWeight * 0.9 / (searchFusionK + 1)
+	wantBoth := keywordAlone + meaningAlone
+	wantMeaningOnly := searchMeaningWeight * 0.4 / (searchFusionK + 1)
+	if math.Abs(scoreBoth-wantBoth) > 1e-6 {
+		t.Errorf("score for the both-lists issue = %v, want %v (its own rank and its own cosine, weighted and summed)", scoreBoth, wantBoth)
 	}
-	if math.Abs(scoreMeaningOnly-wantMeaningOnly) > 1e-9 {
-		t.Errorf("score for the meaning-only issue = %v, want %v (position 2 of the meaning list alone)", scoreMeaningOnly, wantMeaningOnly)
+	if math.Abs(scoreMeaningOnly-wantMeaningOnly) > 1e-6 {
+		t.Errorf("score for the meaning-only issue = %v, want %v (the meaning leg alone)", scoreMeaningOnly, wantMeaningOnly)
+	}
+	if scoreBoth <= keywordAlone || scoreBoth <= meaningAlone {
+		t.Errorf("fused score for the both-lists issue = %v, want it above either leg alone (%v keyword, %v meaning)",
+			scoreBoth, keywordAlone, meaningAlone)
 	}
 	if scoreBoth <= scoreMeaningOnly {
 		t.Errorf("fused score for the both-lists issue = %v, want it greater than the meaning-only issue's %v", scoreBoth, scoreMeaningOnly)
 	}
+}
+
+// issueKeywordRank is what search's keyword leg ranks issue key at for query: ts_rank_cd over the
+// issue's own search vector with the length normalisation searchKeywordLegsSQL passes.
+func issueKeywordRank(t *testing.T, database *store.Store, query, key string) float64 {
+	t.Helper()
+	var rank float32
+	if err := database.Pool.QueryRow(context.Background(),
+		"select ts_rank_cd(search, websearch_to_tsquery('english', $1), 32) from issues where key = $2",
+		query, key).Scan(&rank); err != nil {
+		t.Fatalf("read issue %s's keyword rank: %v", key, err)
+	}
+	return float64(rank)
 }
 
 // TestSearchNeverRanksAVectorOfAnotherIdentity is INFRA-393's "search never compares a query with
@@ -540,7 +624,7 @@ func maxBlock(word string) string {
 // agree; a block past either bound had no vector for its tail at all, which is what windows fix.
 func TestACommentAndMessageOfOneLongestBlockReachTheEmbedderWhole(t *testing.T) {
 	embedder := &recordingEmbedder{fakeEmbedder: &fakeEmbedder{}}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "LONG", "Longest bodies", "Body text.")
 	commentBody, messageBody := maxBlock("astrolabe"), maxBlock("sextant")
 	comment := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{"body": commentBody}, "alice")
@@ -551,6 +635,9 @@ func TestACommentAndMessageOfOneLongestBlockReachTheEmbedderWhole(t *testing.T) 
 	if message.Code != http.StatusCreated {
 		t.Fatalf("create message: status=%d body=%s", message.Code, message.Body.String())
 	}
+	// The writes record the blocks; the tick's window arm writes the windows the embedder is
+	// given (INFRA-988).
+	windowOwedOwners(t, deps)
 	processAllPending(t, database, embedder)
 
 	embedder.mu.Lock()
@@ -646,7 +733,7 @@ func TestSearchAndWritesRideOutAnAzureOutage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build the Azure client: %v", err)
 	}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: client})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: client})
 	issue := createInteractionIssue(t, handler, "AZUR", "Astrolabe calibration guide", "Keyword body text.")
 
 	degraded := searchResponse(t, handler, "q=astrolabe")
@@ -663,6 +750,9 @@ func TestSearchAndWritesRideOutAnAzureOutage(t *testing.T) {
 	commentID := decodeBody[model.Comment](t, comment).ID
 
 	ctx := context.Background()
+	// The comment's windows are the tick's to write, and it writes them while Azure is down:
+	// a window is a row, not a vector (INFRA-988).
+	windowOwedOwners(t, deps)
 	processAllPending(t, database, client)
 	var embeddedDuringOutage, dead bool
 	commentWindow := "select %s from embeddings where kind = 'comment_block' and split_part(id, '#', 1) = 'comment/' || $1"
@@ -763,7 +853,7 @@ func TestMeaningSearchFindsACommentByItsBestBlock(t *testing.T) {
 func TestALongBlocksTailIsFoundByMeaning(t *testing.T) {
 	const tail = "Vernier scales are read against the limb."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "TAIL", "Long block", "Body text.")
 	filler := strings.Repeat("Routine survey notes repeated at length. ", 1+(embed.MaxInputRunes+2000)/40)
 	body := filler + tail + "\n"
@@ -778,6 +868,9 @@ func TestALongBlocksTailIsFoundByMeaning(t *testing.T) {
 	if len(body) <= embed.MaxInputRunes {
 		t.Fatalf("the document is %d characters, want more than embed.MaxInputRunes (%d)", len(body), embed.MaxInputRunes)
 	}
+
+	// The upload records the document's blocks and leaves their windows to the tick.
+	windowOwedOwners(t, deps)
 
 	// The piece holding the tail is the only window mapped to a match: it is a later piece of
 	// one block, so the passage it holds is past where a whole-text row ever reached.
@@ -858,7 +951,7 @@ func uploadSearchDocument(t *testing.T, handler http.Handler, issueKey, name, bo
 // lost. A comment, whose arm is its own, stands beside them as the rest of the page.
 func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "CROWD", "Crowded windows", "Body text.")
 	// One block per window: a block of exactly the most block text a window holds
 	// (embed's windowTextChars) leaves no room for the one after it.
@@ -872,6 +965,8 @@ func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
 	short := uploadSearchDocument(t, handler, issue.Key, "short.md", "A short note on the same subject.\n")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "One remark on the same subject."}, "alice")
 
+	// The uploads and the comment record their blocks; their windows are the tick's.
+	windowOwedOwners(t, deps)
 	windows := windowTexts(t, database, "document_block", long.ID)
 	if len(windows) <= contracts.SearchKindDepth {
 		t.Fatalf("the long document holds %d windows, want more than the %d items an arm keeps", len(windows), contracts.SearchKindDepth)
@@ -891,4 +986,572 @@ func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
 	searchHit(t, response, "document", long.ID)
 	searchHit(t, response, "document", short.ID)
 	searchHit(t, response, "comment", comment.ID)
+}
+
+// TestProjectScopedSearchFindsItsCommentPastOtherProjectsNearerComments is the trade
+// searchMeaningCommentArm makes, held to its bound. The arm takes its nearest comment windows
+// before the project filter runs, so comments of every project stand in the candidate set a
+// project-scoped search then filters: the project's own comment is returned while fewer than
+// searchWindowCandidates comments of other projects are nearer to the query than it is. More
+// such comments than the contracts.SearchKindDepth items the arm keeps stand ahead of it here,
+// which is what the arm's ten-times-deeper candidate set buys - at a candidate depth of
+// SearchKindDepth they would be the whole arm and the project's own comment would be lost.
+func TestProjectScopedSearchFindsItsCommentPastOtherProjectsNearerComments(t *testing.T) {
+	nearer := contracts.SearchKindDepth + 1
+	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	loud := createInteractionIssue(t, handler, "LOUD", "Another project's issue", "Body text.")
+	mine := createInteractionIssue(t, handler, "MINE", "This project's issue", "Body text.")
+
+	// Every other project's comment is nearer to the query than this project's own, and each
+	// stands at a distance of its own so the arm's ordering over them is total.
+	loudComments := make(map[string]bool, nearer)
+	for index := range nearer {
+		comment := createThreadComment(t, handler, loud.Key,
+			map[string]any{"body": fmt.Sprintf("Nearer remark %d of the other project.", index)}, "alice")
+		loudComments[comment.ID] = true
+		embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.95-0.001*float64(index), 1))
+	}
+	own := createThreadComment(t, handler, mine.Key, map[string]any{"body": "The remark this project wants back."}, "alice")
+	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+own.ID, angledVector(0.5, 2))
+	processAllPending(t, database, embedder)
+
+	requireNoKeywordHit(t, "q=wibbleflorp&project=MINE")
+	response := searchResponse(t, handler, "q=wibbleflorp&project=MINE")
+	if response.Degraded != "" {
+		t.Fatalf("Degraded = %q, want empty", response.Degraded)
+	}
+	searchHit(t, response, "comment", own.ID)
+	for _, result := range response.Results {
+		if result.Kind == "comment" && loudComments[result.ID] {
+			t.Fatalf("results = %+v, want no comment of the other project; %q is one of its %d", response.Results, result.ID, nearer)
+		}
+	}
+}
+
+// crowdCommentWindows writes as many comment windows of project as rows says, every one of
+// them at vector, straight into embeddings: the crowd a project-scoped search has to be
+// answered past.
+// They are settled rows of the configured identity (embedded_hash = content_hash, so the queue
+// has nothing to do with them) under ids of the shape a real window carries,
+// "comment/<uuid>#b1", and they belong to no comment: what a candidate CTE reads of a window is
+// the row itself - its kind, its vector, its model and now its project - so a crowd of rows
+// consumes the arm's candidate limit exactly as a crowd of windows of real comments would, at
+// one statement instead of a thousand writes.
+func crowdCommentWindows(t *testing.T, database *store.Store, embedder embed.Embedder, project string, rows int, vector []float32) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into embeddings (kind, id, text_snapshot, content_hash, embedded_hash, model, embedding, embedded_at, covers, project_key)
+		select 'comment_block', 'comment/' || gen_random_uuid()::text || '#b1', 'a window of another project',
+		       md5(n::text), md5(n::text), $1, $2::vector, now(), array['b1'], $3
+		from generate_series(1, $4) n
+	`, embedder.Identity(), embed.Literal(vector), project, rows); err != nil {
+		t.Fatalf("write %d comment windows of %s: %v", rows, project, err)
+	}
+}
+
+// TestProjectScopedSearchFindsItsCommentsPastMoreNearerWindowsThanTheArmTakes is INFRA-988's
+// defect, held as a test. The comment arm takes searchWindowCandidates windows through the
+// index; while its project filter stood above that limit, the windows of every project filled
+// the candidate set and the filter then kept whichever of them happened to belong to the
+// project that asked - on the load-test deployment, 2 of the 800 windows a small project held,
+// because another project's 703,365 were nearer. The filter is now a predicate on the window
+// row itself (searchQueryMeaningScoped, migration 20261109120000), so the limit is spent on
+// that project alone.
+//
+// The crowd here is one window more than the arm takes, every one of them nearer to the query
+// than anything the project owns, which is the shape above at the smallest size that has it.
+// The control is the same query with no project: unscoped, the arm's whole candidate set is
+// the crowd, and the project's own comments are returned by nothing - which is what every
+// scoped search met before this change, and what makes the scoped assertion below a test of
+// the predicate's place rather than of the fixture.
+//
+// The fill's row is recorded done, because this is the world the column's own predicate is
+// read in: every row here was written by this release's writers and carries its project
+// already, and a deployment reaches that state at the boot after the pass finishes
+// (meaningStatementFor). Until it does, a scoped search reads the owner each arm joins and
+// this arm is the one measured above - which is what
+// TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling stands on.
+func TestProjectScopedSearchFindsItsCommentsPastMoreNearerWindowsThanTheArmTakes(t *testing.T) {
+	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	createInteractionIssue(t, handler, "LOUD", "Another project's issue", "Body text.")
+	mine := createInteractionIssue(t, handler, "MINE", "This project's issue", "Body text.")
+
+	own := make([]string, 0, 3)
+	for index := range cap(own) {
+		comment := createThreadComment(t, handler, mine.Key,
+			map[string]any{"body": fmt.Sprintf("Remark %d this project wants back.", index)}, "alice")
+		own = append(own, comment.ID)
+		embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.5, 2+index))
+	}
+	crowdCommentWindows(t, database, embedder, "LOUD", searchWindowCandidates+1, angledVector(0.9, 1))
+	processAllPending(t, database, embedder)
+	recordEmbeddingProjectKeyFill(t, database, true)
+
+	requireNoKeywordHit(t, "q=wibbleflorp&project=MINE")
+	response := searchResponse(t, handler, "q=wibbleflorp&project=MINE")
+	if response.Degraded != "" {
+		t.Fatalf("Degraded = %q, want empty", response.Degraded)
+	}
+	for _, id := range own {
+		searchHit(t, response, "comment", id)
+	}
+
+	// The control: with no project named, the crowd is the whole candidate set and none of this
+	// project's comments is reachable at all.
+	unscoped := searchResponse(t, handler, "q=wibbleflorp")
+	for _, result := range unscoped.Results {
+		if result.Kind == "comment" && slices.Contains(own, result.ID) {
+			t.Fatalf("the unscoped search returned %s, so the crowd of %d windows does not fill the arm's %d candidates and this test proves nothing",
+				result.ID, searchWindowCandidates+1, searchWindowCandidates)
+		}
+	}
+}
+
+// TestProjectScopedSearchFindsItsCommentsPastThatCrowdWhileTheFillIsStillLabelling is the test
+// above in the one state it does not cover: the fill window, where meaningStatementFor serves
+// the joined statement because the progress row does not read done yet.
+//
+// The switch's own claim is that the joined shape is what the release before this change did, so
+// a caller is never worse off while the fill runs. For four of the five arms that holds: each
+// carries its joined predicate inside its own candidate CTE. The comment arm does not.
+// searchMeaningCommentArm hoists both the project predicate and the comments join above the
+// candidate limit under meaningOneProjectJoined, where main keeps them inside the ordered,
+// limited select, so another project's crowd fills the arm's candidates again and this project's
+// comments are lost - the defect this whole change exists to end, for the length of the window.
+//
+// Measured on a Dispatch of this head against a real Postgres, with a crowd of
+// searchWindowCandidates+1 real comment windows of another project at cosine 1.000: the joined
+// shape answered 4 hits - ask, document, issue, message - with the comment gone, where the
+// scoped shape and a build of main both answered 5. The crowd is exactly the threshold: 1,001
+// windows lose it, 999 do not (INFRA-988).
+//
+// The fixture is the one above with the progress row left as a migrated database leaves it. Its
+// sibling records the fill done, which is what keeps that test green and is the honest state for
+// what that test measures; this is the half of the pair nothing covered.
+func TestProjectScopedSearchFindsItsCommentsPastThatCrowdWhileTheFillIsStillLabelling(t *testing.T) {
+	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	createInteractionIssue(t, handler, "LOUD", "Another project's issue", "Body text.")
+	mine := createInteractionIssue(t, handler, "MINE", "This project's issue", "Body text.")
+
+	own := make([]string, 0, 3)
+	for index := range cap(own) {
+		comment := createThreadComment(t, handler, mine.Key,
+			map[string]any{"body": fmt.Sprintf("Remark %d this project wants back.", index)}, "alice")
+		own = append(own, comment.ID)
+		embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.5, 2+index))
+	}
+	crowdCommentWindows(t, database, embedder, "LOUD", searchWindowCandidates+1, angledVector(0.9, 1))
+	processAllPending(t, database, embedder)
+	recordEmbeddingProjectKeyFill(t, database, false)
+	if embeddingProjectKeyFillIsDone(t, database) {
+		t.Fatal("the progress row reads done, so this fixture is not the fill window it is written for")
+	}
+
+	requireNoKeywordHit(t, "q=wibbleflorp&project=MINE")
+	response := searchResponse(t, handler, "q=wibbleflorp&project=MINE")
+	if response.Degraded != "" {
+		t.Fatalf("Degraded = %q, want empty", response.Degraded)
+	}
+	for _, id := range own {
+		searchHit(t, response, "comment", id)
+	}
+}
+
+// TestAFilteredMeaningSearchFindsTheCommentItsFiltersKeep is the defect at the other boundary:
+// not the project's, but q's own three filters (searchRowFilters). The route says ?status=,
+// ?author= and ?updated_since= narrow every leg of the search (routes_table.go, GET
+// /api/v1/search), and main applies all three inside the comment arm's ordered, limited
+// candidate select. The arm this change buys takes the nearest searchWindowCandidates comment
+// windows first and applies them above that limit, so one crowd of windows the filter would
+// have cut fills the candidate set and the comment the filter keeps is answered by nothing at
+// all - unscoped, and scoped once the fill's row reads done, which are the two statements that
+// arm belongs to. A filtered search therefore runs the joined statement, whose comment arm is
+// main's, whatever project it names (meaningStatementFor).
+//
+// Which filters move, and so which this test covers. Of everything the comment arm applies, the
+// floor (searchMeaningFloor) and the per-item window dedup (`distinct on`) run above the
+// candidate limit in main's arm too, and the project predicate runs inside it in both (on the
+// row's own column here, on the owner there). Of what filters a candidate, the three of
+// searchRowFilters are what moved and what a request can name, so there is a case here for each
+// of them, unscoped and scoped. One more filter moved and no request names it: the inner join to
+// comments, which drops a window whose comment row is gone and runs above the limit here where
+// main runs it inside. It costs no row today, because no path deletes a comment row
+// (searchMeaningCommentArm says what would change that), so no test here covers it.
+//
+// The fixture is the crowd test's above with one filter's other side on every row of the crowd:
+// searchWindowCandidates+1 windows, one more than the arm takes and every one of them nearer to
+// the query than the comment under test, of one real comment - of bob rather than alice, on an
+// issue in todo rather than in triage, written before the watermark rather than after it. Real,
+// because each filter reads the comment's own row and its issue, which a window of no comment
+// (crowdCommentWindows) never reaches: such a window is dropped by the arm's own join instead,
+// which is a different thing and would not hold this defect. The crowd is of the same project
+// as the comment, so a project predicate cannot be what cuts it in the scoped case either.
+//
+// The fill's row reads done, which is the state the column's own predicate is read in: with it
+// not done the scoped search already takes the joined statement, and the scoped case here would
+// prove nothing about the filters.
+func TestAFilteredMeaningSearchFindsTheCommentItsFiltersKeep(t *testing.T) {
+	const project = "FLTR"
+	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	loud := createInteractionIssue(t, handler, project, "The issue every filter cuts", "Body text.")
+	crowd := createThreadComment(t, handler, loud.Key,
+		map[string]any{"body": "A remark every filter cuts."}, "bob")
+	if patch := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+loud.Key,
+		map[string]any{"status": "todo"}, "alice"); patch.Code != http.StatusOK {
+		t.Fatalf("move the crowd's issue to todo: status=%d body=%s", patch.Code, patch.Body.String())
+	}
+
+	// The watermark is the database's own clock, the clock every row's time is written by, read
+	// between the two comments: the crowd's is behind it and the comment under test ahead of it.
+	var cut time.Time
+	if err := database.Pool.QueryRow(context.Background(), "select now()").Scan(&cut); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+
+	// The project is the first issue's, so the second is created in it rather than with it
+	// (createSearchIssue): both comments have to be of one project for the scoped case to turn
+	// on the filter rather than on the project predicate.
+	mine := createSearchIssue(t, handler, project, "The issue every filter keeps", "Body text.")
+	kept := createThreadComment(t, handler, mine,
+		map[string]any{"body": "A remark this search wants back."}, "alice")
+	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+kept.ID, angledVector(0.5, 2))
+	crowdOneCommentsWindows(t, database, embedder, crowd.ID, project, searchWindowCandidates+1, angledVector(0.9, 1))
+	processAllPending(t, database, embedder)
+	recordEmbeddingProjectKeyFill(t, database, true)
+
+	// One baseline for the three queries: the word is in no row of the corpus, so every hit
+	// below came from the meaning leg, and each filter only narrows that further.
+	requireNoKeywordHit(t, "q=wibbleflorp")
+	// Each case's name is the parameter's own name, which is what the query binds it under.
+	for _, filter := range []struct{ name, value string }{
+		{"author", "alice"},
+		{"status", model.IssueStatusTriage},
+		{"updated_since", cut.Format(time.RFC3339Nano)},
+	} {
+		for _, scope := range []struct{ name, project string }{{"unscoped", ""}, {"scoped", project}} {
+			t.Run(filter.name+" "+scope.name, func(t *testing.T) {
+				query := url.Values{"q": {"wibbleflorp"}, filter.name: {filter.value}}
+				if scope.project != "" {
+					query.Set("project", scope.project)
+				}
+				response := searchResponse(t, handler, query.Encode())
+				if response.Degraded != "" {
+					t.Fatalf("Degraded = %q, want empty", response.Degraded)
+				}
+				searchHit(t, response, "comment", kept.ID)
+			})
+		}
+	}
+}
+
+// crowdOneCommentsWindows writes that many windows of one real comment, every one of them
+// embedded at vector, where crowdCommentWindows writes windows of no comment at all. The
+// difference is the whole of what the test above needs: a filter on the status, the author or
+// the date reads the comment's own row and its issue, so a crowd meant to be cut by one of them
+// has to be a crowd the arm's joins reach. The suffix is "#c<n>" rather than "#b<n>" so that
+// these rows never collide with the window the block index writes for that comment's first block.
+func crowdOneCommentsWindows(
+	t *testing.T, database *store.Store, embedder embed.Embedder, commentID, project string, rows int, vector []float32,
+) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into embeddings (kind, id, text_snapshot, content_hash, embedded_hash, model, embedding, embedded_at, covers, project_key)
+		select 'comment_block', 'comment/' || $5 || '#c' || n, 'another window of one comment',
+		       md5(n::text), md5(n::text), $1, $2::vector, now(), array['b1'], $3
+		from generate_series(1, $4) n
+	`, embedder.Identity(), embed.Literal(vector), project, rows, commentID); err != nil {
+		t.Fatalf("write %d windows of comment %s: %v", rows, commentID, err)
+	}
+}
+
+// recordEmbeddingProjectKeyFill writes the one row of embeddings_project_key_backfill the read
+// path switches on, and embeddingProjectKeyFillIsDone reads it back. A test stands either side
+// of the fill by writing that row rather than by running the pass, which would label the very
+// rows a test of an unlabelled corpus needs left null.
+func recordEmbeddingProjectKeyFill(t *testing.T, database *store.Store, done bool) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(),
+		"update embeddings_project_key_backfill set done = $1", done); err != nil {
+		t.Fatalf("record the embeddings project_key fill as done=%v: %v", done, err)
+	}
+}
+
+func embeddingProjectKeyFillIsDone(t *testing.T, database *store.Store) bool {
+	t.Helper()
+	var done bool
+	if err := database.Pool.QueryRow(context.Background(),
+		"select done from embeddings_project_key_backfill").Scan(&done); err != nil {
+		t.Fatalf("read the embeddings project_key fill's progress: %v", err)
+	}
+	return done
+}
+
+// resultProject is the project a search result belongs to, read off the page as a person
+// reading it would: an issue-owned hit from its issue's key, a document-owned one from the
+// owner's own project. It is how the test below filters an unscoped page by hand.
+func resultProject(result model.SearchResult) string {
+	if result.Owner.Kind == "issue" {
+		project, _, _ := strings.Cut(result.Owner.Key, "-")
+		return project
+	}
+	return result.Owner.Project
+}
+
+// searchResultKeys is a page as a set of "<kind>/<id>" in one order, for comparing two pages by
+// what they hold rather than by the order fusion ranked them in.
+func searchResultKeys(results []model.SearchResult) []string {
+	keys := make([]string, 0, len(results))
+	for _, result := range results {
+		keys = append(keys, result.Kind+"/"+result.ID)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling is the second half of INFRA-988's
+// defect. project_key is nullable, every row stored before migration 20261109120000 carries
+// null until store.FillEmbeddingProjectKeys labels it - 31 m 41 s for 1,109,536 rows on a clone
+// of the load-test database, longer in production - and `null = $2` is unknown in SQL, so while
+// that pass runs a predicate on the column alone hides every row it has not reached. A
+// deployment that had taken the migration and not the pass answered a project-scoped meaning
+// search from the labelled part of its corpus and nothing else, which is strictly worse than
+// the release before it: the read path serves the predicate on the owner each arm joins until
+// the fill's own row reads done (meaningStatementFor, meaningProjectScope).
+//
+// The fixture is one row of each kind a meaning arm reads - an issue, a comment, a message, an
+// ask and a document - in one project, each embedded to a word the corpus does not hold, so
+// only the meaning leg can answer at all (requireNoKeywordHit). The distance is cosine 0.9,
+// well clear of searchMeaningFloor rather than near it: a row at the floor itself is one
+// rounding away from being cut by the floor, and a test that lost a row that way would read
+// as this defect. The rows are then unlabelled the only way a test can unlabel them, as the
+// fill's own test does (embedding_project_key_test.go), and the fill's row is left not done:
+// that pair is a database the migrations have reached and the pass has not.
+//
+// What it asserts is the scoped page against the unscoped page filtered by hand to this project
+// - the answer that does not depend on the column at all - and each of the five items by name,
+// so a fixture that quietly stopped embedding one of them fails here rather than passing on two
+// short pages. The issue's own auto-created spec document is a sixth embeddings row and is in
+// neither page: nothing maps its text, so it embeds at cosine 0 and stands below
+// searchMeaningFloor, which is why five rather than six is the whole answer.
+func TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling(t *testing.T) {
+	const project, title, spec = "UNFL", "An unlabelled subject", "Body text."
+	embedder := &fakeEmbedder{vectors: map[string][]float32{
+		"wibbleflorp":                   queryVector(),
+		issueEmbeddingText(title, spec): angledVector(0.9, 2),
+	}}
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
+	issue := createInteractionIssue(t, handler, project, title, spec)
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "A remark to find."}, "alice")
+	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "A message to find."}, "alice")
+	ask := createIssueAsk(t, handler, issue.Key, "A question to find?")
+	document := uploadSearchDocument(t, handler, issue.Key, "notes.md", "A document to find.\n")
+	windowOwedOwners(t, deps)
+	// A distinct axis each, as angledVector requires of vectors answering one query.
+	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.9, 3))
+	embedWindowsAs(t, database, embedder, "message_block", "message/"+message.ID, angledVector(0.9, 4))
+	embedWindowsAs(t, database, embedder, "ask_part", "ask/"+ask, angledVector(0.9, 5))
+	embedWindowsAs(t, database, embedder, "document_block", document.ID, angledVector(0.9, 6))
+	processAllPending(t, database, embedder)
+
+	if _, err := database.Pool.Exec(context.Background(), "update embeddings set project_key = null"); err != nil {
+		t.Fatalf("unlabel the stored rows: %v", err)
+	}
+	// Both halves of "the pass has not run". Without either, the scoped search below would be
+	// answered by the column's own predicate and this test would prove nothing.
+	if labelled := countRows(t, database, "select count(*) from embeddings where project_key is not null"); labelled != 0 {
+		t.Fatalf("%d embeddings rows are still labelled, so this is not the database a fill has yet to reach", labelled)
+	}
+	if embeddingProjectKeyFillIsDone(t, database) {
+		t.Fatal("the fill's row reads done, so this test stands after the pass rather than during it")
+	}
+
+	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
+	scoped := searchResponse(t, handler, "q=wibbleflorp&project="+project)
+	if scoped.Degraded != "" {
+		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", scoped.Degraded)
+	}
+	for _, want := range []struct{ kind, id string }{
+		{"issue", issue.Key},
+		{"comment", comment.ID},
+		{"message", message.ID},
+		{"ask", ask},
+		{"document", document.ID},
+	} {
+		searchHit(t, scoped, want.kind, want.id)
+	}
+
+	unscoped := searchResponse(t, handler, "q=wibbleflorp")
+	owned := make([]model.SearchResult, 0, len(unscoped.Results))
+	for _, result := range unscoped.Results {
+		if resultProject(result) == project {
+			owned = append(owned, result)
+		}
+	}
+	if len(owned) != 5 {
+		t.Fatalf("the unscoped search found %d rows of %s, want the fixture's five; this test compares the two pages, so an unscoped page missing one proves nothing: %+v",
+			len(owned), project, unscoped.Results)
+	}
+	if got, want := searchResultKeys(scoped.Results), searchResultKeys(owned); !slices.Equal(got, want) {
+		t.Errorf("the scoped search returned %v, want %v: what the unscoped search found of %s, which no project_key predicate filtered",
+			got, want, project)
+	}
+}
+
+// unlabelledFillWindow is the fixture the two tests below stand on: one project holding an
+// issue and a comment, each embedded to a word the corpus does not hold, with every embeddings
+// row set back to unlabelled. That is a database the migrations have reached and the fill has
+// not, which is the one state in which what a scoped search finds turns on the read of the
+// fill's progress row: the joined statement answers from the owner each arm joins, and the
+// column's own predicate would answer nothing at all. It answers the handler, the store, the
+// server's dependencies, and the two items a scoped search has to come back with.
+func unlabelledFillWindow(t *testing.T, project string) (http.Handler, *store.Store, Deps, string, string) {
+	t.Helper()
+	const title, spec = "A subject no fill has labelled", "Body text."
+	embedder := &fakeEmbedder{vectors: map[string][]float32{
+		"wibbleflorp":                   queryVector(),
+		issueEmbeddingText(title, spec): angledVector(0.9, 2),
+	}}
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
+	issue := createInteractionIssue(t, handler, project, title, spec)
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "A remark to find."}, "alice")
+	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.9, 3))
+	processAllPending(t, database, embedder)
+	if _, err := database.Pool.Exec(context.Background(), "update embeddings set project_key = null"); err != nil {
+		t.Fatalf("unlabel the stored rows: %v", err)
+	}
+	if labelled := countRows(t, database, "select count(*) from embeddings where project_key is not null"); labelled != 0 {
+		t.Fatalf("%d embeddings rows are still labelled, so this is not the database a fill has yet to reach", labelled)
+	}
+	return handler, database, deps, issue.Key, comment.ID
+}
+
+// A progress row this process cannot read serves the joined statement and a complete page, and
+// that promise is the whole of why the read may fail at all (embeddingProjectKeysFilled). It is
+// kept only if the failure leaves the search's own transaction usable, since the meaning
+// statement runs on that transaction next.
+//
+// Here the table is not there: a binary newer than its database, which is reachable, since the
+// server migrates before it serves and a database somebody repaired by hand has whatever it
+// has. Measured at this change's head, every project-scoped meaning search answered 500 for as
+// long as that lasted, where the release before it answered from the owner each arm joins
+// (INFRA-988).
+func TestAProjectScopedSearchAnswersWhenTheFillsProgressTableIsMissing(t *testing.T) {
+	const project = "NOTB"
+	handler, database, _, issueKey, commentID := unlabelledFillWindow(t, project)
+	if _, err := database.Pool.Exec(context.Background(), "drop table embeddings_project_key_backfill"); err != nil {
+		t.Fatalf("drop the fill's progress table: %v", err)
+	}
+
+	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
+	response := searchResponse(t, handler, "q=wibbleflorp&project="+project)
+	if response.Degraded != "" {
+		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", response.Degraded)
+	}
+	searchHit(t, response, "issue", issueKey)
+	searchHit(t, response, "comment", commentID)
+}
+
+// The same promise, broken the other way the round measured: the row is there and holds a value
+// this process cannot scan. The first scoped search on each pooled connection answered 500 with
+// SQLSTATE 0A000, `cached plan must not change result type`, which Postgres raises when the
+// cached plan of a prepared statement no longer describes the row it reads and which pgx does
+// not retry inside a transaction; every later search on that connection degraded as promised.
+// So the search this test drives is the first one on a connection that holds such a plan, which
+// is the one that failed.
+func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *testing.T) {
+	const project = "BADV"
+	_, database, deps, issueKey, commentID := unlabelledFillWindow(t, project)
+	// The search runs on a store of one connection, so the connection that holds the cached
+	// plan is the connection it searches on (storetest.SingleConnection, as the issue read's
+	// own prepared-statement test uses it). Preparing the read on every connection of the
+	// shared pool instead means holding all sixty-four of them at once (store.sharedPoolSize),
+	// which a busy server refuses with SQLSTATE 53300.
+	deps.Store = storetest.SingleConnection(t, database)
+	served := directServer(deps)
+	cacheTheProgressRead(t, deps.Store)
+	for _, statement := range []string{
+		"alter table embeddings_project_key_backfill alter column done drop default",
+		"alter table embeddings_project_key_backfill alter column done type text using 'labelling'",
+	} {
+		if _, err := database.Pool.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+
+	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
+	response, err := served.runSearch(context.Background(),
+		searchParameters{text: "wibbleflorp", project: project, limit: searchDefaultLimit})
+	if err != nil {
+		t.Fatalf("the first scoped search on the connection holding that plan: %v, want the joined statement's page", err)
+	}
+	if response.Degraded != "" {
+		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", response.Degraded)
+	}
+	searchHit(t, response, "issue", issueKey)
+	searchHit(t, response, "comment", commentID)
+}
+
+// The third way the progress read can go wrong, and the one that costs a search time rather
+// than rows: the row is there, readable, and locked. The read then waits for the lock, and
+// behind an ACCESS EXCLUSIVE one it waited out the whole bound the server holds on a meaning
+// statement (searchMeaningStatementBound, 15 s) before degrading to the joined statement -
+// 15,002 ms measured at this change's head against 202 ms with a lock_timeout of 200 ms
+// (INFRA-988). A search whose answer is the same either way must not spend a quarter of a
+// minute learning that, so the savepoint bounds its own wait
+// (embeddingProjectKeysFilledLockWait).
+//
+// The bound asserted here is far looser than the setting and far tighter than the one it
+// replaces: a search that answers inside it is one that gave up waiting, and a search that
+// waits the statement bound out cannot pass it however loaded the server is. The page is
+// asserted too, because a short answer that lost the project's rows would be no better than a
+// slow one.
+func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRow(t *testing.T) {
+	const project = "LCKD"
+	handler, database, _, issueKey, commentID := unlabelledFillWindow(t, project)
+	ctx := context.Background()
+	// The lock is held for the search and released with this transaction, which is rolled back
+	// whatever the test does next: a lock left on that table would stall every later test of
+	// this database.
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds the lock: %v", err)
+	}
+	defer func() { _ = holder.Rollback(context.Background()) }()
+	if _, err := holder.Exec(ctx, "lock table embeddings_project_key_backfill in access exclusive mode"); err != nil {
+		t.Fatalf("lock the fill's progress row: %v", err)
+	}
+
+	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
+	started := time.Now()
+	response := searchResponse(t, handler, "q=wibbleflorp&project="+project)
+	waited := time.Since(started)
+	if waited > 5*time.Second {
+		t.Errorf("the scoped search behind an ACCESS EXCLUSIVE lock on the fill's progress row took %s, want far less than the 15 s the server allows a meaning statement: the read waits out the statement bound instead of its own lock bound",
+			waited)
+	}
+	if response.Degraded != "" {
+		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", response.Degraded)
+	}
+	searchHit(t, response, "issue", issueKey)
+	searchHit(t, response, "comment", commentID)
+}
+
+// cacheTheProgressRead reads the fill's progress row once on database's connection, which leaves
+// it holding a prepared plan for that read (pgx's QueryExecModeCacheStatement, the pool's own
+// default). A deployment's connections hold such a plan after one search apiece; a database a
+// test has just opened holds none, and the failure
+// TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned covers is only raised
+// on a connection that does.
+func cacheTheProgressRead(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var done bool
+	if err := database.Pool.QueryRow(ctx, embeddingProjectKeysFilledQuery).Scan(&done); err != nil {
+		t.Fatalf("read the fill's progress to prepare its plan: %v", err)
+	}
 }

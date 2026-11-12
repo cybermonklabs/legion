@@ -1,16 +1,18 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { userOnFakeClock } from "../../__tests__/user";
 import { api } from "../../api/client";
-import type { CredentialGrant, MachineLogin } from "../../api/types";
+import type { ApproverGrantResp, LauncherCredentialResp } from "../../api/types";
 import { GrantsSection } from "./GrantsSection";
 import { MachineLoginPage } from "./MachineLoginPage";
 import { MachineLoginsSection } from "./MachineLoginsSection";
 
-const devbox: MachineLogin = {
+const devbox: LauncherCredentialResp = {
   approved_by: "ada@example.com",
   credential_id: "cred-devbox",
   expired: false,
@@ -20,7 +22,7 @@ const devbox: MachineLogin = {
   service: null,
   subject: null,
 };
-const laptop: MachineLogin = {
+const laptop: LauncherCredentialResp = {
   approved_by: "ada@example.com",
   credential_id: "cred-laptop",
   expired: false,
@@ -32,7 +34,7 @@ const laptop: MachineLogin = {
 };
 /** A service's login a person approved before services logged in with their own Kubernetes
  *  token, which someone other than the viewer approved: anyone signed in lists and revokes it. */
-const daemon: MachineLogin = {
+const daemon: LauncherCredentialResp = {
   approved_by: "bob@example.com",
   credential_id: "cred-daemon",
   expired: false,
@@ -43,7 +45,7 @@ const daemon: MachineLogin = {
   subject: null,
 };
 /** The devbox's previous login: expired, but a box it started still renews with its own key. */
-const stale: MachineLogin = {
+const stale: LauncherCredentialResp = {
   approved_by: "ada@example.com",
   credential_id: "cred-stale",
   expired: true,
@@ -105,9 +107,10 @@ test("an expired login whose sessions still run is listed and marked so, and Rev
 test("revoking a machine login refreshes Live grants", async () => {
   const user = userEvent.setup();
   let logins = [devbox];
-  const grant: CredentialGrant = {
+  const grant: ApproverGrantResp = {
     approver: null,
     created_at: "2026-10-03T12:05:00Z",
+    decided_by: null,
     enrollment: { kind: "session", operator: "ada@example.com", runtime_id: "box-1", slot: null },
     expires_at: "2026-10-03T13:05:00Z",
     grant_id: "grant-1",
@@ -156,7 +159,8 @@ test("revoking a machine login refreshes Live grants", async () => {
 });
 
 test("the machine-login page lists the viewer's machine logins, and Revoke ends the one confirmed", async () => {
-  const user = userEvent.setup();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   let live = [devbox, laptop];
   const getMachineLogins = spyOn(api, "getMachineLogins").mockImplementation(async () => ({
     credentials: live,
@@ -180,9 +184,7 @@ test("the machine-login page lists the viewer's machine logins, and Revoke ends 
       ],
     ]);
     // A mutation calls its function a few microtasks after the click; a timer runs after them all.
-    const settled = Promise.withResolvers<void>();
-    setTimeout(settled.resolve, 0);
-    await settled.promise;
+    await tick(0);
     expect(revokeMachineLogin).not.toHaveBeenCalled();
 
     confirm.mockReturnValue(true);
@@ -194,6 +196,7 @@ test("the machine-login page lists the viewer's machine logins, and Revoke ends 
     expect(section.getByText("laptop.example.com")).toBeDefined();
     expect(revokeMachineLogin).toHaveBeenCalledTimes(1);
   } finally {
+    realClock();
     cleanup();
     confirm.mockRestore();
     getMachineLogins.mockRestore();
@@ -249,7 +252,11 @@ test("a service's login someone else approved is listed by its service and its a
 // token login of `undefined`.
 test("a service's login from a broker that sends no subject is shown as one a person approved", async () => {
   const user = userEvent.setup();
-  const { subject: _omitted, ...fromOlderBroker } = daemon;
+  // The route table declares `subject` on every machine login, because the broker Dispatch
+  // relays today sends one; a broker older than the field sends no such key at all, which is
+  // what this row is, so the key is dropped from the value rather than set to anything.
+  const fromOlderBroker: LauncherCredentialResp = { ...daemon };
+  Reflect.deleteProperty(fromOlderBroker, "subject");
   const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({
     credentials: [fromOlderBroker],
   });
@@ -276,7 +283,7 @@ test("a service's login from a broker that sends no subject is shown as one a pe
 
 test("a service's token login names its ServiceAccount, and its Revoke says what logs in again", async () => {
   const user = userEvent.setup();
-  const tokenLogin: MachineLogin = {
+  const tokenLogin: LauncherCredentialResp = {
     ...daemon,
     approved_by: "",
     credential_id: "cred-token",
@@ -320,7 +327,7 @@ test("a service's token login names its ServiceAccount, and its Revoke says what
 // the row a credential id picks ends that login and no other.
 test("two logins of one service on one host are told apart by their credential ids, and Revoke ends the one picked by its id", async () => {
   const user = userEvent.setup();
-  const copy: MachineLogin = {
+  const copy: LauncherCredentialResp = {
     ...daemon,
     approved_by: "mallory@example.com",
     credential_id: "cred-copy",
@@ -359,7 +366,7 @@ test("two logins of one service on one host are told apart by their credential i
 
 test("a machine login approved on the page joins the list", async () => {
   const user = userEvent.setup();
-  let live: MachineLogin[] = [];
+  let live: LauncherCredentialResp[] = [];
   const getMachineLogins = spyOn(api, "getMachineLogins").mockImplementation(async () => ({
     credentials: live,
   }));
@@ -376,6 +383,7 @@ test("a machine login approved on the page joins the list", async () => {
     requested_at: "2026-10-03T12:00:00Z",
     rules_version: "v1",
     service: null,
+    session: { enrollment: null, request: null },
     state: "pending",
   });
   const approveCredentialRecord = spyOn(api, "approveCredentialRecord").mockImplementation(

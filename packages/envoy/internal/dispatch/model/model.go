@@ -230,7 +230,10 @@ func DecodeAnchor(data []byte, anchor *Anchor) error {
 
 // AnchorInput selects document text by quote or identifies a browser-owned mark.
 type AnchorInput struct {
-	Artifact   string  `json:"artifact"`
+	// Artifact is required: an anchor naming no document is refused (400 INVALID_ANCHOR,
+	// api.resolveAnchor). The tag is read by the OpenAPI emitter, which requires a field of a
+	// request body only where the handler refuses a body without it (api/openapi.go).
+	Artifact   string  `json:"artifact" required:"true"`
 	Quote      *string `json:"quote,omitempty"`
 	Occurrence *int    `json:"occurrence,omitempty"`
 	MarkID     *string `json:"mark_id,omitempty"`
@@ -493,7 +496,10 @@ type IssueSummary struct {
 	Repo         *string `json:"repo"`
 	ResolvedRepo *string `json:"resolved_repo"`
 	IssueRouteReach
+	CreatedBy         *Actor        `json:"created_by"`
+	CreatedAt         time.Time     `json:"created_at"`
 	UpdatedAt         time.Time     `json:"updated_at"`
+	ClosedAt          *time.Time    `json:"closed_at"`
 	LastSeq           int           `json:"last_seq"`
 	PrimaryArtifactID string        `json:"primary_artifact_id"`
 	OpenAsks          int           `json:"open_asks"`
@@ -513,7 +519,9 @@ type IssueSummaryPage struct {
 // An issue owner carries Key, Title and Status; a document owner carries Project, Slug,
 // ArtifactID and Name.
 type SearchOwner struct {
-	Kind       string `json:"kind"`
+	// Kind is "issue" or "document": scanSearchRows reads the column the search query writes as
+	// `case when r.owner_artifact_id is null then 'issue' else 'document' end` (search.go).
+	Kind       string `json:"kind" enum:"issue,document"`
 	Key        string `json:"key,omitempty"`
 	Title      string `json:"title,omitempty"`
 	Status     string `json:"status,omitempty"`
@@ -543,7 +551,9 @@ type SearchIssue struct {
 // document settlement retracted while it was answered, and nil when nobody answered.
 // Answer.Selected is an empty list, never null, when the answer chose no option.
 type SearchAsk struct {
-	State      string         `json:"state"` // "open" | "answered" | "resolved"
+	// State is "open", "answered" or "resolved": it is the asks row's own state, which
+	// asks_state_check holds to those three (migration 0007_ask_resolution).
+	State      string         `json:"state" enum:"open,answered,resolved"`
 	Answer     *AskAnswer     `json:"answer,omitempty"`
 	Resolution *AskResolution `json:"resolution,omitempty"`
 }
@@ -572,6 +582,29 @@ type SearchResult struct {
 	Ask *SearchAsk `json:"ask,omitempty"`
 }
 
+// SearchQueryReading is how GET /api/v1/search read the words it was given: Operators names the
+// operator forms the query was read as using (contracts.SearchOperatorPhrase,
+// SearchOperatorOr, SearchOperatorExclude), empty for a query that wrote none, and Broadened is
+// whether the answer came from the fallback search over the query's rarest words, which runs for
+// a query the words as typed match nothing at all for (api.runSearch, api.searchRarestWords). A
+// caller showing a person what was done with their words reads it rather than parsing them
+// again. Mirrors contracts' SearchQueryReading.
+type SearchQueryReading struct {
+	Operators []string `json:"operators"`
+	Broadened bool     `json:"broadened"`
+}
+
+// SearchFilters is what one search narrowed every leg of itself by: the project, the issue
+// status a row belongs to, who wrote the item it names, and the time the item was last written
+// (RFC 3339). Each is absent when the request named it not at all. Mirrors contracts'
+// SearchFilters.
+type SearchFilters struct {
+	Project      string `json:"project,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Author       string `json:"author,omitempty"`
+	UpdatedSince string `json:"updated_since,omitempty"`
+}
+
 // SearchResponse is one page of the fused search result list.
 type SearchResponse struct {
 	Results []SearchResult `json:"results"`
@@ -588,6 +621,11 @@ type SearchResponse struct {
 	// embedder configured, the query's own embedding timed out, or the model service answered an
 	// error) - and is empty when meaning search ran normally.
 	Degraded string `json:"degraded,omitempty"`
+	// Query is how the words were read and Filters what the search narrowed every leg by: the
+	// route answers both on every path, so a caller never has to guess which of its chips the
+	// search applied (api.searchQueryReading, api.searchAppliedFilters).
+	Query   SearchQueryReading `json:"query"`
+	Filters SearchFilters      `json:"filters"`
 }
 
 // SearchCoverage is how much of what meaning search covers has a current vector from the
@@ -595,12 +633,16 @@ type SearchResponse struct {
 // identity (embed.Embedder.Identity), Place ("bedrock", "azure", or "dev" for the local
 // harness's own embedder, which no deployment runs) and Model are read from it; all three are
 // null when no embedder is configured, and then nothing is current.
+//
+// Kinds and Total cover what the index holds; NotIndexed names what it does not, so a reader
+// can tell a kind that is covered and complete from one nothing indexes at all.
 type SearchCoverage struct {
-	Identity *string              `json:"identity"`
-	Place    *string              `json:"place"`
-	Model    *string              `json:"model"`
-	Total    SearchCoverageCounts `json:"total"`
-	Kinds    SearchCoverageKinds  `json:"kinds"`
+	Identity   *string                    `json:"identity"`
+	Place      *string                    `json:"place"`
+	Model      *string                    `json:"model"`
+	Total      SearchCoverageCounts       `json:"total"`
+	Kinds      SearchCoverageKinds        `json:"kinds"`
+	NotIndexed []SearchCoverageNotIndexed `json:"not_indexed"`
 }
 
 // SearchCoverageKinds is SearchCoverage's counts for each kind meaning search ranks: the issue,
@@ -613,6 +655,18 @@ type SearchCoverageKinds struct {
 	CommentBlock  SearchCoverageCounts `json:"comment_block"`
 	MessageBlock  SearchCoverageCounts `json:"message_block"`
 	AskPart       SearchCoverageCounts `json:"ask_part"`
+}
+
+// SearchCoverageNotIndexed is one kind of node neither search leg holds a row of: Kind names it
+// and Items is how many of it the database holds, counted from the table that holds it. It is a
+// list of its own rather than a kind of SearchCoverageKinds on purpose: a kind with no row of
+// its own would read there as items 0, current 0, lacking 0, which is what a covered kind with
+// nothing left to embed reads as, and the two mean opposite things. A row here carries no
+// current, lacking or failed, because none of those is defined for a kind nothing indexes, and
+// its Items is in no total: Total sums the covered kinds alone.
+type SearchCoverageNotIndexed struct {
+	Kind  string `json:"kind"`
+	Items int64  `json:"items"`
 }
 
 // SearchCoverageCounts splits Items, the searchable items of a kind (or of all of them), into
@@ -655,26 +709,23 @@ type DuplicateCandidate struct {
 	Href        string `json:"href"`
 }
 
-// WriteSuggestion is one item the related-item check judges like what was just filed:
-// a search hit over the same project. Ask is where an ask item stands (its latest answer, who gave
-// it, when and the options chosen; or its resolution; or open). AnsweredBy and AnsweredAt repeat
-// the answer's user and time on the ask Suggestions.Decision names, for clients built before Ask.
+// WriteSuggestion is one item the related-item check judges like what was just filed: a search
+// hit of the asking project in Suggestions.Related, and of another project in
+// Suggestions.OtherProjects. Ask is where an ask item stands (its latest answer, who gave
+// it, when and the options chosen; or its resolution; or open).
 type WriteSuggestion struct {
-	Kind       string          `json:"kind"`
-	Owner      SearchOwner     `json:"owner"`
-	Artifact   *SearchArtifact `json:"artifact,omitempty"`
-	ID         string          `json:"id"`
-	Snippet    string          `json:"snippet"`
-	Href       string          `json:"href"`
-	Ask        *SearchAsk      `json:"ask,omitempty"`
-	AnsweredBy string          `json:"answered_by,omitempty"`
-	AnsweredAt *time.Time      `json:"answered_at,omitempty"`
+	Kind     string          `json:"kind"`
+	Owner    SearchOwner     `json:"owner"`
+	Artifact *SearchArtifact `json:"artifact,omitempty"`
+	ID       string          `json:"id"`
+	Snippet  string          `json:"snippet"`
+	Href     string          `json:"href"`
+	Ask      *SearchAsk      `json:"ask,omitempty"`
 }
 
 // Suggestions is the related-item check's result on a newly created issue or ask: the
-// three items most like it (Related, one per owner) and, when an answered ask already settles the
-// same question, that decision (Decision). The check never refuses the write; it waits at most
-// five seconds, and says what it did.
+// three items most like it (Related, one per owner). The check never refuses the write; it waits
+// at most five seconds, and says what it did.
 //
 // Outcome is "found" (Related holds at least one item), "none" (it searched and found nothing) or
 // "not_made" (it did not search to the end). Search is how it searched, "meaning_and_keywords" or
@@ -689,13 +740,19 @@ type WriteSuggestion struct {
 // why, exactly when the near-copy check before the create did not answer, so a filer knows the
 // create went in unchecked; it is absent on every other write, which runs no such check.
 // Related is always an array, never null.
+//
+// OtherProjects rides beside Related, never inside it: a write that asks a person a question -
+// an ask create, a new decision block, and `dispatch related` - also carries the answered
+// questions of the other projects that stand closest to it in meaning. Each item is one such
+// answered question, and its Owner.Project names the project that holds it. Every other write
+// leaves it empty.
 type Suggestions struct {
 	Outcome         string               `json:"outcome"`
 	Search          string               `json:"search,omitempty"`
 	SearchNote      string               `json:"search_note,omitempty"`
 	SearchQuery     string               `json:"search_query,omitempty"`
 	Related         []WriteSuggestion    `json:"related"`
-	Decision        *WriteSuggestion     `json:"decision,omitempty"`
+	OtherProjects   []WriteSuggestion    `json:"other_projects,omitempty"`
 	Missing         string               `json:"missing,omitempty"`
 	TitleMatches    []DuplicateCandidate `json:"title_matches,omitempty"`
 	LikelyDuplicate *DuplicateCandidate  `json:"likely_duplicate,omitempty"`
@@ -712,20 +769,28 @@ type Suggestions struct {
 // searched by meaning and keywords). Each map holds only the values seen, and is {} for none.
 // Completed is the checks that searched to the end (found or none, whatever the search mode),
 // SkippedForTime those not made because the search ran out of time (reason timeout).
+//
+// OtherProjectOffers is how many writes of the same window offered an answered question of
+// another project: one per write, whatever number of questions it offered. It is read from
+// write_suggestions, the table that records each item a check offered, under the same window,
+// project and source-kind filters; every other count here is read from related_checks, which
+// holds no key of that table. Only an ask create records such a row (api.persistSuggestions), so
+// the count is zero under any other source kind.
 type RelatedChecksReport struct {
-	Project        *string            `json:"project"`
-	SourceKind     *string            `json:"source_kind"`
-	From           *time.Time         `json:"from"`
-	To             *time.Time         `json:"to"`
-	Total          int                `json:"total"`
-	BySourceKind   map[string]int     `json:"by_source_kind"`
-	ByOutcome      map[string]int     `json:"by_outcome"`
-	BySearch       map[string]int     `json:"by_search"`
-	ByReason       map[string]int     `json:"by_reason"`
-	Completed      int                `json:"completed"`
-	SkippedForTime int                `json:"skipped_for_time"`
-	KeywordMS      RelatedCheckTiming `json:"keyword_ms"`
-	TotalMS        RelatedCheckTiming `json:"total_ms"`
+	Project            *string            `json:"project"`
+	SourceKind         *string            `json:"source_kind"`
+	From               *time.Time         `json:"from"`
+	To                 *time.Time         `json:"to"`
+	Total              int                `json:"total"`
+	BySourceKind       map[string]int     `json:"by_source_kind"`
+	ByOutcome          map[string]int     `json:"by_outcome"`
+	BySearch           map[string]int     `json:"by_search"`
+	ByReason           map[string]int     `json:"by_reason"`
+	Completed          int                `json:"completed"`
+	SkippedForTime     int                `json:"skipped_for_time"`
+	OtherProjectOffers int                `json:"other_project_offers"`
+	KeywordMS          RelatedCheckTiming `json:"keyword_ms"`
+	TotalMS            RelatedCheckTiming `json:"total_ms"`
 }
 
 // RelatedCheckTiming summarizes one of related_checks' millisecond columns over the checks that
@@ -965,22 +1030,106 @@ type ArtifactReviewEventPayload struct {
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
 }
 
-// CurrencyCurrent, CurrencyOlder and CurrencyUnknown are whether a recorded result still speaks
-// for the work as it stands: CurrencyCurrent at the commit the work stands at and the words the
-// result proved, CurrencyOlder at an earlier commit or against words that have changed since,
-// and CurrencyUnknown when Dispatch cannot read the repository the check's issue resolves to.
+// CheckBasisNamed, CheckBasisPullRequest and CheckBasisBranch are the kinds of thing a check's
+// results are compared with: the one commit a reader named in `at`, the head of a pull request
+// Dispatch holds for the check's issue, and a branch of the check's issue's repository.
 const (
-	CurrencyCurrent = "current"
-	CurrencyOlder   = "older"
-	CurrencyUnknown = "unknown"
+	CheckBasisNamed       = "named"
+	CheckBasisPullRequest = "pull_request"
+	CheckBasisBranch      = "branch"
 )
+
+// BasisLearnedReadAt and BasisLearnedUpdatedAt say which time a basis learned from a pull
+// request carries: BasisLearnedReadAt is pull_request_heads.checked_at, when Dispatch last read
+// the pull request from GitHub, and BasisLearnedUpdatedAt is event_at, the pull request's own
+// update time as its newest webhook event carried it. The later of the two is the one shown, so
+// a head a webhook moved after the last complete read prints GitHub's own time and never an
+// older read time.
+const (
+	BasisLearnedReadAt    = "read_at"
+	BasisLearnedUpdatedAt = "updated_at"
+)
+
+// ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable and ReasonReadFailed are why a check
+// names nothing to compare its results with (CheckBlock.ComparedNothing), and why a result's
+// commit cannot be placed (ResultCommitStands.Reason). The three are kept apart because each
+// is a different thing for a reader to do: there is no pull request and no branch to compare
+// with, the App cannot read the repository, or a read Dispatch makes did not answer.
+const (
+	ReasonNoPullRequestOrBranch = "no_pull_request_or_branch"
+	ReasonRepositoryUnreadable  = "repository_unreadable"
+	ReasonReadFailed            = "read_failed"
+)
+
+// CommitAtBasis, CommitOtherCommit and CommitUnknown are where one result's commit stands: at
+// one of the commits the check named, at another commit, or not known with the reason.
+const (
+	CommitAtBasis     = "at_basis"
+	CommitOtherCommit = "other_commit"
+	CommitUnknown     = "unknown"
+)
+
+// PassStandsYes, PassStandsNo and PassStandsUnknown answer the gate's question for one check:
+// whether a pass of it stands at what the check compared its results with.
+const (
+	PassStandsYes     = "yes"
+	PassStandsNo      = "no"
+	PassStandsUnknown = "unknown"
+)
+
+// CheckBasis is one commit or branch a check's results are compared with. Commit is set for a
+// `named` and a `pull_request` basis, Branch for a `branch` one, and PullRequest is the number
+// of the pull request whose head the commit is.
+type CheckBasis struct {
+	Kind        string          `json:"kind" enum:"named,pull_request,branch"`
+	Commit      string          `json:"commit,omitempty"`
+	Branch      string          `json:"branch,omitempty"`
+	PullRequest *int            `json:"pull_request,omitempty"`
+	LearnedAt   *BasisLearnedAt `json:"learned_at,omitempty"`
+}
+
+// BasisLearnedAt is when Dispatch last learned a pull request's head and which time that is
+// (BasisLearnedReadAt, BasisLearnedUpdatedAt). A basis Dispatch learned neither way carries
+// none.
+type BasisLearnedAt struct {
+	At   time.Time `json:"at"`
+	Kind string    `json:"kind" enum:"read_at,updated_at"`
+}
+
+// CheckPassStands is the one line that answers the gate's question for a check: whether a pass
+// of it stands at what it compared its results with, against the check's words now, and from
+// which roles. Roles is empty for every answer but PassStandsYes. A pass whose check's words
+// moved does not stand, and a retracted result counts for nothing.
+type CheckPassStands struct {
+	Answer string   `json:"answer" enum:"yes,no,unknown"`
+	Roles  []string `json:"roles,omitempty"`
+}
+
+// ResultCommitStands is where one result's commit stands against what its check compared with:
+// CommitAtBasis with the basis it matched, CommitOtherCommit, or CommitUnknown with the reason
+// (ReasonRepositoryUnreadable, ReasonReadFailed). It says nothing about the check's words,
+// which CheckResult.CheckWordsMoved answers on its own.
+type ResultCommitStands struct {
+	Answer string      `json:"answer" enum:"at_basis,other_commit,unknown"`
+	Basis  *CheckBasis `json:"basis,omitempty"`
+	Reason string      `json:"reason,omitempty" enum:"repository_unreadable,read_failed"`
+}
+
+// CheckResultRetracted is the retraction one result carries on a read of the results
+// (check_result_retractions): why the result is wrong, who said so and when. The result itself
+// is neither updated nor deleted, so a reader sees both records.
+type CheckResultRetracted struct {
+	Reason    string    `json:"reason"`
+	Actor     Actor     `json:"actor"`
+	CreatedAt time.Time `json:"created_at"`
+}
 
 // CheckResult is one result recorded against a `check` block of an issue's Verification
 // document (check_results). IssueKey is the issue it was recorded on, which may be a descendant
 // of CheckIssueKey, the issue whose Verification document holds the check. CheckVersion and
 // CheckSHA256 are the block's changed_version and text_sha256 when the result was recorded, so
-// a read can tell a result whose check has been reworded since. Currency is computed when the
-// results are read and is empty on the record's own answer.
+// a read can tell a result whose check has been reworded since. CommitStands, CheckWordsMoved
+// and Retracted are read when the results are read and are absent from the record's own answer.
 type CheckResult struct {
 	ID              string    `json:"id"`
 	IssueKey        string    `json:"issue_key"`
@@ -1004,7 +1153,27 @@ type CheckResult struct {
 	Actor           Actor     `json:"actor"`
 	CreatedAt       time.Time `json:"created_at"`
 	EventSeq        *int64    `json:"event_seq,omitempty"`
-	Currency        string    `json:"currency,omitempty"`
+	// CommitStands is where this result's commit stands against what its check compared with,
+	// and CheckWordsMoved whether the check's words moved after the result was recorded, which
+	// CheckSHA256 beside the check's SHA256 decides. They are two facts and two fields: a
+	// result at the compared commit under an older wording is both, and one word for both
+	// would hide which.
+	CommitStands    *ResultCommitStands   `json:"commit_stands,omitempty"`
+	CheckWordsMoved *bool                 `json:"check_words_moved,omitempty"`
+	Retracted       *CheckResultRetracted `json:"retracted,omitempty"`
+}
+
+// CheckResultRetraction is the record that says one stored result is wrong
+// (check_result_retractions). It names the result and keeps the reason and the actor. The
+// result itself is neither updated nor deleted, so a reader sees both records. One result
+// takes one retraction, which the table's key holds.
+type CheckResultRetraction struct {
+	ResultID  string    `json:"result_id"`
+	Reason    string    `json:"reason"`
+	Session   string    `json:"session"`
+	Actor     Actor     `json:"actor"`
+	CreatedAt time.Time `json:"created_at"`
+	EventSeq  *int64    `json:"event_seq,omitempty"`
 }
 
 // CheckBlock is one `check` block of a Verification document as a result read shows it: where it
@@ -1023,6 +1192,12 @@ type CheckBlock struct {
 	Version         int           `json:"version"`
 	SHA256          string        `json:"sha256"`
 	Results         []CheckResult `json:"results"`
+	// ComparedWith is every commit and branch this check's results are compared with, in the
+	// order they are asked about, and ComparedNothing is why there are none where it is empty
+	// (ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable, ReasonReadFailed).
+	ComparedWith    []CheckBasis    `json:"compared_with"`
+	ComparedNothing string          `json:"compared_nothing,omitempty" enum:"no_pull_request_or_branch,repository_unreadable,read_failed"`
+	PassStands      CheckPassStands `json:"pass_stands"`
 }
 
 // IssueCoverage is what each requirement of an issue's spec lacks: the requirements the spec
@@ -1066,6 +1241,19 @@ type CheckResultEventPayload struct {
 	Verdict         string `json:"verdict"`
 	Role            string `json:"role"`
 	CommitSHA       string `json:"commit_sha"`
+}
+
+// CheckResultRetractedEventPayload is the payload of result.retracted, appended on the check's
+// issue as result.recorded is: the retracted result, the issue it was recorded on (Issue, which
+// is the check's issue only when the result was recorded there), the check it claimed to prove,
+// and why it is wrong.
+type CheckResultRetractedEventPayload struct {
+	ResultID     string `json:"result_id"`
+	Issue        string `json:"issue"`
+	CheckIssue   string `json:"check_issue"`
+	CheckBlockID string `json:"check_block_id"`
+	CommitSHA    string `json:"commit_sha"`
+	Reason       string `json:"reason"`
 }
 
 // ArtifactHumanEditedEventPayload is the payload of artifact.human_edited, which Dispatch appends
@@ -1260,11 +1448,26 @@ type Ask struct {
 	// snapshot from when the request opened. nil for questions, and for an approval ask whose
 	// document has since been deleted.
 	ApprovalArtifact *AskAnchorArtifact `json:"approval_artifact,omitempty"`
+	// AskedOf is the person this ask waits on: the canonical login of somebody who has signed in
+	// to Dispatch. It is empty until a person hands the ask on, and an empty field means the ask
+	// waits on the assignee of its issue, which is where every ask starts.
+	AskedOf *string `json:"asked_of"`
+	// AskedOfBy is the person who last handed the ask on and AskedOfAt when they did; both are
+	// empty until somebody first hands the ask on. A hand-on to the assignee of the ask's own
+	// issue empties AskedOf and still writes both, so the ask card can say who gave it back.
+	AskedOfBy *string    `json:"asked_of_by"`
+	AskedOfAt *time.Time `json:"asked_of_at"`
 	// WaitingOn is whose reply an open ask needs next: a moved approval request stays with its
 	// agent while RequestedVersion is below Version, and a hand-back returns it to the human until
 	// a reply newer than the one it answered decides it. Set on ask reads only (inbox rows, ask lists,
 	// the ask detail), never on the ask.* event payloads; empty for answered and resolved asks.
 	WaitingOn string `json:"waiting_on,omitempty"`
+	// WaitingOnPerson is the person an ask waits on: AskedOf once somebody has handed the ask on,
+	// and the assignee of its issue until then (api.askedOfPersonExpression). Set on ask reads
+	// only (inbox rows, ask lists, the ask detail), never on the ask.* event payloads; empty when
+	// nobody waits on it, which is an ask on a project document or an unassigned issue that
+	// nobody was handed.
+	WaitingOnPerson string `json:"waiting_on_person,omitempty"`
 }
 
 // AskAnchorArtifact is the document containing an ask's quoted anchor.
@@ -1710,17 +1913,22 @@ type MyRepliesResponse struct {
 	NextCursor string       `json:"next_cursor,omitzero"`
 }
 
-// SessionAnswer kinds: an ask's current answer (its ID is the ask's), a comment, or a message.
+// SessionAnswer kinds: an ask's current answer (its ID is the ask's), a comment, a message, or a
+// person's decline of an ask (its ID is the ask's too). A decline is a kind of its own because the
+// person chose nothing: a reader that drew it as an answer would draw an empty list of chosen
+// options under a question nobody answered.
 const (
-	SessionAnswerKindAnswer  = "answer"
-	SessionAnswerKindComment = "comment"
-	SessionAnswerKindMessage = "message"
+	SessionAnswerKindAnswer   = "answer"
+	SessionAnswerKindComment  = "comment"
+	SessionAnswerKindMessage  = "message"
+	SessionAnswerKindDeclined = "declined"
 )
 
 // SessionAnswer relations: what an item is to the session Dispatch delivered it to, spelled as
 // SESSION_ANSWER_RELATIONS in packages/contracts/src/dispatch-api.ts spells them.
 const (
 	SessionAnswerRelationAnsweredYourAsk        = "answered_your_ask"
+	SessionAnswerRelationDeclinedYourAsk        = "declined_your_ask"
 	SessionAnswerRelationRepliedOnYourAsk       = "replied_on_your_ask"
 	SessionAnswerRelationRepliedInCommentThread = "replied_in_a_comment_thread"
 	SessionAnswerRelationCommentedOnDocument    = "commented_on_a_document"
@@ -1739,25 +1947,29 @@ type SessionAnswerAsk struct {
 
 // SessionAnswer is one thing a person wrote that Dispatch delivered to a session, on
 // GET /api/v1/agents/{session_id}/answers: an ask's current answer, a comment at its current
-// body, or a message, each (Kind, ID) once. Author is always a user. Text is the person's words in
-// full ("" for an answer that chose options only). Selected and Replaced are an answer's, each
-// omitted when empty or false; EditedAt is an edited comment's; Ask is set on an answer and on a
-// reply in an ask's thread. Owner and Ref are nil for a direct message, which is on no issue and
-// has no dispatch:// address; Href is then /agents/<session>/live.
+// body, a message, or a person's decline of an ask, each (Kind, ID) once. Author is always a
+// user. Text is the person's own words in full ("" for an answer that chose options only, and for
+// a decline the person wrote no note with). DispatchWords is set on a decline alone: the words
+// Dispatch wrote for the asking agent (DeclineDispatchWords), kept apart from the person's note so
+// no reader has to cut one out of the other. Selected and Replaced are an answer's, each omitted
+// when empty or false; EditedAt is an edited comment's; Ask is set on an answer, on a decline and
+// on a reply in an ask's thread. Owner and Ref are nil for a direct message, which is on no issue
+// and has no dispatch:// address; Href is then /agents/<session>/live.
 type SessionAnswer struct {
-	Kind     string            `json:"kind"`
-	Relation string            `json:"relation"`
-	ID       string            `json:"id"`
-	At       time.Time         `json:"at"`
-	EditedAt *time.Time        `json:"edited_at,omitempty"`
-	Author   Actor             `json:"author"`
-	Text     string            `json:"text"`
-	Selected []string          `json:"selected,omitempty"`
-	Replaced bool              `json:"replaced,omitempty"`
-	Ask      *SessionAnswerAsk `json:"ask,omitempty"`
-	Owner    *OpenAskOwner     `json:"owner"`
-	Ref      *string           `json:"ref"`
-	Href     string            `json:"href"`
+	Kind          string            `json:"kind"`
+	Relation      string            `json:"relation"`
+	ID            string            `json:"id"`
+	At            time.Time         `json:"at"`
+	EditedAt      *time.Time        `json:"edited_at,omitempty"`
+	Author        Actor             `json:"author"`
+	Text          string            `json:"text"`
+	DispatchWords string            `json:"dispatch_words,omitempty"`
+	Selected      []string          `json:"selected,omitempty"`
+	Replaced      bool              `json:"replaced,omitempty"`
+	Ask           *SessionAnswerAsk `json:"ask,omitempty"`
+	Owner         *OpenAskOwner     `json:"owner"`
+	Ref           *string           `json:"ref"`
+	Href          string            `json:"href"`
 }
 
 // SessionAnswersResponse is what people wrote to one session since Since, newest first by At,
@@ -1769,13 +1981,31 @@ type SessionAnswersResponse struct {
 	Items     []SessionAnswer `json:"items"`
 }
 
-// AskResolution records why a question no longer needs a human answer.
+// AskResolution records why a question no longer needs a human answer. Reason holds the
+// person's own note alone and DispatchWords the words Dispatch writes beside it, so no reader
+// has to cut one out of the other.
 type AskResolution struct {
-	Kind   string    `json:"kind"`
-	Reason string    `json:"reason"`
-	Actor  Actor     `json:"actor"`
-	At     time.Time `json:"at"`
+	Kind          string    `json:"kind"`
+	Reason        string    `json:"reason"`
+	DispatchWords string    `json:"dispatch_words,omitempty"`
+	Actor         Actor     `json:"actor"`
+	At            time.Time `json:"at"`
 }
+
+// AskResolutionDeclined is the AskResolution kind a person's decline of an ask records, and the
+// one kind that carries DeclineDispatchWords, which docs.WriteAskResolution writes under it. It
+// is a constant of this package because the four places that write or read it sit in three
+// packages - the write of every resolution (docs), the decline route and the reminder of an
+// issue's declined asks (api), and the list of what people wrote to a session
+// (sessionanswers) - and api imports the other two, so neither can import api.
+const AskResolutionDeclined = "declined"
+
+// DeclineDispatchWords is what Dispatch writes beside a person's note when they decline to
+// answer: the four sentences the asking agent reads to decide what to do next.
+const DeclineDispatchWords = "The person chose not to answer this question. " +
+	"Decide the next step without an answer. " +
+	"Do not ask this question again unless the facts change. " +
+	"Write in your work what you assumed."
 
 // Comment is a collaboration comment, optionally with an edit suggestion. A comment
 // replies to at most one of another comment (ReplyTo) or an ask (AskID). Comment
@@ -1788,20 +2018,229 @@ type Mention struct {
 	SessionID *string `json:"session_id"`
 }
 
+// CommentMentionIdempotencyKey is the idempotency key every send of a comment's mention of target
+// goes under, <comment>:<target>:<mention mode>. mentionMode is the mode the comment recorded on
+// that mention (comment_mentions.delivery), never the mode of the attempt being sent: the
+// mention's first attempt is opened in it (createCommentFor in internal/dispatch/api), so this is
+// one key per mention, the same for its automatic send, for the delivery sweep's resend and for a
+// dashboard Retry in any mode. Whichever copy reaches the recipient second therefore repeats the
+// key of the one that landed and is recognised as the repeat it is (DELIVERY_DUPLICATE_WINDOW_MS
+// in packages/contracts). An attempt a Retry overtook is sent after that Retry whenever the Retry
+// failed (MentionAttemptStandsSQL), and a Retry recorded failed may still have reached the session
+// - a receipt timeout says so itself - so one key per mention is what makes that send safe: the
+// session keeps one copy whichever of the two arrives first. The consequence is that a Retry in
+// any mode of a mention whose earlier attempt reached the session is recorded duplicate and
+// delivers nothing. The API sends the mention under it, and the outbox keys the copy it publishes
+// to a session whose mention failed by the same send's dedupe key (contracts.AgentSendDedupeKey).
+func CommentMentionIdempotencyKey(commentID, target, mentionMode string) string {
+	return commentID + ":" + target + ":" + mentionMode
+}
+
 // DeliveryClaimLapse is the lease on a pending delivery attempt (a comment_deliveries or
 // message_deliveries row): a sender's claim older than this was left by a sender that never came
-// back. Two readers depend on the one window and must agree. The API's claimLapsed
-// (internal/dispatch/api) lets another sender resume or settle an attempt whose claim is older,
-// and the outbox's mentionDeliveryQuery (internal/dispatch/outbox) stops holding a mentioned
-// session's own-topic copy back for a pending mention attempt whose claim - or creation, when no
-// sender claimed it - is older, so the outbox never waits on an attempt a sender may no longer
-// finish. Both judge it in Postgres against Postgres's own timestamps, through
-// DeliveryClaimLapseInterval.
+// back, since a send is bounded by the listener client's own window and the short transaction that
+// records its outcome. The API's claim transactions and mention sender and the outbox's mention
+// rule read it through the delivery predicates below, so they agree on it.
 const DeliveryClaimLapse = time.Minute
 
 // DeliveryClaimLapseInterval is DeliveryClaimLapse as a Postgres interval literal in whole
 // seconds, for SQL that compares a delivery's claimed_at or created_at against now().
 var DeliveryClaimLapseInterval = fmt.Sprintf("interval '%d seconds'", int64(DeliveryClaimLapse/time.Second))
+
+// MentionSweepWindow is how far back the delivery sweep resumes an owed mention attempt
+// (OwedMentionAttemptSQL): the window in which a repeat of a send is still recognised as a
+// duplicate (contracts.DeliveryDuplicateWindow), so a resend of one that did land is dropped
+// rather than delivered twice. Past it the sweep sends nothing, and the outbox counts the attempt
+// abandoned as soon as no sender holds it (MentionAbandonedSQL) and resumed while one does
+// (MentionResumedSQL): either way it waits on it no longer.
+const MentionSweepWindow = contracts.DeliveryDuplicateWindow
+
+// MentionSweepWindowInterval is MentionSweepWindow as a Postgres interval literal in whole
+// seconds.
+var MentionSweepWindowInterval = fmt.Sprintf("interval '%d seconds'", int64(MentionSweepWindow/time.Second))
+
+// The delivery predicates are SQL over one delivery row. DeliveryClaimFreeSQL names its columns
+// unqualified, so a statement applies it to that table alone or to a subquery over it; the mention
+// predicates take the row's name in the statement - its alias, or the table's own name - because
+// each reads the attempts of the same target beside it. Postgres judges each against the
+// timestamps it wrote itself, so no process's clock moves them: a task whose clock ran ahead would
+// otherwise read every live claim as lapsed, and one that ran behind would never resume an owed
+// attempt.
+//
+// MentionLiveSQL, MentionResumedSQL and MentionAbandonedSQL split the pending attempts of
+// comment_deliveries three ways, each attempt into exactly one; a caller pairs each with
+// state = 'pending'. All three turn on DeliveryClaimLapse, the lease the delivery sweep waits an
+// attempt out for before it sends it (OwedMentionAttemptSQL): resumed on the attempt's own age,
+// abandoned on the age of the claim on it (DeliveryClaimFreeSQL, the same lease the sweep takes
+// an attempt by), and live on neither holding. So the outbox cannot come to a different answer
+// from the sweep about who owes an attempt, and every pending attempt past that lease is resumed
+// or abandoned, with none of them live, whoever holds it and whether or not a later attempt
+// overtook it. A mentioned session's own copy is held back for no longer than that lease; the one
+// copy held past it is a role route's forward that carries no key for an attempt naming no
+// session yet, whose own bound is unnamedForwardBound in internal/dispatch/outbox, two of these
+// leases, past which that copy is a comment_fallback_copies row rather than a wait. Which process
+// acts on an attempt in each state, and what becomes of the mentioned session's copy of the comment
+// meanwhile, is described once, on publishFallbackCopies in internal/dispatch/outbox.
+
+// DeliveryClaimFreeSQL is true of a delivery attempt no sender holds: never claimed, or claimed
+// more than DeliveryClaimLapse ago. The API's claim transactions take a pending attempt that reads
+// so, a comment mention's and a targeted message's alike.
+var DeliveryClaimFreeSQL = `(claimed_at is null or claimed_at < now() - ` + DeliveryClaimLapseInterval + `)`
+
+// DeliveryClaimMineSQL is true of a delivery attempt whose claim is the caller's own: the row was
+// claimed no earlier than the claim param names, and that claim is itself still live. A claim only
+// moves forward and a sender takes one only once the claim on the row has lapsed, so while the
+// caller's own claim is live every claim the row can carry is one the caller wrote itself - the
+// claim it took, and the refreshes it has made since. The mention sender's queued sends read it
+// beside DeliveryClaimFreeSQL (claimCommentDeliveryAttempt): each holds a claim from the moment
+// its attempt was committed, so the attempt its lane finally sends is claimed, and claimed by it.
+func DeliveryClaimMineSQL(param string) string {
+	return `(claimed_at >= ` + param + ` and ` + param + ` > now() - ` + DeliveryClaimLapseInterval + `)`
+}
+
+// mentionLaterAttemptSQL is true of the comment_deliveries row named row when a later attempt of
+// its (comment, target) satisfies condition, which names that attempt's row later.
+func mentionLaterAttemptSQL(row, condition string) string {
+	return `(exists (select 1 from comment_deliveries later
+		where later.comment_id = ` + row + `.comment_id and later.target = ` + row + `.target
+		  and later.attempt > ` + row + `.attempt and ` + condition + `))`
+}
+
+// MentionAttemptStandsSQL is true of the comment_deliveries row named row when no later attempt
+// of its (comment, target) stands in its place: every later attempt failed, or there is none. A
+// retry from the card opens a later attempt beside this one, and a retry recorded failed is an
+// outcome unknown rather than one that delivered nothing: a receipt timeout says the message may
+// already have been delivered (contracts.ReceiptTimeoutCause), and a reply callback can fail an
+// attempt whose frame the session plainly received (replyComment in internal/dispatch/api). The
+// mention is this attempt's to send again all the same - the sweep owes it
+// (OwedMentionAttemptSQL), a sender bound to it sends it, and the outbox waits on it as the
+// mention's (MentionAttemptIsTheMentionsSQL) - because every attempt of one mention sends under
+// the mention's one idempotency key (CommentMentionIdempotencyKey), whatever mode the attempt
+// itself went in: should that failed later attempt have landed, this send repeats its key and
+// the recipient's host drops it. Only a later attempt that delivered the comment takes the send
+// over for good (MentionAttemptDeliveredLaterSQL); while a later attempt is still pending
+// neither is settled, and the attempt it overtook is left pending for whichever of the two
+// outcomes follows (claimCommentDeliveryAttempt in internal/dispatch/api).
+func MentionAttemptStandsSQL(row string) string {
+	return `(not ` + mentionLaterAttemptSQL(row, `later.state <> 'failed'`) + `)`
+}
+
+// MentionAttemptDeliveredLaterSQL is true of the comment_deliveries row named row when a later
+// attempt of its (comment, target) was sent: that attempt handed the recipient the comment, so
+// this one is superseded and nothing may send it. Whichever of the two senders comes second
+// settles it (supersedeCommentDelivery in internal/dispatch/api), and the delivery sweep settles
+// every such attempt left pending and claim-free (settleSupersededMentions), so none stays
+// pending for good.
+func MentionAttemptDeliveredLaterSQL(row string) string {
+	return mentionLaterAttemptSQL(row, `later.state = 'sent'`)
+}
+
+// MentionAttemptIsTheMentionsSQL is true of a pending attempt the delivery sweep owes, or will owe
+// once its first minute passes: one no later attempt stands in the place of
+// (MentionAttemptStandsSQL), created within MentionSweepWindow. Its send is the mention's, live or
+// resumed, so the outbox holds the mentioned session's copy back from the comment's own event and
+// keeps it as a comment_fallback_copies row instead.
+func MentionAttemptIsTheMentionsSQL(row string) string {
+	return `(` + MentionAttemptStandsSQL(row) + ` and ` + row + `.created_at > now() - ` + MentionSweepWindowInterval + `)`
+}
+
+// deliveryClaimFreeSQL is DeliveryClaimFreeSQL over the row named row, for a predicate that reads
+// the attempts of the same target beside it and so must qualify its columns.
+func deliveryClaimFreeSQL(row string) string {
+	return `(` + row + `.claimed_at is null or ` + row + `.claimed_at < now() - ` + DeliveryClaimLapseInterval + `)`
+}
+
+// mentionAttemptPastClaimLapseSQL is true of a pending attempt that is the mention's
+// (MentionAttemptIsTheMentionsSQL) and was created more than DeliveryClaimLapse ago: the lease an
+// attempt is left to the process that opened it for. Past it the attempt is the delivery sweep's
+// as soon as no sender holds it (OwedMentionAttemptSQL).
+func mentionAttemptPastClaimLapseSQL(row string) string {
+	return `(` + MentionAttemptIsTheMentionsSQL(row) +
+		` and ` + row + `.created_at < now() - ` + DeliveryClaimLapseInterval + `)`
+}
+
+// OwedMentionAttemptSQL is true of a pending attempt the delivery sweep sends now: the mention's,
+// created at least DeliveryClaimLapse ago (mentionAttemptPastClaimLapseSQL), and held by no
+// sender, so an attempt its own process opened is left to that process for its first minute. The
+// sweep reads it, and the outbox counts it resumed beside every other pending attempt past that
+// same lease that is not abandoned, which it cannot tell from it (MentionResumedSQL).
+func OwedMentionAttemptSQL(row string) string {
+	return `(` + mentionAttemptPastClaimLapseSQL(row) + ` and ` + deliveryClaimFreeSQL(row) + `)`
+}
+
+// MentionResumedSQL is true of a pending mention attempt the outbox waits for no longer: it was
+// created more than DeliveryClaimLapse ago - the lease an attempt is left to the process that
+// opened it for - and is not abandoned (MentionAbandonedSQL). That is one of three sends the
+// outbox cannot tell apart: the mention's own, held by no sender, which the delivery sweep sends
+// next pass (OwedMentionAttemptSQL) under the mention's one idempotency key, which the listener
+// drops as a repeat when an earlier send landed; one a sender holds still, a send queued behind a
+// lane held longer than a lease, whose claim its process writes again every mentionClaimRefresh;
+// and one a later attempt overtook while its sender held it, which that sender sends when its
+// lane reaches it - a later attempt that failed may have landed, and this send repeats its key if
+// it did, so this one stands (MentionAttemptStandsSQL) - or settles superseded, once a later
+// attempt has been sent. The outbox waits for none of them, whoever holds the attempt and whether
+// or not a retry overtook it: it holds that session's copy as a comment_fallback_copies row, which
+// the fallback pass publishes should the send fail and settles with nothing sent once it lands.
+func MentionResumedSQL(row string) string {
+	return `(` + row + `.created_at < now() - ` + DeliveryClaimLapseInterval +
+		` and not ` + MentionAbandonedSQL(row) + `)`
+}
+
+// MentionAbandonedSQL is true of a pending mention attempt no send is coming for while it reads
+// so, and that no sender holds: created more than MentionSweepWindow ago, or overtaken by a later
+// attempt of the same target that did not fail (MentionAttemptStandsSQL), and claimed by nobody
+// within DeliveryClaimLapse. The delivery sweep sends no such attempt; it settles the overtaken
+// ones superseded once that later attempt has been sent (MentionAttemptDeliveredLaterSQL,
+// settleSupersededMentions in internal/dispatch/api), and leaves the ones past the window. The
+// outbox settles such an attempt failed before it publishes the copy in the mention's place; a
+// claim that commits first leaves the attempt live until that claim lapses, so the sender and the
+// outbox never both act on it.
+//
+// Reading abandoned is not final. The attempt a lane stood down from while a Retry of its mention
+// was in flight (claimCommentDeliveryAttempt in internal/dispatch/api) is claim-free and
+// overtaken, so it reads abandoned for as long as that Retry stays pending; once the Retry fails
+// the attempt stands again and is the sweep's to send (OwedMentionAttemptSQL). Whichever comes
+// first decides it: an outbox pass that settles it failed takes it from the sweep, and a sweep
+// that sends it leaves the outbox nothing to settle.
+func MentionAbandonedSQL(row string) string {
+	return `(not ` + MentionAttemptIsTheMentionsSQL(row) + ` and ` + deliveryClaimFreeSQL(row) + `)`
+}
+
+// MentionLiveSQL is true of a pending mention attempt whose send is live and the outbox still
+// waits on: neither past the lease a send is waited out for (MentionResumedSQL) nor abandoned
+// (MentionAbandonedSQL), which is to say created within DeliveryClaimLapse and claimed, or
+// unclaimed and the mention's still. That is the mention's own attempt in the DeliveryClaimLapse
+// after its comment committed - claimed, which the mention sender does when the attempt is
+// committed and keeps doing while the send waits on its recipient's lane, or unclaimed, the shape
+// of an attempt whose send the sender refused - and, within that same lease, an attempt a later
+// one overtook while a sender holds it. The outbox holds a mentioned session's copy back while
+// its attempt is live, so that wait is bounded by the lease, whoever holds the attempt.
+func MentionLiveSQL(row string) string {
+	return `(not ` + MentionResumedSQL(row) + ` and not ` + MentionAbandonedSQL(row) + `)`
+}
+
+// MentionSession is the one session a mention attempt counts under, ok false when it counts under
+// none: sessionID, the session the mention is pinned to ("" when it is pinned to none), or else
+// the <id> of a session:<id> target - an unpinned mention whose lookup went unanswered, or one
+// that failed before its sender resolved it - the one session that target can reach. An unpinned
+// role:X counts under no session: only the listener knows its holder. MentionSessionSQL is the
+// same rule over a comment_deliveries row.
+func MentionSession(sessionID, target string) (string, bool) {
+	if sessionID != "" {
+		return sessionID, true
+	}
+	if id, ok := strings.CutPrefix(target, "session:"); ok && id != "" {
+		return id, true
+	}
+	return "", false
+}
+
+// MentionSessionSQL is MentionSession over the comment_deliveries row named row - its alias, or
+// the table's own name, as the mention predicates above take it - null when the attempt counts
+// under no session (substr drops the 8 bytes of "session:").
+func MentionSessionSQL(row string) string {
+	return `coalesce(` + row + `.session_id, case when ` + row + `.target like 'session:%' then substr(` + row + `.target, 9) end)`
+}
 
 // CommentDelivery records one attempt to deliver a mention to its resolved session.
 type CommentDelivery struct {
@@ -2080,13 +2519,28 @@ type CommentEventPayload struct {
 	// ask or is a root comment.
 	ThreadRootID string `json:"thread_root_id,omitempty"`
 	// SuppressRoute is resolved before the comment event commits, so the outbox can deduplicate
-	// without consulting the live session registry. It names a candidate only: the session the
-	// route resolved to when the comment was written, which the comment's mentions also resolved
-	// to. The mention's send runs after the commit and can fail, so the outbox skips the route's
-	// copy only once comment_deliveries shows the mention was sent to that session, holds the copy
-	// back while the send is still pending, and publishes it when the send failed or was
-	// abandoned. SuppressedRoute is the route that resolved to SuppressedRouteSessionID. The
-	// outbox's session routes read the comment's own mentions for the same rule.
+	// without consulting the live session registry. It names a candidate only: a session the
+	// comment's mentions deliver it to as far as its creation knows - the session the mention's
+	// lookup pinned, or the <id> of a session:<id> mention whose lookup went unanswered within its
+	// bound (that mention itself stays unpinned; MentionSession). The outbox's other session routes
+	// (an author, the thread's sessions, the primary document's, the claimant, a follower) read the
+	// comment's own mentions as their candidates the same way. The mention's send runs after the
+	// commit and can fail, so the outbox decides each candidate's copy when it publishes by what
+	// that mention's attempts came to - the copy skipped once it was sent, held back while it is
+	// live, published, under the failed send's dedupe key, once it failed or was abandoned, and
+	// held for the fallback pass while the delivery sweep resends it - as publishFallbackCopies in
+	// internal/dispatch/outbox describes; this payload is never touched again.
+	// SuppressRoute marks the issue route's copy as left to a mention: either the route names a
+	// candidate, because its lookup pinned it or because its own lookup went unanswered and it is
+	// session:<id> (SuppressedRoute is the route string, SuppressedRouteSessionID that candidate),
+	// or the route string equals a mention's target whose lookup went unanswered (SuppressedRoute
+	// alone, no session known), and the outbox then applies the rule to the mention of that
+	// target, while the route is still that string.
+	// The route copy still duplicates the mention for an unanswered role:X mention whose holder
+	// the route names under another string, and for a role:X route whose own lookup went
+	// unanswered while a mention of another string reaches its holder; that session then receives
+	// two copies. Every other session route duplicates an unanswered role:X mention whose holder it
+	// reaches the same way: only the listener knows that holder.
 	SuppressRoute            bool    `json:"suppress_route"`
 	SuppressedRoute          string  `json:"suppressed_route,omitempty"`
 	SuppressedRouteSessionID *string `json:"suppressed_route_session_id,omitempty"`
@@ -2509,7 +2963,10 @@ type EditPreconditionMismatch struct {
 
 // EditOp is one agent document editing operation.
 type EditOp struct {
-	Op         string          `json:"op"`
+	// Op is required: an operation naming no op is refused (400 INVALID_OP, the default arm of
+	// the switch docs.applyOperation ends on), as every request body's field the OpenAPI
+	// emitter requires is (api/openapi.go).
+	Op         string          `json:"op" required:"true"`
 	Find       string          `json:"find,omitempty"`
 	With       string          `json:"with,omitempty"`
 	Occurrence *int            `json:"occurrence,omitempty"`
@@ -2545,6 +3002,18 @@ var IssueStatuses = []string{
 	"retro",
 	"done",
 }
+
+// IssueStatusesOutOfWorkflow is every status of that lifecycle a Legion deployment runs nothing
+// in: an issue holding one is parked, closed, or not yet decided on, and the deployment's
+// workflow neither starts a phase for it nor refuses a READY on its behalf. Only `todo`, which
+// admits, and the four the workflow itself writes are left out.
+//
+// The daemon holds its own copy of this rule (packages/daemon/internal/record/project.go,
+// OutOfWorkflow): the two are separate values in separate Go modules that have to be changed
+// together, not one shared list, as the `legion` label already is (api/issue_parent.go). It is
+// named here because a write's advice reads it, to say whether a design gate recorded on an
+// issue holds any READY back (api.supersededApprovalGates).
+var IssueStatusesOutOfWorkflow = []string{IssueStatusTriage, "icebox", "backlog", "done"}
 
 var issueStatusSet = func() map[string]struct{} {
 	statuses := make(map[string]struct{}, len(IssueStatuses))

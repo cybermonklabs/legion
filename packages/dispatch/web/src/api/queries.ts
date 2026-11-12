@@ -18,7 +18,7 @@ import type {
   DeliveryLiveView,
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
-  DeliveryTimelineResponse,
+  DeliveryTimelineWithMeasures,
   InboxRow,
   IssueDetails,
   MyRepliesResponse,
@@ -140,9 +140,12 @@ export const artifactBlocksQuery = (id: string) =>
     queryFn: () => api.getArtifactBlocks(id),
   });
 
-/** The viewer's per-agent conversation state: each session's Clear, read mark, and count of
- *  unread replies to the viewer's direct messages. The navigation, the Agents page, and the
- *  live view all read this one key. */
+/** The viewer's per-agent conversation state: each session's Clear, read mark, count of unread
+ *  replies to the viewer's direct messages, and `pinned_at` where the viewer pinned it
+ *  (`features/agents/pins.ts`). The navigation, the Agents page, and the live view all read this
+ *  one key, and `user_agent_state.updated` refreshes it, so a pin or a read mark another browser
+ *  of the same person made shows here without a reload. A session the viewer has only pinned is
+ *  in the answer too. */
 export const userAgentStateQuery = () =>
   queryOptions({
     queryKey: ["user-agent-state"],
@@ -229,6 +232,15 @@ export const projectsQuery = () =>
     queryFn: () => api.listProjects(),
   });
 
+/** The two settings the bar reads before it offers a person's typed words as a new issue: the
+ *  label that issue carries and the session it is routed to. One read for the session: the
+ *  deployment changes it only by restarting. */
+export const newIssueSettingsQuery = () =>
+  queryOptions({
+    queryKey: ["new-issue-settings"],
+    queryFn: () => api.getNewIssueSettings(),
+  });
+
 /** Everyone who has signed in (`GET /api/v1/users`), sorted by email and kept for the session:
  *  the issue header's assignee picker and the Inbox's assignee filter choose from this one list.
  *  Each call site keeps its own `enabled` - the list is read only once a reader reaches for a
@@ -277,12 +289,16 @@ export const boardMoveMutationKey = (project: string): readonly unknown[] => [
  * unanswered waits for the answer: until then the server may not have applied the move, and its
  * list would put the card back where it came from.
  */
-export const projectIssuesQuery = (project: string, labels: readonly string[]) =>
+export const projectIssuesQuery = (project: string, labels: readonly string[], open = false) =>
   queryOptions({
-    queryKey: projectIssuesQueryKey(project, labels),
+    queryKey: [...projectIssuesQueryKey(project, labels), ...(open ? ["open"] : [])],
     queryFn: async (context) => {
       await boardMovesSettled(context, project);
-      return api.listIssues(labels.length === 0 ? { project } : { labels, project });
+      return api.listIssues({
+        project,
+        ...(labels.length ? { label: [...labels] } : {}),
+        ...(open ? { open: true } : {}),
+      });
     },
   });
 
@@ -331,7 +347,7 @@ const LIVE = {
 
 /** The body each delivery view's kind is answered with: the GET route's it mirrors. */
 interface DeliveryLiveBodies {
-  readonly timeline: DeliveryTimelineResponse;
+  readonly timeline: DeliveryTimelineWithMeasures;
   readonly measures: DeliveryMeasuresResponse;
   readonly pipeline: DeliveryPipelineResponse;
 }

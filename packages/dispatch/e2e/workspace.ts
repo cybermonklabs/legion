@@ -24,9 +24,9 @@ import { sessionIds } from "./session-ids";
 // folds), a direct message, a broadcast and an issue's Conversation. `e2e/workspace.e2e.ts`
 // proves each surface renders non-empty.
 
-// Four sessions carry no `last_seen`, which the fake Envoy answers as "live now" on every read, so
-// they never age into Inactive however long an instance runs. The Archivist is the one that must:
-// twenty minutes stale already, it only grows staler after this module is evaluated.
+// Four sessions carry no `last_seen`, which the fake Envoy answers as "live now" on every read,
+// so they never fall under `Quiet` however long an instance runs. The Archivist is the one that
+// must: twenty minutes stale already, it only grows staler after this module is evaluated.
 export const workspaceSessions: FakeSession[] = [
   {
     capabilities: ["aside", "btw", "steer"],
@@ -60,8 +60,8 @@ export const workspaceSessions: FakeSession[] = [
     session_id: sessionIds.observer,
     title: "Observer",
   },
-  // Twenty minutes stale: the Agents page folds it under Inactive (`AgentsPage.tsx`'s
-  // `INACTIVE_AFTER_MS`, ten minutes).
+  // Twenty minutes stale: the Agents page lists it under `Quiet` (`agent-groups.ts`'s
+  // `QUIET_AFTER_MS`, ten minutes).
   {
     capabilities: ["aside", "btw"],
     dir: "/workspaces/archivist",
@@ -103,7 +103,7 @@ export interface SeededWorkspace {
 async function waitForSpecAsk(issueKey: string): Promise<void> {
   const deadline = Date.now() + 15_000;
   for (;;) {
-    if ((await getIssue(issueKey)).open_asks.some((ask) => ask.block_id)) return;
+    if (((await getIssue(issueKey)).open_asks ?? []).some((ask) => ask.block_id)) return;
     if (Date.now() > deadline) {
       throw new Error(`seedWorkspace: ${issueKey}'s spec decision was not indexed within 15 s`);
     }
@@ -274,10 +274,10 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
     },
     alice
   );
-  if (broadcast.excluded.length > 0) {
+  if ((broadcast.excluded ?? []).length > 0) {
     throw new Error(`seedWorkspace: the broadcast excluded ${JSON.stringify(broadcast.excluded)}`);
   }
-  const plannerCopy = broadcast.recipients.find(
+  const plannerCopy = (broadcast.recipients ?? []).find(
     (recipient) => recipient.session_id === sessionIds.planner
   );
   if (plannerCopy === undefined) throw new Error("seedWorkspace: the planner received no copy");
@@ -298,7 +298,7 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
     },
     broadcast: {
       id: broadcast.id,
-      sessionIds: broadcast.recipients.map((recipient) => recipient.session_id),
+      sessionIds: (broadcast.recipients ?? []).map((recipient) => recipient.session_id),
     },
     directMessage: directMessage.id,
     // blocking, snoozed, rotate, the spec's decision block, and the document ask.

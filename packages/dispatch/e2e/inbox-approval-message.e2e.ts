@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import {
   answerAsk,
   createIssue,
@@ -8,10 +6,11 @@ import {
   editArtifact,
   getArtifact,
   requestApproval,
+  withOpenedAsk,
 } from "./api";
 import { holdFirstRequest } from "./editor";
 import { inboxPane, paneScroller, selectedRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -116,7 +115,7 @@ async function seedApproval(summary: string): Promise<Seed> {
   await createProject({ key: PROJECT, name: "Mirror rollout" });
   const issue = await createIssue({ project: PROJECT, spec: SPEC, title: "Mirror rollout" });
   const artifactId = issue.primary_artifact_id;
-  const opened = await requestApproval(artifactId, { summary }, session);
+  const opened = withOpenedAsk(await requestApproval(artifactId, { summary }, session));
   expect(opened.version).toBe(1);
   const spec = await getArtifact(artifactId);
   expect(opened.ask.question).toBe(`Approve ${spec.name} (version 1)? ${summary}`);
@@ -140,7 +139,9 @@ async function seedTwoDocuments(): Promise<Seed> {
 
   // An approval of version 1 is what the request below is marked against, so the document the
   // column draws beside the question carries the marks of what changed since.
-  const first = await requestApproval(artifactId, { summary: "The first draft." }, session);
+  const first = withOpenedAsk(
+    await requestApproval(artifactId, { summary: "The first draft." }, session)
+  );
   await answerAsk(
     first.ask.id,
     { expected_edited_at: null, selected: ["Approve"] },
@@ -159,10 +160,12 @@ async function seedTwoDocuments(): Promise<Seed> {
     content: VERIFICATION,
     name: "verification.md",
   });
-  const opened = await requestApproval(
-    artifactId,
-    { include_verification: true, summary: TWO_DOCUMENT_SUMMARY },
-    session
+  const opened = withOpenedAsk(
+    await requestApproval(
+      artifactId,
+      { include_verification: true, summary: TWO_DOCUMENT_SUMMARY },
+      session
+    )
   );
   expect(opened.version).toBe(2);
   const spec = await getArtifact(artifactId);
@@ -179,11 +182,8 @@ async function seedTwoDocuments(): Promise<Seed> {
   };
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("the reading pane draws the request's whole question as markdown above the document", async ({
+// @pr: An approval: the reading pane has to draw the request's whole question above the document it asks about.
+test("the reading pane draws the request's whole question as markdown above the document @pr", async ({
   browser,
 }) => {
   const seed = await seedApproval(RICH_SUMMARY);

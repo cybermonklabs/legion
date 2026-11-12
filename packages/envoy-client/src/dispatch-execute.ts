@@ -10,7 +10,12 @@ import type {
   Ask,
   AskRead,
   AskUrgency,
+  BasisLearnedAt,
   BlockPath,
+  CheckBasis,
+  CheckBlock,
+  CheckPassStands,
+  CheckResult,
   ClaimedIssue,
   ClaimHolderLiveness,
   Comment,
@@ -18,11 +23,12 @@ import type {
   CreateArtifactInput,
   CreateAskInput,
   CreateCommentInput,
+  DispatchEvent,
+  DocumentWriteAdvice,
   DuplicateCandidate,
   EditAskInput,
   EditOp,
   EditPrecondition,
-  Event,
   GraphEdge,
   GraphNode,
   GraphReferences,
@@ -40,8 +46,8 @@ import type {
   IssuePriority,
   IssueProgress,
   IssueReferences,
-  IssueRouteReach,
   IssueRouteStatus,
+  MessageDeliveryMode,
   MessageRead,
   MyReplyRow,
   OpenAsk,
@@ -52,6 +58,7 @@ import type {
   WriteAdvice,
 } from "@legion/contracts";
 import {
+  ARTIFACT_NAME_EXISTS_RULE,
   ASK_URGENCIES,
   actorActText,
   actorLabel,
@@ -62,10 +69,14 @@ import {
   dispatchToolSchema,
   dispatchToolSpecs,
   encodeBlockId,
+  ISSUE_ROUTE_STATUSES,
+  inboxThreadRow,
   isIdPrefix,
   itemFromSearch,
+  PATH_KEEPS_BYTES,
   PROJECT_KEY_PATTERN,
   PROJECT_KEY_RULE,
+  pathKeepsBytesOf,
   serviceSubjectLabel,
   typedBlockIdAttribute,
   zodSchemaApi,
@@ -73,7 +84,7 @@ import {
 import { canonicalRepo } from "@legion/contracts/repo";
 import { z } from "zod";
 import { actorText } from "./actor-text";
-import { askAnswerText, textHead } from "./ask-answer";
+import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine, commandName } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import {
@@ -135,7 +146,7 @@ import {
 import { ownerSubscribeLine } from "./dispatch-subscribe";
 import { messageFor } from "./errors";
 import { humanEditHead } from "./human-edit";
-import { decisionBlockLines, relatedCheckLines } from "./related-check";
+import { decisionBlockLines, declinedAskLines, relatedCheckLines } from "./related-check";
 import { pageSummaryText, searchAnswer } from "./search-answer";
 import { isNoAnswersRoute, renderSessionAnswersList } from "./session-answers";
 import { formatZodIssues, ToolInputError } from "./tool-input-errors";
@@ -260,10 +271,67 @@ export function adviceMemory(): Set<string> {
   return triageAdviceShown;
 }
 
+/** The call that hands a moved approval request back to the person, built in one place for the
+ *  two lines that print it - a document write's advice and a reply on such a request - so the
+ *  two can never drift. `artifactID` and `primary` describe the request's FIRST document, the
+ *  one whose approval route the call reopens, and `summaryVersion` is the version the request
+ *  asks about, which is what the `--summary` placeholder names as the floor of what changed. */
+function handBackApprovalCommand(request: {
+  owner: { kind: "issue" | "project"; key: string };
+  artifactID: string;
+  primary: boolean;
+  verification: boolean;
+  summaryVersion: number;
+}): string {
+  const owner =
+    request.owner.kind === "project"
+      ? `--project ${request.owner.key} --artifact ${request.artifactID}`
+      : request.primary
+        ? `--issue ${request.owner.key}`
+        : `--issue ${request.owner.key} --artifact ${request.artifactID}`;
+  // `--include-verification` asks for the issue's spec and its Verification document in one
+  // card, and `requestArtifactApproval` (packages/envoy/internal/dispatch/api/reviews.go)
+  // refuses it with 409 NOT_SPEC_DOCUMENT on every other document, a project document included.
+  // So the flag rides only a request whose first document is its issue's primary one.
+  const verification =
+    request.owner.kind === "issue" && request.primary && request.verification
+      ? " --include-verification"
+      : "";
+  return (
+    `dispatch request-approval ${owner}${verification} ` +
+    `--summary '<what changed since version ${request.summaryVersion}>'`
+  );
+}
+
+/** Each document that stands above the version its approval request asks about, in the order the
+ *  request names them: `spec.md asked about version 9 and is now version 10`, joined with `; `
+ *  so the clauses stay one sentence. */
+function movedApprovalClauses(
+  documents: readonly { name: string; requested_version: number; version: number }[]
+): string {
+  return documents
+    .map(
+      (document) =>
+        `${document.name} asked about version ${document.requested_version} and is now version ${document.version}`
+    )
+    .join("; ");
+}
+
+/** The documents of an approval request a version has moved: the ones standing above the version
+ *  the request asks about. It is this side's one spelling of `requested_version < version`, the
+ *  rule the server spells as `docs.ApprovalAwaitsHandBack` and the SQL `approvalMoved`, read by
+ *  the two lines that name a moved request - a document write's advice and a reply on such a
+ *  request - so the two can never drift. */
+function movedApprovalDocuments<Document extends { requested_version: number; version: number }>(
+  documents: readonly Document[]
+): Document[] {
+  return documents.filter((document) => document.requested_version < document.version);
+}
+
 function renderAdvice(
   tool: string,
   key: string,
-  advice: WriteAdvice | undefined,
+  advice: WriteAdvice | DocumentWriteAdvice | undefined,
   opts: {
     isAskReply?: boolean;
     isPrimarySpec?: boolean;
@@ -273,9 +341,14 @@ function renderAdvice(
 ): string[] {
   if (advice === undefined) return [];
 
-  const hasIssueAdvice = advice.issue_status !== undefined;
-  const openAsks = advice.your_open_asks;
-  const writesSinceHuman = advice.session_writes_since_human;
+  // A project document stands under no issue, so its write's advice carries the document half
+  // alone (DocumentWriteAdvice): no status, no writes-since-human count and no open-ask list.
+  // Every line below that reports the issue reads them through `issueAdvice`, which is that
+  // half only when the server sent it.
+  const issueAdvice: WriteAdvice | undefined = "issue_status" in advice ? advice : undefined;
+  const hasIssueAdvice = issueAdvice !== undefined;
+  const openAsks = issueAdvice?.your_open_asks ?? undefined;
+  const writesSinceHuman = issueAdvice?.session_writes_since_human;
   const lines: string[] = [];
   const unparsed = advice.unparsed_openers;
   if (
@@ -283,7 +356,7 @@ function renderAdvice(
     unparsed.count > 0 &&
     (tool === "dispatch_issue" || tool === "dispatch_artifact")
   ) {
-    const quoted = unparsed.examples.map((example) => JSON.stringify(example)).join(", ");
+    const quoted = (unparsed.examples ?? []).map((example) => JSON.stringify(example)).join(", ");
     const subject =
       unparsed.count === 1
         ? "1 typed-block opening in this document is text, not a block"
@@ -307,8 +380,8 @@ function renderAdvice(
   // asks it to do the one thing the daemon undoes. The memo is marked inside the block, so a key
   // whose line was never printed can still be told later if it leaves Legion's hands.
   if (
-    advice.issue_status === "triage" &&
-    advice.legion_managed_status !== true &&
+    issueAdvice?.issue_status === "triage" &&
+    issueAdvice.legion_managed_status !== true &&
     tool !== "dispatch_issue" &&
     !(tool === "dispatch_issue_update" && opts.setsStatus === true) &&
     !triageAdviceShown.has(key)
@@ -338,17 +411,90 @@ function renderAdvice(
     }
   }
 
+  // The version this write stored took an open approval request of the document back from the
+  // person it was asked of: it waits on this agent now and nothing tells that person, so the
+  // write that moved it is where the request and the call that hands it back are named. The
+  // report carries everything the line says, so this reads no ask and makes no request, which is
+  // what keeps `renderAdvice` synchronous. It comes before the superseded-approval block so that
+  // block's line stays the last advice line a document write prints.
+  const movedApproval = advice.moved_approval_request;
+  if (
+    movedApproval !== undefined &&
+    (tool === "dispatch_doc_edit" || tool === "dispatch_artifact")
+  ) {
+    // No line when no document of the report moved, since a document still at the version the
+    // request asks about is one this write left alone. A report holding no document at all
+    // (`documents` is null on a request this client cannot describe) moved none of them either.
+    const documents = movedApproval.documents ?? [];
+    const moved = movedApprovalDocuments(documents);
+    // The owner part of the call comes from the request's own place. A report naming neither an
+    // issue nor a project could name no owner, and an invalid command is worse than no line.
+    const movedOwner =
+      movedApproval.issue !== undefined && movedApproval.issue !== ""
+        ? ({ kind: "issue", key: movedApproval.issue } as const)
+        : movedApproval.project !== undefined && movedApproval.project !== ""
+          ? ({ kind: "project", key: movedApproval.project } as const)
+          : undefined;
+    // The call reopens the request's first document, and the `--summary` floor is the version
+    // the first document that moved was handed over at. `--include-verification` is what asked
+    // for a second document, so it is read from the documents beside the first.
+    const first = documents[0];
+    const firstMoved = moved[0];
+    // Both reads are guarded because the strictest tsconfig of this repository,
+    // packages/claude-envoy's, compiles these sources under `noUncheckedIndexedAccess`, which
+    // types an indexed read as possibly `undefined`. The `undefined` arm cannot be reached:
+    // `moved` is `documents` filtered, so a `moved` that is not empty leaves both arrays holding
+    // a first element. A first element missing all the same is one more reason to print no line.
+    if (
+      moved.length > 0 &&
+      movedOwner !== undefined &&
+      first !== undefined &&
+      firstMoved !== undefined
+    ) {
+      const command = handBackApprovalCommand({
+        owner: movedOwner,
+        artifactID: first.artifact_id,
+        primary: first.primary,
+        verification: documents.slice(1).some((document) => document.role === "verification"),
+        summaryVersion: firstMoved.requested_version,
+      });
+      lines.push(
+        `This write moved the open approval request (ask ${movedApproval.ask_id}): it waits on ` +
+          "an agent now, not on the person, and nothing tells the person. " +
+          `${movedApprovalClauses(moved)}. Once the human has agreed to every point in it, hand ` +
+          `the same request back: ${command}. Not yours to hand back? Tell the issue's architect.`
+      );
+    }
+  }
+
   // The gate line is last for the document tools, for the reason the cadence line is last for
   // the others: behind `| tail -1` it is the only line the agent sees, and it is the one line of
   // a document write that someone else has to act on. It describes this one write - the version
   // it stored, the approval that version replaced and how that approval comes back - rather than a
   // rule about editing a spec, because the server sends it only on the write that superseded the
   // approval.
+  //
+  // The gate clause comes from `design_gates`, the server's record of which issues' design gates
+  // name the document just written: it names those issues, and it is silent for every other
+  // document. Absent (an older Dispatch keeps no such record), empty, and anything that is not a
+  // list of gates all print no clause, which is the safe direction - a reader told nothing asks
+  // the tree's architect, a reader told a gate that is not there stops working for no reason.
   const superseded = advice.superseded_approval;
   if (superseded !== undefined && (tool === "dispatch_doc_edit" || tool === "dispatch_artifact")) {
-    lines.push(
-      `Stored version ${superseded.version}, superseding version ${superseded.approved_version}, which ${superseded.approved_by} approved. That approval is stale until someone approves version ${superseded.version} or a later write stores the text of version ${superseded.approved_version} again exactly, with no decision block in it decided since: a Legion design gate on this document is closed meanwhile, so every READY in its tree is refused. Meant to change the approved design? Request approval with \`dispatch request-approval\`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan.`
+    const gates = Array.isArray(superseded.design_gates) ? superseded.design_gates : [];
+    const parts = [
+      `Stored version ${superseded.version}, superseding version ${superseded.approved_version}, which ${superseded.approved_by} approved. That approval is stale until someone approves version ${superseded.version} or a later write stores the text of version ${superseded.approved_version} again exactly, with no decision block in it decided since.`,
+    ];
+    if (gates.length > 0) {
+      const named = gates.map((gate) => `${gate.issue}, step ${gate.step}`).join("; ");
+      parts.push(
+        `A Legion design gate records this document, so every READY in ${gates.length === 1 ? "its" : "each"} tree is refused until that approval comes back: ${named}.`
+      );
+    }
+    parts.push(
+      "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan."
     );
+    lines.push(parts.join(" "));
   }
 
   // The cadence line comes last and opens by saying the write went through: behind `| tail -1`
@@ -495,6 +641,17 @@ function optionalString(args: Record<string, unknown>, name: string): string | u
   return typeof value === "string" ? value : undefined;
 }
 
+/** A field the server reads as a tri-state: absent leaves it, null clears it, a string sets it.
+ *  `assignee` is one, and `--clear-assignee` is how the command sends its null. */
+function optionalNullableString(
+  args: Record<string, unknown>,
+  name: string
+): string | null | undefined {
+  const value = args[name];
+  if (value === null) return null;
+  return typeof value === "string" ? value : undefined;
+}
+
 function optionalBoolean(args: Record<string, unknown>, name: string): boolean | undefined {
   const value = args[name];
   return typeof value === "boolean" ? value : undefined;
@@ -560,11 +717,13 @@ function optionalComponents(
 function componentsChange(input: IssueComponentsInput, after: IssueComponents): string {
   switch (input.mode) {
     case "explicit":
-      return `components -> explicit [${after.ids.join(", ")}]`;
+      return `components -> explicit [${(after.ids ?? []).join(", ")}]`;
     case "none":
       return `components -> none (${after.reason ?? input.reason ?? ""})`;
     case "inherit":
       return "components -> inherit";
+    default:
+      return `components -> ${input.mode}`;
   }
 }
 
@@ -586,7 +745,7 @@ async function architectureGuidance(
   project: string,
   components: IssueComponents
 ): Promise<string | undefined> {
-  if (components.mode === "none" || components.ids.length > 0) return undefined;
+  if (components.mode === "none" || (components.ids ?? []).length > 0) return undefined;
 
   try {
     if ((await client.listArchitectureSources(project)).length === 0) return undefined;
@@ -735,6 +894,13 @@ function article(kind: string): string {
   return kind === "ask" ? "an ask" : `a ${kind}`;
 }
 
+/** How a posted message points the agent at the conversation it was written into. The two
+ *  writes that post one - a reply on an issue, a message to a session - say the same sentence,
+ *  and say it of their own message. */
+function conversationReadBack(messageId: string): string {
+  return `${commandLine("dispatch_read", { message: messageId })} reads the conversation back.`;
+}
+
 /**
  * Why `value`, given to `field` of a `kind` reply, names no block that reply can answer: a block
  * of another kind of item (a document's included), or one pinned to a revision, since a reply
@@ -833,15 +999,27 @@ async function refuseItemOffRef(
 }
 
 /**
+ * How a caller words a prefix `resolveIdPrefix` resolved to none, or to more than one. `refusal`
+ * is handed what the prefix matched and every candidate it was matched against, and answers the
+ * whole refusal. A caller that gives it also raises that refusal as a problem no flag carries
+ * (ToolInputError), since what the reader must fix is the id and not which flags the command
+ * takes.
+ */
+interface PrefixCandidates<Item> {
+  readonly refusal: (matched: readonly Item[], candidates: readonly Item[]) => string;
+}
+
+/**
  * The full id an ask or comment reference names. A full uuid passes through; a unique prefix
  * is resolved against `list()`, the candidate set `ownerName` names; anything else is refused.
  */
-async function resolveIdPrefix(
+async function resolveIdPrefix<Item extends { readonly id: string }>(
   tool: string,
   kind: "ask" | "comment",
   id: string,
   ownerName: string,
-  list: () => Promise<readonly { readonly id: string }[]>
+  list: () => Promise<readonly Item[]>,
+  candidates?: PrefixCandidates<Item>
 ): Promise<string> {
   const fullID = normalizeUUID(id);
   if (fullID !== undefined) return fullID;
@@ -851,8 +1029,12 @@ async function resolveIdPrefix(
     ]);
   }
   const prefix = id.toLowerCase();
-  const matches = (await list()).filter((item) => item.id.toLowerCase().startsWith(prefix));
+  const all = await list();
+  const matches = all.filter((item) => item.id.toLowerCase().startsWith(prefix));
   if (matches.length === 1 && matches[0] !== undefined) return matches[0].id;
+  if (candidates !== undefined) {
+    throw new ToolInputError(tool, [candidates.refusal(matches, all)], { aboutAFlag: false });
+  }
   throw new ToolInputError(tool, [
     matches.length === 0
       ? `${kind} id ${id} matches none of the ${kind}s on ${ownerName}; use the full id`
@@ -916,7 +1098,7 @@ async function sessionOpenAsks(
 ): Promise<readonly Pick<OpenAsk, "id" | "question">[]> {
   const session = sessionId?.trim();
   if (!session) throw new Error("host session id is required to read this session's open asks");
-  return (await client.openAsks(session)).asks;
+  return (await client.openAsks(session)).asks ?? [];
 }
 
 /** The asks a refused ask id can be corrected to, in the server's own hint shape. */
@@ -1638,6 +1820,12 @@ async function resolveOwnerArguments(
   if (tool === "dispatch_read" && typeof args.message === "string") {
     return { args, ref, owner: null };
   }
+  // A retraction names one stored result by its id, and the server reads that result's issue for
+  // itself. LEGION_ISSUE must not fill an issue in here: issue is a record's argument, and a
+  // retraction that carried one would be refused as a record mixed with a retraction.
+  if (tool === "dispatch_result" && typeof args["retract"] === "string") {
+    return { args, ref, owner: null };
+  }
   const legionIssue = env.LEGION_ISSUE;
   if (!legionIssue) {
     problems.push(ownerRequiredProblem);
@@ -1731,14 +1919,15 @@ async function resolveArtifact(
     };
   }
   const issue = await client.getIssue(owner.issue);
+  const issueArtifacts = issue.artifacts ?? [];
   let artifact: Artifact | undefined;
   if (artifactReference === undefined || artifactReference === "spec") {
-    artifact = issue.artifacts.find(
+    artifact = issueArtifacts.find(
       (candidate) => candidate.primary || candidate.id === issue.primary_artifact_id
     );
   } else {
     artifact = artifactByReference(
-      issue.artifacts,
+      issueArtifacts,
       artifactReference,
       { kind: "issue", issue: issue.key },
       canonical
@@ -1746,7 +1935,7 @@ async function resolveArtifact(
   }
   if (!artifact) {
     throw new DocumentNotFoundError(
-      documentReferenceProblem(artifactReference ?? "spec", issue.artifacts, {
+      documentReferenceProblem(artifactReference ?? "spec", issueArtifacts, {
         kind: "issue",
         issue: issue.key,
       })
@@ -1932,11 +2121,19 @@ function boundedEditDistance(a: readonly string[], b: readonly string[], limit: 
 
 const askHintLimit = 8;
 
-function askIDInputProblem(asks: readonly Pick<Ask, "id" | "question">[], scope: string): string {
+/** The open asks a refused `reply_to_ask` lists, each by the 8 characters that name it — a
+ *  prefix this flag resolves — and the head of its question, at most askHintLimit of them. */
+function openAskChoices(asks: readonly Pick<Ask, "id" | "question">[], owner: string): string {
+  if (asks.length === 0) return `${owner} holds no open ask.`;
   const hints = asks
     .slice(0, askHintLimit)
     .map((ask) => `${ask.id.slice(0, 8)}… ${textHead(ask.question)}`);
-  return `ask IDs are UUIDs; use the full ask ID; ${scope} open asks: ${hints.length === 0 ? "none" : hints.join(", ")}`;
+  return `The open asks of ${owner} are: ${hints.join(", ")}.`;
+}
+
+/** The refusal of a `reply_to_ask` value that is neither a whole ask id nor a prefix of one. */
+function askIDInputProblem(asks: readonly Pick<Ask, "id" | "question">[], owner: string): string {
+  return `ask ids are uuids. Write the whole id, or at least its first 8 characters. ${openAskChoices(asks, owner)}`;
 }
 
 /** The line a reply on an approval request a newer version moved prints: no reply hands such a
@@ -1949,36 +2146,98 @@ async function movedApprovalLine(
   const ask = (await client.getAsk(askID).catch(() => undefined))?.ask;
   const approval = ask?.approval;
   if (ask?.kind !== "approval" || approval === undefined) return undefined;
-  if (approval.requested_version >= approval.version) return undefined;
-  const owner =
-    ask.issue_key === null
-      ? `--project ${ask.approval_artifact?.project ?? "<project>"} --artifact ${approval.artifact_id}`
-      : ask.approval_artifact?.primary === true
-        ? `--issue ${ask.issue_key}`
-        : `--issue ${ask.issue_key} --artifact ${approval.artifact_id}`;
+  // Every document the request names is read, not its lead pair alone: a request over a spec and
+  // its issue's Verification document moves when either of the two does, and a write of the
+  // Verification document moves the second one while the lead pair stands still. A Dispatch older
+  // than this client sends no list at all, and for it the lead pair is the whole request.
+  const listed = approval.documents ?? [];
+  const documents =
+    listed.length > 0
+      ? listed
+      : [
+          {
+            name: approval.name,
+            requested_version: approval.requested_version,
+            version: approval.version,
+          },
+        ];
+  const moved = movedApprovalDocuments(documents);
+  if (moved.length === 0) return undefined;
+  // The first document that moved carries the `--summary` floor. The read is guarded because the
+  // strictest tsconfig of this repository, packages/claude-envoy's, compiles these sources under
+  // `noUncheckedIndexedAccess`, which types an indexed read as possibly `undefined`. The
+  // `undefined` arm cannot be reached: `moved` is `documents` filtered and is not empty here, so
+  // it holds a first element. A first element missing all the same is one more reason to answer
+  // `undefined`.
+  const firstMoved = moved[0];
+  if (firstMoved === undefined) return undefined;
+  const command = handBackApprovalCommand({
+    owner:
+      ask.issue_key === null
+        ? { kind: "project", key: ask.approval_artifact?.project ?? "<project>" }
+        : { kind: "issue", key: ask.issue_key },
+    artifactID: approval.artifact_id,
+    primary: ask.approval_artifact?.primary === true,
+    // An ask carries no role for the documents of its request, so the flag is read from the
+    // request's own shape: the only request that names two documents is an issue's spec with
+    // that issue's Verification document, because `requestArtifactApproval`
+    // (packages/envoy/internal/dispatch/api/reviews.go) appends a second document only under
+    // `include_verification`, which it refuses on any document that is not the issue's spec.
+    verification: documents.length > 1 && ask.approval_artifact?.primary === true,
+    summaryVersion: firstMoved.requested_version,
+  });
   return (
-    `The reply did not hand the ask to the human: it is the approval request for ${approval.name} ` +
-    `at version ${approval.requested_version}, and ${approval.name} is now version ${approval.version}. ` +
-    "No reply hands a moved approval request back. Once the human has agreed to every point in " +
-    `version ${approval.version}, run: dispatch request-approval ${owner} --summary ` +
-    `'<what changed since version ${approval.requested_version}>'`
+    "The reply did not hand the ask to the human: it is an open approval request, and " +
+    `${movedApprovalClauses(moved)}. No reply hands a moved approval request back. Once the ` +
+    `human has agreed to every point in it, run: ${command}`
   );
 }
 
-async function invalidReplyToAskProblem(
+/** The open asks a `reply_to_ask` may name, and the words a refusal calls their owner by: the
+ *  issue's own open asks, or those of the project document the comment is written on. */
+async function replyToAskCandidates(
   client: DispatchClient,
   owner: Owner,
   resolved: ResolvedArtifact | undefined
-): Promise<string> {
+): Promise<{ readonly asks: readonly Pick<Ask, "id" | "question">[]; readonly owner: string }> {
   if (owner.kind === "issue") {
     const issue = resolved?.issue ?? (await client.getIssue(owner.issue));
-    return askIDInputProblem(issue.open_asks, "this issue's");
+    return { asks: issue.open_asks ?? [], owner: "this issue" };
   }
   if (resolved === undefined) throw new Error("project document is missing its resolved artifact");
-  return askIDInputProblem(
-    await client.getArtifactAsks(resolved.artifact.id, "open"),
-    "this document's"
-  );
+  return {
+    asks: await client.getArtifactAsks(resolved.artifact.id, "open"),
+    owner: "this document",
+  };
+}
+
+/**
+ * The whole ask id `reply_to_ask` names: a whole uuid passes through, and a prefix of at least 8
+ * hex characters is resolved against the owner's open asks by the resolver `dispatch read` uses
+ * (resolveIdPrefix). A value that is neither, one that names no open ask, and one that names
+ * more than one are each refused here, and each refusal lists those asks so the next call
+ * carries an id that resolves. None of them prints the command's flags: the id is what the
+ * reader must fix.
+ */
+async function resolveReplyToAsk(
+  tool: string,
+  client: DispatchClient,
+  target: Owner,
+  resolved: ResolvedArtifact | undefined,
+  id: string
+): Promise<string> {
+  const whole = normalizeUUID(id);
+  if (whole !== undefined) return whole;
+  const { asks, owner } = await replyToAskCandidates(client, target, resolved);
+  if (!isIdPrefix(id)) {
+    throw new ToolInputError(tool, [askIDInputProblem(asks, owner)], { aboutAFlag: false });
+  }
+  return resolveIdPrefix(tool, "ask", id, owner, async () => asks, {
+    refusal: (found, all) =>
+      found.length === 0
+        ? `reply_to_ask ${id} names no open ask of ${owner}. ${openAskChoices(all, owner)}`
+        : `reply_to_ask ${id} names ${found.length} open asks of ${owner}. Write more of the id. ${openAskChoices(all, owner)}`,
+  });
 }
 
 function anchor(
@@ -2024,22 +2283,183 @@ function approvalLine(artifact: Pick<Artifact, "approval">): string | undefined 
       return `Approval: approved v${approval.version} by ${approval.by?.id ?? "unknown"}, changed since (now v${approval.latest_version}) - the human's own answer to a decision block carries the approval when that answer is the whole change since v${approval.version}; for any other change, request approval again once the human has agreed to every point in this version, with a --summary naming what changed since v${approval.version}${content}`;
     case "changes_requested":
       return `Approval: changes requested on v${approval.version} by ${approval.by?.id ?? "unknown"}: ${approval.reason ?? ""}${content}`;
+    default:
+      // The wire type is an open string: a state this build does not know names itself.
+      return `Approval: ${approval.state} on v${approval.version}${content}`;
   }
+}
+
+/** The document an upload under `name` would write the next version of: the owner's artifact
+ *  whose slug or filename that name is, as the upload itself resolves one (`$2 in (name, slug)`,
+ *  the slug first). Undefined where the owner holds no such document. */
+function artifactUnderName(artifacts: readonly Artifact[], name: string): Artifact | undefined {
+  const written = name.trim();
+  return (
+    artifacts.find((held) => held.slug === written) ??
+    artifacts.find((held) => held.name === written)
+  );
+}
+
+/** The refusal of an upload under a name its owner already holds: the document found, its kind,
+ *  its newest version and who wrote that version, then the rule that names --force. */
+function artifactNameExistsProblem(held: Artifact, owner: string): string {
+  const versions = held.versions ?? [];
+  const newest = versions[versions.length - 1];
+  if (newest === undefined) {
+    return `${owner} already holds ${held.name} (slug ${held.slug}, kind ${held.kind}), which has no version yet and which ${actorText(held.created_by)} created. ${ARTIFACT_NAME_EXISTS_RULE}`;
+  }
+  const authors = (newest.authors ?? []).map(actorText);
+  const wroteIt = authors.length === 0 ? actorText(held.created_by) : authors.join(" and ");
+  return `${owner} already holds ${held.name} (slug ${held.slug}, kind ${held.kind}) at version ${newest.number}, which ${wroteIt} wrote. ${ARTIFACT_NAME_EXISTS_RULE}`;
+}
+
+/**
+ * How much of one line a refusal quotes whole. A line of a document is bounded by the document
+ * itself, so one differing line can be as long as the whole text, and a quote nobody can read
+ * to the end is one nobody acts on — the same reason STORED_TEXT_PRINTED bounds the stored
+ * text below, and the cut is named the same way.
+ */
+const STORED_LINE_QUOTED = 200;
+
+/** `line` as a refusal quotes it: its JSON spelling whole while the line is short, and
+ *  otherwise that of its first STORED_LINE_QUOTED characters, with the cut named after it. */
+function quotedStoredLine(line: string): string {
+  if (line.length <= STORED_LINE_QUOTED) return JSON.stringify(line);
+  const head = JSON.stringify(line.slice(0, STORED_LINE_QUOTED));
+  return `${head} (cut after ${STORED_LINE_QUOTED} of its ${line.length} characters)`;
+}
+
+/** The first line the store would write otherwise, which is the line a reader fixes first. The
+ *  two texts differ, so one of the three arms answers. Each quote is bounded, since the line it
+ *  names can be as long as the document itself. */
+function firstStoredDifference(given: string, stored: string): string {
+  const written = given.split("\n");
+  const holds = stored.split("\n");
+  // Each side is read as `string | undefined`, since a line past the end of its own text is
+  // undefined and the strict packages that compile this file say so. The two are not equal
+  // here, so exactly one arm below answers and the pair can never both be undefined.
+  for (let line = 0; line < Math.max(written.length, holds.length); line += 1) {
+    const wrote = written[line];
+    const held = holds[line];
+    if (wrote === held) continue;
+    if (wrote === undefined && held !== undefined) {
+      return `the store writes a line ${line + 1}, ${quotedStoredLine(held)}`;
+    }
+    if (held === undefined && wrote !== undefined) {
+      return `the store drops line ${line + 1}, ${quotedStoredLine(wrote)}`;
+    }
+    if (wrote !== undefined && held !== undefined) {
+      return `line ${line + 1} reads ${quotedStoredLine(wrote)} and is stored as ${quotedStoredLine(held)}`;
+    }
+  }
+  return "the stored text differs from the text given";
+}
+
+/**
+ * How much of the stored text a refusal prints whole. Past it the refusal prints the first whole
+ * lines that fit and says how much it cut: a document is up to 1 MiB, and a refusal nobody can
+ * read to the end is one nobody acts on. The line a reader fixes first is named before the text
+ * either way, so a cut refusal still says what to change.
+ */
+const STORED_TEXT_PRINTED = 2000;
+
+/** The stored text as a refusal prints it, and what the refusal says of the cut: whole while it
+ *  is short, and otherwise its first whole lines up to STORED_TEXT_PRINTED characters. */
+function storedTextPrinted(stored: string): { readonly text: string; readonly cut: string } {
+  if (stored.length <= STORED_TEXT_PRINTED) return { text: stored, cut: "" };
+  const head = stored.slice(0, STORED_TEXT_PRINTED);
+  const lastLineFeed = head.lastIndexOf("\n");
+  const text = lastLineFeed === -1 ? head : head.slice(0, lastLineFeed + 1);
+  return {
+    text,
+    cut: ` The text below is cut after ${text.length} of its ${stored.length} characters: change the line named above and send the text again.`,
+  };
+}
+
+/**
+ * The refusal of inline text the store would change: where the two first differ, the way out
+ * this name has, and the text the store writes, so the writer can send exactly that text. The
+ * markers hold the stored text apart from the prose around it. A name `--path` would store as
+ * bytes has a second way out, which keeps the text as it was written; a Markdown name has none,
+ * since `--path` parses and renders it the same way (`pathKeepsBytesOf`).
+ */
+function storedTextProblem(given: string, stored: string, name: string): string {
+  const asBytes = pathKeepsBytesOf(name)
+    ? ` To keep the text as you wrote it, send it as a file with ${PATH_KEEPS_BYTES}.`
+    : "";
+  const printed = storedTextPrinted(stored);
+  return [
+    `Dispatch stores this text under another spelling: ${firstStoredDifference(given, stored)}.`,
+    ` Send the text Dispatch stores, which is between the two marker lines below.${asBytes}`,
+    `${printed.cut}\n--- the text Dispatch stores ---\n${printed.text}`,
+    "--- end of the text Dispatch stores ---",
+  ].join("");
+}
+
+/**
+ * The refusal of an upload whose stored-text check could not run. The check is the one thing that
+ * says whether the store would write this text under another spelling, so a failure that is not
+ * the route's absence leaves that question open, and an upload sent anyway would store the
+ * changed text this check exists to stop.
+ *
+ * A body Dispatch itself refused as too large is the one such failure a repeat can never get
+ * through, so that refusal names what to do instead of saying to send the upload again: the
+ * text is past what the check reads, and a name whose extension keeps the bytes has `--path`,
+ * which stores the file and asks this route nothing.
+ */
+function storedTextCheckFailed(error: unknown, name: string): string {
+  const failure = `Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip failed with ${messageFor(error)}.`;
+  if (!dispatchAnswered(error, 413)) {
+    return `${failure} Send the upload again once that call is answered.`;
+  }
+  // Only a body past markdownRoundTripLimit reaches here, and that is always text past the
+  // megabyte a markdown document may hold, so every remedy this names has to be one that
+  // takes the text out of one document: a document of its own is no remedy at all, since the
+  // upload refused is already one and a second would be refused the same way.
+  const asBytes = pathKeepsBytesOf(name)
+    ? ` Send it as a file with ${PATH_KEEPS_BYTES}, which asks this check nothing.`
+    : "";
+  return `${failure} This text is longer than the check reads, and sending the upload again does not change that: a markdown document is at most 1 MiB, so shorten it or split it across documents of at most that.${asBytes}`;
+}
+
+/**
+ * Whether the round trip failed because Dispatch itself holds no such route: the 404 or 405 a
+ * Dispatch older than POST /api/v1/markdown/round-trip answers, as its own JSON. Such a server
+ * cannot say what it would store, and refused the upload itself before this check existed, so
+ * the upload goes on and that server makes its own answer.
+ *
+ * A 404 or 405 page from an ingress, a proxy or a load balancer is `DispatchGatewayError`,
+ * which says nothing about the route, so `dispatchAnswered` is what this asks: reading such a
+ * page as an absent route would skip the check and store the respelled text it exists to stop.
+ */
+function roundTripRouteAbsent(error: unknown): boolean {
+  return dispatchAnswered(error, 404) || dispatchAnswered(error, 405);
+}
+
+/** `text` without a final line feed, which is what the stored-text check compares. The store
+ *  ends every document it holds with one, so text a writer gave without one comes back with one
+ *  and nothing else changed (`markdown_round_trip_test.go` pins "one" stored as "one\n"). That
+ *  one line feed is the only difference the check forgives. */
+function withoutFinalLineFeed(text: string): string {
+  return text.endsWith("\n") ? text.slice(0, -1) : text;
 }
 
 /** The Components line of an issue read: the effective set with where it came from. */
 function componentsLine(components: IssueComponents): string {
+  const ids = components.ids ?? [];
+  const unknown = components.unknown ?? [];
   const inherited =
     components.inherited_from === null ? "" : ` (inherited from ${components.inherited_from})`;
-  const retired =
-    components.unknown.length === 0 ? "" : ` (retired: ${components.unknown.join(", ")})`;
+  const retired = unknown.length === 0 ? "" : ` (retired: ${unknown.join(", ")})`;
   switch (components.mode) {
     case "explicit":
-      return `Components: ${components.ids.length === 0 ? "none live" : components.ids.join(", ")}${inherited}${retired}`;
+      return `Components: ${ids.length === 0 ? "none live" : ids.join(", ")}${inherited}${retired}`;
     case "none":
       return `Components: none — ${components.reason ?? ""}${inherited}`;
     case "inherit":
       return "Components: unassigned";
+    default:
+      return `Components: ${components.mode}${inherited}${retired}`;
   }
 }
 
@@ -2171,7 +2591,14 @@ function holdsSession(claim: IssueClaim | null | undefined): boolean {
   return claim?.actor.kind === "session";
 }
 
-type RoutedIssue = Pick<Issue, "route"> & Partial<IssueRouteReach>;
+type RoutedIssue = Pick<Issue, "route"> &
+  Partial<Pick<IssueDetails, "route_status" | "route_holder" | "route_status_reason">>;
+
+/** Whether a `route_status` the server sent is one the words below judge. The wire type is an
+ *  open string, so a status a newer Dispatch adds reads as the route alone. */
+function isRouteStatus(value: string): value is IssueRouteStatus {
+  return ISSUE_ROUTE_STATUSES.some((status) => status === value);
+}
 
 /** Whether the route is a role a live session holds, which the live registry names. */
 function routeHeldBySession(issue: RoutedIssue): boolean {
@@ -2209,7 +2636,8 @@ function routeText(issue: RoutedIssue, titles?: ReadonlyMap<string, string>): st
         ? " (the Envoy listener's agent list is refilling, so whether it reaches anyone is unknown; try again in a moment)"
         : " (the Envoy listener did not answer, so whether it reaches anyone is unknown)",
   };
-  return issue.route + (issue.route_status == null ? "" : reach[issue.route_status]);
+  const status = issue.route_status;
+  return issue.route + (status != null && isRouteStatus(status) ? reach[status] : "");
 }
 
 /**
@@ -2227,27 +2655,161 @@ function progressText(progress: IssueProgress | undefined, sep: string): string 
   return parts.join(sep);
 }
 
-/** What `dispatch results` prints: each check of the issue's Verification document with its
- *  latest result and whether that result is current. A check with no result says so, and an
+/** How many characters of a reading `--brief` keeps. R2 of the spec sets the number: a reader
+ *  who wants the gate alone on an issue holding hundreds of results reads this much of a reading
+ *  that stands at none of the compared commits, and the whole of every other one. */
+const BRIEF_READING_CHARACTERS = 200;
+
+/** The three reasons a check compared its results with nothing, and the two a result's commit
+ *  cannot be placed, in words a reader acts on. A check takes all three and a result all but
+ *  no_pull_request_or_branch, so the check's set types this map and answers both. */
+const COMPARISON_REASONS: Readonly<Record<NonNullable<CheckBlock["compared_nothing"]>, string>> = {
+  no_pull_request_or_branch: "the issue has no pull request and no branch to compare with",
+  repository_unreadable: "Dispatch cannot read the repository",
+  read_failed: "a read Dispatch made did not answer",
+};
+
+/** When Dispatch learned a pull request's head, and which time that is: `read_at` is Dispatch's
+ *  own read of the pull request, `updated_at` is GitHub's update time as a webhook carried it. */
+function learnedText(learned: BasisLearnedAt): string {
+  if (learned.kind === "read_at") return `Dispatch read it ${learned.at}`;
+  return `GitHub updated it ${learned.at}`;
+}
+
+/** One thing a check compared its results with, as the head line names it. */
+function basisText(basis: CheckBasis): string {
+  const learned = basis.learned_at === undefined ? "" : ` (${learnedText(basis.learned_at)})`;
+  if (basis.kind === "pull_request") {
+    const number = basis.pull_request === undefined ? "" : `#${basis.pull_request} `;
+    return `the head of pull request ${number}at ${basis.commit ?? "an unnamed commit"}${learned}`;
+  }
+  if (basis.kind === "branch") return `branch ${basis.branch ?? "unnamed"}${learned}`;
+  return `the commit you named, ${basis.commit ?? ""}${learned}`;
+}
+
+/** Where a result's commit stands, as the basis it matched names that place. The head line has
+ *  already printed each basis whole, so this names it short. */
+function basisPlace(basis: CheckBasis): string {
+  if (basis.kind === "pull_request") {
+    return basis.pull_request === undefined
+      ? "the head of a pull request"
+      : `the head of pull request #${basis.pull_request}`;
+  }
+  if (basis.kind === "branch") return `on branch ${basis.branch ?? "unnamed"}`;
+  return "the commit you named";
+}
+
+/** The first of R4's two facts: where one result's commit stands against what its check compared
+ *  with. A Dispatch server that does not answer it says so rather than reading as another
+ *  commit. */
+function commitStandsText(stands: CheckResult["commit_stands"]): string {
+  if (stands === undefined) {
+    return "Where that commit stands is not known: this Dispatch server does not say";
+  }
+  if (stands.answer === "at_basis") {
+    return stands.basis === undefined
+      ? "That commit is one of the compared commits"
+      : `That commit is ${basisPlace(stands.basis)}`;
+  }
+  if (stands.answer === "other_commit") return "That commit is none of the compared commits";
+  // The reason is the server's to give and may be absent, so the answer stands on its own
+  // where there is none.
+  return stands.reason === undefined
+    ? "Where that commit stands is not known"
+    : `Where that commit stands is not known: ${COMPARISON_REASONS[stands.reason]}`;
+}
+
+/** R4's other fact: whether the check's words moved after the result was recorded. Both versions
+ *  are named either way, because they are the handles a reader reads the two wordings with. */
+function checkWordsText(check: CheckBlock, result: CheckResult): string {
+  const versions = `result version ${result.check_version}, check version ${check.version}`;
+  if (result.check_words_moved === undefined) {
+    return `Whether the check's words moved is not known (${versions})`;
+  }
+  return result.check_words_moved
+    ? `The check's words moved after this result (${versions})`
+    : `The check's words did not move after this result (${versions})`;
+}
+
+/** R5 for one check: whether a pass of it stands, and from which roles. */
+function passStandsText(pass: CheckPassStands | undefined): string {
+  if (pass === undefined)
+    return "Whether a pass stands is not known: this Dispatch server does not say";
+  if (pass.answer === "yes") {
+    const roles = pass.roles ?? [];
+    return roles.length === 0
+      ? "A pass stands: yes"
+      : `A pass stands: yes, from ${roles.join(", ")}`;
+  }
+  if (pass.answer === "no") return "A pass stands: no";
+  return "A pass stands: not known";
+}
+
+/** The reading one role recorded. `brief` cuts a reading whose result stands at none of the
+ *  compared commits, and leaves every other reading whole: the reading is the record, and a
+ *  reader who asked for the gate alone still reads the whole of what stands. */
+function readingLines(result: CheckResult, brief: boolean): string[] {
+  const observed = result.observed;
+  if (observed === "") return ["    The role recorded no reading."];
+  const cut = brief && result.commit_stands?.answer !== "at_basis";
+  if (cut && observed.length > BRIEF_READING_CHARACTERS) {
+    return [`    Reading: ${observed.slice(0, BRIEF_READING_CHARACTERS)}… (result ${result.id})`];
+  }
+  return [`    Reading: ${observed}`];
+}
+
+/** One result, in the order the API served it: the verdict, the role, the whole commit, R4's two
+ *  facts, the time, the id, the retraction that stands against it, and the reading. */
+function resultLines(check: CheckBlock, result: CheckResult, brief: boolean): string[] {
+  const lines = [
+    `  - ${result.verdict} by ${result.role} at ${result.commit_sha}. ${commitStandsText(result.commit_stands)}. ${checkWordsText(check, result)}. Recorded ${result.created_at}. Result ${result.id}.`,
+  ];
+  const retracted = result.retracted;
+  if (retracted !== undefined) {
+    lines.push(
+      `    Retracted by ${actorText(retracted.actor)} at ${retracted.created_at}. The reason: ${retracted.reason}`
+    );
+  }
+  return [...lines, ...readingLines(result, brief)];
+}
+
+/** One check: a head line naming what it compared with and whether a pass of it stands, the
+ *  check's own words once, then every result recorded against it. */
+function checkLines(check: CheckBlock, brief: boolean): string[] {
+  const bases = check.compared_with ?? [];
+  const reason = check.compared_nothing;
+  const compared =
+    bases.length > 0
+      ? `Compared with ${bases.map(basisText).join(", ")}`
+      : reason === undefined
+        ? "Compared with nothing, and this Dispatch server does not say why"
+        : `Compared with nothing: ${COMPARISON_REASONS[reason]}`;
+  const results = check.results ?? [];
+  return [
+    `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check.pass_stands)}.`,
+    `  The check's words: ${check.text}`,
+    ...(results.length === 0
+      ? ["  No result is recorded for this check."]
+      : results.flatMap((result) => resultLines(check, result, brief))),
+  ];
+}
+
+/** What `dispatch results` prints: each check of the issue's Verification document, what Dispatch
+ *  compared its results with, whether a pass of it stands, its own words once, and every result
+ *  recorded against it in the order the API serves them. A check with no result says so, and an
  *  issue with no Verification document says that instead of printing an empty list: Dispatch
  *  answers `verification_artifact_id` "" for such an issue, never null, so that is what is
  *  compared. */
-function formatCheckResults(results: IssueCheckResults): string {
+function formatCheckResults(results: IssueCheckResults, brief = false): string {
   if (results.verification_artifact_id === "") {
     return `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`;
   }
-  if (results.checks.length === 0) {
+  const checks = results.checks ?? [];
+  if (checks.length === 0) {
     return `${results.issue}'s Verification document holds no check blocks.`;
   }
-  const lines = results.checks.map((check) => {
-    const head = `- ${check.block_id} (${check.when}): `;
-    const latest = check.results[0];
-    if (latest === undefined) {
-      return `${head}no result yet. ${check.text}`;
-    }
-    return `${head}${latest.verdict} at ${latest.commit_sha} by ${latest.role}, ${latest.currency ?? "unknown"}. ${check.text}`;
-  });
-  return [`Checks of ${results.issue}:`, ...lines].join("\n");
+  const blocks = checks.map((check) => checkLines(check, brief).join("\n"));
+  return [`Checks of ${results.issue}:`, ...blocks].join("\n\n");
 }
 
 /** Which repository the issue targets and where it came from: its own, or resolved through its
@@ -2297,14 +2859,17 @@ function refuseUnsavedRepository(
 
 function issueSummary(
   issue: IssueDetails,
-  events: readonly Event[],
+  events: readonly DispatchEvent[],
   references: IssueReferences | string,
   graph: readonly string[],
   linkBase: string,
   coverage: IssueCoverage | string,
   agents?: LiveAgents
 ): string {
-  const asks = issue.open_asks;
+  const asks = issue.open_asks ?? [];
+  const labels = issue.labels ?? [];
+  const links = issue.external_links ?? [];
+  const members = typeof references === "string" ? [] : (references.members ?? []);
   const spec = issue.artifacts?.find((artifact) => artifact.primary);
   const specApproval = spec === undefined ? undefined : approvalLine(spec);
   if (issue.priority === undefined) throw new Error("Dispatch issue is missing priority");
@@ -2324,7 +2889,7 @@ function issueSummary(
     `Assignee: ${issue.assignee ?? "unassigned"}`,
     `Claimed by: ${issue.claim === null ? "nobody" : claimText(issue.claim, agents, issue)}`,
     ...(issue.priority === null ? [] : [`Priority: P${issue.priority}`]),
-    `Labels: ${issue.labels.length === 0 ? "none" : issue.labels.join(", ")}`,
+    `Labels: ${labels.length === 0 ? "none" : labels.join(", ")}`,
     componentsLine(issue.components),
     `Route: ${routeText(issue, agents?.titles)}`,
     repositoryLine(issue),
@@ -2337,16 +2902,14 @@ function issueSummary(
     // read the server could not answer says so rather than reading as a spec with no gaps.
     ...(typeof coverage === "string"
       ? [`Coverage: ${coverage}`]
-      : coverage.gaps.map((gap) => `Coverage: ${gap}`)),
+      : (coverage.gaps ?? []).map((gap) => `Coverage: ${gap}`)),
     // The links a person or an agent put on the issue — the pull request that delivers it among
     // them — which the issue page renders with their state; the reference graph below carries
     // only links between Dispatch nodes.
     "External links:",
-    ...(issue.external_links.length === 0
+    ...(links.length === 0
       ? ["- none"]
-      : issue.external_links.map(
-          (link) => `- ${link.url}${link.kind === undefined ? "" : ` (${link.kind})`}`
-        )),
+      : links.map((link) => `- ${link.url}${link.kind === undefined ? "" : ` (${link.kind})`}`)),
     // Every document, picture and file the issue holds, oldest first, which a document
     // reference's not-found hint points to once the issue holds more than the hint lists.
     "Documents:",
@@ -2356,9 +2919,9 @@ function issueSummary(
     "References:",
     ...(typeof references === "string"
       ? [`- ${references}`]
-      : references.members.length === 0
+      : members.length === 0
         ? ["- none"]
-        : references.members.map(
+        : members.map(
             ({ artifact, depth, via }) =>
               `- ${artifact.project}/${artifact.slug} · depth ${depth} via ${via.kind} ${via.id}`
           )),
@@ -2376,8 +2939,9 @@ function issueSummary(
  *  queried end. */
 function referenceLines(read: GraphReferences | string): string[] {
   if (typeof read === "string") return [`- ${read}`];
-  if (read.edges.length === 0) return ["- none"];
-  return read.edges.map(edgeLine);
+  const edges = read.edges ?? [];
+  if (edges.length === 0) return ["- none"];
+  return edges.map(edgeLine);
 }
 
 /** Whether `kind`, a graph node's, is one of the items whose blocks are its own (`ITEM_KINDS`):
@@ -2493,8 +3057,8 @@ function graphSectionLines(
  */
 function nodeLine(node: GraphNode): string[] {
   if (node.made_by === undefined) return [];
-  const fact = (by: Actor[] | undefined, time: string | null | undefined) =>
-    `${by === undefined || by.length === 0 ? "nobody recorded" : by.map(actorText).join(", ")}${time == null ? "" : ` at ${time}`}`;
+  const fact = (by: Actor[] | null | undefined, time: string | null | undefined) =>
+    `${by == null || by.length === 0 ? "nobody recorded" : by.map(actorText).join(", ")}${time == null ? "" : ` at ${time}`}`;
   const made = fact(node.made_by, node.made_at);
   const changed = fact(node.changed_by, node.changed_at);
   const { parent } = node;
@@ -2600,15 +3164,15 @@ async function typedBlockOf(
  */
 function askPartNoun(ask: Ask, node: GraphNode, blockID: string): string {
   if (ask.answer?.id === blockID) return "Answer";
-  if (ask.options.some((option) => option.id === blockID)) return "Option";
+  if ((ask.options ?? []).some((option) => option.id === blockID)) return "Option";
   const placed =
     (ask.revision ?? 0) > 0 &&
-    ask.options.every((option) => option.id !== undefined) &&
+    (ask.options ?? []).every((option) => option.id !== undefined) &&
     (ask.answer === null || ask.answer.id !== undefined);
   return placed && node.pin?.state !== "removed" ? "Question" : "Part";
 }
 
-function logSummary(issue: IssueDetails, events: readonly Event[]): string {
+function logSummary(issue: IssueDetails, events: readonly DispatchEvent[]): string {
   return [
     `Key: ${issue.key}`,
     "Events:",
@@ -2617,7 +3181,7 @@ function logSummary(issue: IssueDetails, events: readonly Event[]): string {
 }
 
 /** The head of the text an event carries, so a log reads without opening each item. */
-function eventHead(event: Event): string | undefined {
+function eventHead(event: DispatchEvent): string | undefined {
   switch (event.type) {
     case "ask.opened":
     case "ask.anchor_refreshed":
@@ -2629,6 +3193,10 @@ function eventHead(event: Event): string | undefined {
       const previousAnswer = event.payload.previous_answer;
       return `${textHead(event.payload.question)} -> ${textHead(askAnswerText(event.payload.answer))}${previousAnswer === undefined ? "" : ` (was: ${textHead(askAnswerText(previousAnswer))})`}`;
     }
+    case "ask.asked_of":
+      // Whom the question waits on after the hand-on. An empty `asked_of` handed it to the
+      // assignee of its own issue, whom the payload does not name.
+      return `${textHead(event.payload.question)} -> asked of ${event.payload.asked_of ?? "the assignee of its issue"}`;
     case "comment.created":
     case "comment.answered":
     case "comment.anchor_refreshed":
@@ -2669,7 +3237,7 @@ function eventHead(event: Event): string | undefined {
 
 /** The `dispatch://` reference of the message, comment or ask an issue event carries, so a log
  *  line names what `dispatch read --ref` reads and a spec links: the log shows no other id. */
-function eventRef(event: Event): string | undefined {
+function eventRef(event: DispatchEvent): string | undefined {
   const payload: unknown = event.payload;
   const id =
     typeof payload === "object" && payload !== null && "id" in payload ? payload.id : undefined;
@@ -2689,12 +3257,12 @@ function eventRef(event: Event): string | undefined {
  *  and the filer is that title (`Legion implementer · INFRA-1160` counts as `Legion
  *  implementer`): a session id names one process, so without the title the count is one row per
  *  session (`skill://legion-controller/references/weekly-audit.md`). */
-function eventActorText(actor: Event["actor"]): string {
+function eventActorText(actor: DispatchEvent["actor"]): string {
   const title = actor.kind === "session" ? actor.origin?.session_title : undefined;
   return title === undefined || title === "" ? actorText(actor) : `${actorText(actor)} (${title})`;
 }
 
-function eventLine(event: Event): string {
+function eventLine(event: DispatchEvent): string {
   const head = eventHead(event);
   const ref = eventRef(event);
   return `- #${event.seq} ${event.type}${ref === undefined ? "" : ` ${ref}`} · ${eventActorText(event.actor)} · ${event.created_at}${head === undefined || head === "" ? "" : ` · ${head}`}`;
@@ -2704,9 +3272,9 @@ function childrenSummary(issue: IssueDetails): string {
   return [
     `Key: ${issue.key}`,
     "Children:",
-    ...(issue.children.length === 0
+    ...((issue.children ?? []).length === 0
       ? ["- none"]
-      : issue.children.map((child) => `- ${child.key}: ${child.title} (${child.status})`)),
+      : (issue.children ?? []).map((child) => `- ${child.key}: ${child.title} (${child.status})`)),
   ].join("\n");
 }
 
@@ -2727,20 +3295,21 @@ function askSummary(
   outgoing: GraphReferences | string
 ): string {
   const answer = ask.answer;
-  const earlierAnswers = answers.slice(0, -1);
+  const earlierAnswers = (answers ?? []).slice(0, -1);
   const parts = askPartEdges(ask, incoming);
   const partRef = (id: string) => `${askRef}#b-${encodeBlockId(id)}`;
-  const chain = replies.flatMap((reply) => [
+  const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
     `Body: ${reply.body}`,
   ]);
+  const resolutionWords = dispatchWordsText(ask.resolution?.dispatch_words);
   return [
     `Question: ${ask.question}`,
     ...anchorLines(ask),
     "Options:",
-    ...(ask.options.length === 0
+    ...((ask.options ?? []).length === 0
       ? ["- none"]
-      : ask.options.flatMap((option) => [
+      : (ask.options ?? []).flatMap((option) => [
           `- ${option.label}${option.description ? ` — ${option.description}` : ""}${option.id === undefined ? "" : ` (${partRef(option.id)})`}`,
           ...partReferenceLines(parts.at, option.id),
         ])),
@@ -2752,7 +3321,7 @@ function askSummary(
       ? ["- none"]
       : [
           `- By: ${actorActText(answer.user, answer.act)}`,
-          `- Selected: ${answer.selected.length === 0 ? "none" : answer.selected.join(", ")}`,
+          `- Selected: ${(answer.selected ?? []).length === 0 ? "none" : (answer.selected ?? []).join(", ")}`,
           ...(answer.text === null ? [] : [`- Text: ${answer.text}`]),
           ...(answer.id === undefined ? [] : [`- Reference: ${partRef(answer.id)}`]),
           ...partReferenceLines(parts.at, answer.id),
@@ -2772,7 +3341,12 @@ function askSummary(
           "Resolution:",
           `- By: ${ask.resolution.actor.id}`,
           `- Kind: ${ask.resolution.kind}`,
-          `- Reason: ${ask.resolution.reason}`,
+          // A decline the person wrote no note with holds no reason, so the line is left out
+          // rather than printed empty; the sentences Dispatch wrote for the asking agent stand
+          // on a bullet of their own, under the label every reader of them names them with
+          // (`dispatchWordsText`), so nobody reads them as the person's words.
+          ...(ask.resolution.reason === "" ? [] : [`- Reason: ${ask.resolution.reason}`]),
+          ...(resolutionWords === undefined ? [] : [`- ${resolutionWords}`]),
         ]),
     "Replies:",
     ...(chain.length === 0 ? ["- none"] : chain),
@@ -2791,14 +3365,14 @@ function askPartEdges(
   incoming: GraphReferences | string
 ): { at: Map<string, GraphEdge[]>; rest: GraphReferences | string } {
   const ids = new Set(
-    [...ask.options.map((option) => option.id), ask.answer?.id].filter(
+    [...(ask.options ?? []).map((option) => option.id), ask.answer?.id].filter(
       (id): id is string => id !== undefined
     )
   );
   const at = new Map<string, GraphEdge[]>();
   if (typeof incoming === "string" || ids.size === 0) return { at, rest: incoming };
   const rest: GraphEdge[] = [];
-  for (const edge of incoming.edges) {
+  for (const edge of incoming.edges ?? []) {
     const part = edge.block?.block_id;
     if (part === undefined || !ids.has(part)) {
       rest.push(edge);
@@ -2831,9 +3405,22 @@ function openAskAge(ageSeconds: number): string {
   return `${days}d${hours % 24 === 0 ? "" : ` ${hours % 24}h`}`;
 }
 
+/** The person an open ask is asked of, as the server resolved it (`waiting_on_person`: whoever
+ *  the ask was handed to, and the assignee of its issue until somebody hands it on), and
+ *  `nobody` where the server names none — an ask on a project document, or on an issue nobody
+ *  holds, that nobody was handed. */
+function openAskAskedOf(ask: OpenAsk): string {
+  const person = ask.waiting_on_person;
+  return person === undefined || person === "" ? "nobody" : person;
+}
+
+/** One row of `dispatch open-asks`, in both of the listing's groups: the person it is asked of
+ *  is on every row, since one row renderer is one rule. The word is the ask card's own, `asked
+ *  of`, rather than `waiting on`, because a row under `Waiting on agent (N):` waits on the
+ *  agent - the next move there is the agent's, and naming the person must not claim otherwise. */
 function openAskLine(ask: OpenAsk, baseUrl: string): string {
   const priority = ask.priority === null ? "" : `P${ask.priority} · `;
-  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · ${ask.question} · ${new URL(ask.ref, baseUrl).toString()}`;
+  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${openAskAskedOf(ask)} · ${ask.question} · ${new URL(ask.ref, baseUrl).toString()}`;
 }
 
 export function formatOpenAsksSummary(response: OpenAsksResponse, baseUrl: string): string {
@@ -2841,8 +3428,8 @@ export function formatOpenAsksSummary(response: OpenAsksResponse, baseUrl: strin
   if (response.count === 0) {
     return ["There are no unanswered asks for this session.", `Scope: ${scope}.`].join("\n");
   }
-  const waitingOnHuman = response.asks.filter((ask) => ask.waiting_on === "human");
-  const waitingOnAgent = response.asks.filter((ask) => ask.waiting_on === "agent");
+  const waitingOnHuman = (response.asks ?? []).filter((ask) => ask.waiting_on === "human");
+  const waitingOnAgent = (response.asks ?? []).filter((ask) => ask.waiting_on === "agent");
   return [
     `${response.count} unanswered ${response.count === 1 ? "ask" : "asks"} you authored on active issues and project documents.`,
     "",
@@ -2857,9 +3444,10 @@ export function formatOpenAsksSummary(response: OpenAsksResponse, baseUrl: strin
 /** The person a credential acts for, as `GET /api/v1/whoami` names them: the owner of a personal
  *  or broker-issued token, and a signed-in person's own login in the canonical lowercase every
  *  stored login and assignee carries. `null` for a credential that acts for nobody, which the
- *  shared token and a service-account token are. */
+ *  shared token and a service-account token are. The route says which of the two bodies it sent
+ *  in `kind`, so the union narrows on that. */
 function whoamiPerson(identity: WhoamiResponse): string | null {
-  return identity.kind === "agent" ? identity.owner : identity.login.toLowerCase();
+  return identity.kind === "user" ? identity.login.toLowerCase() : identity.owner;
 }
 
 /** How much of an ask's question the Inbox summary's line carries. The event summaries' head
@@ -2889,7 +3477,8 @@ function inboxSnoozed(row: InboxRow, now: number): boolean {
  */
 function inboxSection(row: InboxRow, now: number): "agent" | "human" | "later" | undefined {
   if (inboxSnoozed(row, now)) return "later";
-  return row.waiting_on;
+  const waiting = row.waiting_on;
+  return waiting === "agent" || waiting === "human" ? waiting : undefined;
 }
 
 /** Where an inbox row's ask lives: the issue key or the document slug its line is named by, and
@@ -2920,8 +3509,9 @@ function inboxAskLine(row: InboxRow): string {
  *  one on a project document, and the session's name for an Agent row, which sits on neither.
  *  A Reply row with no owner at all is named by its thread id, the one name every row carries. */
 function inboxThreadLabel(row: MyReplyRow): string {
-  if (row.kind === "agent") return row.session.name;
-  return row.issue?.key ?? row.document?.slug ?? row.thread_id;
+  const thread = inboxThreadRow(row);
+  if (thread.kind === "agent") return thread.session.name;
+  return thread.issue?.key ?? thread.document?.slug ?? thread.thread_id;
 }
 
 /** How long ago the newest reply in a thread was written, in one short field: the largest whole
@@ -2957,7 +3547,7 @@ function credentialRequestLine(request: CredentialPendingRow): string {
   const session = request.session ?? null;
   return [
     `- ${request.kind}`,
-    request.identifiers.join(", "),
+    (request.identifiers ?? []).join(", "),
     request.requested_at,
     ...(session === null
       ? []
@@ -2980,10 +3570,10 @@ function inboxReadRefusal(error: unknown): string {
  * band are the server's order and nothing re-sorts them.
  *
  * `Needs you` is the page's `needsYou` (`.../features/inbox/BlockedOnYou.tsx`): the asks waiting
- * on a person that the viewer has not deferred and that sit on their own issues (`waitingOnYou`),
+ * on a person that the viewer has not deferred and that wait on them (`waitingOnYou`),
  * plus every credential request, which is the viewer's by construction because the list is read
  * as `?approver=me`. Here that is the band's own rows and nothing narrower, since `?assignee=me`
- * keeps only the asks on issues assigned to the caller, as the page's default view does; counting
+ * keeps only the asks that wait on the caller, as the page's default view does; counting
  * the rows it prints is therefore the page's rule, and it is the one count that cannot disagree
  * with the lines under it.
  *
@@ -3027,7 +3617,7 @@ function commentSummary({ comment, replies }: CommentRead, graph: readonly strin
     ...replyBlockLines(comment),
     `Body: ${comment.body}`,
   ];
-  const chain = replies.flatMap((reply) => [
+  const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
     ...anchorLines(reply),
     ...replyBlockLines(reply),
@@ -3078,9 +3668,9 @@ function anchorLines(
  *  index where no header cell covers it. */
 export function positionText(block: BlockPath): string {
   const { table, path } = block;
-  const segments = path.map((entry) => `${entry.type}[${entry.index}]`);
+  const segments = (path ?? []).map((entry) => `${entry.type}[${entry.index}]`);
   if (table === undefined || table.row === null) return segments.join(" › ");
-  const tableAt = path.findIndex((entry) => entry.type === "table");
+  const tableAt = (path ?? []).findIndex((entry) => entry.type === "table");
   const cells = table.cells ?? [];
   const label = (table.column === null ? cells : cells.slice(0, table.column))
     .map((cell) => cell.trim())
@@ -3100,7 +3690,7 @@ function messageSummary({ message, replies }: MessageRead, graph: readonly strin
     ...replyBlockLines(message),
     `Body: ${message.body}`,
   ];
-  const chain = replies.flatMap((reply) => [
+  const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
     ...replyBlockLines(reply),
     `Body: ${reply.body}`,
@@ -3242,7 +3832,8 @@ async function readUploadedFile(
   owner: string,
   shown: Set<string> | undefined
 ): Promise<DispatchToolResult> {
-  const latest = Math.max(0, ...artifact.versions.map((version) => version.number));
+  const versions = artifact.versions ?? [];
+  const latest = Math.max(0, ...versions.map((version) => version.number));
   const number = requested ?? latest;
   const of = number === latest ? "" : ` of ${latest}`;
   const bytesRoute = `GET /api/v1/artifacts/${artifact.id}/versions/${number} serves its bytes.`;
@@ -3252,7 +3843,7 @@ async function readUploadedFile(
       `uploaded ${mime} picture (version ${number}${of}). ${bytesRoute}`,
     details,
   });
-  const stated = artifact.versions.find((version) => version.number === number);
+  const stated = versions.find((version) => version.number === number);
   if (
     artifact.kind === "image" &&
     stated?.size !== undefined &&
@@ -3306,20 +3897,15 @@ const BLOCK_OPENING_CHARS = 60;
  * table lists its rows and cells from its `/blocks` entry, the indexes `delete_row` and
  * `delete_column` take placed by Dispatch from its tree; a Dispatch whose entry carries no rows is
  * said to report none, never answered from the markdown, since a column read from the markdown is
- * not the index `delete_column` takes once a cell spans columns. The markdown is read before and
- * after the blocks, and a document whose token or text moved between them is refused, since the
- * offsets would slice text they were not computed over.
+ * not the index `delete_column` takes once a cell spans columns. The markdown, the blocks, the
+ * token and the version come from one answer (`liveBlocks`), so no write between two reads can
+ * leave the offsets slicing text they were not computed over.
  */
 async function listDocumentBlocks(
   client: DispatchClient,
   artifact: Artifact
-): Promise<{ text: string; token: string | undefined }> {
+): Promise<{ text: string; token: string | undefined; version: number | null }> {
   const live = await liveBlocks(client, artifact);
-  if (live === undefined) {
-    throw new Error(
-      `${artifact.name} changed while dispatch doc-read --blocks read it, so the opening words could name the wrong text; nothing is listed. Run it again.`
-    );
-  }
   const { bytes, blocks } = live;
   const decoder = new TextDecoder();
   const lines = [
@@ -3356,11 +3942,11 @@ async function listDocumentBlocks(
           `${indent}  This Dispatch does not report table rows yet, so no row or column index is listed.`
         );
       } else {
-        for (const row of block.table.rows) {
+        for (const row of block.table.rows ?? []) {
           lines.push(
             `${indent}  row ${row.index}, ${row.id === "" ? "no id yet" : `id ${row.id}`}`
           );
-          for (const cell of row.cells) {
+          for (const cell of row.cells ?? []) {
             const under = cell.header === "" ? "" : `, under ${JSON.stringify(cell.header)}`;
             lines.push(
               `${indent}    row ${cell.row} column ${cell.column}, ${cell.id === "" ? "no id yet" : `id ${cell.id}`}${under}: ${cell.text === "" ? "(empty)" : cell.text}`
@@ -3371,30 +3957,39 @@ async function listDocumentBlocks(
     }
     holders.push(block);
   }
-  return { text: lines.join("\n"), token: live.token };
+  return { text: lines.join("\n"), token: live.token, version: live.version };
 }
 
-/** A live document's blocks and the UTF-8 bytes of the markdown their ranges index. */
+/** A live document as one answer of Dispatch carries it: the UTF-8 bytes of its markdown, the
+ *  blocks whose ranges index those bytes, its whole-document token and its version. */
 interface LiveBlocks {
   readonly bytes: Uint8Array;
   readonly token: string | undefined;
+  readonly version: number | null;
   readonly blocks: ArtifactBlock[];
 }
 
 /**
- * A live document's blocks, read between two reads of its markdown, since Dispatch reports each
- * block's range as UTF-8 offsets into `/text`'s markdown; undefined when the token or the text
- * moved between the two reads, since the offsets would slice text they were not computed over.
+ * A live document's blocks and the markdown their ranges index, from one read of the text route
+ * with `?blocks=true`: Dispatch renders the markdown, the blocks, the token and the version from
+ * one tree, so a write by another session cannot leave the offsets slicing text they were not
+ * computed over. A Dispatch older than that parameter answers the text with no blocks at all,
+ * which is said rather than listed as a document with none.
  */
-async function liveBlocks(
-  client: DispatchClient,
-  artifact: Artifact
-): Promise<LiveBlocks | undefined> {
-  const before = await client.docRead(artifact.id);
-  const blocks = await client.artifactBlocks(artifact.id);
-  const after = await client.docRead(artifact.id);
-  if (before.token !== after.token || before.markdown !== after.markdown) return undefined;
-  return { bytes: new TextEncoder().encode(before.markdown), token: before.token, blocks };
+async function liveBlocks(client: DispatchClient, artifact: Artifact): Promise<LiveBlocks> {
+  const read = await client.docReadWithBlocks(artifact.id);
+  if (read.blocks === undefined) {
+    throw new Error(
+      `${artifact.name} was read from a Dispatch older than this command: it serves a document's blocks only on their own route, not beside the text they index, so nothing was listed.`
+    );
+  }
+  return {
+    bytes: new TextEncoder().encode(read.markdown),
+    token: read.token,
+    // A Dispatch that names no version at all reads as a document with none.
+    version: read.version ?? null,
+    blocks: read.blocks,
+  };
 }
 
 /** A document as a Dispatch call names it: `dispatch doc-edit`'s owner and document arguments. */
@@ -3439,9 +4034,8 @@ export interface DocumentBlocks {
  * arguments: its owner from the target, its ref or `LEGION_ISSUE`, and its document by id, slug,
  * filename, the ref's slug, or `spec` for an issue's primary document. A target naming no document
  * of its owner answers "not-found", which is what the first upload of a file reads. Everything
- * else throws: a refused target, a filename two documents answer to, a failed read, and a document
- * that changed between its two text reads. Every request carries the client's signal, so a stop
- * ends the read.
+ * else throws: a refused target, a filename two documents answer to, and a failed read. Every
+ * request carries the client's signal, so a stop ends the read.
  */
 export async function readDocumentBlocks(
   client: DispatchClient,
@@ -3473,11 +4067,6 @@ export async function readDocumentBlocks(
     throw error;
   }
   const live = await liveBlocks(client, resolved.artifact);
-  if (live === undefined) {
-    throw new Error(
-      `${resolved.artifact.name} changed while its blocks were read, so their byte ranges could slice the wrong text; nothing was read. Read it again.`
-    );
-  }
   const decoder = new TextDecoder();
   return {
     name: resolved.artifact.name,
@@ -3903,7 +4492,7 @@ export async function executeDispatchTool(
       throw error;
     }
     return {
-      text: renderSessionAnswersList(response.items, { now: Date.now() }),
+      text: renderSessionAnswersList(response.items ?? [], { now: Date.now() }),
       details: { session: sessionId, since: response.since, total: response.total },
     };
   }
@@ -3913,12 +4502,14 @@ export async function executeDispatchTool(
     const client = dispatchClient();
     const identity = await client.whoami();
     const owner = whoamiPerson(identity);
-    // A Dispatch that predates verified service tokens omits the field entirely.
-    const service = identity.kind === "agent" ? (identity.service ?? null) : null;
-    // So does one that predates broker-issued tokens, which are the only credential that proves
-    // a session of its own: read either omission as that older build, not as "no session".
-    const proved = identity.kind === "agent" ? (identity.session ?? null) : null;
-    const project = identity.kind === "agent" ? (identity.project ?? null) : null;
+    // The three fields only the agent body carries, and which a Dispatch older than verified
+    // service tokens or broker-issued tokens leaves out of it: an absent field reads as null
+    // here, exactly as "this credential names none" does.
+    const agent = identity.kind === "agent" ? identity : undefined;
+    const service = agent?.service ?? null;
+    // A broker-issued token is the only credential that proves a session of its own.
+    const proved = agent?.session ?? null;
+    const project = agent?.project ?? null;
     // The session Dispatch records the writes as: the one the credential proved, else this host's.
     const session = proved ?? sessionId;
     const unowned =
@@ -4172,6 +4763,7 @@ export async function executeDispatchTool(
       const rankBefore = optionalString(args, "before");
       const rankAfter = optionalString(args, "after");
       const priority = optionalPriority(args, "priority");
+      const assignee = optionalNullableString(args, "assignee");
       const labels = Array.isArray(args.labels) ? (args.labels as string[]) : undefined;
       const blockedBy = Array.isArray(args.blocked_by) ? (args.blocked_by as string[]) : undefined;
       const requestedLinks = Array.isArray(args.external_links)
@@ -4223,14 +4815,15 @@ export async function executeDispatchTool(
       // An explicit empty list (only `--clear-external-links` sends one) is a genuine clear: it
       // replaces the set with nothing rather than merging in zero new links, which would just
       // re-send the issue's current links unchanged.
-      const linked = before.external_links.map((link) => link.url);
+      const existingLinks = before.external_links ?? [];
+      const linked = existingLinks.map((link) => link.url);
       const newLinks = requestedLinks?.filter((url) => !linked.includes(url)) ?? [];
       const sentLinks =
         requestedLinks === undefined
           ? undefined
           : requestedLinks.length === 0
             ? []
-            : [...before.external_links, ...newLinks.map((url) => ({ url }))];
+            : [...existingLinks, ...newLinks.map((url) => ({ url }))];
       // A rank with neither neighbour is not a no-op: the server ranks the issue last in its
       // project. So an ordinary update sends no rank key at all.
       const rank =
@@ -4247,6 +4840,7 @@ export async function executeDispatchTool(
           ...(title === undefined ? {} : { title }),
           ...(labels === undefined ? {} : { labels }),
           ...(priority === undefined ? {} : { priority }),
+          ...(assignee === undefined ? {} : { assignee }),
           ...(route === undefined ? {} : { route }),
           ...(parent === undefined ? {} : { parent: parent === "" ? null : parent }),
           ...(blockedBy === undefined ? {} : { blocked_by: blockedBy }),
@@ -4283,7 +4877,8 @@ export async function executeDispatchTool(
         throw withAccount(error, landed);
       }
       refuseUnsavedRepository("updated", after, repo);
-      const linkCount = `(${after.external_links.length} ${after.external_links.length === 1 ? "link" : "links"})`;
+      const links = after.external_links ?? [];
+      const linkCount = `(${links.length} ${links.length === 1 ? "link" : "links"})`;
       const changes = [
         ...(closingNote === undefined
           ? []
@@ -4292,10 +4887,17 @@ export async function executeDispatchTool(
         ...(title === undefined ? [] : [`title "${after.title}"`]),
         ...(labels === undefined
           ? []
-          : [after.labels.length === 0 ? "labels cleared" : `labels ${after.labels.join(", ")}`]),
+          : [
+              (after.labels ?? []).length === 0
+                ? "labels cleared"
+                : `labels ${(after.labels ?? []).join(", ")}`,
+            ]),
         ...(priority === undefined
           ? []
           : [after.priority === null ? "priority cleared" : `priority -> P${after.priority}`]),
+        ...(assignee === undefined
+          ? []
+          : [after.assignee === null ? "assignee cleared" : `assignee -> ${after.assignee}`]),
         ...(rank === undefined
           ? []
           : [
@@ -4322,9 +4924,9 @@ export async function executeDispatchTool(
         ...(blockedBy === undefined
           ? []
           : [
-              after.blocked_by.length === 0
+              (after.blocked_by ?? []).length === 0
                 ? "blocked_by cleared"
-                : `blocked by ${after.blocked_by.join(", ")}`,
+                : `blocked by ${(after.blocked_by ?? []).join(", ")}`,
             ]),
         ...(components === undefined ? [] : [componentsChange(components, after.components)]),
         ...(repo === undefined
@@ -4346,7 +4948,7 @@ export async function executeDispatchTool(
         details: {
           issue: after.key,
           status: after.status,
-          external_links: after.external_links.map((link) => link.url),
+          external_links: (after.external_links ?? []).map((link) => link.url),
           ...(closingNote === undefined ? {} : { message: closingNote.id }),
           ...(after.advice === undefined ? {} : { advice: after.advice }),
         },
@@ -4468,7 +5070,7 @@ export async function executeDispatchTool(
               offset: optionalNumber(args, "offset") ?? 0,
             });
       const { total, limit, offset } = page;
-      const rows = page.issues.map((row) => ({
+      const rows = (page.issues ?? []).map((row) => ({
         key: row.key,
         title: row.title,
         status: row.status,
@@ -4653,13 +5255,18 @@ export async function executeDispatchTool(
           : resolved === undefined
             ? issueTopic(issue())
             : documentTopic(resolved.artifact);
-      // The check's form sits right under the line naming the ask; renderAdvice's cadence line
-      // must stay the result's last line.
-      const checkLines = relatedCheckLines(ask.advice?.suggestions, {
+      // The check's form sits right under the line naming the ask, and the issue's declined
+      // asks under that; renderAdvice's cadence line must stay the result's last line.
+      const checkContext = {
         project: resolved?.artifact.project ?? (ask.issue_key ?? "").replace(/-[0-9]+$/, ""),
         text: stringArg(args, "question"),
         configUrl: linkBase,
-      });
+      };
+      const checkLines = relatedCheckLines(ask.advice?.suggestions, checkContext);
+      // An ask on a project document stands on no issue, and the server sends declined asks
+      // only for a write that does, so there is nothing to print there.
+      const declinedLines =
+        ask.issue_key === null ? [] : declinedAskLines(ask.advice, ask.issue_key, linkBase);
       const adviceLines = await otherAdviceLines(() =>
         renderAdvice(input.tool, askOwner.label, ask.advice, {})
       );
@@ -4667,6 +5274,7 @@ export async function executeDispatchTool(
         text: [
           `Asked ${ask.id} on ${askOwner.label} (urgency ${ask.urgency}): ${ask.question}`,
           ...checkLines,
+          ...declinedLines,
           await followsAsk(askOwner, input.subscriptions),
           ...adviceLines,
         ].join("\n"),
@@ -4709,12 +5317,9 @@ export async function executeDispatchTool(
       const replyTo = itemReplyTo(args, "reply_to");
       const replyToAskTarget = itemReplyTo(args, "reply_to_ask");
       const replyToAsk =
-        replyToAskTarget === undefined ? undefined : normalizeUUID(replyToAskTarget.id);
-      if (replyToAskTarget !== undefined && replyToAsk === undefined) {
-        throw new ToolInputError(input.tool, [
-          await invalidReplyToAskProblem(client, owner, resolved),
-        ]);
-      }
+        replyToAskTarget === undefined
+          ? undefined
+          : await resolveReplyToAsk(input.tool, client, owner, resolved, replyToAskTarget.id);
       // reply_to and reply_to_ask are mutually exclusive, so at most one names a block: a block
       // of the comment reply_to answers, or the part of the ask reply_to_ask threads under.
       const replyToBlock = replyTo?.block ?? replyToAskTarget?.block;
@@ -4867,7 +5472,7 @@ export async function executeDispatchTool(
             details: { message: reply.id, in_reply_to: inReplyTo, posted: false },
           };
         }
-        const readBack = `${commandLine("dispatch_read", { message: inReplyTo })} reads the conversation back.`;
+        const readBack = conversationReadBack(inReplyTo);
         const parent = reply.in_reply_to ?? undefined;
         const follows = parent === inReplyTo ? undefined : parent;
         return {
@@ -4905,6 +5510,38 @@ export async function executeDispatchTool(
           issue: issueKey,
           message: message.id,
           ...(message.advice === undefined ? {} : { advice: message.advice }),
+        },
+      };
+    }
+    case "dispatch_send_to_agent": {
+      const session = stringArg(args, "session");
+      const inReplyTo = optionalString(args, "in_reply_to");
+      // The route answers once the first attempt has settled, so its state is what says whether
+      // the session has the words or whether Dispatch is still trying.
+      const message = await client.agentMessage(session, {
+        body: stringArg(args, "body"),
+        delivery: stringArg(args, "delivery") as MessageDeliveryMode,
+        ...(inReplyTo === undefined ? {} : { in_reply_to: inReplyTo }),
+      });
+      // Go marshals an empty delivery slice as `null`, so the route table's type is nullable;
+      // either way there is no attempt to read, which the `undefined` branch below already says.
+      const attempt = message.deliveries?.at(-1);
+      const readBack = conversationReadBack(message.id);
+      const arrival =
+        attempt === undefined
+          ? "Dispatch recorded no delivery attempt for it"
+          : attempt.state === "failed"
+            ? `its delivery failed: ${attempt.error ?? "the listener gave no reason"}`
+            : attempt.state === "pending"
+              ? "its delivery is still on its way"
+              : `it reached that session as ${attempt.delivery}`;
+      return {
+        text: `Sent message ${message.id} to session ${session}; ${arrival}. ${readBack}`,
+        details: {
+          session,
+          message: message.id,
+          ...(attempt === undefined ? {} : { delivery: attempt.state }),
+          ...(inReplyTo === undefined ? {} : { in_reply_to: inReplyTo }),
         },
       };
     }
@@ -4964,11 +5601,19 @@ export async function executeDispatchTool(
           .find((text) => text !== undefined) ??
         resolved.issue?.title ??
         "";
-      const checkLines = decisionBlockLines(edited.advice, {
+      const checkContext = {
         project: resolved.artifact.project,
         text: editAskText,
         configUrl: linkBase,
-      });
+      };
+      const checkLines = decisionBlockLines(edited.advice, checkContext);
+      // The issue's declined asks follow the blocks' own checks; renderAdvice's cadence line
+      // must stay the result's last line. A project document stands on no issue, and the server
+      // sends declined asks only for a write that does.
+      const declinedLines =
+        resolved.issue === undefined
+          ? []
+          : declinedAskLines(edited.advice, resolved.issue.key, linkBase);
       const adviceLines = await otherAdviceLines(() =>
         renderAdvice(input.tool, resolvedTopic(resolved).label, edited.advice, {})
       );
@@ -4980,6 +5625,7 @@ export async function executeDispatchTool(
         text: [
           `${applied}${await notSubscribed(resolvedTopic(resolved), input.subscriptions)}`,
           ...checkLines,
+          ...declinedLines,
           ...tokenTrailer,
           ...adviceLines,
         ].join("\n"),
@@ -5026,11 +5672,14 @@ export async function executeDispatchTool(
           );
         }
         const listed = await listDocumentBlocks(client, resolved.artifact);
+        // The token and the version come from the one answer the blocks came from, so the
+        // trailer names the document this listing was read from and nothing else.
+        const trailer = [
+          ...(listed.token === undefined ? [] : [`Document token: ${listed.token}`]),
+          `Document version: ${listed.version === null ? "none yet" : listed.version}`,
+        ];
         return {
-          text:
-            listed.token === undefined
-              ? listed.text
-              : `${listed.text}\n\nDocument token: ${listed.token}`,
+          text: `${listed.text}\n\n${trailer.join("\n")}`,
           details:
             resolved.owner.kind === "project"
               ? {
@@ -5174,6 +5823,21 @@ export async function executeDispatchTool(
       };
     }
     case "dispatch_result": {
+      const retract = optionalString(args, "retract");
+      if (retract !== undefined) {
+        const retraction = await client.retractResult(retract, {
+          actor,
+          reason: stringArg(args, "reason"),
+        });
+        return {
+          text: `Retracted result ${retraction.result_id}. ${actorText(retraction.actor)} retracted it at ${retraction.created_at}. The reason: ${retraction.reason}\n\nThe result stays readable, and it proves nothing from now on. Record a new result where the check still needs one.`,
+          details: {
+            result: retraction.result_id,
+            reason: retraction.reason,
+            created_at: retraction.created_at,
+          },
+        };
+      }
       const issue = stringArg(args, "issue");
       // Each optional field is omitted rather than passed as `undefined`: the input's optional
       // properties are exact (`exactOptionalPropertyTypes`, which claude-envoy compiles this
@@ -5209,16 +5873,73 @@ export async function executeDispatchTool(
     }
     case "dispatch_results": {
       const issue = stringArg(args, "issue");
-      const results = await client.issueResults(issue);
+      const at = optionalString(args, "at");
+      const brief = optionalBoolean(args, "brief") === true;
+      const results = await client.issueResults(issue, at);
+      const checks = results.checks ?? [];
       return {
-        text: formatCheckResults(results),
-        details: { issue, checks: results.checks.length },
+        text: formatCheckResults(results, brief),
+        details: {
+          issue,
+          checks: checks.length,
+          results: checks.reduce((total, check) => total + (check.results ?? []).length, 0),
+        },
       };
     }
     case "dispatch_artifact": {
       const summary = optionalString(args, "summary");
       const name = stringArg(args, "name");
       const content = optionalString(args, "content");
+      const artifactOwner = documentOwner();
+      // An upload under a name the owner already holds writes that document's next version, over
+      // the text it holds, so the command reads what the owner holds and refuses it. --force is
+      // what asks for the version, and the API writes one for every other caller as before.
+      if (optionalBoolean(args, "force") !== true) {
+        const held = artifactUnderName(
+          artifactOwner.kind === "project"
+            ? // unlinked, as every other read of a project's own documents is: without it the
+              // answer carries every issue-attached document of the project too, and an upload
+              // naming one of those is refused although the server would write a new document.
+              await client.listProjectArtifacts(artifactOwner.project, true)
+            : await client.listIssueArtifacts(issue()),
+          name
+        );
+        if (held !== undefined) {
+          throw new ToolInputError(input.tool, [
+            artifactNameExistsProblem(
+              held,
+              artifactOwner.kind === "project"
+                ? `project ${artifactOwner.project}`
+                : `issue ${issue()}`
+            ),
+          ]);
+        }
+      }
+      // Inline text is stored as Markdown: Dispatch parses it and stores its rendering, so a
+      // text it would write under another spelling is refused here rather than stored changed.
+      // The round trip is the store's own parse and render (POST /api/v1/markdown/round-trip).
+      // Only a Dispatch that holds no such route leaves the upload to make its own refusal, as
+      // it did before this check: every other failure refuses the upload, since a check that did
+      // not run says nothing about what the store would write.
+      if (content !== undefined) {
+        let stored: string | undefined;
+        try {
+          stored = await client.markdownRoundTrip(content);
+        } catch (error) {
+          if (!roundTripRouteAbsent(error)) {
+            throw new Error(storedTextCheckFailed(error, name), { cause: error });
+          }
+        }
+        // The store ends a document with a line feed the writer's own text need not carry, and
+        // that one line feed is no other spelling: both sides lose at most one before they are
+        // compared. Every other difference is refused.
+        if (
+          stored !== undefined &&
+          withoutFinalLineFeed(stored) !== withoutFinalLineFeed(content)
+        ) {
+          throw new ToolInputError(input.tool, [storedTextProblem(content, stored, name)]);
+        }
+      }
       const artifactInput =
         content === undefined
           ? {
@@ -5240,7 +5961,6 @@ export async function executeDispatchTool(
               ...(summary === undefined ? {} : { summary }),
               actor,
             };
-      const artifactOwner = documentOwner();
       const result =
         artifactOwner.kind === "project"
           ? await client.projectArtifact(artifactOwner.project, artifactInput)
@@ -5382,7 +6102,7 @@ export async function executeDispatchTool(
         const thread = await client.getMessageThread(messageIdOf(message) as string, sessionId);
         const issueKey = thread.message.issue_key;
         const [pictures, graph] = await Promise.all([
-          picturesOf(datedBodies([thread.message, ...thread.replies])),
+          picturesOf(datedBodies([thread.message, ...(thread.replies ?? [])])),
           issueKey === null
             ? []
             : graphSections(
@@ -5458,7 +6178,7 @@ export async function executeDispatchTool(
         );
         const commentRef = refTarget(ref, "comment", id);
         const [pictures, graph] = await Promise.all([
-          picturesOf(datedBodies([comment.comment, ...comment.replies])),
+          picturesOf(datedBodies([comment.comment, ...(comment.replies ?? [])])),
           graphSections(client, commentRef),
         ]);
         return {
@@ -5484,7 +6204,7 @@ export async function executeDispatchTool(
           ownerArguments.ref.id
         );
         const [pictures, graph] = await Promise.all([
-          picturesOf(datedBodies([messageRead.message, ...messageRead.replies])),
+          picturesOf(datedBodies([messageRead.message, ...(messageRead.replies ?? [])])),
           graphSections(client, messageRef),
         ]);
         return {
@@ -5576,7 +6296,7 @@ export async function executeDispatchTool(
                   `Issue: ${resolved.issue.key} [${resolved.issue.status}] ${resolved.issue.title}`,
                 ]),
             `Reference: ${documentRef}`,
-            `Versions: ${artifact.versions.length}`,
+            `Versions: ${(artifact.versions ?? []).length}`,
             ...(approval === undefined ? [] : [approval]),
             ...(await graphSections(client, documentRef)),
           ].join("\n"),
@@ -5624,7 +6344,10 @@ export async function executeDispatchTool(
         graphSections(client, dispatchIssueRef(read.issue.key)),
         liveAgents(client, holdsSession(read.issue.claim) || routeHeldBySession(read.issue)),
         picturesOf([
-          ...read.issue.open_asks.map((ask) => ({ text: ask.question, at: ask.created_at })),
+          ...(read.issue.open_asks ?? []).map((ask) => ({
+            text: ask.question,
+            at: ask.created_at,
+          })),
           ...(await eventTextsWhole(client, read.events)),
         ]),
         issueCoverageOrReason(client, read.issue.key),

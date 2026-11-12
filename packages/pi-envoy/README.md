@@ -278,7 +278,7 @@ messages; with Envoy on and no NATS server, or with its NATS seed refused (a see
 other servers, a failing `natsSeed` command, a seed variable that cannot be read), it keeps the
 tools and `/whoami`, takes no inbound messages, connects to no NATS server, and refuses
 `envoy_subscribe` and the Legion role claim with `inbound messages are off for this session: <why>`,
-the claim before any listener call, so a Legion process fails its boot rather than hold a role
+the claim before any listener call, so a Legion process stops rather than hold a role
 whose tasks reach nobody. When a
 section is off for a reason worth saying, the session says so once at its start:
 `envoy: no envoy.json at <path>: Dispatch and Envoy are off`, the lost `DISPATCH_URL` when
@@ -317,10 +317,12 @@ The shared specs in `@legion/contracts` supply each command's description and fl
 `@legion/envoy-client`'s `dispatch-command.ts` derives one command per spec and one flag per field.
 
 `dispatch artifact` takes exactly one upload source: a local `--path`, or inline `--content`. For
-example, an architect can post a specification directly, its text on stdin:
+example, an architect can post a specification directly, its text on stdin. Every issue is created
+with a `spec.md`, and the command refuses an upload under the name of a document the issue already
+holds, so this one carries `--force`, which writes the next version of it:
 
 ```sh
-dispatch artifact --issue LEGION-1 --name spec.md --content-file - <<'EOF'
+dispatch artifact --issue LEGION-1 --name spec.md --content-file - --force <<'EOF'
 # Design
 EOF
 ```

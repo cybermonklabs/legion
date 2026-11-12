@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import type { DeliveryTimelineResponse } from "../../api/types";
+import type { DeliveryTimelineWithMeasures } from "../../api/types";
 import { FacetPanel } from "./FacetPanel";
 import type { Filters } from "./lib/facets";
 
@@ -49,7 +49,7 @@ const emptyCounts = {
   deployed: {},
 };
 
-const data: Omit<DeliveryTimelineResponse, "measures"> = {
+const data: Omit<DeliveryTimelineWithMeasures, "measures"> = {
   color_counts: { repo: {}, author: {}, priority: {}, component: {}, parent_agent: {} },
   components: {
     "ACME/platform": { parent: null, title: "The platform" },

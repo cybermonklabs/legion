@@ -46,10 +46,11 @@ children. Then
 request approval of both documents with `dispatch request-approval --include-verification`, with
 a `--summary` whose last sentence states both reviews' results.
 A question you ask a person with `dispatch ask` goes on the root issue, and once you have handed it
-to them, end your turn: that hand-back returns the root's admission slot while you stay live to
+to them, end your turn: that hand-back moves the root to `awaiting_person`, which keeps its
+admission slot, while you stay live to
 read the person's comments and replies — when nothing else of the tree is at work: no other issue
 of the tree in a phase, the `legion` label still on, and no person or outside session holding the
-root's Dispatch claim. The root keeps its slot otherwise, and you run on. An approval request is the same:
+root's Dispatch claim. The root stays at `admitted` otherwise, and you run on. An approval request is the same:
 `dispatch request-approval`, then `register_gate` of that version, hands the spec to the human, so
 end your turn after the registration; so is a reply in the request's thread that leaves the turn
 with the human. The person's answer, resolution or reply on any ask of the root, their review of
@@ -59,6 +60,21 @@ still with them; so does a question or the request you wait on being retracted b
 settlement, closed by anyone who is not a person, or handed back to your turn, once nothing else is
 with the person. A root waiting on a person gets no `design-approved` notice: when the task says
 "this resume is your design-approved wake", act on it as on `design-approved`.
+Your root holds its admission slot throughout, as every issue holds the one the daemon gave it
+until it is done, leaves the workflow or waits only for its merge, so that resume takes no slot
+and comes however full the cap is. An answered root stands in the admission line until the pass
+that resumes it, and nothing is sent to you about that wait: your
+record's `waitingLine` gives the live place in the line and the line's length, and the daemon
+starts you again by itself on that pass. Beside the place, `waitingLine` gives the line's own
+fields: `part` and `kind`, `partPlace` of `partLength` inside that part, `holdsSlot`, true for
+your root, which holds its slot already, `since` for an issue whose work came back or
+`rootRank`, `ownRank` and `rootKey` for one that has not started, and `reason`, the daemon's
+own sentence for that place. `why` on any issue of your tree that is not working now says the
+same in one word and one sentence: `claim_stopped`, a claim nothing will wake; `waiting`, this
+line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue the record
+holds in the workflow that no admission list places. Your resume task says what answered the
+wait.
+Act on neither the place nor the wait.
 A person's request after the approval becomes a requirement only in the spec, at a version they
 approve; its work goes in this tree's pull request.
 Approval is pinned to the spec version: any new version closes the gate until it is approved,
@@ -163,12 +179,13 @@ Then
 `sign_off` (which moves it to retro) or send it back with `request_backward_move` (`issue`, `to`
 `implementing` or `testing`, `reason`). Your acceptance comment names each check with its result.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
-issue's own head: a result a child recorded against one of the root's checks proves nothing for
-the root, and a child that carries part of a root requirement proves that part with a check on
-the child's own Verification document whose `serves` names the requirement, which clears the
-root's coverage flag for it. The root's own checks are proven at the root's own head, or, for an
-`after_merge` check, on the branch the root's pull request merged into or on the repository's
-default branch, in the root's last round.
+issue's own head: each needs a pass standing at that head, which
+`dispatch results --issue <issue>` shows. A result a child recorded against one of the root's
+checks proves nothing for the root, and a child that carries part of a root requirement proves
+that part with a check on the child's own Verification document whose `serves` names the
+requirement, which clears the root's coverage flag for it. The root's own checks are proven at
+the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged
+into or on the repository's default branch, in the root's last round.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap
 the tester and the reviewer name and neither refuses, so your acceptance is the only gate on it:
 name that gap in your acceptance comment and decide there how each delivered item is proven at

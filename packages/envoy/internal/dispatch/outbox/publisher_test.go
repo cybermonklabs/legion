@@ -90,8 +90,9 @@ type unfenced struct{}
 
 func (unfenced) Deadline() time.Time { return time.Now().Add(time.Hour) }
 
-// errMentionPending is what publish returns when the event's destinations held a mentioned
-// session's copy back for a mention still being sent (destinations.leftToMention), and nothing
+// errMentionPending is what publish returns when the event's destinations held a copy back for a
+// mention still being sent - a mentioned session's own (destinations.leftToMention), or a role
+// route's copy waiting for the mention its key comes from (resolveRoleHolders) - and nothing
 // else kept the event from finishing: the batch blocks such an event for mentionPendingDelay
 // (settleEvent).
 var errMentionPending = errors.New("a mention's delivery is still undecided")
@@ -108,23 +109,40 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 	if err != nil {
 		return err
 	}
+	single := &batchEvent{
+		pendingEvent: pendingEvent{event: event, slug: slug, routing: routing},
+		item:         item,
+		delivered:    delivered,
+	}
 	want := newWanted()
-	_, _, _ = eventDestinations(event, item.Topic, routing, want)
+	_, _, _ = eventDestinations(ctx, deps, single, want)
 	found, err := loadLookups(ctx, deps.Store.Pool, want)
 	if err != nil {
 		return err
 	}
-	list, mentionPending, resolveErr := eventDestinations(event, item.Topic, routing, found)
-	single := &batchEvent{item: item, destinationsOf: list}
-	resolveRoleHolders(ctx, deps, []*batchEvent{single})
+	// As a batch does before it reads any destination, and the roles it resolved there are the
+	// ones its own role routes read (resolveDestinations, resolveRoleHolders).
+	resolvedRoles := resolveUnpinnedRoleMentions(ctx, deps, found.readings()...)
+	list, mentionPending, resolveErr := eventDestinations(ctx, deps, single, found)
+	single.destinationsOf, single.mentionPending = list, mentionPending
+	resolveRoleHolders(ctx, deps, []*batchEvent{single}, resolvedRoles)
 	sender := deps.Publisher.WindowUntil(nil)
 	var failures []error
 	for _, dest := range single.destinationsOf {
 		if _, ok := delivered[dest.subject]; ok {
 			continue
 		}
+		if dest.waiting {
+			// A role copy waiting on a mention sends nothing this read, as a batch's own plan
+			// sends nothing for it (destination.waiting, planChains); it holds its key there,
+			// which one event has nothing to hold.
+			continue
+		}
 		routed := item
 		routed.Topic = dest.subject
+		if dest.dedupeKey != "" {
+			routed.DedupeKey = dest.dedupeKey
+		}
 		var answer <-chan error
 		switch {
 		case dest.forward == nil:
@@ -143,24 +161,25 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 	if err := errors.Join(append(failures, resolveErr)...); err != nil {
 		return err
 	}
-	if mentionPending {
+	if single.mentionPending {
 		return errMentionPending
 	}
 	return nil
 }
 
 // routeTopics runs add, one of an event's route rules, over event with the followers and authors
-// it asks for read as a batch reads them, and returns the subjects it added.
-func routeTopics(t *testing.T, database *store.Store, event model.Event, add func(model.Event, lookup, *destinations) error) []string {
+// it asks for read as a batch reads them, and returns the subjects it added. The event's issue
+// has no route and no claimant here (routing), as none of these events' issues is claimed.
+func routeTopics(t *testing.T, database *store.Store, event model.Event, add func(model.Event, routing, lookup, *destinations) error) []string {
 	t.Helper()
 	want := newWanted()
-	_ = add(event, want, &destinations{seen: map[string]struct{}{}})
+	_ = add(event, routing{}, want, &destinations{seen: map[string]struct{}{}})
 	found, err := loadLookups(context.Background(), database.Pool, want)
 	if err != nil {
 		t.Fatalf("read the lookups: %v", err)
 	}
 	d := &destinations{seen: map[string]struct{}{}}
-	if err := add(event, found, d); err != nil {
+	if err := add(event, routing{}, found, d); err != nil {
 		t.Fatalf("add the routes: %v", err)
 	}
 	topics := []string{}
@@ -548,7 +567,7 @@ func TestPublishPreviousClaimantTellsTheSessionThatLostTheClaim(t *testing.T) {
 			database := storetest.Open(t)
 			seedIssue(t, database, "T-1", nil)
 			event := model.Event{Type: tc.eventType, Actor: tc.actor, Payload: tc.payload}
-			previousClaimant := func(event model.Event, _ lookup, d *destinations) error {
+			previousClaimant := func(event model.Event, _ routing, _ lookup, d *destinations) error {
 				addPreviousClaimant(event, d)
 				return nil
 			}
@@ -1188,6 +1207,77 @@ func TestRunRoutesAskResolutionToTheAskerAndHumanResolutionToTheRoute(t *testing
 				t.Fatalf("author route in_reply_to = %q, want %q", items[2].InReplyTo, askID)
 			}
 		})
+	}
+}
+
+// A person who declines an ask closes it like any other resolution, so the decline takes the same
+// road out: the issue topic, the issue's route, and every session following the ask on its own
+// topic, the asker among them. Each copy names the ask it answers, and carries the four sentences
+// Dispatch writes (model.DeclineDispatchWords) and the person's note in parts of their own, so the
+// reader never has to cut one out of the other.
+func TestADeclineTellsEveryFollowingSessionInDispatchsOwnWords(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	route := "role:legion-controller-x"
+	seedIssue(t, database, "T-1", &route)
+	askID := seedAsk(t, database, "T-1", model.Actor{Kind: "session", ID: "session-asker"}, "Ship it?")
+	seedFollower(t, database, askID, "session-replier")
+	person := model.Actor{Kind: "user", ID: "alice"}
+	note := "The vendor owns that date; I do not."
+	event := appendEvent(t, database, broker, model.Event{
+		IssueKey: new("T-1"),
+		Type:     "ask.resolved",
+		Actor:    person,
+		Payload: model.Ask{
+			ID: askID, IssueKey: new("T-1"), Question: "Ship it?", State: "resolved",
+			Resolution: &model.AskResolution{
+				Kind:          "declined",
+				Reason:        note,
+				DispatchWords: model.DeclineDispatchWords,
+				Actor:         person,
+				At:            time.Unix(1, 0).UTC(),
+			},
+		},
+	})
+	wantTopics := []string{
+		"notifications.dispatch.issue.T-1.ask.resolved",
+		"notifications.role.legion-controller-x",
+		"notifications.agent.session-asker",
+		"notifications.agent.session-replier",
+	}
+	publisher := &recordingPublisher{}
+	stop := run(t, database, publisher, broker)
+	defer stop()
+
+	waitFor(t, time.Second, "decline publication", func() bool {
+		return len(publisher.all()) == len(wantTopics) && publishedAt(t, database, event.ID) != nil
+	})
+	items := publisher.all()
+	if topics := topicsOf(items); !reflect.DeepEqual(topics, wantTopics) {
+		t.Fatalf("published to %#v, want %#v", topics, wantTopics)
+	}
+	for index, item := range items {
+		if item.InReplyTo != askID {
+			t.Fatalf("publication %d (%s) in_reply_to = %q, want the declined ask %q", index, item.Topic, item.InReplyTo, askID)
+		}
+		var payload struct {
+			Payload struct {
+				Resolution model.AskResolution `json:"resolution"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(item.Payload), &payload); err != nil {
+			t.Fatalf("decode event payload %s: %v", item.Payload, err)
+		}
+		resolution := payload.Payload.Resolution
+		if resolution.Kind != "declined" {
+			t.Fatalf("publication %d (%s) resolution kind = %q, want declined", index, item.Topic, resolution.Kind)
+		}
+		if resolution.DispatchWords != model.DeclineDispatchWords {
+			t.Fatalf("publication %d (%s) dispatch_words = %q, want %q", index, item.Topic, resolution.DispatchWords, model.DeclineDispatchWords)
+		}
+		if resolution.Reason != note {
+			t.Fatalf("publication %d (%s) reason = %q, want the person's note %q alone", index, item.Topic, resolution.Reason, note)
+		}
 	}
 }
 

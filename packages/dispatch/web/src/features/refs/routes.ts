@@ -850,7 +850,7 @@ export function itemRoute(
  *  the shape every in-app thread link already uses. A typed ask block is named by its block
  *  fragment, which is how a decision block is focused, rather than by the ask's id. */
 export function documentItemPath(
-  artifact: Pick<Artifact, "issue_key" | "kind" | "primary" | "project" | "slug">,
+  artifact: Pick<Artifact, "issue_key" | "kind" | "primary" | "project" | "session_id" | "slug">,
   item: { blockID?: string; id: string; kind: "ask" | "comment" }
 ): string {
   const path = buildReferencePath(documentRoute(artifact));
@@ -1153,4 +1153,11 @@ export const AGENT_LIVE_PATH = "/agents/:sessionId/live";
  */
 export function routeFillsViewport(pathname: string): boolean {
   return matchPath(AGENT_LIVE_PATH, pathname) !== null;
+}
+
+/** The session whose live view `pathname` names, and `undefined` on every other address. The
+ *  address is read here, beside the pattern, because a surface outside this module holds no
+ *  live route of its own: its link into a live view is `AgentName`'s (`biome.json`). */
+export function liveViewSessionOf(pathname: string): string | undefined {
+  return matchPath(AGENT_LIVE_PATH, pathname)?.params.sessionId;
 }

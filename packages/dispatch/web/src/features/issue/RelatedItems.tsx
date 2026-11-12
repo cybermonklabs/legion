@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
 
 import { api } from "../../api/client";
-import type { Suggestions, WriteSuggestion } from "../../api/types";
+import type { SearchOwner, Suggestions, WriteSuggestion } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
   badgeLow,
@@ -13,9 +13,8 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { statusText } from "../project/board-model";
-import { Timestamp } from "../refs/Timestamp";
 import { AskHitStatus } from "../search/AskHitStatus";
-import { kindLabel } from "../search/search-model";
+import { kindLabel, searchResultKind } from "../search/search-model";
 import { RELATED_DEBOUNCE_MS, RELATED_TITLE_MIN } from "./related-timing";
 
 /**
@@ -97,10 +96,9 @@ export function RelatedItems({ project, title }: { project: string; title: strin
 }
 
 /**
- * Exactly one of the check's three forms, then the past decision when the check found one.
- * Which form the answer holds is the contract's judgement (`relatedCheckFormOf`), the same one
- * the CLI reads; this only renders it. `title_matches` is not shown: this route writes nothing,
- * so no title overlap was forced past.
+ * Exactly one of the check's three forms. Which form the answer holds is the contract's
+ * judgement (`relatedCheckFormOf`), the same one the CLI reads; this only renders it.
+ * `title_matches` is not shown: this route writes nothing, so no title overlap was forced past.
  */
 function RelatedForm({
   suggestions,
@@ -109,15 +107,14 @@ function RelatedForm({
   suggestions: Suggestions;
   title: string;
 }): ReactNode {
-  const { decision } = suggestions;
   const check = relatedCheckFormOf(suggestions);
-  let form: ReactNode;
   if (check.form === "not_made") {
-    form = (
+    return (
       <p className={textMutedOnSurface}>{notMadeText(check.reason, title, check.searchQuery)}</p>
     );
-  } else if (check.form === "items") {
-    form = (
+  }
+  if (check.form === "items") {
+    return (
       <>
         <p className={`font-medium ${textSecondaryOnSurface}`}>
           {/* A server predating the forms names no search mode, so the heading names none. */}
@@ -136,45 +133,44 @@ function RelatedForm({
         </ul>
       </>
     );
-  } else {
-    form = (
-      <p className={textMutedOnSurface}>
-        {check.mode === undefined
-          ? "Related-item check searched and found nothing."
-          : `Related-item check searched (${check.mode}) and found nothing.`}
-      </p>
-    );
   }
   return (
-    <>
-      {form}
-      {decision === undefined ? null : (
-        <div className="space-y-1">
-          <p className={`font-medium ${textSecondaryOnSurface}`}>
-            A past decision may already answer this:
-          </p>
-          <ul>
-            <RelatedItemRow item={decision}>
-              <p className={`text-xs ${textMutedOnSurface}`}>
-                Answered by {decision.answered_by}
-                {decision.answered_at === undefined ? null : (
-                  <>
-                    {" · "}
-                    <Timestamp at={decision.answered_at} />
-                  </>
-                )}
-              </p>
-              {/* One item per owner can collapse the decision's ask out of the related items,
-                  so where its ask stands is named here, inside the decision's own item. */}
-              {decision.ask === undefined ? null : (
-                <AskHitStatus ask={decision.ask} muted={false} />
-              )}
-            </RelatedItemRow>
-          </ul>
-        </div>
-      )}
-    </>
+    <p className={textMutedOnSurface}>
+      {check.mode === undefined
+        ? "Related-item check searched and found nothing."
+        : `Related-item check searched (${check.mode}) and found nothing.`}
+    </p>
   );
+}
+
+/** A suggestion's kind as the badge says it. The kind reaches the browser as the string the route
+ *  table declares, so one this build has no word for is shown as the server wrote it rather than
+ *  dropped. */
+function itemKindLabel(kind: string): string {
+  const known = searchResultKind(kind);
+  return known === undefined ? kind : kindLabel(known);
+}
+
+/** Where a suggestion's owner stands: an issue's lifecycle status, a document's `project/slug`.
+ *  `SearchOwner` is one flat shape whose issue fields are absent on a document and the other way
+ *  round, so each is read where it is and an owner carrying neither reads as nothing. */
+function ownerStanding(owner: SearchOwner): string {
+  const status = owner.status;
+  if (status !== undefined) {
+    return statusText(status);
+  }
+  const { project, slug } = owner;
+  return project === undefined || slug === undefined ? "" : `${project}/${slug}`;
+}
+
+/** The owner as the link names it: an issue's `KEY Title`, a document's name. An owner missing
+ *  the fields its kind carries names itself by its kind, which is all the row then knows. */
+function ownerLabel(owner: SearchOwner): string {
+  const { key, title } = owner;
+  if (key !== undefined) {
+    return title === undefined ? key : `${key} ${title}`;
+  }
+  return owner.name ?? owner.kind;
 }
 
 /**
@@ -197,11 +193,9 @@ function RelatedItemRow({
         className={`flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs ${textMutedOnSurface}`}
       >
         <span className={`rounded-full px-2 py-0.5 font-medium ${badgeLow.bg} ${badgeLow.text}`}>
-          {kindLabel(item.kind)}
+          {itemKindLabel(item.kind)}
         </span>
-        <span className="min-w-0 [overflow-wrap:anywhere]">
-          {owner.kind === "issue" ? statusText(owner.status) : `${owner.project}/${owner.slug}`}
-        </span>
+        <span className="min-w-0 [overflow-wrap:anywhere]">{ownerStanding(owner)}</span>
       </div>
       <a
         className={`block min-w-0 [overflow-wrap:anywhere] ${linkText} ${linkHoverText}`}
@@ -209,7 +203,7 @@ function RelatedItemRow({
         rel="noreferrer"
         target="_blank"
       >
-        {owner.kind === "issue" ? `${owner.key} ${owner.title}` : owner.name}
+        {ownerLabel(owner)}
       </a>
       {children}
     </li>

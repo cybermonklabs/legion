@@ -177,7 +177,9 @@ async function runSession(options: {
   return { requests, sessions };
 }
 
-/** Every `advisor-gate` entry the session recorded, in order. */
+/** Every `advisor-gate` entry the session recorded, in order. Every line is parsed, the last one
+ * included: `runSession` awaited `rpc.end()`, so nothing is still appending and a trailing
+ * fragment is a defect that must throw rather than be withheld (dispatch://INFRA-2188). */
 async function gateEntries(sessions: string): Promise<unknown[]> {
   const files = (await readdir(sessions, { recursive: true })).filter((file) =>
     file.endsWith(".jsonl")
@@ -340,6 +342,16 @@ test.skipIf(omp === undefined && !onActions)(
       port: 0,
       async fetch(request) {
         const route = new URL(request.url).pathname;
+        // The upload reads two things before it posts: the issue's own documents, so it can refuse
+        // a name the issue already carries, and the store's round trip of the markdown, so it can
+        // refuse text the store would change. An empty list and the text as given let it through.
+        if (request.method === "GET" && route === "/api/v1/issues/DSP-1/artifacts") {
+          return Response.json([]);
+        }
+        if (request.method === "POST" && route === "/api/v1/markdown/round-trip") {
+          const sent = (await request.json()) as { markdown?: string };
+          return Response.json({ markdown: sent.markdown });
+        }
         if (request.method === "POST" && route === "/api/v1/issues/DSP-1/artifacts") {
           const file = (await request.formData()).get("file");
           uploads.push(file instanceof Blob ? await file.text() : "");

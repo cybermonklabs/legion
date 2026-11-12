@@ -211,7 +211,9 @@ func TestAHeldPhasesRetryKeepsTheAssignmentItsWorkerStillServes(t *testing.T) {
 
 	// The tester's claim fails — a budget ran out — and the issue is held. The claim keeps the task
 	// it was working, and the turn it is in goes on serving that task's assignment.
-	applyAssignmentFact(t, h, engine, "claim-failed", intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleTester, Reason: "the launch budget ran out"})
+	applyAssignmentFact(t, h, engine, "claim-failed", intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleTester,
+		Reason: "the launch budget ran out", Cause: supervise.CauseLaunchRefused, Budgets: supervise.Budgets{LaunchFailures: 3},
+		Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2}})
 	assertIssuePhase(t, h, phase.Held)
 
 	// The architect retries the hold: testing again, with the same work, so the start hands the
@@ -247,7 +249,7 @@ func TestAHeldPhasesRetryKeepsTheAssignmentItsWorkerStillServes(t *testing.T) {
 func newAssignmentHarness(t *testing.T) (*harness, *workflow.Engine, *factRecorder) {
 	t.Helper()
 	return newWorkflowHarness(t, workflow.Config{Project: testProject, Repositories: testRepositories,
-		Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, MaxFixAttempts: 3})
+		Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3})
 }
 
 // applyAssignmentFact applies fact to the workflow under id, as the route that carries it would,
@@ -297,11 +299,9 @@ func seedAssignment(t *testing.T, h *harness, issue string, role claim.Role, ass
 
 // queuedStart is the newest start the outbox holds for role on issue, with its row id: the row the
 // outbox runner would deliver next.
-// A start of a phase worker is two rows (workflow.StartOrOwe): the relaunch, which carries no
-// task and brings the role's session back at once, and the row that carries the task and the
-// assignment and waits for the issue's admission slot. Only the second is the start these tests
-// read, and it is not always the newer of the two: a second transition before the slot replaces
-// the waiting row's payload in place, keeping its id, so the relaunch beside it is newer.
+// A phase worker's start is one row, which carries the task and the assignment and waits for the
+// issue's admission slot (workflow.StartOrOwe). A start with no task is a role admission brings
+// back beside it and carries no assignment, so it is not one of these.
 func queuedStart(t *testing.T, h *harness, issue string, role claim.Role) (int64, record.SuperviseRequest) {
 	t.Helper()
 	var id int64

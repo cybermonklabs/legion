@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "./__tests__/fake-clock";
+import { graphNode } from "./__tests__/graph-fixture";
 import { installFakeLiveSockets } from "./__tests__/live-socket-harness";
 import { answerIssuePatches } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
@@ -12,6 +13,12 @@ import { ApiError, api, NetworkError } from "./api/client";
 import { liveSocketFor } from "./api/live-socket";
 import type { AuthenticatedUser } from "./api/types";
 import { AuthGate } from "./app";
+// The Answers, document and project pages are lazy routes of the app. A page module's first
+// compile is not what a wait is for, so the modules are loaded here, with the test file, and no
+// wait measures that load.
+import "./features/answers/AnswersPage";
+import "./features/document/DocumentPage";
+import "./features/project/ProjectPage";
 import { SendStoppedError } from "./features/writes/keyed-write";
 import { plainWrite, writesOf } from "./features/writes/write-store";
 
@@ -200,7 +207,7 @@ test("a sign-in from another tab drops every write of the person before, stops i
     for (const spy of spies) spy.mockRestore();
     window.matchMedia = originalMatchMedia;
   }
-}, 15_000);
+});
 
 // W32. A session that lapses keeps the person's own writes: whoami answers 401 and the page shows
 // the sign-in page, every write stops trying and nothing more goes out, but both writes - one out,
@@ -303,7 +310,7 @@ test("a lapsed session keeps every write, and the same person's sign-in resumes 
     for (const spy of spies) spy.mockRestore();
     window.matchMedia = originalMatchMedia;
   }
-}, 15_000);
+});
 
 // (b) Signing out discards the person's own writes, so it asks first while any is unsent, naming
 // each: Cancel keeps them signed in with every write as it was. Confirmed, and once Dispatch has
@@ -412,7 +419,7 @@ test("signing out asks first, then drops every write here and tells every other 
     for (const spy of spies) spy.mockRestore();
     window.matchMedia = originalMatchMedia;
   }
-}, 15_000);
+});
 
 // (b) The person signed out in another tab of this browser: this tab drops every write they pressed
 // - out or refused - and stops trying it, so no tab holds a write whose kept file another tab let
@@ -483,7 +490,7 @@ test("a sign-out in another tab drops that person's writes here", async () => {
     for (const spy of spies) spy.mockRestore();
     window.matchMedia = originalMatchMedia;
   }
-}, 15_000);
+});
 
 // INFRA-292's precondition. The event feed's first subscription resumes from the sign-in check's
 // `event_head`, which is sound only while every read the page makes, and its socket, wait for that
@@ -548,13 +555,6 @@ test("nothing is read and no socket opens until whoami answers, and the feed res
 });
 
 test("project routes render the project page and a project document route", async () => {
-  // React.lazy loads each page module on its first render (app.tsx). Loading the two pages this
-  // test routes to first keeps their cold compile, hundreds of milliseconds on a loaded host, out
-  // of findBy's one-second window, which is for the routing under test.
-  await Promise.all([
-    import("./features/project/ProjectPage"),
-    import("./features/document/DocumentPage"),
-  ]);
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = (() =>
     ({
@@ -576,7 +576,13 @@ test("project routes render the project page and a project document route", asyn
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
-    { created_at: "2026-09-10T00:00:00Z", key: "CORE", name: "Core", open_asks: 0 },
+    {
+      created_at: "2026-09-10T00:00:00Z",
+      key: "CORE",
+      name: "Core",
+      open_asks: 0,
+      gated_steps: [],
+    },
   ]);
   const listProjectArtifacts = spyOn(api, "listProjectArtifacts").mockResolvedValue([]);
   // No architecture source: the bare project path opens on Issues.
@@ -593,6 +599,8 @@ test("project routes render the project page and a project document route", asyn
     name: "Design notes",
     primary: false,
     project: "CORE",
+    ref_key: "CORE/design-notes",
+    session_id: null,
     slug: "design-notes",
     versions: [],
   });
@@ -607,19 +615,25 @@ test("project routes render the project page and a project document route", asyn
     name: "Design notes",
     primary: false,
     project: "CORE",
+    ref_key: "CORE/design-notes",
+    session_id: null,
     slug: "design-notes",
     versions: [],
   };
   const documentReads = [
     spyOn(api, "getArtifact").mockResolvedValue(artifact),
-    spyOn(api, "getArtifactText").mockResolvedValue({ markdown: "", version: null }),
+    spyOn(api, "getArtifactText").mockResolvedValue({
+      markdown: "",
+      token: "sha256:design-notes",
+      version: null,
+    }),
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
     spyOn(api, "listArtifactComments").mockResolvedValue([]),
     spyOn(api, "listArtifactAsks").mockResolvedValue([]),
     spyOn(api, "getArtifactSubscribers").mockResolvedValue([]),
     spyOn(api, "getReferences").mockResolvedValue({
       edges: [],
-      node: { id: "artifact-1", kind: "artifact" },
+      node: graphNode({ id: "artifact-1", kind: "artifact" }),
     }),
   ];
   const renderRoute = (path: string) => {
@@ -666,9 +680,6 @@ test("project routes render the project page and a project document route", asyn
 });
 
 test("the Inbox page links to the answers page, which renders at /answers", async () => {
-  // React.lazy loads the page module on its first render; loading it first keeps its cold
-  // compile out of findBy's window, as the project-routes test above does.
-  await import("./features/answers/AnswersPage");
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = (() =>
     ({

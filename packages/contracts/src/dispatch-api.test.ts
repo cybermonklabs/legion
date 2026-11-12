@@ -32,6 +32,7 @@ import {
   DispatchTargetedCommentPayloadSchema,
   DispatchTargetedMessagePayloadSchema,
   type EditCommentInput,
+  everyBuildReadsSearch,
   type Handoff,
   HandoffRecordedPayloadSchema,
   type HandoffSummary,
@@ -45,6 +46,7 @@ import {
   IssueDeployedEventPayloadSchema,
   IssueEventPayloadSchema,
   type ItemBlocks,
+  inboxThreadRow,
   type Message,
   MessageDeliveryEventPayloadSchema,
   type MessageDeliveryMode,
@@ -56,6 +58,7 @@ import {
   type ReplyBlock,
   ReplyBlockSchema,
   retriesUnderKey,
+  SEARCH_MEMBERS_EVERY_BUILD_READS,
   serviceSubjectLabel,
   type TmuxPlace,
   type UserStateUpdatedEventPayload,
@@ -162,6 +165,7 @@ test("models Agent activity and open-ask aggregates", () => {
     open_asks: 2,
     roles: ["planner"],
     session_id: "planner-session",
+    state: "live",
     title: "Planner",
   } satisfies Agent;
 
@@ -185,6 +189,8 @@ test("carries a session's whole tmux place", () => {
     open_asks: 0,
     roles: ["planner"],
     session_id: "planner-session",
+    // The server always writes a session's state (model.Agent), so the document requires it.
+    state: "live",
     title: "Planner",
     tmux_place: {
       socket: "/tmp/tmux-1000/default",
@@ -428,6 +434,28 @@ test("parses an ask the close of its issue withdrew", () => {
   expect(parsed.resolution?.kind).toBe("withdrawn");
 });
 
+test("parses an ask a person declined to answer, note and Dispatch's words apart", () => {
+  const parsed = AskEventPayloadSchema.parse({
+    opened_event_id: 12,
+    question: "Ship it?",
+    resolution: {
+      kind: "declined",
+      reason: "Ask the release owner instead.",
+      dispatch_words:
+        "The person chose not to answer this question. Decide the next step without an answer. " +
+        "Do not ask this question again unless the facts change. Write in your work what you assumed.",
+      actor: { kind: "user", id: "alice@example.com" },
+      at: "2026-10-25T00:00:00Z",
+    },
+  });
+
+  expect([parsed.resolution?.kind, parsed.resolution?.reason]).toEqual([
+    "declined",
+    "Ask the release owner instead.",
+  ]);
+  expect(parsed.resolution?.dispatch_words).toStartWith("The person chose not to answer");
+});
+
 test("models answer changes, ask answer history, and the answers page", () => {
   const answer = {
     user: "alice@example.com",
@@ -438,6 +466,8 @@ test("models answer changes, ask answer history, and the answers page", () => {
   const ask = {
     id: "ask-1",
     issue_key: "CORE-1",
+    artifact_id: null,
+    block_id: null,
     author: { kind: "session", id: "session-1" },
     kind: "question",
     question: "Ship it?",
@@ -450,6 +480,9 @@ test("models answer changes, ask answer history, and the answers page", () => {
     opened_event_id: 7,
     created_at: "2026-10-08T00:00:00Z",
     edited_at: null,
+    asked_of: null,
+    asked_of_by: null,
+    asked_of_at: null,
   } satisfies Ask;
   const input = {
     selected: ["Hold"],
@@ -621,7 +654,7 @@ test("models the Inbox's Reply and Agent rows and the read mark's event", () => 
     payload: read,
   } satisfies DispatchEvent;
 
-  const agent = page.rows[3];
+  const agent = page.rows[3] === undefined ? undefined : inboxThreadRow(page.rows[3]);
   expect([
     page.rows.map((row) => `${row.kind}:${row.reply.kind}`),
     page.rows.map((row) => row.unread_count),
@@ -730,6 +763,8 @@ test("models full orphaned anchor refresh events without a notification", () => 
   };
   const ask: Ask = {
     anchor,
+    artifact_id: null,
+    block_id: null,
     anchor_artifact: { name: "spec.md", primary: true, project: "CORE", slug: "spec" },
     answer: null,
     author: { id: "session-1", kind: "session" },
@@ -744,9 +779,15 @@ test("models full orphaned anchor refresh events without a notification", () => 
     question: "The release is ready, but the revised plan needs review. How should we proceed?",
     state: "open",
     urgency: "med",
+    asked_of: null,
+    asked_of_by: null,
+    asked_of_at: null,
   };
   const comment: Comment = {
     anchor,
+    answers: null,
+    artifact_id: null,
+    reply_block: null,
     author: { id: "session-1", kind: "session" },
     body: "This suggestion is now stale.",
     created_at: "2026-09-18T00:00:00Z",
@@ -807,6 +848,7 @@ test("accepts an artifact-owned ask edit event", () => {
       id: "ask-1",
       issue_key: null,
       artifact_id: "a4cf7999-cab2-4326-939d-cb1e76733cc3",
+      block_id: null,
       author: { kind: "session", id: "session-1" },
       kind: "question",
       question: "The document is ready for readers. How should we publish it?",
@@ -819,6 +861,9 @@ test("accepts an artifact-owned ask edit event", () => {
       opened_event_id: 3,
       created_at: "2026-09-11T04:00:00Z",
       edited_at: "2026-09-11T04:05:29Z",
+      asked_of: null,
+      asked_of_by: null,
+      asked_of_at: null,
       previous: {
         question: "The document needs a publication decision. How should we proceed?",
         options: [{ label: "Publish for readers" }],
@@ -925,6 +970,9 @@ test("models comment thread lifecycle events and author edits", () => {
   const actor: Actor = { id: "alice", kind: "user" };
   const comment: Comment = {
     anchor: null,
+    answers: null,
+    artifact_id: null,
+    reply_block: null,
     author: actor,
     body: "Edited discussion",
     created_at: "2026-09-10T00:00:00Z",
@@ -1024,6 +1072,9 @@ test("keeps the comment id, author, and message id when parsing event payloads",
   const actor: Actor = { id: "alice", kind: "user" };
   const comment: Comment = {
     anchor: null,
+    answers: null,
+    artifact_id: null,
+    reply_block: null,
     author: actor,
     body: "Please update this.",
     created_at: "2026-09-10T00:00:00Z",
@@ -1135,6 +1186,7 @@ test("a reply names the block it answers, and an event recorded before reads no 
     text: "Two.",
   };
   const reply: Message = {
+    broadcast_id: null,
     author: actor,
     body: "On two.",
     created_at: "2026-09-10T00:00:01Z",
@@ -1147,6 +1199,8 @@ test("a reply names the block it answers, and an event recorded before reads no 
   };
   const comment: Comment = {
     anchor: null,
+    answers: null,
+    artifact_id: null,
     ask_id: null,
     author: actor,
     body: "On the second paragraph.",
@@ -1284,17 +1338,19 @@ test("models per-block anchor reference counts", () => {
 });
 
 test("keeps document read tokens optional for older Dispatch servers", () => {
-  const block: ArtifactBlock = {
+  // The route table states `token` on both reads, so the contract's own shapes always carry one;
+  // an older Dispatch answers without it, which is that answer minus the field.
+  const block: Omit<ArtifactBlock, "token"> = {
     from: 0,
     id: "legacy-block",
     references: { asks: 0, comments: 0 },
     to: 6,
     type: "paragraph",
   };
-  const text: ArtifactText = { markdown: "legacy", version: null };
+  const text: Omit<ArtifactText, "token"> = { markdown: "legacy", version: null };
 
-  expect(block.token).toBeUndefined();
-  expect(text.token).toBeUndefined();
+  expect("token" in block).toBe(false);
+  expect("token" in text).toBe(false);
 });
 
 test("models a comment's and a direct message's blocks", () => {
@@ -1305,6 +1361,12 @@ test("models a comment's and a direct message's blocks", () => {
       id: comment,
       issue_key: "CORE-1",
       ref: `dispatch://CORE-1/comment/${comment}`,
+      made_by: [{ kind: "user", id: "alice" }],
+      made_at: "2026-10-28T00:00:00Z",
+      changed_by: [{ kind: "user", id: "alice" }],
+      changed_at: "2026-10-28T00:00:00Z",
+      parent: { kind: "issue", id: "CORE-1", ref: "dispatch://CORE-1" },
+      parent_version: null,
     },
     revision: 2,
     indexed: true,
@@ -1318,21 +1380,34 @@ test("models a comment's and a direct message's blocks", () => {
         to: "Alpha 😀.".length,
         changed_revision: 1,
         changed_at: "2026-10-28T00:00:00Z",
+        embedding: "embedded",
       },
     ],
   };
   // A direct message has no address and no revision; neither has any of its blocks.
   const directBlocks: ItemBlocks = {
-    item: { kind: "message", id: "33333333-3333-4333-8333-333333333333" },
+    item: {
+      kind: "message",
+      id: "33333333-3333-4333-8333-333333333333",
+      made_by: [{ kind: "user", id: "alice" }],
+      made_at: "2026-10-28T00:00:00Z",
+      changed_by: [{ kind: "user", id: "alice" }],
+      changed_at: "2026-10-28T00:00:00Z",
+      // A direct message belongs to no issue, so its node has no parent.
+      parent: null,
+      parent_version: null,
+    },
     indexed: true,
-    blocks: [{ id: "b1", type: "paragraph", text: "Where?", from: 0, to: 6 }],
+    blocks: [
+      { id: "b1", type: "paragraph", text: "Where?", from: 0, to: 6, embedding: "embedded" },
+    ],
   };
   // An item owed an index lists no block.
   const owed: ItemBlocks = { ...commentBlocks, indexed: false, blocks: [] };
 
-  expect(commentBlocks.blocks[0]?.to).toBe(9);
+  expect(commentBlocks.blocks?.[0]?.to).toBe(9);
   expect(directBlocks.revision).toBeUndefined();
-  expect(directBlocks.blocks[0]?.ref).toBeUndefined();
+  expect(directBlocks.blocks?.[0]?.ref).toBeUndefined();
   expect(owed.blocks).toEqual([]);
 });
 
@@ -1361,4 +1436,44 @@ test("a Kubernetes service subject renders as namespace/name, and anything else 
     "system:serviceaccount:legion:default:extra"
   );
   expect(serviceSubjectLabel("kubernetes-admin")).toBe("kubernetes-admin");
+});
+
+test("a search of the members every build reads stays on GET /api/v1/search", () => {
+  expect(SEARCH_MEMBERS_EVERY_BUILD_READS).toEqual(["q", "project", "limit", "offset", "session"]);
+
+  expect(everyBuildReadsSearch({})).toBe(true);
+  expect(everyBuildReadsSearch({ q: "astrolabe" })).toBe(true);
+  expect(everyBuildReadsSearch({ q: "astrolabe", project: "LEGION", limit: 20, offset: 40 })).toBe(
+    true
+  );
+
+  // `session` is declared on every operation of every build and read by `actingPerson` on every
+  // route, so an older build serves a request carrying it correctly; sending that request to a
+  // path the build refuses would be the inversion of what this rule is for.
+  expect(everyBuildReadsSearch({ q: "astrolabe", session: "session-1" })).toBe(true);
+
+  // Both clients build a request out of optional filters, so a filter nobody set is a key whose
+  // value is `undefined`. It narrows nothing and an older build drops nothing, so it is not
+  // carried.
+  expect(everyBuildReadsSearch({ q: "astrolabe", status: undefined })).toBe(true);
+  expect(
+    everyBuildReadsSearch({ q: "astrolabe", keywords_only: undefined, number_project: undefined })
+  ).toBe(true);
+});
+
+test("a search carrying anything beyond them goes to GET /api/v1/search/results", () => {
+  const beyond: Record<string, unknown> = {
+    number_project: "INFRA",
+    status: "in_progress",
+    author: "sami@theorem.dev",
+    updated_since: "2026-11-01T00:00:00Z",
+    keywords_only: true,
+  };
+  for (const [member, value] of Object.entries(beyond)) {
+    expect(everyBuildReadsSearch({ q: "astrolabe", [member]: value })).toBe(false);
+  }
+
+  // The rule reads the request's own keys, so a member added after this test was written routes
+  // itself without anyone remembering to list it here.
+  expect(everyBuildReadsSearch({ q: "astrolabe", component: "search" })).toBe(false);
 });

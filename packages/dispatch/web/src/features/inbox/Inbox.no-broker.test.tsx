@@ -189,10 +189,10 @@ test("with no broker, a gap in the event feed asks the list again once, and a fo
     // The gap's refresh goes through the scheduler, which fetches a read at most once a second
     // (`api/query-refresh.ts`), and the page loaded the Inbox well under a second ago; each wait
     // gives that interval room.
-    await waitFor(() => expect(getCredentialPending).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    await waitFor(() => expect(getCredentialPending).toHaveBeenCalledTimes(2));
     // The gap's whole-cache refresh refetches the inbox list; the held answer is not asked a
     // third time, and nothing blinks while the second call is out.
-    await waitFor(() => expect(getInbox).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    await waitFor(() => expect(getInbox).toHaveBeenCalledTimes(2));
     await act(async () => {
       await Promise.resolve();
     });
@@ -209,6 +209,7 @@ test("with no broker, a gap in the event feed asks the list again once, and a fo
             kind: "agent_secret",
             record_id: "record-1",
             requested_at: new Date().toISOString(),
+            session: { enrollment: null, request: null },
           },
         ],
       });
@@ -220,4 +221,4 @@ test("with no broker, a gap in the event feed asks the list again once, and a fo
     liveSocketFor(queryClient).close();
     sockets.restore();
   }
-}, 10_000);
+});

@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { ArchitectureSource, IssueSummary, ItemBlocks } from "@legion/contracts";
 import { bearerCredential } from "../bearer";
-import { DISPATCH_WRITE_RETRY, DispatchClient, DispatchGatewayError } from "../dispatch-http";
+import {
+  DISPATCH_WRITE_RETRY,
+  DispatchClient,
+  DispatchGatewayError,
+  type SearchOptions,
+} from "../dispatch-http";
 import { fakeSearchResponse } from "./fake-search-response";
 
 interface RecordedRequest {
@@ -218,6 +223,62 @@ describe("DispatchClient", () => {
       method: "GET",
       headers: { Authorization: "Bearer secret", Accept: "application/json" },
     });
+  });
+
+  test("a search of q alone stays on /api/v1/search", async () => {
+    const { fetchImpl, requests } = fakeFetch([jsonResponse(fakeSearchResponse([]))]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    await client.search("astrolabe");
+
+    expect(new URL(requests[0]?.url ?? "").pathname).toBe("/api/v1/search");
+  });
+
+  // A member `everyBuildReadsSearch` does not keep on `/api/v1/search` is one a Dispatch
+  // released before the results route drops, answering unnarrowed rows under the filters a
+  // person chose; that build answers the results path `404 no route` instead, which is a
+  // refusal. `SearchOptions` carries no such member today, so the test puts one on the request
+  // through a cast: the rule reads the request's own keys, so the day the command grows a
+  // filter it is routed without anyone remembering to.
+  test("a search carrying a member everyBuildReadsSearch drops asks for /api/v1/search/results", async () => {
+    const { fetchImpl, requests } = fakeFetch([jsonResponse(fakeSearchResponse([]))]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    await client.search("astrolabe", {
+      project: "LEGION",
+      status: "in_progress",
+    } as SearchOptions);
+
+    const url = new URL(requests[0]?.url ?? "");
+    expect(url.pathname + url.search).toBe(
+      "/api/v1/search/results?q=astrolabe&project=LEGION&status=in_progress"
+    );
+  });
+
+  // `keywords_only` is the one flag among the five, and the path is picked from the members the
+  // request carries. A boolean the URL dropped would ask for the results route and arrive
+  // without the flag, so the server would answer by meaning the search asked it to skip: the
+  // harm this route exists to stop, caused by the client rather than by an older build.
+  test("a boolean member reaches the URL, so the flag the path was picked for is sent", async () => {
+    const { fetchImpl, requests } = fakeFetch([jsonResponse(fakeSearchResponse([]))]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    await client.search("astrolabe", { keywords_only: true } as SearchOptions);
+
+    const url = new URL(requests[0]?.url ?? "");
+    expect(url.pathname + url.search).toBe("/api/v1/search/results?q=astrolabe&keywords_only=true");
   });
 
   test("lists this session's open asks with an optional server baseline", async () => {
@@ -1124,10 +1185,19 @@ describe("DispatchClient", () => {
 
   test("maps a comment's and a message's blocks reads to the API", async () => {
     const blocks: ItemBlocks = {
-      item: { kind: "comment", id: "comment-1" },
+      item: {
+        kind: "comment",
+        id: "comment-1",
+        made_by: null,
+        made_at: null,
+        changed_by: null,
+        changed_at: null,
+        parent: null,
+        parent_version: null,
+      },
       revision: 1,
       indexed: true,
-      blocks: [{ id: "b1", type: "paragraph", text: "Alpha.", from: 0, to: 6 }],
+      blocks: [{ id: "b1", type: "paragraph", text: "Alpha.", from: 0, to: 6, embedding: "none" }],
     };
     const { fetchImpl, requests } = fakeFetch([
       jsonResponse(blocks),
@@ -1189,7 +1259,13 @@ test("maps an ask resolution to the authenticated API", async () => {
 });
 
 test("createProject posts the key, name and actor and answers the created project", async () => {
-  const project = { key: "CORE", name: "Core", open_asks: 0, created_at: "2026-10-11T00:00:00Z" };
+  const project = {
+    key: "CORE",
+    name: "Core",
+    open_asks: 0,
+    created_at: "2026-10-11T00:00:00Z",
+    gated_steps: [],
+  };
   const { fetchImpl, requests } = fakeFetch([jsonResponse(project, 201)]);
   const client = new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl);
 

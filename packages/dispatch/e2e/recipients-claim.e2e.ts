@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 
 import { setLiveSessions } from "./agents";
@@ -15,7 +13,7 @@ import {
   releaseClaim,
 } from "./api";
 import { inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // A person's answer and replies on an ask reach the ask's followers, the session holding the
@@ -29,11 +27,8 @@ const routed = "e2e-reach-routed";
 // only on its next probe, and the default ladder probes once a second after the first second.
 const ROSTER = { intervals: [50, 50, 100, 200, 500], timeout: 15_000 };
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("the ask card lists the issue's claimant and route, and drops the claimant on release without a reload", async ({
+// @pr: A claim the server settles: the ask card names the claimant and the route, and a release drops the claimant with no reload.
+test("the ask card lists the issue's claimant and route, and drops the claimant on release without a reload @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -51,7 +46,7 @@ test("the ask card lists the issue's claimant and route, and drops the claimant 
     { session_id: routed, title: "Routed (e2e)" },
   ]);
   const read = await getAsk(ask.id);
-  expect(read.followers.map((row) => row.session_id)).toEqual([asker.id]);
+  expect((read.followers ?? []).map((row) => row.session_id)).toEqual([asker.id]);
   expect([read.claimant, read.route]).toEqual([claimant.id, `session:${routed}`]);
 
   const alice = await asUser(browser, "alice");

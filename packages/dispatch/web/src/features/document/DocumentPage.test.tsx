@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
 import type { Artifact, Subscriber } from "../../api/types";
@@ -14,7 +15,7 @@ import { DocumentPage } from "./DocumentPage";
 
 const getReferences = spyOn(api, "getReferences").mockResolvedValue({
   edges: [],
-  node: { id: "artifact-1", kind: "artifact" },
+  node: graphNode({ id: "artifact-1", kind: "artifact" }),
 });
 // The document's own blocks and the asks anchored in it: every rendered page reads both, and
 // none of these rows carries either.
@@ -36,6 +37,8 @@ const artifact: Artifact = {
   name: "Design notes",
   primary: false,
   project: "CORE",
+  ref_key: "CORE/design-notes",
+  session_id: null,
   slug: "design-notes",
   versions: [
     {
@@ -86,22 +89,22 @@ test("renders the header, the document, versions, and Referenced by for an unlin
         direction: "in",
         excerpt: { text: "See dispatch://CORE/artifact/design-notes" },
         kind: "mentions",
-        node: {
+        node: graphNode({
           id: "comment-1",
           issue_key: "CORE-1",
           kind: "comment",
           project: "CORE",
           ref: "dispatch://CORE-1/comment/comment-1",
-        },
+        }),
         source_seq: 1,
       },
     ],
-    node: {
+    node: graphNode({
       id: "artifact-1",
       kind: "artifact",
       project: "CORE",
       ref: "dispatch://CORE/artifact/design-notes",
-    },
+    }),
   });
   const { runtime, view } = renderDocumentPage();
 
@@ -191,6 +194,7 @@ test("shows Subscribed agents and unsubscribes after confirming the dialog", asy
       open_asks: 0,
       roles: [],
       session_id: "0123456789abcdef",
+      state: "live",
       title: "Planner (live)",
     },
   ]);

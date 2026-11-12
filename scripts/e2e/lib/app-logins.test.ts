@@ -10,14 +10,27 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { appTokenSources } from "./app-logins";
-import { holdsNoToken, release, standInGitHub, tokenOf } from "./stand-in-github-fixtures";
+import {
+  type AppCredentialSource,
+  type AppRole,
+  appCredentialSources,
+  appLogin,
+} from "./app-logins";
+import {
+  appPrivateKey,
+  holdsNoKey,
+  holdsNoToken,
+  release,
+  standInGitHub,
+  tokenOf,
+} from "./stand-in-github-fixtures";
 
 // lib/app-logins.ts run as the stage proofs run it, against the stand-in GitHub of
 // stand-in-github-fixtures.ts, which answers GraphQL's viewer and GET /apps/<slug> under an
-// installation token of one of its Apps and refuses every other request, the JWT routes
-// (GET /app, the installation routes) among them.
-const { url: standIn, seen, dir } = standInGitHub("app-logins-test");
+// installation token of one of its Apps, and the two App-JWT routes a key-configured App is
+// proved through to a request signed with that App's own key; it refuses every other request,
+// GET /app among them.
+const { url: standIn, seen, verified, dir } = standInGitHub("app-logins-test");
 const script = join(import.meta.dir, "app-logins.ts");
 // The home every child of this file runs under, so none of them reads the caller's.
 const home = join(dir, "home");
@@ -28,13 +41,18 @@ const unreachable = `http://127.0.0.1:${closed.port}/`;
 await closed.stop(true);
 
 const releaseIDs = [101, 202, 303, 404];
-// The home and the releases this file's children read, staged before the first row: `dir` is
-// reserved where `standInGitHub` was called and made by the hook that reservation registered, so
-// a run that selects no row of this file stages nothing and leaves nothing behind.
+// The stand-in Apps whose own key a row puts behind a private_key_command.
+const keyIDs = [101, 202, 404];
+// The home, the releases and the keys this file's children read, staged before the first row:
+// `dir` is reserved where `standInGitHub` was called and made by the hook that reservation
+// registered, so a run that selects no row of this file stages nothing and leaves nothing behind.
 beforeAll(() => {
   mkdirSync(home);
   for (const id of releaseIDs) {
     writeFileSync(join(dir, `release-${id}.json`), release({ sjawhar: tokenOf(id) }));
+  }
+  for (const id of keyIDs) {
+    writeFileSync(join(dir, `key-${id}.pem`), appPrivateKey(id), { mode: 0o600 });
   }
 });
 
@@ -49,6 +67,11 @@ function config(implement: string, review: string): string {
 }
 const app = (id: string, command = `cat ${join(dir, `release-${id}.json`)}`) =>
   `    app_id: "${id}"\n    token_command: ${JSON.stringify(command)}`;
+/** The `github_apps` entry of an App proved from its key: its id and a private_key_command that
+ * reads that App's PEM out of a file of this test's own, the `cat --` shape
+ * lib/github-apps.sh writes under --token-dir. */
+const keyApp = (id: string, command = `cat -- ${join(dir, `key-${id}.pem`)}`) =>
+  `    app_id: "${id}"\n    private_key_command: ${JSON.stringify(command)}`;
 
 // The run is asynchronous: the stand-in GitHub answers from this test's own event loop. The child
 // gets PATH, a home of the test's own and `env`, never the caller's whole environment. The helper
@@ -106,41 +129,51 @@ ${then}`;
 // A failure names the App it could not read by its role and app id, on one line of stderr.
 const namesApp = (role: string, id: string) => new RegExp(`\\b${role} App\\b.*\\bapp_id ${id}\\b`);
 
-/** Ends the process whose pid the file holds, and answers whether that process was still
- * running. */
-function endRecordedProcess(pidFile: string): boolean {
-  if (!existsSync(pidFile)) return false;
+/** How a recorded process ended: the pid file was never written, what it held was no pid to
+ * signal, the kernel refused the signal because the process had gone, or the signal ended a
+ * process that was still running. */
+type ProcessEnding = "no pid file" | "unusable pid" | "already gone" | "killed";
+
+/** Ends the process whose pid the file holds, and answers which of those four endings it came
+ * to. */
+function endRecordedProcess(pidFile: string): ProcessEnding {
+  if (!existsSync(pidFile)) return "no pid file";
   const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10);
   rmSync(pidFile, { force: true });
-  if (!Number.isInteger(pid) || pid <= 1) return false;
+  if (!Number.isInteger(pid) || pid <= 1) return "unusable pid";
   try {
     process.kill(pid, "SIGKILL");
-    return true;
+    return "killed";
   } catch {
-    // Already gone: nothing to end.
-    return false;
+    return "already gone";
   }
 }
 
 /**
  * Runs `body` against a pid file of its own, `name` under `dir`, ends whatever process that file
- * names once `body` is over, and asserts that the process was still running. A command that
- * escapes its caller's session outlives the run that started it, so a row that starts one has it
- * write down the pid it ends up with and ends it here; a descendant that ended before the run
- * did would leave the row proving nothing.
+ * names once `body` is over, and asserts that the ending was `killed`, the one of the four that
+ * means a running process was ended here. A command that escapes its caller's session outlives
+ * the run that started it, so a row that starts one has it write down the pid it ends up with
+ * and ends it here; a descendant that ended before the run did would leave the row proving
+ * nothing, and the assertion prints the ending it came to instead.
+ *
+ * A descendant that writes must ignore `SIGPIPE`. Its output goes into the socket whose only
+ * reader is the helper, and the row waits for the helper to exit, so on a stock kernel the next
+ * write after that exit ends the writer and `endRecordedProcess` answers `already gone`. The
+ * writing row below carries the measurement.
  */
 async function withEscapedDescendant(
   name: string,
   body: (pidFile: string) => Promise<void>
 ): Promise<void> {
   const pidFile = join(dir, name);
-  let wasRunning = false;
+  let ending: ProcessEnding | undefined;
   try {
     await body(pidFile);
   } finally {
-    wasRunning = endRecordedProcess(pidFile);
+    ending = endRecordedProcess(pidFile);
   }
-  expect(wasRunning).toBe(true);
+  expect(ending).toBe("killed");
 }
 
 describe("app-logins.ts", () => {
@@ -337,15 +370,23 @@ describe("app-logins.ts", () => {
     // row's does: the `sh` that prints `$$` is the `sh` that then runs the loop, and the pid
     // therefore names the writer itself. Killing it ends the writing and leaves the `sleep` of
     // the iteration it stood in, which holds the inherited stderr for the rest of its second and
-    // then exits. `setsid` puts the loop outside every process group the helper kills, and the
-    // helper's own exit does not stop it (measured: it was still writing into the socket
-    // `Bun.spawn` gave the command ten seconds later). It counts its writes rather than looping
-    // for ever, so a run that never reaches the cleanup still ends it, as the silent row's
-    // `sleep 60` ends itself; thirty seconds is six times the bound it must not push out.
+    // then exits. `setsid` puts the loop in a session of its own, so no process group the helper
+    // kills reaches it. Its fd 1 and fd 2 are the one socket whose only reader is the helper,
+    // and this row waits for the helper's exit, so that reader has always gone before the
+    // cleanup kills the loop. That is why the loop ignores `SIGPIPE`: on a stock Linux kernel
+    // the next write into a socket whose reader has gone raises it, and its default disposition
+    // ends the `sh` the loop runs in, which is what failed this row at random on CI's
+    // ubuntu-24.04 runners; under this repository's gVisor sandboxes that write fails with
+    // `EPIPE` but raises no `SIGPIPE`, so the loop survives. `trap "" PIPE` makes the two
+    // kernels agree (measured both ways: the same loop against a closed reader is ended with
+    // exit status 141, 128 + `SIGPIPE`, without it and runs to its end with it). It counts its
+    // writes rather than looping for ever, so a run that never reaches the cleanup still ends
+    // it, as the silent row's `sleep 60` ends itself; thirty seconds is six times the bound it
+    // must not push out.
     await withEscapedDescendant("escaped-writing.pid", async (pidFile) => {
       const escaped =
-        `setsid sh -c 'echo $$ >${pidFile}; i=0; while [ $i -lt 30 ]; do printf x >&2; sleep 1;` +
-        " i=$((i + 1)); done' >&2 & exit 3";
+        `setsid sh -c 'trap "" PIPE; echo $$ >${pidFile}; i=0; while [ $i -lt 30 ]; do` +
+        " printf x >&2; sleep 1; i=$((i + 1)); done' >&2 & exit 3";
       const started = Date.now();
       const { code, stderr } = await run(config(app("101", escaped), app("202")));
       expect(code).toBe(1);
@@ -498,13 +539,187 @@ describe("app-logins.ts", () => {
     }
   });
 
-  test("an App configured with no token_command is refused by name", () => {
+  // The key path, which lib/github-apps.sh writes for the review role: the App's own key behind
+  // a private_key_command, out of which this mints the App's installation token and then proves
+  // exactly what the token path proves.
+  test("an App proved from its key prints its bot login, its two JWT routes asked before the viewer", async () => {
+    seen.length = 0;
+    const { code, stdout, stderr } = await run(config(app("101"), keyApp("202")));
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({
+      implement: "example-implement[bot]",
+      review: "example-review[bot]",
+    });
+    // The token path's two reads, then the key path's four: the App JWT lists the App's
+    // installations and mints that installation's token, each asked once for that role, and the
+    // viewer and GET /apps/<slug> follow under the token it minted.
+    expect(seen).toEqual([
+      "POST /graphql",
+      "GET /apps/example-implement",
+      "GET /app/installations",
+      "POST /app/installations/2020/access_tokens",
+      "POST /graphql",
+      "GET /apps/example-review",
+    ]);
+    holdsNoToken(stdout);
+    holdsNoKey(stdout, keyIDs);
+  });
+
+  test("an App whose GET /apps/<slug> answers another id is refused from its key too, naming both ids", async () => {
+    const { code, stdout, stderr } = await run(config(app("101"), keyApp("404")));
+    expect(code).toBe(1);
+    expect(stdout).toBe("");
+    expect(stderr).toMatch(namesApp("review", "404"));
+    expect(stderr).toContain("answered App id 405, want 404");
+    // The field the credential was read from is the one the message names.
+    expect(stderr).toContain(
+      "github_apps.review.private_key_command's key minted another App's token"
+    );
+    holdsNoToken(stderr);
+    holdsNoKey(stderr, keyIDs);
+  });
+
+  test("an App without its role's write permission is refused from its key", async () => {
+    // The two Apps swapped, the review role on the implement App's key: GitHub answers that
+    // App's id, and checks: read.
+    const { code, stdout, stderr } = await run(config(app("202"), keyApp("101")));
+    expect(code).toBe(1);
+    expect(stdout).toBe("");
+    expect(stderr).toMatch(namesApp("review", "101"));
+    expect(stderr).toContain('answered permissions.checks "read", want write');
+    holdsNoToken(stderr);
+    holdsNoKey(stderr, keyIDs);
+  });
+
+  test("a key command that fails is named by its field, exit code and stderr, its key never quoted", async () => {
+    // It prints the key on stdout before it fails, so the row says what becomes of that too.
+    const failing = `cat -- ${join(dir, "key-202.pem")}; echo 'the key command refused' >&2; exit 5`;
+    const { code, stderr } = await run(config(app("101"), keyApp("202", failing)));
+    expect(code).toBe(1);
+    expect(stderr).toBe(
+      "the key command refused\napp-logins: the review App (app_id 202): github_apps.review.private_key_command failed (exit 5): the key command refused"
+    );
+    holdsNoToken(stderr);
+    holdsNoKey(stderr, keyIDs);
+  });
+
+  test("a key command that prints nothing is refused", async () => {
+    const { code, stderr } = await run(config(app("101"), keyApp("202", "true")));
+    expect(code).toBe(1);
+    expect(stderr).toBe(
+      "app-logins: the review App (app_id 202): github_apps.review.private_key_command produced empty output"
+    );
+    holdsNoToken(stderr);
+    holdsNoKey(stderr, keyIDs);
+  });
+
+  test("a key command runs as the daemon runs it: no NATS seed, stdin closed, owner, repositories and read-only untouched", async () => {
+    // The daemon sets none of the three narrowing variables for a key command, so each reaches
+    // it with the value the caller set, where the token command's row above reads them empty.
+    const probe =
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
+      'printf "%s|%s|%s|%s|%s|%s|%s" "$NATS_NKEY_SEED" "$NATS_DAEMON_NKEY_SEED" "$NATS_NKEY_SEED_FILE" "${LEGION_GITHUB_OWNER-unset}" "${LEGION_GITHUB_REPOS-unset}" "${LEGION_GITHUB_READ_ONLY-unset}" "$(cat)" >&2; exit 4';
+    const { code, stderr } = await run(config(app("101"), keyApp("202", probe)), {
+      NATS_NKEY_SEED: "pane-seed",
+      NATS_DAEMON_NKEY_SEED: "daemon-seed",
+      NATS_NKEY_SEED_FILE: "/seed-file",
+      LEGION_GITHUB_OWNER: "kept-owner",
+      LEGION_GITHUB_REPOS: "kept-repo",
+      LEGION_GITHUB_READ_ONLY: "1",
+    });
+    expect(code).toBe(1);
+    expect(stderr).toBe(
+      "||/seed-file|kept-owner|kept-repo|1|app-logins: the review App (app_id 202): github_apps.review.private_key_command failed (exit 4): ||/seed-file|kept-owner|kept-repo|1|"
+    );
+  });
+
+  // The clock the App JWT is signed from is read after the key command returns, not before it:
+  // a command may wait 35 minutes on a person where the JWT it signs lives nine, so a reading
+  // taken before a slow command would sign a JWT that expired while that command waited, and
+  // GitHub's 401 would stand in for the run's real cause. The row drives appLogin directly,
+  // since the clock is that function's parameter, and hands it a clock that runs twenty minutes
+  // behind until the key command has written its marker: a reading taken before the command is
+  // stale by those twenty minutes, and one taken after it is the real time. What it reads back
+  // is the `exp` of the JWT the stand-in verified, which the stand-in hands over in `verified`,
+  // so the assertion is about what that server accepted rather than about a JWT derived again
+  // here.
+  test("the App JWT is signed from a clock read after the key command, so a command that waits mints no expired JWT", async () => {
+    const marker = join(dir, "key-command-ran");
+    rmSync(marker, { force: true });
+    const staleBy = 20 * 60 * 1000;
+    // The marker is written before the key is printed, so every reading of this clock after the
+    // command returns sees it and every reading before the command runs does not.
+    const command = `touch -- ${marker}; cat -- ${join(dir, "key-202.pem")}`;
+    const source: AppCredentialSource = { appId: "202", kind: "private_key_command", command };
+    const now = () => new Date(existsSync(marker) ? Date.now() : Date.now() - staleBy);
+    verified.length = 0;
+    const login = await appLogin("review", source, standIn, now);
+    // Every answer the stand-in gave came before this instant, so a JWT still live now was live
+    // for each of them.
+    const answered = Date.now();
+    expect(login).toBe("example-review[bot]");
+    expect(existsSync(marker)).toBe(true);
+    // The one JWT, verified by both of the App-JWT routes the key path asks.
+    expect(verified.length).toBe(2);
+    for (const claims of verified) {
+      const expires = Number(claims.exp) * 1000;
+      const expired = Math.round((answered - expires) / 1000);
+      expect(
+        expires,
+        `the App JWT the stand-in verified carried exp ${claims.exp} with iat ${claims.iat}, which had expired ${expired} seconds before the stand-in answered: its clock was read ${staleBy / 60_000} minutes before the key command rather than after it`
+      ).toBeGreaterThan(answered);
+    }
+  });
+
+  // What `agent-secrets` prints when this deployment's broker holds no secret under the name it
+  // was given, the one failure of this helper whose fix is an input of the run rather than
+  // anything on GitHub.
+  const unknownSecret =
+    "echo 'agent-secrets: no agent secret has this name (UNKNOWN_SECRET)' >&2; exit 1";
+  /** The message appLogin ends on when `role`'s token command is refused that way. */
+  const refusalOf = async (role: AppRole, appId: string) => {
+    const source: AppCredentialSource = { appId, kind: "token_command", command: unknownSecret };
+    return await appLogin(role, source, standIn).then(
+      (login) => `appLogin answered ${login} where it had to refuse`,
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    );
+  };
+
+  test("a broker that serves no secret for the implement App names the input that names that secret", async () => {
+    const message = await refusalOf("implement", "101");
+    expect(message).toContain("(UNKNOWN_SECRET)");
+    expect(message).toContain(
+      "set LEGION_E2E_IMPLEMENT_APP_SECRET to the name of a github-app secret"
+    );
+  });
+
+  test("the same refusal for a review token_command names the key command, never the input require_app_inputs refuses", async () => {
+    const message = await refusalOf("review", "202");
+    expect(message).toContain("(UNKNOWN_SECRET)");
+    expect(message).toContain("set LEGION_E2E_REVIEW_APP_KEY_COMMAND");
+    // lib/github-apps.sh's require_app_inputs refuses LEGION_E2E_REVIEW_APP_SECRET by name, so
+    // an operator told to set it would be refused for doing as this said.
+    expect(message).not.toContain("LEGION_E2E_REVIEW_APP_SECRET");
+  });
+
+  test("an App configured with neither credential field is refused by name, as is a config with no github_apps", () => {
     expect(() =>
-      appTokenSources(
-        'github_apps:\n  implement: { app_id: "1", private_key_command: "true" }\n  review: { app_id: "2", token_command: "true" }\n'
+      appCredentialSources(
+        'github_apps:\n  implement: { app_id: "1" }\n  review: { app_id: "2", token_command: "true" }\n'
       )
-    ).toThrow("github_apps.implement names its credential without a token_command");
-    expect(() => appTokenSources("project: ACME\n")).toThrow("the config has no github_apps");
+    ).toThrow(
+      "github_apps.implement names its credential without a token_command or a private_key_command"
+    );
+    expect(() => appCredentialSources("project: ACME\n")).toThrow("the config has no github_apps");
+  });
+
+  test("an App configured with both credential fields is refused by name", () => {
+    expect(() =>
+      appCredentialSources(
+        'github_apps:\n  implement: { app_id: "1", token_command: "true", private_key_command: "true" }\n  review: { app_id: "2", token_command: "true" }\n'
+      )
+    ).toThrow("github_apps.implement names both a token_command and a private_key_command");
   });
 });
 

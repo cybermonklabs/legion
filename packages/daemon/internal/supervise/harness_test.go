@@ -147,7 +147,9 @@ type memStore struct {
 	claims     map[claim.Token]Claim
 	deliveries map[claim.Token]Delivery
 	puts       []Claim
-	failures   map[string]error
+	// writes is each write and retirement of a pending delivery, in order (deliveryLog).
+	writes   []string
+	failures map[string]error
 	// onPut, when set, runs on every PutClaim before it is recorded.
 	onPut func(Claim)
 }
@@ -196,6 +198,7 @@ func (s *memStore) PutDelivery(_ context.Context, token claim.Token, d Delivery)
 		return fmt.Errorf("put delivery %s: no claim %s", d.ID, token)
 	}
 	s.deliveries[token] = d
+	s.writes = append(s.writes, "put "+d.ID)
 	return nil
 }
 
@@ -245,6 +248,7 @@ func (s *memStore) RetireDelivery(ctx context.Context, c Claim, deliveryID strin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.deliveries, c.Token)
+	s.writes = append(s.writes, "retire "+deliveryID)
 	return nil
 }
 
@@ -313,6 +317,17 @@ func (s *memStore) delivery(token claim.Token) (Delivery, bool) {
 	defer s.mu.Unlock()
 	d, ok := s.deliveries[token]
 	return d, ok
+}
+
+// deliveryLog is every write and retirement of a pending delivery, in order, as "put <id>" and
+// "retire <id>". A case reads it to see how a delivery ended: the real store releases what a
+// delivery holds of a person's decisions in the delete alone (its releaseKeptDecisions), so a
+// row overwritten in place by the next delivery leaves those rows held by an id that is gone,
+// and a write under an id after its retirement is that fault.
+func (s *memStore) deliveryLog() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.writes...)
 }
 
 func (s *memStore) history() []Claim {
@@ -582,6 +597,10 @@ func newBareHarness(t *testing.T) *harness {
 		// helper below records for every claim it brings up: a test exercising plugin staleness
 		// overrides it (or posts a RequestRegister naming a different one) itself.
 		PluginContract: 24,
+		// The gate of a daemon that paces nothing, which grants every refresh: every Deps carries
+		// one and none is nil, and a test that wants the lane bounded builds its own
+		// (NewRefreshGate, gatedHarness).
+		RefreshGate: NewRefreshGate(0),
 	}
 	return h
 }
@@ -746,6 +765,33 @@ func (h *harness) wantBudgets(want Budgets) {
 	h.t.Helper()
 	if got := h.budgets(); got != want {
 		h.t.Fatalf("budgets = %+v, want %+v", got, want)
+	}
+}
+
+// wantFailure is the whole record a failure leaves on the claim: the cause word the site that
+// failed it chose, the sentence that site wrote for a person to read — matched on a fragment,
+// since several of them carry the error the runtime or the provider answered with — and the
+// moment of the failure, which lies between the clock reading the caller took before the step
+// that failed the claim and the clock now. It says nothing of the claim's state: a claim an
+// operator retired after it failed carries the same record.
+func (h *harness) wantFailure(cause FailureCause, detail string, since time.Time) {
+	h.t.Helper()
+	got := h.claim()
+	if got.FailureCause == cause && strings.Contains(got.Failure, detail) &&
+		!got.FailedAt.Before(since) && !got.FailedAt.After(h.clock.Now()) {
+		return
+	}
+	h.t.Fatalf("the claim carries cause %q, failure %q and failed at %s; want cause %q, a failure naming %q, and a failure between %s and %s",
+		got.FailureCause, got.Failure, got.FailedAt, cause, detail, since, h.clock.Now())
+}
+
+// wantNoFailure is a claim that carries no failure record at all, which is every claim but one
+// the daemon has failed and not launched again.
+func (h *harness) wantNoFailure() {
+	h.t.Helper()
+	if got := h.claim(); got.FailureCause != "" || got.Failure != "" || !got.FailedAt.IsZero() {
+		h.t.Fatalf("the claim carries cause %q, failure %q and failed at %s, want no record of a failure",
+			got.FailureCause, got.Failure, got.FailedAt)
 	}
 }
 

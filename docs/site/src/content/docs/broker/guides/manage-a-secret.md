@@ -142,7 +142,19 @@ machine's Application Default Credentials are its own identity, and so does ever
   broker cannot read off the kind: an admin console password and a personal API key are both
   stored strings. Such a secret is `--tier human`, names its `--requesters`, and takes a
   `--max-grant` of an hour or less, so a person approves every release, only someone it names may
-  ask, and the grant is short enough to review while it is live. Any value but `true` is refused.
+  ask, and the grant is short enough to review while it is live. A person approves every release
+  of one even where a deployment runs a model judge: the judge refuses an administrator's
+  secret, so no airlock rules entry can move one of its requests off the person who approves it
+  ([The model judge](/legion/broker/concepts/#the-model-judge)). Any value but `true` is refused.
+- **`--shape`** is optional. It says what the stored value is, so the broker knows what it may do
+  to that value before it spends it. **`--shape token`** is a one-line credential, an API key or a
+  bearer token: the broker removes the whole trailing run of carriage returns and line feeds
+  before it hands the value over, unless the value is nothing but line endings, which it leaves as
+  it is. **`--shape document`** is a value whose every byte is part of it, a PEM key or a JSON
+  file: the broker removes nothing. A secret with no tag is read by the broker's own reading of
+  the value: that trailing run goes only where the rest of the value is not empty and holds no
+  carriage return and no line feed, so a PEM document keeps the line feed that ends it. Any word
+  but `token` and `document` is refused before anything is written.
 - **`--max-grant`** is optional, except with `--admin true` and with
   `--kind google-service-account`, where each needs it, of an hour or less. It is the longest
   `--ttl` a request for this secret may use.
@@ -155,8 +167,21 @@ machine's Application Default Credentials are its own identity, and so does ever
   Ctrl-S, Ctrl-Q, and Ctrl-C, Ctrl-\\ or Ctrl-Z inside a bracketed paste, refuses the value. The
   prompt keeps discarding through Enter or Ctrl-D and the paste's end before reporting the error
   and naming the pipe command. Anywhere
-  else the CLI reads standard input to its end, less one trailing newline. Empty values and
+  else the CLI reads standard input to its end. The CLI then reads what it stores by the same rule
+  the broker spends a value under, the secret's `--shape` above: a token loses its whole trailing
+  run of carriage returns and line feeds, a document loses nothing, and a value whose secret
+  carries no shape tag loses that run only where the rest of it is not empty and holds no carriage
+  return and no line feed. Where that rule removes nothing, one final line feed goes, so `echo`
+  and a file that ends in a newline store the value without one. `secret set` reads the secret's
+  own shape tag first, so a document's owner stores a document. Empty values and
   invalid UTF-8 are refused (exit 2) and write nothing.
+
+**Keeping a value's final line ending.** Tag the secret `--shape document`, and the broker removes
+nothing from its value. The CLI still removes one final line feed wherever the rule removes
+nothing, which covers a document and a value holding a line ending inside it, so pipe one more line
+ending than the value needs. For a value the rule trims, a one-line credential under
+`--shape token` or under no shape tag at all, no number of piped endings survives, so
+`--shape document` is the only way to keep one.
 
 The CLI checks your sign-in before it asks for the value, so a refused sign-in never has you type a
 secret for nothing. The secret is created on the broker's key with its tags, and the broker serves
@@ -275,10 +300,10 @@ form makes.
 
 ```console
 $ agent-secrets secret list
-NAME               OWNER            TIER   KIND          MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
-DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -          -              yes    -        -
-DEMO_GITHUB_APP    ada@example.com  agent  github-app    -          -              yes    -        -
-DEMO_LOGIN         ada@example.com  human  google-login  1h         -              yes    -        -
+NAME               OWNER            TIER   KIND          SHAPE  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
+DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -      -          -              yes    -        -
+DEMO_GITHUB_APP    ada@example.com  agent  github-app    -      -          -              yes    -        -
+DEMO_LOGIN         ada@example.com  human  google-login  -      1h         -              yes    -        -
 Every row is a secret in AWS Secrets Manager account 111122223333 in us-east-1.
 ```
 
@@ -300,6 +325,7 @@ github_owners: -
 requesters: -
 scopes: -
 admin: -
+shape: -
 max_grant: -
 default_grant: -
 created: 2026-10-06T20:31:08Z
@@ -331,7 +357,7 @@ retagged DEMO_DEPLOY_TOKEN in AWS Secrets Manager account 111122223333 in us-eas
 broker: serving DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 in us-east-1
 ```
 
-Name `--owner`, `--tier`, `--kind`, `--github-owners`, `--requesters`, `--scopes`, `--admin`, `--max-grant`, `--default-grant` or a combination. A retag that
+Name `--owner`, `--tier`, `--kind`, `--github-owners`, `--requesters`, `--scopes`, `--admin`, `--shape`, `--max-grant`, `--default-grant` or a combination. A retag that
 sets tags reads the owner and tier tags the secret holds and sends both in one request. On AWS,
 this lets an IAM condition inspect both tags. Every other tag or annotation stays as it is. For a
 secret missing an owner or tier tag, name that tag too.
@@ -339,7 +365,8 @@ secret missing an owner or tier tag, name that tag too.
 `--kind none` removes the kind tag and the `mint-service-account` tag written with it,
 `--github-owners none` removes the GitHub owners, `--requesters none` removes the list of who may
 ask, `--scopes none` removes the scopes, so the token carries `cloud-platform` alone again,
-`--admin none` removes the administrator's mark, `--max-grant none` removes the max grant, and
+`--admin none` removes the administrator's mark, `--shape none` removes the shape, so the broker
+reads the value for itself again, `--max-grant none` removes the max grant, and
 `--default-grant none` removes the opt-out. A
 removal is a retag of its own: it changes no other tag, so the cloud refusing it leaves the secret
 as it was. A retag that names `none` beside another change is refused before it writes anything.
@@ -461,10 +488,10 @@ that moment is both), and the **earliest** it can be purged:
 
 ```console
 $ agent-secrets secret list
-NAME               OWNER            TIER   KIND  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
-DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -          -              yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
-DEMO_EMPTY_KEY     ada@example.com  human  -     -          -              yes    -                     -
-DEMO_SHARED_KEY    shared           human  -     -          -              yes    -                     -
+NAME               OWNER            TIER   KIND  SHAPE  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
+DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -      -          -              yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
+DEMO_EMPTY_KEY     ada@example.com  human  -     -      -          -              yes    -                     -
+DEMO_SHARED_KEY    shared           human  -     -      -          -              yes    -                     -
 EARLIEST_PURGE is the deletion plus Secrets Manager's 7-day minimum recovery window: restore works at least until then; the window the delete chose may be longer.
 ```
 

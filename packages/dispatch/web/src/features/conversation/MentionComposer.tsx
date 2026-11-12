@@ -21,6 +21,7 @@ import {
   apiErrorMessage,
   isAnchorMissing,
   isCapExceeded,
+  isDecisionBlockInBody,
 } from "../../api/client";
 import { issueCollaboratorsQuery } from "../../api/queries";
 import type {
@@ -174,7 +175,7 @@ function roleOptions(
 ): MentionOption[] {
   const byRole = new Map<string, Agent>();
   for (const agent of agents) {
-    for (const role of agent.roles) byRole.set(role, agent);
+    for (const role of agent.roles ?? []) byRole.set(role, agent);
   }
   return [...byRole.entries()]
     .sort(([left], [right]) => {
@@ -187,7 +188,7 @@ function roleOptions(
           : 1;
     })
     .map(([role, agent]) => ({
-      capabilities: agent.capabilities,
+      capabilities: agent.capabilities ?? [],
       detail: `${agent.dir} · ${new Date(agent.last_seen).toLocaleString()}`,
       holder: text.sessionText(agent.session_id, agent.title),
       sessionId: agent.session_id,
@@ -208,7 +209,7 @@ export function mentionOptions(
         (left, right) => right.last_seen - left.last_seen || left.title.localeCompare(right.title)
       )
       .map((agent) => ({
-        capabilities: agent.capabilities,
+        capabilities: agent.capabilities ?? [],
         detail: `${agent.dir} · ${new Date(agent.last_seen).toLocaleString()}`,
         holder: text.sessionText(agent.session_id, agent.title),
         sessionId: agent.session_id,
@@ -454,7 +455,7 @@ function draftRefusal(
  *  this send names - the margin's, when the server refused the send for a mark it cannot see and
  *  the margin could not write that mark again - else the words of a refusal written for the
  *  reader (the server's missing anchor, a send they stopped, a text past a bound Dispatch holds
- *  it to), else the page's wording around what went wrong. */
+ *  it to, a text holding a decision block), else the page's wording around what went wrong. */
 function refusalMessage(
   refusal: Error,
   anchor: ComposerAnchor | undefined,
@@ -464,7 +465,10 @@ function refusalMessage(
   if (anchorMissing && anchorRefusal !== undefined && anchorRefusal.markId === anchor?.mark_id) {
     return anchorRefusal.text;
   }
-  return anchorMissing || refusal instanceof SendStoppedError || isCapExceeded(refusal)
+  return anchorMissing ||
+    refusal instanceof SendStoppedError ||
+    isCapExceeded(refusal) ||
+    isDecisionBlockInBody(refusal)
     ? refusal.message
     : `Couldn't send — ${apiErrorMessage(refusal, "network error")}`;
 }
@@ -730,7 +734,7 @@ export function MentionComposer({
       (answer) => {
         if (!current || !answer.indexed || answer.revision === undefined) return;
         const opened = textareaValue(editBody);
-        const spans = spansFromBlocks(editBody, opened, answer.blocks);
+        const spans = spansFromBlocks(editBody, opened, answer.blocks ?? []);
         if (spans === undefined) return;
         // What the reader typed while the read was out, measured from the body it answered.
         followedBlocks.current = followEdit(

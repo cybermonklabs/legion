@@ -36,7 +36,7 @@
 //	agent-secrets whoami [--json]
 //	agent-secrets sign --method M --url U [--enrollment E]
 //	agent-secrets secret list|show|create|set|retag|delete|restore ...
-//	agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] [--github-owner LOGIN [--github-repo NAME]... [--github-read-only]] -- <command> [args...]
+//	agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] [--github-owner LOGIN [--github-repo NAME]... [--github-read-only]] [--github-token] -- <command> [args...]
 //
 // Environment: AGENT_SECRETS_URL (the broker's base URL) and, for every session-authenticated
 // subcommand, either AGENT_SECRETS_KEY_DIR (an agent box or pod's key.pem and enrollment, the
@@ -138,7 +138,7 @@ var commands = []command{
 	{"machine revoke", "agent-secrets machine revoke <credential_id>",
 		"End one of your own machines' logins under this machine's login, as Dispatch's machine-login\npage does: it enrolls nothing more, and every session it enrolled ends. Revoking this\nmachine's own login ends this machine's broker access too."},
 	{"grant list", "agent-secrets grant list [--json]",
-		"List the live grants of your sessions and those you approved, under this machine's login:\neach one's id, secrets, how it was granted, who approved it, its session and operator, and\nwhen it expires. Dispatch's Live grants page lists the same."},
+		"List the live grants of your sessions and those you approved, under this machine's login:\neach one's id, secrets, how it was granted, who approved it, who decided it (the model judge\nfor a grant it approved), its session and operator, and when it expires. Dispatch's Live\ngrants page lists the same."},
 	{"grant revoke", "agent-secrets grant revoke <grant_id>",
 		"End a grant as its operator or approver, under this machine's login, as Dispatch's Live\ngrants page does. Ending an automatic grant also makes its session ask before it gets those\nsecrets again."},
 	{"login", "agent-secrets login",
@@ -165,8 +165,8 @@ var commands = []command{
 		"Print this session's enrollment as the broker's JSON, as self --json does."},
 	{"sign", "agent-secrets sign --method M --url U [--enrollment E]",
 		"Print the proof this session would sign for one broker call, without making the call."},
-	{"", "agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] [--github-owner LOGIN [--github-repo NAME]... [--github-read-only]] -- <command> [args...]",
-		"Request secrets, wait up to --wait (default 30m) for a person to decide, and run <command>\nwith each granted secret in its environment under its NAME; nothing runs unless all are\ngranted. One line on stderr names those secrets and the broker and store they came from,\nnever a value. A name a person must approve needs --reason; with none the\nwhole request is denied. The grant lasts --ttl, or 15 minutes when any secret is human tier and 12 hours otherwise (until this session ends when every secret is tagged default-grant=session). --github-owner narrows each\nGitHub App token the grant releases to that account's installation, and --github-repo and\n--github-read-only narrow it further, to those repositories and to read access; a token\nnarrowed to repositories alone keeps every permission the App holds, so a machine that must\nonly read needs --github-read-only too. <command> runs only once the broker answers that it\napplied the narrowing."},
+	{"", "agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] [--github-owner LOGIN [--github-repo NAME]... [--github-read-only]] [--github-token] -- <command> [args...]",
+		"Request secrets, wait up to --wait (default 30m) for a person to decide, and run <command>\nwith each granted secret in its environment under its NAME; nothing runs unless all are\ngranted. One line on stderr names those secrets and the broker and store they came from,\nnever a value. A name a person must approve needs --reason; with none the\nwhole request is denied. The grant lasts --ttl, or 15 minutes when any secret is human tier and 12 hours otherwise (until this session ends when every secret is tagged default-grant=session). --github-owner narrows each\nGitHub App token the grant releases to that account's installation, and --github-repo and\n--github-read-only narrow it further, to those repositories and to read access; a token\nnarrowed to repositories alone keeps every permission the App holds, so a machine that must\nonly read needs --github-read-only too. <command> runs only once the broker answers that it\napplied the narrowing. Each GitHub App secret's NAME holds the JSON object of installations\nthe release makes; with --github-token it holds that one installation's token alone, which is\nthe form a command that sends the token to GitHub needs. --github-token needs --github-owner,\nand nothing runs when a release holds other than one installation, or when the grant releases\nno GitHub App token at all."},
 }
 
 // usageEnvironment closes usage: the variables every form reads, and the exit codes.
@@ -1143,6 +1143,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		return nil
 	})
 	githubReadOnly := flags.Bool("github-read-only", false, "narrow the GitHub App token further, to contents: read, metadata: read, pull_requests: read and actions: read")
+	githubToken := flags.Bool("github-token", false, "hand over each GitHub App token alone, in place of the JSON object of installations the release carries: the form a command that sends the token to GitHub needs, and it needs --github-owner")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -1151,7 +1152,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets: %v\n", err)
 		return exitUsageError
 	}
-	narrowing, err := githubNarrowing(*githubOwner, flagGiven(flags, "github-owner"), githubRepos, *githubReadOnly)
+	narrowing, err := githubNarrowing(*githubOwner, flagGiven(flags, "github-owner"), githubRepos, *githubReadOnly, *githubToken)
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets: %v\n", err)
 		return exitUsageError
@@ -1252,6 +1253,19 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	// --github-token: each released GitHub App token is handed over alone, in place of the JSON
+	// object of installations it is released in (narrow.go). It is settled here, with every name
+	// released and before the airlock writes a file, so a refusal leaves nothing behind and runs
+	// nothing. A name the broker holds behind its airlock is in no released value at all, so a
+	// grant of such a name alone is refused rather than run with a document GitHub reads as no
+	// token.
+	if *githubToken {
+		if err := githubTokensAlone(values.Values); err != nil {
+			fmt.Fprintf(stderr, "agent-secrets: %v; nothing was run\n", err)
+			return 1
+		}
+	}
+
 	// The airlock's two files are written before anything is said or run: without the trust
 	// bundle the command cannot verify the proxy, and a command that cannot reach its secret is
 	// better refused here than failed halfway through its own work.
@@ -1278,7 +1292,6 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	// never a value. A reader of the command's log can tell these values from another secrets
 	// CLI's for the same names.
 	fmt.Fprintf(stderr, "agent-secrets: %s from %s\n", strings.Join(names, ", "), src())
-	warnTrailingNewline(stderr, values.Values)
 	if err := syscall.Exec(path, command, childEnv); err != nil {
 		fmt.Fprintf(stderr, "agent-secrets: exec %s: %v\n", command[0], err)
 		return 1
@@ -1402,43 +1415,4 @@ func buildChildEnv(environ []string, values map[string]string, release *AirlockR
 		envp = append(envp, name+"="+set[name])
 	}
 	return envp, nil
-}
-
-// warnTrailingNewline writes one line naming each released secret whose value ends in a line
-// ending, before the command runs. The value is injected exactly as it is stored, because a
-// stored value may legitimately be several lines, a PEM document among them (`secret set` reads
-// whatever is piped to it and drops only the newline that ends that pipe), and this CLI cannot
-// tell a value's own last newline from the one a producer added.
-//
-// It is worth a line of standard error all the same, because a one-line credential that ends in
-// a newline is a seeding mistake that is invisible where it is written and expensive where it is
-// read: a caller that puts such a value straight into an HTTP header gets a rejected header, and
-// the error reporting that can quote the whole secret into a log or a saved session
-// (dispatch://INFRA-1042). So the line names the secret, never any part of its value, and leaves
-// the decision with the reader: an ending that belongs to the value stays, and one that does not
-// is removed by storing the value again.
-//
-// The line says to pipe the value without its ending rather than to pipe the value, because
-// `secret set` drops one final LF from its standard input and nothing else (readSecretValue): a
-// value re-piped as it is keeps a CR, whether it ends in CRLF or in a lone CR, and keeps every
-// LF but the last.
-//
-// It reads the handed-over values alone, and not what a name behind the airlock puts in the
-// child's environment, because no airlock name's value can end in a line ending: it is either a
-// placeholder, which is agent-secrets-placeholder- and 32 characters of letters and digits, or a
-// JSON object encoding/json re-emitted with placeholders in it, which ends in '}'. A value that
-// ends in a newline behind the airlock ends in one inside the proxy, where the proxy puts it into
-// the request it rewrites and no command ever sees it.
-func warnTrailingNewline(stderr io.Writer, values map[string]string) {
-	ending := make([]string, 0, len(values))
-	for name, value := range values {
-		if strings.HasSuffix(value, "\n") || strings.HasSuffix(value, "\r") {
-			ending = append(ending, name)
-		}
-	}
-	if len(ending) == 0 {
-		return
-	}
-	slices.Sort(ending)
-	fmt.Fprintf(stderr, "agent-secrets: %s end in a line ending, and are injected as stored; keep it where the value is meant to end that way, and where it is not (a one-line credential a caller sends unstripped makes an error that can print the whole secret) store the value again with `agent-secrets secret set`, piping it with the ending already removed, since that form drops one final LF and no CR\n", strings.Join(ending, ", "))
 }

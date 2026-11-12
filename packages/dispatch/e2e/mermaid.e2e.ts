@@ -20,8 +20,6 @@
 // the page, so the style, hostile, worker, focus and redraw rows fail.
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { type BrowserContext, expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createComment, createIssue, createProject, editComment, getArtifactText } from "./api";
 import { blockId, documentEditor, openSpec, placeCaret } from "./editor";
 import {
@@ -33,7 +31,7 @@ import {
   settledScrollTop,
   withoutScrollAnchoring,
 } from "./mermaid-helpers";
-import { resetDatabase } from "./seed";
+import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // What this file's init scripts keep on the page's window.
@@ -115,7 +113,7 @@ async function expectDrawnDiagram(card: Locator, labels: readonly string[]): Pro
   // the page moved between Playwright's actionability check on the summary and the click's own
   // dispatch - and no `toggle` fired and no figure was redrawn. Nothing had opened the
   // disclosure, so the row waited out its whole expect timeout; it failed that way twice in 100
-  // repeats on firefox in a two-lane run of this pod. A click already taken leaves the source
+  // repeats on firefox in a two-worker run of this pod. A click already taken leaves the source
   // visible, so the retry clicks only while it is still hidden rather than closing what the
   // first click opened.
   //
@@ -278,16 +276,16 @@ async function expectNothingHostile(
   // The shadow-root walk is read first: it is the positive signal that the drawing is installed,
   // and walking it forces the style pass each hostile carrier would fetch from.
   expect(await hostileLeftovers(preview)).toEqual([]);
+  // `REQUEST_MARGIN_MS`, at the call: the walk above forced the style pass a hostile carrier
+  // would fetch from, and this window covers a fetch begun a task or two after that pass. A
+  // request that is never made marks nothing to wait on, so the window is the check.
   await sleep(REQUEST_MARGIN_MS);
   expect(await page.evaluate(() => window.__hostile)).toEqual([]);
   expect(requested).toEqual([]);
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("a comment holding a mermaid block draws a diagram, its source behind Mermaid source", async ({
+// @pr: The diagram family's one row on the lane: a mermaid block in a comment draws, with its source behind Mermaid source.
+test("a comment holding a mermaid block draws a diagram, its source behind Mermaid source @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -491,6 +489,9 @@ test("a document's mermaid diagram draws, styles nothing outside it, and fetches
     expect(ownStyles).toContainEqual(expect.stringContaining("--_text"));
     expect(ownStyles?.filter((style) => style?.includes("@import"))).toEqual([]);
 
+    // `REQUEST_MARGIN_MS`, at the call: the sheet whose `@import` would fetch the font is
+    // installed and resolved by the read above, and this window covers a fetch begun a task or
+    // two after that pass. A request that is never made marks nothing else to wait on.
     await sleep(REQUEST_MARGIN_MS);
     expect(googleFonts).toEqual([]);
   } finally {
@@ -667,6 +668,9 @@ test("a reader who scrolls after a block link lands is not pulled back once the 
     // either moves the offset the sampler reads or starts a smooth scroll inside the Node-side
     // margin after it.
     await settledScrollTop(page);
+    // `PULL_BACK_MARGIN_MS`, at the call: long enough for a smooth scroll a focus re-run started
+    // to have moved the offset the sampler above read, so an offset still equal below is a pull
+    // back that never happened rather than one this row read too early.
     await sleep(PULL_BACK_MARGIN_MS);
     expect(await page.evaluate(() => document.scrollingElement?.scrollTop)).toBe(scrolled);
     await expect(paragraph).not.toBeInViewport();

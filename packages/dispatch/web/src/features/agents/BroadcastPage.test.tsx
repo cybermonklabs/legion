@@ -1,9 +1,10 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { DELIVERY_DUPLICATE_WINDOW_MS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { wholeText } from "../../__tests__/whole-text";
@@ -17,6 +18,7 @@ import type {
   UserAgentStates,
 } from "../../api/types";
 import { BroadcastPage } from "./BroadcastPage";
+import { messageDeliveryFields } from "./delivery-fixture";
 
 const agents: Agent[] = [
   {
@@ -29,16 +31,17 @@ const agents: Agent[] = [
     open_asks: 0,
     roles: [],
     session_id: "planner-session",
+    state: "live",
     title: "Planner",
   },
 ];
 
 function attempt(overrides: Partial<MessageDelivery>): MessageDelivery {
   return {
+    ...messageDeliveryFields(),
     attempt: 1,
     created_at: new Date().toISOString(),
     delivery: "steer",
-    duplicate: false,
     envelope_id: null,
     error: null,
     message_id: "message-1",
@@ -61,11 +64,13 @@ function broadcast(deliveries: MessageDelivery[]): BroadcastRead {
         message: {
           author: { id: "alice", kind: "user" },
           body: "Report status.",
+          broadcast_id: "broadcast-1",
           created_at: new Date().toISOString(),
           deliveries,
           id: "message-1",
           in_reply_to: null,
           issue_key: null,
+          reply_block: null,
           target: "session:planner-session",
         },
         replies: [],
@@ -121,11 +126,13 @@ function threadMessage(id: string, author: Message["author"], body: string): Mes
   return {
     author,
     body,
+    broadcast_id: null,
     created_at: new Date().toISOString(),
     deliveries: [],
     id,
     in_reply_to: "message-1",
     issue_key: null,
+    reply_block: null,
     target: null,
   };
 }
@@ -134,7 +141,7 @@ function threadMessage(id: string, author: Message["author"], body: string): Mes
  *  own follow-up between them. */
 function answeredBroadcast(): BroadcastRead {
   const read = broadcast([attempt({ envelope_id: "e1", state: "sent" })]);
-  const [recipient] = read.recipients;
+  const [recipient] = read.recipients ?? [];
   if (recipient === undefined) throw new Error("the fixture has no recipient");
   const session = { id: "planner-session", kind: "session" } as const;
   return {
@@ -178,6 +185,7 @@ test("opening a broadcast marks the recipient's answers read by id, and only the
 // the row waits for the unread count or the replies it shows to change. A refetch of the broadcast
 // renders the same replies in a new array, as every render does, and sends nothing more.
 test("a refused mark is sent once and then left alone, however often the row re-renders", async () => {
+  jest.useFakeTimers();
   const page = renderBroadcast(
     answeredBroadcast(),
     undefined,
@@ -187,11 +195,10 @@ test("a refused mark is sent once and then left alone, however often the row re-
   try {
     await waitFor(() => expect(page.putAgentState).toHaveBeenCalledTimes(1));
     await page.queryClient.invalidateQueries({ queryKey: ["broadcast"] });
-    const quiet = Promise.withResolvers<void>();
-    setTimeout(quiet.resolve, 500);
-    await quiet.promise;
+    await tick(500);
     expect(page.putAgentState).toHaveBeenCalledTimes(1);
   } finally {
+    realClock();
     page.view.unmount();
     page.restore();
   }
@@ -345,7 +352,7 @@ test("the broadcast's body and a recipient's answer render as Markdown blocks, l
   const listed: BroadcastRead = {
     ...read,
     body: "Three things:\n\n1. **Stop** the deploy\n2. Check `deploy.yml`",
-    recipients: read.recipients.map((recipient) => ({
+    recipients: (read.recipients ?? []).map((recipient) => ({
       ...recipient,
       replies: [threadMessage("answer-1", session, "Done:\n\n- stopped\n- *green*")],
     })),

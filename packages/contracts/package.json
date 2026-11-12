@@ -28,6 +28,11 @@
       "types": "./src/legion-api.ts",
       "bun": "./src/legion-api.ts",
       "default": "./dist/legion-api.js"
+    },
+    "./trailing-slash": {
+      "types": "./src/trailing-slash.ts",
+      "bun": "./src/trailing-slash.ts",
+      "default": "./dist/trailing-slash.js"
     }
   },
   "main": "dist/index.js",
@@ -35,7 +40,9 @@
   "scripts": {
     "gen:go": "bun run scripts/gen-go.ts",
     "check:go": "bun run scripts/gen-go.ts --check",
-    "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/legion-api.ts --outdir dist --target bun --format esm",
+    "gen:api": "bun run scripts/gen-api.ts",
+    "check:api": "bun run scripts/gen-api.ts --check",
+    "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/legion-api.ts src/trailing-slash.ts --outdir dist --target bun --format esm",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test",
     "lint": "bunx biome check src/ schemas/"
@@ -47,6 +54,7 @@
     "@biomejs/biome": "^2.3.14",
     "@legion/test-fixtures": "workspace:*",
     "@types/bun": "latest",
+    "openapi-typescript": "7.13.0",
     "typescript": "^5.3.0"
   }
 }

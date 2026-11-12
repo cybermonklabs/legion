@@ -27,15 +27,18 @@ import (
 // Every read and write goes through the bucket's legacy nats.KeyValue, except what nats.go runs as
 // a watcher and the reads beside them: a watch of the bucket (WatchKeys), a key's history
 // (ReadHistory) and its stream's state (ReadStreamState) go through the same bucket's
-// jetstream.KeyValue instead. nats.go v1.50.0's legacy KV watcher, which its legacy Watch, History
-// and Keys all run, arms an init timer while its scan is pending whose callback can send on the
-// channels the subscription's end has just closed, a "send on closed channel" panic in a goroutine
-// nats.go owns (kv.go:1145-1172, unfixed through v1.55.0), while the jetstream package's watcher has
-// no such timer and closes its updates only on the subscription goroutine's own exit (jetstream/
-// kv.go:1215-1366). So the legacy handle is held unexported and KeyValue forwards only the calls it
-// checks: nothing can reach the legacy handle's Watch, WatchAll, WatchFiltered, History, Keys or
-// ListKeys through a KeyValue, and a call to one does not compile. A legacy handle cannot name the
-// connection it was opened on, so every constructor takes it.
+// jetstream.KeyValue instead, and the leader-answered read of one key (GetFromLeader) makes
+// nats.go's legacy GetLastMsg call on that jetstream context's connection. nats.go v1.50.0's
+// legacy KV watcher, which
+// its legacy Watch, History and Keys all run, arms an init timer while its scan is pending whose
+// callback can send on the channels the subscription's end has just closed, a "send on closed
+// channel" panic in a goroutine nats.go owns (kv.go:1145-1172, unfixed through v1.55.0), while
+// the jetstream package's watcher has no such timer and closes its updates only on the
+// subscription goroutine's own exit (jetstream/kv.go:1215-1366). So the legacy handle is held
+// unexported and KeyValue forwards only the calls it checks: nothing can reach the legacy
+// handle's Watch, WatchAll, WatchFiltered, History, Keys or ListKeys through a KeyValue, and a
+// call to one does not compile. A legacy handle cannot name the connection it was opened on, so
+// every constructor takes it.
 //
 // EnsureKeyValue and OpenKeyValue are how the listener and Dispatch open every bucket, and
 // WrapKeyValue pairs a legacy handle a caller already holds with its connection. A test that
@@ -50,10 +53,11 @@ type KeyValue struct {
 	// goes through.
 	watch jetstream.KeyValue
 	// streams is the same connection's jetstream context, which every read of the bucket's stream
-	// goes through (ReadStreamState): each read fetches the stream afresh. The jetstream handle's
-	// own Status stores the info it read in the handle's shared stream value with no lock (nats.go
-	// v1.50.0 jetstream/stream.go:460, from kv.go:1556), so two reads of one handle at once -- a
-	// watcher's stream probe beside its completion check -- race on it.
+	// goes through (ReadStreamState), and whose connection the leader read takes (GetFromLeader):
+	// each read fetches the stream afresh. The
+	// jetstream handle's own Status stores the info it read in the handle's shared stream value
+	// with no lock (nats.go v1.50.0 jetstream/stream.go:460, from kv.go:1556), so two reads of one
+	// handle at once -- a watcher's stream probe beside its completion check -- race on it.
 	streams jetstream.JetStream
 }
 

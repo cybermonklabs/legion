@@ -401,7 +401,10 @@ export function ProofDocument({
         const source = current ?? artifact;
         return {
           ...source,
-          versions: [...source.versions.filter(({ number }) => number !== created.number), created],
+          versions: [
+            ...(source.versions ?? []).filter(({ number }) => number !== created.number),
+            created,
+          ],
         };
       });
       onVersionChange(created.number);
@@ -1171,6 +1174,7 @@ export function ProofDocument({
             <AskBlockCard
               ask={blockAsks.find((candidate) => candidate.block_id === blockId)}
               host={host}
+              inBody={false}
               key={host.key}
               onAnswered={blockAnswered}
               owner={owner.kind === "document" ? owner : undefined}

@@ -15,10 +15,13 @@ import type {
   Ask,
   AskRead,
   CheckResultRecorded,
+  CheckResultRetraction,
+  CheckResultRetractionInput,
   ClaimedIssue,
   Comment,
   CommentRead,
   CommentWriteResponse,
+  CreateAgentMessageInput,
   CreateArtifactInput,
   CreateAskInput,
   CreateCommentInput,
@@ -27,12 +30,13 @@ import type {
   CreateProjectInput,
   CreateVersionInput,
   CredentialPendingResponse,
+  DispatchEvent,
   DispatchLimits,
   DispatchServiceErrorShape,
+  DocumentAdvised,
   EditArtifactInput,
   EditArtifactResponse,
   EditAskInput,
-  Event,
   GraphEdgeKind,
   GraphReferences,
   Handoff,
@@ -49,6 +53,7 @@ import type {
   IssueSummary,
   IssueSummaryPage,
   ItemBlocks,
+  MarkdownRoundTripResponse,
   Message,
   MessageRead,
   MessageReplyInput,
@@ -69,6 +74,7 @@ import type {
 import {
   answerNotKept,
   DEFAULT_ISSUE_READ_EVENTS,
+  everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
@@ -77,6 +83,7 @@ import {
   type IdempotencyLandedCode,
   retriesUnderKey,
 } from "@legion/contracts";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
@@ -268,6 +275,11 @@ export interface IssuePageRequest {
   readonly offset: number;
 }
 
+/** What the `dispatch search` command narrows by. It carries none of the five members the search
+ *  bar sends (`number_project`, `status`, `author`, `updated_since`, `keywords_only`): those
+ *  belong to the bar's own feature, and the command cannot narrow by them today. `search` reads
+ *  the request's keys rather than this shape, so the day one is added here it is routed to
+ *  `GET /api/v1/search/results` with nobody remembering to. */
 export interface SearchOptions {
   readonly project?: string;
   readonly limit?: number;
@@ -787,7 +799,7 @@ export class DispatchClient {
     readonly writeRetry: DispatchWriteRetry = DISPATCH_WRITE_RETRY
   ) {
     this.#credential = credential;
-    this.#baseUrl = baseUrl.replace(/\/+$/, "");
+    this.#baseUrl = withoutTrailingSlashes(baseUrl);
     this.#signal = requestSignal(signal);
     this.#madeAt = this.#now();
   }
@@ -852,6 +864,26 @@ export class DispatchClient {
     );
   }
 
+  /** `GET /api/v1/issues/{key}/artifacts`: every document and file the issue holds, each with
+   *  its versions, which is what `dispatch artifact` reads to refuse a name the issue already
+   *  holds. */
+  async listIssueArtifacts(issue: string): Promise<Artifact[]> {
+    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "artifacts"]);
+  }
+
+  /** `POST /api/v1/markdown/round-trip`: the markdown Dispatch would store for this text. The
+   *  route writes nothing: it parses the text and renders it again, as a document write does, so
+   *  a caller compares the answer with the text it holds and refuses a text the store would
+   *  change. */
+  async markdownRoundTrip(markdown: string): Promise<string> {
+    const answer: MarkdownRoundTripResponse = await this.#json(
+      "POST",
+      ["api", "v1", "markdown", "round-trip"],
+      { markdown }
+    );
+    return answer.markdown;
+  }
+
   async listProjectArtifacts(project: string, unlinked = false): Promise<Artifact[]> {
     return this.#json(
       "GET",
@@ -871,7 +903,7 @@ export class DispatchClient {
     project: string,
     input: CreateArtifactInput,
     key?: string
-  ): Promise<ArtifactUploadResponse> {
+  ): Promise<DocumentAdvised<ArtifactUploadResponse>> {
     return this.#upload(["api", "v1", "projects", project, "artifacts"], input, key);
   }
 
@@ -885,7 +917,7 @@ export class DispatchClient {
   async agentArtifact(
     sessionId: string,
     input: CreateArtifactInput
-  ): Promise<ArtifactUploadResponse> {
+  ): Promise<Advised<ArtifactUploadResponse>> {
     return this.#upload(["api", "v1", "agents", sessionId, "artifacts"], input);
   }
 
@@ -904,8 +936,15 @@ export class DispatchClient {
     ]);
   }
 
+  /** `GET /api/v1/search`, or `GET /api/v1/search/results` for a request carrying a member a
+   *  Dispatch released before that route would drop (`everyBuildReadsSearch`), which such a
+   *  build refuses rather than answering unnarrowed. */
   async search(query: string, options: SearchOptions = {}): Promise<SearchResponse> {
-    return this.#json("GET", ["api", "v1", "search"], undefined, { q: query, ...options });
+    const request = { q: query, ...options };
+    const path = everyBuildReadsSearch(request)
+      ? ["api", "v1", "search"]
+      : ["api", "v1", "search", "results"];
+    return this.#json("GET", path, undefined, request);
   }
 
   /** `POST /api/v1/projects/{key}/related`: the related-item check over a title and a text,
@@ -951,7 +990,11 @@ export class DispatchClient {
     );
   }
 
-  async getIssueEvents(issue: string, after = 0, limit = ISSUE_EVENTS_PAGE_MAX): Promise<Event[]> {
+  async getIssueEvents(
+    issue: string,
+    after = 0,
+    limit = ISSUE_EVENTS_PAGE_MAX
+  ): Promise<DispatchEvent[]> {
     return this.#json(
       "GET",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "events"],
@@ -974,7 +1017,7 @@ export class DispatchClient {
         : requested === "all"
           ? issue.last_seq
           : Math.min(requested, issue.last_seq);
-    const events: Event[] = [];
+    const events: DispatchEvent[] = [];
     let after = Math.max(0, issue.last_seq - count);
     while (events.length < count) {
       const limit = Math.min(ISSUE_EVENTS_PAGE_MAX, count - events.length);
@@ -1059,7 +1102,8 @@ export class DispatchClient {
 
   /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's
    *  own order (the owning issue's priority, then whose turn it is, then the latest activity),
-   *  which no reader re-sorts. `me` is the caller, and keeps the rows on issues assigned to them,
+   *  which no reader re-sorts. `me` is the caller, and keeps the rows waiting on them — the asks
+   *  handed to them, and the asks on the issues assigned to them that nobody has handed on —
    *  which is what the Inbox page shows by default. The route reads the caller's own `person`
    *  scope and refuses a credential without it with 403 OAUTH_SCOPE_REQUIRED. */
   async inbox(assignee: string): Promise<InboxRow[]> {
@@ -1235,9 +1279,30 @@ export class DispatchClient {
     );
   }
 
-  /** Each check of an issue's Verification document with every result recorded against it. */
-  async issueResults(issue: string): Promise<IssueCheckResults> {
-    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "results"]);
+  /** Each check of an issue's Verification document with every result recorded against it.
+   *  `at` pins every check to that one commit, which `GET .../results?at=` takes as 40 lowercase
+   *  hex characters, and Dispatch reads GitHub for none of it. */
+  async issueResults(issue: string, at?: string): Promise<IssueCheckResults> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "results"],
+      undefined,
+      at === undefined ? undefined : { at }
+    );
+  }
+
+  /**
+   * Records that one stored result is wrong, with the reason, and answers the retraction. The
+   * result itself is neither changed nor deleted: a reader of the results sees the result and
+   * its retraction together. The session that recorded the result, a session holding the
+   * Dispatch claim of the issue it was recorded on, and a caller whose credential carries a
+   * person may each retract it.
+   */
+  async retractResult(
+    resultID: string,
+    input: CheckResultRetractionInput
+  ): Promise<CheckResultRetraction> {
+    return this.#json("POST", ["api", "v1", "results", resultID, "retract"], input);
   }
 
   async editAsk(id: string, input: EditAskInput): Promise<Ask> {
@@ -1327,6 +1392,16 @@ export class DispatchClient {
   }
 
   /**
+   * `POST /api/v1/agents/{session_id}/messages`: one message into a session's own conversation,
+   * which belongs to no issue. The route is the person's, so the credential must hold the
+   * `person` scope. It answers once the message's first delivery attempt has settled, with that
+   * attempt on the message.
+   */
+  async agentMessage(sessionId: string, input: CreateAgentMessageInput): Promise<Message> {
+    return this.#json("POST", ["api", "v1", "agents", sessionId, "messages"], input);
+  }
+
+  /**
    * `POST /api/v1/messages/{id}/reply`: the targeted session's reply to the delivery it
    * received. It takes no issue, so it is the route that answers a human's direct message -
    * a conversation Dispatch keeps without one - and the server settles the delivery attempt
@@ -1410,7 +1485,9 @@ export class DispatchClient {
     issue: string,
     input: CreateArtifactInput
   ): Promise<
-    ArtifactUploadResponse & { readonly artifact: Artifact & { readonly issue_key: string } }
+    Advised<ArtifactUploadResponse> & {
+      readonly artifact: Artifact & { readonly issue_key: string };
+    }
   > {
     return this.#upload(
       ["api", "v1", "issues", await this.#resolveIssue(issue), "artifacts"],
@@ -1429,6 +1506,14 @@ export class DispatchClient {
     return version === undefined
       ? this.#json("GET", ["api", "v1", "artifacts", id, "text"])
       : this.#json("GET", ["api", "v1", "artifacts", id, "versions", String(version)]);
+  }
+
+  /** `GET /api/v1/artifacts/{id}/text?blocks=true`: the live document's markdown, its token, its
+   *  version and its blocks in one answer, every part of it rendered from the one tree, so a write
+   *  by another session between two reads cannot leave the blocks indexing markdown they were not
+   *  computed over. A Dispatch older than the parameter answers the text without `blocks`. */
+  async docReadWithBlocks(id: string): Promise<ArtifactText> {
+    return this.#json("GET", ["api", "v1", "artifacts", id, "text"], undefined, { blocks: true });
   }
 
   /** One version of an uploaded file as Dispatch stores it: `GET /artifacts/{id}/versions/{n}`
@@ -1488,7 +1573,11 @@ export class DispatchClient {
    * AskGate's one append per decision, which a resumed session must not write twice — and replaces
    * the key this call would mint for itself. It must match `IDEMPOTENCY_KEY_PATTERN`.
    */
-  async docEdit(id: string, input: EditArtifactInput, key?: string): Promise<EditArtifactResponse> {
+  async docEdit(
+    id: string,
+    input: EditArtifactInput,
+    key?: string
+  ): Promise<Advised<EditArtifactResponse>> {
     return this.#json(
       "POST",
       ["api", "v1", "artifacts", id, "edits"],
@@ -1503,7 +1592,7 @@ export class DispatchClient {
     return this.#json("POST", ["api", "v1", "artifacts", id, "versions"], input);
   }
 
-  async getArtifactEvents(id: string, after = 0, limit = 200): Promise<Event[]> {
+  async getArtifactEvents(id: string, after = 0, limit = 200): Promise<DispatchEvent[]> {
     return this.#json("GET", ["api", "v1", "artifacts", id, "events"], undefined, { after, limit });
   }
 
@@ -1976,7 +2065,13 @@ export class DispatchClient {
     );
     if (query) {
       for (const [name, value] of Object.entries(query)) {
-        if (typeof value === "string" || typeof value === "number") {
+        // A boolean is sent as `true` or `false`, the two words every route that reads one
+        // takes (`parseQueryBool` in the server). It must be sent rather than dropped: a
+        // search's path is picked from the members the request carries
+        // (`everyBuildReadsSearch`), so a dropped `keywords_only: true` would ask for
+        // `/api/v1/search/results` and then arrive with the flag gone, and the server would
+        // answer by meaning the search asked it to skip.
+        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
           url.searchParams.set(name, String(value));
         } else if (Array.isArray(value)) {
           for (const item of value) url.searchParams.append(name, String(item));

@@ -1,5 +1,3 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { type FakeSession, getSentMessages, setLiveSessions, setSessionSendStatus } from "./agents";
 import {
   createIssue,
@@ -21,7 +19,7 @@ import {
   selectEditorQuote,
   typeAtEnd,
 } from "./editor";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // A closed issue still takes comments and messages (dispatch://INFRA-448), so a finished issue's
@@ -54,10 +52,6 @@ interface Fixture {
   /** Bob's message to the tester, whose delivery failed. */
   readonly testerMessageId: string;
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 async function seedClosedIssue(): Promise<Fixture> {
   await setLiveSessions([planner, tester]);
@@ -105,7 +99,8 @@ async function send(page: Page, path: string): Promise<void> {
   await expect(form.getByLabel("Comment")).toHaveValue("");
 }
 
-test("a comment written in a closed issue's Conversation posts", async ({ browser }) => {
+// @pr: Create through answer to close: a closed issue still takes a comment, which is the write people make most often after a close.
+test("a comment written in a closed issue's Conversation posts @pr", async ({ browser }) => {
   const { issueKey } = await seedClosedIssue();
   const alice = await asUser(browser, "alice");
 
@@ -157,7 +152,7 @@ test("a message to an agent written on a closed issue posts and reaches the agen
       .poll(async () =>
         (await listIssueMessages(issueKey))
           .find((thread) => thread.message.id === plannerMessageId)
-          ?.replies.map((message) => [message.body, message.target])
+          ?.replies?.map((message) => [message.body, message.target])
       )
       .toEqual([["Message after the close", `session:${planner.session_id}`]]);
     await expect
@@ -193,7 +188,7 @@ test("Reply on a closed issue's message thread posts", async ({ browser }) => {
       .poll(async () =>
         (await listIssueMessages(issueKey))
           .find((thread) => thread.message.id === questionId)
-          ?.replies.map((message) => message.body)
+          ?.replies?.map((message) => message.body)
       )
       .toEqual(["Replied after the close"]);
   } finally {
@@ -221,7 +216,7 @@ test("Retry of a failed delivery on a closed issue posts a new attempt", async (
     expect((await posted).ok()).toBe(true);
     await expect
       .poll(async () =>
-        (await getMessage(issueKey, testerMessageId)).message.deliveries.map((delivery) => [
+        ((await getMessage(issueKey, testerMessageId)).message.deliveries ?? []).map((delivery) => [
           delivery.attempt,
           delivery.state,
         ])

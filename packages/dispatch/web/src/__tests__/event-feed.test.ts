@@ -22,7 +22,7 @@ import {
   userStateQuery,
 } from "../api/queries";
 import { refreshQueries } from "../api/query-refresh";
-import type { Ask, AskRead, Event, EventType, InboxRow } from "../api/types";
+import type { Ask, AskRead, DispatchEvent, EventType, InboxRow } from "../api/types";
 import { hasPendingAskThreadInvalidation } from "../features/inbox/ask-thread-freshness";
 import { issueAsk } from "../features/inbox/inbox-fixture";
 import { useAskAnswerForm } from "../features/inbox/useAskAnswerForm";
@@ -217,7 +217,7 @@ function dataFor(name: ReadName, page: PageOptions): unknown {
 }
 
 /** The reads of the page `event` marks stale, signed in as alice. */
-function refreshedReads(event: Event, page: Partial<PageOptions> = {}): ReadName[] {
+function refreshedReads(event: DispatchEvent, page: Partial<PageOptions> = {}): ReadName[] {
   const options: PageOptions = {
     inboxHolds: true,
     pinned: true,
@@ -235,10 +235,10 @@ function refreshedReads(event: Event, page: Partial<PageOptions> = {}): ReadName
 }
 
 function event(
-  type: Event["type"],
+  type: DispatchEvent["type"],
   payload: Record<string, unknown> = {},
-  overrides: Partial<Event> = {}
-): Event {
+  overrides: Partial<DispatchEvent> = {}
+): DispatchEvent {
   return {
     actor: { id: "planner", kind: "session" },
     created_at: "2026-10-26T00:00:00Z",
@@ -250,7 +250,7 @@ function event(
     seq: 4,
     type,
     ...overrides,
-  } as Event;
+  } as DispatchEvent;
 }
 
 /** An `issue.*` payload as the server writes it: the issue after the write, flat. */
@@ -273,7 +273,7 @@ function issue(fields: Record<string, unknown> = {}): Record<string, unknown> {
 const documentOwner = { artifact_id: "artifact-1", issue_key: null, project: "CORE" } as const;
 
 interface Rule {
-  readonly event: Event;
+  readonly event: DispatchEvent;
   readonly page?: Partial<PageOptions>;
   readonly refreshes: readonly ReadName[];
   readonly spares: readonly ReadName[];
@@ -1003,7 +1003,7 @@ const rules: Record<string, Rule> = {
     event: event(
       "message.answered",
       { id: "message-2", target: "session:planner", thread_logins: ["bob"] },
-      { actor: { id: "bob", kind: "user" }, issue_key: null, project: undefined } as Partial<Event>
+      { actor: { id: "bob", kind: "user" }, issue_key: null, project: undefined }
     ),
     refreshes: [],
     spares: ["inboxThreads", "replies"],
@@ -1141,6 +1141,26 @@ test("a recorded result refreshes the results of the check's issue and of the re
   ]);
 });
 
+// A retraction moves exactly the two reads a record moves, for the same reason: the result
+// stays in both listings and stops counting as evidence there. A tab that did not refetch would
+// keep showing a retracted result as proof.
+test("a retracted result refreshes the results of the check's issue and of the recording issue", () => {
+  const retracted = event("result.retracted", {
+    check_block_id: "k1",
+    check_issue: "CORE-1",
+    commit_sha: "1111111111111111111111111111111111111111",
+    issue: "CORE-9",
+    reason: "The run was against the wrong commit.",
+  });
+  expect(eventRefreshTargets(retracted, "alice").map((target) => target.queryKey)).toEqual([
+    ["issue", "CORE-1"],
+    ["events", "CORE-1"],
+    ["issues", "project", "CORE"],
+    ["issue", "CORE-1", "results"],
+    ["issue", "CORE-9", "results"],
+  ]);
+});
+
 // A document version moves what the Spec tab's gap pills and the Verification tab's checks
 // read: adding a `check` to verification.md, or a `requirement` to the spec, changes both. Both
 // reads hang under the issue's key, and every issue target is `exact`, so the branch names them
@@ -1162,7 +1182,7 @@ test("a document version refreshes the issue's coverage and its recorded results
 // Several branches return before the end of the target list - the claim's among them, and a claim
 // is how a Legion agent arrives on an issue - so the rule sits ahead of them.
 test("an event that makes a collaborator refreshes the issue's collaborators", () => {
-  const refreshesCollaborators = (incoming: Event): boolean =>
+  const refreshesCollaborators = (incoming: DispatchEvent): boolean =>
     eventRefreshTargets(incoming, "alice").some(
       (target) =>
         target.exact === true &&
@@ -1183,7 +1203,7 @@ test("an event that makes a collaborator refreshes the issue's collaborators", (
 
 /** One event of every type the feed can carry, keyed by type so a new one fails to compile here
  *  until it has a row. */
-const eventsByType: Record<EventType, Event> = {
+const eventsByType: Record<EventType, DispatchEvent> = {
   "architecture.sync_failed": event("architecture.sync_failed", {}, { issue_key: null }),
   "architecture.synced": event("architecture.synced", {}, { issue_key: null }),
   "artifact.approved": event("artifact.approved", { artifact_id: "artifact-3", ask_id: null }),
@@ -1200,6 +1220,7 @@ const eventsByType: Record<EventType, Event> = {
   }),
   "ask.anchor_refreshed": event("ask.anchor_refreshed", { anchor: null, id: "ask-1" }),
   "ask.answered": event("ask.answered", { anchor: null, id: "ask-1" }),
+  "ask.asked_of": event("ask.asked_of", { anchor: null, id: "ask-1", asked_of: "bob" }),
   "ask.edited": event("ask.edited", { anchor: null, id: "ask-1" }),
   "ask.follower_added": event("ask.follower_added", { ask_id: "ask-1", session_id: "s1" }),
   "ask.follower_removed": event("ask.follower_removed", { ask_id: "ask-1", session_id: "s1" }),
@@ -1248,6 +1269,21 @@ const eventsByType: Record<EventType, Event> = {
     role: "implementer",
     verdict: "pass",
   }),
+  "result.retracted": event("result.retracted", {
+    check_block_id: "k1",
+    check_issue: "CORE-1",
+    commit_sha: "1111111111111111111111111111111111111111",
+    issue: "CORE-1",
+    reason: "The run was against the wrong commit.",
+  }),
+  "issue.pull_request_attribution_changed": event("issue.pull_request_attribution_changed", {
+    repo: "acme/widgets",
+    number: 42,
+    url: "https://github.com/acme/widgets/pull/42",
+    from: "CORE-1",
+    to: "CORE-2",
+    source: "branch",
+  }),
   "settings.architecture_source.updated": event(
     "settings.architecture_source.updated",
     {},
@@ -1295,10 +1331,12 @@ test("a feed event prepends a newer event to the loaded log page", () => {
     pages: [[event("message.created", {}, { id: 7, seq: 7 })]],
   });
   prependEventToLog(client, event("message.created", {}, { id: 8, seq: 8 }));
-  expect(client.getQueryData<{ pages: Event[][] }>(["events", "CORE-1"])?.pages[0]).toEqual([
-    event("message.created", {}, { id: 8, seq: 8 }),
-    event("message.created", {}, { id: 7, seq: 7 }),
-  ]);
+  expect(client.getQueryData<{ pages: DispatchEvent[][] }>(["events", "CORE-1"])?.pages[0]).toEqual(
+    [
+      event("message.created", {}, { id: 8, seq: 8 }),
+      event("message.created", {}, { id: 7, seq: 7 }),
+    ]
+  );
 });
 
 test("a log page that predates streamed events keeps them in front of it", () => {
@@ -1333,7 +1371,7 @@ function cacheThread(client: QueryClient, id: string, issueKey: string | null): 
   client.setQueryData(["ask-thread", id], { ask: { id, issue_key: issueKey } });
 }
 
-function refreshedThreads(incoming: Event): string[] {
+function refreshedThreads(incoming: DispatchEvent): string[] {
   const client = new QueryClient();
   cacheThread(client, "ask-1", "CORE-1");
   cacheThread(client, "ask-2", "CORE-2");

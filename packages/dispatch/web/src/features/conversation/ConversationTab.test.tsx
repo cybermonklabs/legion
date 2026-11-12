@@ -5,7 +5,11 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { jump } from "../../__tests__/fake-clock";
+import { graphNode } from "../../__tests__/graph-fixture";
 import {
+  dwellOn,
   type IntersectionControl,
   installIntersectionObserver,
   type Placement,
@@ -22,7 +26,7 @@ import type {
   Ask,
   Comment,
   CommentDelivery,
-  Event,
+  DispatchEvent,
   Handoff,
   IssueAskRow,
   IssueAskThreadRow,
@@ -32,6 +36,7 @@ import type {
   UserIssueState,
   UserState,
 } from "../../api/types";
+import { messageDeliveryFields } from "../agents/delivery-fixture";
 import { stubMatchMedia } from "../margin/margin-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { userPreferenceStorageKey } from "../shell/userPreference";
@@ -53,16 +58,15 @@ function issueState(dismissed: string[] = [], lastReadSeq = 0): UserIssueState {
 
 function comment(id: string, overrides: Partial<Comment> = {}): Comment {
   return {
+    ...commentDeliveryFields(),
     anchor: null,
     ask_id: null,
     author: alice,
     body: `Body of ${id}`,
     created_at: "2026-09-20T00:00:00Z",
-    deliveries: [],
     edited_at: null,
     id,
     issue_key: "CORE-1",
-    mentions: [],
     reply_to: null,
     resolved: false,
     resolved_at: null,
@@ -76,6 +80,8 @@ function comment(id: string, overrides: Partial<Comment> = {}): Comment {
 function message(id: string, overrides: Partial<Message> = {}): Message {
   return {
     author: alice,
+    broadcast_id: null,
+    reply_block: null,
     body: `Body of ${id}`,
     created_at: "2026-09-09T00:00:00Z",
     deliveries: [],
@@ -93,6 +99,7 @@ function thread(root: Message, replies: Message[] = []): MessageRead {
 
 function attempt(overrides: Partial<MessageDelivery> = {}): MessageDelivery {
   return {
+    ...messageDeliveryFields(),
     attempt: 1,
     created_at: recentAttemptAt,
     delivery: "btw",
@@ -108,6 +115,7 @@ function attempt(overrides: Partial<MessageDelivery> = {}): MessageDelivery {
 
 function mentionAttempt(overrides: Partial<CommentDelivery> = {}): CommentDelivery {
   return {
+    duplicate: false,
     attempt: 1,
     comment_id: "comment-1",
     created_at: recentAttemptAt,
@@ -125,6 +133,11 @@ function mentionAttempt(overrides: Partial<CommentDelivery> = {}): CommentDelive
 
 const baseAsk: Ask = {
   anchor: null,
+  artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
+  block_id: null,
   answer: null,
   author: { id: "s1", kind: "session" },
   created_at: "2026-09-10T09:00:00Z",
@@ -159,7 +172,7 @@ function askRow(overrides: Partial<Ask> = {}, replies: Comment[] = []): IssueAsk
   };
 }
 
-function headEvent(seq: number, at = "2026-09-20T00:00:00Z"): Event {
+function headEvent(seq: number, at = "2026-09-20T00:00:00Z"): DispatchEvent {
   return {
     actor: alice,
     created_at: at,
@@ -169,7 +182,7 @@ function headEvent(seq: number, at = "2026-09-20T00:00:00Z"): Event {
     payload: {},
     seq,
     type: "issue.created",
-  } as Event;
+  } as DispatchEvent;
 }
 
 function agent(sessionId: string, title: string, capabilities: string[] = []): Agent {
@@ -182,6 +195,7 @@ function agent(sessionId: string, title: string, capabilities: string[] = []): A
     machine_id: "m",
     open_asks: 0,
     roles: [],
+    state: "live",
     session_id: sessionId,
     title,
   };
@@ -196,6 +210,8 @@ const primaryDocument: Artifact = {
   name: "spec.md",
   primary: true,
   project: "CORE",
+  ref_key: "CORE-1/spec",
+  session_id: null,
   slug: "spec",
   versions: [],
 };
@@ -216,10 +232,10 @@ interface Lists {
    *  to a summary), and `getHandoff` answers one by id. */
   handoffs?: Handoff[];
   /** The issue's newest event, which a dwell on the newest card marks read through. */
-  head?: Event[];
+  head?: DispatchEvent[];
   messages?: MessageRead[];
   /** The first event the reader has not read: its moment is the unread boundary. */
-  unread?: Event[];
+  unread?: DispatchEvent[];
 }
 
 /** The four reads the Conversation builds its list from, plus the two one-row event reads that
@@ -242,7 +258,7 @@ function stubLists(initial: Lists = {}): { lists: Lists; restore: () => void } {
     spyOn(api, "commentBlocks").mockImplementation(async (id) => ({
       blocks: [],
       indexed: false,
-      item: { id, issue_key: "CORE-1", kind: "comment" },
+      item: graphNode({ id, issue_key: "CORE-1", kind: "comment" }),
     })),
     spyOn(api, "getIssueEvents").mockImplementation(async (_key, options = {}) =>
       options.order === "desc" ? (lists.head ?? []) : (lists.unread ?? [])
@@ -2080,14 +2096,15 @@ function renderThreads(lists: Lists, unread: readonly string[], focusItemId?: st
   };
 }
 
-/** `element` stays on screen as `placement` says for a second, and every write it starts lands. */
-async function dwellOn(viewport: IntersectionControl, element: Element, placement?: Placement) {
+/** The shared dwell with the fake clock it moves: this file's tests leave installing the clock to
+ *  the dwell rather than installing it at their head. */
+async function dwellOnFakeClock(
+  viewport: IntersectionControl,
+  element: Element,
+  placement?: Placement
+) {
   jest.useFakeTimers();
-  act(() => viewport.show(element, placement));
-  act(() => {
-    jest.advanceTimersByTime(1_000);
-  });
-  for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
+  await dwellOn(viewport, element, placement);
 }
 
 /** A session's reply in a message thread. */
@@ -2113,7 +2130,7 @@ test("landing on a message thread shows its replies and marks the thread read th
     await screen.findByText("Session reply message-2");
     const newest = page.turn("message:message-2");
     expect(page.viewport.observed()).toContain(newest);
-    await dwellOn(page.viewport, newest);
+    await dwellOnFakeClock(page.viewport, newest);
     expect(page.mark.mock.calls).toEqual([
       ["message-1", { read_through: "2026-09-09T00:05:00.25Z" }, keyedAttempt],
     ]);
@@ -2134,7 +2151,7 @@ test("a message thread taller than the screen is marked read from its newest rep
   try {
     await screen.findByText("Session reply message-3");
     act(() => page.viewport.show(page.turn("message:message-1"), { height: 3_000, visible: 300 }));
-    await dwellOn(page.viewport, page.turn("message:message-3"));
+    await dwellOnFakeClock(page.viewport, page.turn("message:message-3"));
     expect(page.mark.mock.calls).toEqual([
       ["message-1", { read_through: "2026-09-09T00:06:00Z" }, keyedAttempt],
     ]);
@@ -2157,7 +2174,7 @@ test("a targeted message's thread is marked read once its newest reply is on scr
   );
   try {
     await screen.findByText("Session reply message-2");
-    await dwellOn(page.viewport, page.turn("message:message-2"));
+    await dwellOnFakeClock(page.viewport, page.turn("message:message-2"));
     expect(page.mark.mock.calls).toEqual([
       ["message-1", { read_through: "2026-09-09T00:07:00Z" }, keyedAttempt],
     ]);
@@ -2196,7 +2213,7 @@ test("at a desktop width, landing on a comment opens its thread inline and readi
     expect(
       page.turn("comment:root-comment").querySelector("article")?.getAttribute("aria-expanded")
     ).toBe("true");
-    await dwellOn(page.viewport, replyItem);
+    await dwellOnFakeClock(page.viewport, replyItem);
     expect(page.mark.mock.calls).toEqual([
       ["root-comment", { read_through: reply.created_at }, keyedAttempt],
     ]);
@@ -2235,7 +2252,7 @@ test("on a phone, landing on a comment opens its thread dialog and reading it ma
     const dialog = await screen.findByRole("dialog", { name: "Thread" });
     const replyItem = within(dialog).getByText("Reply comment").closest("li");
     if (replyItem === null) throw new Error("expected the reply's item");
-    await dwellOn(page.viewport, replyItem);
+    await dwellOnFakeClock(page.viewport, replyItem);
     expect(page.mark.mock.calls).toEqual([
       ["root-comment", { read_through: reply.created_at }, keyedAttempt],
     ]);
@@ -2284,14 +2301,10 @@ test("the read mark writes the issue's head seq as the reader, and retries an un
     await screen.findByText("Newest");
     const card = view.container.querySelector('[data-turn="comment:comment-1"]');
     if (card === null) throw new Error("expected the newest card");
-    await dwellOn(viewport, card);
-    for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
+    await dwellOnFakeClock(viewport, card);
     expect(putIssueState.mock.calls).toEqual([["CORE-1", { last_read_seq: 7 }, keyedAttempt]]);
     expect(putIssueState.mock.calls[0]?.[2]?.login).toBe("alice");
-    act(() => {
-      jest.advanceTimersByTime(1_000);
-    });
-    for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
+    await jump(1_000);
     expect(putIssueState.mock.calls.map(([key, input]) => [key, input])).toEqual([
       ["CORE-1", { last_read_seq: 7 }],
       ["CORE-1", { last_read_seq: 7 }],

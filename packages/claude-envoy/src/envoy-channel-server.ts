@@ -1087,9 +1087,11 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // A frame no sweep will show again gets its notice at once: a role forward, already
       // acknowledged, one on a subscription the replay does not read (refused, not started, or
       // the listener's replay failing), or one received before its subject's cursor started.
-      // The stream's copy of any other waits for a sweep.
+      // The stream's copy of any other waits for a sweep. The notice is asked for this
+      // process's one session by name, read when the failure lands.
       const envelope = renderInbound(message.raw, identity.id, message.subject).envelope
-      if (envelope !== undefined) void replay.liveFailed(topic, envelope, error, receivedAt)
+      if (envelope !== undefined)
+        void replay.liveFailed(identity.id, topic, envelope, error, receivedAt)
     },
     deliver: async (message) => {
       takeRemovals(message.raw)
@@ -2171,6 +2173,26 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // The claim's boot, for the endpoint's resume reminder and its recreated-workspace notice: both
   // need the claim, and the claim starts further down, once the channel session exists.
   const claimBooted = Promise.withResolvers<void>()
+  // The other way round: the hook endpoint is built here, before the claim, and the boot's
+  // first-turn signal fills this slot. The endpoint calls it at every `UserPromptSubmit`, this
+  // process's only sight of a turn starting; the call reports that turn and claims nothing, and
+  // the boot's own claim step, which runs after `claims/ready`, is what takes the Envoy name —
+  // inside a running turn rather than ahead of the daemon's task (INFRA-1573).
+  //
+  // A slot, rather than a promise that remembers every prompt this process ever saw, because on
+  // this host the first prompt is always the bridge's seeding `/rename`
+  // (`packages/daemon/internal/claudebridge`), which runs before the claim exists — it is what
+  // writes the transcript the boot waits for, so no registration can precede it. A signal kept
+  // from before the boot filled this slot would take the name the moment `claims/ready` answers,
+  // ahead of the daemon's task, which is the ordering this defers.
+  //
+  // The boot fills the slot as soon as `claims/register` has answered, before the ready that
+  // follows, so a prompt that arrives while that ready is still being retried — the daemon took
+  // the first one and its answer was lost, and its task reaches Claude Code meanwhile — is this
+  // session's first turn and the name is taken as soon as ready answers, rather than at the
+  // bound. A pane given no task at all is the bound's to cover, and a later prompt costs
+  // nothing — the step itself claims once however often it runs.
+  let reportFirstTurn: (() => void) | undefined
   const phaseHook =
     pane === undefined || daemon === undefined
       ? undefined
@@ -2178,6 +2200,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
           stateFile: phaseStallFile(pane.configDir, identity.id),
           claim: () => claim?.capability(),
           booted: claimBooted.promise,
+          firstTurnStarted: () => reportFirstTurn?.(),
           readState: (signal) => daemon.state({ signal }),
           reportActivity: (input) => daemon.activity(input),
           inbox: inbox === undefined ? undefined : (text) => inbox.notification({ content: text }),
@@ -2454,6 +2477,12 @@ export async function runEnvoyChannelServer(): Promise<void> {
         signal: booting.signal,
         log: logLegion,
         stop: endPane,
+        // The signal goes in the slot the phase hook's `UserPromptSubmit` calls. The boot fills
+        // it when `claims/register` has answered, which is after the bridge's seed: that prompt
+        // found the slot empty and reported nothing.
+        onFirstTurn: (started) => {
+          reportFirstTurn = started
+        },
       })
       // What `claimSession.bootstrap` returning is to the Oh My Pi host: the point the phase
       // endpoint may read the claim, arm its resume reminder and tell the worker its workspace

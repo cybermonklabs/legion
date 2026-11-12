@@ -37,7 +37,7 @@ The secrets broker holds them as `github-app` secrets, which release installatio
 `LEGION_IMPLEMENT_APP` (agent tier) and `LEGION_REVIEW_APP` (human tier: each new grant waits for a person's approval in Dispatch, and a later release under the same live grant reuses it).
 Its `token_command` names `--ttl 12h`, because a human-tier request that names no lifetime gets 15 minutes, and the daemon renews a lease about 40 minutes after it mints one:
 without the flag every renewal would wait for a person, and with it the approver reads the twelve hours on the card and decides them.
-A daemon that holds no App key uses them through `token_command`, as the live proofs do (`scripts/e2e/lib/github-apps.sh`, `app_token_command`):
+A daemon that holds no App key uses both Apps through `token_command`, as the live proofs do for the implement App (`scripts/e2e/lib/github-apps.sh`, `app_token_command`):
 
 ```yaml
 github_apps:
@@ -48,6 +48,9 @@ github_apps:
     app_id: "5341243"
     token_command: "agent-secrets LEGION_REVIEW_APP --ttl 12h --reason=legion-daemon-github-app-token ${LEGION_GITHUB_OWNER:+--github-owner \"$LEGION_GITHUB_OWNER\"} ${LEGION_GITHUB_REPOS:+$(printf ' --github-repo %s' $LEGION_GITHUB_REPOS)} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s \"$LEGION_REVIEW_APP\"'"
 ```
+
+The live proofs take the review App's tokens that way no longer.
+They resolve that App's key on the driver, from the operator's `LEGION_E2E_REVIEW_APP_KEY_COMMAND`, into a key file of the run's own, and give the App a `private_key_command` that reads it, while the implement App keeps the `token_command` above (`scripts/e2e/lib/github-apps.sh`, `write_github_apps`).
 
 The daemon runs the command with `sh -c` whenever it needs a lease: at boot, and again once fewer
 than 20 minutes remain on a lease it holds.
@@ -152,6 +155,33 @@ the saved help is the pin's).
 The shared clone's `credential.helper` is `!legion git-credential` with `credential.useHttpPath`
 on, so a pane's `git` and `jj git push` read the hosts.yml of the repository in the path git asks
 about where the bundle holds its directory, the owner's otherwise, and nothing else.
+
+A pane keeps the machine's own `git` and `jj`, unwrapped.
+Legion's leak-guard wrappers and its pre-push hook are the worker image's, root-owned under
+`/opt/legion` in a filesystem no role can write ([Worker image](kubernetes.md#worker-image)), and
+a shared box has no such boundary: the daemon, its panes and the operator are one Unix user, so a
+wrapper put first on a pane's `PATH` would be one the pane can replace, and a `core.hooksPath`
+pinned for it one the pane can override.
+A copy of them here would read as a guard and hold nothing.
+What a pane does run the guard in is `legion gh` and the rescue helper, the same binary with the
+same rules compiled in, and each of them resolves the shared public leak check from the pane's
+own `PUBLIC_LEAK_CHECK`.
+A pane can find that check no other way: `PUBLIC_LEAK_CHECK` is not a name a pane reads from the
+daemon's environment, a pane's `XDG_CONFIG_HOME` is under the state directory rather than the
+operator's home, and the check's installer puts its files on no `PATH` a pane has.
+So the daemon resolves it instead, once per launch and in its own environment — the machine's
+own `PUBLIC_LEAK_CHECK`, a `public-leak-check.sh` on its `PATH`, or the pointer file under its
+configuration home — and tells the pane where it is
+(`resolveLeakCheck` and `panePairs`, `packages/daemon/internal/runtime/tmux`).
+An operator who points one pane at another copy still wins: `runtime.tmux.pane_env` and a spec's
+own `Env` are told after the resolved one, and the last value of a name is what the pane holds.
+Legion installs no check on a shared box — the pinned install is the pod's, from a tag the worker
+image carries — so a box that writes to public repositories carries it through the check's own
+installer, run on the machine the daemon runs on.
+A daemon that resolves none logs one line per launch naming the pane, tells that pane no
+`PUBLIC_LEAK_CHECK`, and every write from it to a public repository is then refused with a setup
+error naming the missing check.
+
 The real gh is a compiled program, so when the first `gh` on the daemon's `PATH`
 is a script (a `gh` wrapper of the box's own, as the devbox's login `PATH` heads with, or asdf's
 shim), boot refuses it, naming it and `LEGION_GH_PATH` (`RefuseScriptGH`): run as the real gh, a
@@ -345,6 +375,25 @@ provider_keys:
   every process of the host, so a secret reaches a pane as a file. The loader refuses these at load
   and the runtime again at boot, naming the variable and never its value. A launch whose own
   variable or secret pointer collides with a `pane_env` name is refused.
+  `OTEL_RESOURCE_ATTRIBUTES` is the one composed name `pane_env` accepts: the runtime composes
+  `PI_CONFIG_FILES` from `pi_config_files` and so refuses that name in the list above, while the
+  attributes are the operator's to begin and the runtime's to finish.
+  The operator sets the attributes this deployment's spend is billed
+  under, and each pane carries them with its own `legion.issue` and `legion.role` after them,
+  so a pane's own attributes name the issue it serves. The agent keeps the last value a key is
+  given, so the daemon's two pairs come last. Both keys reach the spend collector today, and
+  its keep-list of six `theorem.*` attributes drops every other key, so no spend row names an
+  issue yet. A row grouped by issue follows when the collector keeps them, which
+  dispatch://INFRA-1835 adds to that list. A controller pane serves no issue and carries the
+  role alone, and the boot gate's probe runs no role, so it carries the operator's value with its
+  trailing commas and whitespace dropped and nothing added.
+  The loader reads this one value for its content as well as its name: it
+  refuses a member the agent's OpenTelemetry detector would throw on — one that is no single
+  `key=value`, one with an empty key, one whose key or value does not percent-decode or is longer
+  than 255 characters once decoded, and one naming `legion.issue` or `legion.role`, which the
+  runtime writes itself — and names that member and what is wrong with it, never the rest of the
+  value. One such member costs the pane every attribute of the variable, the operator's own among
+  them, because the detector's caller catches the throw with an empty hand.
 - **`pi_config_files`** paths resolve against `legion.yaml`'s directory and may not hold `:`.
   Legion adds no overlay of its own to the list: it writes none, so the operator's are the whole of
   it, with a role's own (`role_config_files`) after them. The

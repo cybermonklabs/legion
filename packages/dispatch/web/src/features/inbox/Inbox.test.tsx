@@ -8,7 +8,7 @@ import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
 import { wholeText } from "../../__tests__/whole-text";
@@ -22,12 +22,14 @@ import type {
   Issue,
   IssueDetails,
 } from "../../api/types";
+import { QUIET_MS } from "../doc/refocus-when-settled";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import type { InboxRoute } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, DIALOG_SCOPE } from "../shell/keymap";
 import { READING_PANE_QUERY } from "../shell/useDialog";
+import { replyRow } from "../threads/replies-fixture";
 import { Inbox } from "./Inbox";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 
@@ -38,13 +40,18 @@ function artifactAsk(): InboxRow {
     anchor: null,
     answer: null,
     artifact_id: "artifact-1",
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
     author: { id: "session-1", kind: "session" },
     created_at: "2026-09-11T00:00:00Z",
     document: { name: "Design notes", project: "CORE", slug: "design-notes" },
+    block_id: null,
     edited_at: null,
     id: "ask-1",
     issue_key: null,
     kind: "question",
+    last_reply: null,
     multiple: false,
     opened_event_id: 1,
     options: [],
@@ -99,6 +106,8 @@ function narrowIssueOf(row: InboxRow, assignee: string | null): Issue {
     number: 3,
     parent: null,
     blocked_by: [],
+    plan_artifact_id: "artifact-plan",
+    decisions_artifact_id: "",
     primary_artifact_id: "artifact-3",
     priority: null,
     project: "CORE",
@@ -109,6 +118,7 @@ function narrowIssueOf(row: InboxRow, assignee: string | null): Issue {
     status: "todo",
     title: row.issue?.title ?? "",
     updated_at: row.created_at,
+    verification_artifact_id: "artifact-verification",
   };
 }
 
@@ -168,9 +178,9 @@ test("a cold Inbox hydrates every ask thread from its one list response", async 
     await waitFor(() =>
       expect(
         rows.map(
-          (row) => queryClient.getQueryData<AskRead>(["ask-thread", row.id])?.replies[0]?.body
+          (row) => queryClient.getQueryData<AskRead>(["ask-thread", row.id])?.replies?.[0]?.body
         )
-      ).toEqual(rows.map((row) => row.thread.replies[0]?.body))
+      ).toEqual(rows.map((row) => row.thread.replies?.[0]?.body))
     );
     expect(getInbox).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(getAsk).toHaveBeenCalledTimes(0));
@@ -617,6 +627,7 @@ function secretRequest(overrides: Partial<CredentialPendingRow> = {}): Credentia
     kind: "agent_secret",
     record_id: "record-1",
     requested_at: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+    session: { enrollment: null, request: null },
     ...overrides,
   };
 }
@@ -720,6 +731,7 @@ test("Inbox narrows to one agent's asks from ?agent and clears back to the whole
       open_asks: 2,
       roles: [],
       session_id: "session-1",
+      state: "live",
       title: "Planner",
     },
   ]);
@@ -987,7 +999,7 @@ test("the reader's own Ask back keeps the row under Waiting on you, unscrolled, 
       anchor: null,
       ask_id: input.ask_id ?? null,
       author: { id: "alice", kind: "user" },
-      body: input.body,
+      body: input.body ?? "",
       created_at: "2026-09-11T02:00:00Z",
       edited_at: null,
       id: "reply-1",
@@ -1402,11 +1414,14 @@ async function filterTrigger(user: UserEvent): Promise<HTMLElement> {
 }
 
 /** Opens the assignee filter if it is shut and toggles one of its rows. The popover is portalled
- *  onto the body, so its options are reached from the screen rather than from the list. */
+ *  onto the body, so its options are reached from the screen rather than from the list, and from
+ *  its own listbox rather than from the screen: every open ask's card carries a people picker of
+ *  its own (the hand-on control), whose options name the same people. */
 async function toggleAssignee(user: UserEvent, option: RegExp) {
   const trigger = await filterTrigger(user);
   if (trigger.getAttribute("aria-expanded") !== "true") await user.click(trigger);
-  await user.click(await screen.findByRole("option", { name: option }));
+  const listbox = await screen.findByRole("listbox", { name: "Assignee options" });
+  await user.click(await within(listbox).findByRole("option", { name: option }));
 }
 
 function headings(): string[] {
@@ -1706,17 +1721,22 @@ test("Assign to me PATCHes the viewer's lowercase login and keeps its row until 
       )
     );
     expect(rowIds()).toEqual(["ask-orphan"]);
-    // Once the server has recorded it, the refetched inbox carries the new assignee.
+    // Once the server has recorded it, the refetched inbox carries the new assignee, and with
+    // it the person the row waits on (`coalesce(asked_of, assignee)`, which the server resolves).
     getInbox.mockResolvedValue([
-      { ...orphan, issue: { assignee: "alice", key: "CORE-3", title: "Nobody's issue" } },
+      {
+        ...orphan,
+        issue: { assignee: "alice", key: "CORE-3", title: "Nobody's issue" },
+        waiting_on_person: "alice",
+      },
     ]);
     await act(async () => {
       save.resolve(narrowIssueOf(orphan, "alice"));
       await save.promise;
     });
     // Nobody's no longer, the row leaves this filter once the save settles and the refetch
-    // lands; the box under test can be slow to deliver both, so this wait is generous.
-    await waitFor(() => expect(rowIds()).toEqual([]), { timeout: 4000 });
+    // lands.
+    await waitFor(() => expect(rowIds()).toEqual([]));
   } finally {
     unmount();
     patchIssue.mockRestore();
@@ -1765,15 +1785,87 @@ test("a refused Assign to me keeps its row under the Unassigned filter, with the
     expect(rowIds()).toEqual(["ask-orphan"]);
 
     getInbox.mockResolvedValue([
-      { ...orphan, issue: { assignee: "alice", key: "CORE-3", title: "Nobody's issue" } },
+      {
+        ...orphan,
+        issue: { assignee: "alice", key: "CORE-3", title: "Nobody's issue" },
+        waiting_on_person: "alice",
+      },
     ]);
     await user.click(within(alert).getByRole("button", { name: /Retry/ }));
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(rowIds()).toEqual([]), { timeout: 4000 });
+    await waitFor(() => expect(rowIds()).toEqual([]));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   } finally {
     unmount();
     patchIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// The hand-on's optimistic `waiting_on_person` takes the row out of the reader's own list as
+// the write starts, which would unmount the card holding the control: the card registers its
+// write with the list through the context the list provides (`hand-on-live.ts`), so the
+// refusal is shown where the reader pressed, by the instance that wrote, rather than lost to a
+// remount.
+test("a refused hand-on keeps its row in the reader's own list, with the reason and a working Retry", async () => {
+  const user = userEvent.setup();
+  // Handed to alice on an issue bob holds, so the row is alice's and handing it back to bob
+  // takes it out of her list.
+  const mine = issueAsk({
+    asked_of: "alice",
+    id: "ask-mine",
+    issue: { assignee: "bob", key: "CORE-4", title: "Bob's issue" },
+    issue_key: "CORE-4",
+    question: "Hand this on?",
+  });
+  const rows = [mine];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const people = mockPeople();
+  const firstHandOn = Promise.withResolvers<InboxRow>();
+  let attempts = 0;
+  const handedBack = { ...mine, asked_of: null, waiting_on_person: "bob" };
+  const handAskTo = spyOn(api, "handAskTo").mockImplementation(async () => {
+    attempts += 1;
+    return attempts === 1 ? firstHandOn.promise : handedBack;
+  });
+  const { unmount } = renderInbox("/");
+  try {
+    await screen.findByText("Hand this on?");
+    await user.selectOptions(
+      within(rowOf("ask-mine")).getByLabelText("Hand this question to"),
+      "bob"
+    );
+    await waitFor(() => expect(handAskTo).toHaveBeenCalledWith("ask-mine", "bob", keyedAttempt));
+    // Handed on optimistically, the row waits on somebody else - and stays.
+    await waitFor(() => expect(screen.getByText("Handing on…")).toBeTruthy());
+    expect(rowIds()).toEqual(["ask-mine"]);
+
+    await act(async () => {
+      firstHandOn.reject(
+        new ApiError(409, {
+          code: "ASK_NOT_OPEN",
+          error: "only open asks may be handed to another person",
+        })
+      );
+      await firstHandOn.promise.catch(() => undefined);
+    });
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("only open asks may be handed to another person");
+    expect(rowIds()).toEqual(["ask-mine"]);
+
+    // The card's own Retry writes again; the row leaves once the server takes it and the
+    // refetched inbox says bob waits on it.
+    getInbox.mockResolvedValue([handedBack]);
+    await user.click(within(alert).getByRole("button", { name: /Retry/ }));
+    await waitFor(() => expect(handAskTo).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(rowIds()).toEqual([]), { timeout: 4000 });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    unmount();
+    handAskTo.mockRestore();
+    people.mockRestore();
     getAsk.mockRestore();
     getInbox.mockRestore();
   }
@@ -2256,7 +2348,13 @@ test("a short row names its kind: a decision block, an approval request, and any
     block_id: "ship_it",
   });
   const approval = inboxIssue("ask-approval", "CORE-3", "Approve spec.md (version 4)?", {
-    approval: { artifact_id: "artifact-1", name: "spec.md", requested_version: 4, version: 4 },
+    approval: {
+      artifact_id: "artifact-1",
+      documents: null,
+      name: "spec.md",
+      requested_version: 4,
+      version: 4,
+    },
     approval_artifact: { name: "spec.md", primary: true, project: "CORE", slug: "spec" },
     kind: "approval",
   });
@@ -3144,7 +3242,11 @@ test("an unmount inside the column keeps the record: the focus falls to the body
     await user.click(assign);
     served = served.map((row) =>
       row.id === "ask-b"
-        ? { ...row, issue: { assignee: "alice", key: "CORE-2", title: "Nobody's issue" } }
+        ? {
+            ...row,
+            issue: { assignee: "alice", key: "CORE-2", title: "Nobody's issue" },
+            waiting_on_person: "alice",
+          }
         : row
     );
     await act(async () => {
@@ -3219,7 +3321,11 @@ test("a focus landing outside the column drops the record an unmount inside it l
     await user.click(assign);
     served = served.map((row) =>
       row.id === "ask-b"
-        ? { ...row, issue: { assignee: "alice", key: "CORE-2", title: "Nobody's issue" } }
+        ? {
+            ...row,
+            issue: { assignee: "alice", key: "CORE-2", title: "Nobody's issue" },
+            waiting_on_person: "alice",
+          }
         : row
     );
     await act(async () => {
@@ -3300,7 +3406,11 @@ test("l back into a column an unmount dropped the focus out of leaves the record
     await user.click(assign);
     served = served.map((row) =>
       row.id === "ask-b"
-        ? { ...row, issue: { assignee: "alice", key: "CORE-2", title: "Nobody's issue" } }
+        ? {
+            ...row,
+            issue: { assignee: "alice", key: "CORE-2", title: "Nobody's issue" },
+            waiting_on_person: "alice",
+          }
         : row
     );
     await act(async () => {
@@ -3927,6 +4037,8 @@ const SPEC_DOCUMENT: Artifact = {
   name: "spec.md",
   primary: true,
   project: "CORE",
+  ref_key: "CORE-1/spec",
+  session_id: null,
   slug: "spec",
   versions: [],
 };
@@ -3955,6 +4067,7 @@ test("the answer keys act on the selected decision block, not the first one in t
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT);
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
     markdown: "",
+    token: "",
     version: null,
   });
   const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
@@ -4017,6 +4130,356 @@ test("the answer keys act on the selected decision block, not the first one in t
     getInbox.mockRestore();
     getIssue.mockRestore();
     listIssueAsks.mockRestore();
+  }
+});
+
+/** Draws one decision block in the column's editor, as the real editor draws one for every
+ *  `ask` node of the document: the node view stamps its element with the block id, which is
+ *  what the column places itself by. */
+function drawAskBlock(editor: FakeEditor, blockId: string, question: string): void {
+  const nodeViews = editor.viewProps.nodeViews as Record<
+    string,
+    (node: ProseMirrorNode) => { dom: HTMLElement; destroy(): void }
+  >;
+  const construct = nodeViews.ask;
+  if (construct === undefined) throw new Error("the ask node view was not installed");
+  act(() => {
+    editor.root.append(construct(askBlockNode(blockId, question)).dom);
+  });
+}
+
+/** A question written as a decision block of `SPEC_DOCUMENT`. Its block stands before any
+ *  heading, so the section the column opens at is the document's start and the placement writes
+ *  `scrollTop` itself: happy-dom lays nothing out, so a scroll to a heading would measure a move
+ *  of zero and say nothing about where the column went. */
+function decisionRow(id: string, blockId: string, question: string): InboxRow {
+  return inboxIssue(id, "CORE-1", question, {
+    block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
+    block_id: blockId,
+  });
+}
+
+/** Every read the column makes while it draws these rows' questions, and the one restore that
+ *  puts them all back. `getArtifact` is handed back too, for the row that makes that read fail
+ *  and land again. */
+function mockDocumentColumnReads(rows: readonly InboxRow[]) {
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT);
+  const mocks = [
+    spyOn(api, "getInbox").mockResolvedValue([...rows]),
+    mockAskReads(rows),
+    mockIssueReads(),
+    getArtifact,
+    spyOn(api, "getArtifactText").mockResolvedValue({ markdown: "", token: "", version: null }),
+    spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue(
+      rows.map((row) => ({ ...row, last_reply: null }))
+    ),
+  ];
+  return {
+    getArtifact,
+    restore: () => {
+      for (const mock of mocks) {
+        mock.mockRestore();
+      }
+    },
+  };
+}
+
+test("the first draw of a question's document puts the column at the start of its section", async () => {
+  const narrow = widenToReadingPane();
+  const ask = decisionRow("ask-a", "block-a", "Ship behind a flag?");
+  const rows = [ask];
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const reads = mockDocumentColumnReads(rows);
+  const { unmount } = renderInbox("/?item=ask-a", { runtime: fake.runtime });
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(fake.connections).toHaveLength(1));
+    act(() => fake.sync());
+    await waitFor(() => expect(fake.editors).toHaveLength(1));
+    const editor = fake.editors[0];
+    if (editor === undefined) throw new Error("the column mounted no editor");
+    const scroller = screen.getByTestId("inbox-pane-scroller");
+    // The one scroller outlives the row, so it starts wherever the reader last left it.
+    scroller.scrollTop = 240;
+    drawAskBlock(editor, "block-a", ask.question);
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+  } finally {
+    unmount();
+    narrow();
+    reads.restore();
+  }
+});
+
+test("a question's document lost and read again leaves the column where the reader left it", async () => {
+  // One placement is armed for each row the reader opens, so the document going and coming
+  // back - a read that fails and the read after it that lands - arms none. The row waits the
+  // hold's quiet window out before it leaves the reader anywhere: while the hold is on, the
+  // column is the first placement's to write, and a row that read `scrollTop` before it ended
+  // would pass whether or not a second placement had been armed.
+  const narrow = widenToReadingPane();
+  const ask = decisionRow("ask-a", "block-a", "Ship behind a flag?");
+  const rows = [ask];
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const reads = mockDocumentColumnReads(rows);
+  const { queryClient, unmount } = renderInbox("/?item=ask-a", { runtime: fake.runtime });
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(fake.connections).toHaveLength(1));
+    act(() => fake.sync());
+    await waitFor(() => expect(fake.editors).toHaveLength(1));
+    const editor = fake.editors[0];
+    if (editor === undefined) throw new Error("the column mounted no editor");
+    const scroller = screen.getByTestId("inbox-pane-scroller");
+    drawAskBlock(editor, "block-a", ask.question);
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+    // The drawing has been quiet for longer than the hold waits, so the first placement is over.
+    await act(async () => {
+      await Bun.sleep(QUIET_MS * 3);
+    });
+    scroller.scrollTop = 240;
+
+    // The document's read fails, and the column falls back to the question's own card.
+    reads.getArtifact.mockRejectedValue(new Error("DOCUMENT_UNLOADABLE"));
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["artifact", "artifact-1"] });
+    });
+    await waitFor(() => expect(fake.connections[0]?.destroyed).toBe(true));
+
+    // The read after it lands, so the column opens the same document again and draws the block.
+    reads.getArtifact.mockResolvedValue(SPEC_DOCUMENT);
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["artifact", "artifact-1"] });
+    });
+    await waitFor(() => expect(fake.connections).toHaveLength(2));
+    act(() => fake.sync());
+    // The fake's sync reaches every connection it ever made, the one the lost document left
+    // behind among them, so the editor to draw in is the one whose root stands in the column.
+    const reopened = await waitFor(() => {
+      const live = fake.editors.find((candidate) => scroller.contains(candidate.root));
+      if (live === undefined) throw new Error("the column mounted no editor of its own");
+      return live;
+    });
+    drawAskBlock(reopened, "block-a", ask.question);
+    await within(screen.getByTestId("inbox-pane")).findByTestId("ask-ask-a");
+
+    expect(scroller.scrollTop).toBe(240);
+  } finally {
+    unmount();
+    narrow();
+    reads.restore();
+  }
+});
+
+test("opening another question arms a placement of its own", async () => {
+  // Two decision blocks of one document, so the column keeps the document it has open and only
+  // the row the reader opened changes. The row waits the hold's quiet window out first, so the
+  // column the second row writes is written by the second row's own placement.
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const first = decisionRow("ask-a", "block-a", "Ship behind a flag?");
+  const second = decisionRow("ask-b", "block-b", "Rename the flag?");
+  const rows = [first, second];
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const reads = mockDocumentColumnReads(rows);
+  const { unmount } = renderInbox("/?item=ask-a", { runtime: fake.runtime });
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    expect(selectedIds()).toEqual(["ask-a"]);
+    await waitFor(() => expect(fake.connections).toHaveLength(1));
+    act(() => fake.sync());
+    await waitFor(() => expect(fake.editors).toHaveLength(1));
+    const editor = fake.editors[0];
+    if (editor === undefined) throw new Error("the column mounted no editor");
+    const scroller = screen.getByTestId("inbox-pane-scroller");
+    drawAskBlock(editor, "block-a", first.question);
+    drawAskBlock(editor, "block-b", second.question);
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+    await act(async () => {
+      await Bun.sleep(QUIET_MS * 3);
+    });
+    scroller.scrollTop = 240;
+
+    await user.keyboard("j");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    await waitFor(() => expect(scroller.scrollTop).toBe(0));
+  } finally {
+    unmount();
+    narrow();
+    reads.restore();
+  }
+});
+
+// The same refusal, pressed on the card the reading column draws for a question written as a
+// decision block. That card is the document page's own (`ReadingPane` -> `DocumentPane`, in
+// `PaneDocument.tsx`, -> `ProofDocument` -> `AskBlockCard`), so no prop of this list reaches
+// it: the registration it holds its row with is the one it reads from the context the list
+// provides. Without it the optimistic `waiting_on_person` drops the row, the column has
+// nothing selected to draw, and the refusal comes back to no card at all.
+test("a refused hand-on from the column's decision block keeps the row, with the reason on that card", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  // Handed to alice on an issue bob holds, so handing it back to bob takes it out of her list.
+  const mine = inboxIssue("ask-mine", "CORE-1", "Ship behind a flag?", {
+    asked_of: "alice",
+    block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
+    block_id: "block-a",
+    issue: { assignee: "bob", key: "CORE-1", title: "Bob's issue" },
+  });
+  const rows = [mine];
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const people = mockPeople();
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT);
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "",
+    token: "",
+    version: null,
+  });
+  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue(
+    rows.map((row) => ({ ...row, last_reply: null }))
+  );
+  const handOn = Promise.withResolvers<InboxRow>();
+  const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => handOn.promise);
+  const { unmount } = renderInbox("/?item=ask-mine", { runtime: fake.runtime });
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(fake.connections).toHaveLength(1));
+    act(() => fake.sync());
+    await waitFor(() => expect(fake.editors).toHaveLength(1));
+    const editor = fake.editors[0];
+    if (editor === undefined) throw new Error("the column mounted no editor");
+    const nodeViews = editor.viewProps.nodeViews as Record<
+      string,
+      (node: ProseMirrorNode) => { dom: HTMLElement; destroy(): void }
+    >;
+    const construct = nodeViews.ask;
+    if (construct === undefined) throw new Error("the ask node view was not installed");
+    act(() => {
+      editor.root.append(construct(askBlockNode("block-a", mine.question)).dom);
+    });
+    const card = await within(pane).findByTestId("ask-ask-mine");
+
+    await user.selectOptions(within(card).getByLabelText("Hand this question to"), "bob");
+    await waitFor(() => expect(handAskTo).toHaveBeenCalledWith("ask-mine", "bob", keyedAttempt));
+    // Handed on optimistically, the row waits on somebody else - and the column keeps the card
+    // the reader pressed, which is the only surface the server's answer can reach.
+    await waitFor(() => expect(within(card).getByText("Handing on…")).toBeTruthy());
+    expect(rowIds()).toEqual(["ask-mine"]);
+
+    await act(async () => {
+      handOn.reject(
+        new ApiError(409, {
+          code: "ASK_NOT_OPEN",
+          error: "only open asks may be handed to another person",
+        })
+      );
+      await handOn.promise.catch(() => undefined);
+    });
+    const alert = await within(card).findByRole("alert");
+    expect(alert).toHaveTextContent("only open asks may be handed to another person");
+    expect(card.isConnected).toBe(true);
+    expect(rowIds()).toEqual(["ask-mine"]);
+  } finally {
+    unmount();
+    narrow();
+    handAskTo.mockRestore();
+    people.mockRestore();
+    getArtifact.mockRestore();
+    getArtifactBlocks.mockRestore();
+    getArtifactText.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    listIssueAsks.mockRestore();
+  }
+});
+
+// The other side of that hold: a card under the Inbox that speaks for an ask this list draws
+// no row for. The card of a Reply row's thread is one - the reader replied in a question that
+// waits on somebody else, so her own list holds the thread and hides the ask - and so is every
+// ask block of a document open in the column beside the selected one. A hand-on from one of
+// those must leave the list as it stands: the hold is for a card the list can drop, and
+// nothing here can drop this one. Held anyway, the optimistic `waiting_on_person` would draw
+// the hidden question into her list, and a refusal would leave it there for good - the write
+// stays failed until it is tried again, and no card unmounts to let it go.
+test("a refused hand-on from a Reply-thread card leaves the reader's own list as it was", async () => {
+  const user = userEvent.setup();
+  // Handed to bob on carol's issue, so alice's own list hides the ask itself; she is in its
+  // thread, which is the row she has.
+  const theirs = issueAsk({
+    asked_of: "bob",
+    id: "ask-theirs",
+    issue: { assignee: "carol", key: "CORE-2", title: "Carol's issue" },
+    issue_key: "CORE-2",
+    question: "Which approach?",
+  });
+  const rows = [theirs];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const people = mockPeople();
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+    as_of: "2026-10-12T00:00:00Z",
+    limit: 200,
+    offset: 0,
+    rows: [
+      replyRow("ask-theirs", {
+        issue: { key: "CORE-2", title: "Carol's issue" },
+        kind: "ask",
+        ref: "/issues/CORE-2/asks/ask-theirs",
+        subject: "Which approach?",
+      }),
+    ],
+    total: 1,
+  });
+  const handOn = Promise.withResolvers<InboxRow>();
+  const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => handOn.promise);
+  const { unmount } = renderInbox("/");
+  try {
+    const row = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>('[data-inbox-row="reply:ask-theirs"]');
+      if (found === null) throw new Error("the Reply row has not rendered");
+      return found;
+    });
+    const control = await within(row).findByLabelText("Hand this question to");
+    expect(rowIds()).toEqual(["reply:ask-theirs"]);
+
+    // Handed back to the assignee of its own issue, from the thread card.
+    await user.selectOptions(control, "carol");
+    await waitFor(() =>
+      expect(handAskTo).toHaveBeenCalledWith("ask-theirs", "carol", keyedAttempt)
+    );
+    await waitFor(() => expect(within(row).getByText("Handing on…")).toBeTruthy());
+    expect(rowIds()).toEqual(["reply:ask-theirs"]);
+
+    await act(async () => {
+      handOn.reject(
+        new ApiError(409, {
+          code: "ASK_NOT_OPEN",
+          error: "only open asks may be handed to another person",
+        })
+      );
+      await handOn.promise.catch(() => undefined);
+    });
+    // The refusal is on the card that wrote it, and the question alice never listed is still
+    // not in her list.
+    const alert = await within(row).findByRole("alert");
+    expect(alert).toHaveTextContent("only open asks may be handed to another person");
+    expect(rowIds()).toEqual(["reply:ask-theirs"]);
+  } finally {
+    unmount();
+    handAskTo.mockRestore();
+    listMyReplies.mockRestore();
+    people.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
   }
 });
 

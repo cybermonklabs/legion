@@ -101,7 +101,11 @@
       "tree": "LEGION-208",
       "repo": "acme/widgets",
       "defaultBranch": "main",
-      "workers": {}
+      "workers": {},
+      "why": {
+        "state": "blocked",
+        "reason": "It waits on LEGION-300, which is not done."
+      }
     },
     "LEGION-210": {
       "key": "LEGION-210",
@@ -111,7 +115,24 @@
       "tree": "LEGION-210",
       "repo": "acme/widgets",
       "defaultBranch": "main",
-      "workers": {}
+      "workers": {},
+      "waitingLine": {
+        "place": 1,
+        "length": 2,
+        "part": "starting",
+        "kind": "queued_root",
+        "partPlace": 1,
+        "partLength": 2,
+        "holdsSlot": false,
+        "rootRank": "00010",
+        "ownRank": "00010",
+        "rootKey": "LEGION-210",
+        "reason": "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank."
+      },
+      "why": {
+        "state": "waiting",
+        "reason": "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank. It waits on LEGION-301, which is not done."
+      }
     },
     "LEGION-211": {
       "key": "LEGION-211",
@@ -121,13 +142,31 @@
       "tree": "LEGION-211",
       "repo": "acme/widgets",
       "defaultBranch": "main",
-      "workers": {}
+      "workers": {},
+      "waitingLine": {
+        "place": 2,
+        "length": 2,
+        "part": "starting",
+        "kind": "queued_root",
+        "partPlace": 2,
+        "partLength": 2,
+        "holdsSlot": false,
+        "rootRank": "00011",
+        "ownRank": "00011",
+        "rootKey": "LEGION-211",
+        "reason": "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank."
+      },
+      "why": {
+        "state": "waiting",
+        "reason": "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank."
+      }
     }
   },
   "pendingStatusWrites": [],
   "heldOutboxRows": [],
   "strandedClaims": [],
   "wakesWaiting": [],
+  "claimsToRefresh": 0,
   "controllerLocator": {
     "runtime": "kubernetes",
     "external": true,
@@ -184,14 +223,28 @@
     "pod_update_max_open_rounds": null,
     "pod_update_rounds_per_minute": null,
     "review_round_cap": 3,
-    "max_fix_attempts": 3,
     "controller": "operator",
     "capabilities": {
       "decided": {}
     },
     "worker_backends": {},
     "role_config_files": {},
-    "repository_renames": []
+    "repository_renames": [],
+    "hooks": [
+      {
+        "name": "work-back",
+        "on": "work_back",
+        "moves": [
+          "any"
+        ],
+        "every": 5,
+        "roles": [
+          "implementer",
+          "tester",
+          "reviewer"
+        ]
+      }
+    ]
   },
   "consumers": []
 }

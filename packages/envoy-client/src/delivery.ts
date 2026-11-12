@@ -30,7 +30,7 @@ import {
 } from "@legion/contracts";
 import { encode } from "@toon-format/toon";
 import { z } from "zod";
-import { askAnswerText, textHead } from "./ask-answer";
+import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import { DispatchClient } from "./dispatch-http";
@@ -605,7 +605,8 @@ export async function wholeCarriedBody(
   try {
     if (item.resource === "comment") {
       const read = await client.getComment(item.id);
-      return [read.comment, ...read.replies].find((comment) => comment.id === item.id)?.body;
+      return [read.comment, ...(read.replies ?? [])].find((comment) => comment.id === item.id)
+        ?.body;
     }
     const read =
       item.issueKey === null
@@ -615,7 +616,7 @@ export async function wholeCarriedBody(
         : await client.getMessage(item.issueKey, item.id);
     return read === undefined
       ? undefined
-      : [read.message, ...read.replies].find((message) => message.id === item.id)?.body;
+      : [read.message, ...(read.replies ?? [])].find((message) => message.id === item.id)?.body;
   } catch {
     return undefined;
   }
@@ -647,9 +648,10 @@ export function replyWith(envelope: DeliveryEnvelope): ReplyHint | undefined {
 }
 
 // Dispatch event payloads follow the wire contract: issue.* carries the Issue,
-// ask.opened/anchor_refreshed/handed_back/answered/resolved the Ask, ask.edited the edited Ask plus
-// its prior fields and editor, message.created the Message, comment.*/suggestion.* the Comment plus
-// artifact_name, artifact.created {artifact}, artifact.version {artifact_id, name, version, diff?},
+// ask.opened/anchor_refreshed/handed_back/asked_of/answered/resolved the Ask, ask.edited the
+// edited Ask plus its prior fields and editor, message.created the Message,
+// comment.*/suggestion.* the Comment plus artifact_name, artifact.created {artifact},
+// artifact.version {artifact_id, name, version, diff?},
 // artifact.human_edited {artifact_id, name, from_version, to_version, editors, diff, diff_truncated},
 // and child.status {child_key, from, to}.
 // Bus frames are untrusted, so each schema below declares exactly the fields
@@ -669,6 +671,7 @@ const DISPATCH_PAYLOAD_SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   "ask.anchor_refreshed": AskPayloadSchema,
   "ask.edited": AskEditedPayloadSchema,
   "ask.handed_back": AskPayloadSchema,
+  "ask.asked_of": AskPayloadSchema,
   "ask.answered": AskPayloadSchema,
   "ask.resolved": AskPayloadSchema,
   "comment.created": CommentPayloadSchema,
@@ -752,13 +755,20 @@ interface CompactDispatch {
   readonly askId: string | undefined;
 }
 
+// How a closed ask reads on the card: the kind, the person's own reason where the record holds
+// one, and the words Dispatch wrote for the asking agent where it holds those (a decline), under
+// the label every reader of them names them with (`dispatchWordsText`), so nobody reads
+// Dispatch's instruction as the person's note. A decline the person wrote no note with is the
+// ordinary one, so an empty reason leaves no separator behind.
 function askResolutionText(
   resolution: z.infer<typeof AskPayloadSchema>["resolution"]
 ): string | undefined {
   if (resolution === null || resolution === undefined) return undefined;
   const kind = resolution.kind ?? "resolved";
   const reason = resolution.reason ?? "";
-  return reason === "" ? kind : `${kind}: ${reason}`;
+  const closed = reason === "" ? kind : `${kind}: ${reason}`;
+  const words = dispatchWordsText(resolution.dispatch_words);
+  return words === undefined ? closed : `${closed} · ${words}`;
 }
 
 function dispatchCompact(
@@ -828,6 +838,20 @@ function dispatchCompact(
         ...(previousAnswer === null || previousAnswer === undefined
           ? {}
           : { previous_answer: askAnswerText(previousAnswer) }),
+      };
+      break;
+    }
+    case "ask.asked_of": {
+      // Whom the ask waits on from now on, and who handed it there. An empty `asked_of` is a
+      // hand-on to the assignee of the ask's own issue: the ask follows that issue again, and
+      // the payload names no login for the person, so the line says where it went instead.
+      const handedOnBy = ask.data.asked_of_by;
+      record = {
+        ...record,
+        asked_of: ask.data.asked_of ?? "the assignee of its issue",
+        ...(handedOnBy === null || handedOnBy === undefined || handedOnBy === ""
+          ? {}
+          : { handed_on_by: handedOnBy }),
       };
       break;
     }

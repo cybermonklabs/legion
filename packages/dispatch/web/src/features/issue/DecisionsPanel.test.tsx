@@ -4,6 +4,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type {
   Artifact,
@@ -58,14 +59,24 @@ const table = decision({
       created_version: 1,
       from_block: "store-why",
       stale: false,
-      to: { block_id: "p1", id: "CORE-1/spec#p1", kind: "block", text: "Notices are stored." },
+      to: graphNode({
+        block_id: "p1",
+        id: "CORE-1/spec#p1",
+        kind: "block",
+        text: "Notices are stored.",
+      }),
     },
     {
       created_at: "2026-11-01T00:00:00Z",
       created_version: 1,
       from_block: "store-why",
       stale: true,
-      to: { block_id: "p 2", id: "CORE-1/spec#p 2", kind: "block", text: "Old rows expire." },
+      to: graphNode({
+        block_id: "p 2",
+        id: "CORE-1/spec#p 2",
+        kind: "block",
+        text: "Old rows expire.",
+      }),
     },
   ],
   text: "## Store notices in a table\n\nA table keeps them queryable.\n\nUnsure: the index may be slow.",
@@ -140,12 +151,10 @@ test("the panel sorts the view into its four lists, in order", async () => {
     expect(within(waiting).getByRole("button", { name: "Change" })).toBeDefined();
     // The paragraph's markdown renders after the commit that mounts it, and the first body of
     // the run waits for the block schema and the headless engine to load.
-    await waitFor(
-      () =>
-        expect(within(waiting).getByTestId("decision-unsure")).toHaveTextContent(
-          "the index may be slow."
-        ),
-      { timeout: 10_000 }
+    await waitFor(() =>
+      expect(within(waiting).getByTestId("decision-unsure")).toHaveTextContent(
+        "the index may be slow."
+      )
     );
     // Each link opens the spec at the block it shaped, its id written as `encodeBlockId` writes it.
     const shaped = within(waiting)

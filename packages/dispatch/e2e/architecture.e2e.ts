@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import {
   createIssue,
@@ -11,7 +10,7 @@ import {
   syncArchitectureSource,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 async function expectTouchTarget(locator: Locator): Promise<void> {
@@ -78,14 +77,11 @@ async function screenshot(page: Page, projectName: string, name: string): Promis
   await page.screenshot({ fullPage: true, path: `${dir}/${name}-${width}.png` });
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // SLOW(>=2s): one row for the whole Architecture page - the seeded model and its six issues, the
 // bars over them, a drill-down, a row's details, a status change that has to move a bar, and the
 // Unassigned picker. Each clause of the title is a press the row has to make.
-test("a project with a source opens on its Architecture: bars, drill-down, details, a bar that moves on a status change, and the Unassigned picker", async ({
+// @pr: The Architecture page whole: bars over the seeded model, a drill-down, details, a bar that a status change moves, and the Unassigned picker.
+test("a project with a source opens on its Architecture: bars, drill-down, details, a bar that moves on a status change, and the Unassigned picker @pr", async ({
   browser,
 }) => {
   const issues = await seedArchitecture();
@@ -217,10 +213,9 @@ test("a project with a source opens on its Architecture: bars, drill-down, detai
 // are touch-sized. Each claim is read where the page renders it, reached by its own URL. The
 // touch rule is the phone layout's alone (styles.css gives every control 44 px below 1280 px),
 // so the row runs on the phone and nowhere else.
-test("the Architecture page keeps its titles inside their links and its Unassigned controls touch-sized @phone", async ({
+test("the Architecture page keeps its titles inside their links and its Unassigned controls touch-sized @phone @phone-only", async ({
   browser,
 }, testInfo) => {
-  test.skip(testInfo.project.name !== "iphone", "these are the phone layout's own measurements");
   const issues = await seedArchitecture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -322,10 +317,10 @@ test("Refresh with a broken model keeps the last model up behind an error banner
       `at ${modelCommit.slice(0, 8)}`
     );
     const tree = await getArchitecture("CORE");
-    expect(tree.sources.map((source) => [source.repo, source.last_commit])).toEqual([
+    expect((tree.sources ?? []).map((source) => [source.repo, source.last_commit])).toEqual([
       ["legion/arch", modelCommit],
     ]);
-    expect(tree.components.map((component) => component.id).sort()).toEqual([
+    expect((tree.components ?? []).map((component) => component.id).sort()).toEqual([
       "api",
       "docs",
       "github",
@@ -341,14 +336,14 @@ test("Refresh with a broken model keeps the last model up behind an error banner
       "aria-selected",
       "true"
     );
-    await expect(page.getByRole("button", { name: "Filters · 1 active" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Filter Labels: 1 picked" })).toBeVisible();
 
     // A project without a source has no Architecture tab and opens on Issues, the filter
     // parameters forwarded.
     await page.goto("/projects/OPS?label=frontend");
     await expect(page).toHaveURL(/\/projects\/OPS\/issues\?label=frontend$/);
     await expect(page.getByRole("tab", { name: "Architecture" })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Filters · 1 active" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Filter Labels: 1 picked" })).toBeVisible();
   } finally {
     await context.close();
   }

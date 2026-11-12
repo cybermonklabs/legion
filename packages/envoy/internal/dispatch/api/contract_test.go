@@ -109,7 +109,7 @@ func newContractRig(t *testing.T) *contractRig {
 		PendingTTL: 12 * time.Hour,
 		Audience:   brokerServer.URL, Skew: time.Minute, Replay: enr.Replay,
 	}
-	reqMachine.Chain = requests.NewChainVerifier(brokerStore, brokerServer.URL, time.Minute)
+	reqMachine.Chain = requests.NewChainVerifier(brokerStore, brokerServer.URL, time.Minute, reqMachine.Airlock)
 	provider := brokertest.NewOAuthProvider(t, brokerStore, issuer)
 	mach := &machine.Service{
 		Store: brokerStore, Enroll: enr, Policy: cur,
@@ -410,7 +410,7 @@ func TestContractPendingListShowsCreatedRecordThroughDispatch(t *testing.T) {
 
 // TestContractMachineLoginLookupAndApproveThroughDispatch drives the typed-code machine flow
 // (approveMachineLogin): a machine's signed login request produces a code; Dispatch's lookup route
-// resolves it to the record (ruling 13's one selector); approving through Dispatch with the same
+// resolves it to the record (decision 13's one selector); approving through Dispatch with the same
 // code mints a launcher credential, while without the code the broker refuses CODE_REQUIRED and
 // with another code CODE_MISMATCH.
 func TestContractMachineLoginLookupAndApproveThroughDispatch(t *testing.T) {
@@ -619,7 +619,7 @@ func TestContractAnAutomaticGrantIsListedRevokedAndThenAsksItsOwner(t *testing.T
 
 // approveMachineLogin logs approver's own machine in as a person does: the machine asks the
 // broker's device authorization for its signed login, naming approver in its login_hint; approver looks its code
-// up through Dispatch (ruling 13's one selector), which answers the pending launcher_credential
+// up through Dispatch (decision 13's one selector), which answers the pending launcher_credential
 // record; an approval without the code is refused CODE_REQUIRED, and one with another code
 // CODE_MISMATCH; and approver's approval with the same code mints a launcher credential. It returns
 // the launcher credential the approval minted and the machine's key. A service logs in with its own

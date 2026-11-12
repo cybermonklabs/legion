@@ -41,16 +41,16 @@ func (s *selectors) add(owner, what string) {
 
 // repository records the owner and the repository value names: a selector naming one repository
 // of one owner. The owner is lowercased, as a bundle's directory names an owner, and the
-// repository is keyed as the directory holding its token is named for it (ghRepositoryName), so
-// two spellings of one repository — `Legion-Smoke` in a pull request's URL beside
-// `-R sjawhar/legion-smoke`, or a remote's `widgets.git` beside `widgets` — are the one
-// repository the command names rather than two, which would send it to the owner's own
-// directory.
+// repository is keyed as the directory holding its token is named for it
+// (ghconfig.RepositoryName), so two spellings of one repository — `Legion-Smoke` in a pull
+// request's URL beside `-R sjawhar/legion-smoke`, or a remote's `widgets.git` beside `widgets` —
+// are the one repository the command names rather than two, which would send it to the owner's
+// own directory.
 func (s *selectors) repository(value, what string) error {
 	owner, repo, err := repositoryTarget(value, what, s.api)
 	if err == nil {
 		s.add(owner, what)
-		s.repos[ghRepositoryName(repo)] = true
+		s.repos[ghconfig.RepositoryName(repo)] = true
 	}
 	return err
 }
@@ -84,12 +84,13 @@ func (s *selectors) pairOwner(value, what string) error {
 }
 
 // onlyRepository is the one repository every selector of the command named, as the bundle's
-// directory holding its token is named for it (ghRepositoryName, the key selectors.repository
-// records): "" where a selector named the command's owner alone, where the selectors named two
-// repositories, and where they named none. A command whose selectors agree on one repository is
-// the one whose narrowest token the bundle may hold; every other reaches whatever else of the
-// owner's gh resolves, and so the owner's own directory. The owner is its caller's, the one
-// owner the command names (ghTargetOf), since a second owner is a refusal before this is asked.
+// directory holding its token is named for it (ghconfig.RepositoryName, the key
+// selectors.repository records): "" where a selector named the command's owner alone, where the
+// selectors named two repositories, and where they named none. A command whose selectors agree
+// on one repository is the one whose narrowest token the bundle may hold; every other reaches
+// whatever else of the owner's gh resolves, and so the owner's own directory. The owner is its
+// caller's, the one owner the command names (ghTargetOf), since a second owner is a refusal
+// before this is asked.
 func (s *selectors) onlyRepository() string {
 	if s.ownerOnly || len(s.repos) != 1 {
 		return ""
@@ -437,7 +438,7 @@ func isGitHubHost(host string) bool {
 // is no GitHub login. The name is the second segment as gh reads it, whatever follows it (a pull
 // request's number, a tree's path), as the argument spells it. The caller that records it keys
 // it as the directory holding its token is named for it (selectors.repository,
-// gitcredential.go's ghRepositoryName), so two spellings of one repository are one selector;
+// ghconfig.RepositoryName), so two spellings of one repository are one selector;
 // the lookup normalizes it again, which changes nothing for a name GitHub holds, and decides
 // whether a bundle can hold a directory of that name, since a name no directory can hold is one
 // the bundle holds none for.
@@ -580,7 +581,7 @@ func (s *selectors) fromWorkingDirectory(remotes func() ([]ghRemote, error)) err
 		}
 		if owner != "" {
 			s.add(owner, "the working directory's "+remote.what())
-			s.repos[ghRepositoryName(repo)] = true
+			s.repos[ghconfig.RepositoryName(repo)] = true
 		}
 	}
 	return nil

@@ -83,8 +83,8 @@ func passed(t *testing.T, pool *pgxpool.Pool, what string) {
 
 // startRowsOf is every start the outbox still owes issue, spelled for a failure message: the role,
 // the phase, and whether the row waits for the issue's admission slot. The repair of a slot writes
-// two such rows for a worker it starts again (workflow.StartOrOwe), and the repair of a start that
-// can no longer act deletes the one that waits.
+// one such row for a worker it starts again (workflow.StartOrOwe), and the repair of a start that
+// can no longer act deletes it.
 func startRowsOf(t *testing.T, pool *pgxpool.Pool, issue string) []string {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select coalesce(payload->>'role', ''), coalesce(payload->>'phase', ''),
@@ -275,10 +275,14 @@ func workingPane(token claim.Token) *runtime.Locator {
 }
 
 // seedWaitingMember records member as a tree member holding no admission slot, with the claim of
-// its role and the start its transition owes that role. The claim is ready: the relaunch half of
-// the start has run and brought the worker's session back, and the half that carries the task
-// waits for the issue's slot (record.SuperviseRequest.NeedsSlot), which is where the cap is
-// applied (the outbox's own ordering rules).
+// its role and the start its transition owes that role. A phase worker's start is one row, which
+// carries the task and waits for the issue's slot (record.SuperviseRequest.NeedsSlot), and that
+// row has never run against this claim: a row held for a slot its issue does not hold is not
+// claimable at all (record's outboxInOrder), so it stands in the outbox exactly where it was
+// written and nothing of it has reached the claim. The claim is the live one of the round
+// before — the transition that wrote this row found the role already claimed — which is why it
+// is ready, with a session and a process of its own, while the row it is owed waits for the
+// slot.
 func seedWaitingMember(t *testing.T, dsn string, member record.Issue, worker supervise.Claim, owed record.SuperviseRequest) {
 	t.Helper()
 	ctx := context.Background()
@@ -320,10 +324,10 @@ func seedCappedRoots(t *testing.T, cfg config.Config, project string, roots ...s
 
 // seedWaitingTester records key as a member of root's tree waiting for an admission slot, which
 // is the fixture every test of a stop that meets a waiting issue is built from: the member stands
-// in testing holding no slot, the relaunch half of its start has already run — its tester is
-// ready, with no task — and the half that carries the task waits for that slot. rank is the
-// member's rank; the order two of these are written in is what orders them in the line, which
-// goes by the age of the row each issue is owed (record.Waiting).
+// in testing holding no slot, and the one row its start is — the row that carries the task —
+// stands in the outbox unrun, held for the slot its issue does not hold, with its tester ready
+// and holding no task. rank is the member's rank; the order two of these are written in is what
+// orders them in the line, which goes by the age of the row each issue is owed (record.Waiting).
 func seedWaitingTester(t *testing.T, cfg config.Config, project, root, key, rank string, tester claim.Token) {
 	t.Helper()
 	parent := root
@@ -338,16 +342,19 @@ func seedWaitingTester(t *testing.T, cfg config.Config, project, root, key, rank
 	writePrompt(t, cfg, tester)
 }
 
-// A stop ends the start its issue was still owed. An issue waiting for an admission slot holds the
-// other half of its transition in the outbox — the row that carries the worker's task — and that
-// row would start the worker the operator stopped the moment a slot came. The repair of a start
-// that can no longer act ends it instead (admit's finishFencedStarts), so the stop holds for a
-// waiting issue as it holds for a slotted one.
+// A stop ends the start its issue was still owed. An issue waiting for an admission slot holds
+// the row that carries its worker's task in the outbox, and that row would start the worker the
+// operator stopped the moment a slot came. The repair of a start that can no longer act ends it
+// instead (admit's finishFencedStarts), so the stop holds for a waiting issue as it holds for a
+// slotted one.
 //
-// The fixture is the waiting half of that pair. The member stands in a worker phase with no slot
-// of its own, the relaunch half has already run — its tester is ready, with no task — and the task
-// half waits. Two roots hold the cap's two slots, so the member is in the line and nothing is
-// granted it. The stop is made over the operator's own route.
+// The fixture is that row waiting. The member stands in a worker phase with no slot of its own,
+// its one start row stands in the outbox unrun — a row held for a slot is claimable by nothing
+// until the slot comes — and its tester is ready with no task. Two roots hold the cap's two
+// slots, so the member is in the line and nothing is granted it. The stop is made over the
+// operator's own route, which is what stamps the claim with the write mark its retirement took
+// (store's putClaim): the row's payload was written before the stop was recorded, so its mark
+// is below the claim's and the stop outlived it.
 //
 // What the passes after the stop do is read twice, because the cap would explain the first read
 // on its own. First with both slots still held: the issue owes its tester nothing, the runtime is
@@ -359,7 +366,7 @@ func seedWaitingTester(t *testing.T, cfg config.Config, project, root, key, rank
 //
 // The second half of the test is the way back the repair leaves, which is the start the rule's own
 // comment names: the held phase's retry. The worker being gone holds the issue out of its phase,
-// and the architect's retry restores the phase and writes the pair again. The issue is then in the
+// and the architect's retry restores the phase and writes the start again. The issue is then in the
 // line, takes the free slot, and its tester is launched — so what the stop ended is one start, not
 // the issue's ability to run again.
 func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
@@ -405,10 +412,10 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 	outOfTheLine(t, d, member, "once a slot stood free")
 
 	// The way back, which the stop leaves open: the issue is held and its architect retries the
-	// held phase, which writes the start pair again.
+	// held phase, which writes the start again.
 	heldAndRetried(t, pool, d, startedAgainEngine(cfg), member, claim.RoleTester)
 	if owed := startRowsOf(t, pool, member); len(owed) == 0 {
-		t.Fatalf("after the retry of the held phase %s owes the start rows %v, want the relaunch and the task the retry writes: the retry is the way back the repair leaves",
+		t.Fatalf("after the retry of the held phase %s owes the start rows %v, want the one row the retry writes: the retry is the way back the repair leaves",
 			member, owed)
 	}
 	if line := d.state().Admission.Waiting; !slices.Contains(line, member) {
@@ -529,12 +536,15 @@ func applyFact(t *testing.T, pool *pgxpool.Pool, source, eventID string, fact in
 // heldAndRetried is the held phase's retry, one of the workflow's ways back from a stop: the stop
 // fails no claim, so the hold is applied here as the daemon applies it when the worker of a live
 // phase is gone (workflow's claimFailed), the issue is read standing at held, and the architect's
-// retry of that held phase is applied. What the retry then writes is each caller's own read: the
-// phase it put the issue back in, the start rows it wrote, or the launch they reach.
+// retry of that held phase is applied. The failure carries what the daemon's own carries beside
+// its sentence (applyTerminal): the cause of a process that died until its deaths ran out, those
+// counters, and the limits they ran out against. What the retry then writes is each caller's own
+// read: the phase it put the issue back in, the start rows it wrote, or the launch they reach.
 func heldAndRetried(t *testing.T, pool *pgxpool.Pool, d *daemon, engine *workflow.Engine, issue string, role claim.Role) {
 	t.Helper()
 	applyFact(t, pool, "api", "worker-died:"+issue, intake.ClaimFailed{Issue: issue, Role: role,
-		Reason: "the operator stopped it"}, engine)
+		Reason: "the operator stopped it", Cause: supervise.CauseDied, Budgets: supervise.Budgets{LaunchFailures: 2, Deaths: 3},
+		Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2}}, engine)
 	if held := d.state().Issues[issue].Phase; held != phase.Held {
 		t.Fatalf("%s stands at %s, want %s: the worker of its phase is gone, so the phase is held for its architect to decide",
 			issue, held, phase.Held)

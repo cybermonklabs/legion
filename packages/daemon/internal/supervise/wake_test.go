@@ -36,18 +36,31 @@ const (
 	thirdToken  claim.Token = "legion-LEGION-209-reviewer"
 )
 
-// pacedHarness is a harness whose machines reserve from one limiter of rate wakes a minute in
-// bursts of one, every paced release spread by half an interval. A rate of zero is the pacing
-// off, and the machines are handed no Reserve at all, which is what the daemon hands them at that
-// rate rather than a limiter that paces nothing (the daemon's run, openSupervision): a harness
-// that handed one would take a path production never takes, and the line its wakes write would
-// say paced=true of a pacing that is off (reserveWake, wakeRan).
-func pacedHarness(t *testing.T, rate int) *harness {
+// pacedDeps sets a machine's pacing to one limiter of rate wakes a minute in bursts of one,
+// every paced release spread by half an interval. A rate of zero is the pacing off, and the
+// machine is handed no Reserve at all, which is what the daemon hands it at that rate rather
+// than a limiter that paces nothing (the daemon's run, openSupervision): a harness that handed
+// one would take a path production never takes, and the line its wakes write would say
+// paced=true of a pacing that is off (reserveWake, wakeRan).
+func pacedDeps(rate int) func(*Deps) {
+	return func(d *Deps) {
+		d.WakePace = WakePace{Rate: rate, Burst: 1}
+		if rate > 0 {
+			d.WakePace.Reserve = wakepace.New(rate, 1, func(time.Duration) time.Duration { return wakePart }).Reserve
+		}
+	}
+}
+
+// pacedHarness is a harness whose machines reserve from one such limiter (pacedDeps). tune is
+// whatever else the test's own Deps need, set before the first machine exists, as the daemon sets
+// them (openSupervision, then the machines it builds): the stale-plugin refresh gate is set that
+// way (plugin_refresh_gate_test.go).
+func pacedHarness(t *testing.T, rate int, tune ...func(*Deps)) *harness {
 	t.Helper()
 	h := newBareHarness(t)
-	h.deps.WakePace = WakePace{Rate: rate, Burst: 1}
-	if rate > 0 {
-		h.deps.WakePace.Reserve = wakepace.New(rate, 1, func(time.Duration) time.Duration { return wakePart }).Reserve
+	pacedDeps(rate)(&h.deps)
+	for _, set := range tune {
+		set(&h.deps)
 	}
 	c := queuedClaim()
 	if err := h.store.PutClaim(h.ctx, c); err != nil {
@@ -493,12 +506,10 @@ func stalePluginClaim(c Claim, contract int) Claim {
 	return c
 }
 
-// A plugin wave is forty stale live claims found in one pass, each of them able to answer a round:
-// their update tasks are wakes of the daemon's own — each wakes a live session in place of a
-// launch — so they go out at the same paced spacing a wave of launches does, one claim's round
-// opening at each turn. Nothing is relaunched: the whole of what a claim that can answer costs is
-// the task.
-func TestAWaveOfStalePluginsPostsItsUpdateTasksAtThePacedSpacing(t *testing.T) {
+// A plugin wave is forty stale live claims found in one pass. Each costs one paced wake and no
+// ask at all: the lane relaunches the process onto this daemon's plugin, so the wave goes out at
+// the spacing every wave of launches does, one claim's process replaced at each turn.
+func TestAWaveOfStalePluginsRelaunchesAtThePacedSpacing(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.deps.PluginContract = PodUpdateContract + 1
 	const wave = 40
@@ -511,30 +522,27 @@ func TestAWaveOfStalePluginsPostsItsUpdateTasksAtThePacedSpacing(t *testing.T) {
 		h.mustPostTo(m, StalePlugin{Claim: waveToken(i), Trigger: "sweep"})
 	}
 
-	round := PluginRound(h.deps.PluginContract)
 	for i, m := range machines {
 		if i > 0 {
-			if got := m.Claim().UpdateRound; got != "" {
-				t.Fatalf("claim %d holds round %q before its turn, want none: its update task waits for the pacing", i, got)
-			}
+			h.wantStarts(waveToken(i), 0)
 			h.clock.Advance(wakeInterval + wakePart)
 			m.Wait()
 		}
-		if got := m.Claim().UpdateRound; got != round {
-			t.Fatalf("claim %d holds round %q at its turn, want %q", i, got, round)
-		}
+		h.wantStarts(waveToken(i), 1)
 	}
 	for i := range machines {
-		h.wantStarts(waveToken(i), 0)
-		h.wantWakeLine(waveToken(i), "kind=plugin-task")
+		h.wantWakeLine(waveToken(i), "kind=plugin-refresh")
+		if got := machines[i].Claim().UpdateRound; got != "" {
+			t.Fatalf("claim %d holds round %q, want none: the lane asks its worker nothing", i, got)
+		}
 	}
 }
 
-// The sweep posts StalePlugin to every stale live claim at every tick, and a claim whose update
-// task is merely queued is not one it skips, so the same claim is posted again every minute of a
-// wave. Those re-posts must be free: the claim already holds a wake, so each of them returns
-// having taken no token and opened no second round. What the limiter did is read through the claim
-// behind it — one that waits two turns rather than sixty-two.
+// The sweep posts StalePlugin to every stale live claim at every tick, and a claim whose
+// relaunch is merely queued is not one it skips, so the same claim is posted again every minute
+// of a wave. Those re-posts must be free: the claim already holds a wake, so each of them
+// returns having taken no token and raised no second relaunch. What the limiter did is read
+// through the claim behind it — one that waits two turns rather than sixty-two.
 func TestAMinuteOfStalePluginRePostsOverAWaitingWakeTakesNoSecondToken(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.deps.PluginContract = PodUpdateContract + 1
@@ -552,17 +560,12 @@ func TestAMinuteOfStalePluginRePostsOverAWaitingWakeTakesNoSecondToken(t *testin
 		t.Fatalf("the stored claim is %s recording %+v in round %q, want %s recording its process in none: the gate left it as it stands",
 			stored.State, stored.Locator, stored.UpdateRound, StateReady)
 	}
+	h.wantStarts(secondToken, 0)
 	h.clock.Advance(wakeInterval + wakePart)
 	stale.Wait()
 
-	if got, want := stale.Claim().UpdateRound, PluginRound(h.deps.PluginContract); got != want {
-		t.Fatalf("the claim holds round %q at its turn, want %q", got, want)
-	}
-	if opened := h.logs.lines("supervise: an update round is open on this claim", "claim="+string(secondToken)); len(opened) != 1 {
-		t.Fatalf("the claim opened %d rounds, want 1: %s", len(opened), strings.Join(opened, " | "))
-	}
-	h.wantStarts(secondToken, 0)
-	h.wantWakeLine(secondToken, "kind=plugin-task", "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
+	h.wantStarts(secondToken, 1)
+	h.wantWakeLine(secondToken, "kind=plugin-refresh", "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
 
 	h.clock.Advance(wakeInterval + wakePart)
 	behind.Wait()
@@ -571,10 +574,9 @@ func TestAMinuteOfStalePluginRePostsOverAWaitingWakeTakesNoSecondToken(t *testin
 	h.wantWakeLine(thirdToken, "kind=launch", "waitedFor="+(2*(wakeInterval+wakePart)).String())
 }
 
-// A post that becomes a relaunch rather than a task — a worker whose plugin has no
-// ready_for_update op to answer a round with — reserves nothing in refreshPlugin: its launch takes
-// the one token, at the gate every launch passes (launchAfter). One token, one wake line, and the
-// claim behind it waits two turns rather than three.
+// The lane reserves nothing of its own in refreshPlugin: the relaunch it raises takes the one
+// token every launch takes, at the gate every launch passes (launchAfter). One token, one wake
+// line, and the claim behind it waits two turns rather than three.
 func TestAStalePluginRelaunchTakesItsOneTokenAtTheLaunchGate(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.deps.PluginContract = PodUpdateContract + 1
@@ -593,7 +595,7 @@ func TestAStalePluginRelaunchTakesItsOneTokenAtTheLaunchGate(t *testing.T) {
 	if got := stale.Claim().UpdateRound; got != "" {
 		t.Fatalf("the relaunched claim holds round %q, want none: a worker that cannot answer is relaunched instead", got)
 	}
-	h.wantWakeLine(secondToken, "kind=launch", "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
+	h.wantWakeLine(secondToken, "kind=plugin-refresh", "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
 
 	h.clock.Advance(wakeInterval + wakePart)
 	behind.Wait()
@@ -602,11 +604,11 @@ func TestAStalePluginRelaunchTakesItsOneTokenAtTheLaunchGate(t *testing.T) {
 	h.wantWakeLine(thirdToken, "kind=launch", "waitedFor="+(2*(wakeInterval+wakePart)).String())
 }
 
-// The project controller's own claim is held by neither branch of the stale-plugin lane, whatever
-// the queue holds. It is relaunched at once rather than asked: the `legion` tool its session holds
-// has no ready_for_update op, so a round over it would stay open for ever — and the relaunch takes
+// The project controller's own claim is held for no turn and paced by nothing, whatever the
+// queue holds. It is relaunched where the lane finds it, mid-turn as well as idle: its pod holds
+// no issue workspace, so it has nothing to push and no turn to wait out — and the relaunch takes
 // no token, since the operator's own read of a running wave is this one session's.
-func TestTheControllersStalePluginIsHeldByNeitherBranch(t *testing.T) {
+func TestTheControllersStalePluginIsRelaunchedWhereItIsFound(t *testing.T) {
 	for _, state := range []ClaimState{StateReady, StateWorking} {
 		t.Run(string(state), func(t *testing.T) {
 			h := pacedHarness(t, wakeRate)
@@ -625,37 +627,9 @@ func TestTheControllersStalePluginIsHeldByNeitherBranch(t *testing.T) {
 			if got := controller.Claim().UpdateRound; got != "" {
 				t.Fatalf("the controller holds round %q, want none: no controller turn can answer one", got)
 			}
-			h.wantWakeLine(c.Token, "kind=launch", "waited=false", "paced=false")
+			h.wantWakeLine(c.Token, "kind=plugin-refresh", "waited=false", "paced=false")
 		})
 	}
-}
-
-// A registration that lands while the update task waits its turn takes the claim past the fact
-// the task was reserved for, so the turn opens no round: a round over a worker already on this
-// daemon's plugin would ask it to push and answer, hold its next phase's tasks behind that ask,
-// and end hours later in a relaunch of a current process (openPluginUpdateIfStale). The token is
-// spent either way — the limiter charges on the reserve — which is why the pass that reserves
-// and the turn that runs each make the comparison for themselves.
-func TestAPluginWakeWhoseClaimRegisteredCurrentOpensNoRound(t *testing.T) {
-	h := pacedHarness(t, wakeRate)
-	h.deps.PluginContract = PodUpdateContract + 1
-	stale := h.machineFor(stalePluginClaim(wakeClaim(secondToken, StateReady), PodUpdateContract))
-
-	h.must(RequestSpawn{Claim: h.token})
-	h.mustPostTo(stale, StalePlugin{Claim: secondToken, Trigger: "sweep"})
-	h.mustPostTo(stale, RequestRegister{
-		Claim: secondToken, Generation: 1, Session: session, SessionFile: sessionFile,
-		CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract,
-	})
-
-	h.clock.Advance(wakeInterval + wakePart)
-	stale.Wait()
-
-	if got := stale.Claim().UpdateRound; got != "" {
-		t.Fatalf("the claim holds round %q, want none: it registered on this daemon's plugin while its update task waited its turn", got)
-	}
-	h.wantStarts(secondToken, 0)
-	h.wantWakeLine(secondToken, "kind=plugin-task", "waited=true")
 }
 
 // What a machine tells a reader of every claim about the wake it is holding
@@ -684,7 +658,7 @@ func TestTheViewNamesTheWakeTheMachineHoldsUntilItHasRun(t *testing.T) {
 		turns int
 	}{
 		{launching, WakeLaunch, 1},
-		{stale, WakePluginTask, 2},
+		{stale, WakePluginRefresh, 2},
 	} {
 		held := waiting.m.View().WakeWaiting
 		at := reserved.Add(time.Duration(waiting.turns) * (wakeInterval + wakePart))
@@ -703,9 +677,7 @@ func TestTheViewNamesTheWakeTheMachineHoldsUntilItHasRun(t *testing.T) {
 		}
 	}
 	h.wantStarts(secondToken, 1)
-	if got, want := stale.Claim().UpdateRound, PluginRound(h.deps.PluginContract); got != want {
-		t.Fatalf("the stale claim holds round %q at its turn, want %q", got, want)
-	}
+	h.wantStarts(thirdToken, 1)
 }
 
 // Check c-nonblocking of dispatch://INFRA-976/spec, over a claim the gate parked above a process
@@ -716,13 +688,11 @@ func TestTheViewNamesTheWakeTheMachineHoldsUntilItHasRun(t *testing.T) {
 // a launching claim's does, and goes to the process the launch starts.
 //
 // The path here is a rollout of the plugin contract, which is where the window is widest: a bump
-// makes every live claim stale, each takes the plugin-task lane, and the end of the round its
-// worker answered relaunches the process through the paced gate (endPodUpdate, replaceProcess).
-// The round's end clears the hold that kept the claim's next task back (answeredOpenRound), so
-// without this guard the next task goes to the worker the relaunch is about to kill. repoint's
-// stale address and relaunchStale open the same window. The task is the workflow's own, named by
-// the outbox row it comes from: an operator's task, which names no row, runs that launch where
-// it arrives and is queued for the process the launch starts
+// makes every live claim stale, and the lane relaunches each of them through the paced gate
+// (refreshPlugin, relaunchStale), which keeps the process it replaces until its turn. repoint's
+// stale address and a pod round's replacement open the same window. The task is the workflow's
+// own, named by the outbox row it comes from: an operator's task, which names no row, runs that
+// launch where it arrives and is queued for the process the launch starts
 // (runParkedLaunchNow, TestAnOperatorsDeliveryOverAParkedLaunchRunsThatLaunchNow).
 //
 // The negative control is the guard reverted (sendPending's launchWaits): the task is then handed
@@ -730,20 +700,15 @@ func TestTheViewNamesTheWakeTheMachineHoldsUntilItHasRun(t *testing.T) {
 func TestATaskDeliveredWhileALaunchWaitsItsTurnWaitsForTheProcessThatLaunchStarts(t *testing.T) {
 	const next = "review the pull request"
 	h := pacedHarness(t, wakeRate)
-	h.reach(StateReady)
-	round := PluginRound(h.m.deps.PluginContract + 1)
+	h.reach(StateIdle)
+	// The walk to idle delivers a phase task and works it, so one prompt is already sent.
+	sent := len(h.prompts())
+	h.m.deps.PluginContract = PodUpdateContract + 1
 
-	// The round as its worker answers one: it reads the ask in a turn, pushes its work, answers
-	// ready_for_update, and ends that turn. The claim is idle with its hands empty when the
-	// round's end relaunches it, which is the state the sweep's end finds.
-	h.openUpdate(round, testReasons)
-	h.wantPrompts(1)
-	h.must(StreamTurnStart{Claim: h.token})
-	h.signalUpdate("c0ffee")
-	h.must(StreamTurnEnd{Claim: h.token})
-	h.must(PodUpdateEnded{Claim: h.token, Round: round})
+	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 
 	replaced := h.locator()
+	h.wantWaitingWake(WakePluginRefresh)
 	if got := h.claim(); got.State != StateIdle || got.Locator == nil || *got.Locator != replaced {
 		t.Fatalf("the claim whose relaunch waits is %s recording %+v, want %s recording the process it still runs",
 			got.State, got.Locator, StateIdle)
@@ -751,7 +716,7 @@ func TestATaskDeliveredWhileALaunchWaitsItsTurnWaitsForTheProcessThatLaunchStart
 
 	h.must(RequestDeliver{Claim: h.token, Task: next, ID: "outbox:42", Row: 42, Generation: 7})
 
-	h.wantPrompts(1)
+	h.wantPrompts(sent)
 	if p := h.pending(); p.Task != next || !p.DeliveredAt.IsZero() || !p.ConfirmedAt.IsZero() {
 		t.Fatalf("the task delivered while the launch waits is %+v, want %q queued unread: the process it would reach is the one this launch replaces",
 			p, next)
@@ -769,9 +734,8 @@ func TestATaskDeliveredWhileALaunchWaitsItsTurnWaitsForTheProcessThatLaunchStart
 
 	h.relaunched()
 
-	sent := h.wantPrompts(2)
-	if sent[1].Message != next {
-		t.Fatalf("the prompts are %+v, want the round's ask and then the task, to the process the launch started", sent)
+	if got := h.wantPrompts(sent + 1)[sent]; got.Message != next {
+		t.Fatalf("the prompt after the relaunch is %+v, want the task %q, to the process the launch started", got, next)
 	}
 }
 
@@ -894,17 +858,20 @@ func TestATakeBackTheStoreRefusesAtTheTurnRetiresNoTask(t *testing.T) {
 func TestATakeBackTheStoreRefusesAtTheTurnLeavesNoMarkBehind(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
-	h.m.deps.PluginContract = 25
-	h.m.deps.PluginRelaunchable = true
 
 	// The agent acknowledges a task, the sweep finds the claim's plugin stale and raises the
 	// relaunch, and that launch waits its turn over the process the agent is on. The turn of the
 	// task starts and ends inside the wait, with Oh My Pi's result still to come, so the launch's
-	// turn finds a confirmed task to take back.
+	// turn finds a confirmed task to take back. The daemon's contract moves between the task and
+	// the sweep, as it does in life: a task handed to a claim already stale is held rather than
+	// sent, since every `legion` call of that process is refused (sendPending's
+	// staleRefusesClaim).
 	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", ID: "outbox:7", Row: 7, Generation: 7})
 	sent := h.pending().ID
+	h.m.deps.PluginContract = 25
+	h.m.deps.PluginRelaunchable = true
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
-	waiting := h.wantWaitingWake(WakeLaunch)
+	waiting := h.wantWaitingWake(WakePluginRefresh)
 	h.must(StreamTurnStart{Claim: h.token, DeliveryID: sent})
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
 
@@ -949,17 +916,18 @@ func TestATakeBackTheStoreRefusesAtTheTurnLeavesNoMarkBehind(t *testing.T) {
 // One death is charged once, however many reports of it arrive. A claim whose relaunch waits its
 // turn still records the process it found dead, so a second report of that same incarnation
 // reaches the judgement every report passes through — the runtime's own sweep makes one every
-// interval — and before this guard that second report ran the whole death again: another death
-// and another launch failure charged, and the waiting relaunch replaced by a fresh token at the
-// back of the queue. In a wave a claim with work outstanding then failed after two real deaths
-// rather than at launch_failure_limit, and the claim behind it lost the turn the queue had
-// already given it. The four other paths that report a process to that judgement — a closed
-// connection, the boot interval, the probe interval and the registration deadline — have a test
-// of their own below.
+// interval — and before this guard that second report ran the whole death again: another launch
+// failure charged, and the waiting relaunch replaced by a fresh token at the back of the queue.
+// In a wave a claim with work outstanding then failed after two real deaths rather than at
+// launch_failure_limit, and the claim behind it lost the turn the queue had already given it.
+// The death itself is charged once wherever its report is judged, on a record of its own
+// (died). The four other paths that report a process to that judgement — a closed connection,
+// the boot interval, the probe interval and the registration deadline — have a test of their
+// own below.
 //
 // The negative control is the guard reverted (judge's launchWaits): the budgets then read two
-// deaths and two launch failures, and the claim behind waits a turn longer, both of which this
-// test reads.
+// launch failures against the one death, and the claim behind waits a turn longer, both of
+// which this test reads.
 func TestASecondReportOfTheOneDeathOverAWaitingRelaunchChargesNothing(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	behind := h.machineFor(wakeClaim(secondToken, StateQueued))
@@ -1313,22 +1281,24 @@ func TestALaunchRefusedAtItsTurnLeavesItsBootingProcessWatched(t *testing.T) {
 func TestALaunchRefusedAtItsTurnBindsTheTurnItsAcknowledgedPromptAwaits(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
-	h.m.deps.PluginContract = 25
-	h.m.deps.PluginRelaunchable = true
 	store := &unansweredCheckLaunchStore{memStore: h.store}
 	h.m.deps.Store = store
 
 	// The task is sent and the agent acknowledges it, which is what arms the bound; the sweep
 	// then finds the claim's plugin stale and relaunches it, and that launch waits its turn
-	// over the process the agent is on.
+	// over the process the agent is on. The contract moves between the two, as it does in life:
+	// a task handed to a claim already stale is held rather than sent, so no prompt of it would
+	// be acknowledged and no bound armed (sendPending's staleRefusesClaim).
 	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Row: 7})
 	acked := h.wantPrompts(1)[0].DeliveryID
 	if _, awaiting := h.m.timers[TimerTurn]; !awaiting {
 		t.Fatal("the acknowledged prompt waits for its turn on nothing, want the bound armed")
 	}
+	h.m.deps.PluginContract = 25
+	h.m.deps.PluginRelaunchable = true
 
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
-	waiting := h.wantWaitingWake(WakeLaunch)
+	waiting := h.wantWaitingWake(WakePluginRefresh)
 	if _, awaiting := h.m.timers[TimerTurn]; awaiting {
 		t.Fatal("the park left the turn bound of the process the launch replaces armed, want it disarmed")
 	}
@@ -1348,6 +1318,177 @@ func TestALaunchRefusedAtItsTurnBindsTheTurnItsAcknowledgedPromptAwaits(t *testi
 	h.wantBudgets(Budgets{PromptFailures: 1})
 	if p := h.pending(); p.ID == acked || p.DeliveredAt.IsZero() {
 		t.Fatalf("the task is %+v, want it back under a new id with its read mark, past the bound of prompt %s", p, acked)
+	}
+}
+
+// workingOverTheProcessItsRefusedRelaunchKept is the claim both tests below read: one working
+// for a turn whose process the runtime found gone, whose relaunch the pacing parked, and whose
+// turn the store could not answer the lifecycle recheck of (unansweredCheckLaunchStore). The
+// refusal keeps the dead process and the wake is spent, so the claim stands stored working
+// over a process nothing is replacing, and what the runtime last reported of that process is
+// the one fact that tells it from a claim in a turn (Claim.ProcessGone, reportedProcess).
+//
+// The store answers again before it returns, so what each path below does to that fact is the
+// path's own and not a second refusal's.
+func workingOverTheProcessItsRefusedRelaunchKept(t *testing.T) (*harness, runtime.Locator) {
+	t.Helper()
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateWorking)
+	dead := h.locator()
+	store := &unansweredCheckLaunchStore{memStore: h.store}
+	h.m.deps.Store = store
+
+	h.observe(runtime.Gone)
+	waiting := h.wantWaitingWake(WakeLaunch)
+	store.failing = true
+	h.advance(waiting.At.Sub(h.clock.Now()))
+	store.failing = false
+
+	h.wantState(StateWorking)
+	if held := h.m.View().WakeWaiting; held != nil {
+		t.Fatalf("the claim names wake %+v, want none: the turn ran and its launch was refused", held)
+	}
+	if got := h.claim(); got.Locator == nil || *got.Locator != dead || !got.ProcessGone {
+		t.Fatalf("the refused claim records %+v with ProcessGone %v, want the dead process it kept, %+v, reported gone",
+			got.Locator, got.ProcessGone, dead)
+	}
+	return h, dead
+}
+
+// The claim a refused relaunch leaves working over a dead process is told from a claim in a
+// turn by what the runtime last reported of the process it records, and by nothing else: its
+// state, the compaction it is not in, the suspension nothing holds over it and the wake it no
+// longer has all read as a claim in a turn reads (api's refuseState, freshSession). The record
+// is the verdict that raised the relaunch, kept where every verdict is judged
+// (reportedProcess), so the refusal writes nothing for it.
+//
+// The negative control is the record reverted (reportedProcess's gone verdict dropped): both
+// recovery doors then answer such a claim "is in a turn", which it is not, in the one window
+// those recoveries exist for.
+func TestARelaunchRefusedAtItsTurnLeavesTheClaimRecordingWhatBecameOfItsProcess(t *testing.T) {
+	h, dead := workingOverTheProcessItsRefusedRelaunchKept(t)
+
+	view := h.m.View()
+	if !view.ProcessGone {
+		t.Fatal("the refused claim reports nothing of its process, want the gone verdict that raised the relaunch")
+	}
+	if view.Compacting || view.SuspensionHeld || view.WakeWaiting != nil || view.State != StateWorking {
+		t.Fatalf("the claim is %s reporting Compacting %v, a suspension held %v and wake %+v; want the four a claim in a turn reads",
+			view.State, view.Compacting, view.SuspensionHeld, view.WakeWaiting)
+	}
+	if got := view.Locator; got == nil || *got != dead {
+		t.Fatalf("the claim records %+v, want the dead process the refusal kept, %+v", got, dead)
+	}
+}
+
+// Every path that changes what the runtime last reported of the process a refused relaunch
+// left the claim over. The record is about one process, so it goes when that process goes
+// (letGo) and it is written again by every report the machine judges of it: a verdict that
+// found the process running clears it, and a runtime that could not answer leaves the last
+// answer standing (judge, reportedProcess). A record that outlived any of them would refuse a
+// claim "its process is gone" over a process that is running, or over one the claim no longer
+// records at all.
+//
+// The negative control is each clearing dropped in turn: the row's claim then reports its
+// process gone while the runtime has just found it alive, at a stale address, or replaced by
+// the launch the row's turn ran.
+func TestWhatTheRuntimeLastReportedOfTheKeptProcessGoesWithEveryPathThatChangesIt(t *testing.T) {
+	for _, path := range []struct {
+		name string
+		// run takes the refused claim to the path's end, and want is what the claim reports of
+		// its process there.
+		run  func(t *testing.T, h *harness, dead runtime.Locator)
+		want bool
+	}{
+		{"the relaunch the next report of the process raises", func(t *testing.T, h *harness, _ runtime.Locator) {
+			// The sweep reports the dead process again, which raises the relaunch the refusal
+			// left owing; its turn starts the process that replaces it (letGo, launchNow).
+			h.observe(runtime.Gone)
+			waiting := h.wantWaitingWake(WakeLaunch)
+			h.advance(waiting.At.Sub(h.clock.Now()))
+			h.relaunched()
+		}, false},
+		{"a report that finds the process alive after all", func(t *testing.T, h *harness, _ runtime.Locator) {
+			h.observe(runtime.Alive)
+		}, false},
+		{"a report that finds it at a stale address", func(t *testing.T, h *harness, dead runtime.Locator) {
+			// The process is running, holding an address a process launched now is not handed,
+			// so the claim is relaunched over a live process and that launch waits its turn
+			// (repoint, reserveWake). Nothing let the process go, so the record is the report's
+			// own doing.
+			h.observe(runtime.StaleAddress)
+			h.wantWaitingWake(WakeLaunch)
+			if got := h.claim().Locator; got == nil || *got != dead {
+				t.Fatalf("the claim records %+v, want the process the repoint's launch replaces at its turn, %+v", got, dead)
+			}
+		}, false},
+		{"a runtime that could not answer", func(t *testing.T, h *harness, _ runtime.Locator) {
+			h.observe(runtime.Uncertain)
+		}, true},
+	} {
+		t.Run(path.name, func(t *testing.T) {
+			h, dead := workingOverTheProcessItsRefusedRelaunchKept(t)
+
+			path.run(t, h, dead)
+
+			if got := h.claim().ProcessGone; got != path.want {
+				t.Fatalf("the claim reports ProcessGone %v, want %v", got, path.want)
+			}
+		})
+	}
+}
+
+// A verdict the sweep gives while a launch waits its turn decides nothing, but it is still
+// what the runtime last reported of the process the claim records: the guard reads the one
+// and not the other (judge, reportedProcess). The window that turns on it is a park a stale
+// address raised — that verdict found the process alive, so it cleared the record — over a
+// process that then dies. If the park's own turn is refused, the claim is left stored working
+// over a dead process, and this record is the whole of what tells it from a claim in a turn
+// (Claim.ProcessGone, api's refuseState and freshSession).
+//
+// The negative control is the record put back behind the guard (judge's launchWaits): the
+// claim then reports its process running after a death the park dropped, and both recovery
+// doors answer it "in a turn" until the next sweep.
+func TestADeathReportedWhileALaunchWaitsItsTurnIsRecordedForTheClaimItMayLeave(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateWorking)
+	dead := h.locator()
+	store := &unansweredCheckLaunchStore{memStore: h.store}
+	h.m.deps.Store = store
+
+	// The process is alive at a stale address, so its relaunch is raised over a live process
+	// and parked, and the verdict clears the record (repoint, reportedProcess).
+	h.observe(runtime.StaleAddress)
+	waiting := h.wantWaitingWake(WakeLaunch)
+	if h.claim().ProcessGone {
+		t.Fatal("the claim reports its process gone after a verdict that found it alive at a stale address")
+	}
+
+	// The process dies under the park. Nothing is acted on — the launch's turn replaces that
+	// process either way — and what the claim records of it is this verdict.
+	h.observe(runtime.Gone)
+
+	if !h.claim().ProcessGone {
+		t.Fatal("the claim reports nothing of the process that died under the park, want the gone verdict recorded")
+	}
+	if got := h.m.View().WakeWaiting; got == nil || got.Kind != WakeLaunch {
+		t.Fatalf("the claim's waiting wake is %+v, want the parked relaunch the death did not touch", got)
+	}
+
+	// The park's turn comes and the store cannot answer its lifecycle recheck, so the relaunch
+	// is refused and the claim keeps the dead process with no launch coming for it (runWake,
+	// relaunchRefused).
+	store.failing = true
+	h.advance(waiting.At.Sub(h.clock.Now()))
+	store.failing = false
+
+	h.wantState(StateWorking)
+	if got := h.claim(); got.Locator == nil || *got.Locator != dead || !got.ProcessGone {
+		t.Fatalf("the refused claim records %+v with ProcessGone %v, want the dead process it kept, %+v, reported gone",
+			got.Locator, got.ProcessGone, dead)
+	}
+	if got := h.m.View().WakeWaiting; got != nil {
+		t.Fatalf("the claim names wake %+v, want none: the turn ran and its launch was refused", got)
 	}
 }
 
@@ -1416,7 +1557,7 @@ func TestAStalePluginRelaunchRefusedAtItsTurnLeavesNoMarkBehind(t *testing.T) {
 	h.m.deps.Store = store
 
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
-	waiting := h.wantWaitingWake(WakeLaunch)
+	waiting := h.wantWaitingWake(WakePluginRefresh)
 	if got := h.claim(); got.PluginRelaunchFor != 0 {
 		t.Fatalf("the claim whose stale-plugin relaunch waits is marked for %d, want 0: its launch has not run", got.PluginRelaunchFor)
 	}
@@ -1479,7 +1620,7 @@ func TestARefusedRelaunchOnTheChargedPathKeepsTheMarkOfTheRelaunchThatRan(t *tes
 	// The first stale registration of this claim: relaunched for free, and marked for the
 	// contract that relaunch is made for. Its turn replaces the process.
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
-	waiting := h.wantWaitingWake(WakeLaunch)
+	waiting := h.wantWaitingWake(WakePluginRefresh)
 	h.advance(waiting.At.Sub(h.clock.Now()))
 
 	h.wantStarts(h.token, 2)
@@ -1547,74 +1688,6 @@ func TestARefusedRetryOfAProcesslessClaimKeepsItsPluginMark(t *testing.T) {
 		t.Fatalf("the failed claim after its refused retry is marked for %d, want the %d its last relaunch left: the retry relaunched nothing",
 			got.PluginRelaunchFor, h.deps.PluginContract)
 	}
-}
-
-// A plugin task's wake ends no held suspension. The task waits over a claim whose agent is in a
-// turn (refreshPlugin), and a suspend that arrives in that turn is held so the turn is not cut off
-// mid-tool-call (holdSuspension): ending the hold at this wake's turn would stop the process in
-// the middle of the very turn the hold exists to protect, and the wake is not a relaunch — it
-// opens a round over a session that goes on running. So the hold is left to that turn's own end,
-// which is the decision that runs it, and the wake opens nothing: the suspension stops the
-// process, and the launch that resumes the claim installs this daemon's plugin by itself.
-//
-// The negative control is the kind test reverted (wakeNow's held branch): the process is then
-// stopped at the wake's turn, which this test reads at the runtime's suspends.
-func TestAPluginTaskWakeLeavesAHeldSuspensionToTheTurnItProtects(t *testing.T) {
-	h := pacedHarness(t, wakeRate)
-	h.deps.PluginContract = PodUpdateContract + 1
-	working := stalePluginClaim(wakeClaim(secondToken, StateReady), PodUpdateContract)
-	working.State = StateWorking
-	working.Pending = &Delivery{ID: "delivery-1", Task: "implement the plan", QueuedAt: epoch, DeliveredAt: epoch, ConfirmedAt: epoch}
-	stale := h.machineFor(working)
-	if err := h.store.PutDelivery(h.ctx, working.Token, *working.Pending); err != nil {
-		t.Fatal(err)
-	}
-
-	h.must(RequestSpawn{Claim: h.token})
-	h.mustPostTo(stale, StalePlugin{Claim: secondToken, Trigger: "sweep"})
-	// The daemon's own suspension, its issue having left the workflow: it waits for the turn
-	// however long the turn takes, where an operator's is bounded at the stop timeout from its
-	// arrival — a bound shorter than a wave's spacing, which would stop this process itself.
-	err := h.postTo(stale, RequestSuspend{Claim: secondToken, Reason: "its issue left the workflow", By: SuspendedByDaemon})
-	if !suspensionHeld(err) {
-		t.Fatalf("the suspend of a claim in a turn answered %v, want the hold for the turn's end", err)
-	}
-
-	h.clock.Advance(wakeInterval + wakePart)
-	stale.Wait()
-
-	if got := suspendsOf(h, secondToken); got != 0 {
-		t.Fatalf("the runtime was asked to stop the process %d times at the update task's turn, want none: the hold protects the turn still running", got)
-	}
-	got := stale.Claim()
-	if got.State != StateWorking || !got.SuspensionHeld {
-		t.Fatalf("the claim at the update task's turn is %s holding %v, want %s with the suspension still held",
-			got.State, got.SuspensionHeld, StateWorking)
-	}
-	if got.UpdateRound != "" {
-		t.Fatalf("the claim holds round %q, want none: a round opened here would ask a worker the suspension is about to stop", got.UpdateRound)
-	}
-
-	h.mustPostTo(stale, StreamTurnEnd{Claim: secondToken})
-
-	if got := suspendsOf(h, secondToken); got != 1 {
-		t.Fatalf("the runtime was asked to stop the process %d times at the turn's end, want once: the hold runs there", got)
-	}
-	if got := stale.Claim(); got.State != StateSuspended || got.SuspendedBy != SuspendedByDaemon {
-		t.Fatalf("the claim at the turn's end is %s suspended by %q, want %s by %q", got.State, got.SuspendedBy, StateSuspended, SuspendedByDaemon)
-	}
-}
-
-// suspendsOf is how many times the runtime was asked to stop token's process.
-func suspendsOf(h *harness, token claim.Token) int {
-	h.t.Helper()
-	stopped := 0
-	for _, call := range h.rt.CallsOf("Suspend") {
-		if call.Locator.Claim == token {
-			stopped++
-		}
-	}
-	return stopped
 }
 
 // Check c-spread of dispatch://INFRA-976/spec names two wakes that never wait, and one of them is
@@ -1791,6 +1864,70 @@ func TestAnOperatorsDeliveryTheClaimRefusesRunsNoParkedRelaunch(t *testing.T) {
 	h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: 1})
 }
 
+// The same park, over a claim that owes the task a provider error took back. Nothing works that
+// task, the ladder's next step can be ten minutes away and a run of errors has no end of its
+// own, so a newer task does not wait behind it: the owed task is retired and the newer one takes
+// its place (replaceable, queue, dispatch://INFRA-956 R2). A task the claim takes this way is a
+// task a person is waiting on, exactly as one it takes over no delivery at all, so the launch
+// parked above the process that task would reach runs where it arrives rather than at a paced
+// turn tens of minutes away in a wave (runParkedLaunchNow).
+//
+// The owed task is replaced before that launch runs, because the launch takes the ladder's wait
+// with the claim's timers (letGo), and that wait is the whole of what makes the owed task
+// replaceable: queue, reading the claim the launch leaves, would find a task no newer one may
+// replace and answer the operator "a delivery is already pending", having just replaced a live
+// process for a request that was answered with nothing.
+//
+// The negative control is the guard reverted (runParkedLaunchNow's pending delivery): the
+// operator's task then replaces the owed one and waits out the paced turn, which this test
+// reads at the state and the runtime's starts.
+func TestAnOperatorsDeliveryReplacingTheLaddersTaskRunsTheParkedLaunchNow(t *testing.T) {
+	const task = "look at the production check"
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateWorking)
+	replaced := h.locator()
+
+	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+	owed := h.pending()
+	if !h.m.replaceable(&owed) {
+		t.Fatalf("the task the provider error took back is %+v, want one a newer task replaces: this test needs the ladder's wait", owed)
+	}
+
+	h.observe(runtime.StaleAddress)
+	h.wantWaitingWake(WakeLaunch)
+
+	// The task arrives part of the way into the wait, as a person's does.
+	h.advance(wakePart)
+	h.must(RequestDeliver{Claim: h.token, Task: task})
+
+	h.wantState(StateLaunching)
+	h.wantStarts(h.token, 2)
+	if resume := h.wantCalls("Resume", 1)[0]; resume.Previous == nil || *resume.Previous != replaced {
+		t.Fatalf("the launch the operator's task ran replaced %+v, want the process the gate left running, %+v",
+			resume.Previous, replaced)
+	}
+	if held := h.m.View().WakeWaiting; held != nil {
+		t.Fatalf("the claim names wake %+v, want none: an operator's task waits for no turn", held)
+	}
+	if p := h.pending(); p.Task != task || p.ID == owed.ID || p.ProviderErrorRetries != 0 {
+		t.Fatalf("the task is %+v, want the operator's %q queued in place of the owed one, with a ladder of its own", p, task)
+	}
+	if _, armed := h.m.timers[TimerPromptRetry]; armed {
+		t.Error("the ladder's wait is still armed for a task the claim no longer holds")
+	}
+	h.wantWakeLine(h.token, "kind=launch", "waited=true", "waitedFor="+wakePart.String(), "paced=false")
+
+	// Only the owed task was ever prompted; the operator's goes at the ready of the process this
+	// launch started.
+	h.wantPrompts(1)
+	h.relaunched()
+
+	sent := h.wantPrompts(2)
+	if sent[1].Message != task {
+		t.Fatalf("the prompts are %+v, want the operator's task at the process the launch started", sent)
+	}
+}
+
 // The same park over a dead process, reached by a claim that is ready and holds no task: the
 // task the operator gives it is queued for the process the relaunch starts rather than sent to
 // the connection of the process that died, which would read nothing and confirm nothing. The
@@ -1877,52 +2014,6 @@ func TestAnOperatorsDeliveryOverAParkedLaunchArmsTheNextProcessesTimers(t *testi
 
 	h.wantBudgets(Budgets{LaunchFailures: 1})
 	h.wantStarts(h.token, 3)
-}
-
-// A plugin task's wake is left exactly where it waits. It replaces no process — it opens a round
-// over a session that goes on taking work (openPluginUpdateIfStale) — so it holds no send back
-// (launchWaits, sendPending) and an operator's task reaches the running process through it
-// without touching it. Taking it off the claim would buy nothing and cost a second token: the
-// sweep posts the stale plugin again at its next tick and the wake it raised would go to the
-// back of the queue (refreshPlugin).
-//
-// The negative control is the kind test reverted (runParkedLaunchNow's launchWaits): the round's
-// own wake is then run by the operator's task, so the round opens where that task arrives and
-// its ask takes the claim's one delivery slot, and the task itself is refused "a delivery is
-// already pending", which this test reads at the delivery.
-func TestAnOperatorsDeliveryLeavesAPluginTaskWakeWhereItWaits(t *testing.T) {
-	const task = "look at the production check"
-	h := pacedHarness(t, wakeRate)
-	h.deps.PluginContract = PodUpdateContract + 1
-	conn := fake.NewConn()
-	h.conns.Register(secondToken, conn)
-	stale := h.machineFor(stalePluginClaim(wakeClaim(secondToken, StateReady), PodUpdateContract))
-
-	h.must(RequestSpawn{Claim: h.token})
-	h.mustPostTo(stale, StalePlugin{Claim: secondToken, Trigger: "sweep"})
-	waiting := stale.View().WakeWaiting
-	if waiting == nil || waiting.Kind != WakePluginTask {
-		t.Fatalf("the stale claim names wake %+v, want a plugin task waiting its turn", waiting)
-	}
-
-	h.mustPostTo(stale, RequestDeliver{Claim: secondToken, Task: task})
-
-	if held := stale.View().WakeWaiting; held == nil || *held != *waiting {
-		t.Fatalf("the claim names wake %+v, want the one it held, %+v: an operator's task leaves a plugin task's wake alone", held, waiting)
-	}
-	if prompts := conn.Prompts(); len(prompts) != 1 || prompts[0].Message != task {
-		t.Fatalf("the prompts are %+v, want the operator's task at the process the claim runs: no launch waits over it", prompts)
-	}
-	h.wantStarts(secondToken, 0)
-
-	h.clock.Advance(wakeInterval + wakePart)
-	stale.Wait()
-
-	if got := stale.Claim(); got.UpdateRound != PluginRound(h.deps.PluginContract) {
-		t.Fatalf("the claim holds round %q at its turn, want %q", got.UpdateRound, PluginRound(h.deps.PluginContract))
-	}
-	h.wantWakeLine(secondToken, "kind=plugin-task", "waited=true", "paced=true")
-	h.wantStarts(secondToken, 0)
 }
 
 // A claim holding a suspension keeps both the hold and the wake. The turn of such a claim ends
@@ -2013,7 +2104,7 @@ func TestAReRegistrationInsideAStalePluginRelaunchsWaitIsChargedNothing(t *testi
 
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 
-	waiting := h.wantWaitingWake(WakeLaunch)
+	waiting := h.wantWaitingWake(WakePluginRefresh)
 	if got := h.claim(); got.State != StateReady || got.PluginRelaunchFor != 0 {
 		t.Fatalf("the claim whose stale-plugin relaunch waits is %s marked for %d, want %s marked for 0: its launch has not run",
 			got.State, got.PluginRelaunchFor, StateReady)
@@ -2063,7 +2154,7 @@ func TestAStalePluginRelaunchThatRunsMarksTheClaim(t *testing.T) {
 	h.m.deps.PluginRelaunchable = true
 
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
-	waiting := h.wantWaitingWake(WakeLaunch)
+	waiting := h.wantWaitingWake(WakePluginRefresh)
 	if got := h.claim(); got.PluginRelaunchFor != 0 {
 		t.Fatalf("the claim whose stale-plugin relaunch waits is marked for %d, want 0: its launch has not run", got.PluginRelaunchFor)
 	}
@@ -2090,78 +2181,6 @@ func TestAStalePluginRelaunchThatRunsMarksTheClaim(t *testing.T) {
 		t.Fatalf("the registration of the relaunched process = %v, want the stale-plugin refusal naming 24 and 25", err)
 	}
 	h.wantBudgets(Budgets{LaunchFailures: 1})
-}
-
-// Two stale-plugin relaunches raised over one claim, the second replacing the wake the first
-// parked, leave the mark where they found it when neither runs. The daemon's sweep posts the end
-// of an answered plugin round at every tick for a claim that is not working, and the stale lane
-// relaunches that same claim from a registration of its old process, so the two meet: the
-// registration's relaunch parks a wake, and the round's end raises a relaunch of its own over it
-// (relaunchStale, endPodUpdate, reserveWake). Neither has marked the claim — the mark is written
-// where a launch starts a process (launchNow) — so a refusal at the second wake's turn leaves
-// the claim exactly as the first relaunch found it, and the next stale registration is the first
-// this claim has had relaunched: relaunched for free rather than walked toward failed.
-//
-// The negative control is the mark written where the relaunch is decided
-// (markPluginRelaunch setting `m.claim.PluginRelaunchFor = m.deps.PluginContract`): the second
-// relaunch then marks the claim for this daemon's contract and nothing takes it back, which this
-// test reads at the mark.
-func TestASecondStalePluginRelaunchOverAParkedOneLeavesNoMarkBehind(t *testing.T) {
-	h := pacedHarness(t, wakeRate)
-	h.reach(StateIdle)
-	h.m.deps.PluginContract = 25
-	h.m.deps.PluginRelaunchable = true
-	h.m.deps.PodUpdateRetask = testPodUpdateRetask
-	store := &unansweredCheckLaunchStore{memStore: h.store}
-	h.m.deps.Store = store
-
-	// The claim's own plugin round, answered by its worker: from here the daemon's sweep posts
-	// its end at every tick until the end decides something (reconcilePluginUpdate).
-	round := PluginRound(25)
-	h.openUpdate(round, testReasons)
-	h.signalUpdate("c0ffee")
-
-	// The old process re-registers on the old contract inside that round. No launch waits yet,
-	// so the stale lane relaunches it, and that launch waits its turn.
-	err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
-		SessionFile: sessionFile, CapabilityHash: []byte("capability"), PluginContract: 24})
-
-	var refusal claim.Refusal
-	if !errors.As(err, &refusal) || refusal != claim.StalePluginContract(24, 25) {
-		t.Fatalf("the stale re-registration = %v, want the stale-plugin refusal naming 24 and 25", err)
-	}
-	first := h.wantWaitingWake(WakeLaunch)
-
-	// The sweep's next end post for the answered round raises a relaunch of its own, which
-	// replaces that wake.
-	h.must(PodUpdateEnded{Claim: h.token, Round: round})
-
-	second := h.wantWaitingWake(WakeLaunch)
-	if !second.At.After(first.At) {
-		t.Fatalf("the round's end left the claim holding the wake due at %s, want the one its own relaunch took after %s",
-			second.At, first.At)
-	}
-
-	// The second relaunch is refused at its turn, as the first would have been: neither ran.
-	store.failing = true
-	h.advance(second.At.Sub(h.clock.Now()))
-
-	h.wantStarts(h.token, 1)
-	if got := h.claim(); got.PluginRelaunchFor != 0 {
-		t.Fatalf("the claim is marked for %d after both relaunches were abandoned, want 0: neither started a process",
-			got.PluginRelaunchFor)
-	}
-
-	// The process neither relaunch replaced registers again, still on the old contract: the
-	// first stale registration this claim has had relaunched, so it is relaunched for free.
-	store.failing = false
-	err = h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
-		SessionFile: sessionFile, CapabilityHash: []byte("capability"), PluginContract: 24})
-
-	if !errors.As(err, &refusal) || refusal != claim.StalePluginContract(24, 25) {
-		t.Fatalf("the re-registration after both abandoned relaunches = %v, want the stale-plugin refusal naming 24 and 25", err)
-	}
-	h.wantBudgets(Budgets{})
 }
 
 // A stale-plugin relaunch a held suspension ends in a suspension marks nothing, whether or not
@@ -2216,48 +2235,6 @@ func TestAStalePluginRelaunchAHeldSuspensionEndsMarksNothing(t *testing.T) {
 		t.Fatalf("the suspended claim is marked for %d, want 0: its relaunch replaced no process", got.PluginRelaunchFor)
 	}
 	h.wantCalls("Resume", 0)
-}
-
-// A registration that clears the mark while a relaunch waits does not unsay the relaunch that
-// then runs. The mark is cleared by a registration that records this daemon's own contract
-// (register, reregister), and the launch the pacing holds goes on to replace that process at its
-// turn: it did relaunch, so it marks the claim where it starts, and the next registration that
-// still differs is read against it (staleRegistration). Nothing of the mark the relaunch found
-// is put back over the claim either — there is nothing to put back, because the decision wrote
-// nothing.
-//
-// The negative control is the commit removed (launchNow's commitPluginRelaunch): the claim ends
-// marked for nothing after a relaunch that did replace its process, which this test reads at the
-// mark and at the stored claim.
-func TestARegistrationInsideTheWaitDoesNotUnsayTheRelaunchThatRuns(t *testing.T) {
-	h := pacedHarness(t, wakeRate)
-	h.reach(StateReady)
-	h.m.deps.PluginContract = 25
-	h.m.deps.PluginRelaunchable = true
-	// The mark an earlier relaunch of this claim left, for the registration below to clear.
-	h.m.claim.PluginRelaunchFor = 25
-
-	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
-	waiting := h.wantWaitingWake(WakeLaunch)
-
-	// The shim reconnects inside the wait and the agent registers on this daemon's own contract,
-	// which clears the mark.
-	h.must(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
-		SessionFile: sessionFile, CapabilityHash: []byte("capability"), PluginContract: 25})
-	if got := h.claim(); got.PluginRelaunchFor != 0 {
-		t.Fatalf("the claim after a current registration is marked for %d, want 0", got.PluginRelaunchFor)
-	}
-
-	h.advance(waiting.At.Sub(h.clock.Now()))
-
-	h.wantStarts(h.token, 2)
-	if got := h.claim(); got.PluginRelaunchFor != 25 {
-		t.Fatalf("the claim after the turn that replaced its process is marked for %d, want 25: that relaunch ran",
-			got.PluginRelaunchFor)
-	}
-	if stored := h.store.load(h.token); stored.PluginRelaunchFor != 25 {
-		t.Fatalf("the store holds the claim marked for %d, want 25", stored.PluginRelaunchFor)
-	}
 }
 
 // suspendHeld is whether err is the answer a suspension held for later gives its caller.

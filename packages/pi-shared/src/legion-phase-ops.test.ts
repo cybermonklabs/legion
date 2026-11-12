@@ -109,7 +109,7 @@ test("the description sets the host's sentences before and after handoff_complet
   expect(bare).not.toContain("request_backward_move");
   expect(bare.endsWith("role topic with envoy_publish.")).toBe(true);
   expect(placed).toContain(
-    "this tool cannot spawn workers. read_record returns the record of `issue` from the daemon's state. handoff_complete (phase workers"
+    "this tool cannot spawn workers. read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. A held issue names in `heldFrom` the phase the hold took it out of. A failed claim carries `failure`: the `cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and `attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts that phase again, as the architect's retry_or_escalate with retry does. handoff_complete (phase workers"
   );
   // Every host states `ready_for_update`, so its sentences are the template's own, between
   // handoff_complete's contract and the host's `after`.
@@ -124,6 +124,10 @@ test("each op refuses its arguments whole before any daemon request, naming ever
   const refusals = [
     [{ op: "handoff_complete" }, "handoff_complete requires summary"],
     [{ op: "handoff_complete", summary: "  " }, "handoff_complete requires summary"],
+    [
+      { op: "handoff_complete", summary: "x", issue: 44 },
+      "handoff_complete's issue is an issue key, as LEGION-208 is",
+    ],
     [
       { op: "handoff_complete", summary: "x", verdict: "maybe" },
       "handoff_complete's verdict is pass, pending or fail",
@@ -150,7 +154,7 @@ test("each op refuses its arguments whole before any daemon request, naming ever
       { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
       'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"',
     ],
-    [{ op: "read_record" }, "read_record requires issue"],
+    [{ op: "read_record", issue: 44 }, "read_record's issue is an issue key, as LEGION-208 is"],
     [{ op: "read_release_records" }, "read_release_records requires since"],
     [{ op: "read_release_records", since: " " }, "read_release_records requires since"],
     [
@@ -164,6 +168,10 @@ test("each op refuses its arguments whole before any daemon request, naming ever
     [{ op: "request_backward_move", reason: "r" }, "request_backward_move requires to"],
     [{ op: "request_backward_move", to: " ", reason: "r" }, "request_backward_move requires to"],
     [{ op: "request_backward_move", to: 44, reason: "r" }, "request_backward_move requires to"],
+    [
+      { op: "request_backward_move", to: "implementing", reason: "r", issue: 44 },
+      "request_backward_move's issue is an issue key, as LEGION-208 is",
+    ],
     [
       { op: "request_backward_move" },
       "request_backward_move requires to; request_backward_move requires reason",
@@ -198,6 +206,53 @@ test("handoff_complete reads the issue's phase, finds the record and commit for 
     ready: false,
     ...REPORT,
   });
+});
+
+// Workers named their own issue on handoff_complete and left it off read_record, and both were
+// refused: 1,515 failed calls in the 48 h to 2026-11-10 17:40Z in INFRA's sessions alone
+// (dispatch://INFRA-2824). A read that names no issue now reads the claim's own, a read that names
+// one still reads that one, and a completion takes the claim's own issue and refuses any other.
+test("read_record with no issue answers the claim's own record; handoff_complete takes its own issue and refuses another", async () => {
+  const { ops, routes, posted } = runtime();
+  const state = daemonFixture("state.json") as { issues: Record<string, unknown> };
+  await expect(executePhaseOp(ops, { op: "read_record" })).resolves.toEqual({
+    record: state.issues["LEGION-208"],
+  });
+  await expect(executePhaseOp(ops, { op: "read_record", issue: " " })).resolves.toEqual({
+    record: state.issues["LEGION-208"],
+  });
+  for (const issue of ["LEGION-209", " LEGION-209\n"]) {
+    await expect(executePhaseOp(ops, { op: "read_record", issue })).resolves.toEqual({
+      record: state.issues["LEGION-209"],
+    });
+  }
+  await expect(
+    executePhaseOp(ops, { op: "handoff_complete", summary: "Done.", issue: "LEGION-209" })
+  ).rejects.toThrow(
+    new Error(
+      "handoff_complete reports this session's own issue LEGION-208; leave issue out, or name LEGION-208, not LEGION-209"
+    )
+  );
+  // The refusal read no record and minted no grant: the four routes are the four reads'.
+  expect(routes).toEqual([
+    "/legion/v1/state",
+    "/legion/v1/state",
+    "/legion/v1/state",
+    "/legion/v1/state",
+  ]);
+  expect(posted).toEqual([]);
+  // A completion naming its own issue posts exactly what one leaving it out posts.
+  await expect(
+    executePhaseOp(ops, { op: "handoff_complete", summary: "Done.", verdict: "pass" })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  const unnamed = posted.at(-1);
+  expect(unnamed).toMatchObject({ summary: "Done.", verdict: "pass" });
+  for (const issue of ["LEGION-208", " LEGION-208 "]) {
+    await expect(
+      executePhaseOp(ops, { op: "handoff_complete", summary: "Done.", verdict: "pass", issue })
+    ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+    expect(posted.at(-1)).toEqual(unnamed);
+  }
 });
 
 /** `state.json` with a key no schema names at four depths: the top level, one issue, one worker's
@@ -266,9 +321,37 @@ test("a root architect's handoff_complete is refused as unavailable before its o
     await expect(executePhaseOp(root.ops, input)).rejects.toThrow(new Error(refusal));
   }
   await expect(executePhaseOp(root.ops, { op: "handoff_complete", phase: "plan" })).rejects.toThrow(
-    new Error(`handoff_complete does not accept field "phase"; ${refusal}`)
+    new Error(
+      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, ready, wake_at; ${refusal}`
+    )
   );
   expect(root.routes).toEqual([]);
+});
+
+// A refusal that named only the field refused left the agent to guess the call again: an
+// architect sent park_child a `reason` and a worker sent ready_for_update an `issue`, and each was
+// told no more than that the field is refused. A refusal names, once after every field it refuses,
+// the fields the operation takes.
+test("a field an op does not take is refused naming the fields the op takes", async () => {
+  const { ops, routes } = runtime();
+  const refusals = [
+    [
+      { op: "ready_for_update", round: "r1", issue: "LEGION-208" },
+      'ready_for_update does not accept field "issue"; it takes round',
+    ],
+    [
+      { op: "read_record", issue: "LEGION-208", reason: "why" },
+      'read_record does not accept field "reason"; it takes issue',
+    ],
+    [
+      { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
+      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"; it takes summary, issue, verdict, ready, wake_at',
+    ],
+  ] as const;
+  for (const [input, message] of refusals) {
+    await expect(executePhaseOp(ops, input)).rejects.toThrow(new Error(message));
+  }
+  expect(routes).toEqual([]);
 });
 
 /** LEGION-208 closed by its merge, its production check open on its second look, as the daemon's
@@ -589,12 +672,25 @@ test("request_backward_move names the issue an architect returns from accepting,
       op: "request_backward_move",
       to: "implementing",
       reason: "test failed",
+      issue: " LEGION-208 ",
+    })
+  ).resolves.toEqual({});
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    to: "implementing",
+    reason: "test failed",
+  });
+  await expect(
+    executePhaseOp(runtimeFor(implementer), {
+      op: "request_backward_move",
+      to: "implementing",
+      reason: "test failed",
       issue: "LEGION-209",
     })
   ).rejects.toThrow(
     new Error("a phase worker moves only its own issue LEGION-208, not LEGION-209")
   );
-  expect(posted).toHaveLength(before + 2);
+  expect(posted).toHaveLength(before + 4);
 });
 
 test("read_record answers the issue's record, or names an issue the daemon has none for; request_backward_move posts with a fresh grant", async () => {
@@ -614,6 +710,71 @@ test("read_record answers the issue's record, or names an issue the daemon has n
     })
   ).resolves.toEqual({});
   expect(routes.slice(2)).toEqual(["/legion/v1/grants", "/legion/v1/phase/backward"]);
+});
+
+test("read_record hands on the place of an issue standing in the admission line", async () => {
+  const state = daemonFixture("state.json");
+  const issues = state.issues as Record<string, Record<string, unknown>>;
+  const admission = state.admission as Record<string, unknown>;
+  const waitingLine = { place: 1, length: 1 };
+  const { ops } = runtime(implementer, {
+    ...state,
+    admission: { ...admission, waiting: ["LEGION-212"] },
+    issues: { ...issues, "LEGION-212": { ...issues["LEGION-212"], waitingLine } },
+  });
+
+  const standing = (await executePhaseOp(ops, { op: "read_record", issue: "LEGION-212" })) as {
+    record: Record<string, unknown>;
+  };
+  expect(standing.record.waitingLine).toEqual(waitingLine);
+  // The issue holding a slot stands in no line, so its record carries no place at all.
+  const holding = (await executePhaseOp(ops, { op: "read_record", issue: "LEGION-208" })) as {
+    record: Record<string, unknown>;
+  };
+  expect(holding.record).not.toHaveProperty("waitingLine");
+});
+
+// Contract 75: the daemon's state says why a claim failed and which phase a hold stopped, and
+// both seats read them through the one parse this client makes (`LegionStateResponse`): a key
+// the schema does not name is stripped before the agent sees it, so a record the daemon serves
+// reaches a worker only because `packages/contracts/src/legion-api.ts` names it. The body here
+// is the Go golden itself, not an object written beside it, so this row is red until the
+// daemon's own fixture carries the keys.
+test("a failed claim carries its cause", async () => {
+  const { ops } = runtime();
+  const golden = daemonFixture("state.json") as { issues: Record<string, Record<string, unknown>> };
+  const failure = {
+    cause: "died" as const,
+    detail: "launch failures ran out",
+    at: "2026-09-22T08:47:03Z",
+    attempts: { launchFailures: 4, deaths: 1, promptFailures: 0, promptRetires: 0 },
+  };
+
+  const answered = (await executePhaseOp(ops, { op: "read_record", issue: "LEGION-210" })) as {
+    record: Record<string, unknown>;
+  };
+  expect(answered.record).toEqual(golden.issues["LEGION-210"]);
+  const held = answered.record as {
+    heldFrom?: string;
+    holdReason?: string;
+    workers: Record<string, { claim: { failure?: Record<string, unknown> } }>;
+  };
+  expect(held.workers.implementer?.claim.failure).toEqual(failure);
+  expect({ heldFrom: held.heldFrom, holdReason: held.holdReason }).toEqual({
+    heldFrom: "implementing",
+    holdReason: "escalated",
+  });
+
+  // The controller's read_state is this same body whole, the record beside the limits in
+  // `settings` that its counts are read against.
+  const state = await ops.daemon.state();
+  expect(state.issues["LEGION-210"] as unknown).toEqual(golden.issues["LEGION-210"]);
+  expect(state.issues["LEGION-210"]?.workers.implementer?.claim.failure).toEqual(failure);
+  expect(state.settings).toMatchObject({
+    launch_failure_limit: 4,
+    prompt_failure_limit: 5,
+    prompt_retire_limit: 3,
+  });
 });
 
 /** A window the daemon served: three releases — one woken five minutes later, one woken three
@@ -702,8 +863,8 @@ const RELEASE_RECORDS = {
 };
 
 /** A runtime whose daemon answers `records` on the release-records route and nothing else,
- * recording what was posted, with the clock the open release is measured against. */
-function recordsRuntime(records: unknown) {
+ * recording what was posted, with `asOf` as the clock an open release is measured against. */
+function recordsRuntime(records: unknown, asOf = "2026-11-01T18:00:00Z") {
   const posted: { readonly path: string; readonly body: unknown }[] = [];
   const stub = (async (input, init) => {
     posted.push({
@@ -721,7 +882,7 @@ function recordsRuntime(records: unknown) {
     branchHead: async () => {
       throw new Error("no branch-head lookup expected");
     },
-    now: () => new Date("2026-11-01T18:00:00Z"),
+    now: () => new Date(asOf),
   };
   return { ops, posted };
 }
@@ -737,6 +898,7 @@ test("read_release_records posts the claim's own token and secret, and counts th
     ...RELEASE_RECORDS,
     counts: {
       releases: 3,
+      releasesSuspendingNoRole: 0,
       resumes: 3,
       resumesByKind: { task: 1, message: 2 },
       holds: 2,
@@ -777,7 +939,14 @@ test("a window with nothing in it counts as nothing, and measures no wake", asyn
     releases: [],
     resumes: [],
     holds: [],
-    counts: { releases: 0, resumes: 0, resumesByKind: {}, holds: 0, holdsByReason: {} },
+    counts: {
+      releases: 0,
+      releasesSuspendingNoRole: 0,
+      resumes: 0,
+      resumesByKind: {},
+      holds: 0,
+      holdsByReason: {},
+    },
     podHoursReleased: 0,
     wokenWithinTenMinutes: { releases: 0, share: 0 },
     wakeToFirstTurnSeconds: {
@@ -788,6 +957,111 @@ test("a window with nothing in it counts as nothing, and measures no wake", asyn
       max: null,
     },
   });
+});
+
+/** A window with one release of each kind: one that suspended a role and was woken five minutes
+ * later, and one that suspended no role, which no resume row can ever name. */
+const ONE_RELEASE_OF_EACH_KIND = {
+  releases: [
+    {
+      id: 1,
+      issue: "LEGION-208",
+      generation: 2,
+      roles: ["implementer"],
+      at: "2026-11-01T12:00:00Z",
+      bundleBytes: 1024,
+    },
+    {
+      id: 2,
+      issue: "LEGION-209",
+      generation: 1,
+      roles: [],
+      at: "2026-11-01T13:00:00Z",
+      bundleBytes: 0,
+    },
+  ],
+  resumes: [
+    {
+      id: 1,
+      release: 1,
+      issue: "LEGION-208",
+      role: "implementer",
+      kind: "task",
+      at: "2026-11-01T12:05:00Z",
+      podReadyAt: "2026-11-01T12:06:00Z",
+      firstTurnAt: "2026-11-01T12:07:00Z",
+      stuck: false,
+    },
+  ],
+  holds: [],
+};
+
+test("a release that suspended no role is counted as a release and measured in nothing else", async () => {
+  const { ops } = recordsRuntime(ONE_RELEASE_OF_EACH_KIND);
+
+  await expect(
+    executePhaseOp(ops, { op: "read_release_records", since: "2026-11-01T00:00:00Z" })
+  ).resolves.toEqual({
+    since: "2026-11-01T00:00:00Z",
+    asOf: "2026-11-01T18:00:00.000Z",
+    ...ONE_RELEASE_OF_EACH_KIND,
+    counts: {
+      releases: 2,
+      releasesSuspendingNoRole: 1,
+      resumes: 1,
+      resumesByKind: { task: 1 },
+      holds: 0,
+      holdsByReason: {},
+    },
+    // The five minutes of the woken release alone, though the other has stood open five hours
+    // at `now`: a release no wake can reach is charged nothing.
+    podHoursReleased: 0.08,
+    // One of one, not one of two: the release that suspended no role is in neither half.
+    wokenWithinTenMinutes: { releases: 1, share: 1 },
+    // The timings read the resume rows, which name the woken release alone.
+    wakeToFirstTurnSeconds: {
+      measured: 1,
+      withoutFirstTurn: 0,
+      median: 120,
+      p90: 120,
+      max: 120,
+    },
+  });
+});
+
+test("the pod hours of a release that suspended no role do not grow with the clock", async () => {
+  const records = {
+    releases: [
+      {
+        id: 1,
+        issue: "LEGION-208",
+        generation: 2,
+        roles: [],
+        at: "2026-11-01T12:00:00Z",
+        bundleBytes: 0,
+      },
+    ],
+    resumes: [],
+    holds: [],
+  };
+  const summary = async (asOf: string) =>
+    (await executePhaseOp(recordsRuntime(records, asOf).ops, {
+      op: "read_release_records",
+      since: "2026-11-01T00:00:00Z",
+    })) as {
+      readonly podHoursReleased: number;
+      readonly counts: Record<string, number>;
+      readonly wokenWithinTenMinutes: { readonly releases: number; readonly share: number };
+    };
+
+  // Six hours after the release, then a day after it. An unresumed release that suspended a role
+  // is charged to the moment of the read, so charging this one would report more hours at every
+  // later read, for ever, though an operator's retry may have rebuilt the pod a minute later.
+  const atSixHours = await summary("2026-11-01T18:00:00Z");
+  const atADay = await summary("2026-11-02T12:00:00Z");
+  expect([atSixHours.podHoursReleased, atADay.podHoursReleased]).toEqual([0, 0]);
+  expect(atSixHours.counts).toMatchObject({ releases: 1, releasesSuspendingNoRole: 1 });
+  expect(atSixHours.wokenWithinTenMinutes).toEqual({ releases: 0, share: 0 });
 });
 
 test("ready_for_update answers for the round its task named, with the branch head, and leaves the head out when the branch is not on the remote", async () => {
@@ -854,7 +1128,7 @@ test("ready_for_update answers for the round its task named, with the branch hea
       runtimeFor(async () => head),
       { op: "ready_for_update", round, head }
     )
-  ).rejects.toThrow(new Error('ready_for_update does not accept field "head"'));
+  ).rejects.toThrow(new Error('ready_for_update does not accept field "head"; it takes round'));
   expect(posted).toHaveLength(2);
 });
 

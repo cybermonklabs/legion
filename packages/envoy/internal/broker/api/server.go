@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/broker/wire"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
@@ -308,8 +309,22 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 			writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "this route needs a launcher proof, not a session proof")
 			return caller{}, false
 		}
-		cred, err := s.deps.Enroll.Credential(r.Context(), subject.LauncherID)
-		if err != nil {
+		// By the key the proof proved and not by the launcher id alone: a login writes its
+		// own key and pod uid onto the credential row (enroll.Service.IssueTokenLoginTx),
+		// so a login landing between the proof's own lookup and this read moves the row out
+		// from under the proof, and a read by id alone would hand the handler whatever
+		// identity the row then holds. A login bound to no pod takes one row per subject on
+		// either schema, and a pod's own re-login moves its own row under the same id, so
+		// the pair is right on either (enroll.Service.CredentialForKey).
+		cred, err := s.deps.Enroll.CredentialForKey(r.Context(), subject.LauncherID, subject.Thumbprint)
+		switch {
+		case errors.Is(err, enroll.ErrNoCredential):
+			// The key that proved this request holds the row no longer, so it authenticates
+			// nothing — the same answer this call site gives every credential that is not
+			// valid, rather than the 503 of a store that cannot answer.
+			writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "the launcher credential is not valid")
+			return caller{}, false
+		case err != nil:
 			writeUnavailable(w, "DATABASE_UNAVAILABLE", "read launcher credential", err)
 			return caller{}, false
 		}
@@ -440,14 +455,14 @@ func (s *server) listedCaller(w http.ResponseWriter, err error, account string, 
 }
 
 // serviceCaller authenticates a service's own projected ServiceAccount token for authenticate,
-// the credential serviceAuth's routes take, and answers the service BROKER_SERVICE_LOGINS lets
-// that account log in as. It is the token login's own check
-// (machine.Service.VerifyServiceToken), so a route of this class and a daemon's token
-// login accept exactly the same credential: the same verifier, the same hour-from-issue bound on a
-// copied token, and the same list. An account that list does
-// not name is 403 ACCOUNT_NOT_LISTED, the credential being sound and the broker's list refusing; a
-// broker that trusts no Kubernetes token issuer answers 401 ACCOUNT_TOKENS_OFF, as this class's
-// routes then authenticate no one. No refusal repeats the token.
+// the credential serviceAuth's routes take, and answers the login that token made as one
+// machine.ServiceAccount, which serviceAuth hands the handler. It is the token login's own
+// check (machine.Service.VerifyServiceToken), so a route of this class and a daemon's token
+// login accept exactly the same credential: the same verifier, the same hour-from-issue bound
+// on a copied token, and the same list. An account the list does not name is 403
+// ACCOUNT_NOT_LISTED, the credential being sound and the broker's list refusing; a broker that
+// trusts no Kubernetes token issuer answers 401 ACCOUNT_TOKENS_OFF, as this class's routes then
+// authenticate no one. No refusal repeats the token.
 func (s *server) serviceCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
 	account, err := s.deps.MachineLogin.VerifyServiceToken(r.Context(), bearer(r))
 	switch {
@@ -467,7 +482,7 @@ func (s *server) serviceCaller(w http.ResponseWriter, r *http.Request) (caller, 
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the ServiceAccount token does not verify")
 		return caller{}, false
 	}
-	return caller{service: account.Service}, true
+	return caller{service: account}, true
 }
 
 // proofSubject verifies r's Proof header and returns who it authenticates, unwrapped: authLauncher
@@ -604,11 +619,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// stateResponse is what a denial, a cancel or a revoke answers.
-type stateResponse struct {
-	// The state the call left the request, record or grant in: "denied", "cancelled" or "revoked".
-	State string `json:"state"`
-}
+// stateResponse is what a denial, a cancel or a revoke answers: wire.StateResponse itself, named
+// here because the broker's generated HTTP reference documents a route's answer from a type this
+// package declares, as introspectionResponse names oauthwire.Introspection
+// (handlers_introspect.go).
+type stateResponse = wire.StateResponse
 
 // healthResponse is GET /healthz's answer while the broker is not draining and can reach
 // Postgres. Neither refusal has a type of its own: both are the ordinary broker error object

@@ -181,14 +181,14 @@ func TestTablesResourcesShowFailedSamplerReadsAsMissing(t *testing.T) {
 	checkRowWidths(t, md)
 }
 
-// TestTablesDoNotShowUnreadCommitsAsZero: a step whose loadtest.event_commits could not be read
-// (events.commits_error: a foreign run's database without the commit trigger, or an unreachable
-// -pg) knows nothing about its commits, receipts or delivery: Committed is 0 because nothing was
-// read, not because nothing committed. Its tables must not present that 0 as a measurement: the
-// committed rate, the issue-topic receipts and each kind's committed count are not 0; each table
-// with cells that depend on the commit rows marks the row, shows "-" in those cells and names
-// events.commits_error in a note; the other cells keep their values; and neither a step whose
-// commit rows were read nor a table that no commit row feeds carries the mark.
+// TestTablesDoNotShowUnreadCommitsAsZero: a step whose public.loadtest_event_commits could not be
+// read (events.commits_error: a foreign run's database without the commit trigger, or an
+// unreachable -pg) knows nothing about its commits, receipts or delivery: Committed is 0 because
+// nothing was read, not because nothing committed. Its tables must not present that 0 as a
+// measurement: the committed rate, the issue-topic receipts and each kind's committed count are
+// not 0; each table with cells that depend on the commit rows marks the row, shows "-" in those
+// cells and names events.commits_error in a note; the other cells keep their values; and neither
+// a step whose commit rows were read nor a table that no commit row feeds carries the mark.
 func TestTablesDoNotShowUnreadCommitsAsZero(t *testing.T) {
 	perOp := 0.0123
 	read := stepData{name: "read", sum: summary{
@@ -208,7 +208,7 @@ func TestTablesDoNotShowUnreadCommitsAsZero(t *testing.T) {
 				kindComment:  {Offered: 1, WriteMs: stat{N: 1, P50: 118, P99: 118}},
 				kindAnchored: {Offered: 8, WriteMs: stat{N: 8, P50: 670, P99: 720}},
 			},
-			CommitsError: `read loadtest.event_commits (is commit-trigger.sql installed?): ERROR: relation "loadtest.event_commits" does not exist (SQLSTATE 42P01)`,
+			CommitsError: `read public.loadtest_event_commits (is commit-trigger.sql installed?): ERROR: relation "public.loadtest_event_commits" does not exist (SQLSTATE 42P01)`,
 		},
 		Resources: &resourcesSummary{},
 		Live:      liveSummary{Frames: 40, FrameMsFromCreatedAt: stat{N: 40, P50: 30, P99: 80}},
@@ -297,6 +297,47 @@ func TestTablesMarkAFailedTransactionIDRead(t *testing.T) {
 		t.Errorf("no note of the failed-reads mark names summary.json `resources.xid_read_error`:\n%s", text)
 	}
 	checkRowWidths(t, md)
+}
+
+func TestTablesRenderTheRestartScenario(t *testing.T) {
+	dispatchCPU, pgCPU := 41.5, 30.25
+	cur := summary{
+		Config: summaryConfig{Step: "restart"},
+		LiveReconnects: &reconnectSummary{Stale: 1, Groups: map[string]reconnectGroup{
+			"all": {Reconnects: 3, Complete: 1, AfterRestart: 2, ReplayBytesTotal: 20 << 20, Refetches: 2, RefetchRequests: 12, RefetchFailures: 1,
+				RefetchBytes: 300 << 10, RefetchMs: stat{N: 12, P50: 40, P99: 90}, ReplayBytes: stat{N: 3, P50: 2048, Max: 20 << 20}},
+			reconnectStale: {Reconnects: 1, ReplayBytesTotal: 20 << 20, ReplayFrames: stat{N: 1, P50: 12600, Max: 12600}, Refetches: 1},
+		}},
+		Restart: &restartSummary{AtS: 30, DurationS: 4.25, OldPID: 10, NewPID: 20, DispatchCPUS: &dispatchCPU,
+			DispatchCPUSPer5s: []float64{0.5, 6, 4.25}, PostgresCPUS: &pgCPU},
+		CommentMentions: &mentionSummary{Frac: 0.2, PerComment: 3,
+			Window:       mentionSplit{With: mentionGroup{Offered: 10, OK2xx: 9, WriteMs: stat{N: 9, P50: 700, P99: 1500}}, Without: mentionGroup{Offered: 40, OK2xx: 40, WriteMs: stat{N: 40, P50: 60, P99: 200}}},
+			AfterRestart: &mentionSplit{With: mentionGroup{Offered: 2, OK2xx: 1, WriteMs: stat{N: 1, P50: 900, P99: 900}}},
+		},
+	}
+	md := renderTables([]stepData{{name: "old", sum: summary{Config: summaryConfig{Step: "old"}}}, {name: "restart", sum: cur}})
+
+	for _, c := range []struct {
+		title, old string
+		cur        []string
+	}{
+		{"Live reconnects", "| old | - | - | - | - | - | - | - | - | - | - | - | - | - | - |", []string{
+			"| restart | all | 3 (1) | 2 | 0 | - | - | - | 2 / 20,480 | 20,480 | - | 2 | 12 (1) | 300 | 40 / 90 |",
+			"| restart | stale | 1 (0) | 0 | 0 | - | - | 12,600 / 12,600 | - | 20,480 | - | 1 | 0 (0) | 0 | - |",
+		}},
+		{"Restart", "| old | - | - | - | - | - | - | - | - |", []string{"| restart | 30 | 4.2 | 10 → 20 | 41.50 | 0.50 6.00 4.25 | 30.25 | - | - |"}},
+		{"Comment mentions", "| old | - | - | - | - | - |", []string{"| restart | 20% / 3 | 700 / 1,500 (9 / 10) | 60 / 200 (40 / 40) | 900 / 900 (1 / 2) | - |"}},
+	} {
+		text := section(md, c.title)
+		if !strings.Contains(text, c.old+"\n") {
+			t.Errorf("section %q lacks %q:\n%s", c.title, c.old, text)
+		}
+		for _, want := range c.cur {
+			if !strings.Contains(text, want+"\n") {
+				t.Errorf("section %q lacks %q:\n%s", c.title, want, text)
+			}
+		}
+	}
 }
 
 func TestTablesRenderEditorsAndRoomsPerStep(t *testing.T) {
@@ -415,6 +456,40 @@ func TestTablesReadTheOlderLiveTransport(t *testing.T) {
 	}
 	if note := noteLine(text, "transport:"); !strings.Contains(note, "`live.transport`") {
 		t.Errorf("no note of the transport column names summary.json `live.transport`:\n%s", text)
+	}
+	checkRowWidths(t, md)
+}
+
+// TestTablesShowEachPopulationOfATwoPopulationStep: a step that drove both populations
+// (summary.json `populations`) gets a row per population, so the report shows production's own
+// writes and reads beside the loop's at every factor; a step that drove one adds no such table.
+func TestTablesShowEachPopulationOfATwoPopulationStep(t *testing.T) {
+	one := stepData{name: "step-0x", sum: summary{Config: summaryConfig{Step: "step-0x"}}}
+	if md := renderTables([]stepData{one}); strings.Contains(md, "Each population") {
+		t.Fatalf("a step that drove one population got a populations table:\n%s", md)
+	}
+	two := stepData{name: "step-6x", sum: summary{
+		Config: summaryConfig{Step: "step-6x", EventsPerS: 25, RequestsPerS: 291},
+		Events: eventsSummary{Offered: 250, OfferedPerS: 25},
+		Populations: []populationSummary{
+			{Name: populationBaseline, Seed: "/work/seed.json", EventMix: eventMix{Name: defaultEventMix},
+				RouteMix: defaultRouteMixName, EventsPerS: 4, RequestsPerS: 60,
+				Events:   eventsSummary{OfferedPerS: 4, CommittedPerS: 4, IssueTopicReceipts: 120, ExpectedIssueTopicReceipts: 120},
+				Requests: requestsSummary{Sent: 600, SentPerS: 60, OK2xx: 600}},
+			{Name: populationLoop, Seed: "/work/loopseed.seed.json", EventMix: eventMix{Name: loopEventMix},
+				RouteMix: "routes-spec-loop-2026-11-03.txt", EventsPerS: 21, RequestsPerS: 231,
+				Events:   eventsSummary{OfferedPerS: 21, CommittedPerS: 20, IssueTopicReceipts: 600, ExpectedIssueTopicReceipts: 630},
+				Requests: requestsSummary{Sent: 2310, SentPerS: 231, OK2xx: 2300}},
+		},
+	}}
+	md := renderTables([]stepData{two})
+	text := section(md, "Each population of a two-population step")
+	for _, want := range []string{"| step-6x | baseline | /work/seed.json | " + defaultEventMix + " | 4.00 / 4.00 / 4.00 |",
+		"| step-6x | loop | /work/loopseed.seed.json | " + loopEventMix + " | 21.00 / 21.00 / 20.00 |",
+		"| 60.0 / 60.0 | 100.0% |", "| 231.0 / 231.0 | 99.6% |"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the populations table lacks %q:\n%s", want, text)
+		}
 	}
 	checkRowWidths(t, md)
 }

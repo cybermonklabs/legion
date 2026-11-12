@@ -40,17 +40,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 var (
-	projectKeyPattern  = regexp.MustCompile(contracts.ProjectKeyPattern)
-	issueKeyPattern    = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}-[0-9]+$`)
-	externalRefPattern = regexp.MustCompile(`^([^/\s]+)/([^/\s#]+)#([1-9][0-9]*)$`)
+	projectKeyPattern = regexp.MustCompile(contracts.ProjectKeyPattern)
+	issueKeyPattern   = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}-[0-9]+$`)
 )
 
 // projectKeyProblem is every route's refusal of a value that is not a project key: the field it
@@ -78,8 +77,15 @@ type Deps struct {
 	Identity       identity.Identity
 	AgentTokens    *auth.SharedAgentTokens
 	DefaultProject string
-	ServerURL      string
-	Docs           docs.API
+	// NewIssueLabel and NewIssueSession configure the issue the dashboard's search bar files
+	// from the words a person typed when those words match nothing it found
+	// (GET /api/v1/settings/new-issue; cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL,
+	// DISPATCH_NEW_ISSUE_SESSION). NewIssueLabel empty is an issue that carries no label;
+	// NewIssueSession empty is an issue made with no conversation started on it.
+	NewIssueLabel   string
+	NewIssueSession string
+	ServerURL       string
+	Docs            docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
 	// is the only one search compares queries with (INFRA-393); nil means Dispatch has no
 	// embedder, and search answers keyword-only on every request, always setting
@@ -137,6 +143,16 @@ type Deps struct {
 	// DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW, under the test hooks), so a send to a session that
 	// is gone settles without sleeping the production window.
 	ListenerTakeoverWindow time.Duration
+	// HorizonStallAfter and HorizonWarnEvery replace how long a pending event-horizon
+	// observation waits before the process logs its stall warning, and how often each of that
+	// Horizon's three warnings repeats - the stall warning while the stall stands, the
+	// failed-observation warning and the failed-persist warning (events.Horizon.SetStallWarning).
+	// Zero keeps the horizon's own five and thirty seconds; a deployment leaves both zero, and
+	// only a test process sets another (cmd/dispatch: DISPATCH_TEST_HORIZON_STALL_AFTER and
+	// DISPATCH_TEST_HORIZON_WARN_EVERY, under the test hooks), so a test whose wait keys on the
+	// stall warning sees it inside its own patience.
+	HorizonStallAfter time.Duration
+	HorizonWarnEvery  time.Duration
 	// TestHookTimeout replaces how long a test hook waits for every process's acknowledgement
 	// (testHookTimeout, test_hooks_fanout.go). Zero keeps ten seconds; neither
 	// routes.BuildAppContext nor cmd/dispatch sets it, so every deployment with the hooks on and
@@ -168,8 +184,12 @@ type DepsInput struct {
 	Identity       identity.Identity
 	AgentTokens    *auth.SharedAgentTokens
 	DefaultProject string
-	ServerURL      string
-	EnvoyURL       string
+	// NewIssueLabel and NewIssueSession are the two new-issue settings; see Deps. A label longer
+	// than one an issue may carry, or a session id that is no session id, refuses startup.
+	NewIssueLabel   string
+	NewIssueSession string
+	ServerURL       string
+	EnvoyURL        string
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
@@ -212,6 +232,10 @@ type DepsInput struct {
 	// ListenerTakeoverWindow replaces the twelve-second listener take-over window; see
 	// Deps.ListenerTakeoverWindow.
 	ListenerTakeoverWindow time.Duration
+	// HorizonStallAfter and HorizonWarnEvery replace the five-second stall threshold and the
+	// thirty-second repeat of every event-horizon warning; see Deps.HorizonStallAfter.
+	HorizonStallAfter time.Duration
+	HorizonWarnEvery  time.Duration
 	// TestHookTimeout replaces the ten-second test-hook acknowledgement timeout; see
 	// Deps.TestHookTimeout.
 	TestHookTimeout time.Duration
@@ -227,6 +251,13 @@ func NewDeps(input DepsInput) (Deps, error) {
 	defaultProject := strings.TrimSpace(input.DefaultProject)
 	if defaultProject != "" && !projectKeyPattern.MatchString(defaultProject) {
 		return Deps{}, fmt.Errorf("invalid DISPATCH_DEFAULT_PROJECT %q (expected project key)", defaultProject)
+	}
+	newIssue, problem := newIssueSettingsFrom(input.NewIssueLabel, input.NewIssueSession)
+	switch problem {
+	case "label":
+		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_LABEL %q (at most %d characters)", newIssue.Label, maxIssueLabel16)
+	case "session":
+		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_SESSION %q (expected a session id)", newIssue.Session)
 	}
 	if input.Events == nil {
 		input.Events = events.NewBroker()
@@ -270,6 +301,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Identity:               input.Identity,
 		AgentTokens:            input.AgentTokens,
 		DefaultProject:         defaultProject,
+		NewIssueLabel:          newIssue.Label,
+		NewIssueSession:        newIssue.Session,
 		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
@@ -287,6 +320,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		StreamHeartbeat:        heartbeat,
 		RouteRosterTTL:         input.RouteRosterTTL,
 		ListenerTakeoverWindow: input.ListenerTakeoverWindow,
+		HorizonStallAfter:      input.HorizonStallAfter,
+		HorizonWarnEvery:       input.HorizonWarnEvery,
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		DashboardEntry:         input.DashboardEntry,
@@ -329,14 +364,22 @@ type server struct {
 	// shutdown for it (detached). Register sets it from its lifetime parameter and refuses a nil one, since nothing would
 	// ever end the work it bounds; a test passes its own t.Context(). A server a test builds
 	// directly has none unless the test sets it (directServer sets context.Background()).
-	lifetime        context.Context
-	routeIndex      []routeIndexEntry
+	lifetime   context.Context
+	routeIndex []routeIndexEntry
+	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
+	// write, held to the table this server mounts (going_catalogue.go).
+	going           GoingCatalogue
 	adviceQueryHook func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
 	// (newFailingAdviceHandler, and the check's bound tests), so a case's outcome is its own choice
 	// rather than its machine's speed.
 	suggestionTimeout time.Duration
+	// beforeCrossProjectRead runs at the head of relatedOtherProjects, before it reads, and its
+	// error stands in for the read failing. Only a test sets it: it is how a case holds that one
+	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
+	// as it runs in production.
+	beforeCrossProjectRead func(ctx context.Context) error
 	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
 	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it
 	// (the forced create whose check does not answer), so a case's outcome is its own choice
@@ -365,8 +408,9 @@ type server struct {
 	// agentWatchInterval is how often an agent view re-arms its session: agentStreamWatchInterval,
 	// which a test replaces.
 	agentWatchInterval time.Duration
-	// eventRelay is the live feed every events subscription reads (INFRA-66), on every server
-	// register mounts: it starts its listening connection on the first subscription.
+	// eventRelay is the live feed every events subscription and the delivery hub read (INFRA-66),
+	// on every server register mounts: it starts its listening connection on the first of them to
+	// subscribe and stops it with the last.
 	eventRelay *eventStreamRelay
 	// testHooks carries every test hook to every process serving the database
 	// (test_hooks_fanout.go); nil without Deps.TestHooksEnabled, and on a server with no Store,
@@ -381,9 +425,12 @@ type server struct {
 	// bootMark closes once the server's boot mark has been taken (takeBootMark), which the marks
 	// in eventMarks begin with; nil on a server with no Store.
 	bootMark chan struct{}
-	// eventMarks is the event log marks the relay's first start and GET /auth/whoami bound the ids
-	// a writer can still hold open by (event_marks.go).
+	// eventMarks is the event log marks the relay's generation starts and GET /auth/whoami bound
+	// the ids a writer can still hold open by (event_marks.go).
 	eventMarks eventMarks
+	// mentions sends comment mentions after their comment's response (comment_mention_sender.go),
+	// on every server register mounts.
+	mentions *mentionSender
 	// detached is everything a request started that runs on past its client: every keyed write's
 	// handler (keyedWrites, which runs it on a context the client's going away does not cancel) and
 	// every delivery a handler started and did not wait for (a broadcast's recipients, a sweep's
@@ -417,6 +464,11 @@ type server struct {
 	// slowWrites and leaves its record here, so a test can disarm a route and still read what the
 	// hook did before and since.
 	slowWriteRuns sync.Map
+	// newIssueOverride is what the new-issue test hook last set
+	// (POST /api/v1/settings/new-issue/_test), which GET /api/v1/settings/new-issue answers in
+	// place of the two settings Deps carries; nil until a hook call sets one, which is every
+	// server without TestHooksEnabled, since that mounts no hook.
+	newIssueOverride atomic.Pointer[newIssueSettings]
 	// warnedUnmatchedRuns holds a warnedProductionRun for each deploy run productionApplies has
 	// asked about - one with no production job or no configured apply step - so this process asks
 	// delivery_run_warnings, which decides which process logs the warning (firstToWarn), once per
@@ -434,13 +486,13 @@ type server struct {
 	// branches is what the results reads last learned about each repository's default branch
 	// (delivery.Branches), held across requests so the Verification tab's refetch on every
 	// result.recorded does not spend one GET /repos/{owner}/{repo} apiece. It answers about
-	// every branch a check is measured against, and caches the default branch alone, since what
+	// every branch a check is compared with, and caches the default branch alone, since what
 	// a named branch holds of a commit is kept in the database (branch_commits). The policy is
 	// delivery's; the server holds the one cache the process shares.
 	branches delivery.Branches
 	// commitPulls is the moment before which the results read will not read GitHub again for the
 	// pull requests of a commit it could answer for no other way (delivery.CommitPullReads,
-	// currencyReader.readThroughHead), held across requests so one commit costs at most one such
+	// comparisonReader.readThroughHead), held across requests so one commit costs at most one such
 	// read per delivery.CommitPullReadStaleAfter however often the tab refetches, and one per
 	// delivery.CommitPullSettledFor once GitHub has put that pull request's head elsewhere. The
 	// policy is delivery's; the server holds the one cache the process shares.
@@ -537,6 +589,7 @@ func (s *server) waitBackground() {
 	s.liveSockets.wait()
 	s.deliveryHub.wait()
 	s.eventRelay.wait()
+	s.mentions.wait()
 	if s.testHooks != nil {
 		s.testHooks.wait()
 	}
@@ -613,6 +666,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	}
 	s.eventRelay = newEventStreamRelay(s, lifetime)
 	s.takeBootMark()
+	s.mentions = s.startMentionSender()
 	s.deliveryHub = newDeliveryHub(s, lifetime, deliveryHubClock{})
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
@@ -628,6 +682,26 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// deleted and its entry left behind — so the table is refused rather than mounted
 		// (routeScopes).
 		panic("api.Register: the route table's scope map names a route the table does not mount: " + strings.Join(unmounted, "; "))
+	}
+	going, err := buildGoingCatalogue(routes)
+	if err != nil {
+		// A catalogue entry naming a row this table does not hold or does not class as a write,
+		// a placeholder no argument of the tool fills, or a relation named in neither edge
+		// family, is refused rather than mounted (going_catalogue.go).
+		panic("api.Register: the route table holds a row the going catalogue cannot hold: " + err.Error())
+	}
+	s.going = going
+	if shapeless := shapelessRoutes(routes); len(shapeless) > 0 {
+		// A row with no shape is a row the generated OpenAPI document would leave out, so the
+		// one definition of the API would stop being one; the table is refused rather than
+		// mounted (routes_shapes.go).
+		panic("api.Register: the route table holds a row with no request and response shape: " + strings.Join(shapeless, "; "))
+	}
+	if unshaped := shapedRoutesNotMounted(); len(unshaped) > 0 {
+		// A shape for a route nothing serves is a shape the document would describe and no
+		// caller could reach — a row renamed or deleted and its entry left behind — so the
+		// table is refused rather than mounted (routeShapes).
+		panic("api.Register: the route table's shape map names a route the table does not mount: " + strings.Join(unshaped, "; "))
 	}
 	s.routeIndex = routeIndexEntries(routes)
 	replays := s.keyedReplays()
@@ -782,209 +856,38 @@ func parseQueryInt(query url.Values, field string, min, max int) (value int, pre
 	return parsed, true, true
 }
 
-// The codes writeHandlerError answers a document it cannot read or serve and an unclassified
-// failure with, which a comment's or ask's single read also carries as anchor_block_error
-// (anchorBlock).
-const (
-	codeDocSchema             = "DOC_SCHEMA"
-	codeDocServiceUnavailable = "DOC_SERVICE_UNAVAILABLE"
-	codeDocumentUnloadable    = "DOCUMENT_UNLOADABLE"
-	codeInternal              = "INTERNAL"
-)
-
-// documentErrorCode names an error a document operation returns when it could not read or serve
-// the document, and is empty for any other error. writeHandlerError and anchorBlock both name a
-// document error by it, and both in one order, so the two cannot name one error differently.
-//
-// A room or store that could not serve the document is DOC_SERVICE_UNAVAILABLE whatever failed it,
-// so both take that code before any branch that reads the error's cause. A failed room carries the
-// error another operation failed it with - settlement's schema refusal, a settlement that failed
-// three times (its warm-up refused because the issue had closed, among others), a writer's commit
-// that failed or its client cancelled, a store write or load that failed, a history that did not
-// decode - and that error says nothing of this request: the caller retries once the room is
-// evicted, and its retry meets the document itself.
-//
-// A stored history this request itself could not decode is DOCUMENT_UNLOADABLE, the state a
-// rebuild repairs. A tree outside the schema is DOC_SCHEMA, which both take only after the
-// branches that name the caller's own input or a block the document does not hold, so a refusal
-// whose reason the renderer gave (an ask block that cannot render) stays that refusal.
-func documentErrorCode(err error) string {
-	switch {
-	case errors.Is(err, docs.ErrServiceUnavailable):
-		return codeDocServiceUnavailable
-	case errors.Is(err, docs.ErrDocumentUnloadable):
-		return codeDocumentUnloadable
-	case errors.Is(err, docs.ErrDocSchema):
-		return codeDocSchema
+// parseQueryBool reads one query parameter as true or false, as parseQueryInt reads one as an
+// integer: present is false when the request carried no value the route reads, and a value that
+// is neither "true" nor "false" is present with valid false, so each route writes its own code
+// and message around it. The two routes that read such a parameter read it differently, and
+// both readings are carried here rather than either being changed: trim cuts the value's
+// surrounding whitespace before it is read, which search's ?keywords_only= does and GET
+// /api/v1/projects/{key}/related does not, and readFirst reads the parameter as url.Values.Get
+// does - the first value, however many were sent, and a blank one as no value at all - which
+// that related route does where search refuses a repeated or a blank one.
+func parseQueryBool(query url.Values, field string, trim, readFirst bool) (value, present, valid bool) {
+	values, ok := query[field]
+	if !ok {
+		return false, false, false
 	}
-	return ""
-}
-
-func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
-	var apiErr *apiError
-	if errors.As(err, &apiErr) {
-		if apiErr.retryAfter > 0 {
-			// Before the body: writeError writes the status and the headers go with it.
-			w.Header().Set("Retry-After", strconv.Itoa(apiErr.retryAfter))
+	first := values[0]
+	if trim {
+		first = strings.TrimSpace(first)
+	}
+	if readFirst {
+		if first == "" {
+			return false, false, false
 		}
-		if apiErr.scope != "" {
-			w.Header().Set("WWW-Authenticate", insufficientScopeChallenge(apiErr.scope))
-		}
-		writeError(w, apiErr.code, apiErr.status, apiErr.message)
-		// A 500 the handler named is a server fault like any other, so the operator's log shows it.
-		if apiErr.status == http.StatusInternalServerError {
-			slog.Error("dispatch: API handler failed", "code", apiErr.code, "error", err)
-		}
-		return
+	} else if len(values) != 1 {
+		return false, true, false
 	}
-	documentCode := documentErrorCode(err)
-	switch documentCode {
-	case codeDocServiceUnavailable:
-		writeError(w, documentCode, http.StatusServiceUnavailable, docs.ErrServiceUnavailable.Error())
-		return
-	case codeDocumentUnloadable:
-		writeError(w, documentCode, http.StatusConflict, docs.ErrDocumentUnloadable.Error())
-		slog.Warn("dispatch: API document history cannot load", "error", err)
-		return
+	switch first {
+	case "false":
+		return false, true, true
+	case "true":
+		return true, true, true
 	}
-	// The edit route's own ambiguity error names the operation and the quote; the bare pmdoc one
-	// still serves every other caller of FindQuote.
-	var ambiguousQuote *docs.ErrAnchorAmbiguous
-	if errors.As(err, &ambiguousQuote) {
-		writeAmbiguousTarget(w, ambiguousQuote.Error(), ambiguousQuote.Candidates)
-		return
-	}
-	var ambiguous *pmdoc.ErrTargetAmbiguous
-	if errors.As(err, &ambiguous) {
-		writeAmbiguousTarget(w, ambiguous.Error(), ambiguous.Candidates)
-		return
-	}
-
-	var preconditionFailed *docs.ErrPreconditionFailed
-	if errors.As(err, &preconditionFailed) {
-		currentBlocks := make([]model.EditBlockPrecondition, 0)
-		for _, mismatch := range preconditionFailed.Mismatches {
-			if mismatch.Scope == "block" && mismatch.Current != nil {
-				currentBlocks = append(currentBlocks, model.EditBlockPrecondition{
-					ID: mismatch.BlockID, Token: *mismatch.Current,
-				})
-			}
-		}
-		WriteJSON(w, http.StatusConflict, map[string]any{
-			"error":      preconditionFailed.Error(),
-			"code":       "PRECONDITION_FAILED",
-			"current":    map[string]any{"document": preconditionFailed.CurrentDocument, "blocks": currentBlocks},
-			"mismatches": preconditionFailed.Mismatches,
-		})
-		return
-	}
-	// A write whose text a concurrent browser change removed before the write could be versioned
-	// (LEGION-269). Nothing was written, so this reads like PRECONDITION_FAILED: re-read the
-	// document and decide again.
-	var lostEdit *docs.ErrEditLost
-	if errors.As(err, &lostEdit) {
-		body := map[string]any{
-			"error":        lostEdit.Error(),
-			"code":         "EDIT_LOST_TO_CONCURRENT_CHANGE",
-			"participants": participantsOrEmpty(lostEdit.Participants),
-		}
-		if lostEdit.Suggestion != "" {
-			body["suggestion"] = lostEdit.Suggestion
-		} else {
-			body["lost_ops"] = lostEdit.Ops
-		}
-		WriteJSON(w, http.StatusConflict, body)
-		return
-	}
-	var invalidPrecondition *docs.ErrInvalidPrecondition
-	if errors.As(err, &invalidPrecondition) {
-		writeError(w, "INVALID_PRECONDITION", http.StatusBadRequest, invalidPrecondition.Error())
-		return
-	}
-	if errors.Is(err, docs.ErrPreconditionBusy) {
-		writeError(w, "EDIT_QUEUE_FULL", http.StatusTooManyRequests, docs.ErrPreconditionBusy.Error())
-		return
-	}
-	var invalidAskBlock *docs.ErrInvalidAskBlock
-	if errors.As(err, &invalidAskBlock) {
-		writeError(w, "INVALID_ASK_BLOCK", http.StatusBadRequest, invalidAskBlock.Error())
-		return
-	}
-	var unrepresentableAsk *docs.ErrAskBlockUnrepresentable
-	if errors.As(err, &unrepresentableAsk) {
-		writeError(w, "ASK_BLOCK_TEXT", http.StatusBadRequest, unrepresentableAsk.Error())
-		return
-	}
-	var invalidOp *docs.ErrInvalidOp
-	if errors.As(err, &invalidOp) {
-		writeError(w, "INVALID_OP", http.StatusBadRequest, invalidOp.Error())
-		return
-	}
-	if errors.Is(err, pmdoc.ErrTargetSpansBlocks) {
-		writeError(w, "TARGET_SPANS_BLOCKS", http.StatusBadRequest, err.Error())
-		return
-	}
-	if errors.Is(err, pmdoc.ErrTableWidth) {
-		writeError(w, "TABLE_WIDTH", http.StatusBadRequest, err.Error())
-		return
-	}
-	if errors.Is(err, docs.ErrAnchorMissing) {
-		writeError(w, "ANCHOR_MISSING", http.StatusConflict, err.Error())
-		return
-	}
-	if errors.Is(err, docs.ErrAnchorOrphaned) {
-		writeError(w, "ANCHOR_ORPHANED", http.StatusConflict, err.Error())
-		return
-	}
-	if errors.Is(err, pmdoc.ErrTargetNotFound) {
-		writeError(w, "TARGET_NOT_FOUND", http.StatusNotFound, err.Error())
-		return
-	}
-	// A block pointer refused on any route but the edit route (which answers INVALID_OP) is the
-	// caller's markdown to fix, as a schema refusal of it is.
-	if errors.Is(err, docs.ErrInvalidMarkdown) || errors.Is(err, pmdoc.ErrBlockPointer) {
-		writeError(w, "INVALID_MARKDOWN", http.StatusBadRequest, err.Error())
-		return
-	}
-	if docs.IsTooLarge(err) {
-		writeError(w, "CAP_EXCEEDED", http.StatusRequestEntityTooLarge, err.Error())
-		slog.Warn("dispatch: API refused a document too large to store", "error", err)
-		return
-	}
-	// A tree outside the schema that the document holds answers 409 with its one message, the same
-	// on every route whatever the route wrapped it in (docs.OutsideSchemaError). Any other schema
-	// refusal is a tree an operation produced, which is the server's fault.
-	if documentCode == codeDocSchema {
-		var outside *docs.OutsideSchemaError
-		if errors.As(err, &outside) {
-			writeError(w, documentCode, http.StatusConflict, outside.Error())
-			slog.Warn("dispatch: API document outside Proof schema", "error", err)
-			return
-		}
-		writeError(w, documentCode, http.StatusInternalServerError, err.Error())
-		slog.Error("dispatch: API document outside Proof schema", "error", err)
-		return
-	}
-	if errors.Is(err, docs.ErrIssueClosed) {
-		writeError(w, "ISSUE_CLOSED", http.StatusConflict, err.Error())
-		return
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
-		return
-	}
-	writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")
-	slog.Error("dispatch: API handler failed", "error", err)
-}
-
-// writeAmbiguousTarget serves a quote that resolved in several places: the caller picks one by
-// the candidates' positions, or narrows the quote.
-func writeAmbiguousTarget(w http.ResponseWriter, message string, candidates []pmdoc.Candidate) {
-	WriteJSON(w, http.StatusConflict, map[string]any{
-		"error":      message,
-		"code":       "TARGET_AMBIGUOUS",
-		"candidates": candidates,
-	})
+	return false, true, false
 }
 
 // refuseChangedLogin runs a write route's handler only for the person who pressed the write, when
@@ -1428,14 +1331,20 @@ func countExceededError(code, field string, count, limit int) *apiError {
 		"%s is %d over the %d-item limit (%d/%d)", field, count-limit, limit, count, limit)
 }
 
-// blockBoundError is what a route answers an itemblocks.Check with: nil where the body passed
-// both bounds, else the refusal the typed error words (itemblocks.CapExceeded names the block,
-// itemblocks.CountExceeded the count), with the status and code every cap refusal carries.
-// Every route that bounds a body calls this one helper, so a route added later cannot word the
-// same refusal differently.
+// blockBoundError is what a route answers an itemblocks.Check with: nil where the body broke no
+// rule, else the refusal the typed error words, under the code that rule is refused by. A bound
+// broken (itemblocks.CapExceeded names the block, itemblocks.CountExceeded the count) carries
+// CAP_EXCEEDED, the code every cap refusal carries; a body holding a decision block
+// (itemblocks.DecisionBlock) carries DECISION_BLOCK_IN_BODY, since what it is refused for is
+// what it holds rather than how long it is. Every route that checks a body calls this one
+// helper, so a route added later cannot word the same refusal differently.
 func blockBoundError(err error) *apiError {
 	if err == nil {
 		return nil
+	}
+	var decision *itemblocks.DecisionBlock
+	if errors.As(err, &decision) {
+		return errorf(http.StatusBadRequest, "DECISION_BLOCK_IN_BODY", "%s", err)
 	}
 	return errorf(http.StatusBadRequest, "CAP_EXCEEDED", "%s", err)
 }
@@ -1487,6 +1396,11 @@ func (maxBytesDiscarder) Header() http.Header             { return nil }
 func (maxBytesDiscarder) Write(value []byte) (int, error) { return len(value), nil }
 func (maxBytesDiscarder) WriteHeader(int)                 {}
 
+// actorInput is the body of every route whose only input is who acts.
+type actorInput struct {
+	Actor *model.Actor `json:"actor"`
+}
+
 // decodeJSON decodes r's body, one JSON value of at most maxJSONRequestBytes, into value, which
 // declares every member the body may carry. A string the body holds anywhere that carries U+0000
 // is refused, naming where it stands (unstorableJSON).
@@ -1530,8 +1444,14 @@ func WriteJSON(w http.ResponseWriter, status int, body any) {
 	}
 }
 
+// errorBody is the body of every refusal writeError answers, on every route.
+type errorBody struct {
+	Code  string `json:"code"`
+	Error string `json:"error"`
+}
+
 func writeError(w http.ResponseWriter, code string, status int, message string) {
-	WriteJSON(w, status, map[string]string{"error": message, "code": code})
+	WriteJSON(w, status, errorBody{Code: code, Error: message})
 }
 
 func encodeJSON(value any) ([]byte, error) {
@@ -1656,29 +1576,4 @@ func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, artifactID str
 	}
 	diff := text.UnifiedDiff(previous, current)
 	return &diff, nil
-}
-
-func externalRef(ref string) (repo string, number string, err error) {
-	match := externalRefPattern.FindStringSubmatch(strings.TrimSpace(ref))
-	if match == nil {
-		return "", "", errorf(http.StatusBadRequest, "INVALID_ISSUE_REF", "invalid issue reference %q", ref)
-	}
-	return canonicalRepo(match[1], match[2]), match[3], nil
-}
-
-func canonicalRepo(owner, repo string) string {
-	owner = strings.ToLower(strings.TrimSpace(owner))
-	repo = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(repo)), ".git")
-	return owner + "/" + repo
-}
-
-func externalURL(repo, number string) string {
-	return "https://github.com/" + repo + "/issues/" + number
-}
-
-func externalURLs(repo, number string) []string {
-	return []string{
-		externalURL(repo, number),
-		"https://github.com/" + repo + "/pull/" + number,
-	}
 }

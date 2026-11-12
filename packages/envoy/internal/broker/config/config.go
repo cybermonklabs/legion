@@ -18,6 +18,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -261,6 +262,44 @@ type Config struct {
 	// belong to. For the broker's local stack alone: a production start, which is one with
 	// BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
 	AirlockTestNoKind bool
+	// BROKER_JUDGE_MODEL_URL: the base URL the broker's model judge calls its model at, an
+	// absolute http(s) URL. Required with the rest of JudgeSettings, which are all-or-none:
+	// with none of the five set there is no judge, and every human-tier request waits for the
+	// person who decides it today.
+	JudgeModelURL string
+	// BROKER_JUDGE_MODEL: the id of the model the judge asks, as the endpoint at
+	// BROKER_JUDGE_MODEL_URL names it. Required with the rest of JudgeSettings.
+	JudgeModel string
+	// BROKER_JUDGE_MODEL_PROTOCOL: the wire protocol that endpoint speaks, one of
+	// anthropic-messages (the default), openai-responses, openai-chat and azure-anthropic,
+	// which are agentloop's four Run kinds; any other value refuses the start naming the
+	// setting, the value and the four it takes. It is the one judge setting with a default, so
+	// it is never among the ones a half-configured judge is refused for; and because it says
+	// nothing on its own, setting it with the other five unset is refused as the same mistake,
+	// naming the five a judge needs, rather than read as a deployment that meant no judge.
+	JudgeModelProtocol string
+	// BROKER_JUDGE_MODEL_AUDIENCE: the audience of the Google identity token the broker
+	// presents to the endpoint at BROKER_JUDGE_MODEL_URL, minted for the broker's own machine
+	// identity. Required with the rest of JudgeSettings.
+	JudgeModelAudience string
+	// BROKER_JUDGE_DISPATCH_URL: the base URL of the Dispatch the judge reads an issue from, an
+	// absolute http(s) URL. It makes two GETs there — one for the issue a request's reason
+	// names, which answers that issue's key, title and status, and one for the whole markdown
+	// of the issue's spec document — and writes nothing: no ask, no comment, no status.
+	// Required with the rest of JudgeSettings.
+	JudgeDispatchURL string
+	// BROKER_JUDGE_DISPATCH_TOKEN_FILE: the file holding the broker's own projected
+	// ServiceAccount token for the Dispatch at BROKER_JUDGE_DISPATCH_URL. Read when the judge
+	// calls Dispatch and not at boot, through the reader every other projected token in this
+	// binary goes through (brokertoken.AccountToken), which reads the file again once what it
+	// last read is 30 seconds old, so a rotation reaches the judge without a restart.
+	// Required with the rest of JudgeSettings.
+	JudgeDispatchTokenFile string
+	// BROKER_JUDGE_TEST_SKIP_CHECKS: with it true, the judge's checks before the model are off,
+	// so a request one of them would hold back is asked about anyway. It is the negative
+	// control of the check the judge belongs to. For the broker's local stack alone: a
+	// production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	JudgeTestSkipChecks bool
 	// BROKER_AZURE_TOKEN_FILE: the path of the broker pod's projected ServiceAccount token for
 	// azure-login releases, default /var/run/secrets/azure/tokens/azure-identity-token. Read only
 	// on release, not at boot, and read anew each time so the rotated token is used. The token's
@@ -333,11 +372,14 @@ type Config struct {
 	// account (system:serviceaccount:<namespace>:<name>, named exactly: there is no wildcard) logs in
 	// as the one service its entry names and is given once; one service may have several accounts,
 	// one per machine. A namespace's default account is refused, since every pod there that names
-	// no account runs as it, and so is an account BROKER_SERVICES binds for a service's pods, since
-	// every such pod holds a token for it. Keyed by account, each answering its service. A token
-	// whose subject is not listed is refused, and a credential an account's login issued stops
-	// authenticating once its entry is gone. Needs BROKER_K8S_OIDC_ISSUER, whose tokens it trusts.
-	// Unset, no service logs in with a token.
+	// no account runs as it. An account BROKER_SERVICES binds for a service's pods may be listed
+	// here as well, which is a pod of that account enrolling itself: every such pod holds a token
+	// for the account, so each of them logs the service in, and what keeps one of them from
+	// enrolling another is enroll.Service.podUnderTokenLogin, which gives such a login the one pod
+	// whose token made it and answers ErrPodSelfEnrollOnly for any other pod UID. Keyed by account,
+	// each answering its service. A token whose subject is not listed is refused, and a credential
+	// an account's login issued stops authenticating once its entry is gone. Needs
+	// BROKER_K8S_OIDC_ISSUER, whose tokens it trusts. Unset, no service logs in with a token.
 	ServiceLogins map[string]string
 	// BROKER_K8S_OIDC_ISSUER: the issuer of the Kubernetes service-account tokens pods enroll
 	// with. Set it with BROKER_K8S_OIDC_AUDIENCE, or neither, in which case no pod can enroll.
@@ -519,13 +561,43 @@ var SignInSettings = []string{signInIssuerSetting, signInClientIDSetting, signIn
 // order.
 var airlockProxySettings = []string{"BROKER_AIRLOCK_PROXY_URL", "BROKER_AIRLOCK_CA_CERT_FILE", "BROKER_AIRLOCK_CA_KEY_FILE"}
 
+// The five settings the broker's model judge needs, each read by its own name: the endpoint it
+// calls its model at, the model's id, the audience of the identity token it presents there, the
+// Dispatch it reads an issue from, and the file holding its token for that Dispatch. The
+// protocol that endpoint speaks has a default, so it is not one of them.
+const (
+	judgeModelURLSetting          = "BROKER_JUDGE_MODEL_URL"
+	judgeModelSetting             = "BROKER_JUDGE_MODEL"
+	judgeModelAudienceSetting     = "BROKER_JUDGE_MODEL_AUDIENCE"
+	judgeDispatchURLSetting       = "BROKER_JUDGE_DISPATCH_URL"
+	judgeDispatchTokenFileSetting = "BROKER_JUDGE_DISPATCH_TOKEN_FILE"
+	judgeModelProtocolSetting     = "BROKER_JUDGE_MODEL_PROTOCOL"
+)
+
+// JudgeSettings are those five settings, all-or-none: none of them set is a broker with no
+// judge, and some of them set refuses the start naming the ones missing. Every message that
+// names them names them in this order.
+var JudgeSettings = []string{judgeModelURLSetting, judgeModelSetting, judgeModelAudienceSetting, judgeDispatchURLSetting, judgeDispatchTokenFileSetting}
+
+// judgeModelProtocols are the wire protocols BROKER_JUDGE_MODEL_PROTOCOL takes, in the order
+// every refusal naming them uses. They are agentloop's four Run kinds — AnthropicMessages,
+// OpenAIResponses, OpenAIChat and AzureAnthropic, the Kind constants of
+// packages/envoy/agentloop/agentloop.go, where SystemOne is Decide's kind and no Run's — written
+// out here rather than imported: agentloop carries the Anthropic, OpenAI, Google and gRPC client
+// libraries with it, and config, which every broker command loads before anything else, imports
+// none of them. A value added there is added here.
+var judgeModelProtocols = []string{"anthropic-messages", "openai-responses", "openai-chat", "azure-anthropic"}
+
 // noUIToken is why BROKER_UI_TOKEN and its file are gone: the routes it authenticated take the
 // caller's own Kubernetes ServiceAccount token now.
 const noUIToken = "the broker's approval routes take the calling service's own Kubernetes ServiceAccount token, verified against BROKER_K8S_OIDC_ISSUER, so list that account in BROKER_API_ACCOUNTS instead of sharing a bearer with Dispatch's server"
 
-// noDispatchCredential is why the broker's Dispatch variables are gone: it asks and issues nothing
-// in Dispatch.
-const noDispatchCredential = "the broker holds no Dispatch credential"
+// noDispatchCredential is why the broker's five Dispatch variables are gone: they named a
+// Dispatch the broker asked and issued in, which it still does not do. The one thing it reads
+// there now, whether an issue is open, is the model judge's read under its own settings, so a
+// deployment that still sets one of the five is configured for a Dispatch the broker never
+// writes to and a credential it never holds.
+const noDispatchCredential = "the broker opens no Dispatch ask and issues nothing in Dispatch; its model judge reads one thing there, whether an issue is open, at BROKER_JUDGE_DISPATCH_URL and with the broker's own projected ServiceAccount token (BROKER_JUDGE_DISPATCH_TOKEN_FILE), and writes nothing"
 
 // noDatabasePassword is why BROKER_DATABASE_PASSWORD and its placeholder are gone: BROKER_DATABASE_URL
 // alone says how the broker signs in.
@@ -577,8 +649,8 @@ var serviceAccountPattern = regexp.MustCompile(`^system:serviceaccount:[a-z0-9](
 const defaultServiceAccount = "default"
 
 // serviceAccountEntry is one <service>=system:serviceaccount:<namespace>:<name> entry of
-// BROKER_SERVICES or BROKER_SERVICE_LOGINS, with its text as the setting gave it.
-type serviceAccountEntry struct{ service, subject, text string }
+// BROKER_SERVICES or BROKER_SERVICE_LOGINS.
+type serviceAccountEntry struct{ service, subject string }
 
 // parseServiceAccounts reads setting's whitespace-separated <service>=<ServiceAccount subject>
 // entries, the form BROKER_SERVICES and BROKER_SERVICE_LOGINS share, in order. It refuses, naming
@@ -602,9 +674,23 @@ func parseServiceAccounts(setting, value string) ([]serviceAccountEntry, error) 
 		if err := bindOnce(seen, setting, subject, service); err != nil {
 			return nil, err
 		}
-		entries = append(entries, serviceAccountEntry{service: service, subject: subject, text: text})
+		entries = append(entries, serviceAccountEntry{service: service, subject: subject})
 	}
 	return entries, nil
+}
+
+// servicesByAccount keys parseServiceAccounts' entries by account, each answering its service,
+// the shape Config.ServicesByAccount and Config.ServiceLogins both hold. No entry, no map: a
+// setting left unset reads nil rather than an empty map.
+func servicesByAccount(entries []serviceAccountEntry) map[string]string {
+	if len(entries) == 0 {
+		return nil
+	}
+	byAccount := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		byAccount[entry.subject] = entry.service
+	}
+	return byAccount
 }
 
 // isDefaultServiceAccount reports whether subject is a namespace's default account, the one
@@ -990,11 +1076,11 @@ func parseAirlockTestResolve(value string) (map[string]netip.Addr, error) {
 	return hosts, nil
 }
 
-// airlockTestSwitch reads one of the airlock's two test-only switches: unset is off, and
-// anything strconv.ParseBool does not read is refused rather than taken as off, since a
-// misspelled value would otherwise turn a negative control into the ordinary run it is meant to
-// be compared against.
-func airlockTestSwitch(setting, value string) (bool, error) {
+// testOnlySwitch reads one of the local stack's test-only switches, the airlock's two and
+// the judge's one: unset is off, and anything strconv.ParseBool does not read is refused rather
+// than taken as off, since a misspelled value would otherwise turn a negative control into the
+// ordinary run it is meant to be compared against.
+func testOnlySwitch(setting, value string) (bool, error) {
 	text := strings.TrimSpace(value)
 	if text == "" {
 		return false, nil
@@ -1127,8 +1213,9 @@ func databaseIAM(databaseURL string) (bool, error) {
 
 // httpURLSetting refuses a setting whose value is no absolute http or https URL, naming the
 // setting and quoting the value with its own credentials and query taken out (redact.URL). The
-// two settings held to this form are a page a machine opens in a browser and a proxy a command
-// dials, and neither works at all as a bare host and port.
+// settings held to this form are a page a machine opens in a browser, a proxy a command dials,
+// and the two the judge calls — its model's endpoint and its Dispatch — and none of them works
+// at all as a bare host and port.
 func httpURLSetting(name, value string) error {
 	if parsed, err := url.Parse(value); err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 		return fmt.Errorf("%s must be an absolute http(s) URL: %q", name, redact.URL(value))
@@ -1160,6 +1247,12 @@ func Load(getenv func(string) string) (Config, error) {
 		AirlockTestGitHubAPIBase:  strings.TrimSpace(getenv("BROKER_AIRLOCK_TEST_GITHUB_API_BASE")),
 		AirlockTestGoogleTokenURL: strings.TrimSpace(getenv("BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL")),
 		AirlockTestUpstreamCAFile: strings.TrimSpace(getenv("BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE")),
+		JudgeModelURL:             strings.TrimSpace(getenv("BROKER_JUDGE_MODEL_URL")),
+		JudgeModel:                strings.TrimSpace(getenv("BROKER_JUDGE_MODEL")),
+		JudgeModelProtocol:        orDefault(getenv("BROKER_JUDGE_MODEL_PROTOCOL"), "anthropic-messages"),
+		JudgeModelAudience:        strings.TrimSpace(getenv("BROKER_JUDGE_MODEL_AUDIENCE")),
+		JudgeDispatchURL:          strings.TrimSpace(getenv("BROKER_JUDGE_DISPATCH_URL")),
+		JudgeDispatchTokenFile:    strings.TrimSpace(getenv("BROKER_JUDGE_DISPATCH_TOKEN_FILE")),
 		AzureTokenFile:            orDefault(getenv("BROKER_AZURE_TOKEN_FILE"), secrets.DefaultAzureTokenFile),
 		AzureLoginSecret:          getenv("BROKER_AZURE_LOGIN_SECRET"),
 		K8sOIDCIssuer:             getenv("BROKER_K8S_OIDC_ISSUER"),
@@ -1169,21 +1262,25 @@ func Load(getenv func(string) string) (Config, error) {
 		EnvoyURL:                  getenv("BROKER_ENVOY_URL"),
 		TrustedProxyHeader:        getenv("BROKER_TRUSTED_PROXY_HEADER"),
 	}
-	// The airlock's test-only settings, each read whatever the rules file says, since the two
-	// minter bases are read with no airlock at all. cmd/broker refuses every one of them on a
-	// production start; what is refused here is a value the broker could not act on.
-	var airlockTestErr error
-	if cfg.AirlockTestDialAllow, airlockTestErr = parseAirlockTestDialAllow(getenv("BROKER_AIRLOCK_TEST_DIAL_ALLOW")); airlockTestErr != nil {
-		return Config{}, airlockTestErr
+	// The local stack's test-only settings, the airlock's and the judge's: each is read
+	// whatever the rules file says, since the two minter bases are read with no airlock at all.
+	// cmd/broker refuses every one of them on a production start; what is refused here is a
+	// value the broker could not act on.
+	var testSwitchErr error
+	if cfg.AirlockTestDialAllow, testSwitchErr = parseAirlockTestDialAllow(getenv("BROKER_AIRLOCK_TEST_DIAL_ALLOW")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
 	}
-	if cfg.AirlockTestResolve, airlockTestErr = parseAirlockTestResolve(getenv("BROKER_AIRLOCK_TEST_RESOLVE")); airlockTestErr != nil {
-		return Config{}, airlockTestErr
+	if cfg.AirlockTestResolve, testSwitchErr = parseAirlockTestResolve(getenv("BROKER_AIRLOCK_TEST_RESOLVE")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
 	}
-	if cfg.AirlockTestKeepValues, airlockTestErr = airlockTestSwitch("BROKER_AIRLOCK_TEST_KEEP_VALUES", getenv("BROKER_AIRLOCK_TEST_KEEP_VALUES")); airlockTestErr != nil {
-		return Config{}, airlockTestErr
+	if cfg.AirlockTestKeepValues, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_KEEP_VALUES", getenv("BROKER_AIRLOCK_TEST_KEEP_VALUES")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
 	}
-	if cfg.AirlockTestNoKind, airlockTestErr = airlockTestSwitch("BROKER_AIRLOCK_TEST_NO_KIND", getenv("BROKER_AIRLOCK_TEST_NO_KIND")); airlockTestErr != nil {
-		return Config{}, airlockTestErr
+	if cfg.AirlockTestNoKind, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_NO_KIND", getenv("BROKER_AIRLOCK_TEST_NO_KIND")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
+	}
+	if cfg.JudgeTestSkipChecks, testSwitchErr = testOnlySwitch("BROKER_JUDGE_TEST_SKIP_CHECKS", getenv("BROKER_JUDGE_TEST_SKIP_CHECKS")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
 	}
 	if cfg.AzureLoginSecret != "" {
 		if _, err := policy.NameToSlug(cfg.AzureLoginSecret); err != nil {
@@ -1254,6 +1351,50 @@ func Load(getenv func(string) string) (Config, error) {
 			return Config{}, err
 		}
 	}
+	// The judge's five settings are all-or-none, as the sign-in client's four are: with none of
+	// them set the broker has no judge and every human-tier request waits for a person, and
+	// with some of them set the start is refused naming the ones missing, since a judge given
+	// four of the five would decide nothing and say so one request at a time.
+	//
+	// BROKER_JUDGE_MODEL_PROTOCOL has a default, so it is never one of the missing ones; it is
+	// still counted as naming a judge, so a deployment that sets it alone is refused rather
+	// than read as one that meant no judge. On its own it configures nothing — it says which
+	// shape an endpoint that was never named speaks — and that is the same mistake as the four
+	// of five above, which the broker refuses rather than runs past.
+	//
+	// One value per JudgeSettings entry, read in that order, so the missing ones are named in
+	// the order every message naming them uses and one list is walked rather than two that
+	// could part.
+	judgeValues := []string{cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelAudience, cfg.JudgeDispatchURL, cfg.JudgeDispatchTokenFile}
+	var judgeMissing []string
+	for i, setting := range JudgeSettings {
+		if judgeValues[i] == "" {
+			judgeMissing = append(judgeMissing, setting)
+		}
+	}
+	switch {
+	case len(judgeMissing) == len(JudgeSettings) && getenv(judgeModelProtocolSetting) == "":
+		// No judge, which is every deployment until one is configured.
+	case len(judgeMissing) > 0:
+		return Config{}, fmt.Errorf("the broker's model judge needs %s; missing %s",
+			strings.Join(JudgeSettings, ", "), strings.Join(judgeMissing, ", "))
+	default:
+		// The two URLs held to their form, as BROKER_MACHINE_LOGIN_URL and the proxy's are: a
+		// value with no scheme or no host is one no call could be made to, and a judge that
+		// boots and then fails every call decides nothing while looking configured.
+		for _, u := range []struct{ setting, value string }{
+			{judgeModelURLSetting, cfg.JudgeModelURL},
+			{judgeDispatchURLSetting, cfg.JudgeDispatchURL},
+		} {
+			if err := httpURLSetting(u.setting, u.value); err != nil {
+				return Config{}, err
+			}
+		}
+		if !slices.Contains(judgeModelProtocols, cfg.JudgeModelProtocol) {
+			return Config{}, fmt.Errorf("%s must be one of %s, got %q",
+				judgeModelProtocolSetting, strings.Join(judgeModelProtocols, ", "), cfg.JudgeModelProtocol)
+		}
+	}
 	switch cfg.SecretsStore {
 	case secrets.StoreAWS:
 		if !strings.HasSuffix(cfg.SecretsPrefix, "/") || strings.HasPrefix(cfg.SecretsPrefix, "/") || strings.ContainsFunc(cfg.SecretsPrefix, unicode.IsSpace) {
@@ -1274,25 +1415,17 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	for _, entry := range services {
-		if cfg.ServicesByAccount == nil {
-			cfg.ServicesByAccount = map[string]string{}
-		}
-		cfg.ServicesByAccount[entry.subject] = entry.service
-	}
+	cfg.ServicesByAccount = servicesByAccount(services)
 	logins, err := parseServiceAccounts("BROKER_SERVICE_LOGINS", getenv("BROKER_SERVICE_LOGINS"))
 	if err != nil {
 		return Config{}, err
 	}
-	for _, entry := range logins {
-		if name, bound := cfg.ServicesByAccount[entry.subject]; bound {
-			return Config{}, fmt.Errorf("BROKER_SERVICE_LOGINS names %s, the account BROKER_SERVICES binds for %q's pods, got %q: every such pod holds a token for it and would log in as %s; log the service in with an account of its own that no pod it enrolls runs as", entry.subject, name, entry.text, entry.service)
-		}
-		if cfg.ServiceLogins == nil {
-			cfg.ServiceLogins = map[string]string{}
-		}
-		cfg.ServiceLogins[entry.subject] = entry.service
-	}
+	// An account BROKER_SERVICES already binds may be listed here too, which is a pod of that
+	// service's own account logging the service in with its own projected token and enrolling
+	// itself (agent-secrets enroll --pod). What narrows such a login to one pod is
+	// enroll.Service.podUnderTokenLogin rather than this loader, as the ServiceLogins field
+	// doc says.
+	cfg.ServiceLogins = servicesByAccount(logins)
 	if cfg.ServiceAccountSecrets, err = parseServiceAccountSecrets("BROKER_SERVICE_ACCOUNT_SECRETS", getenv("BROKER_SERVICE_ACCOUNT_SECRETS")); err != nil {
 		return Config{}, err
 	}

@@ -1,6 +1,7 @@
 import { resetFakeEnvoy } from "./agents";
 import { forgetSessions, quiesceDocuments, resetLogins } from "./api";
 import { resetFakeBroker } from "./fake-broker-helpers";
+import { resetFakeEmbedder } from "./fake-embedder-helpers";
 import { resetFakeGithub } from "./fake-github-helpers";
 import { measured } from "./measure";
 import { sql } from "./psql";
@@ -24,12 +25,14 @@ const tables = [
   "delivery_runs",
   "delivery_pull_requests",
   // pull_request_heads and check_results are reached by the cascade below (both carry a
-  // foreign key into issues); default_branch_commits and branch_commits carry none, so they
-  // are named here.
-  "default_branch_commits",
+  // foreign key into issues); branch_commits carries none, so it is named here.
   "branch_commits",
   "user_issue_state",
   "user_agent_state",
+  // The agents a person pinned (migration 20261106215223), a table of its own that no foreign
+  // key reaches: a pin a row leaves behind would order the next row's Agents list and put its
+  // sessions in the next row's sidebar.
+  "user_agent_pin",
   "user_agent_read",
   "user_agent_reply_read",
   "user_agent_thread_dismissed",
@@ -38,6 +41,7 @@ const tables = [
   "refs",
   "messages",
   "broadcasts",
+  "comment_fallback_copies",
   "comments",
   "asks",
   "doc_checkpoints",
@@ -52,7 +56,9 @@ const tables = [
   "user_sessions",
 ];
 
-function sqlLiteral(value: string): string {
+/** `value` as a SQL string literal, with every quote of its own doubled. psql interpolates no
+ *  variable inside a quoted literal, so text reaches Postgres as written. */
+export function sqlLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
@@ -246,10 +252,12 @@ async function resetDatabaseOnce(): Promise<void> {
  * It also clears the fake Envoy, whose
  * process-local subscriptions outlive an emptied database and otherwise match recycled issue keys,
  * the fake broker, whose seeded credential requests would otherwise reach every later row's
- * Inbox, and the fake GitHub, whose installations would otherwise let a later row's reconcile
- * succeed against repositories it never seeded; those resets wait on nothing in the database, so
- * they run beside the quiesce and delete, which keep their order. All settle before this returns,
- * a failed one included, so a reset that fails never leaves another running into the next test's.
+ * Inbox, the fake GitHub, whose installations would otherwise let a later row's reconcile
+ * succeed against repositories it never seeded, and the fake embedder, whose counted calls and
+ * seeded markers belong to the row that made them; those resets wait on nothing in the database,
+ * so they run beside the quiesce and delete, which keep their order. All settle before this
+ * returns, a failed one included, so a reset that fails never leaves another running into the
+ * next test's.
  * The delete takes `user_sessions` with it and the inserts above put alice's and bob's rows back
  * at generation 0, so their cookies authenticate again and e2e/api.ts keeps those two
  * (`forgetSessions`, which also forgets every other login's and every browser sign-in since the
@@ -257,7 +265,7 @@ async function resetDatabaseOnce(): Promise<void> {
  * (e2e/users.ts).
  *
  * The two sides are the timing fixture's parts `reset-sql` and `reset-fakes` (e2e/measure.ts):
- * the three fakes are one part, settled together so one failing still lets the others finish.
+ * the fakes are one part, settled together so one failing still lets the others finish.
  */
 export async function resetDatabase(): Promise<void> {
   const resets = await Promise.allSettled([
@@ -267,6 +275,7 @@ export async function resetDatabase(): Promise<void> {
         resetFakeEnvoy(),
         resetFakeBroker(),
         resetFakeGithub(),
+        resetFakeEmbedder(),
       ]);
       for (const fake of fakes) if (fake.status === "rejected") throw fake.reason;
     }),

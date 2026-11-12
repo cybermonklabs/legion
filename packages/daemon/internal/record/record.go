@@ -251,6 +251,11 @@ const (
 	// AnsweredByVersion is a spec version newer than the one waited on, which hands the approval
 	// request back to the architect.
 	AnsweredByVersion Answer = "version"
+	// AnsweredByDecline is a person's decline to answer an ask of the root, the one the wait
+	// names or any other: they closed the question with no answer, so nobody will answer it, and
+	// the detail is that ask. The resume prints what Dispatch wrote for the asking agent and the
+	// person's own note, kept on the ask's mirror row (RootAsk.Decline).
+	AnsweredByDecline Answer = "declined"
 )
 
 // ParkedDecision is a person's decision on a tree nobody in it could hear, which the daemon
@@ -295,7 +300,8 @@ type DeliveryHold struct {
 func (i Issue) AwaitingPerson() bool { return i.Phase == phase.AwaitingPerson && i.Awaiting != nil }
 
 // Answered says whether the issue is a root a person's answer released from awaiting_person, which
-// waits for its slot.
+// waits in the line for the resume of its architect, on the row it held through the wait
+// (KeepsSlot).
 func (i Issue) Answered() bool { return i.AwaitingPerson() && i.Awaiting.AnsweredAt != nil }
 
 // EventMark places a Dispatch event in its issue's event log: its sequence on the issue (Seq) and
@@ -398,7 +404,26 @@ type PhaseRow struct {
 	// compares Rounds - ConflictRounds with the cap, so such a round costs the issue nothing,
 	// whichever fact made the move (workflow's recordRound).
 	ConflictRounds int
-	Verdict        string
+	// BackwardMoves is how many times the issue moved back by each kind of move, keyed
+	// "<from>-<to>" as phase.BackwardPairs() writes the pairs: "testing-implementing",
+	// "reviewing-implementing", "awaiting_merge-implementing" and the rest. Like Rounds it is
+	// counted on the implementer's row alone (workflow's recordRound), and the two count the same
+	// moves to different ends: Rounds keeps its meaning exactly, rising on every backward move,
+	// because a phase completion's idempotency key is built from it (api/handoff.go's
+	// handoffPosition), while this map says what kind each move was, which is what a hook reads.
+	// A conflict round is the one move the two part company on: it raises Rounds and
+	// ConflictRounds and no pair, since nobody sent the work back, so no hook fires for it.
+	// The map starts empty when the migration lands and is never filled in from the past, so an
+	// issue already in flight reads counts that add up to less than its Rounds.
+	BackwardMoves map[string]int
+	// CapTold is the review_round_cap value this row last posted the cap's message and its
+	// pr-blocked notice for, 0 for a row that has posted none. It is what makes that telling go
+	// once for each value of the cap rather than on every round after the first that reaches it:
+	// the round that tells writes the cap it read here, and a later round compares the two.
+	// A new generation clears it (ClearGeneration), so a tree sent back to the start tells again
+	// from its own first crossing.
+	CapTold int
+	Verdict string
 	// Summary is what the role reported with its completion. The merger's is its READY packet,
 	// which the daemon posts when the issue reaches awaiting_merge.
 	Summary string
@@ -515,13 +540,11 @@ type PullRequest struct {
 	// settlement comes to is the required set's to say (classify.HeadVerdict).
 	CheckedHead string
 	// Failing and Cancelled are the checks the settlement names as failed and as cancelled.
-	Failing         []string
-	Cancelled       []string
-	FixAttempts     int
-	BlockedAttempts int
-	CheckRuns       []AttemptRun
-	Generation      int64
-	Snapshot        string
+	Failing    []string
+	Cancelled  []string
+	CheckRuns  []AttemptRun
+	Generation int64
+	Snapshot   string
 	// Pushes are the branch's pushes the daemon still reads: every push whose own move, its two
 	// heads, the record has not made (Moves) - a push still on its way from the head, a link of a
 	// chain still to complete, or one that returns the branch to a commit it held before
@@ -535,12 +558,6 @@ type PullRequest struct {
 	// and otherwise queued on the move (Move.Repeats). A push for a move not made yet - one that
 	// returns the branch to a commit it held before, say - is not spent.
 	Moves []Move
-	// HeadCounted is the head the fix-attempt count last counted, a push onto a red verdict, kept
-	// across every head pushed on top of it until one is pushed onto a green verdict, or onto a
-	// settled head whose base branch requires no check and no workflow
-	// (classify.AdvancePullRequestHead); empty when no such attempt stands. The fix-attempt cap holds
-	// a red within that attempt (classify.FixAttemptCapHolds).
-	HeadCounted string
 	// Run is the head run: the pull request's judgement as it stood before the first head still
 	// waiting for a push of its move, and every head, settlement, required read, clearing of the
 	// head the required workflows were read at, and reopen applied since, replayed at each step and
@@ -548,7 +565,7 @@ type PullRequest struct {
 	// its bound with none left waiting.
 	Run *HeadRun
 	// PlannedRed is whether the newest head was the review App's (the tester's red tests): a red on
-	// it is planned, so the next head is not a fix attempt.
+	// it is planned, so it sends no work back (workflow's decideChecks).
 	PlannedRed bool
 	// Required is the checks the pull request's base branch requires (its rulesets' required status
 	// checks and its branch protection's), as the daemon last read them from GitHub
@@ -630,13 +647,10 @@ type Named struct {
 	At     time.Time `json:"at,omitzero"`
 }
 
-// Judgement is the part of a pull request a head run replays: its head, its fix-attempt count and
-// marks, its planned mark, its CI settlement, what its base branch requires, and the moves it has
-// made. BlockedAttempts is what was reported, and is not replayed.
+// Judgement is the part of a pull request a head run replays: its head, its planned mark, its CI
+// settlement, what its base branch requires, and the moves it has made.
 type Judgement struct {
 	HeadSHA       string             `json:"headSha"`
-	FixAttempts   int                `json:"fixAttempts"`
-	HeadCounted   string             `json:"headCounted,omitempty"`
 	PlannedRed    bool               `json:"plannedRed,omitempty"`
 	CheckedHead   string             `json:"checkedHead,omitempty"`
 	Failing       []string           `json:"failing"`
@@ -985,6 +999,14 @@ func SpecGate(gates map[DesignStep]DesignGate) *DesignGate {
 // gate's document: the mirror needs no binding to know it. PersonAnswerSeq is the newest answer of
 // the ask by a person, and PersonSeq the newest other act of a person that would answer a root
 // waiting on that person (workflow's personAct); PersonActSeq is the newest of the two that does.
+//
+// Decline is a person's decline to answer the ask, nil where nobody declined it: the resume
+// prints Dispatch's own words and the person's note from it (workflow's resumeTask), so the
+// daemon keeps no copy of those words and the two packages cannot drift apart. A decline is a
+// fact of the ask, kept whatever order its events arrive in, and nothing takes it off the row:
+// the question was closed with no answer, and no later event of that ask says otherwise, since
+// Dispatch refuses every transition of a resolved ask and its settlement restores a retracted
+// ask alone.
 type RootAsk struct {
 	Issue           string
 	Ask             string
@@ -999,6 +1021,19 @@ type RootAsk struct {
 	ByTree          bool
 	PersonSeq       int64
 	PersonAnswerSeq int64
+	Decline         *AskDecline
+}
+
+// AskDecline is a person's decline to answer an ask, which Dispatch records as the resolution
+// kind `declined`: Note is the person's own note ("" where they wrote none) and Words the
+// sentences Dispatch wrote beside it for the asking agent (Dispatch's model.DeclineDispatchWords),
+// each as Dispatch recorded it. The two are one value because they are one act: a reader asks
+// whether a decline is there, not whether three fields agree. It travels whole, from the
+// Dispatch event (intake's DispatchAskClosed) through the mirror row (RootAsk.Decline) to the
+// task the root's architect resumes with.
+type AskDecline struct {
+	Note  string
+	Words string
 }
 
 // The ask kinds the mirror knows (RootAsk.Kind): an ordinary question, and the approval request
@@ -1322,12 +1357,14 @@ type Store interface {
 	// (PullRequestReview.LegionSession).
 	ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Token) (string, error)
 	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
-	// request, the fix-attempt counts and planned mark of a still-open one (the next generation runs on the same
+	// request, the planned mark of a still-open one (the next generation runs on the same
 	// branch and pull request), its design gate, each role's handoff, review rounds, verdict and
 	// summary, and a READY the gate refused. Each role keeps its claim and its last handoff, so a
-	// commit an earlier generation reported is never new again.
-	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string) error
-	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string) error
+	// commit an earlier generation reported is never new again. An issue whose gate rows it
+	// deletes has the empty set of design-gate documents queued for it, due at now, since the set
+	// Dispatch holds for that issue is the one those rows recorded.
+	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error
+	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error
 	// GatesOf is every design gate issue holds, by step: one entry for each step the issue's
 	// architect has registered. An issue with no gate at all gives an empty map, and a step with
 	// no row has no entry.
@@ -1336,6 +1373,11 @@ type Store interface {
 	// gates one look over many trees judges from (ReadLineFacts), rather than a read per tree
 	// under the fact lock. An issue with no gate has no entry.
 	Gates(ctx context.Context, tx pgx.Tx, issues []string) (map[string]map[DesignStep]DesignGate, error)
+	// GatedIssues is the key of each issue of project that holds at least one design gate and that
+	// Dispatch does not show as done, in key order: the issues a pass over every recorded gate
+	// publishes (the daemon's boot publication), read in one query rather than one per record. An
+	// issue with no gate, and one Dispatch shows done, is left out.
+	GatedIssues(ctx context.Context, tx pgx.Tx, project string) ([]string, error)
 	// GatesForArtifact is every gate registered on artifactID, in issue order: the document owner's
 	// gate and each copy a hand-over carried to a child of its tree. Each row carries its own step.
 	GatesForArtifact(ctx context.Context, tx pgx.Tx, artifactID string) ([]DesignGate, error)
@@ -1422,8 +1464,11 @@ type Store interface {
 	ControllerRegistered(ctx context.Context, tx pgx.Tx, project string) (bool, error)
 	// ControllerNoticePending says whether the outbox of the Dispatch project key project still
 	// holds an unpublished controller notice of kind, so a wake is never queued behind an
-	// identical one.
-	ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind) (bool, error)
+	// identical one. Issue "" reads every issue of the project, which is what a wake about the
+	// project alone asks; an issue, and with it a role, narrow the read to that one claim's own
+	// rows, for a kind whose notice stands per claim (NoticePerClaim). A role of "" narrows
+	// nothing further, so an issue alone reads every role of that issue.
+	ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issue string, role claim.Role) (bool, error)
 
 	// DisarmPending says whether outbox still holds an unfinished auto_merge_disable row of issue:
 	// a finished row is deleted, so any row of the kind is one still to run or retrying.
@@ -1442,6 +1487,14 @@ type Store interface {
 	// (20261106041346_gated_steps_publish), so a restart queues no second row, and a row that
 	// already says this boot's list is left as it is.
 	EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publish GatedStepsPublish, nextAt time.Time) error
+	// EnqueueDesignGates writes the one design_gates_publish row of publish's issue, due at
+	// nextAt, with the issue key as its issue. The row the outbox holds is replaced rather than
+	// left standing: every change to a gate of that issue writes the whole set again, and a
+	// pending row carries the set of the change before this one, which is the set Dispatch would
+	// be shown. The table holds one such row per issue (20261110235320_design_gates_publish), so
+	// a run of changes queues no second row, a row that already says this set is left as it is,
+	// and a replacement takes the row from a lane holding it, whose send carries the older set.
+	EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish DesignGatesPublish, nextAt time.Time) error
 	Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// EnqueueID enqueues row as Enqueue does and returns its id, for a row that claims what it names
 	// (ClaimKeptDecisions). It refuses a ready_merge row, whose insert may update another.
@@ -1564,6 +1617,10 @@ type Store interface {
 	// RoleRuns is RoleRun for a bounded batch, keyed by token. Each batch reads its queued starts
 	// and claims from the caller's transaction snapshot rather than one query pair per role.
 	RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (map[claim.Token]RoleRun, error)
+	// RoleClaims is the claims of tokens alone, keyed by token: RoleRuns' second statement
+	// without its first, for a caller that judges a run by its claim and reads no queued start
+	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.
+	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
 }
 
 // RoleRunKey identifies one role's run of an issue generation.
@@ -1590,14 +1647,23 @@ type QueuedSupervise struct {
 }
 
 // RoleClaim is a claim as RoleRun reads it: its state, the tree it is in, who suspended it while it
-// is suspended, the newest start the outbox ran against it (last_start_row), and the task it holds,
-// nil for none, with the task's generation, phase and confirmation.
+// is suspended, the newest start the outbox ran against it (last_start_row), the write mark its
+// retirement took (retired_at_write_mark), and the task it holds, nil for none, with the task's
+// generation, phase and confirmation.
 type RoleClaim struct {
 	State        supervise.ClaimState
 	Tree         string
 	SuspendedBy  supervise.SuspendSource
 	LastStartRow int64
-	Pending      *supervise.Delivery
+	// RetiredAtWriteMark is the number outbox_write_mark_seq handed the write that recorded this
+	// claim's retirement (store's putClaim, whose doc holds what that sequence orders and what it
+	// does not), and 0 for a claim that has never retired and for one an earlier release retired,
+	// which recorded the moment nowhere. What it is for: its one reader weighs the write mark of a
+	// start row the issue owes against it, to tell a row the workflow wrote after the stop from one
+	// already written when the stop was recorded (admit's stopOutlivedStart). It says nothing about
+	// a claim that is not retired now, which is the only state that reader looks at.
+	RetiredAtWriteMark int64
+	Pending            *supervise.Delivery
 }
 
 // TreeLingers says whether tree lingers after its close: its root is recorded with a linger
@@ -1635,6 +1701,19 @@ func (i Issue) Lingers() bool { return i.LingerUntil != nil }
 // linger only, not in the tree's next run nor in a later linger of it.
 func (i Issue) LingersAt(generation uint64) bool {
 	return i.Lingers() && i.Generation == generation
+}
+
+// Readmittable says whether a todo on this record starts a new generation of its tree: it is a
+// root, and its tree lingers after its sign-off or was closed. A child's done is only the
+// child's.
+//
+// It is the one definition of that question, because two readers decide opposite ways on it and
+// neither may fire where the other does: admission re-admits such a todo at a new generation
+// (admit's readmit), and the workflow releases a held root's hold on a todo that is not this one
+// (workflow's releaseHeldRoot, whose branch reads `!issue.Readmittable()`). A case added to one
+// expression and not to the other would let one todo do both.
+func (i Issue) Readmittable() bool {
+	return claim.IsTreeRoot(i.Key, i.Tree) && (i.Lingers() || i.Phase == phase.Done)
 }
 
 // Standing is where the issue stands for the gate every path that acts on an idle or released

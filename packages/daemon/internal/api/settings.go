@@ -12,7 +12,7 @@ import (
 )
 
 // Settings is the daemon's resolved legion.yaml as `GET /legion/v1/state` carries it (contract
-// 35): the values the daemon runs on, defaults included (a file that omits `max_fix_attempts`
+// 35): the values the daemon runs on, defaults included (a file that omits `review_round_cap`
 // answers 3), keyed as the file is. The route is unauthenticated, so the audience is every pod of
 // the deployment and anything else that reaches the daemon's API port; the block therefore leaves
 // out every credential, every source of one (a secretsd or Secret key, a key command) and every
@@ -90,7 +90,6 @@ type Settings struct {
 	PodUpdateMaxOpenRounds   *int                    `json:"pod_update_max_open_rounds"`
 	PodUpdateRoundsPerMinute *int                    `json:"pod_update_rounds_per_minute"`
 	ReviewRoundCap           int                     `json:"review_round_cap"`
-	MaxFixAttempts           int                     `json:"max_fix_attempts"`
 	Controller               config.ControllerLaunch `json:"controller"`
 	Capabilities             CapabilitiesSettings    `json:"capabilities"`
 	// WorkerBackends is `worker_backends`, the roles that run on a backend other than Oh My Pi by
@@ -110,6 +109,10 @@ type Settings struct {
 	// repository wherever a name is compared, in configured order, `[]` while the file
 	// configures none.
 	RepositoryRenames []RepositoryRenameSettings `json:"repository_renames"`
+	// Hooks is `hooks`, every hook the daemon runs, in the order the file names them, and the
+	// one default hook for a file that names no key. It carries no hook's words: see
+	// HookSettings.
+	Hooks []HookSettings `json:"hooks"`
 }
 
 // RuntimeSettings is `runtime`: its name, the kubernetes block under that runtime alone, and the
@@ -311,6 +314,24 @@ type CapabilitiesSettings struct {
 	Decided map[string]string `json:"decided"`
 }
 
+// HookSettings is one `hooks` entry as the state shows it: the hook's name, the event it stands
+// on, the moves back it selects, how many of them fire it, the roles its words are put in front
+// of, and the path those words are read from. The words themselves are never shown — neither the
+// `prompt` a hook writes inline nor the text of the file `prompt_file` names — because this route
+// authenticates nobody and serves the path of `instructions` rather than its text.
+type HookSettings struct {
+	Name string `json:"name"`
+	On   string `json:"on"`
+	// Moves are the moves back the hook selects, each written "<from>-<to>"; a hook that selects
+	// every move back carries the one-element list `["any"]`, the word the operator writes for it
+	// (config's readHookMoves).
+	Moves []string `json:"moves"`
+	Every int      `json:"every"`
+	Roles []string `json:"roles"`
+	// PromptFile is absent for a hook whose words the file writes inline.
+	PromptFile string `json:"prompt_file,omitempty"`
+}
+
 // SettingsOf is cfg as the state shows it: every setting of the resolved file the audience of an
 // unauthenticated route may read, and no credential, credential source or credential file path
 // (Settings). Of the URLs it emits, the four address keys ride endpointOf and a plugin source in
@@ -358,12 +379,12 @@ func SettingsOf(cfg config.Config) Settings {
 		PodUpdateMaxOpenRounds:                  cfg.PodUpdateMaxOpenRounds,
 		PodUpdateRoundsPerMinute:                cfg.PodUpdateRoundsPerMinute,
 		ReviewRoundCap:                          cfg.ReviewRoundCap,
-		MaxFixAttempts:                          cfg.MaxFixAttempts,
 		Controller:                              cfg.ControllerLaunch,
 		Capabilities:                            CapabilitiesSettings{Decided: make(map[string]string, len(cfg.Capabilities.Decided))},
 		WorkerBackends:                          make(map[string]string, len(cfg.WorkerBackends)),
 		RoleConfigFiles:                         make(map[string][]string, len(cfg.RoleConfigFiles)),
 		RepositoryRenames:                       repositoryRenamesOf(cfg.RepositoryRenames),
+		Hooks:                                   hooksSettingsOf(cfg.Hooks),
 	}
 	for i, key := range cfg.ProviderKeys {
 		settings.ProviderKeys[i] = key.Env
@@ -417,6 +438,34 @@ func repositoryRenamesOf(renames ghrepo.Renames) []RepositoryRenameSettings {
 	settings := make([]RepositoryRenameSettings, len(pairs))
 	for i, pair := range pairs {
 		settings[i] = RepositoryRenameSettings{From: pair.From.String(), To: pair.To.String()}
+	}
+	return settings
+}
+
+// hooksSettingsOf is the hooks the daemon runs as the state shows them, in configured order and
+// `[]` for a deployment that runs none. A hook that names no move back selects every one, which
+// rides as the one-element list `["any"]`, the word the operator writes for it (config's
+// readHookMoves); the words a hook puts in front of its roles ride never, whichever key carries
+// them (HookSettings).
+func hooksSettingsOf(hooks []config.Hook) []HookSettings {
+	settings := make([]HookSettings, len(hooks))
+	for i, hook := range hooks {
+		moves := stringsOf(hook.Moves)
+		if len(moves) == 0 {
+			moves = []string{"any"}
+		}
+		roles := make([]string, len(hook.Roles))
+		for j, role := range hook.Roles {
+			roles[j] = string(role)
+		}
+		settings[i] = HookSettings{
+			Name:       hook.Name,
+			On:         hook.On,
+			Moves:      moves,
+			Every:      hook.Every,
+			Roles:      roles,
+			PromptFile: hook.PromptFile,
+		}
 	}
 	return settings
 }
