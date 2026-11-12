@@ -494,6 +494,35 @@ func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]Phase
 	return phases, nil
 }
 
+// PhaseEntries reads the entry of every phases row of issues in one statement, keyed by issue
+// and role. The rows of an issue the record holds none of are simply absent, which every reader
+// takes as the entry 0.
+func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]int64, error) {
+	entries := make(map[PhaseRole]int64, len(issues))
+	if len(issues) == 0 {
+		return entries, nil
+	}
+	rows, err := tx.Query(ctx, `select issue, role, entry from phases where issue = any($1)`, issues)
+	if err != nil {
+		return nil, fmt.Errorf("list the phase entries of %d issues: %w", len(issues), err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key PhaseRole
+		var role string
+		var entry int64
+		if err := rows.Scan(&key.Issue, &role, &entry); err != nil {
+			return nil, fmt.Errorf("read a phase entry: %w", err)
+		}
+		key.Role = claim.Role(role)
+		entries[key] = entry
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list the phase entries of %d issues: %w", len(issues), err)
+	}
+	return entries, nil
+}
+
 func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error {
 	var decision []byte
 	if phase.Decision != nil {
