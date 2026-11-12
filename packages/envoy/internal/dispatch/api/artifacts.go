@@ -673,9 +673,23 @@ func (s *server) storeArtifact(
 	// replacement of an approved spec closes its design gate as an edit does, unless the restore
 	// above carried the approval to it. A new document has no review of its own to supersede.
 	var superseded *supersededApproval
+	var moved *movedApprovalRequest
 	if kind == "doc" && !created {
+		// This handler serves the project upload as well (uploadProjectArtifact), and a document
+		// upload is an issue's or a project's, so the route both reads below name is the one the
+		// request came in on: a read that failed is logged where it ran.
+		route := "POST /api/v1/projects/{key}/artifacts"
+		if target.IssueKey != nil {
+			route = "POST /api/v1/issues/{key}/artifacts"
+		}
 		superseded = s.supersededApprovalAdvice(
-			r.Context(), tx, "POST /api/v1/issues/{key}/artifacts", artifactIssueKey(artifact), artifact.ID, version.Number,
+			r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID, version.Number,
+		)
+		// The open approval request this upload's own version took back from the person it was
+		// waiting on, read after the move above and after the restore's carry, so a carry that
+		// answered the request reports nothing. A new document carries no request either.
+		moved = s.movedApprovalRequestAdvice(
+			r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID,
 		)
 	}
 	var advice *writeAdvice
@@ -702,13 +716,20 @@ func (s *server) storeArtifact(
 	if advice != nil {
 		advice.documentBlocks = blocks
 		advice.SupersededApproval = superseded
+		advice.MovedApprovalRequest = moved
 	}
 	responsePayload := artifactUploadResponse{Artifact: artifact, Version: version}
-	if target.IssueKey != nil {
+	// An issue document whose bounded issue-advice read failed leaves advice nil, and the three
+	// document reports with nothing to ride on: they are about the document alone, so they go
+	// out on their own shape here rather than being dropped with the issue state that failed,
+	// which is what withAdvice would do with a nil *writeAdvice. The edit route answers the
+	// same way. A write with nothing at all to report still answers the bare payload, so no
+	// reader is handed an empty advice envelope.
+	if target.IssueKey != nil && advice != nil {
 		WriteJSON(w, http.StatusCreated, withAdvice(responsePayload, advice))
-	} else if blocks != nil || superseded != nil {
+	} else if blocks != nil || superseded != nil || moved != nil {
 		WriteJSON(w, http.StatusCreated, withRawAdvice(responsePayload, documentWriteAdvice{
-			documentBlocks: blocks, SupersededApproval: superseded,
+			documentBlocks: blocks, SupersededApproval: superseded, MovedApprovalRequest: moved,
 		}))
 	} else {
 		WriteJSON(w, http.StatusCreated, responsePayload)
@@ -1189,9 +1210,17 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	// version and any carry it made: a person's approval of a spec is Legion's design gate, and
 	// the writer is the only one who learns in time that this write closed it.
 	var superseded *supersededApproval
+	var moved *movedApprovalRequest
 	if written != nil {
 		superseded = s.supersededApprovalAdvice(
 			r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number,
+		)
+		// The open approval request this edit's own version took back from the person it was
+		// waiting on, read after that version moved it (docs.MoveApprovalAsk) and after any
+		// carry: an edit that stored no version moved nothing, and one whose carry answered the
+		// request leaves it with the person and reports nothing.
+		moved = s.movedApprovalRequestAdvice(
+			r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID,
 		)
 	}
 	// An edit hears about the asks of this issue a person declined to answer only where it added
@@ -1238,12 +1267,13 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	if artifact.IssueKey == nil || advice == nil {
 		WriteJSON(w, http.StatusOK, withRawAdvice(responsePayload, documentWriteAdvice{
-			editBlocks: blocks, SupersededApproval: superseded,
+			editBlocks: blocks, SupersededApproval: superseded, MovedApprovalRequest: moved,
 		}))
 		return
 	}
 	advice.editBlocks = blocks
 	advice.SupersededApproval = superseded
+	advice.MovedApprovalRequest = moved
 	WriteJSON(w, http.StatusOK, withAdvice(responsePayload, advice))
 }
 
@@ -1889,7 +1919,8 @@ func artifactSlug(name string) string {
 // roleSlugs pairs each role a document plays with the slug that names it: the one place the two
 // spellings are written. Everything that asks what part a document plays is built from it —
 // documentRole, which writes the role on a new row, the SQL predicates that hold a row to a role
-// (documentRolePredicate), and documentPlays, which asks the same of a row already read.
+// (documentRolePredicate), documentPlays, which asks the same of a row already read, and
+// documentRoleOf, which names the part one row plays.
 var roleSlugs = map[string]string{
 	model.ArtifactRoleVerification: "verification-md",
 	model.ArtifactRolePlan:         "plan-md",
@@ -1925,6 +1956,23 @@ func documentRole(target artifactTarget, kind, slug string) *string {
 // judge the document in hand — agrees about the same row.
 func documentPlays(artifact model.Artifact, role string) bool {
 	return artifact.Role == role || (artifact.Role == "" && artifact.Slug == roleSlugs[role])
+}
+
+// documentRoleOf is the part a document plays: the role of roleSlugs that documentPlays answers
+// true for, asked of the row as every other reader asks it. A row plays at most one of them - a
+// row that carries a role carries one of them, and a row that carries none falls back to its
+// slug, which the map pairs with a single role - so the order this walks the map in cannot
+// change the answer. Asking documentPlays rather than reading artifacts.role is what gives a row
+// whose role column is still null the role its slug decides, which is the state a rolling deploy
+// leaves behind. A document that plays none of them answers "", which omits the field of a
+// report that carries it (movedApprovalDocument).
+func documentRoleOf(artifact model.Artifact) string {
+	for role := range roleSlugs {
+		if documentPlays(artifact, role) {
+			return role
+		}
+	}
+	return ""
 }
 
 // isSpecDocument reports whether an artifact already read is an issue's spec: the primary
