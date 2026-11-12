@@ -7,6 +7,7 @@ import {
   CannotRunError,
   count,
   counted,
+  noBoundTail,
   num,
   outDirectory,
   readCorpus,
@@ -317,22 +318,6 @@ function bandsOf(cut: StratumCut, cases: readonly CaseRow[]): Map<string, CaseRo
 export interface StratumNames {
   one: string;
   many: string;
-}
-
-/**
- * The sentence an answer ends with where some of its lines hold too few cases to carry a bound:
- * how many of them there are and why they carry none, and nothing at all where every line
- * carries one. `consensus.ts` ends its own answer with this same sentence, over its subsets, so
- * this tail is worded in one place rather than two. `MINIMUM_DECIDED` itself is read wherever a
- * bound is decided, here and there both.
- */
-export function noBoundTail(lines: readonly { bound: number | null }[]): string {
-  const small = lines.filter((line) => line.bound === null).length;
-  if (small === 0) return "";
-  return (
-    ` ${count(small)} of ${count(lines.length)} ${small === 1 ? "holds" : "hold"} fewer than ` +
-    `${MINIMUM_DECIDED} cases and so ${small === 1 ? "carries" : "carry"} no bound.`
-  );
 }
 
 /**

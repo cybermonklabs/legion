@@ -1,7 +1,7 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import type { AskOption, CaseRow, CaseVerdict } from "./build-corpus";
-import type { Interval } from "./stats";
+import { type Interval, MINIMUM_DECIDED } from "./stats";
 
 /**
  * What the approval-eval commands share: a built corpus read back, the rule that reads a verdict
@@ -299,6 +299,22 @@ export function count(value: number): string {
  */
 export function counted(value: number, one: string, several = `${one}s`): string {
   return `${count(value)} ${value === 1 ? one : several}`;
+}
+
+/**
+ * The sentence an answer ends with where some of its lines hold too few cases to carry a bound:
+ * how many of them there are and why they carry none, and nothing at all where every line
+ * carries one. `strata.ts` ends its answer over strata with it and `consensus.ts` ends its
+ * answer over subsets with it, so the wording, and the verb each count takes, are chosen here
+ * once rather than in each command. `MINIMUM_DECIDED` is read wherever a bound is decided.
+ */
+export function noBoundTail(lines: readonly { bound: number | null }[]): string {
+  const small = lines.filter((line) => line.bound === null).length;
+  if (small === 0) return "";
+  return (
+    ` ${count(small)} of ${count(lines.length)} ${small === 1 ? "holds" : "hold"} fewer than ` +
+    `${MINIMUM_DECIDED} cases and so ${small === 1 ? "carries" : "carry"} no bound.`
+  );
 }
 
 /** One markdown table, its columns padded so the text reads as a table too. */

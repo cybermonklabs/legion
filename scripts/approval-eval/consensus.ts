@@ -7,6 +7,7 @@ import {
   CannotRunError,
   CorpusError,
   count,
+  noBoundTail,
   num,
   outDirectory,
   readCorpus,
@@ -22,7 +23,6 @@ import {
   DEFAULT_CONFIDENCE,
   MINIMUM_DECIDED,
 } from "./stats";
-import { noBoundTail } from "./strata";
 
 /**
  * Selective prediction read off agreement across model families, which is the abstention signal
