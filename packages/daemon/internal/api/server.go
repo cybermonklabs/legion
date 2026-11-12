@@ -870,13 +870,13 @@ const recordFieldsContract = 75
 const whyAndLineFieldsContract = 85
 
 // assignmentsContract is the daemon contract that added each issue's experiment assignments to
-// the state (version.go's 87). A plugin before it is served the state without the field: one
+// the state (version.go's 90). A plugin before it is served the state without the field: one
 // built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
 // for a key it does not name, and one built after strips the key instead. The three memory
-// fields keep their own gate at memoryContract beside this one, so a caller at 49 through 86 is
+// fields keep their own gate at memoryContract beside this one, so a caller at 49 through 89 is
 // served the one experiment's answer in the three keys it has read since 49 and no assignments,
 // whatever else its own band gives it, and a caller below 49 neither.
-const assignmentsContract = 87
+const assignmentsContract = 90
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

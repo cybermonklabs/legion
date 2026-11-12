@@ -568,7 +568,7 @@ const legionWakeWaiting = z.object({
   dueAt: timestamp,
 });
 
-/** `api.AssignmentView` — one experiment's answer for an issue (contract 87): the name the
+/** `api.AssignmentView` — one experiment's answer for an issue (contract 90): the name the
  * project declares the experiment under, the arm the draw gave the unit, the mode in force at
  * that draw and the instant of it. `variant` and `mode` are strings and not enums: the arms are
  * the operator's own names, the empty string is a unit settled at no arm, and a mode a later
@@ -661,12 +661,12 @@ const legionIssue = z.object({
    * off draws — is `none`. They are absent together while no `memory` answer applies to the
    * issue — a tree first opened before the setting existed — and while its only `memory` answer
    * records no draw, which is a hand-over settling the tree at no arm and which answered none
-   * of the three before contract 87 as well. Every issue of a tree carries its tree's, since
+   * of the three before contract 90 as well. Every issue of a tree carries its tree's, since
    * the draw is made once, for the unit (contract 49). */
   memoryGroup: z.enum(["memory", "none"]).optional(),
   memoryDrawMode: z.enum(["off", "on", "random"]).optional(),
   memoryDrawnAt: timestamp.optional(),
-  /** Every experiment answer that applies to the issue (contract 87): its tree's, for an
+  /** Every experiment answer that applies to the issue (contract 90): its tree's, for an
    * experiment whose unit is the tree, and its own, for one whose unit is the issue, in the
    * order the project's file declares the experiments — the order
    * `settings.projects.<KEY>.experiments` names them in. `variant` and `mode` ride whatever they
@@ -675,7 +675,7 @@ const legionIssue = z.object({
    * experiment the tree it left held no row for, which is how a reader tells a unit settled at
    * no arm from a unit never drawn, which carries no row at all. The key is absent from an issue
    * no experiment holds an answer for, and from every issue of the body the route serves a
-   * caller before 87, so a reader takes it as optional. */
+   * caller before 90, so a reader takes it as optional. */
   assignments: z.array(legionAssignment).optional(),
 });
 

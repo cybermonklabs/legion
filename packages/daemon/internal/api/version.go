@@ -1175,7 +1175,7 @@ package api
 // than the page holds answers without this path. Read the base's own number and every open
 // pull request again at every forward merge rather than from this line.)
 //
-// 87: INFRA-2566 -- the experiments each issue was drawn for on `GET /legion/v1/state`. Every
+// 90: INFRA-2566 -- the experiments each issue was drawn for on `GET /legion/v1/state`. Every
 // issue record of the state gains `assignments`, the experiment answers that apply to it: one
 // `{experiment, variant, mode, drawnAt}` per answer, in the order the project's file declares
 // the experiments, which is the `memory` block's experiment first and then the order
@@ -1205,17 +1205,17 @@ package api
 // strictly parsed shape changes with it. `packages/contracts/src/legion-api.ts` mirrors
 // `assignments` on `legionIssue`, which is a `z.object`: every answer-side schema of
 // `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788, which
-// that package's own test holds it to, and 87 is later than that change, so a reader before 87
+// that package's own test holds it to, and 90 is later than that change, so a reader before 90
 // parses this state and sees no `assignments` at all rather than refusing it — and every
 // worker's `read_record` parses the state through that schema. The downgrade below is still
 // what serves such a reader: a caller that did not ask for the field is not given it.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 87 is served the state without the field (api's stateFor,
+// contract below 90 is served the state without the field (api's stateFor,
 // withoutAssignments), as a caller below 49 is served it without the memory fields; a caller at
-// 49 through 86 is served the three memory fields and no assignments, whatever else its own
+// 49 through 89 is served the three memory fields and no assignments, whatever else its own
 // band gives it — one at 73 or above is served `claimsToRefresh` too, one at 75 or above the
 // record fields, and one at 85 or above the `why` answer and the waiting line's own fields of
-// the entry above, so a caller at 85 or 86 is served all of those and still no assignments —
+// the entry above, so a caller at 85 to 89 is served all of those and still no assignments —
 // and a caller below 49 neither. The number is held in four files that
 // move together: this one,
 // `packages/contracts/fixtures/daemon-api/version.json`, `packages/pi-legion/package.json` and
@@ -1226,16 +1226,18 @@ package api
 // written and read by nothing, and a later release drops them.
 // (This entry took 60 when the base carried 59, 73 at the forward merge of 2026-11-11 that
 // brought main in, 74 at the push that followed, 86 at the forward merge of 2026-11-12 that
-// brought main in at 9009dc1d, and 87 here. The number a renumber takes is
-// one above every open declaration, never the lowest free one: three branches each took the
-// lowest free number at three moments and collided four ways at 65. The heads were read again
-// at this merge, over the `const DaemonAPIVersion` of main and of every one of the 149 open
-// pull requests of this repository at refs/pull/<n>/head rather than over the file lists
-// GitHub gives, which it cuts short for a pull request of many files: main declares 85, the
-// entry right above this one, and 86 is declared by an open head, #2539, as well as by this
-// branch before the move. Neither carries these shapes, so this change takes 87, which is one
-// above every one of them. Read main's number and every open pull request again at the next
-// merge rather than from this line, as
+// brought main in at 9009dc1d, 87 at the push after it, and 90 here. The number a renumber
+// takes is one above every open declaration, never the lowest free one: three branches each
+// took the lowest free number at three moments and collided four ways at 65. The heads were
+// read again at this push, over the `const DaemonAPIVersion` of main and of every one of the
+// 148 open pull requests of this repository at refs/pull/<n>/head rather than over the file
+// lists GitHub gives, which it cuts short for a pull request of many files: main declares 85,
+// the entry right above this one; #3715 and #3830 declare 86; #3730 declares 88; and #3519 and
+// #3659 declare 89. None of them carries these shapes, so this change takes 90, which is one
+// above every one of them: 88 and 89 are taken, and a number below the highest open
+// declaration is refused by .github/scripts/check-daemon-api-contract.sh the moment one of
+// those heads lands and main itself reaches it. Read main's number and every open pull request
+// again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 87
+const DaemonAPIVersion = 90

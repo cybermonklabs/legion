@@ -64,7 +64,7 @@ func TestTheStateShowsEveryIssueTheExperimentsItRunsUnder(t *testing.T) {
 }
 
 // A caller below the contract that added the assignments is served the state without them, and
-// the three memory fields of contract 49 stand beside it untouched: a pod at 49 through 86 reads
+// the three memory fields of contract 49 stand beside it untouched: a pod at 49 through 89 reads
 // its tree's memory group as it always has and no assignment, and a pod below 49 reads neither.
 // The gates are two, so one does not answer for the other.
 func TestTheStateServedBelowTheAssignmentsContractKeepsTheMemoryFields(t *testing.T) {
@@ -103,7 +103,7 @@ func TestTheStateServedBelowTheAssignmentsContractKeepsTheMemoryFields(t *testin
 // assignmentsContract is the contract whose entry in version.go added the field, and this
 // daemon's own contract is never below it: a caller at this contract is served the assignments.
 func TestTheAssignmentsContractIsTheContractThatAddedTheField(t *testing.T) {
-	const addedAssignments = 87
+	const addedAssignments = 90
 	if assignmentsContract != addedAssignments {
 		t.Fatalf("assignmentsContract = %d, want %d, the contract whose entry in version.go added each issue's experiment assignments",
 			assignmentsContract, addedAssignments)
