@@ -1989,6 +1989,15 @@ func (m *Machine) answerByTurnEnd() {
 // back to waiting with its read mark, since a prompt the agent took and answered without a turn
 // may still have been read.
 //
+// Oh My Pi's busy answer (agentBusy) is the exception here as it is for a send it refused
+// outright (refused) and for a refusal after its acknowledgement (lateRefused): the agent ran no
+// turn for this prompt because it is in a turn of its own, so it is working rather than refusing
+// the work, and the task goes back UNREAD — a prompt answered that way was never read — charged
+// nothing, for that turn's end to send again. Charged, this was the third path's own loop: a
+// relaunch resumes the session, the resume starts a turn, the task that follows meets it, three
+// such answers retire the claim, and the retirement launches again, at a full session resume a
+// cycle (dispatch://INFRA-3103).
+//
 // A result for a delivery the claim no longer holds — retired, or taken back under a new id — is
 // fenced out before this runs (fence).
 //
@@ -2005,6 +2014,11 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamPromptResult)
 	m.awaitingResult = ""
 	if !r.AgentInvoked {
+		if agentBusy(r.Error) {
+			m.log.Warn("supervise: Oh My Pi ran no turn for the prompt; it is in a turn of its own, whose end sends the task again",
+				"delivery", r.DeliveryID, "error", r.Error)
+			return m.takeBackPending(ctx, taskUnread)
+		}
 		why := "acknowledged, and Oh My Pi ran no turn for it"
 		if r.Error != "" {
 			why += ": " + r.Error

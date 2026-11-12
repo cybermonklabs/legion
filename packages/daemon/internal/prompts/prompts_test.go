@@ -652,3 +652,65 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 		}
 	}
 }
+
+// A pod holds every role of one issue in a single container under one memory limit, and its
+// sandbox ends the container rather than the process that filled it, so a heavy run started by
+// any role ends every role's turn. The rule that says so has to reach each role through the
+// prompt Compose builds, not through the part that happens to hold it today: the phase workers
+// read it from the headless mechanics, which is the only part the merger shares with the four
+// roles that compose a core, and both architect shapes read it from the one common part they
+// share, so the root's wording and the sub-architect's cannot drift apart. Composing and reading
+// the parts back is what makes a part dropped from Compose fail here. This shows the text is
+// loaded, never that a role obeys it.
+func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	const (
+		sandboxEndsTheContainer = "where that pod's sandbox ends the whole container rather than the one process that filled it"
+		everyRolesTurn          = "a command that fills the limit ends every role's turn and not only yours"
+		ciWork                  = "A whole module's test run (`go test ./...`), a whole Postgres-backed package, a browser suite run whole, and `make -j` or `lake build` are CI's work on the pull request"
+	)
+	worker := []string{
+		"In an issue pod every role of this issue runs in one container and shares its memory limit",
+		sandboxEndsTheContainer,
+		everyRolesTurn,
+		ciWork,
+		"what a role runs in the pod is what `skill://legion-worker/references/tools.md` names",
+		"Every other heavy run goes where your deployment's instructions say",
+		"instructions that name no such route are a gap you report to the architect that owns your issue",
+		"Each subagent you start runs its commands in this pod, so put these facts in its context",
+	}
+	architect := []string{
+		"Your subagents run their commands in your own issue pod",
+		sandboxEndsTheContainer,
+		everyRolesTurn,
+		ciWork,
+		"what may run in the pod is what `skill://legion-worker/references/tools.md` names",
+		"every other heavy run goes where your deployment's instructions say and instructions that name no such route are a gap to report, and you put these facts in the context of each subagent you start",
+	}
+	for _, tc := range []struct {
+		name   string
+		role   claim.Role
+		isRoot bool
+		rule   []string
+	}{
+		{"root architect", claim.RoleArchitect, true, architect},
+		{"sub-architect", claim.RoleArchitect, false, architect},
+		{"planner", claim.RolePlanner, false, worker},
+		{"implementer", claim.RoleImplementer, false, worker},
+		{"tester", claim.RoleTester, false, worker},
+		{"reviewer", claim.RoleReviewer, false, worker},
+		{"merger", claim.RoleMerger, false, worker},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := foldWhitespace(composedText(t, composer, tc.role, tc.isRoot))
+			for _, phrase := range tc.rule {
+				if !strings.Contains(text, phrase) {
+					t.Errorf("the composed %s prompt omits %q", tc.name, phrase)
+				}
+			}
+		})
+	}
+}
