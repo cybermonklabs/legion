@@ -59,7 +59,9 @@ func (s *server) lockedCommentAllowingClosed(ctx context.Context, tx pgx.Tx, id 
 // (400 ACTOR_KIND), and a session is not the author of the comment its owner wrote in a
 // browser (403 NOT_AUTHOR). Every other credential that proves no session - the deployment's
 // shared token, a pod's service-account token - holds no person scope and keeps that refusal.
-// The ask reword reads the two the same way (editAsk, asks.go).
+// The ask reword reaches the person along its own path: editAsk resolves the actor with
+// requireActor and resolves the person beside it, and falls back to that person only where the
+// session it resolved is not the ask's author (asks.go).
 //
 // The person's act names the agent beside them, from `?session=` (actingPerson). The body
 // names no writer at all in that arm, so actSessionFromBody would have nothing to read.
@@ -72,11 +74,10 @@ func (s *server) correctionActor(w http.ResponseWriter, r *http.Request, supplie
 		return model.Actor{}, false
 	}
 	// The session the credential proves, and a body that names a writer at all: the two
-	// bearerSessionActor reads, in the shape it reads them, so a body naming anything but the
-	// session it acts as is answered there and not silently taken as its owner's own write.
-	provesSession := caller.Kind == "session" && caller.ID != ""
-	namesWriter := supplied != nil && (strings.TrimSpace(supplied.ID) != "" || strings.TrimSpace(supplied.Kind) != "")
-	if !provesSession && !namesWriter && caller.Credential.Holds(model.ScopePerson) {
+	// bearerSessionActor reads, through the predicates it reads them with (server.go), so a
+	// body naming anything but the session it acts as is answered there and not silently taken
+	// as its owner's own write.
+	if !credentialProvesSession(caller) && !actorNamesWriter(supplied) && caller.Credential.Holds(model.ScopePerson) {
 		return s.actingPerson(w, r)
 	}
 	return s.requireActor(w, r, supplied)

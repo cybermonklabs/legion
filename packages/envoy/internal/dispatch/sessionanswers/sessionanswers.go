@@ -207,25 +207,25 @@ func scan(row pgx.Row, session string) (model.SessionAnswer, error) {
 	var (
 		item                                                model.SessionAnswer
 		author, answer, deletedBy                           []byte
+		deletedAt                                           *time.Time
 		body, dispatchWords, askID, askQuestion             *string
 		issueKey, issueTitle, docProject, docSlug, docName  *string
 		mentioned, inAskThread, inCommentThread, onDocument bool
 		repliesToSession                                    bool
 	)
 	if err := row.Scan(
-		&item.Kind, &item.ID, &item.At, &item.EditedAt, &item.DeletedAt, &deletedBy,
+		&item.Kind, &item.ID, &item.At, &item.EditedAt, &deletedAt, &deletedBy,
 		&author, &body, &dispatchWords, &answer, &item.Replaced,
 		&askID, &askQuestion, &issueKey, &issueTitle, &docProject, &docSlug, &docName,
 		&mentioned, &inAskThread, &inCommentThread, &onDocument, &repliesToSession,
 	); err != nil {
 		return model.SessionAnswer{}, err
 	}
-	if deletedBy != nil {
-		var actor model.Actor
-		if err := json.Unmarshal(deletedBy, &actor); err != nil {
-			return model.SessionAnswer{}, fmt.Errorf("decode the actor that deleted %s %s: %w", item.Kind, item.ID, err)
-		}
-		item.DeletedBy = &actor
+	// The mark of a deleted post, as every other read of one carries it: the time in UTC and
+	// the actor that deleted it, from the one decode that stands behind them all.
+	var err error
+	if item.DeletedAt, item.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+		return model.SessionAnswer{}, fmt.Errorf("%s %s: %w", item.Kind, item.ID, err)
 	}
 	switch item.Kind {
 	case model.SessionAnswerKindAnswer:
@@ -285,10 +285,6 @@ func scan(row pgx.Row, session string) (model.SessionAnswer, error) {
 	if item.EditedAt != nil {
 		edited := item.EditedAt.UTC()
 		item.EditedAt = &edited
-	}
-	if item.DeletedAt != nil {
-		deleted := item.DeletedAt.UTC()
-		item.DeletedAt = &deleted
 	}
 	if askID != nil {
 		item.Ask = &model.SessionAnswerAsk{ID: *askID, Question: *askQuestion}
