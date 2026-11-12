@@ -1,4 +1,4 @@
-import { queryOptions, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 
@@ -115,25 +115,21 @@ export function ArtifactDocument({
       : { artifact: owner.artifactId }
   );
   const comments = useQuery({
-    ...queryOptions({
-      queryKey: commentsKey,
-      queryFn: () =>
-        owner.kind === "issue"
-          ? api.listComments(owner.key, artifact.id)
-          : api.listArtifactComments(owner.artifactId),
-    }),
+    queryKey: commentsKey,
+    queryFn: () =>
+      owner.kind === "issue"
+        ? api.listComments(owner.key, artifact.id)
+        : api.listArtifactComments(owner.artifactId),
     enabled: commentId !== undefined,
   });
   const ask = useQuery({
-    ...queryOptions({
-      queryKey: ["ask", askRead],
-      queryFn: () => {
-        if (askRead === undefined) {
-          throw new Error("Selected ask query requires an ask id.");
-        }
-        return api.getAsk(askRead);
-      },
-    }),
+    queryKey: ["ask", askRead],
+    queryFn: () => {
+      if (askRead === undefined) {
+        throw new Error("Selected ask query requires an ask id.");
+      }
+      return api.getAsk(askRead);
+    },
     enabled: askRead !== undefined,
   });
   const selectedItem =

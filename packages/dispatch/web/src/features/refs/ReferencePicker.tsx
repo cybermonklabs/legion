@@ -1,4 +1,4 @@
-import { queryOptions, useQueries, useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { type KeyboardEvent, type ReactNode, useState } from "react";
 
 import { api } from "../../api/client";
@@ -32,10 +32,8 @@ export function ReferencePicker({ issueKey, onClose, onSelect }: ReferencePicker
   const dialog = useDialog<HTMLDivElement>({ onClose, open: true });
   const currentIssue = useQuery(issueQuery(issueKey));
   const issues = useQuery({
-    ...queryOptions({
-      queryKey: ["issues", currentIssue.data?.project],
-      queryFn: () => api.listIssues({ project: currentIssue.data?.project }),
-    }),
+    queryKey: ["issues", currentIssue.data?.project],
+    queryFn: () => api.listIssues({ project: currentIssue.data?.project }),
     enabled: currentIssue.data !== undefined,
   });
   const needle = filter.trim().toLowerCase();
