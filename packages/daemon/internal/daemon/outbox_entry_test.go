@@ -414,13 +414,13 @@ func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *t
 }
 
 // A retry of the phase its worker stands in hands that worker the entry its phases row already
-// names, with a task of its own that names the retry's reason (workflow.Engine.restart, which
-// `legion claims retry` and the architect's retry_or_escalate reach). The claim it reaches here
-// is the one the entry alone cannot decide: its worker confirmed the entry's last task and the
-// turn that worked it ended, so the claim holds that entry as its given one
-// (supervise.Claim.GivenEntry) with no delivery pending and no outbox row of the retry recorded
-// against it. The start says it resends that entry (record.SuperviseRequest.ResendEntry), and
-// the task reaches the worker; without the mark the claim would be relaunched with no prompt.
+// names, with a task of its own that names the retry's reason: the held phase's retry, by any
+// route into it (workflow.Engine.restart). The claim it reaches here is the one the entry alone
+// cannot decide: its worker confirmed the entry's last task and the turn that worked it ended,
+// so the claim holds that entry as its given one (supervise.Claim.GivenEntry) with no delivery
+// pending and no outbox row of the retry recorded against it. The start says it resends that
+// entry (record.SuperviseRequest.ResendEntry), and the task reaches the worker; without the
+// mark the claim would be relaunched with no prompt.
 func TestAHeldPhasesRetryReachesAWorkerThatFinishedTheEntrysTask(t *testing.T) {
 	ctx := context.Background()
 	rig := newOneStartRig(t)

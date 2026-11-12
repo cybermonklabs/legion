@@ -159,7 +159,7 @@ func TestTheEntrySweepTickConvergesARoleBehindItsEntry(t *testing.T) {
 
 // The sweep asks one read-only question before it applies anything, and it is the pass's own
 // selection: which roles of this project are owed the work of the entry their phases rows name
-// (admit's OwedEntryRoles). A project with nothing owed takes neither the fact's lock nor a row
+// (admit's OwesEntryWork). A project with nothing owed takes neither the fact's lock nor a row
 // of processed_events, which nothing prunes — one row a minute per project, for the life of a
 // daemon, where no role is waiting for work. The same sweep applies its fact as soon as a role
 // is owed that work.
@@ -260,7 +260,7 @@ func TestTheEntrySweepAppliesNoFactWhileNoRoleIsBehindItsEntry(t *testing.T) {
 
 // A role whose phase its issue has left is no part of the sweep's gate, because it is no part of
 // the pass the sweep's fact makes: that pass reads the role of each slotted issue's current
-// phase and nothing else (phase.RoleFor, admit's OwedEntryRoles), so it would never send such
+// phase and nothing else (phase.RoleFor, admit's OwesEntryWork), so it would never send such
 // a role anything. The past role's phases row stands where the last transition that handed it
 // work left it, above the entry its claim was given — here a claim retired with its delivery
 // unconfirmed — and a gate reading the phases rows of the issue rather than asking the pass
