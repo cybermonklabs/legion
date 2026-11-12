@@ -115,16 +115,29 @@ func lockProjectIssueDependencies(ctx context.Context, tx pgx.Tx, project string
 }
 
 // lockDeploymentIssueDependencies is the one dependency lock that is not a project's, and the
-// last lock every dependency write takes. Every one of them takes it exclusively, so no two
-// dependency walks ever run at once and no ring can be closed by two writes that each walk a
-// graph the other is changing — whatever projects their components touch, and with nothing read
-// before a lock deciding it. What it costs is that dependency writes — a blocked_by write and a
-// reparent — serialize across the deployment rather than per project; every other write takes
-// neither this lock nor a project's.
+// last lock every dependency write takes. Every writer of this build takes it exclusively, so no
+// two dependency walks of this build ever run at once and no ring can be closed by two writes of
+// this build that each walk a graph the other is changing — whatever projects their components
+// touch, and with nothing read before a lock deciding it. What it costs is that dependency
+// writes — a blocked_by write and a reparent — serialize across the deployment rather than per
+// project; every other write takes neither this lock nor a project's.
 //
-// The project locks keep their own meaning beside it: one project's dependency writes still
-// serialize on their own lock, and a caller that holds a project's dependency lock still fences
-// that project's dependency writes (TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks).
+// It serializes every dependency write only while one build serves: a server of the build
+// before this one takes only its own project's dependency lock and never this one. The
+// deployment this repository describes holds that, because gcp:Dispatch rolls the app
+// Deployment with the Recreate strategy at one replica (infra/gcp/dispatch.go,
+// dispatchStrategyFor, minDispatchReplicas), so the old pod stops before the new one starts. A
+// deployment that serves two builds at once — a rolling update above one replica — must not
+// serve a build before this one beside it, since such a writer shares no lock with a writer of
+// this build across three projects.
+//
+// The project locks are kept for two reasons. Beside the exclusive deployment lock they decide
+// nothing among writers of this build; what they still do is fence a writer of an earlier
+// build, which holds only its project's lock, on every project this write names (its own and
+// each target's), so even with two builds serving only a ring through a project this write does
+// not name could close. And the test gates use them: a caller that holds a project's dependency
+// lock fences that project's dependency writes
+// (TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks, issue_dependencies_test.go).
 //
 // The key is its own name rather than lockProjectIssueDependencies' namespace with a literal
 // second key, so a project whose key happens to hash to that literal cannot collide with it; the
@@ -141,13 +154,16 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 
 // lockIssueDependencyWrite takes every lock a blocker or parent write needs, in the one order
 // every such write takes them: the project lock of the issue's own project and of each project a
-// target of this write belongs to, in key order (lockProjectIssueDependencies), and then the
-// deployment-wide dependency lock (lockDeploymentIssueDependencies). The number, rank and row
-// locks follow, as they did before. project is the issue's own project, targets are its
-// blocked_by targets, and caller is the one project the request's credential may write, empty
-// for a credential that names none.
+// target of this write belongs to, in the ascending order of their lock ids (the same ids
+// lockProjectIssueDependencies takes), and then the deployment-wide dependency lock
+// (lockDeploymentIssueDependencies). The number, rank and row locks follow, as they did before.
+// project is the issue's own project, targets are its blocked_by targets, and caller is the one
+// project the request's credential may write, empty for a credential that names none.
 //
-// That order never inverts, because every dependency write takes its project locks first, in key
+// The project locks are taken in lock id order, not key order, because the lock id is what
+// Postgres waits on: two key sets whose keys collide in hashtext would, in key order, take the
+// same two ids in opposite orders. Two keys that collide share one id and are locked once. That
+// order never inverts, because every dependency write takes its project locks first, in id
 // order, and the deployment lock last, so no two writes can hold what the other waits for.
 //
 // The one read it makes runs with no lock held, and nothing that read says decides which locks
@@ -175,10 +191,21 @@ func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller st
 	for _, target := range foreign {
 		projects = append(projects, target.project)
 	}
-	slices.Sort(projects)
-	for _, locked := range slices.Compact(projects) {
-		if err := lockProjectIssueDependencies(ctx, tx, locked); err != nil {
-			return err
+	rows, err := tx.Query(ctx, `
+		select distinct hashtext(p) from unnest($1::text[]) as p order by 1
+	`, projects)
+	if err != nil {
+		return fmt.Errorf("read project dependency lock ids: %w", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[int32])
+	if err != nil {
+		return fmt.Errorf("read project dependency lock ids: %w", err)
+	}
+	for _, id := range ids {
+		if _, err := tx.Exec(ctx, `
+			select pg_advisory_xact_lock(hashtext('dispatch-issue-dependencies'), $1)
+		`, id); err != nil {
+			return fmt.Errorf("lock project issue dependencies: %w", err)
 		}
 	}
 	return lockDeploymentIssueDependencies(ctx, tx)
