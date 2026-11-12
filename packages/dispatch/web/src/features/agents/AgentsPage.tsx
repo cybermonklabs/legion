@@ -1,5 +1,4 @@
 import { DELIVERY_CAPABILITIES } from "@legion/contracts";
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
@@ -28,15 +27,19 @@ import type {
   MessageRead,
   UserAgentStates,
 } from "../../api/types";
+import { Chip } from "../../components/Chip";
+import { ControlRow } from "../../components/ControlRow";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
+import { PanelTrigger } from "../../components/PanelTrigger";
 import { LabelPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
+import { SearchBox } from "../../components/SearchBox";
 import { useSending } from "../../hooks/useSending";
 import { buildInboxPath } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -88,8 +91,7 @@ import {
   matchesFilters,
   searchWords,
   sessionIssueKeys,
-  useAgentMachines,
-  useAgentSearch,
+  useAgentFilters,
 } from "./agent-search";
 import { type NeedsYouBySession, tallyBySession } from "./ask-tally";
 import { deliveryAttempts } from "./attempts";
@@ -895,8 +897,9 @@ function GroupHeading({
   );
 }
 
-/** Which filter panel is open; one at a time, since each is a popover over the page. */
-type OpenFilter = "group" | "machine" | "role" | null;
+/** Which of the three narrowings has its popover open, so the panel keeps one at a time rather
+ *  than a row of them; each is portalled over the page, and two would cover each other. */
+type OpenFilter = "group" | "machine" | "role";
 
 /** The role control's options, with anything picked that is no longer among them: a role whose
  *  last session left is still a row, so the reader sees what they are filtering by and can
@@ -906,6 +909,18 @@ function withPicked(options: readonly string[], picked: readonly string[]): stri
   return [...options, ...picked.filter((value) => !options.includes(value))];
 }
 
+/** The panel the row's one filter trigger opens: a column holding the three multi-selects,
+ *  portalled over the page so opening it moves no row of the list beneath (INFRA-3135, R1). */
+const FILTER_PANEL_CLASS = `z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col gap-2 overflow-y-auto rounded-lg border p-2 text-sm font-normal shadow-lg ${card}`;
+
+/**
+ * The one row the page's controls sit in: the search box, the one trigger over the three
+ * narrowings that are no column of a table here - group, machine and role - and the chips of
+ * the values that are on (INFRA-3135, R1 and R3). Each narrowing is still a multi-select whose
+ * panel holds a text box that narrows its own options (R7: never a dropdown), because forty
+ * machines cannot be read in a list that does not search; all three now sit behind one trigger
+ * rather than three of their own.
+ */
 function AgentFilterBar({
   agents,
   filters,
@@ -920,75 +935,130 @@ function AgentFilterBar({
   // The options carry every machine the filter names even when no live session reports it, so
   // the control shows the filter in force and its row can be unticked (`filterOptions`).
   const { machines, roles } = filterOptions(agents, filters.machines);
-  // One panel open at a time: each is a portalled popover, and two of them over one row would
-  // cover each other.
-  const [open, setOpen] = useState<OpenFilter>(null);
-  const field = `min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`;
+  /** Whether the one **Filter** panel stands open. It is its own state, not one of
+   *  `openPanel`'s words, because the three controls inside it are its children: a control
+   *  opening inside the panel must not take the panel's own open away and unmount the control
+   *  the reader pressed (the Inbox's rule, `features/inbox/Inbox.tsx`). */
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [openPanel, setOpenPanel] = useState<OpenFilter | undefined>(undefined);
+  /** A pointer press outside the panel closes it - except while one of its controls is open,
+   *  because that press is the control's: `AnchoredPanel` listens on the document, so the panel
+   *  and the popover portalled out of it are each told the press was outside them. */
+  const openFilterPanel = (open: boolean) => {
+    if (!open && openPanel !== undefined) return;
+    setFilterOpen(open);
+  };
+  /** Opening one popover shuts whichever was open; closing one that has already been replaced
+   *  leaves the replacement alone, since an outside press reaches both. */
+  const openPopover = (name: OpenFilter, open: boolean) =>
+    setOpenPanel((current) => (open ? name : current === name ? undefined : current));
+  // One chip per value the reader has ticked, in the order the panel lists the three controls;
+  // a press takes that one value off and leaves the rest of the narrowing alone.
+  const chosen = [
+    ...filters.groups.map((value) => ({
+      key: `group:${value}`,
+      label: `Group: ${AGENT_GROUP_LABELS[value]}`,
+      remove: () =>
+        onFilters({ ...filters, groups: filters.groups.filter((one) => one !== value) }),
+    })),
+    ...filters.machines.map((value) => ({
+      key: `machine:${value}`,
+      label: `Machine: ${value}`,
+      remove: () =>
+        onFilters({ ...filters, machines: filters.machines.filter((one) => one !== value) }),
+    })),
+    ...filters.roles.map((value) => ({
+      key: `role:${value}`,
+      label: `Role: ${value}`,
+      remove: () => onFilters({ ...filters, roles: filters.roles.filter((one) => one !== value) }),
+    })),
+  ];
   return (
-    <fieldset className="mb-3 flex flex-wrap items-center gap-2" data-testid="agents-filters">
-      <legend className="sr-only">Agent filters</legend>
-      {/* No dropdown on this page (R7): each filter is a multi-select whose panel holds a text
-          box that narrows its own options, because forty machines cannot be read in a list that
-          does not search. */}
-      <span className="contents" data-testid="agents-filter-group">
-        <MultiSelect
-          emptyMessage="No group matches that."
-          label="Group"
-          // The control picks strings; these are the four group keys, read back in the one
-          // order the page draws them in, whatever order they were ticked in.
-          onChange={(next) =>
-            onFilters({ ...filters, groups: AGENT_GROUPS.filter((group) => next.includes(group)) })
-          }
-          onOpenChange={(next) => setOpen(next ? "group" : null)}
-          open={open === "group"}
-          optionLabel={(value) => AGENT_GROUP_LABELS[value as AgentGroup]}
-          options={AGENT_GROUPS}
-          searchLabel="Search groups"
-          selected={filters.groups}
-          triggerAriaLabel="Filter by group"
+    <ControlRow
+      className="mb-3"
+      chips={
+        chosen.length === 0
+          ? undefined
+          : chosen.map(({ key, label, remove }) => (
+              <Chip
+                aria-label={`Remove filter ${label}`}
+                key={key}
+                onClick={remove}
+                removable
+                selected
+                title={label}
+              >
+                {label}
+              </Chip>
+            ))
+      }
+      search={
+        <SearchBox
+          className="w-full"
+          data-testid="agents-filter-search"
+          label="Search agents"
+          onChange={(value) => onFilters({ ...filters, search: value })}
+          placeholder="Title, directory, machine, session or open issue"
+          ref={searchInputRef}
+          value={filters.search}
         />
-      </span>
-      <span className="contents" data-testid="agents-filter-machine">
-        <MultiSelect
-          emptyMessage="No machine matches that."
-          label="Machine"
-          onChange={(next) => onFilters({ ...filters, machines: next })}
-          onOpenChange={(next) => setOpen(next ? "machine" : null)}
-          open={open === "machine"}
-          options={machines}
-          searchLabel="Search machines"
-          selected={filters.machines}
-          triggerAriaLabel="Filter by machine"
-        />
-      </span>
-      <span className="contents" data-testid="agents-filter-role">
-        <MultiSelect
-          emptyMessage="No role matches that."
-          label="Role"
-          onChange={(next) => onFilters({ ...filters, roles: next })}
-          onOpenChange={(next) => setOpen(next ? "role" : null)}
-          open={open === "role"}
-          options={withPicked(roles, filters.roles)}
-          searchLabel="Search roles"
-          selected={filters.roles}
-          triggerAriaLabel="Filter by role"
-        />
-      </span>
-      {/* It takes the rest of the row, and a row of its own on a phone, so the fields it searches
-          stay readable in the placeholder. */}
-      <input
-        aria-label="Search agents"
-        className={`${field} min-w-0 flex-1 basis-64`}
-        data-testid="agents-filter-search"
-        maxLength={SEARCH_QUERY_MAX}
-        onChange={(event) => onFilters({ ...filters, search: event.target.value })}
-        placeholder="Title, directory, machine, session or open issue"
-        ref={searchInputRef}
-        title={`At most ${SEARCH_QUERY_MAX} characters`}
-        type="search"
-        value={filters.search}
-      />
-    </fieldset>
+      }
+      trigger={
+        <PanelTrigger
+          count={chosen.length}
+          label="Filter"
+          onOpenChange={openFilterPanel}
+          open={filterOpen}
+          panelClassName={FILTER_PANEL_CLASS}
+        >
+          {() => (
+            <>
+              <MultiSelect
+                emptyMessage="No group matches that."
+                label="Group"
+                // The control picks strings; these are the four group keys, read back in the one
+                // order the page draws them in, whatever order they were ticked in.
+                onChange={(next) =>
+                  onFilters({
+                    ...filters,
+                    groups: AGENT_GROUPS.filter((group) => next.includes(group)),
+                  })
+                }
+                onOpenChange={(next) => openPopover("group", next)}
+                open={openPanel === "group"}
+                optionLabel={(value) => AGENT_GROUP_LABELS[value as AgentGroup]}
+                options={AGENT_GROUPS}
+                searchLabel="Search groups"
+                selected={filters.groups}
+                triggerAriaLabel="Filter by group"
+              />
+              <MultiSelect
+                emptyMessage="No machine matches that."
+                label="Machine"
+                onChange={(next) => onFilters({ ...filters, machines: next })}
+                onOpenChange={(next) => openPopover("machine", next)}
+                open={openPanel === "machine"}
+                options={machines}
+                searchLabel="Search machines"
+                selected={filters.machines}
+                triggerAriaLabel="Filter by machine"
+              />
+              <MultiSelect
+                emptyMessage="No role matches that."
+                label="Role"
+                onChange={(next) => onFilters({ ...filters, roles: next })}
+                onOpenChange={(next) => openPopover("role", next)}
+                open={openPanel === "role"}
+                options={withPicked(roles, filters.roles)}
+                searchLabel="Search roles"
+                selected={filters.roles}
+                triggerAriaLabel="Filter by role"
+              />
+            </>
+          )}
+        </PanelTrigger>
+      }
+    />
   );
 }
 
@@ -1437,23 +1507,13 @@ export function AgentsPage(): ReactNode {
   // Every issue key an OPEN ask by each session names (`sessionIssueKeys`), for the search box's
   // "issue key" field.
   const issueKeysBySession = useMemo(() => sessionIssueKeys(inbox.data ?? []), [inbox.data]);
-  // The free-text query and the machines are the page's own `?q=` and `?machine=`, both owned
-  // by `agent-search.ts`; the group and role selections stay plain component state, as the
-  // machine and role did before this box. A link in from the machines page of
+  // The whole narrowing is the page's address, owned by `agent-search.ts`: the free-text query
+  // (`?q=`), the groups (`?group=`), the machines (`?machine=`) and the roles (`?role=`), each
+  // absent until the reader picks something. A link in from the machines page of
   // dispatch://INFRA-883 names one machine in `?machine=`, which is this filter with that one
   // host ticked.
-  const [search, setSearch] = useAgentSearch();
-  const [machines, setMachines] = useAgentMachines();
-  const [fieldFilters, setFieldFilters] = useState<Omit<AgentFilters, "machines" | "search">>({
-    groups: [],
-    roles: [],
-  });
-  const filters: AgentFilters = { ...fieldFilters, machines, search };
-  const setFilters = (next: AgentFilters) => {
-    setFieldFilters({ groups: next.groups, roles: next.roles });
-    if (next.machines !== machines) setMachines(next.machines);
-    if (next.search !== search) setSearch(next.search);
-  };
+  const [filters, setFilters] = useAgentFilters();
+  const search = filters.search;
   const searchInputRef = useRef<HTMLInputElement>(null);
   // Selection is what the human ticked, not what the filters currently show: narrowing the
   // list after ticking a row must not quietly drop that row from the send. Every selected

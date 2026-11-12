@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import type { DeliveryPR } from "../../api/types";
+import { KeymapProvider } from "../shell/KeymapProvider";
 import { OVERSCAN_ROWS, ROW_HEIGHT_PX, scrollTopToShowRow, visibleRowRange } from "./lib/prList";
 import { PRList } from "./PRList";
 
@@ -45,30 +46,73 @@ function prs(count: number): DeliveryPR[] {
   }));
 }
 
+/** The unit DOM has no layout engine, so the test supplies the two measurements the table reads:
+ *  the height of the box the rows scroll in, which is the window it draws, and the height of a
+ *  drawn row, which is what the virtualizer measures each one to be. */
+function measureBoxAt(height: number): () => void {
+  const box = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  const row = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true,
+    get() {
+      return this.dataset.testid === "delivery-pr-list" ? height : (box?.get?.call(this) ?? 0);
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get() {
+      return this.dataset.prRow === undefined ? (row?.get?.call(this) ?? 0) : ROW_HEIGHT_PX;
+    },
+  });
+  return () => {
+    if (box !== undefined) Object.defineProperty(HTMLElement.prototype, "clientHeight", box);
+    if (row !== undefined) Object.defineProperty(HTMLElement.prototype, "offsetHeight", row);
+  };
+}
+
 function renderList(
   rows: DeliveryPR[],
   onSelect = (_id: string) => {},
   onSelectRun = (_id: number) => {}
 ) {
   return render(
-    <PRList
-      allRepos={["acme/widgets"]}
-      colorBy="repo"
-      colorScale={new Map()}
-      sessionGroups={[]}
-      onSelect={onSelect}
-      onSelectRun={onSelectRun}
-      prs={rows}
-      selectedId={undefined}
-    />
+    <KeymapProvider>
+      <PRList
+        allRepos={["acme/widgets"]}
+        colorBy="repo"
+        colorScale={new Map()}
+        columnFilters={[]}
+        facetCounts={{}}
+        issueTitles={{}}
+        onColumnFiltersChange={() => {}}
+        onSelect={onSelect}
+        onSelectRun={onSelectRun}
+        onSortingChange={() => {}}
+        prs={rows}
+        selectedId={undefined}
+        sessionGroups={[]}
+        sorting={[{ id: "merged", desc: true }]}
+      />
+    </KeymapProvider>
   );
 }
 
-/** The body rows rendered, by their 1-based row number (the header is row 1). */
-function renderedRowIndexes(): number[] {
-  return [...document.querySelectorAll("tbody tr[aria-rowindex]")].map((row) =>
-    Number(row.getAttribute("aria-rowindex"))
+/** The rows drawn, by the id each carries. */
+function drawnRows(): string[] {
+  return [...document.querySelectorAll<HTMLElement>("[data-pr-row]")].map(
+    (row) => row.dataset.prRow ?? ""
   );
+}
+
+/** The scroll a browser would do and report: happy-dom lays nothing out and scrolls no box, so
+ *  the test moves the box where the table asked to be taken and fires the event that follows,
+ *  which is what draws the rows at that offset. */
+function scrolledTo(top: number): void {
+  act(() => {
+    const box = screen.getByTestId("delivery-pr-list");
+    box.scrollTop = top;
+    box.dispatchEvent(new Event("scroll"));
+  });
 }
 
 test("the window holds the rows on screen plus the overscan, clamped at both ends", () => {
@@ -90,53 +134,74 @@ test("scrolling to a row moves only as far as it takes to show it below the head
 });
 
 test("the list renders only its first window of rows, and a taller viewport renders more", () => {
-  const innerHeight = window.innerHeight;
-  window.innerHeight = 10 * ROW_HEIGHT_PX;
+  const restore = measureBoxAt(10 * ROW_HEIGHT_PX);
   try {
     renderList(prs(200));
-    const shown = renderedRowIndexes();
-    expect(shown[0]).toBe(2);
-    expect(shown.length).toBe(10 + OVERSCAN_ROWS);
+    const shown = drawnRows();
+    expect(shown[0]).toBe("acme/widgets#1");
+    expect(shown.length).toBeLessThan(200);
+    cleanup();
+    restore();
+
+    const taller = measureBoxAt(40 * ROW_HEIGHT_PX);
+    try {
+      renderList(prs(200));
+      expect(drawnRows().length).toBeGreaterThan(shown.length);
+    } finally {
+      cleanup();
+      taller();
+    }
   } finally {
     cleanup();
-    window.innerHeight = innerHeight;
+    restore();
   }
 });
 
 test("arrowing past the last rendered row renders and focuses the next, and Home and End jump to the ends", async () => {
   const user = userEvent.setup();
-  const innerHeight = window.innerHeight;
-  window.innerHeight = 10 * ROW_HEIGHT_PX;
+  const restore = measureBoxAt(10 * ROW_HEIGHT_PX);
   const opened: string[] = [];
   try {
     renderList(prs(200), (id) => opened.push(id));
-    const lastRendered = 10 + OVERSCAN_ROWS; // 0-based index of the first row not rendered
-    const rows = () => document.querySelectorAll<HTMLElement>("tbody tr[aria-rowindex]");
-    expect([...rows()].filter((row) => row.tabIndex === 0).length).toBe(1);
+    const drawn = drawnRows().length;
+    expect(drawn).toBeLessThan(200);
+    const rows = () => [...document.querySelectorAll<HTMLElement>("[data-pr-row]")];
+    // The rows are reached by the keys rather than by Tab, as every row of the application's
+    // one table is: the first arrow press takes the list's first row, whatever held focus.
+    expect(rows().filter((row) => row.tabIndex === 0).length).toBe(0);
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(rows()[0] as HTMLElement);
 
-    rows()[0]?.focus();
-    for (let i = 0; i < lastRendered; i += 1) {
+    for (let i = 0; i < drawn; i += 1) {
       await user.keyboard("{ArrowDown}");
+      scrolledTo((i + 1) * ROW_HEIGHT_PX);
     }
-    // Row number `lastRendered + 2` (1-based, after the header) was outside the first window.
-    expect(document.activeElement?.getAttribute("aria-rowindex")).toBe(String(lastRendered + 2));
-    expect(document.activeElement?.textContent).toContain(`feat: widget ${lastRendered + 1}`);
+    // The row after the last one of the first window: the table scrolled to it, drew it, and
+    // put focus there.
+    expect(document.activeElement?.getAttribute("data-pr-row")).toBe(`acme/widgets#${drawn + 1}`);
+    expect(document.activeElement?.textContent).toContain(`feat: widget ${drawn + 1}`);
 
     await user.keyboard("{End}");
-    expect(document.activeElement?.getAttribute("aria-rowindex")).toBe("201");
+    // The foot of the list: a row the window never held, so only the scroll that follows the
+    // key draws it. Every row past the drawn window is still an estimate, so the offset is
+    // past the whole list rather than an arithmetic of measured heights.
+    scrolledTo(200 * 64);
+    expect(document.activeElement?.getAttribute("data-pr-row")).toBe("acme/widgets#200");
     await user.keyboard("{Home}");
-    expect(document.activeElement?.getAttribute("aria-rowindex")).toBe("2");
+    scrolledTo(0);
+    expect(document.activeElement?.getAttribute("data-pr-row")).toBe("acme/widgets#1");
 
     await user.keyboard("{Enter}");
     expect(opened).toEqual(["acme/widgets#1"]);
   } finally {
     cleanup();
-    window.innerHeight = innerHeight;
+    restore();
   }
 });
 
 test("a deployed row's 'deployed' opens its deploy run, and the row's own click opens the PR", async () => {
   const user = userEvent.setup();
+  const restore = measureBoxAt(10 * ROW_HEIGHT_PX);
   const opened: string[] = [];
   const runs: number[] = [];
   try {
@@ -157,5 +222,6 @@ test("a deployed row's 'deployed' opens its deploy run, and the row's own click 
     expect(opened).toEqual([]);
   } finally {
     cleanup();
+    restore();
   }
 });

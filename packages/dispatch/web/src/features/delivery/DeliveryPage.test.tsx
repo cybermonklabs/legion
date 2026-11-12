@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
@@ -133,8 +134,32 @@ function LocationProbe() {
   return <output data-testid="location">{useLocation().search}</output>;
 }
 
+/** The unit DOM lays nothing out, so the box the list's rows scroll in reports a height and
+ *  each drawn row its own: without them the table has no window to draw and lists no row. */
+function measureList(): () => void {
+  const box = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  const row = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true,
+    get() {
+      return this.dataset.testid === "delivery-pr-list" ? 600 : (box?.get?.call(this) ?? 0);
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get() {
+      return this.dataset.prRow === undefined ? (row?.get?.call(this) ?? 0) : 36;
+    },
+  });
+  return () => {
+    if (box !== undefined) Object.defineProperty(HTMLElement.prototype, "clientHeight", box);
+    if (row !== undefined) Object.defineProperty(HTMLElement.prototype, "offsetHeight", row);
+  };
+}
+
 function renderPage(url = DELIVERY_URL) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  restoreLayout = measureList();
   render(
     <MemoryRouter initialEntries={[url]}>
       <QueryClientProvider client={queryClient}>
@@ -148,17 +173,35 @@ function renderPage(url = DELIVERY_URL) {
   return queryClient;
 }
 
+/** The one panel the page's filter trigger opens, which holds the four facets that are no
+ *  column of the list. It is portalled out of the page, so its controls are found in the
+ *  document rather than inside the row. */
+async function openFilterPanel(user: UserEvent): Promise<void> {
+  const trigger = screen.getByRole("button", { name: /^Filter(?: · \d+)?$/ });
+  if (trigger.getAttribute("aria-expanded") !== "true") await user.click(trigger);
+}
+
+/** A facet of that panel, by the concept it picks from. */
+async function panelFacet(user: UserEvent, label: string): Promise<HTMLElement> {
+  await openFilterPanel(user);
+  return screen.getByRole("button", { name: new RegExp(`^${label}: `) });
+}
+
 function currentSearch(): URLSearchParams {
   return new URLSearchParams(screen.getByTestId("location").textContent ?? "");
 }
 
 let sockets: FakeLiveSockets;
+/** Puts back the measurements `measureList` replaced, for a test that rendered the page. */
+let restoreLayout: (() => void) | undefined;
 beforeEach(() => {
   sockets = installFakeLiveSockets();
 });
 afterEach(() => {
   cleanup();
   sockets.restore();
+  restoreLayout?.();
+  restoreLayout = undefined;
 });
 
 /** The page's live socket, once the page has opened one, as Dispatch accepts it. */
@@ -420,8 +463,9 @@ test("the facet column offers each value with its count, subscribes a pick and k
   const socket = await answered(timeline);
 
   expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
-  expect(screen.getByRole("button", { name: /^Repository/ }).textContent).toBe("Any repository");
-  await user.click(screen.getByRole("button", { name: /^Priority/ }));
+  // The four facets that are no column sit behind the row's one trigger.
+  expect((await panelFacet(user, "Repository")).textContent).toBe("Any repository");
+  await user.click(await panelFacet(user, "Priority"));
   const priorityOptions = within(screen.getByRole("listbox", { name: "Priority options" }));
   const options = priorityOptions.getAllByRole("option").map((option) => option.textContent);
   expect(options).toEqual(["No issue3", "P01"]);
@@ -429,9 +473,10 @@ test("the facet column offers each value with its count, subscribes a pick and k
 
   // Dispatch applies the facets: the pick is a view of its own, its query the GET route's.
   await subscriptionTo(socket, { kind: "timeline", window: URL_WINDOW, query: "priority=P0" });
-  expect(screen.getByRole("button", { name: /^Priority/ }).textContent).toBe("1 selected");
+  expect((await panelFacet(user, "Priority")).textContent).toBe("1 selected");
 
-  await user.click(screen.getByRole("button", { name: /^Dispatch issue/ }));
+  // The issue is a column of the list, so its filter sits on that column's own header.
+  await user.click(screen.getByRole("button", { name: "Filter Issue" }));
   expect(screen.getByRole("option", { name: /ACME-1 — Ship widgets/ })).toBeDefined();
 
   const colorBy = screen.getByLabelText("Color merges by") as HTMLSelectElement;
@@ -482,7 +527,7 @@ test("while a facet pick waits for its snapshot, the header and freshness keep t
     })
   );
   await screen.findByText(/^Generated .* · window/);
-  await user.click(screen.getByRole("button", { name: /^Priority/ }));
+  await user.click(await panelFacet(user, "Priority"));
   await user.click(
     within(screen.getByRole("listbox", { name: "Priority options" })).getByRole("option", {
       name: /^P0/,
@@ -566,7 +611,7 @@ test("the measures panel sits between the freshness row and the view controls an
   expect(freshness.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(panel.compareDocumentPosition(controls) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
-  await user.click(screen.getByRole("button", { name: /^Repository/ }));
+  await user.click(await panelFacet(user, "Repository"));
   await user.click(
     within(screen.getByRole("listbox", { name: "Repository options" })).getByRole("option", {
       name: /^acme\/widgets/,
@@ -742,7 +787,7 @@ test("a facet pick leaves the window rolling: it writes no from or to, and subsc
     ...emptyTimeline,
     facet_counts: { ...emptyCounts, priority: { P0: 1 } },
   });
-  await user.click(await screen.findByRole("button", { name: /^Priority/ }));
+  await user.click(await panelFacet(user, "Priority"));
   await user.click(
     within(screen.getByRole("listbox", { name: "Priority options" })).getByRole("option", {
       name: /^P0/,
@@ -868,4 +913,168 @@ test("a brush window narrows the merges shown but the waiting line still counts 
     cleanup();
     restoreCanvas();
   }
+});
+
+/** The options of an open filter, by the name each is read out as (`<value>, <n> PR(s)`). */
+function optionNames(listbox: string): (string | null)[] {
+  return within(screen.getByRole("listbox", { name: listbox }))
+    .getAllByRole("option")
+    .map((option) => option.getAttribute("aria-label"));
+}
+
+// What `FacetPanel.test.tsx` proved before the page drew these controls itself: the counts, the
+// wording of a placeholder, what a parent component says it includes, and what a trigger reads.
+test("a facet's options sort by count, read placeholders in words, and say a parent includes its sub-components", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await answered({
+    ...emptyTimeline,
+    components: {
+      "ACME/platform": { parent: null, title: "The platform" },
+      "ACME/api": { parent: "ACME/platform", title: "Public API" },
+      "ACME/api-auth": { parent: "ACME/api", title: "API auth" },
+    },
+    facet_counts: {
+      ...emptyCounts,
+      component: { "ACME/api": 2, "ACME/platform": 1, __no_issue__: 4, __no_component__: 3 },
+      parent_agent: { "Agent 1": 2, __no_session__: 5 },
+    },
+    prs: [listedPR],
+  });
+
+  await user.click(await panelFacet(user, "Component"));
+  expect(optionNames("Component options")).toEqual([
+    "No issue, 4 PRs",
+    "No component, 3 PRs",
+    "Public API (includes 1 sub-component), 2 PRs",
+    "The platform (includes 2 sub-components), 1 PR",
+  ]);
+
+  // Parent agent is a column of the list, so its values are offered on that column's header,
+  // counted by the same answer.
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByRole("button", { name: "Filter Parent agent" }));
+  expect(optionNames("Parent agent options")).toEqual(["No session, 5 PRs", "Agent 1, 2 PRs"]);
+});
+
+test("a facet's trigger names the facet and what is picked", async () => {
+  const user = userEvent.setup();
+  renderPage(`${DELIVERY_URL}&component=ACME%2Fapi`);
+  await answered({
+    ...emptyTimeline,
+    components: { "ACME/api": { parent: null, title: "Public API" } },
+    facet_counts: { ...emptyCounts, component: { "ACME/api": 1 }, repo: { "acme/widgets": 1 } },
+    prs: [listedPR],
+  });
+
+  expect(await panelFacet(user, "Component")).toHaveAttribute(
+    "aria-label",
+    "Component: 1 selected"
+  );
+  expect(await panelFacet(user, "Repository")).toHaveAttribute(
+    "aria-label",
+    "Repository: Any repository"
+  );
+  // A picked value is a chip of the row, which takes it off again.
+  await user.click(screen.getByRole("button", { name: "Remove filter Component: Public API" }));
+  await waitFor(() => expect(currentSearch().has("component")).toBe(false));
+});
+
+test("a group's Parent agent value reads as its name, and Edit groups opens the editor", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await answered({
+    ...emptyTimeline,
+    facet_counts: { ...emptyCounts, parent_agent: { "group:g1": 3, Reviewer: 1 } },
+    prs: [listedPR],
+    session_groups: [
+      {
+        created_at: "2026-10-11T00:00:00Z",
+        created_by: { id: "alice@example.com", kind: "user" },
+        id: "g1",
+        name: "Release crew",
+        sessions: ["s1", "s2"],
+        updated_at: "2026-10-11T00:00:00Z",
+        updated_by: { id: "alice@example.com", kind: "user" },
+      },
+    ],
+    session_pr_counts: { s1: 2, s2: 1, s3: 1 },
+    session_titles: { s1: "Planner one", s2: "Planner two", s3: "Reviewer" },
+  });
+
+  await user.click(screen.getByRole("button", { name: "Filter Parent agent" }));
+  expect(optionNames("Parent agent options")).toEqual(["Release crew, 3 PRs", "Reviewer, 1 PR"]);
+  await user.keyboard("{Escape}");
+
+  await openFilterPanel(user);
+  await user.click(screen.getByRole("button", { name: "Edit groups" }));
+  expect(screen.getByRole("dialog", { name: "Session groups" })).toBeDefined();
+});
+
+// R5: the order the list is in rides in the page's address, absent until the reader presses a
+// header, so a shared link and a reload open the list ordered as they left it.
+test("the list's sort is a parameter of the address: absent until set, and it orders the rows it names", async () => {
+  const user = userEvent.setup();
+  const shipped: DeliveryPR = {
+    ...listedPR,
+    author: "aardvark",
+    id: "acme/widgets#2",
+    merged_at: "2024-06-01T00:30:00Z",
+    number: 2,
+    title: "feat: a shipped widget",
+    url: "https://github.com/acme/widgets/pull/2",
+  };
+  renderPage();
+  await answered({ ...emptyTimeline, prs: [listedPR, shipped] });
+
+  const titles = async () =>
+    (await screen.findAllByRole("row"))
+      .slice(1)
+      .map((row) => (row instanceof HTMLTableRowElement ? row.cells[3]?.textContent : undefined));
+  // The list opens newest merge first, and says nothing about it in the address.
+  expect(await titles()).toEqual(["feat: a waiting widget", "feat: a shipped widget"]);
+  expect(currentSearch().has("sort")).toBe(false);
+
+  await user.click(screen.getByRole("button", { name: /^Author/ }));
+  await waitFor(() => expect(currentSearch().get("sort")).toBe("author"));
+  expect(await titles()).toEqual(["feat: a shipped widget", "feat: a waiting widget"]);
+});
+
+test("a link naming a sort opens the list in that order, and the facets it names narrow it", async () => {
+  renderPage(`${DELIVERY_URL}&sort=-author&author=octocat`);
+  const socket = await openSocket();
+  await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query: "author=octocat",
+  });
+  const { sub } = await subscription(socket, "timeline");
+  serve(
+    socket,
+    snapshotFrame(sub, {
+      ...emptyTimeline,
+      facet_counts: { ...emptyCounts, author: { octocat: 2 } },
+      prs: [
+        listedPR,
+        {
+          ...listedPR,
+          author: "zebra",
+          id: "acme/widgets#3",
+          merged_at: "2024-06-01T00:10:00Z",
+          number: 3,
+          title: "feat: a third widget",
+          url: "https://github.com/acme/widgets/pull/3",
+        },
+      ],
+    })
+  );
+
+  const titles = async () =>
+    (await screen.findAllByRole("row"))
+      .slice(1)
+      .map((row) => (row instanceof HTMLTableRowElement ? row.cells[3]?.textContent : undefined));
+  // Author, descending: the reload reads the order out of the address rather than the default.
+  expect(await titles()).toEqual(["feat: a third widget", "feat: a waiting widget"]);
+  // And the column's own filter says what the address asked the server for.
+  expect(screen.getByRole("button", { name: "Filter Author: 1 picked" })).toBeDefined();
 });

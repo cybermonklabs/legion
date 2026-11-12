@@ -44,6 +44,7 @@ const SCOPE_LABELS: Record<KeymapScope, string> = {
   agents: "Agents",
   architecture: "Architecture",
   board: "Board",
+  delivery: "Delivery",
   dialog: "Dialog",
   document: "Document",
   global: "Global",
