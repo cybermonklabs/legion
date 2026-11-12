@@ -185,6 +185,22 @@ func (rig *receiverRig) awaitState(t *testing.T, state receiveState, within time
 	return time.Now()
 }
 
+// deliveredLast is when the durable last delivered a message, as the consumer itself records it
+// (ConsumerInfo.Delivered.Last, json last_active), on the server's clock rather than this
+// process's. The field is absent until the consumer has delivered something, so a row that reads
+// it has already had a delivery and a nil here is a fault rather than a timing window.
+func deliveredLast(t *testing.T, client *bus.Client, consumer string) time.Time {
+	t.Helper()
+	info, err := client.JS().ConsumerInfo(bus.Stream, consumer)
+	if err != nil {
+		t.Fatalf("consumer info for %s: %v", consumer, err)
+	}
+	if info.Delivered.Last == nil {
+		t.Fatalf("the consumer %s records no last delivery (delivered %d), want the time it delivered", consumer, info.Delivered.Consumer)
+	}
+	return *info.Delivered.Last
+}
+
 // recordingHandler acks each message and sends what it took to the returned channel.
 func recordingHandler() (durableHandler, <-chan receivedMessage) {
 	received := make(chan receivedMessage, 64)
@@ -297,16 +313,27 @@ func TestADurableMessageReceivedWithoutTheLeaseIsDroppedAndRedeliveredToTheHolde
 	if got := strayHandled.Load(); got != 0 {
 		t.Fatalf("the pod without the lease handled %d messages, want none", got)
 	}
+	strayDelivered := deliveredLast(t, stray.client, stray.consumer)
 	stray.receiver.end(context.Background())
 
 	handle, received := recordingHandler()
-	startReceiverRig(t, uri, machineID, "pod-holder", handle, testReceiveTiming(), testLeaseTiming())
+	holder := startReceiverRig(t, uri, machineID, "pod-holder", handle, testReceiveTiming(), testLeaseTiming())
 	message := awaitReceived(t, received, 15*time.Second, "the holder")
 	if message.data != "dropped" || message.delivered != 2 {
 		t.Fatalf("the holder received %q as delivery %d, want the dropped message's redelivery (delivery 2)", message.data, message.delivered)
 	}
-	if after := message.at.Sub(published); after < consumerAckWait-time.Second {
-		t.Fatalf("the holder received the dropped message %s after its first delivery, want it held until the %s ack wait ran out", after, consumerAckWait)
+	// How long the message was held is read at both ends from the consumer's own record of when
+	// it last delivered (ConsumerInfo.Delivered.Last, which the server writes as it delivers):
+	// the stray pod's delivery, then the holder's redelivery. The wall clock below belongs to
+	// this test and its zero is the publish, so it reads the interval less however late this
+	// process saw the message - about 1 ms on an idle pod and more under load - and it keeps the
+	// upper bound alone, that the redelivery is not a second ack wait late.
+	if held := deliveredLast(t, holder.client, holder.consumer).Sub(strayDelivered); held < consumerAckWait {
+		t.Fatalf("the durable redelivered the dropped message %s after it first delivered it, want the whole %s ack wait: the holder must not receive it sooner",
+			held, consumerAckWait)
+	}
+	if after := message.at.Sub(published); after > consumerAckWait+5*time.Second {
+		t.Fatalf("the holder received the dropped message %s after its publish, want the redelivery once the %s ack wait ran out", after, consumerAckWait)
 	}
 	if got := strayHandled.Load(); got != 0 {
 		t.Fatalf("the pod without the lease handled %d messages, want none", got)
