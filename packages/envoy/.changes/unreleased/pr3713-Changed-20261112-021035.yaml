@@ -1,0 +1,5 @@
+kind: Changed
+body: 'The broker checks a GitHub App narrowing before it opens an approval request: a narrowing it cannot serve is refused to the caller, naming the repository the installation does not reach or the read access the App does not hold, and no person is asked. `agent-secrets` sends the narrowing with its request, and asks again without it when the broker does not know the field.'
+time: 2026-11-12T02:10:35.808515692Z
+custom:
+    Issue: pr3713
