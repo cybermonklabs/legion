@@ -69,6 +69,11 @@ jobs:
     # the pod that measured the five against the four, left that nearly as it was.
     timeout-minutes: 15
     steps:
+      - name: Stand in for a runner shutdown
+        run: |
+          echo "::error::The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled."
+          echo "::error::The operation was canceled, exit code 143"
+          exit 143
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
