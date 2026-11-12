@@ -197,18 +197,27 @@ export class JevKeyError extends CannotRunError {
 
 /**
  * Whether the Jev key is in the environment at all, which the runner asks before a round rather
- * than after the first call. It answers nothing about the value and throws `JevKeyError` when
- * the variable is unset or empty.
+ * than after the first call. It answers nothing about the value beyond that, and throws
+ * `JevKeyError` when the variable is unset or holds nothing a header could carry.
  */
 export function assertJevKeyPresent(): void {
-  if ((process.env[JEV_KEY_VARIABLE] ?? "").trim() === "") throw new JevKeyError();
+  jevKey();
 }
 
-/** The Jev key as the header carries it: the value with its trailing line ending taken off. */
+/**
+ * What the environment holds for the Jev key, with the whitespace around it taken off: `""` when
+ * the variable is unset, is empty, or holds nothing but whitespace, which no endpoint would take
+ * as a key. This is the module's one reading of that variable, so the check before a round, the
+ * header a call sends and the scrub all mean the same value.
+ */
+function jevKeyInEnvironment(): string {
+  return (process.env[JEV_KEY_VARIABLE] ?? "").trim();
+}
+
+/** The Jev key a call's header carries, which must be there, and which the scrub then knows. */
 function jevKey(): string {
-  const value = process.env[JEV_KEY_VARIABLE];
-  if (value === undefined || value.replace(/[\r\n]+$/, "") === "") throw new JevKeyError();
-  const key = value.replace(/[\r\n]+$/, "");
+  const key = jevKeyInEnvironment();
+  if (key === "") throw new JevKeyError();
   remember(key);
   return key;
 }
@@ -253,7 +262,7 @@ function remember(secret: string): void {
  */
 export function scrubSecrets(text: string): string {
   let kept = text;
-  const jev = process.env[JEV_KEY_VARIABLE]?.replace(/[\r\n]+$/, "") ?? "";
+  const jev = jevKeyInEnvironment();
   if (jev !== "") kept = kept.split(jev).join(REDACTED);
   for (const secret of secretsRead) kept = kept.split(secret).join(REDACTED);
   return kept;

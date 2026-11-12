@@ -238,7 +238,7 @@ export interface RootReading {
 export interface RuleHalf {
   /** The model the rule was put to. */
   model: string;
-  /** The file the prose was read from, and the SHA-256 of those bytes. */
+  /** The file the prose was read from, named as the repository holds it, and its SHA-256. */
   definition: string;
   definitionSha256: string;
   /** Where answers were kept between runs, and null where none were. */

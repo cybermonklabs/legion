@@ -1006,7 +1006,15 @@ async function modelsFileOf(omp: string): Promise<string | null> {
   return (await Bun.file(path).exists()) ? path : null;
 }
 
-/** The environment one agent run is given: its own home, and no credential of this session's. */
+/**
+ * The environment one agent run is given: its own home, `PATH`, `TMPDIR` where this process has
+ * one, and the two variables the run needs to reach the model gateway, `ANTHROPIC_BASE_URL` and
+ * `ANTHROPIC_API_KEY`. So the agent does get this session's model credential, here and in the
+ * `models.yml` `profilesOf` copies into that home, which is what lets it make the call it is
+ * measured on. What it does not get is everything else of this session's environment: the
+ * broker's `TYPESAFE_API_KEY`, which the Jev arms spend, and any Dispatch or GitHub token among
+ * it, so the run reaches the gateway and no other service.
+ */
 function environmentOf(home: string): Record<string, string> {
   const kept: Record<string, string> = {
     HOME: home,

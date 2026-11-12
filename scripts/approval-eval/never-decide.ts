@@ -56,9 +56,16 @@ export type NeverDecideKind = (typeof NEVER_DECIDE_KINDS)[number];
 /** The model the rule is put to where no caller names another. */
 export const DEFAULT_NEVER_DECIDE_MODEL = "anthropic/claude-opus-5-5";
 
-/** The prose that is the rule: the reference file of the skill that ships it, read from there. */
-export const NEVER_DECIDE_DEFINITION_PATH = fileURLToPath(
-  new URL("../../skills/approval-review/references/never-decide.md", import.meta.url)
+/**
+ * The prose that is the rule: the reference file of the skill that ships it, named as the
+ * repository holds it. A record carries this path, so it says which file was applied without
+ * carrying the path of the machine that ran it.
+ */
+export const NEVER_DECIDE_DEFINITION_PATH = "skills/approval-review/references/never-decide.md";
+
+/** That same file in this checkout, which is where the prose is read from. */
+const DEFINITION_FILE = fileURLToPath(
+  new URL(`../../${NEVER_DECIDE_DEFINITION_PATH}`, import.meta.url)
 );
 
 /** The statuses at which a root waits for a person rather than running, and how to say each. */
@@ -160,7 +167,7 @@ let definitionRead: Promise<string> | null = null;
 
 /** The prose that is the rule, as the shipped skill carries it. */
 export function neverDecideDefinition(): Promise<string> {
-  definitionRead ??= readFile(NEVER_DECIDE_DEFINITION_PATH, "utf8");
+  definitionRead ??= readFile(DEFINITION_FILE, "utf8");
   return definitionRead;
 }
 

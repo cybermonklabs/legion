@@ -765,7 +765,7 @@ jobs:
           done
           # The skills, read back out of the same tarball: the rules are in
           # packages/claude-envoy/scripts/check-packed-skills.sh, which tests/packed-skills.test.ts
-          # runs over tarballs of its own. Without them every install loses all ten skills and
+          # runs over tarballs of its own. Without them every install loses all eleven skills and
           # the dispatch-first hook hooks/hooks.json runs on every session throws.
           packages/claude-envoy/scripts/check-packed-skills.sh packages/claude-envoy/*.tgz
 
