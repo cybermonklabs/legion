@@ -2435,12 +2435,13 @@ It also checks that the probe reopens after a 4001 and after a 1012 and resumes 
 change and revisions it holds.
 Neither row reads a clock, and the two catch different things.
 The 4001 row pins `--reconnect-spread-ms` a day, far above its own per-test limit, so a probe that
-answered a rotation on the timer rather than at once cannot subscribe again inside the row: there
-the runner's limit is the discriminator.
+answered a rotation on the timer rather than at once reaches its second subscribe inside the row
+on about one draw in 2,880 and is caught by the runner's limit on the rest: there the runner's
+limit is the discriminator, and the row's own comment carries that rate.
 The 1012 row pins 50 ms, which makes the probe's own wait a draw from [0, 50 ms) - small and
-bounded rather than deterministic - and catches nothing on its own; a reopen that waited the
-page's two-second default would still pass it, so that
-row asserts the resume's content and order alone, and the backoff's own shape is held by the unit
+bounded rather than deterministic - so it catches no wait at all: a reopen that waited the
+page's two-second default would still pass it. What it does catch is the resume, whose content and
+order it asserts, and the backoff's own shape is held by the unit
 row in `web/src/api/live-socket.test.ts`.
 A third row reads the wait each close line reports (`wait_ms`): at `--reconnect-spread-ms 0`, two
 1012 closes report 0 ms each only while the parsed option reaches the probe's `reconnectWaitMs`

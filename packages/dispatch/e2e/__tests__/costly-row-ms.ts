@@ -28,7 +28,13 @@
  *  whole lane: the worst reading of the rows this limit covers is 3.15 s, by
  *  `psql-session.test.ts`'s overlapping-call row, whose own 3 s sleep is most of it; then 1.18 s
  *  by `"psql reads its own stack's database"`, and the rest under 0.3 s. 90 s is about 29 times
- *  that worst reading.
+ *  that worst reading. The pull request's own per-row table gives that same row 3.05 s from the
+ *  same eight runs, and no surviving record says which run each figure was read from, so this
+ *  comment keeps the higher of the two: a hang guard sized against the smaller would be the one
+ *  mistake that matters here. A third reading, taken when that pair was found to disagree: 12
+ *  runs of `psql-session.test.ts` alone, under the same load, give the row 3.02 s worst and
+ *  3.01 s mean. That is the file-alone shape, not a lane-loaded one, so it is no evidence that
+ *  the row got faster and does not belong beside the two figures above.
  *
  *  The slow pod shape runs about 2.15 times slower: dispatch://INFRA-1505's Verification
  *  preamble records the ratio at code that does not differ - a 335 s suite against 156 s. That
