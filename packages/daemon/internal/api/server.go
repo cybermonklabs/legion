@@ -525,9 +525,12 @@ func trackTransactions(handler http.Handler) http.Handler {
 
 // readyz answers the kubelet's readiness probe, which carries no token, from the daemon's
 // readiness latch alone (Options.Ready): 503 `stopping` from the moment the daemon's stop begins
-// (Options.Stopping), so the pod leaves its Service while it drains; 503 `starting` while the
-// daemon has not reached serving, naming what it waits for; and 200 once it has. The stop is read
-// first, because a stop that begins before the daemon ever served is draining and not starting.
+// (Options.Stopping), to a request on a connection the server still holds through its drain (a new
+// connection gets no answer at all, since the drain closes the listener, which a probe reads as a
+// failure too); 503 `starting` while the daemon has not reached serving, naming what it waits for,
+// which only a request reaching the instant between the server starting and the latch being set
+// sees, since the server serves nothing before that; and 200 once it has. The stop is read first,
+// because a stop that begins before the daemon ever served is draining and not starting.
 // It reads no database, no pool and nothing of the daemon's load, so it answers while every
 // connection of the pool is busy.
 //

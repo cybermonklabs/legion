@@ -291,8 +291,8 @@ wait_healthz
 # The daemon says it is ready, beside the /healthz above and the state read below (INFRA-3169).
 # It is read here and after the restart both, never at one boot alone: the latch is one-way and
 # the booting process's own, so each start begins unlatched and this read says nothing about the
-# next process; /healthz is answered off the mux whatever the boot reached, so a daemon that
-# answers it while /readyz never latches is exactly the state this proof exists to catch, and the
+# next process; /healthz is answered whether or not the latch was set, so a daemon that answers it
+# while /readyz never latches is exactly the state this proof exists to catch, and the
 # restart reaches serving down the other path — an existing store, a second boot — where it could
 # part from this one.
 readyz_200

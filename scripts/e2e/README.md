@@ -481,7 +481,7 @@ After each healthy start the run also reads `GET /readyz` and requires 200, the 
 It polls that read for 5 seconds, because the daemon sets the latch on a goroutine of its own that starts when the serving goroutine does, so `/healthz` can be answered in the instant before it runs;
 a daemon that answers `/healthz` and never latches fails the run all the same.
 It is read at the first boot and again after the restart, never at one of them alone:
-the latch is one-way and the booting process's own, so every start begins unlatched, and `/healthz` is answered off the mux whatever the boot reached — a daemon that answers `/healthz` while it never latches is the state this read catches, at either boot.
+the latch is one-way and the booting process's own, so every start begins unlatched, and `/healthz` is answered whether or not the latch was set — a daemon that answers `/healthz` while it never latches is the state this read catches, at either boot.
 
 After any exit — pass, failure, or an interrupt
 — the `EXIT` trap removes the container and signals the daemon and the keeper;

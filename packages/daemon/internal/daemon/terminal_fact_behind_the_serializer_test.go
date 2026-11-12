@@ -20,8 +20,8 @@ import (
 // w.failed, which ends the workflow and with it the daemon: a slow fact would then cost a
 // restart, and a restart is what started INFRA-3169.
 //
-// The test holds the serializer for a little longer than bootTimeout, the bound terminal applies
-// its fact under at this change's head, then frees it.
+// The test holds the serializer for a little longer than bootTimeout, the bound the boot's replay
+// gives each fact and the bound a live terminal fact had at 52f51bd6, then frees it.
 func TestALiveTerminalFactQueuedPastTheBootBudgetDoesNotStopTheWorkflow(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	handler := &outboxFactHandler{}
