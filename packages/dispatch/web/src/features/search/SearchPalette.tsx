@@ -14,7 +14,11 @@ import { useNavigate } from "react-router-dom";
 
 import { projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Project, SearchResult, SearchResultKind } from "../../api/types";
+import { Chip } from "../../components/Chip";
+import { ControlRow } from "../../components/ControlRow";
+import { PanelTrigger } from "../../components/PanelTrigger";
 import { QueryError } from "../../components/QueryError";
+import { SearchBox } from "../../components/SearchBox";
 import {
   backdrop50,
   badgeLow,
@@ -27,6 +31,7 @@ import {
   selectedCardBg,
   selectedCardBorder,
   surfaceMutedBg,
+  surfaceMutedHoverBg,
   textMutedOnSelectedCard,
   textMutedOnSurface,
   textMutedOnSurfaceMuted,
@@ -34,7 +39,7 @@ import {
   textSecondaryOnSurface,
   textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
-import { statusText } from "../project/board-model";
+import { issueStatuses, statusLabel, statusText } from "../project/board-model";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { searchSnippetMarkdown } from "../refs/markdown-fragment";
 import { referenceTriggerProps } from "../refs/RefPreview";
@@ -51,10 +56,14 @@ import { AskHitStatus } from "./AskHitStatus";
 import { NEW_ISSUE_GROUP_ID, useNewIssueOffer } from "./NewIssueOffer";
 import { barNoteClassName, type Offer, type OfferRow } from "./offer";
 import { type RecentItem, readRecents } from "./recents";
-import { SearchFilterBar } from "./SearchFilterBar";
 import { SearchOperators } from "./SearchOperators";
 import { SEND_TO_AGENT_GROUP_ID, useSendToAgentOffer } from "./SendToAgentOffer";
-import { type SearchBarFilters, searchRequest } from "./search-filters";
+import {
+  type SearchBarFilters,
+  type SearchFilterName,
+  searchFilterChips,
+  searchRequest,
+} from "./search-filters";
 import {
   groupResults,
   kindLabel,
@@ -359,6 +368,182 @@ function CommandGroup({
   );
 }
 
+/** The panel the four narrowings are added from: one column of controls, as wide as the
+ *  longest of them needs and no wider than a phone. */
+const FILTER_PANEL_CLASS = `z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col items-start gap-2 overflow-y-auto rounded-lg border p-2 text-sm font-normal shadow-lg ${card}`;
+
+/** What a chip removed puts back, under the name `searchFilterChips` gives it. */
+const FILTER_REMOVALS: Record<SearchFilterName, SearchBarFilters> = {
+  author: { author: undefined },
+  project: { project: undefined },
+  status: { status: undefined },
+  updatedSince: { updatedSince: undefined },
+};
+
+/** Which narrowing has a list of its own open inside the panel, or undefined for none: the
+ *  panel holds one open at a time, as the Delivery page's facets do. */
+type FilterMenuName = "project" | "status";
+
+/**
+ * One value picked from a short list, inside the panel: a control that names the narrowing and
+ * a list of plain buttons under it.
+ *
+ * The list is buttons rather than a `<select>` or a listbox because the bar's own hits are this
+ * dialog's `option` rows, and a second set of options inside it would join the rows the arrows
+ * walk and the rows a reader is told there are.
+ */
+function FilterMenu({
+  emptyText,
+  label,
+  onOpenChange,
+  onPick,
+  open,
+  options,
+}: {
+  emptyText: string;
+  label: string;
+  onOpenChange: (open: boolean) => void;
+  onPick: (value: string) => void;
+  open: boolean;
+  options: readonly { text: string; value: string }[];
+}): ReactNode {
+  return (
+    <PanelTrigger label={label} onOpenChange={onOpenChange} open={open}>
+      {(close) =>
+        options.length === 0 ? (
+          <p className={`px-3 py-2 text-sm ${textMutedOnSurface}`}>{emptyText}</p>
+        ) : (
+          options.map(({ text, value }) => (
+            <button
+              className={`block min-h-11 w-full rounded-lg px-3 py-2 text-left text-sm ${textPrimaryOnSurface} ${surfaceMutedHoverBg}`}
+              key={value}
+              onClick={() => {
+                close();
+                onPick(value);
+              }}
+              type="button"
+            >
+              {text}
+            </button>
+          ))
+        )
+      }
+    </PanelTrigger>
+  );
+}
+
+/**
+ * The four narrowings the bar offers, in the panel its one trigger opens: a project, an issue
+ * status, an author and the day since which the item was last written. Each is a control in the
+ * panel while it is unset and a chip in the row once the person has chosen, and pressing that
+ * chip drops that narrowing alone and brings its control back.
+ *
+ * The author is typed rather than picked: an item's author is a person's login or a session id,
+ * and no list holds both. It is taken when the person presses Enter or leaves the box, so a
+ * half-typed login never searches. The box keeps what was typed while the panel is shut, so a
+ * reader who opens it again finds their half-typed login where they left it.
+ */
+function SearchNarrowing({
+  filters,
+  onFilters,
+  projects,
+}: {
+  filters: SearchBarFilters;
+  onFilters: (filters: SearchBarFilters) => void;
+  projects: readonly Project[];
+}): ReactNode {
+  const [open, setOpen] = useState(false);
+  const [openMenu, setOpenMenu] = useState<FilterMenuName>();
+  const [author, setAuthor] = useState("");
+  const set = (patch: SearchBarFilters) => onFilters({ ...filters, ...patch });
+  const takeAuthor = () => {
+    const typed = author.trim();
+    if (typed !== "") {
+      setAuthor("");
+      set({ author: typed });
+    }
+  };
+
+  return (
+    <PanelTrigger
+      label="Filter"
+      onOpenChange={(next) => {
+        // An outside press while one of the two lists is open is that list's, not the panel's:
+        // `AnchoredPanel` tells both that the press was outside them.
+        if (!next && openMenu !== undefined) return;
+        // Shutting the panel is leaving the author box as much as moving off it is: a press
+        // outside takes the box away with the panel, before it could lose focus on its own.
+        if (!next) takeAuthor();
+        setOpen(next);
+      }}
+      open={open}
+      panelClassName={FILTER_PANEL_CLASS}
+    >
+      {() => (
+        <>
+          {filters.project === undefined ? (
+            <FilterMenu
+              emptyText="No projects yet"
+              label="Project"
+              onOpenChange={(next) => setOpenMenu(next ? "project" : undefined)}
+              onPick={(project) => set({ project })}
+              open={openMenu === "project"}
+              options={projects.map((project) => ({ text: project.key, value: project.key }))}
+            />
+          ) : null}
+          {filters.status === undefined ? (
+            <FilterMenu
+              emptyText="No statuses"
+              label="Status"
+              onOpenChange={(next) => setOpenMenu(next ? "status" : undefined)}
+              onPick={(status) => set({ status })}
+              open={openMenu === "status"}
+              options={issueStatuses.map((status) => ({
+                text: statusLabel(status),
+                value: status,
+              }))}
+            />
+          ) : null}
+          {filters.author === undefined ? (
+            <SearchBox
+              className="w-full"
+              label="Author"
+              onBlur={takeAuthor}
+              onChange={setAuthor}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  takeAuthor();
+                }
+              }}
+              placeholder="Author"
+              value={author}
+            />
+          ) : null}
+          {/* The date box carries its words on screen: a browser draws an empty one as its own
+              date format and nothing else, so without them a reader cannot tell what the box
+              narrows. */}
+          {filters.updatedSince === undefined ? (
+            <label className={`inline-flex items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
+              Updated since
+              <input
+                className={`min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
+                onChange={(event) => {
+                  if (event.target.value !== "") {
+                    set({ updatedSince: event.target.value });
+                  }
+                }}
+                type="date"
+                value=""
+              />
+            </label>
+          ) : null}
+        </>
+      )}
+    </PanelTrigger>
+  );
+}
+
 export function SearchPalette({
   onClose,
   open,
@@ -454,6 +639,9 @@ function PaletteDialog({
   // this one. The page's project rides with them, under the parameter that narrows nothing,
   // and it is the chip's project at every level because every level sits in one project.
   const narrowed = searchRequest(filters, scope.targets.project);
+  // What is on, in the words the person chose it in: one chip of the row for each narrowing,
+  // and the control of that narrowing stays out of the panel while its chip is up.
+  const filterChips = searchFilterChips(filters);
   // The one search the list reads, in two tiers the hook answers as one. Everything below -
   // the hits, the operators the query was read as, the degraded line and the message under the
   // list - reads this one answer, so the list, what it says about itself and the highlight all
@@ -723,36 +911,62 @@ function PaletteDialog({
           role="dialog"
         >
           {scope.header}
-          <div className={`shrink-0 border-b p-3 ${borderDefault}`}>
-            <input
-              aria-activedescendant={activeRow?.id}
-              aria-controls="search-results"
-              aria-expanded={rows.length > 0}
-              aria-label="Search"
-              className={`block w-full rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
-              onChange={(event) => {
-                setQuery(event.target.value);
-                // A new query is a new list, so the highlight is undecided again and the first
-                // hits to answer it take the head.
-                setActive({ hits: "", id: null });
-              }}
-              onKeyDown={handleKeyDown}
-              placeholder="Search Dispatch"
-              ref={inputRef}
-              role="combobox"
-              type="search"
-              value={query}
-            />
-          </div>
-          {/* What narrows the search and what the words themselves can do, between the box and
-              the hits: the chips the reader has added with the controls for the rest, the three
+          {/* The bar's one row of controls, which is the dialog's own strip rather than a row
+              added to it: the box the words are typed in, the panel the four narrowings are
+              added from, and a chip for each narrowing that is on. */}
+          <ControlRow
+            chips={
+              filterChips.length === 0
+                ? undefined
+                : filterChips.map(({ label, name }) => (
+                    <Chip
+                      aria-label={`Remove ${label}`}
+                      key={name}
+                      onClick={() => setFilters({ ...filters, ...FILTER_REMOVALS[name] })}
+                      removable
+                      selected
+                      title={label}
+                    >
+                      {label}
+                    </Chip>
+                  ))
+            }
+            className={`shrink-0 border-b p-3 ${borderDefault}`}
+            search={
+              <SearchBox
+                className="w-full"
+                combobox={{
+                  activeId: activeRow?.id,
+                  controls: "search-results",
+                  expanded: rows.length > 0,
+                }}
+                label="Search"
+                // The bar names the limit rather than cutting the words a reader typed, so its
+                // box takes a query over it (the message below the list says so).
+                maxLength={null}
+                onChange={(value) => {
+                  setQuery(value);
+                  // A new query is a new list, so the highlight is undecided again and the
+                  // first hits to answer it take the head.
+                  setActive({ hits: "", id: null });
+                }}
+                onKeyDown={handleKeyDown}
+                placeholder="Search Dispatch"
+                ref={inputRef}
+                value={query}
+              />
+            }
+            trigger={
+              <SearchNarrowing
+                filters={filters}
+                onFilters={setFilters}
+                projects={projects.data ?? emptyProjects}
+              />
+            }
+          />
+          {/* What the words themselves can do, between the controls and the hits: the three
               operator forms, and, where meaning search did not run, the one line saying so. */}
           <div className={`shrink-0 border-b ${borderDefault}`}>
-            <SearchFilterBar
-              filters={filters}
-              onFilters={setFilters}
-              projects={projects.data ?? emptyProjects}
-            />
             <SearchOperators inUse={operators} />
             {degraded ? (
               <p

@@ -1,17 +1,19 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useMemo } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type { Artifact, IssueReferences } from "../../api/types";
+import { ControlRow } from "../../components/ControlRow";
+import { SearchBox } from "../../components/SearchBox";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useCappedAddressParam } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   badgePrimary,
   borderDefault,
   dangerText,
   highlightRing,
-  inputClasses,
   linkHoverText,
   linkText,
   textMutedOnSurface,
@@ -230,7 +232,9 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
   const route = parseIssuePath(pathname);
   const issueKey = route?.key;
   const highlightedSlug = route?.kind === "artifact" ? route.slug : undefined;
-  const [filter, setFilter] = useState("");
+  // The words that narrow the list live in the address (`?q=`), so a reader who reloads, shares
+  // the tab or comes back to it finds the list narrowed the way they left it.
+  const [filter, setFilter] = useCappedAddressParam("q");
   const upload = useArtifactUpload(
     { issue: issueKey ?? "" },
     { refusal: isClosed ? CLOSED_ISSUE_UPLOAD_REFUSAL : null }
@@ -291,21 +295,20 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
 
   return (
     <div className="space-y-3 pt-3">
-      {/* One control strip: what narrows the list on the left, what adds to it on the right. */}
-      <div className="flex flex-wrap items-center gap-2">
-        <label className="block min-w-48 flex-1">
-          <span className="sr-only">Filter artifacts</span>
-          <input
-            aria-label="Filter artifacts"
-            className={`block min-h-11 w-full rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
-            onChange={(event) => setFilter(event.target.value)}
+      {/* One control strip: what narrows the list at its head, what adds to it after. */}
+      <ControlRow
+        search={
+          <SearchBox
+            className="w-full"
+            label="Filter artifacts"
+            onChange={setFilter}
             placeholder="Filter artifacts"
-            type="search"
             value={filter}
           />
-        </label>
+        }
+      >
         <ArtifactUploadRow upload={upload} />
-      </div>
+      </ControlRow>
       {references.data === undefined ? null : <References references={references.data} />}
       <ArtifactDropZone upload={upload}>
         {visibleArtifacts.length === 0 ? (

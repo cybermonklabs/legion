@@ -1,10 +1,10 @@
 import { type ReactNode, useRef, useState } from "react";
 
+import { SearchBox } from "../../components/SearchBox";
 import {
   backdrop50,
   borderDefault,
   card,
-  inputClasses,
   kbdHint,
   textMutedOnSurface,
   textPrimaryOnSurface,
@@ -119,13 +119,12 @@ export function ShortcutHelp({
             <h2 className={`text-base font-semibold ${textPrimaryOnSurface}`}>
               Keyboard shortcuts
             </h2>
-            <input
-              aria-label="Filter shortcuts"
-              className={`block min-h-11 min-w-0 flex-1 rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
-              onChange={(event) => setFilter(event.target.value)}
+            <SearchBox
+              className="min-w-0 flex-1"
+              label="Filter shortcuts"
+              onChange={setFilter}
               placeholder="Filter"
               ref={filterRef}
-              type="search"
               value={filter}
             />
             <button

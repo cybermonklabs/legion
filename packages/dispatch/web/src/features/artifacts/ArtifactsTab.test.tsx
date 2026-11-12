@@ -1,9 +1,10 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the dropped file below is a drop, which user-event has no form for
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import type { ReactNode } from "react";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type { Artifact, IssueReferences } from "../../api/types";
@@ -50,10 +51,18 @@ const artifact = {
 
 const noReferences: IssueReferences = { members: [], truncated: false };
 
+/** The tab's own address, which is where its filter lives. */
+function CurrentSearch(): ReactNode {
+  const { search } = useLocation();
+  return <output data-testid="location-search">{search}</output>;
+}
+
 function renderTab(
   artifacts: Artifact[],
   references: IssueReferences = noReferences,
-  isClosed = false
+  isClosed = false,
+  /** The query the tab is opened at, as a reload or a shared link hands it over. */
+  search = ""
 ) {
   const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue(artifacts);
   const getIssueReferences = spyOn(api, "getIssueReferences").mockResolvedValue(references);
@@ -61,8 +70,11 @@ function renderTab(
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
   const view = render(
-    <MemoryRouter initialEntries={[buildIssuePath({ key: "CORE-1", kind: "artifacts" })]}>
+    <MemoryRouter
+      initialEntries={[`${buildIssuePath({ key: "CORE-1", kind: "artifacts" })}${search}`]}
+    >
       <QueryClientProvider client={queryClient}>
+        <CurrentSearch />
         <ArtifactsTab isClosed={isClosed} />
       </QueryClientProvider>
     </MemoryRouter>
@@ -282,6 +294,53 @@ test("the filter input narrows rows by name and kind", async () => {
     view.unmount();
     listArtifacts.mockRestore();
     getIssueReferences.mockRestore();
+  }
+});
+
+// The tab's filter is part of the address, so a reader who reloads, shares the tab or walks
+// back to it finds the same narrowed list rather than the whole one.
+test("the filter rides in the address: absent until set, and found again after a reload", async () => {
+  const user = userEvent.setup();
+  const notes: Artifact = {
+    ...artifact,
+    id: "artifact-notes",
+    kind: "doc",
+    name: "notes.md",
+    slug: "notes-md",
+  };
+  const typed = renderTab([artifact, notes]);
+
+  try {
+    await screen.findByTestId("artifact-diagram-png");
+    // Nothing the reader has not asked for: the address holds no `q` until one is typed.
+    expect(screen.getByTestId("location-search").textContent).toBe("");
+
+    const filter = screen.getByRole("searchbox", { name: "Filter artifacts" });
+    await user.click(filter);
+    await user.paste("notes");
+    await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe("?q=notes"));
+    expect(screen.queryByTestId("artifact-diagram-png")).not.toBeInTheDocument();
+
+    await user.clear(filter);
+    await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe(""));
+  } finally {
+    typed.view.unmount();
+    typed.listArtifacts.mockRestore();
+    typed.getIssueReferences.mockRestore();
+  }
+
+  // The same address opened afresh, as a reload hands it over: the box holds those words and
+  // the list is already narrowed by them, before anybody types.
+  const reloaded = renderTab([artifact, notes], noReferences, false, "?q=notes");
+
+  try {
+    await screen.findByTestId("artifact-notes-md");
+    expect(screen.getByRole("searchbox", { name: "Filter artifacts" })).toHaveValue("notes");
+    expect(screen.queryByTestId("artifact-diagram-png")).not.toBeInTheDocument();
+  } finally {
+    reloaded.view.unmount();
+    reloaded.listArtifacts.mockRestore();
+    reloaded.getIssueReferences.mockRestore();
   }
 });
 

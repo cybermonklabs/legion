@@ -88,10 +88,10 @@ export function useBarScope(
       }
       return false;
     },
-    // What the bar will act on, above the box, with the two keys that move it. The filter chips
-    // below the box are another thing and read as one: they say which items the words search,
-    // each with a Remove control of its own, while this says what the bar acts on and is moved
-    // by Tab and Backspace alone.
+    // What the bar will act on, above the row of controls, with the two keys that move it. The
+    // filter chips in that row are another thing and read as one: they say which items the
+    // words search, each with a Remove control of its own, while this says what the bar acts
+    // on and is moved by Tab and Backspace alone.
     header:
       scope === undefined ? null : (
         <div
