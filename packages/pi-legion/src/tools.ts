@@ -209,13 +209,19 @@ export function createLegionTool(deps: {
         PHASE_OP_SENTENCES.requestBackwardMove +
         "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
         "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
-        "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: take each one " +
-        "to done, or out of the workflow with park_child, and sign off again. close_root is refused the same way and with the " +
-        "same code while an issue beneath the root is still in the workflow, since closing it would stop that work mid-turn. " +
+        "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
+        "to done, and sign off again. " +
+        "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
+        "Ask the person what to do with every other child, and hold the acceptance until they answer. " +
+        "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
+        "since closing it would stop that work mid-turn: answer it the same way, park_child under the same rule included. " +
         "release_children and rerun_child are refused for a child whose ancestor is in retro, merging or awaiting_merge " +
         "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
         "under it now: wait for the ancestor to close, then release it. " +
         "The controller's read_state returns the daemon's whole state and set_status moves an issue to todo, backlog or icebox. " +
+        "Move an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. " +
+        "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
+        "controller's report issue, which holds no work. " +
         "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
         "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
         "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +

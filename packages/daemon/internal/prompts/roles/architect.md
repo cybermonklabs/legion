@@ -34,7 +34,9 @@ is no child and is not parked in `backlog`: write it into the spec of the issue 
 request carries it, the parent's, or the sibling's when the parent's pull request is in another
 repository. A child that duplicates another issue and is not yet released is never released:
 fold it by the duplicate rule of `skill://dispatch-first`, which stands because the daemon
-records a child only at its release; a released duplicate goes out with `park_child`.
+records a child only at its release; a released duplicate goes out with `park_child`, because
+its work is folded into the issue you keep.
+Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Name the issue you keep in that comment.
 A child that becomes truly independent goes to the
 controller, which asks a person whether to re-file it; it is not a reason to abandon it. A problem
 outside this tree is never an issue you file: a clear defect in code this tree touches or depends
