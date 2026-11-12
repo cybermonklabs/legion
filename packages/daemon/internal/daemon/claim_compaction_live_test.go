@@ -7,7 +7,8 @@
 // under the real daemon. scripts/e2e/claim-compaction.sh builds this driver with `-tags e2e` and
 // owns the nats-server and the PostgreSQL it runs against.
 //
-// It is a sibling of provider_error_retry_live_test.go, and what the two share is the live-proof
+// It is a sibling of provider_error_retry_live_test.go and role_prompt_rule_live_test.go, and
+// what the three share is the live-proof
 // base that sits beside them (live_agent_proof_test.go): liveAgentProof's reads of a claim and
 // of the daemon's own log, the recording log handler, the model stand-in, the overlay writers,
 // the run's own database and the two plugins packed from this checkout. The local runtime that
@@ -347,7 +348,7 @@ func (r *claimCompactionLive) overrides() overrides {
 // The root architect's issue stands in accepting rather than in a worker phase, for the same
 // repair: it has an architect's claim and no phase worker's, and the repair would read the
 // planner a planning issue names, find no claim at all and start one. Accepting is the phase
-// whose role is the architect (workflow's RoleFor), where no phase worker runs, so the repair
+// whose role is the architect (phase.RoleFor), where no phase worker runs, so the repair
 // passes over it as it passes over every architect.
 func (r *claimCompactionLive) seed() {
 	t := r.t
@@ -1458,9 +1459,10 @@ const (
 )
 
 // paneStandin is one pane's provider endpoint: it answers a turn's request and a compaction's
-// summary request apart, over the stand-in both proofs share (live_agent_proof_test.go), which
-// records each request. A step sets each behaviour before it drives the claim, and the two
-// counts of its own are what a step reads back.
+// summary request apart, over the stand-in every such proof shares (live_agent_proof_test.go),
+// which records each request. A step sets each behaviour before it drives the claim, and the two
+// counts of its own are what a step reads back. role_prompt_rule_live_test.go takes this
+// stand-in as it is, at its default, where every turn is answered and no step sets anything.
 type paneStandin struct {
 	*modelStandin
 

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // Fact is a closed vocabulary of observations that can change Legion's workflow record.
@@ -185,10 +186,21 @@ type ChildAdoption struct {
 	Children []AdoptedChild
 }
 
-// AdoptedChild is one child a ChildAdoption moves into its tree, with its Dispatch parent.
+// AdoptedChild is one child a ChildAdoption moves into its tree, as the release's own Dispatch
+// read showed it: its Dispatch parent, the status and the keys it waits on, and the sequence
+// Dispatch had run to at that read. The daemon's mirror of those links can be older than the read
+// — a person's re-parent and link are one edit of Dispatch, whose event the consumer may not have
+// delivered — and an adopted root is already recorded, so no observation of it applies to correct
+// the mirror (settleObserved). The read therefore travels with the fact: the mirror takes it
+// (blockers.Mirror), behind the sequence fence every mirror write has, before the adoption judges
+// the child, and the workflow holds the child on it as well as on the mirror's row (workflow's
+// enterChild).
 type AdoptedChild struct {
-	Issue  string
-	Parent string
+	Issue     string
+	Parent    string
+	Status    string
+	BlockedBy []string
+	Seq       int64
 }
 
 func (ChildAdoption) isFact() {}
@@ -463,12 +475,33 @@ type ControllerTick struct {
 
 func (ControllerTick) isFact() {}
 
+// EntrySweep is the daemon's periodic convergence of the phase entries, applied as a synthetic
+// fact every entrySweepInterval by the workflow runtime's own ticker (internal/daemon's
+// tickEntrySweep) and never decoded from an event. Admission is the only handler that acts on
+// it: it reads the project's issues, its slots and its line facts as its promote path does and
+// sends every role whose claim is behind the entry its phases row names that entry's work
+// (admit.Admission.convergeEntries).
+//
+// It carries nothing, because the difference it closes is one the record already holds and the
+// handler reads the whole project. What it is for is the running: an admission pass runs on a
+// fact, and a daemon with no fact arriving — a quiet project, a transition whose own start row
+// the outbox fenced out — would otherwise leave a role behind its entry until something else
+// happened. Going through ApplyFact takes the one lock every fact takes, so the sweep reads no
+// record a transition is in the middle of writing.
+type EntrySweep struct{}
+
+func (EntrySweep) isFact() {}
+
 // PullRequestOpened registers a pull request whose branch or body identifies a Dispatch issue.
 type PullRequestOpened struct {
-	Repo      string
-	Number    int
-	Branch    string
-	HeadSHA   string
+	Repo    string
+	Number  int
+	Branch  string
+	HeadSHA string
+	// Base is the branch the pull request merges into (the listener's `base_ref`, GitHub's
+	// base.ref), empty from a listener that predates the field; the workflow records it so a push
+	// onto that branch finds the pull request again (record.PullRequest.Base).
+	Base      string
 	Body      string
 	URL       string
 	UpdatedAt time.Time
@@ -487,7 +520,7 @@ func (PullRequestOpened) isFact() {}
 // the read found it (nil for none: its number, state and clock). The id holds no read time and no
 // boot, so the same observation applied twice against the same record is one fact (ApplyFact
 // answers the second Duplicate, and Applied finds it before), whichever reader applies it - the
-// required-checks pass or the implementer's completion - while a pull request that changed since,
+// daemon's per-issue read or the implementer's completion - while a pull request that changed since,
 // or a record that changed since (a new generation removes a closed one the opened was declined
 // against), makes a new one.
 func OpenedRead(project, repo, branch string, pull githubrest.PullRequest, generation uint64, recorded *record.PullRequest) (PullRequestOpened, string) {
@@ -508,12 +541,16 @@ func OpenedRead(project, repo, branch string, pull githubrest.PullRequest, gener
 // the branch (the webhook's sender), empty from a listener that predates the field and from the
 // daemon's own read.
 type PullRequestSynchronized struct {
-	Repo      string
-	Number    int
-	Branch    string
-	Before    string
-	Sender    string
-	HeadSHA   string
+	Repo    string
+	Number  int
+	Branch  string
+	Before  string
+	Sender  string
+	HeadSHA string
+	// Base is the branch the pull request merges into, as PullRequestOpened.Base is; empty from a
+	// listener that predates the field and from the daemon's own read of the head, and an empty
+	// one leaves the recorded base as it is.
+	Base      string
 	Body      string
 	UpdatedAt time.Time
 }
@@ -550,6 +587,14 @@ type PullRequestReview struct {
 	// review-App review before the fact is applied, and clears this.
 	BodyTruncated bool
 	Body          string
+	// ReadFromList is whether the daemon's own read of GitHub's list of the pull request's
+	// reviews produced this fact (daemon's reviewToApply) rather than the review's webhook, which
+	// the decoder never sets it from. The list answers with GitHub's current commit_id for every
+	// review it holds (LegionHead, dispatch://INFRA-1557), where the webhook's envelope carries
+	// the commit_id the event was delivered with, so the workflow lets a person's listed review
+	// decide no round while the same person's webhook review decides as it always has
+	// (workflow's refusesRound).
+	ReadFromList bool
 }
 
 func (PullRequestReview) isFact() {}
@@ -564,32 +609,80 @@ func (r PullRequestReview) Decides() bool {
 }
 
 // legionFooterMarker opens the Legion footer every Legion role appends to a pull-request review:
-// a JSON object naming the session and phase that wrote it (skills/legion-worker/SKILL.md, the
-// reviewer template prompts/roles/reviewer.md).
+// a JSON object naming the session and phase that wrote it and the head it read
+// (skills/legion-worker/SKILL.md, the reviewer template prompts/roles/reviewer.md).
 const legionFooterMarker = "<!-- legion:"
 
-// LegionSession is the session named in the last Legion footer in the review's body: the session
-// field of the JSON object between the last occurrence of legionFooterMarker and the next `-->`.
-// It is "" when the body carries no footer, the last one's JSON cannot be parsed, or its session
-// is empty. The last occurrence wins, since an earlier footer quoted in the body (a reply, a
-// reviewer's own draft) is not the one that closes it.
-func (r PullRequestReview) LegionSession() string {
+// legionFooter is what the daemon reads out of that JSON object: the session that submitted the
+// review (LegionSession) and the head the review says it read (LegionHead). A role writes its
+// phase there too, which nothing here reads.
+type legionFooter struct {
+	Session string `json:"session"`
+	Head    string `json:"head"`
+}
+
+// lastLegionFooter decodes the last Legion footer in the review's body: the JSON object between
+// the last occurrence of legionFooterMarker and the next `-->`. Every field is empty when the
+// body carries no footer, no `-->` closes the last one, or its JSON cannot be parsed. The last
+// occurrence wins, since an earlier footer quoted in the body (a reply, a reviewer's own draft)
+// is not the one that closes it.
+func (r PullRequestReview) lastLegionFooter() legionFooter {
 	at := strings.LastIndex(r.Body, legionFooterMarker)
 	if at < 0 {
-		return ""
+		return legionFooter{}
 	}
 	rest := r.Body[at+len(legionFooterMarker):]
 	end := strings.Index(rest, "-->")
 	if end < 0 {
-		return ""
+		return legionFooter{}
 	}
-	var footer struct {
-		Session string `json:"session"`
-	}
+	var footer legionFooter
 	if err := json.Unmarshal([]byte(rest[:end]), &footer); err != nil {
+		return legionFooter{}
+	}
+	return footer
+}
+
+// LegionSession is the session named in the last Legion footer in the review's body
+// (lastLegionFooter). It is "" when the body carries no such footer, the last one's JSON cannot
+// be parsed, or its session is empty.
+func (r PullRequestReview) LegionSession() string {
+	return r.lastLegionFooter().Session
+}
+
+// LegionHead is the head the review says it read: the head field of the last Legion footer in the
+// review's body (lastLegionFooter). It is "" when the body carries no footer, the footer's JSON
+// cannot be parsed, it names no head, or the head it names is not a full commit SHA
+// (fullCommitSHA) - a short SHA or a branch name names no commit, since only the whole of it says
+// which code was read.
+//
+// The workflow holds a review the review App submitted to this rather than to CommitID because
+// GitHub rewrites commit_id to the pull request's current head, so its REST record of a review
+// can name a head the review never saw (dispatch://INFRA-1557). Nothing rewrites the body a
+// review was submitted with, so the footer is the review's own word for the code it read, and it
+// is the only thing a force push back to an earlier head cannot forge: no clock tells those
+// heads apart.
+func (r PullRequestReview) LegionHead() string {
+	head := r.lastLegionFooter().Head
+	if !fullCommitSHA(head) {
 		return ""
 	}
-	return footer.Session
+	return head
+}
+
+// fullCommitSHA says whether s is a commit as GitHub names one: exactly 40 lowercase hexadecimal
+// characters. Nothing shorter is compared with a head, since a prefix names a commit only by
+// chance and GitHub spells every head it reports this way.
+func fullCommitSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // Order is where the review falls among the pull request's reviews (record.ReviewOrder): when it
@@ -603,13 +696,11 @@ func (r PullRequestReview) Order() record.ReviewOrder {
 // CheckRun is one latest-run identity in a checks settlement.
 type CheckRun = record.AttemptRun
 
-// PullRequestChecks is a settled checks observation: the latest run of each check, and the checks
-// the settlement names as failed (any failing conclusion) and as cancelled, kept apart since a
-// cancellation is a property of the run - a later push can cancel it - where a failure is of the
-// code. What they come to is the base branch's required set's to say (classify.HeadVerdict). Envoy's
-// listener publishes one at generation 0 or above; the daemon's two-minute pass applies one it
-// built from GitHub's check runs on a head no settlement stood for at classify.PassGeneration (the
-// daemon's readSettlement), never decoded from an event.
+// PullRequestChecks is Envoy's settled checks observation: the latest run of each check, and the
+// checks the settlement names as failed (any failing conclusion) and as cancelled, kept apart since
+// a cancellation is a property of the run - a later push can cancel it - where a failure is of the
+// code. What they come to is told to the roles that work the issue, which decide it
+// (workflow's tellChecks).
 type PullRequestChecks struct {
 	Repo       string
 	Number     int
@@ -623,34 +714,31 @@ type PullRequestChecks struct {
 
 func (PullRequestChecks) isFact() {}
 
-// RequiredChecks is what a pull request's base branch requires, as the daemon read it from GitHub
-// with its implement App's installation token (requiredchecks.Required): never decoded from an
-// event, applied as a synthetic fact by the daemon's own read of each open pull request
-// (workflowRuntime.watchRequiredChecks). Names is the required checks, an empty Names a base that
-// requires none. Workflows is each workflow its rulesets require, with its latest run's result on
-// WorkflowsHead (requiredchecks.Workflows); both are empty when the base requires no workflow.
-type RequiredChecks struct {
-	Repo          string
-	Number        int
-	Names         []string
-	Workflows     []record.RequiredWorkflow
-	WorkflowsHead string
-}
-
-func (RequiredChecks) isFact() {}
-
 // PullRequestMergeability is GitHub's lazily computed verdict for whether a pull request's head
 // can be merged into Base without a conflict, decoded from GitHub's nullable `mergeable` field on
 // readPullRequest's own /pulls/{number} read, which also names the base branch: never
-// decoded from an event, applied as a synthetic fact by the daemon's own read of each open pull
-// request (workflowRuntime.readRequiredChecks), before requiredFor's own rulesets and workflow
-// reads run. Mergeable is record.MergeabilityUnknown while GitHub is still computing it,
-// record.MergeabilityMergeable or record.MergeabilityConflicting once it has.
+// decoded from an event, applied as a synthetic fact by the daemon's own read of one issue's pull
+// request (workflowRuntime.readIssuePullRequest). Mergeable is record.MergeabilityUnknown while
+// GitHub is still computing it, record.MergeabilityMergeable or record.MergeabilityConflicting
+// once it has. MergeState is
+// GitHub's own merge state for the head from the same answer's `mergeable_state`, and it is what
+// an approval standing on the head waits for: a state the issue may advance on
+// (record.MergeState.Mergeable) ends the round in accepting, and any other state leaves the
+// approval standing where it is and tells the architect and the reviewer so (workflow's
+// reviewRound). It tells a head GitHub holds on a check or a review the repository requires from
+// one GitHub would merge now, which Mergeable cannot.
+//
+// HeadSHA is the head GitHub answered both of them for, from the same answer's `head.sha`. Every
+// read fills it, and the engine records the answer only while the record still stands at that
+// head (workflow's mergeability): a read is one round trip to GitHub, a push can land during it,
+// and a verdict about another head's tree says nothing about this one.
 type PullRequestMergeability struct {
-	Repo      string
-	Number    int
-	Base      string
-	Mergeable record.Mergeability
+	Repo       string
+	Number     int
+	Base       string
+	HeadSHA    string
+	Mergeable  record.Mergeability
+	MergeState record.MergeState
 }
 
 func (PullRequestMergeability) isFact() {}
@@ -675,12 +763,12 @@ type PullRequestClosed struct {
 
 func (PullRequestClosed) isFact() {}
 
-// PullRequestMissing is the required-checks pass finding, in its listing of Repo's open pull
-// requests, none on Branch, the branch of Issue, whose implementer recorded its handoff at
-// HandoffCommit while Issue is in implementing with no open or merged pull request recorded: never
-// decoded from an event. The issue waits in implementing for a pull request nobody is told is
-// missing, so the workflow tells its architect (workflow's pullRequestMissing), once per handoff
-// commit: the pass applies it under an event id naming the issue and the commit.
+// PullRequestMissing is the daemon's per-issue read of GitHub finding no open pull request on
+// Branch, the branch of Issue, whose implementer recorded its handoff at HandoffCommit while Issue
+// is in implementing with no open or merged pull request recorded: never decoded from an event.
+// The issue waits in implementing for a pull request nobody is told is missing, so the workflow
+// tells its architect (workflow's pullRequestMissing), once per handoff commit: the read applies it
+// under an event id naming the issue and the commit (the daemon's tellMissing).
 type PullRequestMissing struct {
 	Issue         string
 	Repo          string
@@ -689,36 +777,6 @@ type PullRequestMissing struct {
 }
 
 func (PullRequestMissing) isFact() {}
-
-// MergeFailed is the merge queue taking issue's pull request Number out at Head, the head its
-// accepted READY named, because the merge failed (ghautomerge.MergeFailed), as the issue's
-// ready_merge outbox row read it from GitHub: never decoded from an event. Reason names the removal
-// and each failing run of the merge_group CI on the commit the queue built.
-type MergeFailed struct {
-	Issue  string
-	Number int
-	Head   string
-	Reason string
-}
-
-func (MergeFailed) isFact() {}
-
-// MergeQueueConflict is GitHub's merge queue reporting its entry for issue's pull request Number
-// at Head, the head its accepted READY named, unmergeable while the queue had built that entry on
-// the tip of the branch the pull request merges into, as the issue's ready_merge outbox row read
-// it from GitHub: never decoded from an event. An entry built on its base branch's tip has
-// nothing ahead of it in the queue to blame, so the head itself is what the queue cannot merge,
-// and the row reads the state that long (the daemon's queueConflictBound) before it sends this.
-// Reason names the branch the implementer is to merge forward and the commit the queue built on;
-// nothing reads either on its own, so neither is a field here.
-type MergeQueueConflict struct {
-	Issue  string
-	Number int
-	Head   string
-	Reason string
-}
-
-func (MergeQueueConflict) isFact() {}
 
 // Push records a branch push.
 type Push struct {
@@ -736,6 +794,22 @@ type Push struct {
 
 func (Push) isFact() {}
 
+// BasePush is a push to a branch that is no issue's (decodePush), which is the shape of a branch
+// pull requests sit on: a base. GitHub recomputes whether each head on that base still merges into
+// it and sends no event for the pull request when it does, so a head the record holds as clean can
+// already be behind or dirty; this fact is the only notice the daemon gets. The workflow finds the
+// open pull requests recorded on Branch and records that their base moved to After (workflow's
+// basePush), so the next read of each is known to be needed. Nothing in it is a decision: a push
+// to a branch no pull request is on changes nothing.
+type BasePush struct {
+	Repo   string
+	Branch string
+	// After is the commit the push left the base branch at.
+	After string
+}
+
+func (BasePush) isFact() {}
+
 // HandoffComplete is an API-originated phase-completion fact.
 type HandoffComplete struct {
 	Issue string
@@ -752,10 +826,9 @@ type HandoffComplete struct {
 	Generation uint64
 	Summary    string
 	Verdict    string
-	Ready      bool
 	// Commit is the commit the completion reports: the implementer's pushed tip for an implementing
-	// round, the commit retro stands on, the head the merger's READY names; none for the planner,
-	// the tester or the reviewer.
+	// round, and the commit retro and merging stand on; none for the planner, the tester or the
+	// reviewer.
 	Commit string
 	// HandoffRecord and HandoffVersion name the Dispatch handoff record the completion of a phase
 	// with a handoff ends with (phase.Handoff): the route read it back from Dispatch and held it to
@@ -763,23 +836,6 @@ type HandoffComplete struct {
 	// Empty and zero for a phase that writes none.
 	HandoffRecord  string
 	HandoffVersion int
-	// MergeNote is READY's by-hand note, empty for any other completion: the MANUAL_MERGE_REQUIRED
-	// answer the route's READY checks give a pull request whose change touches a path the project's
-	// merge.by_hand names. The workflow keeps it with the merger's packet and tells it at its head.
-	MergeNote string
-	// RecordedHead and RecordedHeadAt are the head the daemon's record held for the issue's pull
-	// request when the route read it for READY, and the record's clock then
-	// (record.PullRequest.HeadUpdatedAt). The record follows GitHub only by webhook and the
-	// daemon's two-minute read of each pull request, so it can lag:
-	// the workflow accepts READY while the record is still exactly that snapshot, or already at
-	// Commit, and otherwise refuses it, since a push landed in between. Both fields are compared, so
-	// a record that left this head and came back to it (a force push and its undo) is a moved one.
-	RecordedHead   string
-	RecordedHeadAt time.Time
-	// HeadAt is GitHub's updated_at for the pull request in the route's read, which showed Commit
-	// as its head. A READY the workflow records advances the record to Commit at this clock, so a
-	// synchronize older than it, delivered late or again, changes nothing (classify.LateLifecycle).
-	HeadAt time.Time
 }
 
 func (HandoffComplete) isFact() {}
@@ -802,10 +858,14 @@ const (
 	EscalateDecision RetryOrEscalateDecision = "escalate"
 )
 
-// RetryOrEscalate is an API-originated response to a held phase.
+// RetryOrEscalate is an API-originated response to a held phase. Reason is why the architect
+// answered as it did, which a retry writes into the task the restarted role is given and into
+// the daemon's own log line for the release; it is empty for a response that names none, which
+// leaves the daemon's own words in both.
 type RetryOrEscalate struct {
 	Issue    string
 	Decision RetryOrEscalateDecision
+	Reason   string
 }
 
 func (RetryOrEscalate) isFact() {}
@@ -813,12 +873,18 @@ func (RetryOrEscalate) isFact() {}
 // RestartPhase is the operator's retry of one phase worker, from `legion claims retry` of a claim
 // that failed or that an operator stopped (api's retryClaim). The workflow starts Role's phase
 // again, so a worker relaunched with no task — a new session above all, which has read none of the
-// issue's work — is given the task of the phase it is to work. It is the operator's own fact
-// rather than the architect's RetryOrEscalate because an operator's stop leaves no hold for an
-// architect to decide.
+// issue's work — is given the task of the phase it is to work. An issue held for Role is restored
+// from its hold first, as the architect's RetryOrEscalate restores it; it is the operator's own
+// fact rather than that one because an operator's stop leaves no hold for an architect to decide.
+//
+// FreshSession is `legion claims retry --fresh-session`: the start this fact queues retries the
+// claim in a new session rather than resuming the one it recorded (supervise's RequestRetry). It
+// rides the fact so that the session is forgotten inside the retry decision itself, which means a
+// restart the workflow refuses leaves the claim's session where the operator still has it.
 type RestartPhase struct {
-	Issue string
-	Role  claim.Role
+	Issue        string
+	Role         claim.Role
+	FreshSession bool
 }
 
 func (RestartPhase) isFact() {}
@@ -885,14 +951,58 @@ func (f CloseRoot) Message() string {
 }
 
 // ClaimFailed is the supervision terminal failure observation. Reason is the persisted cause when
-// the supervisor has one, so workflow notices can say what failed after a daemon restart.
+// the supervisor has one, so workflow notices can say what failed after a daemon restart. Death is
+// why the claim's process was last found gone and StartFailure why its last start did not produce
+// a running agent, each as the runtime said it and empty when the claim has none: the two answer
+// different questions — a worker that kept dying and a worker that could never start — and the
+// notices this fact sends name both, since the architect reading them has no other way to learn
+// either (dispatch://INFRA-714 R6).
 type ClaimFailed struct {
-	Issue  string
-	Role   claim.Role
-	Reason string
+	Issue        string
+	Role         claim.Role
+	Reason       string
+	Death        string
+	StartFailure string
+	// Cause is the one word for what failed the claim, chosen by the site that failed it and
+	// carried beside Reason's sentence (supervise.FailureCause, Claim.FailureCause): one sentence
+	// covers several events, and a notice that names the word says which of them this was. It is
+	// "" for a claim whose failure the daemon recorded no cause for.
+	Cause supervise.FailureCause
+	// Budgets are the claim's retry counters as the failure left them, and Limits the
+	// deployment's, where each of those counters runs out. Both travel on the fact because the
+	// workflow engine holds neither the claim nor the configuration the limits are built from:
+	// the daemon takes them from the supervisor it supervises under (workflowRuntime.attach) and
+	// fills them in where the fact is built (applyTerminal).
+	Budgets supervise.Budgets
+	Limits  supervise.Limits
 }
 
 func (ClaimFailed) isFact() {}
+
+// SessionLost is a claim whose recorded session no session store holds any more: its worker now
+// runs a fresh agent that has read none of its own earlier work (supervise's startFresh). Detail
+// is why, as the runtime said it. It is told on the issue, to its architect and to the controller,
+// because a worker that silently lost its memory looks like one that is merely slow.
+type SessionLost struct {
+	Issue  string
+	Role   claim.Role
+	Detail string
+}
+
+func (SessionLost) isFact() {}
+
+// SessionStoreFault is a start that could not reach the session store at all, which is a
+// deployment fault rather than the claim's: nothing of the claim is lost and nothing is charged,
+// and the start is tried again every minute until the store answers (supervise's
+// startWaitsForStore). It is told on the issue and to the controller at the first such start and
+// hourly while it lasts, since no worker of the issue runs meanwhile.
+type SessionStoreFault struct {
+	Issue  string
+	Role   claim.Role
+	Detail string
+}
+
+func (SessionStoreFault) isFact() {}
 
 // ClaimReady is a claim ready to be prompted, from either of two sources: the supervision
 // observation of a launch's ready, its agent having taken its Envoy role and said it can be
@@ -1215,6 +1325,16 @@ func ApplyFact(ctx context.Context, pool *pgxpool.Pool, source, eventID string, 
 			result.Refusal = candidate.Refusal
 		}
 	}
+	// A refused report of a production check leaves its event unmarked, so a report sent again —
+	// the same look and verdict, which is the same fact id its route mints (api's checkReport) —
+	// applies instead of being answered as one already received. It is this fact alone: an
+	// unmarked refusal of any other fact would make a refused handoff apply on its next delivery,
+	// which those refusals exist to stop (dispatch://INFRA-714/spec R12).
+	if _, report := fact.(CheckReport); report && result.Refusal != nil {
+		if err := record.NewStore().ForgetProcessed(ctx, tx, source, eventID); err != nil {
+			return Result{}, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Result{}, err
 	}
@@ -1224,8 +1344,9 @@ func ApplyFact(ctx context.Context, pool *pgxpool.Pool, source, eventID string, 
 }
 
 // Applied is which of eventIDs from source ApplyFact has already applied, read in one query and
-// outside the fact lock. A fact's processed_events row commits with the fact and is never removed,
-// so an id read here as applied is one ApplyFact would only take the lock to skip. A caller that
+// outside the fact lock. A fact's processed_events row commits with the fact, and only a refused
+// production check report removes its own (ApplyFact), so an id read here as applied is one
+// ApplyFact would only take the lock to skip. A caller that
 // replays many facts it has most likely applied before (the boot's terminal replay) applies only
 // the rest: the duplicates cost one read between them, not a transaction each queued on the lock
 // behind every live fact.

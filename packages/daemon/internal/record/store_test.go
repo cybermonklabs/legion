@@ -77,7 +77,6 @@ func issueFixture(key string) Issue {
 		Rank:            "00042U",
 		HandedOver:      true,
 		LastDispatchSeq: 41,
-		ReadyPending:    &ReadyPending{Step: DesignStepSpec, Version: 9},
 		Repo:            "acme/widgets",
 		DefaultBranch:   "release/v7.1",
 		GitHubRepo:      "Acme/Widgets",
@@ -152,7 +151,7 @@ func TestQueuedRootsUnderListsTheLabelledTodoRootsWhoseChainHoldsTheKey(t *testi
 	records := NewStore()
 	issue := func(key, tree, status string, handed bool, ancestry ...string) Issue {
 		issue := issueFixture(key)
-		issue.Tree, issue.Status, issue.HandedOver, issue.ReadyPending, issue.Ancestry = tree, status, handed, nil, ancestry
+		issue.Tree, issue.Status, issue.HandedOver, issue.Ancestry = tree, status, handed, ancestry
 		if len(ancestry) != 0 {
 			issue.Parent = ParentOf(ancestry[0])
 		}
@@ -326,27 +325,23 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		CheckRuns: []AttemptRun{{Name: "unit", ID: 91}, {Name: "lint", ID: 92}}, Generation: 4,
 		Snapshot: "snapshot-4", Pushes: pushes, Moves: []Move{{Before: "9f8e7d", SHA: "a0b1c2"},
 			{Before: "a0b1c2", SHA: "b1c2d3", Pushed: true, Repeats: []ClassifiedPush{{SHA: "b1c2d3", Before: "a0b1c2", ByReviewApp: true}, {SHA: "b1c2d3", Before: "a0b1c2", Sender: "legion-implement[bot]"}}}},
-		PlannedRed: true, State: PullRequestMerged, MergeSHA: "d4e5f6",
-		// A run's anchor keeps a set never read apart from an empty one, and so do its steps.
+		State: PullRequestMerged, MergeSHA: "d4e5f6",
+		// A run's anchor keeps a settlement never made apart from an empty one, and so do its steps.
 		Run: &HeadRun{
 			Anchor: Judgement{HeadSHA: "a0b1c2", CheckedHead: "a0b1c2", Failing: []string{"unit"},
-				CheckRuns: []AttemptRun{{Name: "unit", ID: 90}}, Generation: 3, Snapshot: "snapshot-3", Workflows: []RequiredWorkflow{}},
+				CheckRuns: []AttemptRun{{Name: "unit", ID: 90}}, Generation: 3, Snapshot: "snapshot-3"},
 			Pushes: pushes[:1],
-			Steps: []RunStep{{Head: "b1c2d3", Before: "a0b1c2", At: time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC)}, {Settlement: &Settlement{Head: "b1c2d3", CheckRuns: []AttemptRun{{Name: "unit", ID: 91}}, Generation: 4,
+			Steps: []RunStep{{Head: "b1c2d3", Before: "a0b1c2"}, {Settlement: &Settlement{Head: "b1c2d3", CheckRuns: []AttemptRun{{Name: "unit", ID: 91}}, Generation: 4,
 				Snapshot: "snapshot-4", Failing: []string{"unit"}, Cancelled: []string{"e2e"}}},
-				{Required: &RequiredRead{Names: []string{}, Workflows: []RequiredWorkflow{}}}, {WorkflowsCleared: true}, {Reopened: true}},
-			Decided: "b1c2d3",
+				{Reopened: true}},
 		},
-		// A base that requires no check reads back as such, never as a set that was not read.
-		Required:  []string{},
-		Workflows: []RequiredWorkflow{{Path: ".github/workflows/review.yml", Result: "failure"}}, WorkflowsHead: "b1c2d3",
 	}
-	phase := PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "legion-208-implementer", HandoffCommit: "aabbcc", HandoffRecord: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", HandoffVersion: 3, Rounds: 2, Verdict: "pass",
+	phase := PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "legion-208-implementer", HandoffCommit: "aabbcc",
+		HandoffRecord: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", HandoffVersion: 3, Pass: 3, Rounds: 2, Verdict: "pass",
 		// The counts of two kinds of move and the cap the row told for read back as they were
 		// written: the map keeps a count for each pair it holds, and nothing of either is lost to
 		// the column the other rides in.
-		BackwardMoves: map[string]int{"testing-implementing": 2, "reviewing-implementing": 1}, CapTold: 3,
-		MergeNote: "MANUAL_MERGE_REQUIRED: pull request #1243 matches a by_hand merge rule; do not auto-arm it"}
+		BackwardMoves: map[string]int{"testing-implementing": 2, "reviewing-implementing": 1}, CapTold: 3}
 	gate := DesignGate{Issue: issue.Key, Step: DesignStepSpec, ArtifactID: "artifact-208", LatestVersion: 7, ApprovedVersion: &approved}
 	slot := Slot{Issue: issue.Key, Index: 0, AdmittedAt: updatedAt}
 
@@ -732,9 +727,7 @@ func samePullRequest(got, want PullRequest) bool {
 		reflect.DeepEqual(got.CheckRuns, want.CheckRuns) &&
 		got.Generation == want.Generation && got.Snapshot == want.Snapshot &&
 		reflect.DeepEqual(got.Pushes, want.Pushes) && reflect.DeepEqual(got.Moves, want.Moves) &&
-		reflect.DeepEqual(got.Run, want.Run) &&
-		got.PlannedRed == want.PlannedRed && reflect.DeepEqual(got.Required, want.Required) &&
-		reflect.DeepEqual(got.Workflows, want.Workflows) && got.WorkflowsHead == want.WorkflowsHead && got.MergeSHA == want.MergeSHA
+		reflect.DeepEqual(got.Run, want.Run) && got.MergeSHA == want.MergeSHA
 }
 
 // A production check is one record per closed issue, every field read back as written — the role
@@ -831,10 +824,10 @@ func sameInstant(got, want *time.Time) bool {
 	return got.Equal(*want)
 }
 
-// A new generation keeps an open pull request but none of the old generation's reading of it: its
-// CI settlement, its head run and its planned mark, which would otherwise carry the tester's last
-// round into the new generation's first red.
-func TestClearGenerationResetsAnOpenPullRequestsReading(t *testing.T) {
+// A new generation keeps an open pull request but none of the old generation's reading of its CI:
+// the settlement it recorded is of a head nobody has judged since, and its head run would replay
+// the old generation's judgement.
+func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
@@ -843,8 +836,8 @@ func TestClearGenerationResetsAnOpenPullRequestsReading(t *testing.T) {
 		Issue: issue.Key, Repo: "sjawhar/legion", Number: 1359, Branch: "legion/LEGION-285",
 		HeadSHA: "red-tests", HeadUpdatedAt: time.Date(2026, 9, 25, 21, 0, 0, 0, time.UTC),
 		CheckedHead: "red-tests", Failing: []string{"test"}, CheckRuns: []AttemptRun{},
-		Run:        &HeadRun{Anchor: Judgement{HeadSHA: "fix"}, Steps: []RunStep{{Head: "red-tests"}}},
-		PlannedRed: true, State: PullRequestOpen,
+		Run:   &HeadRun{Anchor: Judgement{HeadSHA: "fix"}, Steps: []RunStep{{Head: "red-tests"}}},
+		State: PullRequestOpen,
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, issue))
@@ -857,9 +850,33 @@ func TestClearGenerationResetsAnOpenPullRequestsReading(t *testing.T) {
 		if got == nil {
 			t.Fatal("the open pull request is gone, want it kept")
 		}
-		if got.CheckedHead != "" || got.Run != nil || got.PlannedRed {
-			t.Fatalf("after ClearGeneration: checkedHead=%q run=%+v plannedRed=%v, want \"\", nil and false",
-				got.CheckedHead, got.Run, got.PlannedRed)
+		if got.CheckedHead != "" || len(got.Failing) != 0 || got.Run != nil {
+			t.Fatalf("after ClearGeneration: checkedHead=%q failing=%v run=%+v, want \"\", none and nil",
+				got.CheckedHead, got.Failing, got.Run)
+		}
+	})
+}
+
+// A new generation's phase row keeps its pass and loses its rounds. The rounds are the last
+// generation's reviews, which review_round_cap bounds within one run; the pass is what tells one
+// pass through a phase from the last in the handoff completion key, so the new run's completion at
+// a commit the old run already reported has to take a key of its own.
+func TestClearGenerationKeepsThePassAndResetsTheRounds(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	issue := issueFixture("LEGION-286")
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issue))
+		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "legion-286-implementer",
+			HandoffCommit: "handoff-4", Pass: 4, Rounds: 2, Verdict: "pass"}))
+		must(t, records.ClearGeneration(ctx, tx, issue.Key, time.Now().UTC()))
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		phases, err := records.Phases(ctx, tx, issue.Key)
+		must(t, err)
+		if len(phases) != 1 || phases[0].Pass != 4 || phases[0].Rounds != 0 || phases[0].HandoffCommit != "" {
+			t.Fatalf("phases after ClearGeneration = %#v, want one row with pass 4, no rounds and no handoff", phases)
 		}
 	})
 }
@@ -1137,62 +1154,6 @@ func TestRenewOutboxLeaseRenewsOnlyUnderItsToken(t *testing.T) {
 	})
 }
 
-// A ready_merge row records that it saw READY's head armed (ReadyMerge.Armed) only under its own
-// lease: a wrong token replaces nothing, and a payload of another kind is an error, never taken for a
-// lease lost. A queue of the same issue and head, a reopen at READY's head, starts the row over
-// unarmed and takes it from the worker holding it, whose replacement then touches nothing.
-func TestAREADYMergeRowsArmIsItsLeaseHoldersAndAReopenStartsItOver(t *testing.T) {
-	ctx := context.Background()
-	st := migratedStore(t)
-	records := NewStore()
-	now := time.Date(2026, 10, 17, 6, 0, 0, 0, time.UTC)
-	queue := func(tx pgx.Tx) {
-		row, err := NewOutboxRow("LEGION-208", ReadyMerge{Number: 42, Head: "ready-head"}, now)
-		must(t, err)
-		must(t, records.Enqueue(ctx, tx, row))
-	}
-	armed := func(tx pgx.Tx) bool {
-		var armed bool
-		must(t, tx.QueryRow(ctx, `select coalesce((payload->>'armed')::boolean, false) from outbox where kind = 'ready_merge'`).Scan(&armed))
-		return armed
-	}
-	seen := ReadyMerge{Number: 42, Head: "ready-head", Armed: true}
-	var leased OutboxRow
-	inTx(t, st, func(tx pgx.Tx) {
-		queue(tx)
-		claimed := claimEachDue(t, records, tx, "LEGION", now)
-		if len(claimed) != 1 {
-			t.Fatalf("claimed %v, want the one row", outboxKeys(claimed))
-		}
-		leased = claimed[0]
-		replaced, err := records.ReplaceOutboxPayload(ctx, tx, leased.ID, "another-lane", seen)
-		must(t, err)
-		if replaced || armed(tx) {
-			t.Fatalf("a replacement under a wrong token = %v, armed %v; want neither", replaced, armed(tx))
-		}
-		replaced, err = records.ReplaceOutboxPayload(ctx, tx, leased.ID, leased.LeaseToken, AutoMergeDisable{Number: 42})
-		if err == nil || replaced || armed(tx) {
-			t.Fatalf("a replacement of another kind under the lease's token = %v, %v, armed %v; want an error and nothing replaced", replaced, err, armed(tx))
-		}
-		replaced, err = records.ReplaceOutboxPayload(ctx, tx, leased.ID, leased.LeaseToken, seen)
-		must(t, err)
-		if !replaced || !armed(tx) {
-			t.Fatalf("a replacement under the lease's token = %v, armed %v; want both", replaced, armed(tx))
-		}
-	})
-	inTx(t, st, func(tx pgx.Tx) {
-		queue(tx)
-		if armed(tx) {
-			t.Fatal("a queue of the same issue and head kept the row armed, want it started over")
-		}
-		replaced, err := records.ReplaceOutboxPayload(ctx, tx, leased.ID, leased.LeaseToken, seen)
-		must(t, err)
-		if replaced || armed(tx) {
-			t.Fatalf("the worker the queue took the row from replaced its payload = %v, armed %v; want neither", replaced, armed(tx))
-		}
-	})
-}
-
 // `legion state` shows a lifecycle row held behind its issue's running one. A due, unleased
 // lifecycle row is held when another lifecycle row of its issue is under a live lease, on that
 // row; a start the branch rule holds behind an issue_branch row is held on the branch row while it
@@ -1225,7 +1186,7 @@ func TestHeldRowsListsLifecycleRowsBehindTheirIssuesRunningOne(t *testing.T) {
 		// (a) LEGION-208: a workspace removal and a status write due behind a running suspend.
 		runningSuspend = enqueue(tx, "LEGION-208", suspend, now)
 		removal = enqueue(tx, "LEGION-208", WorkspaceRemove{Linger: 1}, now)
-		enqueue(tx, "LEGION-208", StatusWrite{Status: "done"}, now)
+		enqueue(tx, "LEGION-208", OrdinaryStatusWrite("done", "in_progress", ""), now)
 		// (b) LEGION-209: a start due behind its branch row, which is running; due a minute before 208's.
 		runningBranch = enqueue(tx, "LEGION-209", IssueBranch{Generation: 1}, now)
 		fencedStart = enqueue(tx, "LEGION-209", start, now.Add(-time.Minute))
@@ -1421,8 +1382,8 @@ func TestDueRowsListsOnlyTheRowsALaneMayRunNow(t *testing.T) {
 		must(t, records.Enqueue(ctx, tx, row))
 	}
 	inTx(t, st, func(tx pgx.Tx) {
-		enqueue(tx, "LEGION-208", StatusWrite{Status: "testing"})
-		enqueue(tx, "LEGION-208", StatusWrite{Status: "retro"})
+		enqueue(tx, "LEGION-208", OrdinaryStatusWrite("testing", "in_progress", ""))
+		enqueue(tx, "LEGION-208", OrdinaryStatusWrite("retro", "testing", ""))
 		enqueue(tx, "LEGION-208", IssueBranch{Generation: 1})
 		enqueue(tx, "LEGION-208", SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 1})
 		enqueue(tx, "LEGION-209", Notice{Kind: "phase-finished", Role: claim.RoleTester, Summary: "Tests passed"})
@@ -1484,7 +1445,7 @@ func TestADueLifecycleRowWaitsWhileItsIssuesLifecycleRowRuns(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		enqueue(tx, "LEGION-208", SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 1})
 		removalID = enqueue(tx, "LEGION-208", WorkspaceRemove{Linger: 1})
-		enqueue(tx, "LEGION-208", StatusWrite{Status: "done"})
+		enqueue(tx, "LEGION-208", OrdinaryStatusWrite("done", "in_progress", ""))
 		enqueue(tx, "LEGION-209", LingerClose{Generation: 1})
 		all := []string{"supervise:LEGION-208:suspend", "workspace_remove:LEGION-208", "dispatch_status:LEGION-208:done", "linger_close:LEGION-209"}
 		if got := due(tx, "", nil); !reflect.DeepEqual(got, all) {
@@ -1635,7 +1596,7 @@ func TestABoardRowClaimedWhileItsIssuesLifecycleClaimIsUncommittedIsLeasedAtOnce
 	inTx(t, st, func(tx pgx.Tx) {
 		for _, payload := range []OutboxPayload{
 			SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 1},
-			StatusWrite{Status: "done"},
+			OrdinaryStatusWrite("done", "in_progress", ""),
 		} {
 			row, err := NewOutboxRow("LEGION-208", payload, now)
 			must(t, err)
@@ -2148,9 +2109,9 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"linger_until", "held_from", "last_dispatch_seq", "ready_pending_version", "ready_pending_step", "hold_reason", "dispatch_status", "repo",
 			"default_branch", "github_repo", "awaiting_ask", "awaiting_gate_version", "awaiting_artifact", "awaiting_answered_at", "awaiting_answered_by",
 			"awaiting_answered_detail", "awaiting_since_seq", "awaiting_since", "handout_seq", "declared_seq", "declared_at", "caught_up_seq",
-			"ancestry", "handed_over_from", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried"},
-		"phases":            {"issue", "role", "claim", "handoff_commit", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "assignment", "handoff_record", "handoff_version"},
-		"pull_requests":     {"issue", "repo", "number", "branch", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "conflicting_head", "merge_sha"},
+			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried"},
+		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_raised_at", "handoff_record", "handoff_version"},
+		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "conflicting_head", "merge_sha"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
 		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened"},
 		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words"},
@@ -2295,8 +2256,8 @@ func TestCheckedHeadMigrationKeepsARecordedVerdictStandingForItsHead(t *testing.
 	inTx(t, st, func(tx pgx.Tx) {
 		pr, err := NewStore().PullRequest(ctx, tx, "LEGION-208")
 		must(t, err)
-		if pr == nil || pr.CheckedHead != "head" || len(pr.CheckRuns) != 1 || pr.Required != nil {
-			t.Fatalf("pull request after 0028 = %+v, want checked head \"head\" with its settlement, and no required set read", pr)
+		if pr == nil || pr.CheckedHead != "head" || len(pr.CheckRuns) != 1 {
+			t.Fatalf("pull request after 0028 = %+v, want checked head \"head\" with its settlement", pr)
 		}
 		unsettled, err := NewStore().PullRequest(ctx, tx, "LEGION-209")
 		must(t, err)

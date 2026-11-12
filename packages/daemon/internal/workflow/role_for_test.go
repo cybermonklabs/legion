@@ -15,11 +15,11 @@ import (
 )
 
 // roleForAnswers is the role that works each phase, written out here rather than read from
-// RoleFor, so a phase added to the daemon fails this test until somebody decides what role works
-// it. The architect works two of them: admitted, where a root's own architect reads its spec and
-// decomposes its tree, and accepting, where it signs the work off. No row of the table starts
-// either (Table), and every site that starts, resumes or reports a phase's worker skips the
-// architect.
+// phase.RoleFor, so a phase added to the daemon fails this test until somebody decides what role
+// works it. The architect works two of them: admitted, where a root's own architect reads its
+// spec and decomposes its tree, and accepting, where it signs the work off. No row of the table
+// starts either (Table), and every site that starts, resumes or reports a phase's worker skips
+// the architect.
 var roleForAnswers = map[phase.Phase]claim.Role{
 	phase.Admitted:       claim.RoleArchitect,
 	phase.AwaitingPerson: "",
@@ -30,13 +30,13 @@ var roleForAnswers = map[phase.Phase]claim.Role{
 	phase.Accepting:      claim.RoleArchitect,
 	phase.Retro:          claim.RoleImplementer,
 	phase.Merging:        claim.RoleMerger,
-	phase.AwaitingMerge:  "",
 	phase.Done:           "",
 	phase.Held:           "",
 }
 
-// R1: RoleFor answers the architect for admitted, beside accepting. The phases come from
-// phase.All, so the test reads the whole phase set the daemon writes and not a list of its own.
+// R1: phase.RoleFor answers the architect for admitted, beside accepting, and this package's
+// forwarder of the same name answers what it answers. The phases come from phase.All, so the test
+// reads the whole phase set the daemon writes and not a list of its own.
 func TestRoleForAnswersEveryPhaseOfPhaseAll(t *testing.T) {
 	for _, p := range phase.All {
 		want, written := roleForAnswers[p]
@@ -44,8 +44,11 @@ func TestRoleForAnswersEveryPhaseOfPhaseAll(t *testing.T) {
 			t.Errorf("phase %s is in phase.All and in no entry of this test's table: decide which role works it, and write it here", p)
 			continue
 		}
+		if got := phase.RoleFor(p); got != want {
+			t.Errorf("phase.RoleFor(%s) = %q, want %q", p, got, want)
+		}
 		if got := RoleFor(p); got != want {
-			t.Errorf("RoleFor(%s) = %q, want %q", p, got, want)
+			t.Errorf("workflow.RoleFor(%s) = %q, want the %q phase.RoleFor answers: the forwarder restates nothing", p, got, want)
 		}
 	}
 	for p := range roleForAnswers {
@@ -55,37 +58,51 @@ func TestRoleForAnswersEveryPhaseOfPhaseAll(t *testing.T) {
 	}
 }
 
-// roleForSite is one function of the daemon that reads RoleFor: the file it is in, relative to
-// the module root, and its name, a method's prefixed with its receiver type.
+// roleForSite is one function of the daemon that reads phase.RoleFor, or this package's forwarder
+// of it: the file it is in, relative to the module root, and its name, a method's prefixed with
+// its receiver type.
 type roleForSite struct{ file, fn string }
 
-// roleForReader is what the reader list pins for one site: how many times the function calls
+// roleForReader is what the reader list pins for one site: how many times the function reads
 // RoleFor, and the behaviour test that holds what the site does with the answer today.
 type roleForReader struct {
 	calls int
 	test  string
 }
 
-// roleForReaders is every non-test caller of RoleFor in the daemon, and the test that holds each
-// one's behaviour. Only one of them answers differently now that RoleFor answers the architect
-// for admitted: noticeFor, where a guard of its own keeps the notice roleless (R2). Every other
-// site reaches its answer through a guard that treats the architect as it treated the empty
-// role, which is what each named test holds it to.
+// roleForReaders is every non-test reader of phase.RoleFor and of workflow.RoleFor in the daemon,
+// and the test that holds each one's behaviour. A reader is a call, or the function passed as a
+// value to a caller that calls it (internal/daemon's wiring of api.Options.RoleFor). Two of them
+// would answer differently now that RoleFor answers the architect for admitted, and each has a
+// guard of its own that keeps what it answered: noticeFor keeps the notice of the move out of
+// admitted roleless (R2), and Engine.leftItsPhase keeps a worker's completion refused while the
+// issue stands at admitted. Every other site reaches its answer through a guard that treats the
+// architect as it treated the empty role, or names the role an admitted root's entry numbers are
+// of, or never reads admitted at all because a check before it refuses that phase, which is what
+// each named test holds it to.
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
 var roleForReaders = map[roleForSite]roleForReader{
+	{file: "cmd/legion/main.go", fn: "entriesBehind"}:                       {calls: 1, test: "TestPlainStateNamesTheRolesNotGivenTheirPhaseEntry"},
 	{file: "internal/admit/admit.go", fn: "Admission.startMidPhaseMembers"}: {calls: 1, test: "TestReadmissionStartsTheTreesMidPhaseChildren"},
-	{file: "internal/admit/admit.go", fn: "Admission.resumeSlottedWorkers"}: {calls: 1, test: "TestASlotWhoseWorkerHasNoTaskIsStartedAgain"},
+	{file: "internal/admit/admit.go", fn: "Admission.owedEntryRoles"}:       {calls: 1, test: "TestASlotWhoseWorkerHasNoTaskIsStartedAgain"},
+	{file: "internal/daemon/daemon.go", fn: "serve"}:                        {calls: 1, test: "TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine"},
+	{file: "internal/projection/project.go", fn: "Project"}:                 {calls: 1, test: "TestTheArchitectHandshakeIsAbsentForAPhaseNoRoleWorks"},
+	{file: "internal/workflow/catch_up.go", fn: "Engine.readyWorkerTask"}:   {calls: 1, test: "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted"},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}:                {calls: 1, test: "TestACarriedRootResumesFromTheApprovedHeadAndTheHold"},
+	{file: "internal/workflow/effects.go", fn: "RoleFor"}:                   {calls: 1, test: "TestRoleForAnswersEveryPhaseOfPhaseAll"},
 	{file: "internal/workflow/engine.go", fn: "Engine.handoff"}:             {calls: 1, test: "TestTheArchitectsCompletionInAcceptingIsRefused"},
 	{file: "internal/workflow/engine.go", fn: "Engine.claimFailed"}:         {calls: 1, test: "TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice"},
-	{file: "internal/workflow/engine.go", fn: "Engine.restartPhase"}:        {calls: 1, test: "TestTheOperatorsRestartOfAPhaseAnotherRoleWorksIsRefused"},
-	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}:          {calls: 1, test: "TestTheOperatorsRestartOfAHeldIssueRestoresThePhase"},
-	{file: "internal/workflow/engine.go", fn: "Engine.backward"}:            {calls: 1, test: "TestAPlannersBackwardMoveFromAcceptingIsRefused"},
+	{file: "internal/workflow/engine.go", fn: "Engine.leftItsPhase"}:        {calls: 1, test: "TestArchitectUnchangedByAWorkersCompletionAtAdmitted"},
+	{file: "internal/workflow/engine.go", fn: "Engine.restartPhase"}:        {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
+	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}:          {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
+	{file: "internal/workflow/engine.go", fn: "backwardRefusal"}:            {calls: 2, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}:          {calls: 2, test: "TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody"},
-	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                  {calls: 1, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
-	{file: "internal/workflow/engine.go", fn: "Engine.phaseEnded"}:          {calls: 1, test: "TestARedTellsTheRoleWhosePhaseItEnded"},
+	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                  {calls: 3, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
+	{file: "internal/workflow/engine.go", fn: "Engine.phaseEnded"}:          {calls: 1, test: "TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic"},
+	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}:         {calls: 1, test: "TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened"},
+	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}:          {calls: 1, test: "TestASettlementMovesNothingAndTellsTheThreeRoles"},
 	{file: "internal/workflow/resume.go", fn: "Engine.booted"}:              {calls: 1, test: "TestTheBootsResumeReachesASlotHolderAndWaitsWhereTheIssueHoldsNone"},
 	{file: "internal/workflow/stranded.go", fn: "Stranded"}:                 {calls: 1, test: "TestStrandedNamesTheClaimsNothingWillWake"},
 	{file: "internal/workflow/wake.go", fn: "OpenPhaseRole"}:                {calls: 1, test: "TestAnArchitectGetsNoBackstop"},
@@ -139,7 +156,7 @@ func TestEveryReaderOfRoleForLeavesTheArchitectUnchanged(t *testing.T) {
 				site.fn, node = functionName(fn), fn.Body
 			}
 			ast.Inspect(node, func(node ast.Node) bool {
-				if call, ok := node.(*ast.CallExpr); ok && callsRoleFor(call.Fun) {
+				if readsRoleFor(node) {
 					found[site]++
 				}
 				return true
@@ -186,15 +203,19 @@ func functionName(fn *ast.FuncDecl) string {
 	return fn.Name.Name
 }
 
-// callsRoleFor is whether the called expression is workflow's RoleFor, inside the package or
-// through it. appauth.AppRoleFor is another function and is not one of these.
-func callsRoleFor(called ast.Expr) bool {
-	switch call := called.(type) {
-	case *ast.Ident:
-		return call.Name == "RoleFor"
+// readsRoleFor is whether node reads phase.RoleFor or this package's forwarder of it: a selector
+// naming either through its package, in a call or passed as a value, or a call of the bare name
+// inside the package that declares it. A bare RoleFor that is no call is a field key
+// (api.Options.RoleFor) and not a read, and appauth.AppRoleFor is another function and is not one
+// of these.
+func readsRoleFor(node ast.Node) bool {
+	switch read := node.(type) {
+	case *ast.CallExpr:
+		name, ok := read.Fun.(*ast.Ident)
+		return ok && name.Name == "RoleFor"
 	case *ast.SelectorExpr:
-		pkg, ok := call.X.(*ast.Ident)
-		return ok && pkg.Name == "workflow" && call.Sel.Name == "RoleFor"
+		pkg, ok := read.X.(*ast.Ident)
+		return ok && (pkg.Name == "phase" || pkg.Name == "workflow") && read.Sel.Name == "RoleFor"
 	}
 	return false
 }

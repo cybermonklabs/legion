@@ -488,7 +488,7 @@ func answerOfAct(ask record.RootAsk, seq int64, otherwise record.Answer) record.
 }
 
 // enterAwaiting moves root into awaiting_person on waiting, which keeps the slot the root holds:
-// an issue keeps its row until it is done, leaves the workflow or waits only for its merge
+// an issue keeps its row until it is done or leaves the workflow
 // (record.KeepsSlot). The architect stays live to read the person's answer, and the controller
 // is told.
 func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting, reason string) error {
@@ -523,6 +523,14 @@ func (e *Engine) tellInPlace(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // next wait. The members an open gate releases are not started here: each is an issue the cap
 // counts, so each takes its own place in the waiting line and starts at its own slot
 // (record.Waiting's LineFirstPhase), in the same admission pass that resumed this root.
+//
+// The resume hands the architect work it was not on, so it raises the architect's phase entry and
+// writes this task as the work of that entry (enter), and the start carries the number
+// (record.SuperviseRequest.Entry) as a phase worker's start does. That is what makes a resume
+// survivable: the answer a person gave lives on the record, so a start row that reaches no claim
+// loses nothing, and the architect can be sent that task again from the record alone. Both
+// callers get it — the promotion of an answered root (admit's record.LineAnswered branch) and
+// tellInPlace, which gives a live architect this task where it stands.
 func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting) error {
 	gates, err := e.store.GatesOf(ctx, tx, root.Key)
 	if err != nil {
@@ -537,12 +545,13 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 		return err
 	}
 	task := resumeTask(root.Key, waiting, step, gate, asks[root.Key], e.armed())
-	if err := e.enqueue(ctx, tx, root.Key, record.SuperviseRequest{
-		Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: root.Generation, Task: task,
-	}); err != nil {
+	entry, err := e.enter(ctx, tx, root, claim.RoleArchitect, task)
+	if err != nil {
 		return err
 	}
-	return nil
+	return e.enqueue(ctx, tx, root.Key, record.SuperviseRequest{
+		Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: root.Generation, Task: task, Entry: entry,
+	})
 }
 
 // gateInQuestion is the step a resume speaks of and the row that step holds (resumeTask): the
