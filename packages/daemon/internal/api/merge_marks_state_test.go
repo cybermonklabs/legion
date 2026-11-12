@@ -129,7 +129,7 @@ func TestTheMergeMarksAreStrippedBelowTheirContract(t *testing.T) {
 // mergeMarksContract is the contract whose entry in version.go added the four keys, and this
 // daemon's own contract is never below it: a caller at this contract is served the marks.
 func TestMergeMarksContractIsTheContractThatAddedTheKeys(t *testing.T) {
-	const addedMergeMarks = 84
+	const addedMergeMarks = 86
 	if mergeMarksContract != addedMergeMarks {
 		t.Fatalf("mergeMarksContract = %d, want %d, the contract whose entry in version.go added the controller's merge marks",
 			mergeMarksContract, addedMergeMarks)

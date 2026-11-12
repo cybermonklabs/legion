@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-  `LegionStateResponse` names the four keys daemon API contract 84 adds to
+  `LegionStateResponse` names the four keys daemon API contract 86 adds to
   `GET /legion/v1/state`: `mergeJumps`, every live jump mark of the project; `mergeHolds`, the
   project's merge hold list; `mergeHeld`, every issue whose merge a hold held when that issue's
   `ready_merge` row last ran; and `mergeJumpRecords`, the newest jump of each repository with the

@@ -367,11 +367,54 @@ const legionSlotView = z.object({
 });
 
 /** `api.WaitingLineView` — where the issue stands in `admission.waiting`: `place`, 1 being first
- * in the line, and `length`, how long that list was at this read. It says where the issue stands,
- * not what holds it, which `admission.blocked` names. */
+ * in the line, and `length`, how long that list was at this read, beside the line's own fields
+ * for a program that acts on the line rather than reading the sentence `reason` renders: `part`,
+ * which of the line's two parts the issue waits in, and `kind`, why it waits there; `partPlace`
+ * and `partLength`, its place within its own part and that part's length; `holdsSlot`, whether it
+ * already holds one of the cap's slots; and what placed it — `since`, the moment its work came
+ * back, for a member of the `returned` part, and `rootRank`, `ownRank` and `rootKey`, the Dispatch
+ * ranks and the tree root's key, for a member of the `starting` part. It says where the issue
+ * stands, not what holds it, which `admission.blocked` names.
+ *
+ * Every member below `length` is optional, for two readers at once: a member carries the fields of
+ * its own part alone, so a returned member names no rank and a starting member no `since`; and a
+ * caller below the contract that brought `partPlace` and the rest of them, contract 85, is served
+ * `place` and `length` alone, with no field of theirs on the wire at all.
+ *
+ * `part` and `kind` are written as the enums they are, which is how `LEGION_WAIT_ANSWERS` writes
+ * the acts that end a root's wait: a `z.enum` refuses a value it does not name rather than dropping
+ * it, so a word a later daemon adds would refuse the whole state body here — and a daemon that adds
+ * one declares a new contract for it, as the ninth answer did at contract 68, which is what keeps
+ * this reader away from a body that carries it. Nothing older reaches them either: both words are
+ * rendered afresh from `record.LinePart` and `record.LineKind` at each read and never stored, so no
+ * retired word comes back off a row, and naming the four kinds is what lets a reader branch on
+ * them. */
 const legionWaitingLineView = z.object({
   place: z.number().int().positive(),
   length: z.number().int().positive(),
+  part: z.enum(["returned", "starting"]).optional(),
+  kind: z.enum(["returning", "answered", "queued_root", "first_phase"]).optional(),
+  partPlace: z.number().int().positive().optional(),
+  partLength: z.number().int().positive().optional(),
+  holdsSlot: z.boolean().optional(),
+  since: timestamp.optional(),
+  rootRank: nonEmptyString.optional(),
+  ownRank: nonEmptyString.optional(),
+  rootKey: issueKey.optional(),
+  reason: nonEmptyString.optional(),
+});
+
+/** `api.WhyView` — the one rendered answer an issue that is not working now carries: `state`,
+ * which of the four facts holds it — its claim has stopped (`claim_stopped`), it waits in the
+ * admission line (`waiting`), something holds it where it stands (`blocked`), or it stands in
+ * neither the line nor the work at all (`unlisted`) — and `reason`, the sentence a person reads.
+ * The projection reads the four in one order over the facts the pass already holds and renders the
+ * sentence of whichever holds the issue, so an issue carries one answer and never two. `state` is a
+ * `z.enum` for the reason `part` and `kind` above are, and it arrives with the line's own
+ * `partPlace` and the rest of its fields at contract 85. */
+const legionWhyView = z.object({
+  state: z.enum(["claim_stopped", "waiting", "blocked", "unlisted"]),
+  reason: nonEmptyString,
 });
 
 /** `api.CheckWakeView` — what woke a production check's latest look: `kind` names the cause
@@ -585,6 +628,16 @@ const legionIssue = z.object({
    * list names, so every issue the line does not carry has none, and a
    * daemon before contract 58 writes none at all, which is why a reader takes it as optional. */
   waitingLine: legionWaitingLineView.optional(),
+  /** The one rendered answer an issue that is not working now carries: which fact holds it, and
+   * the sentence that says so. It sits here beside the line and never inside it, because an issue
+   * whose claim has stopped may stand in that line or outside it — such a member carries this key
+   * and its `waitingLine` both, and reads `claim_stopped`, the state that wins where both hold —
+   * and the answer is the same answer for every issue that carries one. Present only for an issue
+   * the record holds in the workflow whose sentence renders something, so an issue at work
+   * carries none; a caller served the line's own `partPlace` and the fields that arrived with it
+   * is served this key too, and one below contract 85 is served neither (`api.stateFor`,
+   * `withoutWhyAndLineFields`). */
+  why: legionWhyView.optional(),
   waitingOn: legionWaitingOn.optional(),
   check: legionCheckView.optional(),
   /** The memory group of the issue's tree: `memory` for a tree whose roles run with the project's
@@ -774,7 +827,7 @@ const legionConsumerLag = z.object({
   unavailable: nonEmptyString.optional(),
 });
 
-/** `api.MergeJumpView` — one issue's live jump mark (contract 84): the issue, what the controller
+/** `api.MergeJumpView` — one issue's live jump mark (contract 86): the issue, what the controller
  * said the jump is for, the controller session that set it and when. It carries no state of its
  * own, because the mark has none: a mark the state shows has not been spent, and one the daemon
  * spent or the controller took off is gone. `session` is empty for a project whose controller has
@@ -786,7 +839,7 @@ const legionMergeJump = z.object({
   setAt: timestamp,
 });
 
-/** `api.MergeHoldView` — one live merge hold (contract 84): the unanchored regular expressions it
+/** `api.MergeHoldView` — one live merge hold (contract 86): the unanchored regular expressions it
  * matches against the paths a pull request changes, the repository it holds them in, what the
  * controller said the hold is for, when it stops holding, and the controller session that set the
  * list and when. `repository` is `owner/name`, and the empty string is every repository the
@@ -803,7 +856,7 @@ const legionMergeHold = z.object({
 });
 
 /** `api.MergeHeldView` — one issue whose merge a hold held when its `ready_merge` row last ran
- * (contract 84): the issue, and when that row runs again, which is when the daemon reads the
+ * (contract 86): the issue, and when that row runs again, which is when the daemon reads the
  * holds once more. The row keeps the moment a hold caught it until its next run finds no hold,
  * so the hold that caught this row may have ended or been replaced since, and `mergeHolds` can
  * be empty while this key names an issue. Nothing else of the row is here: the row's payload is
@@ -855,7 +908,7 @@ const legionMergeQueueEntry = z.object({
  *   and no reader branches on the difference. */
 const legionMergeJumpOutcome = z.enum(["asked", "accepted", "refused", "unknown"]);
 
-/** `api.MergeJumpRecordView` — the newest jump of one repository (contract 84): the repository,
+/** `api.MergeJumpRecordView` — the newest jump of one repository (contract 86): the repository,
  * the issue whose mark was spent, the pull request's number and head, when the daemon asked, the
  * reason the mark carried, the queue as it stood before the request (oldest entry first, which
  * is what names whose merge the jump asked to go ahead of), how long that queue was, whether the
@@ -928,17 +981,17 @@ const legionMergeJumpRecord = z.object({
  * claims record no contract and a caller the daemon can place in no pod are served the mark, and
  * the shapes `internal/projection` answers before the route marks them carry none either.
  * `mergeJumps`, `mergeHolds`, `mergeHeld` and `mergeJumpRecords` are
- * the controller's merge marks (contract 84): the issues whose next merge the daemon asks GitHub
+ * the controller's merge marks (contract 86): the issues whose next merge the daemon asks GitHub
  * to put at the head of its merge queue, the project's live holds, the issues whose merge a hold
  * held when their `ready_merge` row last ran, and the newest jump of each repository that has had
  * one — what Legion asked GitHub for, never where a merge stands — each never null and each empty
  * while the project carries none of it. All four are optional here for the reason `wakesWaiting`
- * is: a reader before 84 knows none of them and refuses each as surely when it is empty as when
+ * is: a reader before 86 knows none of them and refuses each as surely when it is empty as when
  * it names a mark, so the route leaves all four off the one body it serves a caller in a pod
- * whose claims record a contract below 84 (`api.stateFor`, `withoutMergeMarks`). A reader that
+ * whose claims record a contract below 86 (`api.stateFor`, `withoutMergeMarks`). A reader that
  * finds them absent has been served that stripped body and learns nothing about the marks rather
  * than losing the whole state. The four strips compose on one body: a caller below 53 is below
- * 73, below 75 and below 84 as well, and is served none of these keys. */
+ * 73, below 75 and below 86 as well, and is served none of these keys. */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo,
   contract: legionContract.optional(),

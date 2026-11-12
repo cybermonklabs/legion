@@ -26,7 +26,7 @@ body: |-
   no reason (`HOLD_WITHOUT_REASON`), an `endsAt` no later than now (`HOLD_ALREADY_ENDED`) and a
   repository the project does not serve (`REPOSITORY_NOT_SERVED`), and every call without a
   controller grant (`CONTROLLER_REQUIRED`).
-  The plugin declares daemon API contract 84, whose state carries `mergeJumps`, `mergeHolds`,
+  The plugin declares daemon API contract 86, whose state carries `mergeJumps`, `mergeHolds`,
   `mergeHeld` and `mergeJumpRecords`.
 
   Rolling back to the release before this one is not free. The older daemon refuses the three

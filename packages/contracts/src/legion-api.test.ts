@@ -90,7 +90,7 @@ const schemas: Record<string, z.ZodType> = {
   "root-close.json": LegionEmptyResponse,
   "child-park.json": LegionEmptyResponse,
   "child-rerun.json": LegionEmptyResponse,
-  // The controller's three merge-mark writes (contract 84), each a fact route that answers an
+  // The controller's three merge-mark writes (contract 86), each a fact route that answers an
   // empty object: the jump mark it sets on one issue, the clearing of that mark, and the whole
   // merge hold list it replaces.
   "merge-jump.json": LegionEmptyResponse,
@@ -1184,7 +1184,7 @@ test("every request the plugin sends parses and names its required fields", () =
       { grantId: "grant-208", issue: "LEGION-208", reason: "no change" },
     ],
     ["child", LegionChildRequest, { grantId: "grant-208", issue: "LEGION-209" }],
-    // The controller's merge marks (contract 84): the jump mark, its clearing, and the whole
+    // The controller's merge marks (contract 86): the jump mark, its clearing, and the whole
     // hold list, which carries one hold with every field the route takes.
     [
       "merge jump",
@@ -1288,7 +1288,7 @@ test("the state golden names what every blocked issue waits on", () => {
     { issue: "LEGION-209", blockedBy: ["LEGION-210", "LEGION-213"] },
     { issue: "LEGION-211", blockedBy: ["LEGION-210"] },
   ]);
-  expect(state.admission.waiting).toEqual(["LEGION-211", "LEGION-212"]);
+  expect(state.admission.waiting).toEqual(["LEGION-212", "LEGION-211"]);
 
   const dropped = fixture("state.json") as { admission: Record<string, unknown> };
   delete dropped.admission.blocked;
@@ -2004,7 +2004,7 @@ test("the state golden counts the claims the stale-plugin lane has left, and the
   }
 });
 
-// The controller's merge marks (contract 84): the golden names LEGION-210's jump mark, the two
+// The controller's merge marks (contract 86): the golden names LEGION-210's jump mark, the two
 // holds of the project's list — one of a repository it serves, one of every repository it serves
 // — the issue a hold is keeping back, and the newest jump of four repositories, one per outcome,
 // two of them carrying the words that came back, each with its queue unread. A state
@@ -2152,7 +2152,7 @@ test("the state golden carries the controller's merge marks", () => {
 });
 
 // None of the four keys is required: the route leaves all four off the body it serves a caller
-// in a pod whose claims record a contract below 84 (`api.stateFor`, `withoutMergeMarks`), and a
+// in a pod whose claims record a contract below 86 (`api.stateFor`, `withoutMergeMarks`), and a
 // reader of that body loses the marks rather than the whole state. What is refused is a mark the
 // daemon would never write: a jump with no reason, a hold whose path is blank, a held issue with
 // no due time, and a jump record whose queue entry names no state.
