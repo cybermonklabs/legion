@@ -4822,34 +4822,34 @@ jobs:
     # least twice its package's time clears the floor by the same arithmetic that clears the
     # half.
     #
-    # Measured on attempt 1, each limit the smallest whole minute its package's time is at most
-    # half of:
+    # Each limit is the smallest whole minute its package's time is at most half of, taking the
+    # largest reading this branch has of that package:
     #
     #   call              slowest package       limit  fills    arithmetic
-    #   the package list  pmdoc 496.9 s          17m   48.7 %   496.9 / 30 = 16.56 -> 17
-    #   race-impossible   docs 220.6 s            8m   46.0 %   220.6 / 30 = 7.35 -> 8
-    #   pgmigrate         pgmigrate 285.5 s      10m   47.6 %   285.5 / 30 = 9.52 -> 10
-    #   shutdown          cmd/dispatch 63.0 s     3m   35.0 %   63.0 / 30 = 2.10 -> 3
-    #   routes            routes 44.6 s           2m   37.2 %   44.6 / 30 = 1.49 -> 2
-    #   natslive (rig)    testnats 6.4 s          1m   10.7 %   6.4 / 30 = 0.21 -> 1
-    #   natslive (cap)    bus 6.0 s               1m   10.0 %   6.0 / 30 = 0.20 -> 1
-    #   integration       integration 4.2 s       1m    7.0 %   4.2 / 30 = 0.14 -> 1
+    #   the package list  pmdoc 511.6 s          18m   47.4 %   511.6 / 30 = 17.05 -> 18
+    #   race-impossible   docs 234.2 s            8m   48.8 %   234.2 / 30 = 7.81 -> 8
+    #   pgmigrate         pgmigrate 299.3 s      10m   49.9 %   299.3 / 30 = 9.98 -> 10
+    #   shutdown          cmd/dispatch 67.3 s     3m   37.4 %   67.3 / 30 = 2.24 -> 3
+    #   routes            routes 45.3 s           2m   37.8 %   45.3 / 30 = 1.51 -> 2
+    #   natslive (rig)    testnats 7.5 s          1m   12.5 %   7.5 / 30 = 0.25 -> 1
+    #   natslive (cap)    bus 9.1 s               1m   15.2 %   9.1 / 30 = 0.30 -> 1
+    #   integration       integration 9.6 s       1m   16.0 %   9.6 / 30 = 0.32 -> 1
     #
     # The package list and the race-impossible call are the two whose tests read a margin, and
-    # both clear it: 17m leaves 523.1 s over pmdoc's own time, against the 60 s of its
-    # perCallReportMargin, and 8m leaves 259.4 s over the documents package's, against its 30 s
+    # both clear it: 18m leaves 568.4 s over pmdoc's own time, against the 60 s of its
+    # perCallReportMargin, and 8m leaves 245.8 s over the documents package's, against its 30 s
     # of roomWaitMargin. At 4 minutes the race-impossible call failed that floor and said so
     # itself, in both arms of run 42577832967: "the test binary's deadline leaves 20.769s, not
     # more than roomWaitMargin (30s): this looks like a misconfigured run; raise -timeout".
     #
-    # The job's own bound follows the largest measured time this branch has of it, 725 s (run
-    # 43007295244, job 130477949633), 12.08 minutes, plus the largest of those limits, 17
-    # minutes, plus 6: 12.08 + 17 + 6 = 35.08, so 36. A bound is met when it is at least what
+    # The job's own bound follows the largest measured time this branch has of it, 743 s (run
+    # 43120324547, job 130874347417), 12.38 minutes, plus the largest of those limits, 18
+    # minutes, plus 6: 12.38 + 18 + 6 = 36.38, so 37. A bound is met when it is at least what
     # the head's own pair asks for, and it follows the largest reading rather than the newest,
     # because a job of this lane varies by two minutes between two attempts of one commit and
     # does not settle inside a one-minute band. The eight calls of the unit step run at the
     # same time, so the step's own worst case is the longest of them rather than their sum.
-    timeout-minutes: 36
+    timeout-minutes: 37
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -5210,12 +5210,13 @@ jobs:
           # idle cores, which puts it with routes and the shutdown call rather than with the two
           # calls above it.
           #
-          # -timeout 17m. A call's limit is the smallest whole minute at which its slowest
-          # package takes at most half of it, measured on envoy-go's slower attempt of this
-          # change's own pair (attempt 1, run 42930887149, job 130229106742,
-          # dispatch://INFRA-1075). This call's slowest package is internal/dispatch/pmdoc at
-          # 496.9 s, which is 48.7 per cent of 17m and would be 51.8 per cent of 16m. The
-          # limit leaves 523.1 s above that package's own time, far over the 60 s of pmdoc's
+          # -timeout 18m. A call's limit is the smallest whole minute at which its slowest
+          # package takes at most half of it, measured on the largest reading this branch
+          # has of that package (dispatch://INFRA-1075). This call's slowest package is
+          # internal/dispatch/pmdoc at 511.6 s, read on attempt 2 of the pair at ebc96918
+          # (run 43120324547, job 130874347417), which is 47.4 per cent of 18m and would be
+          # 50.2 per cent of 17m, the limit this call carried until that reading. The limit
+          # leaves 568.4 s above that package's own time, far over the 60 s of pmdoc's
           # perCallReportMargin, which is the floor a package that reads the test binary's
           # deadline sets for itself.
           lead="github.com/sjawhar/envoy/internal/dispatch/pmdoc
@@ -5224,7 +5225,7 @@ jobs:
           github.com/sjawhar/envoy/cmd/dispatch
           github.com/sjawhar/envoy/cmd/broker"
           rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/pgmigrate$' | grep -vxF "$lead")
-          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' -timeout 17m > "$RUNNER_TEMP/go-test-json/unit.json" &
+          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' -timeout 18m > "$RUNNER_TEMP/go-test-json/unit.json" &
           unit=$!
           # The tests the race detector makes impossible, which the race job of each of these
           # packages therefore cannot make, so envoy-go keeps a plain run of exactly them:
