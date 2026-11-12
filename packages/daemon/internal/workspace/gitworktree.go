@@ -38,12 +38,22 @@ const rootHeadRef = "ref: refs/jj/root"
 // symlink is refused: git never creates either as one, and each caller writes or removes files in
 // the entries, which a symlink a tree agent planted would place outside the clone.
 func gitWorktreeEntries(cloneDir, dir string) ([]string, error) {
-	admin := filepath.Join(cloneDir, ".git", "worktrees")
+	return gitDirWorktreeEntries(filepath.Join(cloneDir, ".git"), dir)
+}
+
+// gitDirWorktreeEntries is gitWorktreeEntries over a git directory named outright: each
+// gitDir/worktrees/<id> whose gitdir file names dir's .git. GitLocks sweeps the git directory it
+// is handed, and must list the entries of that same directory, so the directory is read where
+// gitWorktreeEntries joins the clone with .git. The refusal names the clone whose worktrees are
+// refused, which is the git directory's parent for the `<clone>/.git` every caller but a test
+// passes.
+func gitDirWorktreeEntries(gitDir, dir string) ([]string, error) {
+	admin := filepath.Join(gitDir, "worktrees")
 	for _, path := range []string{filepath.Dir(admin), admin} {
 		info, err := os.Lstat(path)
 		switch {
 		case err == nil && info.Mode()&fs.ModeSymlink != 0:
-			return nil, fmt.Errorf("refusing the git worktrees of %s: %s is a symlink, which git never creates", cloneDir, path)
+			return nil, fmt.Errorf("refusing the git worktrees of %s: %s is a symlink, which git never creates", filepath.Dir(gitDir), path)
 		case err != nil && !errors.Is(err, fs.ErrNotExist):
 			return nil, fmt.Errorf("read git worktrees: %w", err)
 		}
