@@ -4,16 +4,25 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -101,4 +110,148 @@ func TestTheControllerTickComesShortlyAfterTheRuntimeStarts(t *testing.T) {
 	testwait.Eventually(t, "the first tick, an hour before the interval's", processed)
 	cancel()
 	<-done
+}
+
+// The tick of a daemon that booted carries the silent list, because the boot registers the
+// deployment's `worker_silence_minutes` with admission (openWorkflow, admit's
+// UseWorkerSilence). The runtime here is the boot's own rather than one this test assembled, so
+// a boot that registered no bound would leave the rule off, as a bound of zero does everywhere
+// else it is read, and the tick below would name nothing at all.
+//
+// What the notice names is the record a reader of the day's report needs: the issue, the role
+// whose claim is silent, the moment that claim last stepped and how long it has been quiet
+// (record.SilentIssue). The architect of the issue was told the same fact by a `worker-silent`
+// notice, and the controller is the second reader, because an architect whose own claim is the
+// silent one cannot act on a notice sent to itself.
+func TestControllerTickOfABootedWorkflowNamesTheSilentWorker(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st, err := store.Open(ctx, pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	defer st.Close()
+	registerTickController(t, pool)
+	board := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if servedBootCall(t, w, r, "CAPTURE") {
+			return
+		}
+		// Nothing waits on anything here, so the turn reads no issue from Dispatch at all
+		// (observeWaitedOn); a read that does arrive is answered as a board that serves the
+		// issue no longer answers, which costs the tick nothing.
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	t.Cleanup(board.Close)
+	cfg := config.Config{
+		Project: "CAPTURE", DispatchURL: board.URL, AdmissionCap: 1, WorkerSilence: 30 * time.Minute,
+		Projects: map[string]config.Project{"CAPTURE": {}},
+	}
+	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
+	w, err := openWorkflow(ctx, cfg, st, "project-id", "dispatch-token", nil,
+		newRepositories(cfg.Project, cfg.RepositoryRenames), log, tokens, repositoriesGitHub(t), nil)
+	if err != nil {
+		t.Fatalf("open the workflow: %v", err)
+	}
+	w.bootID = "test-boot"
+	// Truncated to the microsecond the column holds, so the moment read back is the moment
+	// written and the comparison below is of the record rather than of a rounding.
+	lastStep := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Microsecond)
+	seedSilentPhaseWorker(t, pool, "CAPTURE-700", lastStep)
+
+	w.applyControllerTick(ctx, time.Now())
+
+	silent := queuedTickNotice(t, pool).Silent
+	if len(silent) != 1 {
+		t.Fatalf("the tick names %#v as silent, want the one worker whose last step passed the bound the boot registered", silent)
+	}
+	named := silent[0]
+	if named.Issue != "CAPTURE-700" || named.Role != claim.RoleImplementer {
+		t.Fatalf("the tick names %s's %s as silent, want CAPTURE-700's implementer: the role is the one that works the issue's phase",
+			named.Issue, named.Role)
+	}
+	if !named.LastStep.Equal(lastStep) {
+		t.Errorf("the tick says CAPTURE-700's implementer last stepped at %s, want the %s its claim records", named.LastStep, lastStep)
+	}
+	if want := (2 * time.Hour).String(); named.Silent != want {
+		t.Errorf("the tick says the silence is %q, want %q: the length a reader of the day's report needs at a glance", named.Silent, want)
+	}
+}
+
+// seedSilentPhaseWorker records key as a running root of this project in implementing, holding
+// an admission slot with its tree lifecycle open under the workflow, as promotion leaves a root
+// it admitted, with its implementer's claim up and between turns (supervise.StateReady) holding
+// no task, and the moment its agent last stepped. That is every term of the rule the tick reads
+// (workflow.SilentPhaseWorker) with a step old enough to answer it.
+//
+// The turn the step was taken in started ten minutes before the step itself, the earlier of the
+// two columns the record reads (record.RoleClaim.Step), so the moment the tick names is the
+// step's own (supervise.StepRecord.LastStep) and a read of the wrong column would show.
+func seedSilentPhaseWorker(t *testing.T, pool *pgxpool.Pool, key string, lastStep time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	seedTickIssue(t, pool, record.Issue{
+		Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "CAPTURE",
+		Title: key, Tree: key, Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A",
+		HandedOver: true, LastDispatchSeq: 1,
+	})
+	project, err := claim.ProjectToken("CAPTURE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		records := record.NewStore()
+		if _, err := records.OpenTreeLifecycle(ctx, tx, project, key, treelifecycle.AuthorityWorkflow); err != nil {
+			return err
+		}
+		return records.PutSlot(ctx, tx, record.Slot{Issue: key, Index: 0, AdmittedAt: time.Now()})
+	}); err != nil {
+		t.Fatalf("record the admission slot and the tree lifecycle of %s: %v", key, err)
+	}
+	token, err := claim.NewToken(project, key, claim.RoleImplementer)
+	if err != nil {
+		t.Fatalf("claim token of the implementer of %s: %v", key, err)
+	}
+	if _, err := pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, serving_generation, last_start_row, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+		values ($1, 'CAPTURE', $2, $2, 'implementer', 1, 'ses-implementer', '', $3, 1, 0, 0, 0, 0, 0)`,
+		string(token), key, string(supervise.StateReady)); err != nil {
+		t.Fatalf("record the implementer claim of %s: %v", key, err)
+	}
+	if _, err := pool.Exec(ctx, `update claims set step_at = $2, turn_started_at = $3 where token = $1`,
+		string(token), lastStep, lastStep.Add(-10*time.Minute)); err != nil {
+		t.Fatalf("record the last step of the claim %s: %v", token, err)
+	}
+}
+
+// queuedTickNotice is the one tick wake the pass queued for the controller, and fails the test
+// where the pass queued another controller notice beside it: this case is about what one tick
+// carries, so a second notice in the outbox would make the assertions read the wrong row.
+func queuedTickNotice(t *testing.T, pool *pgxpool.Pool) record.ControllerNotice {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select id, kind, issue, payload from outbox
+		where kind = $1 order by id`, string(record.OutboxKindControllerNotice))
+	if err != nil {
+		t.Fatalf("read the controller notices: %v", err)
+	}
+	defer rows.Close()
+	var queued []record.ControllerNotice
+	for rows.Next() {
+		var row record.OutboxRow
+		if err := rows.Scan(&row.ID, &row.Kind, &row.Issue, &row.Payload); err != nil {
+			t.Fatalf("scan a controller notice: %v", err)
+		}
+		payload, err := record.DecodeOutboxPayload(row)
+		if err != nil {
+			t.Fatalf("decode a controller notice: %v", err)
+		}
+		queued = append(queued, payload.(record.ControllerNotice))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the controller notices: %v", err)
+	}
+	if len(queued) != 1 || queued[0].Kind != record.TickNotice {
+		t.Fatalf("the controller notices = %#v, want the one tick this pass queued", queued)
+	}
+	return queued[0]
 }

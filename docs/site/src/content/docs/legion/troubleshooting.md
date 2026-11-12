@@ -711,6 +711,28 @@ A claim an operator suspended is listed even when a workflow start is queued for
 waits for the operator's resume. One whose `suspendedBy` is `unknown` is listed only while no start
 is queued for it, since the next phase start or re-admission resumes it as before.
 
+## A worker that stopped taking turns
+
+The issue stands in its phase, its worker does nothing, and the daemon's record of it reads like a healthy one.
+The claim is up and the state shows the tree at work.
+The daemon finds such a worker by itself and writes one `worker-silent` notice to the issue's architect.
+The project's controller reads the same issue in the `silent` list of its periodic tick.
+
+The rule is this: the claim's process is up and between turns, it holds no task, and its agent's last recorded step is older than `worker_silence_minutes`.
+That bound is 30 minutes by default, and the configuration refuses a value under 16 minutes when it loads.
+
+The daemon sends the worker its phase's task again, under the assignment the issue's phase row already names.
+Where that row names no assignment, the daemon sends no task, and the notice says so.
+Read what the notice says the daemon did.
+Where it says the task was sent, do nothing, because the worker is coming back.
+Where it says no task was sent, the architect messages the role, and the controller can start the worker's session again with `fresh_session`.
+
+The daemon writes the same record to its own log, as `workflow: a phase worker nothing will prompt was found silent; its architect is told`, so an operator finds every silence without a Dispatch notice.
+
+The rule reads the claim's last recorded step and nothing else.
+A daemon that was itself down for longer than the bound comes back and reads every live worker as silent.
+Each of those gets one prompt and one notice, nothing is stopped, and the floor under `worker_silence_minutes` is what keeps an ordinary restart out of it.
+
 ## A pod does not come up
 
 - **`Pending`.** Usually scheduling: a pod reserves its roles' cpu and memory (3 CPU and 19 GiB for

@@ -398,6 +398,10 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// The project's `memory` block decides what each tree admission opens is drawn: a project the
 	// file names no entry for is the zero block, which is off.
 	w.admission.UseMemory(cfg.Projects[cfg.Project].Memory)
+	// The bound `worker_silence_minutes` sets is what the tick's silent list is read against: an
+	// admission registered none has the rule off and every tick carries no list (admit's
+	// UseWorkerSilence, config.Config.WorkerSilence).
+	w.admission.UseWorkerSilence(cfg.WorkerSilence)
 	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
 	// whether to start a child and admission whether to admit a root inside this same
 	// transaction, from the mirror's rows, so the row an event carries must already be written
