@@ -11452,6 +11452,9 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
+  // The request this fixture carries names no `documents` list, which is what a Dispatch older
+  // than this client answers: for it the lead pair (spec.md, asked about at version 36 and now
+  // at 37) is the whole request, and the line reads that pair alone.
   test("a reply on a moved approval request says why it still waits on the agent and how to hand it back", async () => {
     const askID = "01234567-0000-4000-8000-000000000045";
     const requests: Array<{ method: string; pathname: string }> = [];
@@ -11510,9 +11513,9 @@ describe("executeDispatchTool", () => {
       [
         `Replied on ask ${askID} (comment comment-3; ask now waiting on agent). ` +
           "You follow this ask: its answer and replies reach you directly.",
-        "The reply did not hand the ask to the human: it is the approval request for spec.md at " +
-          "version 36, and spec.md is now version 37. No reply hands a moved approval request " +
-          "back. Once the human has agreed to every point in version 37, run: " +
+        "The reply did not hand the ask to the human: it is an open approval request, and " +
+          "spec.md asked about version 36 and is now version 37. No reply hands a moved " +
+          "approval request back. Once the human has agreed to every point in it, run: " +
           "dispatch request-approval --issue DSP-42 --summary '<what changed since version 36>'",
       ].join("\n")
     );
@@ -11528,6 +11531,164 @@ describe("executeDispatchTool", () => {
     expect((await run({ primary: false, issue: null })).text).toContain(
       "run: dispatch request-approval --project DSP --artifact artifact-7 --summary"
     );
+  });
+
+  // A request over an issue's spec and that issue's Verification document, where the write that
+  // moved it stored the Verification document: the lead pair stands at the version the request
+  // asks about and the second document is the one that moved, so every document of the request
+  // is read, and the `--summary` floor is the second document's requested version, not the
+  // first's. Two documents under a primary first one is what `--include-verification` asked for,
+  // so the call that hands the request back carries the flag again.
+  test("a reply on a two-document request names the second document that moved and its version", async () => {
+    const askID = "01234567-0000-4000-8000-000000000047";
+    const result = await executeDispatchTool({
+      tool: "dispatch_comment",
+      args: { issue: "DSP-42", body: "The verification is written.", reply_to_ask: askID },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: (async (url: RequestInfo | URL) => {
+        const target = new URL(String(url));
+        if (target.pathname === `/api/v1/asks/${askID}`) {
+          return response({
+            ask: {
+              id: askID,
+              issue_key: "DSP-42",
+              kind: "approval",
+              question: "Approve spec.md at version 9?",
+              state: "open",
+              waiting_on: "agent",
+              approval: {
+                artifact_id: "artifact-7",
+                name: "spec.md",
+                version: 9,
+                requested_version: 9,
+                documents: [
+                  {
+                    artifact_id: "artifact-7",
+                    name: "spec.md",
+                    requested_version: 9,
+                    version: 9,
+                  },
+                  {
+                    artifact_id: "artifact-8",
+                    name: "verification.md",
+                    requested_version: 16,
+                    version: 17,
+                  },
+                ],
+              },
+              approval_artifact: {
+                project: "DSP",
+                slug: "spec",
+                name: "spec.md",
+                primary: true,
+              },
+            },
+            replies: [],
+            edits: [],
+            answers: [],
+            followers: [],
+          });
+        }
+        return response({
+          id: "comment-5",
+          issue_key: "DSP-42",
+          ask_id: askID,
+          turn: "human",
+          ask_waiting_on: "agent",
+        });
+      }) as unknown as typeof fetch,
+      subscriptions: async () => ["notifications.dispatch.issue.DSP-42.>"],
+    });
+
+    expect(result.text).toBe(
+      [
+        `Replied on ask ${askID} (comment comment-5; ask now waiting on agent). ` +
+          "You follow this ask: its answer and replies reach you directly.",
+        "The reply did not hand the ask to the human: it is an open approval request, and " +
+          "verification.md asked about version 16 and is now version 17. No reply hands a moved " +
+          "approval request back. Once the human has agreed to every point in it, run: " +
+          "dispatch request-approval --issue DSP-42 --include-verification " +
+          "--summary '<what changed since version 16>'",
+      ].join("\n")
+    );
+  });
+
+  // Nothing moved: every document of the request stands at the version it asks about, so the
+  // reply left the request where it was and reports as any other reply does.
+  test("a reply on an approval request no write moved prints no hand-back line", async () => {
+    const askID = "01234567-0000-4000-8000-000000000048";
+    const result = await executeDispatchTool({
+      tool: "dispatch_comment",
+      args: { issue: "DSP-42", body: "One more point.", reply_to_ask: askID },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: (async (url: RequestInfo | URL) => {
+        const target = new URL(String(url));
+        if (target.pathname === `/api/v1/asks/${askID}`) {
+          return response({
+            ask: {
+              id: askID,
+              issue_key: "DSP-42",
+              kind: "approval",
+              question: "Approve spec.md at version 9?",
+              state: "open",
+              waiting_on: "agent",
+              approval: {
+                artifact_id: "artifact-7",
+                name: "spec.md",
+                version: 9,
+                requested_version: 9,
+                documents: [
+                  {
+                    artifact_id: "artifact-7",
+                    name: "spec.md",
+                    requested_version: 9,
+                    version: 9,
+                  },
+                  {
+                    artifact_id: "artifact-8",
+                    name: "verification.md",
+                    requested_version: 16,
+                    version: 16,
+                  },
+                ],
+              },
+              approval_artifact: {
+                project: "DSP",
+                slug: "spec",
+                name: "spec.md",
+                primary: true,
+              },
+            },
+            replies: [],
+            edits: [],
+            answers: [],
+            followers: [],
+          });
+        }
+        return response({
+          id: "comment-6",
+          issue_key: "DSP-42",
+          ask_id: askID,
+          turn: "human",
+          ask_waiting_on: "agent",
+        });
+      }) as unknown as typeof fetch,
+      subscriptions: async () => ["notifications.dispatch.issue.DSP-42.>"],
+    });
+
+    expect(result.text).toBe(
+      `Replied on ask ${askID} (comment comment-6; ask now waiting on agent). ` +
+        "You follow this ask: its answer and replies reach you directly."
+    );
+    expect(result.text).not.toContain("request-approval");
   });
 
   test("a progress note on an approval request reads no ask", async () => {

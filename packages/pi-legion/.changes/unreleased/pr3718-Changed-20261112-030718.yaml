@@ -1,5 +1,5 @@
 kind: Changed
-body: The plugin declares daemon API contract 76, which adds each issue's `why` and the waiting line's own fields to `GET /legion/v1/state`.
+body: The plugin declares daemon API contract 85, which adds each issue's `why` and the waiting line's own fields to `GET /legion/v1/state`.
 time: 2026-11-12T03:07:18.800778588Z
 custom:
     Issue: pr3718

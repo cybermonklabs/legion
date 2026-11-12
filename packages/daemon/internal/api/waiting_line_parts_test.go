@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -17,15 +16,7 @@ func waitingLineFieldsServed(t *testing.T, body []byte) map[string]map[string]st
 	t.Helper()
 	served := make(map[string]map[string]string)
 	for key, raw := range issueKeyServed(t, body, WaitingLineField) {
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &fields); err != nil {
-			t.Fatalf("decode the %s of %s, %s: %v", WaitingLineField, key, raw, err)
-		}
-		written := make(map[string]string, len(fields))
-		for name, value := range fields {
-			written[name] = string(value)
-		}
-		served[key] = written
+		served[key] = jsonFields(t, "the "+WaitingLineField+" of "+key, raw)
 	}
 	return served
 }

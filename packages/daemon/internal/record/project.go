@@ -291,9 +291,10 @@ type LineEntry struct {
 	Issue Issue
 	Kind  LineKind
 	// Part is the part of the line the entry stands in and PartPlace its place within that part
-	// alone, counted from 1. Waiting sets the part where it places the entry, because the kind
-	// does not say it (LinePart), and the place once the part is sorted, so the number is the
-	// order the line publishes and not the order the loops found.
+	// alone, counted from 1. Waiting sets both in its last two loops, once each part is sorted,
+	// rather than where the entry was built: the kind does not say the part (LinePart), and the
+	// place is the order the sort left, which is the order the line publishes and not the order
+	// the loops found.
 	Part      LinePart
 	PartPlace int
 	// Since is the moment the issue's work came back to it, which is what placed the entry in

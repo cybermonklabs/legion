@@ -1,11 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { dispatchCliLive, useDispatchCliDirectories } from "../../test/dispatch-cli-live";
 import {
   type DispatchStack,
   dispatchStackEnabled,
   startDispatchStack,
-  useDispatchStackDirectory,
 } from "../../test/dispatch-stack";
 
 // The design-gate clause of a document write's advice, over the whole path it is printed through:
@@ -19,8 +17,6 @@ import {
 // deployment's daemon publishes it: PUT /api/v1/issues/{key}/design-gates, over the credential the
 // deployment configured. Everything else a row needs - the project, the issue, the document and
 // the approval the write supersedes - is made over the routes a person reaches.
-
-const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
 
 /** The person who approves every document below, as the server's header identity names them. */
 const PERSON = "alice";
@@ -54,77 +50,22 @@ interface PublishedGate {
   readonly artifact_id: string;
 }
 
-/** An issue as its creation answers it. */
-interface CreatedIssue {
-  readonly key: string;
-  readonly primary_artifact_id: string;
-}
-
-/** A document as its upload answers it. */
-interface UploadedDocument {
-  readonly artifact: { readonly id: string };
-  readonly version: { readonly number: number };
-}
-
 // Reserved here, at the file's module scope: the file's own `afterAll` removes each once the
 // `describe` below has stopped the server writing into it.
-const stackDirectory = useDispatchStackDirectory();
-const stateDirectory = temporaryDirectory("dispatch-cli-live-state");
+const directories = useDispatchCliDirectories();
 
 describe.skipIf(!dispatchStackEnabled)(
   "the design-gate clause the real CLI prints against a real Dispatch",
   () => {
     let stack: DispatchStack | undefined;
 
-    /** The running server, or the error that says why no row can run. */
-    function server(): DispatchStack {
-      if (stack === undefined) throw new Error("the Dispatch stack did not start");
-      return stack;
-    }
-
-    async function request<T>(
-      method: string,
-      route: string,
-      body: unknown,
-      headers: Readonly<Record<string, string>>
-    ): Promise<T> {
-      const response = await fetch(`${server().url}${route}`, {
-        method,
-        headers: { "Content-Type": "application/json", ...headers },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      });
-      const text = await response.text();
-      if (!response.ok) throw new Error(`${method} ${route}: ${response.status} ${text}`);
-      return JSON.parse(text) as T;
-    }
-
-    /** A person's own write, which the server's header identity takes as that person. */
-    const asPerson = <T>(method: string, route: string, body?: unknown): Promise<T> =>
-      request<T>(method, route, body, { "X-Dispatch-User": PERSON });
-
-    /** A machine's write, over the credential the deployment configured, as the daemon publishes
-     *  a gate record and as an agent records a plan review. */
-    const asMachine = <T>(method: string, route: string, body?: unknown): Promise<T> =>
-      request<T>(method, route, body, { Authorization: `Bearer ${server().token}` });
-
-    /** An issue in the workflow, which is where a tree whose gate holds a READY back stands: an
-     *  issue Dispatch still shows in `triage` is out of the workflow, and the advice names no
-     *  gate of one. */
-    const createIssue = async (
-      project: string,
-      title: string,
-      parent?: string
-    ): Promise<CreatedIssue> => {
-      const issue = await asPerson<CreatedIssue>("POST", "/api/v1/issues", {
-        project,
-        title,
-        force: true,
-        spec: "# Design\n\nThe design, as approved.\n",
-        ...(parent === undefined ? {} : { parent }),
-      });
-      await asPerson("PATCH", `/api/v1/issues/${issue.key}`, { status: "in_progress" });
-      return issue;
-    };
+    const { asPerson, asMachine, createIssue, upload, docEdit } = dispatchCliLive({
+      stack: () => stack,
+      session: SESSION,
+      person: PERSON,
+      spec: "# Design\n\nThe design, as approved.\n",
+      directories,
+    });
 
     /** The person's approval of a document's latest version, and the version it pinned. */
     async function approve(artifactId: string): Promise<number> {
@@ -143,51 +84,8 @@ describe.skipIf(!dispatchStackEnabled)(
         actor: { kind: "session", id: SESSION },
       });
 
-    /**
-     * One insert at the end of a document, run through the real CLI entry as an agent's shell runs
-     * it, and the output it printed. A refusal, or anything on standard error, fails the row here:
-     * every row below is about the line a write that went through printed.
-     */
-    async function docEdit(issue: string, artifact: string, sentence: string): Promise<string> {
-      const child = Bun.spawn(
-        [
-          process.execPath,
-          ENTRY,
-          "doc-edit",
-          "--issue",
-          issue,
-          "--artifact",
-          artifact,
-          "--ops-json",
-          JSON.stringify([{ op: "insert", markdown: sentence, after: "end" }]),
-        ],
-        {
-          env: {
-            PATH: process.env.PATH,
-            HOME: stateDirectory,
-            DISPATCH_STATE_DIR: stateDirectory,
-            DISPATCH_HOST: "omp",
-            DISPATCH_SESSION_ID: SESSION,
-            DISPATCH_URL: server().url,
-            DISPATCH_TOKEN: server().token,
-          },
-          stdout: "pipe",
-          stderr: "pipe",
-        }
-      );
-      const [stdout, stderr, code] = await Promise.all([
-        new Response(child.stdout).text(),
-        new Response(child.stderr).text(),
-        child.exited,
-      ]);
-      if (code !== 0 || stderr !== "") {
-        throw new Error(`dispatch doc-edit on ${issue} exited ${code}: ${stderr}${stdout}`);
-      }
-      return stdout.trimEnd();
-    }
-
     beforeAll(async () => {
-      stack = await startDispatchStack({ work: stackDirectory });
+      stack = await startDispatchStack({ work: directories.stack });
       for (const key of [PROJECT, FIRST_TREE, SECOND_TREE]) {
         await asPerson("POST", "/api/v1/projects", { key, name: `${key} project` });
         // The deployment's own gated steps, which its daemon publishes beside the gate records
@@ -205,11 +103,7 @@ describe.skipIf(!dispatchStackEnabled)(
 
     test("a Verification document no gate records names no gate", async () => {
       const issue = await createIssue(PROJECT, "Approved verification");
-      const document = await asPerson<UploadedDocument>(
-        "POST",
-        `/api/v1/issues/${issue.key}/artifacts`,
-        { name: "verification.md", content: "# Verification\n\nOne check.\n" }
-      );
+      const document = await upload(issue.key, "verification.md", "# Verification\n\nOne check.\n");
       const approved = await approve(document.artifact.id);
 
       const printed = await docEdit(issue.key, document.artifact.id, "One more check.");
@@ -220,11 +114,7 @@ describe.skipIf(!dispatchStackEnabled)(
 
     test("a plan a plan review approved names no gate", async () => {
       const issue = await createIssue(PROJECT, "Approved plan");
-      const plan = await asPerson<UploadedDocument>(
-        "POST",
-        `/api/v1/issues/${issue.key}/artifacts`,
-        { name: "plan.md", content: "# Plan\n\nOne task.\n" }
-      );
+      const plan = await upload(issue.key, "plan.md", "# Plan\n\nOne task.\n");
       // A plan is approved by the plan review an agent records over it, never by a person.
       await asMachine("POST", `/api/v1/artifacts/${plan.artifact.id}/plan-reviews`, {
         actor: { kind: "session", id: SESSION },

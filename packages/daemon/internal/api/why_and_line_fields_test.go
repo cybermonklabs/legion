@@ -60,6 +60,24 @@ func whysServed(t *testing.T, body []byte) map[string]WhyView {
 	return answers
 }
 
+// jsonFields is one JSON object as the keys it writes, each left as the JSON text that stands
+// for it, which is the shape both readers of a member of the line work in (lineFieldsOf and
+// waiting_line_parts_test.go's waitingLineFieldsServed). what names the object in a failure,
+// since the two reach it from different places: one off the wire by issue key, the other from
+// the view the fixture holds.
+func jsonFields(t *testing.T, what string, object []byte) map[string]string {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(object, &fields); err != nil {
+		t.Fatalf("decode %s, %s: %v", what, object, err)
+	}
+	written := make(map[string]string, len(fields))
+	for name, value := range fields {
+		written[name] = string(value)
+	}
+	return written
+}
+
 // lineFieldsOf is one member view as the keys it writes on the wire, in the shape
 // waitingLineFieldsServed reads a served member in: the fields the view holds facts for, each
 // left as its JSON text, which is what a caller at the contract is to be served.
@@ -69,15 +87,7 @@ func lineFieldsOf(t *testing.T, view WaitingLineView) map[string]string {
 	if err != nil {
 		t.Fatalf("marshal the member %+v: %v", view, err)
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(encoded, &fields); err != nil {
-		t.Fatalf("read the member back, %s: %v", encoded, err)
-	}
-	written := make(map[string]string, len(fields))
-	for name, value := range fields {
-		written[name] = string(value)
-	}
-	return written
+	return jsonFields(t, "the member read back", encoded)
 }
 
 // fieldNames is the keys of one served member, sorted, for a failure that names what reached the
@@ -189,7 +199,7 @@ func TestWaitingLineContractBands(t *testing.T) {
 // between the two is the whole reason the second strip exists: a caller there is served the
 // field the earlier contract describes and no field of this one.
 func TestWhyAndLineFieldsContractIsTheContractThatAddedThem(t *testing.T) {
-	const addedWhyAndLineFields = 84
+	const addedWhyAndLineFields = 85
 	if whyAndLineFieldsContract != addedWhyAndLineFields {
 		t.Fatalf("whyAndLineFieldsContract = %d, want %d, the contract whose entry in version.go added each issue's answer and the waiting line's own fields",
 			whyAndLineFieldsContract, addedWhyAndLineFields)

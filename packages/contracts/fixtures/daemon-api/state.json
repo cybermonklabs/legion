@@ -6,6 +6,10 @@
     "firstBootAt": "2026-09-18T14:03:27Z",
     "startedAt": "2026-09-22T09:15:02Z"
   },
+  "contract": {
+    "daemon": 85,
+    "caller": 85
+  },
   "admission": {
     "cap": 3,
     "active": [
@@ -48,6 +52,7 @@
       "tree": "LEGION-207",
       "repo": "acme/widgets",
       "defaultBranch": "main",
+      "lingerUntil": "2026-09-22T10:10:12Z",
       "workers": {
         "implementer": {
           "claim": {
@@ -155,8 +160,15 @@
                 }
               ]
             },
+            "servingGeneration": 3,
             "pluginContract": 0,
             "updateRound": "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+            "updateReasons": "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
+            "providerErrorRun": 2,
+            "pendingTask": {
+              "phase": "implementing",
+              "queuedAt": "2026-09-22T09:16:58Z"
+            },
             "step": {
               "at": "2026-09-22T09:17:12Z",
               "turnStartedAt": "2026-09-22T09:16:30Z",
@@ -191,7 +203,8 @@
             },
             "pluginContract": 0,
             "updateRound": "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
-            "updateHead": "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128"
+            "updateHead": "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+            "updateReasons": "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved"
           },
           "handoffRecord": {
             "id": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b",
@@ -255,12 +268,25 @@
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
       "holdReason": "escalated",
+      "heldFrom": "implementing",
       "workers": {
         "implementer": {
           "claim": {
             "session": "ses_implementer_210",
             "state": "failed",
-            "pluginContract": 0
+            "pluginContract": 0,
+            "failure": {
+              "cause": "died",
+              "detail": "launch failures ran out",
+              "at": "2026-09-22T08:47:03Z",
+              "attempts": {
+                "launchFailures": 4,
+                "deaths": 1,
+                "promptFailures": 0,
+                "promptRetires": 0
+              }
+            },
+            "pendingCause": "died"
           },
           "rounds": 1
         }
@@ -285,12 +311,22 @@
       "tree": "LEGION-211",
       "repo": "acme/widgets",
       "defaultBranch": "main",
+      "ancestry": [
+        "LEGION-209",
+        "LEGION-208"
+      ],
       "workers": {
         "implementer": {
           "claim": {
             "session": "ses_implementer_211",
             "state": "suspended",
-            "pluginContract": 0
+            "pluginContract": 0,
+            "pendingTask": {
+              "phase": "implementing",
+              "queuedAt": "2026-09-22T08:54:20Z",
+              "sendFailures": 2,
+              "lastSendError": "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused"
+            }
           },
           "rounds": 1
         }

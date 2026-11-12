@@ -1199,7 +1199,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   or `admission.blocked`, or a stranded claim names it: an answered root reads `waiting`, a root
   whose open children hold its own first phase reads `blocked`, and an issue at work whose
   worker runs, one `held` and a root whose ask a person has not answered yet, which `waitingOn`
-  answers for, read nothing. Neither does an issue the record does not hold in the workflow. A caller from a pod whose claims record a contract below 84 is
+  answers for, read nothing. Neither does an issue the record does not hold in the workflow. A caller from a pod whose claims record a contract below 85 is
   served every issue without `why`, and the `waitingLine` of each member of the line with its
   `place` and its `length` alone, and no `partPlace`. Then, for a closed
   issue whose

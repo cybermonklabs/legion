@@ -41,10 +41,13 @@ import (
 // judged over this project's records alone, and an issue the workflow does not record at all,
 // an operator's claim, is in no record of own and so carries none either.
 //
-// The links and the children-first waits are read here from the two judgements this pass holds
-// apart, and never from state.Admission.Blocked: that list merges both into one
+// The three blocked fills read the links and the children-first waits from the two judgements
+// this pass holds apart, and never from state.Admission.Blocked: that list merges both into one
 // record.BlockedIssue apiece (blockers.Blocked), so a reader of it cannot tell a Dispatch link
-// from an open child, and the three blocked fills need them apart.
+// from an open child, and the fills need them apart. The published list is read for the two
+// things only it says: which issues something holds, which is the `blocked` state's own
+// membership, and what a member of the line a link holds waits on where the links half names
+// nothing for it, the one fallback in this file (the waiting arm below).
 func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim, rows map[string]blockers.Row, childWaits map[string]record.ChildWait) {
 	// The stranded claim each issue's answer names. The set reports two kinds of claim and no
 	// others (workflow.Stranded) — the worker of the issue's phase, and the tree's architect —
@@ -66,9 +69,10 @@ func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim,
 	for _, key := range state.Admission.Waiting {
 		inLine[key] = struct{}{}
 	}
-	// What the published list says each blocked issue waits on: the fallback of the link fill,
-	// for an issue the link half names nothing for — a root of the line whose wait
-	// blockers.LineWaitsOn judged — so that every blocked issue carries an answer.
+	// Which issues something holds and what the published list says each of them waits on: the
+	// membership the `blocked` state is read by, and the fallback of the clause a member of the
+	// line a link holds carries, for an issue the links half names nothing for — a root of the
+	// line whose wait blockers.LineWaitsOn judged.
 	blocked := make(map[string][]string, len(state.Admission.Blocked))
 	for _, row := range state.Admission.Blocked {
 		blocked[row.Issue] = row.BlockedBy
@@ -79,19 +83,6 @@ func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim,
 	active := make(map[string]struct{}, len(state.Admission.Active))
 	for _, key := range state.Admission.Active {
 		active[key] = struct{}{}
-	}
-	// What the link half says an issue waits on, which the waiting clause and the link fill both
-	// name: links, the links this pass judged for the issue (blockers.Holds), and the published
-	// list where that half names nothing for an issue the list does name. The links are the
-	// caller's to read because the blocked arm names them a second time of its own
-	// (blockedReason), and they are judged in the two arms that name them and in no other, since
-	// judging the links of an issue whose answer is its stopped claim, or of one no list places,
-	// is work no sentence reads.
-	waitsOn := func(issue record.Issue, links []string) []string {
-		if len(links) > 0 {
-			return links
-		}
-		return blocked[issue.Key]
 	}
 	// Each cycle the children-first judgement named, by the child whose own blocked_by link
 	// holds it under an ancestor (record.OpenChild.Cycle): the one fact of the three blocked
@@ -124,17 +115,28 @@ func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim,
 			// fill that listed it rendered one (Project, over record.LineEntry), so both are
 			// read without a guard.
 			reason := view.WaitingLine.Reason
-			if clause := linkReason(waitsOn(issue, blockers.Holds(rows, issue))); held && clause != "" {
-				reason += " " + clause
+			if held {
+				// What this member waits on: the links this pass judged for it
+				// (blockers.Holds), and the published row where that half names nothing — a
+				// root of the line whose wait blockers.LineWaitsOn judged. The links are
+				// judged for a member something holds and for no other, since a member
+				// nothing holds reads no clause whatever they say.
+				waitsOn := blockers.Holds(rows, issue)
+				if len(waitsOn) == 0 {
+					waitsOn = blocked[issue.Key]
+				}
+				if clause := linkReason(waitsOn); clause != "" {
+					reason += " " + clause
+				}
 			}
 			why = &api.WhyView{State: api.WhyWaiting, Reason: reason}
 		case held:
 			// The links this pass judged, read once for the two fills that name them: the
 			// children fill names them after the children it waits for, and the link fill is
-			// what waitsOn falls back from.
+			// the whole of them.
 			links := blockers.Holds(rows, issue)
 			why = &api.WhyView{State: api.WhyBlocked,
-				Reason: blockedReason(cycles[issue.Key], childWaits[issue.Key], links, waitsOn(issue, links))}
+				Reason: blockedReason(cycles[issue.Key], childWaits[issue.Key], links)}
 		default:
 			if _, placed := active[issue.Key]; placed {
 				continue
@@ -182,9 +184,12 @@ func claimStoppedReason(issue record.Issue, stopped supervise.Claim) string {
 // children would free an issue a link holds as well no sooner than it frees nothing, which the
 // children sentence alone tells a reader it would, and `admission.blocked` has named both all
 // along (blockers.Blocked merges them into one row). links is what the links half judged for
-// this issue (blockers.Holds) and never waitsOn, whose fallback is that published row and so
-// already holds the open children.
-func blockedReason(cycle string, wait record.ChildWait, links, waitsOn []string) string {
+// this issue (blockers.Holds) alone, and the published row is read nowhere here: where that
+// half names nothing for an issue that list holds, the row came from the children-first
+// judgement (record.ChildWaitRows), which is a parent whose open children the second arm
+// answers or a cycle child the first one does, so the last line is reached with the links in
+// hand.
+func blockedReason(cycle string, wait record.ChildWait, links []string) string {
 	if cycle != "" {
 		return fmt.Sprintf("A blocked_by link holds it under %s, which stands above it in its own tree.", cycle)
 	}
@@ -199,7 +204,7 @@ func blockedReason(cycle string, wait record.ChildWait, links, waitsOn []string)
 		}
 		return children
 	}
-	return linkReason(waitsOn)
+	return linkReason(links)
 }
 
 // linkReason is the clause that names the Dispatch issues an issue waits on that are not done:
