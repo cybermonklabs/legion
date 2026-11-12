@@ -1118,7 +1118,62 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 76: INFRA-3161 -- the two claim recoveries read the claim's process, and `fresh_session`
+// 85: INFRA-2554 (cybermonklabs/legion) -- every issue of `GET /legion/v1/state` that is not
+// working now carries one rendered answer, `why` (`api.WhyView`): its `state` —
+// `claim_stopped`, `waiting`, `blocked` or `unlisted` — and the `reason`, the sentence a person
+// reads. It is present only for an issue the record holds in the workflow whose sentence
+// renders something, so an issue at work carries no such key, and it sits on the issue beside
+// `waitingLine` and never inside it, because an issue whose claim has stopped can stand in the
+// line or outside it — such a member carries both keys, and reads `claim_stopped`, the state
+// that wins where both hold — and the answer is the same answer for every issue that carries
+// one. Beside it `api.WaitingLineView` gains the waiting line's own fields, for a program that
+// acts on the line rather than reading the sentence: `part` (`returned` or `starting`) and
+// `kind` (`returning`, `answered`, `queued_root` or `first_phase`), the member's `partPlace`
+// and its part's `partLength`, `holdsSlot` — whether it already holds one of the cap's slots,
+// written `false` for a member that does not — `since` for a member of the returned part,
+// `rootRank`, `ownRank` and `rootKey` for a member of the starting part, and `reason`, that
+// member's own rendered sentence. Each is absent where the member has no fact for it, so a
+// returned member names no rank and a starting member no `since`. The two halves take one
+// number because they are one answer read two ways and one pass of the projection renders both
+// from the same facts (internal/projection), so no caller stands between them.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 85 is served every issue without `why` and every member of the line with its
+// `place` and its `length` alone (api's stateFor, withoutWhyAndLineFields), which is the body
+// 58 describes, as a caller below 75 is served it without the nine keys the decided claim and
+// issue records added and without the `contract` mark beside the daemon's block
+// (withoutRecordFields), as a caller below 73 is served it without `claimsToRefresh`, one
+// below 62 the workers without their counts of the moves back, one below 58 the issues with no
+// `waitingLine` at all (withoutWaitingLine), one below 57 the claim views with no `step`, one
+// below 56 the stranded report without its retired entries, one below 55 the issues without
+// the gated steps, one below 53 a body with no wakes waiting, one below 51 the issues without
+// the admission's trees and each issue's tree, one below 49 without the memory draw and one
+// below 46 without the claim views' update rounds; the twelve compose, and every reader from
+// 85 on takes these fields as optional. A plugin from 58 through 84 refuses none of them, as a
+// plugin before one of the earlier contracts above refuses its own: every answer-side schema
+// of `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788, which
+// that package's own test holds it to, so such a plugin reads this state and sees neither the
+// answer nor the line's fields. The strip is still what serves it: a caller that did not ask
+// for these fields is not given them, and a plugin built before #2788 is strict and would
+// refuse the whole body for one of them. Nothing else of this change is on the wire: the
+// record and the projection fill the two shapes above and add no route, and the sentence each
+// renders is text a person reads rather than a shape a reader parses.
+// (This branch took 76 while main held 68, took 84 at the forward merge of 2026-11-12 that
+// brought main in at e98fc56e, which declares 73, and takes 85 now at the second such merge,
+// which brought main in at 9009dc1d, which declares the 75 right above. A reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 143 open pull requests of
+// cybermonklabs/legion at 2026-11-12T13:00Z gives, above 75: 76 (#3830), 77 (#3677), 78
+// (#3708), 79 (#3712), 80 (#3730), 81 (#3659), 82 (#3573), 83 (#2539) and 84 (#3534 and this
+// one before the move). #3534 declares 84 as well, so this branch moves off it; 76 through 83
+// are taken by the heads named above; and 85 is the lowest free number above the base and
+// above every open head, which is the number to take, because a release declaring any of 76 to
+// 84 without these shapes would land first and force the renumber then, which is what
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// records. That reading is of this file at refs/pull/<n>/head for every open pull request, not
+// of a file list: GitHub cuts a pull request's file list short, so one that changes more files
+// than the page holds answers without this path. Read the base's own number and every open
+// pull request again at every forward merge rather than from this line.)
+//
+// 86: INFRA-3161 -- the two claim recoveries read the claim's process, and `fresh_session`
 // reaches a claim stored working that no process stands behind. Such a claim was refused
 // `CLAIM_IN_A_TURN` by both recoveries, which left a project controller no recovery at all for a
 // dead architect. Both doors now read that claim's process at the moment of the request
@@ -1146,20 +1201,15 @@ package api
 // claims each operation reaches and the code and the sentence each refusal gives, which
 // `packages/contracts/src/legion-claim-recovery.ts` mirrors and which a controller reads in the
 // `legion` tool's own description, so this number is what keeps a plugin stating the old
-// behaviour off a daemon that answers the new one. (This entry has taken two numbers, each read
-// the same way, and it has been read three times. It took 70 when the base carried 68; it took
-// 76 at the forward merge of 2026-11-12 that brought main in at 1826da13bbc0, where main
-// declared 73; and it keeps 76 at the second forward merge of that day, 9009dc1d5c73, which the
-// pull request's own conflict forced and where main declares 75, the entry right above this
-// one. The reading at that second merge, of `const DaemonAPIVersion` at refs/pull/<n>/head for
-// each of the 149 open pull requests of this repository and never of a file list, gives 75
-// (#2461 and #3666), 77 (#3677), 78 (#3708), 79 (#3712), 80 (#3730), 81 (#3659), 82 (#3573),
-// 83 (#2539) and 84 (#3534 and #3718), and 76 on this pull request alone, so 76 is still free
-// and still the lowest above the base's, which is what the gate's refusal names. The reading
-// is of this file at refs/pull/<n>/head rather than of a file list because GitHub cuts a pull
-// request's file list short, so one that changes more files than the page holds answers without
-// this path. Read the base's own number and every open pull request again at the next forward
-// merge rather than from this line, as
+// behaviour off a daemon that answers the new one. (This entry has taken three numbers, each
+// read the same way: 70 when the base carried 68, 76 at the forward merges of 2026-11-12 where
+// main declared 73 and then 75, and 86 at the third, fbe970eef84d, which the pull request's own
+// conflict forced and where main declares 85, the entry right above this one. The reading at
+// that merge, of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 148 open pull
+// requests of this repository and never of a file list, gives 85 on #3519 and #3831 and no
+// number above it, so 86 is the lowest free number above the base's, which is what the gate's
+// refusal names. Read the base's own number and every open pull request again at the next
+// forward merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 76
+const DaemonAPIVersion = 86
