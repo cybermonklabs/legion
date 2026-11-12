@@ -415,9 +415,10 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 		s.imageReport, s.probed = report, true
 		// The probe waits out a cold node and an image pull, which the boot budget does not bound,
-		// as it does not bound the plugin gate: the work after the probe has a budget of its own.
+		// as it does not bound the plugin gate: the work after the probe has a budget of its own,
+		// and the boot's hold mark with it, since that work is still the boot's sequential steps.
 		var cancelAfterProbe context.CancelFunc
-		boot, cancelAfterProbe = context.WithTimeout(context.WithoutCancel(ctx), bootTimeout)
+		boot, cancelAfterProbe = context.WithTimeout(store.WithTransactionTracking(context.WithoutCancel(ctx)), bootTimeout)
 		defer cancelAfterProbe()
 	} else if plan.modelFallback != nil {
 		// The tmux counterpart of the probe's model-fallback mark, read from the host's Oh My Pi
@@ -441,12 +442,15 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// unreachable Postgres refuses earlier, at store.Open
 		// (TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword, scripts/e2e/stage1-skeleton.sh).
 		plan.nats.log(log)
-		err := bootprobe.Run(ctx, "connect Envoy NATS", readinessRetry, log,
+		// The three probes run one after another on this goroutine, so they share one hold mark
+		// (a sequential flow); whether the daemon is stopping is still read from ctx.
+		probing := store.WithTransactionTracking(ctx)
+		err := bootprobe.Run(probing, "connect Envoy NATS", readinessRetry, log,
 			readinessAttempt(func(attempt context.Context) error {
 				return workflow.connect(attempt, cfg, plan.nats)
 			}, bootTimeout, natsauth.Unreachable))
 		if err == nil {
-			err = bootprobe.Run(ctx, "list Dispatch issues for admission", readinessRetry, log,
+			err = bootprobe.Run(probing, "list Dispatch issues for admission", readinessRetry, log,
 				readinessAttempt(workflow.reconcile, bootTimeout, dispatch.Unreachable))
 		}
 		// The catch-up of the roots that run or wait on a person is its own probe, after the
@@ -457,7 +461,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// catch-up that would never end. The durable consumers start only after it, so no live
 		// fact meets a root still held.
 		if err == nil {
-			err = bootprobe.Run(ctx, "catch up the roots that run or wait on a person", readinessRetry, log,
+			err = bootprobe.Run(probing, "catch up the roots that run or wait on a person", readinessRetry, log,
 				readinessAttempt(workflow.catchUpAwaiting, catchUpAttemptBound, dispatch.Unreachable))
 		}
 		if err != nil {
@@ -475,9 +479,10 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		workflow.attach(s)
 		// Both waited out whatever they waited out on ctx, which the boot budget does not bound:
 		// what follows gets a budget of its own, as the App mint and the image probe's callers
-		// already do.
+		// already do, and the boot's hold mark with it: the boot record and supervision's start
+		// (starting) are the boot's sequential steps.
 		var cancelAfterReady context.CancelFunc
-		boot, cancelAfterReady = context.WithTimeout(context.WithoutCancel(ctx), bootTimeout)
+		boot, cancelAfterReady = context.WithTimeout(store.WithTransactionTracking(context.WithoutCancel(ctx)), bootTimeout)
 		defer cancelAfterReady()
 	}
 
@@ -505,10 +510,13 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	failed := make(chan error, 1)
 	lived := make(chan error, 1)
 	// The replay runs on ctx with a budget per fact (replayTerminal), not on starting: the boot's
-	// budget would end it on the number of facts no daemon applied.
+	// budget would end it on the number of facts no daemon applied. It is one more of the boot's
+	// sequential steps, on start's goroutine after the restore, so its context carries a hold mark.
 	var settle func() error
 	if workflow != nil {
-		settle = func() error { return workflow.replayTerminal(ctx, s.claims, bootTimeout) }
+		settle = func() error {
+			return workflow.replayTerminal(store.WithTransactionTracking(ctx), s.claims, bootTimeout)
+		}
 	}
 	go func() {
 		err := s.start(starting, settle)
@@ -1400,6 +1408,9 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		SessionGone:             cleanSessionStop(supervising, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
 		Clock:                   p.clock,
 		Log:                     log,
+		// A timer that fires and a prompt's send each apply their decision on a goroutine of
+		// their own, beside the machine's feeding goroutine, so each takes a hold mark of its own.
+		Worker: store.ForConcurrentWorker,
 		Limits: supervise.Limits{
 			LaunchFailures: cfg.LaunchFailureLimit,
 			PromptFailures: cfg.PromptFailureLimit,
@@ -1616,7 +1627,9 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 	}()
 	go func() {
 		defer s.wg.Done()
-		s.reconcileOrphans(s.supervisor.ctx)
+		// The sweep runs on a goroutine of its own beside the machines for supervision's life, so
+		// it takes a hold mark of its own.
+		s.reconcileOrphans(store.ForConcurrentWorker(s.supervisor.ctx))
 	}()
 	s.endPluginRounds(s.claims)
 	s.refreshStalePlugins(s.claims, "boot")
@@ -1972,8 +1985,9 @@ func (s *supervision) reconcileBootOrphans(ctx context.Context) bool {
 // uncertain; its hello changes the state before a later retry, and it must never be joined by a
 // second pane. It returns the claims whose release the store did not take, outside the daemon's
 // stop: each is still launch_uncertain, in memory as in the store, and nothing else in this boot
-// releases it, so the caller retries it (relaunchUnfinished).
-func (s *supervision) launchUnfinished(tokens []claim.Token) []claim.Token {
+// releases it, so the caller retries it (relaunchUnfinished). ctx is the relaunches' context; each
+// relaunch derives a context of its own from it.
+func (s *supervision) launchUnfinished(ctx context.Context, tokens []claim.Token) []claim.Token {
 	refused := make([]bool, len(tokens))
 	var launching sync.WaitGroup
 	for i, token := range tokens {
@@ -1984,7 +1998,9 @@ func (s *supervision) launchUnfinished(tokens []claim.Token) []claim.Token {
 		launching.Add(1)
 		go func() {
 			defer launching.Done()
-			refused[i] = s.launchUnfinishedClaim(token, m)
+			// Each relaunch runs on a goroutine of its own beside the others, so each takes a
+			// hold mark of its own rather than ctx's.
+			refused[i] = s.launchUnfinishedClaim(store.ForConcurrentWorker(ctx), token, m)
 		}()
 	}
 	launching.Wait()
@@ -1997,10 +2013,10 @@ func (s *supervision) launchUnfinished(tokens []claim.Token) []claim.Token {
 	return failed
 }
 
-// launchUnfinishedClaim releases one unfinished launch and launches it again, and reports whether
-// the store refused the release (launchUnfinished).
-func (s *supervision) launchUnfinishedClaim(token claim.Token, m *supervise.Machine) bool {
-	released, err := m.ReleaseUncertainLaunch(s.supervisor.ctx)
+// launchUnfinishedClaim releases one unfinished launch and launches it again, both on ctx, and
+// reports whether the store refused the release (launchUnfinished).
+func (s *supervision) launchUnfinishedClaim(ctx context.Context, token claim.Token, m *supervise.Machine) bool {
+	released, err := m.ReleaseUncertainLaunch(ctx)
 	if err != nil {
 		return s.supervisor.decisionFailed(token, "release of an uncertain launch", err,
 			"supervise: release an uncertain launch; retrying at the next orphan sweep")
@@ -2012,7 +2028,7 @@ func (s *supervision) launchUnfinishedClaim(token claim.Token, m *supervise.Mach
 	}
 	s.log.Warn("supervise: launching again a launch the previous daemon did not finish", "claim", token)
 	spawn := supervise.RequestSpawn{Claim: token}
-	if err := m.Handle(s.supervisor.ctx, spawn); err != nil {
+	if err := m.Handle(ctx, spawn); err != nil {
 		s.supervisor.decisionFailed(token, fmt.Sprintf("%T", spawn), err, "supervise: launch an unfinished launch again")
 	}
 	return false
@@ -2042,8 +2058,11 @@ func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) 
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		// The relaunches run on a goroutine of their own beside the machines and the orphan sweep,
+		// so this goroutine takes a hold mark of its own.
+		relaunching := store.ForConcurrentWorker(s.supervisor.ctx)
 		if reconciled {
-			tokens = s.launchUnfinished(tokens)
+			tokens = s.launchUnfinished(relaunching, tokens)
 		}
 		ticker := time.NewTicker(s.plan.orphanSweep)
 		defer ticker.Stop()
@@ -2054,11 +2073,11 @@ func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) 
 			case <-ticker.C:
 			}
 			if !reconciled {
-				if reconciled = s.reconcileBootOrphans(s.supervisor.ctx); !reconciled {
+				if reconciled = s.reconcileBootOrphans(relaunching); !reconciled {
 					continue
 				}
 			}
-			tokens = s.launchUnfinished(tokens)
+			tokens = s.launchUnfinished(relaunching, tokens)
 		}
 	}()
 }

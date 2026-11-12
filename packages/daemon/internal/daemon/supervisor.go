@@ -326,7 +326,9 @@ func (s *supervisor) wait() {
 // shim to redial (stream.HelloResolver).
 func (s *supervisor) helloResolver(tokens *api.BootTokens, timeout time.Duration) stream.HelloResolver {
 	resolve := func(bootToken string) (api.BootToken, bool, error) {
-		ctx, cancel := context.WithTimeout(s.ctx, timeout)
+		// Every hello is resolved on its own connection's goroutine, beside every other, so each
+		// read takes a hold mark of its own (store.ForConcurrentWorker).
+		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(s.ctx), timeout)
 		defer cancel()
 		return tokens.Resolve(ctx, bootToken)
 	}

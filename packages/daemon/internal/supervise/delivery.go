@@ -815,9 +815,12 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 	}
 	m.goroutines++
 	go func() {
-		err := m.adopt(role, loc)
+		// The send runs on a goroutine of its own, so its adoption, its prompt and its outcome's
+		// decision share one fresh context, one after another.
+		working := m.worker()
+		err := m.adopt(working, role, loc)
 		if err == nil {
-			sending, cancel := context.WithTimeout(m.ctx, m.deps.Timeouts.RPC)
+			sending, cancel := context.WithTimeout(working, m.deps.Timeouts.RPC)
 			err = conn.Prompt(sending, d.ID, d.message())
 			cancel()
 		}
@@ -825,7 +828,7 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 		if err != nil {
 			ev = PromptRefused{Claim: token, Generation: generation, DeliveryID: d.ID, Err: err}
 		}
-		if err := m.Handle(m.ctx, ev); err != nil {
+		if err := m.Handle(working, ev); err != nil {
 			m.log.Error("supervise: prompt outcome", "delivery", d.ID, "error", err)
 		}
 		m.mu.Lock()
@@ -842,18 +845,18 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 // A mint that failed is marked as what it is (runtime.ErrIdentityUnavailable) rather than left to
 // read as the transport's silence: it is raised here, before any frame leaves the daemon, and the
 // send's refusal is logged by that name (table.go's refused).
-func (m *Machine) adopt(role claim.Role, loc *runtime.Locator) error {
+func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locator) error {
 	if m.deps.Identity == nil || role == claim.RoleController {
 		return nil
 	}
 	if loc == nil {
 		return fmt.Errorf("adopt the working copy of %s: the claim has no locator", m.claim.Token)
 	}
-	id, err := m.deps.Identity(m.ctx, role, m.claim.Issue)
+	id, err := m.deps.Identity(ctx, role, m.claim.Issue)
 	if err != nil {
 		return fmt.Errorf("%w: the git identity of %s: %w", runtime.ErrIdentityUnavailable, m.claim.Token, err)
 	}
-	return m.deps.Runtime.AdoptWorkingCopy(m.ctx, *loc, id)
+	return m.deps.Runtime.AdoptWorkingCopy(ctx, *loc, id)
 }
 
 // confirm records that the pending delivery's turn started: the claim and the delivery together,

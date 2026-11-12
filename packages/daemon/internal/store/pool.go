@@ -105,8 +105,10 @@ func holdsConnection(ctx context.Context) bool {
 // for as long as the caller lives: ctx's deadline, cancellation and values, with a hold mark of
 // its own, always a fresh one. A worker that takes a connection — a transaction, a cursor — marks
 // only itself, so its siblings are still free to take theirs, and the pool still refuses each
-// worker a second connection of its own. The outbox's lanes, the workflow runtime's loops and the
-// serving group's goroutines each run on one.
+// worker a second connection of its own. Every goroutine of the daemon that runs beside others
+// takes one: the outbox's lanes and each row's lease renewal, the workflow runtime's loops, the
+// serving group's goroutines, the supervision sweeps and relaunches, each machine's feeding
+// goroutine, timers and sends, and each hello the worker stream resolves.
 //
 // It differs from WithTransactionTracking, this package's other mark, by never reusing ctx's:
 // that one hands back the mark ctx already carries, which siblings sharing it would set and

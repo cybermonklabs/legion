@@ -741,6 +741,13 @@ type Deps struct {
 	// tells nobody, as it does for TaskConfirmed above. It is called inside the machine's
 	// decision, so it returns at once.
 	ProviderErrorRunReached func(c Claim, reason string)
+	// Worker is the context a goroutine the machine starts applies its decision on: a timer that
+	// fires (arm) and a prompt's send (startSend) each call Handle from a goroutine of their own,
+	// beside whatever goroutine feeds the machine its events, and the decision writes the claim
+	// through the store. The daemon gives each such goroutine a hold mark of its own for its
+	// connection pool (store.ForConcurrentWorker, which this package cannot import: the store
+	// imports it). nil applies the decision on the machine's context unchanged.
+	Worker func(context.Context) context.Context
 }
 
 func (d Deps) check() error {
@@ -2473,11 +2480,21 @@ func (m *Machine) arm(kind TimerKind, after time.Duration, deliveryID string) {
 	m.seq++
 	ev := Timer{Claim: m.claim.Token, Kind: kind, Generation: m.claim.Generation, Seq: m.seq, DeliveryID: deliveryID}
 	cancel := m.deps.Clock.AfterFunc(after, func() {
-		if err := m.Handle(m.ctx, ev); err != nil {
+		// The timer fires on a goroutine of its own, so its decision runs on a fresh context.
+		if err := m.Handle(m.worker(), ev); err != nil {
 			m.log.Error("supervise: timer", "timer", string(kind), "error", err)
 		}
 	})
 	m.timers[kind] = armed{seq: m.seq, deliveryID: deliveryID, cancel: cancel, due: m.deps.Clock.Now().Add(after)}
+}
+
+// worker is the context a goroutine the machine starts runs its decision on: the machine's own,
+// through Deps.Worker when the daemon set one, called once per goroutine.
+func (m *Machine) worker() context.Context {
+	if m.deps.Worker == nil {
+		return m.ctx
+	}
+	return m.deps.Worker(m.ctx)
 }
 
 func (m *Machine) disarm(kind TimerKind) {
