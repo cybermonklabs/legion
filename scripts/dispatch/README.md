@@ -454,7 +454,9 @@ The steps print one line each, in this order:
   approval request names, whose answer must carry no report:
   `control document=notes.md report=none|present pass|fail`.
 - **Close**, an assertion, in a `finally`: the closing reason as a message, then the close
-  itself, `close issue=<KEY> status=done|other pass|fail`.
+  itself, which is sent whatever that message did, since the close is what withdraws the
+  request: `close issue=<KEY> status=done|other pass|fail`. A reason that could not be posted
+  is not reported, and costs the issue its closing words alone.
 
 A step that could not be carried out prints `<step> unavailable: <category>`
 (`auth|refused|transport|malformed|not-found`) instead of its verdict and is never a pass; the

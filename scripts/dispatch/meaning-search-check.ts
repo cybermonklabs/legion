@@ -3,12 +3,15 @@ import { SQL } from "bun";
 import { z } from "zod";
 import { DispatchClient } from "../../packages/envoy-client/src/dispatch-http";
 import {
+  checkBuild,
   type DispatchConfig,
   EXIT_CODE,
   errorCategory,
-  Health,
+  ISSUE_KEY,
+  overallVerdict,
+  readCommandLine,
   readJson,
-  resolveDispatch,
+  runScript,
   type Category as SharedCategory,
   UsageError,
   type Verdict,
@@ -20,7 +23,6 @@ import {
  * response body, an issue title, a query, the coverage identity or an exception's text, since
  * the repository is public and those carry private hosts and names. */
 
-const PAIR_KEY = /^[A-Z][A-Z0-9]*-[1-9][0-9]*$/;
 const WHOLE_SECONDS = /^[0-9]+$/;
 const POSTGRES_URL = /^postgres(?:ql)?:\/\//;
 /** A2 looks for the issue's own row among this many results, and asks search for no more. */
@@ -177,7 +179,7 @@ function parsePair(value: string): Pair {
   if (split < 0) throw new UsageError(USAGE.pair);
   const key = value.slice(0, split);
   const query = value.slice(split + 1);
-  if (!PAIR_KEY.test(key) || query.trim() === "") throw new UsageError(USAGE.pair);
+  if (!ISSUE_KEY.test(key) || query.trim() === "") throw new UsageError(USAGE.pair);
   return { key, query };
 }
 
@@ -225,13 +227,6 @@ export function parseArguments(argv: readonly string[]): Options {
     ...(lexemeDatabase === undefined ? {} : { lexemeDatabase }),
     ...(expectModel === undefined ? {} : { coverage: { expectModel, waitSeconds } }),
   };
-}
-
-/** Any unavailable check makes the run unavailable; else any failed check fails it. */
-function overallVerdict(verdicts: readonly Verdict[]): Verdict {
-  if (verdicts.includes("unavailable")) return "unavailable";
-  if (verdicts.includes("fail")) return "fail";
-  return "pass";
 }
 
 /**
@@ -420,19 +415,6 @@ function formatCoverage(result: CoverageResult): string[] {
   ];
 }
 
-async function checkBuild(dispatch: DispatchReads, out: (line: string) => void): Promise<Verdict> {
-  let health: Health;
-  try {
-    health = Health.parse(await dispatch.healthz());
-  } catch (error) {
-    out(`build unavailable: ${errorCategory(error)}`);
-    return "unavailable";
-  }
-  const schema = health.schema_version ?? "null";
-  out(`build commit=${health.commit ?? "null"} schema=${schema} ok=${health.ok}`);
-  return "pass";
-}
-
 async function checkA1(
   query: string,
   dispatch: DispatchReads,
@@ -562,25 +544,14 @@ function postgresLexer(target: string): Lexer & { close(): Promise<void> } {
 }
 
 async function main(argv: readonly string[]): Promise<number> {
-  let options: Options;
-  try {
-    options = parseArguments(argv);
-  } catch (error) {
-    if (!(error instanceof UsageError)) throw error;
-    console.error(`usage: ${error.message}`);
-    return 2;
-  }
-  const config = resolveDispatch();
-  if (config === null) {
-    const category: Category = "config";
-    console.error(`unavailable: ${category}`);
-    return 2;
-  }
+  const prelude = readCommandLine(argv, parseArguments, "config" satisfies Category);
+  if (!prelude.ready) return prelude.code;
+  const { options } = prelude;
   const lexer =
     options.lexemeDatabase === undefined ? undefined : postgresLexer(options.lexemeDatabase);
   try {
     return await runChecks(options, {
-      dispatch: liveDispatch(config),
+      dispatch: liveDispatch(prelude.config),
       ...(lexer === undefined ? {} : { lexer }),
       out: (line) => console.log(line),
     });
@@ -589,13 +560,4 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-if (import.meta.main) {
-  let code: number;
-  try {
-    code = await main(Bun.argv.slice(2));
-  } catch (error) {
-    console.error(`unavailable: ${errorCategory(error)}`);
-    code = 2;
-  }
-  process.exit(code);
-}
+if (import.meta.main) await runScript(main);

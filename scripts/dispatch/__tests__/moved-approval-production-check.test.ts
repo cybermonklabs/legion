@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { bearerCredential } from "../../../packages/envoy-client/src/bearer.ts";
 import {
+  type DispatchWrites,
   type ExpectedMove,
   judgeControl,
   judgeMoved,
+  liveDispatch,
   parseArguments,
+  runCheck,
 } from "../moved-approval-production-check.ts";
 import { UsageError } from "../production-check-runtime.ts";
 
@@ -159,5 +163,68 @@ describe("parseArguments", () => {
 
   test("a stray argument is refused", () => {
     expect(() => parseArguments(["--project", "ACME", "ACME-12"])).toThrow(UsageError);
+  });
+});
+
+const SPEC_ID = "2b7f1d90-4c3a-4e58-9b21-7d0e6a5c4f83";
+const VERIFICATION_ID = "c51a7e24-8f60-4b19-83d7-4e2a9c0b6d15";
+const NOTES_ID = "9d3c6b08-2a74-4f51-b6e9-0c8f5a1d7243";
+
+/** A Dispatch that refuses the closing reason and answers the close, writing down every request
+ *  it was sent in the order it arrived. */
+function closingServer(sent: string[]) {
+  return Bun.serve({
+    port: 0,
+    fetch(request) {
+      const { pathname } = new URL(request.url);
+      sent.push(`${request.method} ${pathname}`);
+      return pathname.endsWith("/messages")
+        ? Response.json({ error: { code: "REFUSED", message: "no" } }, { status: 422 })
+        : Response.json({ status: "done" });
+    },
+  });
+}
+
+/** Every write of a run whose steps all pass, with the close the test hands it: the issue is
+ *  made, its three documents are uploaded, the request is opened on the spec, the write of
+ *  `verification.md` carries the report and the write of `notes.md` carries none. */
+function writes(close: DispatchWrites["close"]): DispatchWrites {
+  return {
+    healthz: async () => ({ ok: true, commit: "0123abcd", schema_version: 88 }),
+    createIssue: async () => ({ key: KEY, primary_artifact_id: SPEC_ID, created: true }),
+    setStatus: async () => ({ status: "in_progress" }),
+    upload: async (_key, name) => ({
+      artifact: { id: name === "verification.md" ? VERIFICATION_ID : NOTES_ID },
+      version: { number: 1 },
+    }),
+    requestApproval: async () => ({ ask: { id: ASK }, version: 1 }),
+    edit: async (artifactID) => (artifactID === VERIFICATION_ID ? answer(report()) : answer()),
+    close,
+    docEditCommand: async () => ({ code: 0, line: true }),
+  };
+}
+
+describe("the close of the scratch issue", () => {
+  test("the status write is sent although the closing reason was refused", async () => {
+    const sent: string[] = [];
+    const server = closingServer(sent);
+    try {
+      const live = liveDispatch({
+        url: `http://127.0.0.1:${server.port}`,
+        credential: bearerCredential("t"),
+      });
+      const out: string[] = [];
+      const code = await runCheck(
+        parseArguments(["--project", "ACME"]),
+        writes(live.close),
+        (line) => out.push(line)
+      );
+      expect(sent).toEqual([`POST /api/v1/issues/${KEY}/messages`, `PATCH /api/v1/issues/${KEY}`]);
+      expect(out).toContain(`close issue=${KEY} status=done pass`);
+      expect(out.at(-1)).toBe("all 3 assertions passed");
+      expect(code).toBe(0);
+    } finally {
+      server.stop(true);
+    }
   });
 });

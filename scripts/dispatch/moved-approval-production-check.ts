@@ -6,12 +6,15 @@ import {
 } from "../../packages/envoy-client/src/dispatch-http";
 import {
   type Category,
+  checkBuild,
   type DispatchConfig,
   EXIT_CODE,
   errorCategory,
-  Health,
+  ISSUE_KEY,
+  overallVerdict,
+  readCommandLine,
   readJson,
-  resolveDispatch,
+  runScript,
   UsageError,
   type Verdict,
 } from "./production-check-runtime.ts";
@@ -31,7 +34,6 @@ import {
  * create, since this repository is public and those carry private hosts and names. */
 
 const PROJECT_KEY = /^[A-Z][A-Z0-9]*$/;
-const ISSUE_KEY = /^[A-Z][A-Z0-9]*-[1-9][0-9]*$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** What a key, a name or an id the server answered is printed as when it is none of the check's
@@ -142,7 +144,7 @@ interface Judgement {
 }
 
 /** The writes and reads the steps make, each answering the JSON it received. */
-interface DispatchWrites {
+export interface DispatchWrites {
   /** `GET /healthz`, whose body is read on 200 and on 503. */
   healthz(): Promise<unknown>;
   /** `POST /api/v1/issues`: the scratch issue, with its spec, forced past any near-duplicate. */
@@ -155,7 +157,7 @@ interface DispatchWrites {
   requestApproval(artifactID: string): Promise<unknown>;
   /** `POST /api/v1/artifacts/{id}/edits`: one insert at the end of a document. */
   edit(artifactID: string, sentence: string): Promise<unknown>;
-  /** The closing reason as a message, then the close itself. */
+  /** The closing reason as a message, then the close itself, whatever that message did. */
   close(key: string): Promise<unknown>;
   /** The same edit run through the pod's own `dispatch doc-edit`. */
   docEditCommand(key: string, artifactID: string, sentence: string): Promise<CommandRun>;
@@ -164,7 +166,7 @@ interface DispatchWrites {
 /** A run of the `dispatch` command: its exit status, or null when it could not be run, and
  *  whether the moved-approval line was among the lines it printed. Its output stays inside the
  *  run, so nothing of it can reach the check's own output. */
-interface CommandRun {
+export interface CommandRun {
   readonly code: number | null;
   readonly line: boolean;
 }
@@ -259,22 +261,6 @@ export function judgeControl(answer: unknown, name: string): Judgement {
     verdict,
     line: `control document=${documentName(name)} report=${present ? "present" : "none"} ${verdict}`,
   };
-}
-
-/** The running build, which is not an assertion of its own: whether its commit carries a given
- *  merge is decided outside the script, as it is for the meaning search check. */
-async function printBuild(writes: DispatchWrites, out: Out): Promise<Verdict> {
-  try {
-    const health = Health.parse(await writes.healthz());
-    out(
-      `build commit=${health.commit ?? "null"} schema=${health.schema_version ?? "null"} ` +
-        `ok=${health.ok}`
-    );
-    return "pass";
-  } catch (error) {
-    out(`build unavailable: ${errorCategory(error)}`);
-    return "unavailable";
-  }
 }
 
 /**
@@ -427,9 +413,13 @@ async function closeScratch(key: string, writes: DispatchWrites, out: Out): Prom
 
 /** Runs every step in order, prints their lines, and answers the exit code. The scratch issue is
  *  closed in a `finally`, so a step that threw still gives its issue back. */
-async function runCheck(options: Options, writes: DispatchWrites, out: Out): Promise<number> {
+export async function runCheck(
+  options: Options,
+  writes: DispatchWrites,
+  out: Out
+): Promise<number> {
   const assertions: Verdict[] = [];
-  let blocked = (await printBuild(writes, out)) === "unavailable";
+  let blocked = (await checkBuild(writes, out)) === "unavailable";
   let scratch: Scratch | undefined;
   try {
     scratch = await makeScratch(options.project, writes, out);
@@ -450,12 +440,8 @@ async function runCheck(options: Options, writes: DispatchWrites, out: Out): Pro
   } finally {
     if (scratch !== undefined) assertions.push(await closeScratch(scratch.key, writes, out));
   }
-  const result: Verdict =
-    blocked || assertions.includes("unavailable")
-      ? "unavailable"
-      : assertions.includes("fail")
-        ? "fail"
-        : "pass";
+  // A build that could not be read blocks the run as an unavailable assertion would.
+  const result: Verdict = blocked ? "unavailable" : overallVerdict(assertions);
   const code = EXIT_CODE[result];
   out(`result ${result} exit=${code}`);
   const passed = assertions.filter((verdict) => verdict === "pass").length;
@@ -520,7 +506,7 @@ async function runDocEditCommand(
   }
 }
 
-function liveDispatch(config: DispatchConfig): DispatchWrites {
+export function liveDispatch(config: DispatchConfig): DispatchWrites {
   // `dispatchSettings` already trimmed the URL's trailing slashes. Every write acts as the
   // session this process is, which is the session the approval request is opened by and the one
   // the writes that move it belong to.
@@ -556,8 +542,13 @@ function liveDispatch(config: DispatchConfig): DispatchWrites {
     edit: (artifactID, sentence) => client().docEdit(artifactID, insert(sentence)),
     close: async (key) => {
       // A closing reason is a message of its own, posted before the close, as the `dispatch
-      // issue --status done --reason` call posts it.
-      await client().message(key, { actor, body: WRITTEN.reason });
+      // issue --status done --reason` call posts it. The close is sent whatever that message
+      // did: closing the issue is what withdraws the approval request this check opened, and a
+      // run that left the request standing in production is the one outcome this step exists to
+      // prevent, so a refused or lost reason costs the issue its closing words and nothing else.
+      await client()
+        .message(key, { actor, body: WRITTEN.reason })
+        .catch(() => undefined);
       return client().updateIssue(key, { actor, status: "done" });
     },
     docEditCommand: runDocEditCommand,
@@ -565,32 +556,11 @@ function liveDispatch(config: DispatchConfig): DispatchWrites {
 }
 
 async function main(argv: readonly string[]): Promise<number> {
-  let options: Options;
-  try {
-    options = parseArguments(argv);
-  } catch (error) {
-    if (!(error instanceof UsageError)) throw error;
-    console.error(`usage: ${error.message}`);
-    return 2;
-  }
-  const config = resolveDispatch();
-  if (config === null) {
-    const category: Category = "config";
-    console.error(`unavailable: ${category}`);
-    return 2;
-  }
-  return runCheck(options, liveDispatch(config), (line) => {
+  const prelude = readCommandLine(argv, parseArguments, "config" satisfies Category);
+  if (!prelude.ready) return prelude.code;
+  return runCheck(prelude.options, liveDispatch(prelude.config), (line) => {
     console.log(line);
   });
 }
 
-if (import.meta.main) {
-  let code: number;
-  try {
-    code = await main(Bun.argv.slice(2));
-  } catch (error) {
-    console.error(`unavailable: ${errorCategory(error)}`);
-    code = 2;
-  }
-  process.exit(code);
-}
+if (import.meta.main) await runScript(main);
