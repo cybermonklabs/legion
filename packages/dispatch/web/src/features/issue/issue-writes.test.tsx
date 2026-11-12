@@ -594,9 +594,13 @@ test("IssuePage does not retry an invalid route draft after a failed save", asyn
     await user.clear(route);
     await user.click(route);
     await user.paste("not-a-route");
+    // Retry sits in the header, outside the route editor's panel, so pressing it dismisses the
+    // panel and discards the invalid draft with it - what Cancel and Escape do. Neither the
+    // press nor the discard may send anything.
     await user.click(screen.getByRole("button", { name: "Retry" }));
     expect(patchIssue).toHaveBeenCalledTimes(1);
 
+    route = await openRouteEditor();
     saveRoute = screen.getByRole("button", { name: "Save route" });
     routeForm = saveRoute.closest("form");
     if (routeForm === null) {
@@ -794,12 +798,14 @@ test("IssuePage does not submit a route that was typed but never saved", async (
 
   try {
     const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
-    const route = await openRouteEditor();
     await user.selectOptions(status, "backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
 
+    // The route editor opens over its rail item, and the Status pick is outside that panel, so
+    // the draft is typed with the status save already out rather than before it.
+    const route = await openRouteEditor();
     await user.click(route);
     await user.paste("role:legion");
     act(() => {
@@ -940,19 +946,20 @@ test("IssuePage retries a failed drained title before sending the queued route",
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
 
-    // The route input takes focus when it opens, which would blur (and submit) an open title
-    // editor exactly as a click does in a browser; open it first so both drafts can be staged.
-    const route = await openRouteEditor();
+    // The title editor is staged first and closed by its own blur, because the route editor
+    // opens over its rail item in a panel and a press on the heading outside that panel
+    // dismisses it - exactly as a press outside any popover does.
     const title = await openTitleEditor();
-    const routeForm = screen.getByRole("button", { name: "Save route" }).closest("form");
-    if (routeForm === null) {
-      throw new Error("Save route must be inside a form.");
-    }
     await user.clear(title);
     await user.click(title);
     await user.paste("Queued title");
     // Blur has no user-event form; it is what the title editor saves on.
     fireEvent.blur(title);
+    const route = await openRouteEditor();
+    const routeForm = screen.getByRole("button", { name: "Save route" }).closest("form");
+    if (routeForm === null) {
+      throw new Error("Save route must be inside a form.");
+    }
     await user.click(route);
     await user.paste("role:queued");
     // Submit has no user-event form; the route form saves on its own submit.

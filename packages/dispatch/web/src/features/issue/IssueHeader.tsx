@@ -4,10 +4,8 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
-  useEffect,
   useId,
   useLayoutEffect,
-  useRef,
   useState,
 } from "react";
 import { Link } from "react-router-dom";
@@ -22,6 +20,7 @@ import {
 import { mergeIssue } from "../../api/issue-cache";
 import { projectsQuery, userStateQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
+import { InPlaceEditBox, type InPlaceReadProps } from "../../components/InPlaceEditBox";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -30,15 +29,12 @@ import {
   badgePrimary,
   bgTransparent,
   borderDefault,
-  borderStrongHover,
   borderTransparent,
   calloutWarningBg,
   calloutWarningBorder,
   calloutWarningText,
   card,
   dangerText,
-  focusBorder,
-  focusVisibleRing,
   inputClasses,
   linkHoverText,
   linkText,
@@ -49,10 +45,8 @@ import {
   secondaryButtonText,
   statusPill,
   statusPillDot,
-  surfaceMutedStrongBg,
   textMutedHoverToSecondary,
   textMutedOnSurface,
-  textPrimaryOnSurface,
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
@@ -121,23 +115,10 @@ export function IssueHeader({
 }): ReactNode {
   const queryClient = useQueryClient();
   const [editingTitle, setEditingTitle] = useState(false);
+  // The route and the parent editors open over their rail item in a panel, which takes the
+  // focus into itself (`AnchoredPanel`); the item they hang off stays where it is.
   const [routeEditing, setRouteEditing] = useState(false);
-  const routeInputRef = useRef<HTMLInputElement>(null);
-  // Focus the route input once when editing opens: the trigger button unmounts, so without this
-  // focus would drop to the body and a keyboard user would have to find the form again.
-  useEffect(() => {
-    if (routeEditing) {
-      routeInputRef.current?.focus();
-    }
-  }, [routeEditing]);
   const [parentEditing, setParentEditing] = useState(false);
-  const parentInputRef = useRef<HTMLInputElement>(null);
-  // Same focus handoff as the route editor: the trigger button unmounts when the form opens.
-  useEffect(() => {
-    if (parentEditing) {
-      parentInputRef.current?.focus();
-    }
-  }, [parentEditing]);
   // Whether the details rail has anywhere left to scroll, which is what its trailing fade says.
   // The rail element is state rather than a ref so this runs once per rail, not once per render:
   // three things change the answer and none of them is a render of this component - the reader
@@ -353,6 +334,17 @@ export function IssueHeader({
       setParentEditing(false);
     }
   };
+  // One way out of either panel editor, for Cancel, for Escape and for a press outside it:
+  // `AnchoredPanel` takes those two at the document's capture phase, so the discard cannot sit
+  // on the field's own `onKeyDown` where the press never arrives.
+  const cancelRoute = () => {
+    drafts.discardRoute();
+    setRouteEditing(false);
+  };
+  const cancelParent = () => {
+    drafts.discardParent();
+    setParentEditing(false);
+  };
   // A refused parent save (PARENT_INPUT, ISSUE_CLOSED) renders the server's reason inline,
   // like a route validation error, instead of the generic update failure line.
   const parentSaveFailed = updateIssue.isError && updateIssue.variables?.parent !== undefined;
@@ -376,12 +368,13 @@ export function IssueHeader({
         ? drafts.route
         : agentText.sessionText(routeSession, undefined)
   }`;
-  const routeButton = (name: ReactNode) => (
+  // The pill's box is the shared editor's (`InPlaceEditBox`), handed in by its read slot; what
+  // is left here is what names this control and what it says.
+  const routeButton = (box: InPlaceReadProps) => (name: ReactNode) => (
     <button
+      {...box}
       aria-label={routeLabel}
-      className={`inline-flex min-h-11 max-w-[14ch] shrink-0 items-center truncate rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
       disabled={isClosed}
-      onClick={() => setRouteEditing(true)}
       title={drafts.route === "" ? undefined : drafts.route}
       type="button"
     >
@@ -438,90 +431,54 @@ export function IssueHeader({
             />
           </div>
           <div className="flex min-w-0 flex-1 items-start gap-2">
-            {/* The heading and the editor share one box, and the heading — rendered in both
-                states, over the live draft — is what sizes it, so the box is the same before,
-                during and after an edit, whichever of the two is in it. A heading wrapped onto
-                two lines giving way to a one-line editor (and, from 2xl where the slot is
-                content-sized, to an editor of its own width) moved every control beside it
-                between the mousedown that ends the edit and the mouseup, and the browser gave
-                that click to neither. The editor is taken out of the flow, so the heading alone
-                decides the box: an `input` in the flow would bring its own default width of
-                about twenty characters to a content-sized slot, and the box would still grow
-                for a title shorter than that. The box's floor is that same width, because a
-                box sized by an 11-character heading would leave about 100 px to type in, less
-                room than the editor has today. */}
-            <div className="relative min-w-[20ch] flex-1">
-              {/* While the edit is open this heading holds the box's size and nothing else: out
-                  of the accessibility tree, out of the tab order, inert, invisible while it
-                  keeps its space (never `display: none`), and carrying none of the handlers
-                  that would otherwise reopen the editor from a copy nobody can see. It stays
-                  the header's one `h1`, which is what the title is read and measured by.
-                  biome-ignore lint/a11y/useHeadingContent: the heading holds the title in both
-                  states; while the edit is open it is hidden from assistive software on purpose,
-                  because the editor over it carries the same text as `Issue title`. */}
-              <h1
-                aria-hidden={editingTitle ? true : undefined}
-                className={`min-w-0 break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface} ${
-                  editingTitle ? "invisible" : isClosed ? "" : `cursor-text ${borderStrongHover}`
-                }`}
-                inert={editingTitle}
-                onClick={
-                  editingTitle
-                    ? undefined
-                    : () => {
-                        if (!isClosed) {
-                          setEditingTitle(true);
-                        }
-                      }
-                }
-                onFocus={
-                  editingTitle
-                    ? undefined
-                    : () => {
-                        if (!isClosed) {
-                          setEditingTitle(true);
-                        }
-                      }
-                }
-                onKeyDown={
-                  editingTitle
-                    ? undefined
-                    : (event) => {
-                        if (!isClosed && (event.key === "Enter" || event.key === " ")) {
-                          event.preventDefault();
-                          setEditingTitle(true);
-                        }
-                      }
-                }
-                tabIndex={editingTitle || isClosed ? -1 : 0}
-              >
-                {drafts.title}
-              </h1>
-              {editingTitle ? (
-                <input
-                  aria-describedby={drafts.titleError === null ? undefined : "issue-title-help"}
-                  aria-label="Issue title"
-                  className={`absolute inset-x-0 top-0 min-w-0 rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight outline-none md:py-0 ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
-                  disabled={isClosed}
-                  maxLength={ISSUE_TITLE_MAX}
-                  onBlur={() => {
-                    drafts.requestTitleSubmit();
+            {/* The heading and the editor share one box and one grid cell, drawn by
+                `components/InPlaceEditBox`: the heading, rendered in both states over the live
+                draft, is what sizes that cell, so the box is the same before, during and after
+                an edit, whichever of the two is in it. A heading wrapped onto two lines giving
+                way to a one-line editor (and, from 2xl where the slot is content-sized, to an
+                editor of its own width) moved every control beside it between the mousedown
+                that ends the edit and the mouseup, and the browser gave that click to neither.
+                The rules that hold the box still — the editor out of the flow, the floor of
+                twenty characters, the heading kept mounted and out of the way while the edit is
+                open — are that component's, and it gives the route and the parent editors the
+                same box. What stays here is this editor's own content: its draft, its save and
+                its discard. */}
+            <InPlaceEditBox
+              box="title"
+              className="flex-1"
+              disabled={isClosed}
+              editing={editingTitle}
+              input={{
+                "aria-describedby": drafts.titleError === null ? undefined : "issue-title-help",
+                "aria-label": "Issue title",
+                disabled: isClosed,
+                maxLength: ISSUE_TITLE_MAX,
+                onBlur: () => {
+                  drafts.requestTitleSubmit();
+                  setEditingTitle(false);
+                },
+                onChange: (event) => drafts.writeTitle(event.target.value),
+                onKeyDown: (event) => {
+                  if (event.key === "Escape") {
+                    drafts.discardTitle();
                     setEditingTitle(false);
-                  }}
-                  onChange={(event) => drafts.writeTitle(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") {
-                      drafts.discardTitle();
-                      setEditingTitle(false);
-                      return;
-                    }
-                    saveTitleOnEnter(event);
-                  }}
-                  ref={(node) => node?.focus()}
-                  value={drafts.title}
-                />
-              ) : null}
-            </div>
+                    return;
+                  }
+                  saveTitleOnEnter(event);
+                },
+                ref: (node) => {
+                  node?.focus();
+                },
+                value: drafts.title,
+              }}
+              name="title"
+              onOpen={() => setEditingTitle(true)}
+              overlay="cover"
+              read={(box) => (
+                // The header's one `h1`, which is what the title is read and measured by.
+                <h1 {...box}>{drafts.title}</h1>
+              )}
+            />
             <PinButton
               disabled={updateState.isPending}
               label={state.pinned ? "Unpin issue" : "Pin issue"}
@@ -685,24 +642,78 @@ export function IssueHeader({
               variant="rail"
             />
           </div>
-          {routeEditing ? null : (
-            <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-              <span aria-describedby="issue-route-hint" className="font-medium" title={routeHint}>
+          {/* The rail item stays where it is while its editor is open: the editor is a panel
+              over it (`InPlaceEditBox`, `overlay="panel"`), because a label, a field, Save,
+              Cancel and an error line cannot fit the pill's box. Unmounting the item and
+              adding a form row under the header moved every item to its right and dropped
+              everything below the header by about 52 px. */}
+          <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
+            <span aria-describedby="issue-route-hint" className="font-medium" title={routeHint}>
+              Message route:
+            </span>
+            <InPlaceEditBox
+              box="rail"
+              disabled={isClosed}
+              editing={routeEditing}
+              name="route"
+              onDismiss={cancelRoute}
+              onOpen={() => setRouteEditing(true)}
+              onSubmit={saveRoute}
+              overlay="panel"
+              read={(box) =>
+                routeSession === undefined ? (
+                  routeButton(box)(drafts.route === "" ? "No route" : drafts.route)
+                ) : (
+                  <AgentName
+                    className="inline-flex shrink-0 items-center"
+                    control={routeButton(box)}
+                    kind="control"
+                    sessionId={routeSession}
+                    storedTitle={undefined}
+                  />
+                )
+              }
+            >
+              <label
+                aria-describedby="issue-route-hint"
+                className={`text-sm font-medium ${textSecondaryOnSurface}`}
+                htmlFor="issue-route"
+                title={routeHint}
+              >
                 Message route:
+              </label>
+              <input
+                aria-label="Message route"
+                aria-describedby="issue-route-hint issue-route-help"
+                className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
+                disabled={isClosed}
+                id="issue-route"
+                onChange={(event) => drafts.writeRoute(event.target.value)}
+                placeholder="role:legion-controller-core"
+                value={drafts.route}
+              />
+              <button
+                className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+                disabled={isClosed || !drafts.routeIsValid || updateIssue.isPending}
+                type="submit"
+              >
+                Save route
+              </button>
+              <button
+                className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
+                onClick={cancelRoute}
+                type="button"
+              >
+                Cancel
+              </button>
+              <span
+                className={drafts.routeIsValid ? "sr-only" : `text-sm ${dangerText}`}
+                id="issue-route-help"
+              >
+                A message route must be role:[a-z0-9-]+ or session:[0-9a-f-]{`{16,}`}.
               </span>
-              {routeSession === undefined ? (
-                routeButton(drafts.route === "" ? "No route" : drafts.route)
-              ) : (
-                <AgentName
-                  className="inline-flex shrink-0 items-center"
-                  control={routeButton}
-                  kind="control"
-                  sessionId={routeSession}
-                  storedTitle={undefined}
-                />
-              )}
-            </div>
-          )}
+            </InPlaceEditBox>
+          </div>
           <button
             aria-expanded={subscribersOpen}
             className={`flex min-h-11 shrink-0 items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium ${textSecondaryHoverToPrimary}`}
@@ -718,31 +729,75 @@ export function IssueHeader({
             expanded={referencesOpen}
             onToggle={() => setReferencesOpen((open) => !open)}
           />
-          {parentEditing ? null : (
-            <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-              <span className="font-medium">Parent:</span>
-              {issue.parent === null ? null : (
-                <Link
-                  className={`dispatch-inline-link shrink-0 underline ${linkText} ${linkHoverText}`}
-                  to={buildIssuePath({ key: issue.parent, kind: "issue" })}
+          <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
+            <span className="font-medium">Parent:</span>
+            {issue.parent === null ? null : (
+              <Link
+                className={`dispatch-inline-link shrink-0 underline ${linkText} ${linkHoverText}`}
+                to={buildIssuePath({ key: issue.parent, kind: "issue" })}
+              >
+                {issue.parent}
+              </Link>
+            )}
+            <InPlaceEditBox
+              box="rail"
+              disabled={isClosed}
+              editing={parentEditing}
+              name="parent"
+              onDismiss={cancelParent}
+              onOpen={() => setParentEditing(true)}
+              onSubmit={saveParent}
+              overlay="panel"
+              read={(box) => (
+                <button
+                  {...box}
+                  // The name starts with the word on the button - "None" or "Edit" - because a
+                  // name that does not contain the visible text leaves the control out of reach
+                  // of a voice user (WCAG 2.5.3, axe's `label-content-name-mismatch`).
+                  aria-label={
+                    issue.parent === null ? "None, set parent issue" : "Edit parent issue"
+                  }
+                  disabled={isClosed}
+                  type="button"
                 >
-                  {issue.parent}
-                </Link>
+                  {issue.parent === null ? "None" : "Edit"}
+                </button>
               )}
-              <button
-                // The name starts with the word on the button - "None" or "Edit" - because a
-                // name that does not contain the visible text leaves the control out of reach
-                // of a voice user (WCAG 2.5.3, axe's `label-content-name-mismatch`).
-                aria-label={issue.parent === null ? "None, set parent issue" : "Edit parent issue"}
-                className={`inline-flex min-h-11 max-w-[14ch] shrink-0 items-center rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
+            >
+              <label className="sr-only" htmlFor="issue-parent">
+                Parent
+              </label>
+              <span aria-hidden="true" className={`text-sm font-medium ${textSecondaryOnSurface}`}>
+                Parent:
+              </span>
+              <input
+                aria-describedby="issue-parent-help"
+                className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
                 disabled={isClosed}
-                onClick={() => setParentEditing(true)}
+                id="issue-parent"
+                onChange={(event) => drafts.writeParent(event.target.value)}
+                placeholder={`${issue.project}-12`}
+                value={drafts.parent}
+              />
+              <button
+                className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+                disabled={isClosed || updateIssue.isPending}
+                type="submit"
+              >
+                Save parent
+              </button>
+              <button
+                className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
+                onClick={cancelParent}
                 type="button"
               >
-                {issue.parent === null ? "None" : "Edit"}
+                Cancel
               </button>
-            </div>
-          )}
+              <span className="sr-only" id="issue-parent-help">
+                Parent issue key in {issue.project}; leave empty to clear the parent.
+              </span>
+            </InPlaceEditBox>
+          </div>
           {/* The repository is where the work goes, like the parent, so it sits in this rail,
               which scrolls rather than wrapping: a repository name can be long, and the state
               row above must keep every control on one row at a phone width. An issue whose
@@ -772,104 +827,6 @@ export function IssueHeader({
       <span className="sr-only" id="issue-route-hint">
         {routeHint}
       </span>
-      {routeEditing ? (
-        <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={saveRoute}>
-          <label
-            aria-describedby="issue-route-hint"
-            className={`text-sm font-medium ${textSecondaryOnSurface}`}
-            htmlFor="issue-route"
-            title={routeHint}
-          >
-            Message route:
-          </label>
-          <input
-            aria-label="Message route"
-            aria-describedby="issue-route-hint issue-route-help"
-            className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
-            disabled={isClosed}
-            id="issue-route"
-            onChange={(event) => drafts.writeRoute(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                drafts.discardRoute();
-                setRouteEditing(false);
-              }
-            }}
-            placeholder="role:legion-controller-core"
-            ref={routeInputRef}
-            value={drafts.route}
-          />
-          <button
-            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
-            disabled={isClosed || !drafts.routeIsValid || updateIssue.isPending}
-            type="submit"
-          >
-            Save route
-          </button>
-          <button
-            className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
-            onClick={() => {
-              drafts.discardRoute();
-              setRouteEditing(false);
-            }}
-            type="button"
-          >
-            Cancel
-          </button>
-          <span
-            className={drafts.routeIsValid ? "sr-only" : `text-sm ${dangerText}`}
-            id="issue-route-help"
-          >
-            A message route must be role:[a-z0-9-]+ or session:[0-9a-f-]{`{16,}`}.
-          </span>
-        </form>
-      ) : null}
-      {parentEditing ? (
-        <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={saveParent}>
-          <label className="sr-only" htmlFor="issue-parent">
-            Parent
-          </label>
-          <span aria-hidden="true" className={`text-sm font-medium ${textSecondaryOnSurface}`}>
-            Parent:
-          </span>
-          <input
-            aria-describedby="issue-parent-help"
-            className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
-            disabled={isClosed}
-            id="issue-parent"
-            onChange={(event) => drafts.writeParent(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                drafts.discardParent();
-                setParentEditing(false);
-              }
-            }}
-            placeholder={`${issue.project}-12`}
-            ref={parentInputRef}
-            value={drafts.parent}
-          />
-          <button
-            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
-            disabled={isClosed || updateIssue.isPending}
-            type="submit"
-          >
-            Save parent
-          </button>
-          <button
-            className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
-            onClick={() => {
-              drafts.discardParent();
-              setParentEditing(false);
-            }}
-            type="button"
-          >
-            Cancel
-          </button>
-          <span className="sr-only" id="issue-parent-help">
-            Parent issue key in {issue.project}; leave empty to clear the parent.
-          </span>
-        </form>
-      ) : null}
       {drafts.titleError === null ? null : (
         <p className={`mt-1 text-sm ${dangerText}`} id="issue-title-help">
           {drafts.titleError}
