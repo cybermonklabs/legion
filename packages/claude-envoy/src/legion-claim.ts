@@ -10,6 +10,7 @@ import {
   bootLegionClaim,
   claimBootFailureLine,
   claimIdentityOf,
+  claimIdentityWords,
   type LegionClaimBoot,
   type LegionClaimIdentity,
 } from "@legion/pi-shared/legion-claim-core"
@@ -85,9 +86,11 @@ export function endPane(): void {
  * failure the core never saw writes says it, and so does `stopPane`. */
 const STOPPING_THE_PANE = "stopping the pane so the daemon launches it again"
 
-/** Logs why the pane cannot run, then ends it (`endPane`). */
+/** Logs why the pane cannot run, then ends it (`endPane`). The line names who the pane is and the
+ * daemon it would have registered with, from its own environment, as every other ending of a pane
+ * that holds no claim does (R1, dispatch://INFRA-2883/spec). */
 export function stopPane(why: string): void {
-  logLegion(`${why}; ${STOPPING_THE_PANE}`)
+  logLegion(`${why}; ${claimIdentityWords(claimIdentityOf(process.env))}; ${STOPPING_THE_PANE}`)
   endPane()
 }
 
