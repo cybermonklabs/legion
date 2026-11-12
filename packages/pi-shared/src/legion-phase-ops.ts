@@ -112,7 +112,11 @@ export const PhaseOpArguments = z.discriminatedUnion(
     // The issue whose record it answers, the caller's own when the call names none: a worker
     // reads the issue it works far more often than another, and its own key is one the daemon
     // already told it (its claim), so making it say that key again only refused first calls.
-    operation("read_record", { issue: z.string().optional() }),
+    operation("read_record", {
+      issue: z
+        .string({ error: "read_record's issue is an issue key, as LEGION-208 is" })
+        .optional(),
+    }),
     operation("read_release_records", {
       since: windowStart,
     }),
@@ -121,7 +125,9 @@ export const PhaseOpArguments = z.discriminatedUnion(
       // A completion is always of the caller's own issue, which the claim names, so the call
       // need not name it. One that names it anyway is taken; one that names another issue is
       // refused in executePhaseOp, before any daemon request.
-      issue: z.string().optional(),
+      issue: z
+        .string({ error: "handoff_complete's issue is an issue key, as LEGION-208 is" })
+        .optional(),
       verdict: z
         .enum(["pass", "pending", "fail"], {
           error: "handoff_complete's verdict is pass, pending or fail",
@@ -350,7 +356,8 @@ export async function executePhaseOp(
   const args = parsed.data;
   switch (args.op) {
     case "read_record": {
-      const issue = args.issue !== undefined && args.issue.trim() !== "" ? args.issue : claim.issue;
+      const named = args.issue?.trim() ?? "";
+      const issue = named !== "" ? named : claim.issue;
       return { record: recordFrom(await daemon.state(), issue) };
     }
     case "read_release_records":
@@ -382,14 +389,16 @@ export async function executePhaseOp(
       // (ISSUE_NOT_GRANTS).
       let issue: string | undefined;
       if (claim.role === "architect") {
-        if (args.issue === undefined || args.issue.trim() === "") {
+        const named = args.issue?.trim() ?? "";
+        if (named === "") {
           throw new Error("request_backward_move requires issue");
         }
-        issue = args.issue;
-      } else if (args.issue !== undefined && args.issue !== claim.issue) {
-        throw new Error(
-          `a phase worker moves only its own issue ${claim.issue}, not ${args.issue}`
-        );
+        issue = named;
+      } else {
+        const named = args.issue?.trim() ?? "";
+        if (named !== "" && named !== claim.issue) {
+          throw new Error(`a phase worker moves only its own issue ${claim.issue}, not ${named}`);
+        }
       }
       await daemon.phaseBackward({
         grantId: await mintClaimGrant(daemon, claim),

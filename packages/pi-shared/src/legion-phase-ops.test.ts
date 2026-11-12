@@ -124,7 +124,10 @@ test("each op refuses its arguments whole before any daemon request, naming ever
   const refusals = [
     [{ op: "handoff_complete" }, "handoff_complete requires summary"],
     [{ op: "handoff_complete", summary: "  " }, "handoff_complete requires summary"],
-    [{ op: "handoff_complete", summary: "x", issue: 44 }, "expected string"],
+    [
+      { op: "handoff_complete", summary: "x", issue: 44 },
+      "handoff_complete's issue is an issue key, as LEGION-208 is",
+    ],
     [
       { op: "handoff_complete", summary: "x", verdict: "maybe" },
       "handoff_complete's verdict is pass, pending or fail",
@@ -151,7 +154,7 @@ test("each op refuses its arguments whole before any daemon request, naming ever
       { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
       'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"',
     ],
-    [{ op: "read_record", issue: 44 }, "expected string"],
+    [{ op: "read_record", issue: 44 }, "read_record's issue is an issue key, as LEGION-208 is"],
     [{ op: "read_release_records" }, "read_release_records requires since"],
     [{ op: "read_release_records", since: " " }, "read_release_records requires since"],
     [
@@ -214,9 +217,11 @@ test("read_record with no issue answers the claim's own record; handoff_complete
   await expect(executePhaseOp(ops, { op: "read_record", issue: " " })).resolves.toEqual({
     record: state.issues["LEGION-208"],
   });
-  await expect(executePhaseOp(ops, { op: "read_record", issue: "LEGION-209" })).resolves.toEqual({
-    record: state.issues["LEGION-209"],
-  });
+  for (const issue of ["LEGION-209", " LEGION-209\n"]) {
+    await expect(executePhaseOp(ops, { op: "read_record", issue })).resolves.toEqual({
+      record: state.issues["LEGION-209"],
+    });
+  }
   await expect(
     executePhaseOp(ops, { op: "handoff_complete", summary: "Done.", issue: "LEGION-209" })
   ).rejects.toThrow(
@@ -224,8 +229,13 @@ test("read_record with no issue answers the claim's own record; handoff_complete
       "handoff_complete reports this session's own issue LEGION-208; leave issue out, or name LEGION-208, not LEGION-209"
     )
   );
-  // The refusal read no record and minted no grant: the three routes are the three reads'.
-  expect(routes).toEqual(["/legion/v1/state", "/legion/v1/state", "/legion/v1/state"]);
+  // The refusal read no record and minted no grant: the four routes are the four reads'.
+  expect(routes).toEqual([
+    "/legion/v1/state",
+    "/legion/v1/state",
+    "/legion/v1/state",
+    "/legion/v1/state",
+  ]);
   expect(posted).toEqual([]);
   // A completion naming its own issue posts exactly what one leaving it out posts.
   await expect(
@@ -630,12 +640,25 @@ test("request_backward_move names the issue an architect returns from accepting,
       op: "request_backward_move",
       to: "implementing",
       reason: "test failed",
+      issue: " LEGION-208 ",
+    })
+  ).resolves.toEqual({});
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    to: "implementing",
+    reason: "test failed",
+  });
+  await expect(
+    executePhaseOp(runtimeFor(implementer), {
+      op: "request_backward_move",
+      to: "implementing",
+      reason: "test failed",
       issue: "LEGION-209",
     })
   ).rejects.toThrow(
     new Error("a phase worker moves only its own issue LEGION-208, not LEGION-209")
   );
-  expect(posted).toHaveLength(before + 2);
+  expect(posted).toHaveLength(before + 4);
 });
 
 test("read_record answers the issue's record, or names an issue the daemon has none for; request_backward_move posts with a fresh grant", async () => {
