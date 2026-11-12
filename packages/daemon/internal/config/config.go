@@ -950,24 +950,7 @@ func readInt(value *yaml.Node, key string) (*int, error) {
 // once and take its workspace with it, bound a check before its first look, or ask an update
 // round's worker again at every tick.
 func readHours(value *yaml.Node, key string) (*time.Duration, error) {
-	if value.Tag == "!!null" {
-		return nil, nil
-	}
-	var hours float64
-	if (value.Tag != "!!int" && value.Tag != "!!float") || value.Decode(&hours) != nil {
-		return nil, fmt.Errorf("%s must be a number", key)
-	}
-	if !(hours > 0) {
-		return nil, fmt.Errorf("%s must be a positive number", key)
-	}
-	if hours > maxTimerSeconds/3600 {
-		return nil, fmt.Errorf("%s must be at most %d", key, maxTimerSeconds/3600)
-	}
-	duration := time.Duration(math.Round(hours * float64(time.Hour)))
-	if duration <= 0 {
-		return nil, fmt.Errorf("%s must be a positive number", key)
-	}
-	return &duration, nil
+	return readUnit(value, key, time.Hour, maxTimerSeconds/3600)
 }
 
 // readMinutes is readHours' twin for a key written in minutes (`worker_silence_minutes`): a
@@ -982,24 +965,33 @@ func readHours(value *yaml.Node, key string) (*time.Duration, error) {
 // write the bound in is therefore the unit the key takes.
 //
 // A value too small to hold a nanosecond is refused exactly as a non-positive one is, never read
-// as zero: a zero bound would make every phase worker between turns a silent one
-// (workflow.SilentPhaseWorker reads a bound of 0 as the rule switched off, and resolve never
-// hands it one).
+// as zero: a bound of zero or less is the repair switched off (workflow.SilentPhaseWorker names
+// no worker silent under one), so a value that rounded to zero would leave that deployment with
+// no silence repair at all while its file read as though it had set one.
 func readMinutes(value *yaml.Node, key string) (*time.Duration, error) {
+	return readUnit(value, key, time.Minute, maxTimerMinutes)
+}
+
+// readUnit is the body readHours and readMinutes share, for a key written as a number of unit
+// and bounded at most of them: a positive number, a decimal among them, refused above most and
+// refused when it is too small to hold a nanosecond of unit, and nil for a key the file writes
+// with no value at all. It is one function because the two keys differ in nothing but their unit
+// and their bound, and because the refusals a test compares whole are then written once.
+func readUnit(value *yaml.Node, key string, unit time.Duration, most int) (*time.Duration, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
 	}
-	var minutes float64
-	if (value.Tag != "!!int" && value.Tag != "!!float") || value.Decode(&minutes) != nil {
+	var read float64
+	if (value.Tag != "!!int" && value.Tag != "!!float") || value.Decode(&read) != nil {
 		return nil, fmt.Errorf("%s must be a number", key)
 	}
-	if !(minutes > 0) {
+	if !(read > 0) {
 		return nil, fmt.Errorf("%s must be a positive number", key)
 	}
-	if minutes > maxTimerMinutes {
-		return nil, fmt.Errorf("%s must be at most %d", key, maxTimerMinutes)
+	if read > float64(most) {
+		return nil, fmt.Errorf("%s must be at most %d", key, most)
 	}
-	duration := time.Duration(math.Round(minutes * float64(time.Minute)))
+	duration := time.Duration(math.Round(read * float64(unit)))
 	if duration <= 0 {
 		return nil, fmt.Errorf("%s must be a positive number", key)
 	}

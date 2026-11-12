@@ -67,6 +67,10 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own
   merge) or its link is taken off (by a person or the tree's architect), and a children-first wait
   ends when the last open child leaves the workflow, so take nothing for them.
+- **Phase workers nothing will prompt.** Each entry of the tick's `silent` list, with the role whose
+  claim is silent and how long it has been quiet (`skill://legion-controller/references/wakes.md`).
+  That list arrives on the tick wake alone and is in no `read_state` field, so the report names the
+  most recent tick's list and says nothing of them on a day no tick carried one.
 - **Free slots.** Counted as the skill's "Free slots" says, in issues rather than trees; each
   stays free until an issue in the line takes it.
 - **Open capabilities.** Each row of `read_state`'s `capabilities` whose `status` is `open`: its

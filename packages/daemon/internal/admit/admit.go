@@ -82,9 +82,11 @@ type Admission struct {
 	// workerSilence is how long a phase worker's last recorded step may be in the past before
 	// the tick notice names its issue silent (config.Config.WorkerSilence,
 	// `worker_silence_minutes`), the one bound the sweep, the silence handler and this list are
-	// all read against (workflow.SilentPhaseWorker). Zero, the admission nobody registered one
-	// with, switches the list off exactly as a deployment that sets the key to zero does, and
-	// the tick then names nothing silent.
+	// all read against (workflow.SilentPhaseWorker). Zero switches the list off, and is the
+	// admission nobody registered a bound with: no configuration can produce it, since
+	// config.readMinutes refuses zero and every other non-positive value and the key defaults to
+	// half an hour, so the only zero is a test's admission, and the tick then names nothing
+	// silent.
 	workerSilence time.Duration
 }
 
@@ -109,7 +111,8 @@ func (a *Admission) UseMemory(memory config.Memory) {
 // than a parameter of New for the reason UseMemory and ReportCapabilities are: every test that
 // admits anything builds an admission, and none of them configures a silence bound. A deployment
 // that registers none has the rule off, which is what a bound of zero means everywhere else it
-// is read.
+// is read — a bound no file can write, since config.readMinutes refuses zero and the key
+// defaults to half an hour.
 func (a *Admission) UseWorkerSilence(bound time.Duration) {
 	a.workerSilence = bound
 }
@@ -497,7 +500,9 @@ func (a *Admission) lineFacts(ctx context.Context, tx pgx.Tx) ([]record.Issue, r
 // (workflow.ChildWaitRows), judged from this transaction's own reads by the function the state's
 // `blocked` is built with (blockers.Blocked), so the controller is told exactly what
 // `legion state` shows. It reads the issues and the line facts itself, for a caller that holds
-// neither; the tick reads them once and calls blockedFrom with them.
+// neither, which is now the package's own tests alone: the tick reads them once and calls
+// lineFacts and blockedFrom. It is kept because it is the whole judgement in one call, which is
+// what a test of what is blocked wants to make.
 func (a *Admission) blocked(ctx context.Context, tx pgx.Tx) ([]record.BlockedIssue, error) {
 	issues, facts, err := a.lineFacts(ctx, tx)
 	if err != nil {
@@ -541,10 +546,11 @@ func (a *Admission) blockedFrom(ctx context.Context, tx pgx.Tx, issues []record.
 // answer to it.
 //
 // The read is one batched record.RoleRuns call for every issue at work whose phase has a worker
-// role (workflow.RoleFor), as the repair of a slot with no worker reads its own
-// (resumeSlottedWorkers), and never a call per issue: a tick runs over the whole project. The
-// last step comes from the claim the record holds (record.RoleClaim.Step), because admission
-// holds no claim of the supervisor at all, where the sweep reads the live one. A bound of zero
+// role (workflow.PhaseWorkerRole, the one statement of that role the rule itself is held to, so
+// that this list and the architects' `worker-silent` notices can never be about different
+// roles), and never a call per issue: a tick runs over the whole project. The last step comes
+// from the claim the record holds (record.RoleClaim.Step), because admission holds no claim of
+// the supervisor at all, where the sweep reads the live one. A bound of zero
 // switches the rule off, which is the one reading this makes of its own: with no bound nothing
 // is silent, and the read is not made at all.
 //
@@ -574,8 +580,8 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 		if issue.Project != a.project {
 			continue
 		}
-		role := workflow.RoleFor(issue.Phase)
-		if role == "" || role == claim.RoleArchitect {
+		role := workflow.PhaseWorkerRole(issue)
+		if role == "" {
 			continue
 		}
 		// An issue whose work the record does not show under way has no worker that is owed a

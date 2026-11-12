@@ -14,7 +14,7 @@ import (
 // supervisor are where it read them, which is the source a claim's own terminal facts take
 // (terminalSource). The two share no id — each of these begins "worker-silent:"
 // (workerSilentEventID) — and processed_events is keyed on the pair.
-const silenceSource = "supervise"
+const silenceSource = terminalSource
 
 // workerSilentEventID is the identity of one silence, which tellSilentPhaseWorkers' own comment
 // says what rests on: the claim token and the moment of that claim's last step. Nothing of the
@@ -86,8 +86,9 @@ func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []super
 	if len(facts) == 0 {
 		return
 	}
-	// Every apply that failed is logged where it failed, naming its source and its id
-	// (workflowRuntime.applyFacts), and the next sweep reads the same silence and applies the
-	// identical fact again, which is the retry; a line here would say the same thing twice.
+	// Every failure is logged where it failed (workflowRuntime.applyFacts): an apply that failed
+	// by its source and its id, and a sweep dropped whole by its source and the number of facts
+	// it carried. The next sweep reads the same silence and applies the identical fact again,
+	// which is the retry; a line here would say the same thing twice.
 	_ = s.applyFacts(ctx, silenceSource, facts)
 }

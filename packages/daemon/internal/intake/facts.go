@@ -1081,13 +1081,14 @@ func (PodBackstopDue) isFact() {}
 // `worker_silence_minutes`). It is never decoded from an event — the sweep reads the live claims
 // over the supervisor and applies one fact per claim it reads that way.
 //
-// That reading is cheap and decides nothing: it is made over the supervisor's claims and the
-// issues the daemon holds in memory, and the record can have moved since. So the fact carries
-// what the sweep read — the moment of the claim's last step and the bound it judged that moment
-// against — and the handler (workflow's workerSilent) re-reads the record inside the fact's own
-// transaction and decides. The bound rides the fact rather than being read again in the handler
-// so that the decision is made against the number the sweep used, and not against one an
-// operator changed between the reading and the apply.
+// That reading is cheap and decides nothing: it is made over the supervisor's claims and
+// nothing else — the sweep reads fields of supervise.Claim and no record at all — and the
+// record can have moved since. So the fact carries what the sweep read — the moment of the
+// claim's last step and the bound it judged that moment against — and the handler (workflow's
+// workerSilent) re-reads the record inside the fact's own transaction and decides. The bound
+// rides the fact rather than being read again in the handler so that the decision is made
+// against the number the sweep used, and not against one an operator changed between the
+// reading and the apply.
 //
 // The fact's identity, which the sweep mints, is the claim token and LastStep. So ApplyFact's
 // durable mark makes one silence one fact however many of the minute's sweeps read it, and a

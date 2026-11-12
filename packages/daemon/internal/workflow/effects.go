@@ -69,6 +69,20 @@ func workingPhase(issue record.Issue) phase.Phase {
 	return issue.Phase
 }
 
+// PhaseWorkerRole is the role that works the phase issue's worker works (workingPhase), and ""
+// where no worker is owed a turn: a phase no role works, and the architect, whose turn is its
+// own rather than a worker's. Both refusals are OpenPhaseRole's, read here rather than stated a
+// second time.
+//
+// It is the one statement of "the role that works this issue's phase" a phase worker's silence
+// is judged by, so that the three readers of that term cannot drift apart: SilentPhaseWorker
+// holds the role of the claim it is given against it, the handler of a silence fact asks it of
+// the issue it has read before it reads anything else (workerSilent), and admission's tick list
+// reads each issue's run for the role it answers (admit's silentWorkers).
+func PhaseWorkerRole(issue record.Issue) claim.Role {
+	return OpenPhaseRole(workingPhase(issue))
+}
+
 // StopActs is whether a queued stop, row id, still acts on its claim when the outbox runs it, with
 // lastStart the newest start the outbox ran against the claim (its last_start_row), and root the
 // issue's tree root as recorded, read only for a tree close. The outbox executor asks it of every
@@ -117,13 +131,15 @@ func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, root *rec
 //
 // Its one reading of run.Queued is queuedStartActs, which SilentPhaseWorker reads too: a start
 // already queued for the phase is what makes a promotion start needless here and a quiet worker
-// no silent one there, and the two rules must answer that term alike.
+// no silent one there, and the two rules must answer that term alike. The stop that term is
+// weighed against is read once here (actingStop) and handed to it.
 func StartFor(run record.RoleRun, root record.Issue, generation uint64, current phase.Phase) bool {
-	if queuedStartActs(run, root, current) {
+	stop := actingStop(run, root)
+	if queuedStartActs(run, stop, current) {
 		return false
 	}
 	held := run.Claim
-	if actingStop(run, root) != 0 || held == nil || held.Tree != root.Key {
+	if stop != 0 || held == nil || held.Tree != root.Key {
 		return true
 	}
 	holds := held.Pending != nil && held.Pending.StillWorked(generation, current, held.State)
@@ -151,13 +167,14 @@ func actingStop(run record.RoleRun, root record.Issue) int64 {
 }
 
 // queuedStartActs is whether a start the outbox has still to run will reach the claim with
-// current's task: a queued start naming that phase with an id above every stop that still acts
-// (actingStop). It is one statement of that term because the two rules that read it must read it
-// alike — StartFor, for which a start already queued is a promotion start that would be a second
-// copy, and SilentPhaseWorker, for which a worker whose task is already on its way is no worker
-// nothing will prompt — and because a reader who changes one of them is then changing both.
-func queuedStartActs(run record.RoleRun, root record.Issue, current phase.Phase) bool {
-	stop := actingStop(run, root)
+// current's task: a queued start naming that phase with an id above stop, the newest queued stop
+// that still acts (actingStop), which the caller reads once and gives it rather than having it
+// read again here for every judgement. It is one statement of that term because the two rules
+// that read it must read it alike — StartFor, for which a start already queued is a promotion
+// start that would be a second copy, and SilentPhaseWorker, for which a worker whose task is
+// already on its way is no worker nothing will prompt — and because a reader who changes one of
+// them is then changing both.
+func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 	for _, queued := range run.Queued {
 		if queued.Request.Op == "start" && queued.Request.Phase == current && queued.ID > stop {
 			return true
@@ -212,19 +229,19 @@ func queuedStartActs(run record.RoleRun, root record.Issue, current phase.Phase)
 // Every claim fact it shares with StartFor — that this daemon holds the claim at all, its
 // state, the update round it is in, and the task it holds — it reads from run.Claim, the value
 // StartFor reads, so the two rules can never judge one claim from two readings of it. role is
-// the role the run was read for, which both callers build with RoleFor, and the rule holds it
-// against the role the work of the issue's own phase belongs to. lastStep comes from the caller
-// because no record of a run carries a step record at all: the sweep takes it from the claim it
-// read (supervise.Claim.Step.LastStep(), as the daemon's stall backstop takes it), and the
-// handler from the fact the sweep wrote.
+// the role the run was read for, and the rule holds it against PhaseWorkerRole(issue), the role
+// the work of the issue's own phase belongs to: the sweep's handler asks that same function of
+// the record before it reads a run at all, and admission's list reads each run for the role it
+// answers. lastStep comes from the caller because no record of a run carries a step record at
+// all: the sweep takes it from the claim it read (supervise.Claim.Step.LastStep(), as the
+// daemon's stall backstop takes it), and the handler from the fact the sweep wrote.
 func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun,
 	lastStep time.Time, bound time.Duration, now time.Time,
 ) bool {
 	if bound <= 0 || run.Claim == nil {
 		return false
 	}
-	working := RoleFor(workingPhase(issue))
-	if working == "" || working == claim.RoleArchitect || working != role {
+	if working := PhaseWorkerRole(issue); working == "" || working != role {
 		return false
 	}
 	if !record.AtWork(issue, gate) || root.Lingers() {
@@ -240,7 +257,7 @@ func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role clai
 	if c.Pending != nil && c.Pending.StillWorked(issue.Generation, issue.Phase, c.State) {
 		return false
 	}
-	if queuedStartActs(run, root, issue.Phase) || StartFor(run, root, issue.Generation, issue.Phase) {
+	if queuedStartActs(run, actingStop(run, root), issue.Phase) || StartFor(run, root, issue.Generation, issue.Phase) {
 		return false
 	}
 	return !lastStep.IsZero() && lastStep.Add(bound).Before(now)
@@ -423,11 +440,12 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // ResumeSlottedWorker starts again the worker of the phase issue stands in, with restart's
 // semantics: the assignment the role's phases row already names, so a completion still in flight
 // is never refused for an assignment nothing ever delivered, and the phase's resume task, which
-// says to carry the work on rather than beginning it. It is exported for admission's repair of a
-// slot whose worker has no task (admit's resumeSlottedWorkers), which is the one caller: every
-// other way back into a phase is a transition with a task of its own. The task is
-// ResumePhaseTask rather than ResumeTask: restart appends the merger's approved head itself
-// (withApprovedHead), so taking ResumeTask's copy of it would name the head twice.
+// says to carry the work on rather than beginning it. It is exported for admission's repair of
+// a slot whose worker has no task (admit's resumeSlottedWorkers) and read by the daemon's
+// repair of a phase worker nothing will prompt (silence.go's repairSilence), which are its two
+// callers. The task is ResumePhaseTask rather than ResumeTask: restart appends the merger's
+// approved head itself (withApprovedHead), so taking ResumeTask's copy of it would name the
+// head twice.
 func (e *Engine) ResumeSlottedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	return e.restart(ctx, tx, issue, role, ResumePhaseTask(issue))
 }

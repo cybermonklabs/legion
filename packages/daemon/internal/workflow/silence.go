@@ -26,10 +26,12 @@ const workerSilentNotice record.NoticeKind = "worker-silent"
 // once, with the values the record holds now and the moment and the bound the sweep wrote into
 // the fact.
 //
-// The role is the fact's, which is the claim the sweep read, and not RoleFor(workingPhase) read
-// again here: the fact names one claim, and a step time of one claim says nothing about
-// another's. The rule holds that role against the role the issue's own phase belongs to, so a
-// fact of a role that does not work the issue's phase answers false there and starts nobody.
+// The role the rule is asked about is the fact's, which is the claim the sweep read, and never
+// the issue's own phase worker read in its place: the fact names one claim, and a step time of
+// one claim says nothing about another's. What the issue's record settles is the other half of
+// that term — PhaseWorkerRole, the role the work of the issue's own phase belongs to, which the
+// fact's role must equal — and that half is asked first, before any other read, so a fact of a
+// role that does not work the issue's phase starts nobody and costs nothing more.
 //
 // Any store error of any read or write below is returned as an error and never written over
 // with a notice. The notice, the start row and the mark that this fact was applied are one
@@ -51,17 +53,32 @@ func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.Worker
 	if issue.Generation != fact.Generation {
 		return intake.Result{}, nil
 	}
-	root, err := e.store.Issue(ctx, tx, issue.Tree)
-	if err != nil || root == nil {
-		return intake.Result{}, err
+	// The role term of the rule (SilentPhaseWorker, PhaseWorkerRole) needs only the issue, which
+	// is in hand, so it is asked before the three reads below rather than among them. The sweep
+	// can filter on it for nobody: a supervise.Claim carries no issue phase, so it mints a fact
+	// for every quiet claim of a non-architect role, and most of those name a role that does not
+	// work their issue's phase. Each of them would otherwise spend a root, a gate and a run read
+	// inside this fact's own transaction, under the one advisory lock every fact of the daemon
+	// takes (intake.ApplyFact), only to be refused here.
+	if role := PhaseWorkerRole(*issue); role == "" || role != fact.Role {
+		return intake.Result{}, nil
 	}
-	// The tree's design gate as the record builds one (record.ReadTreeGates), for the one issue
+	// The record of the root of the issue's tree, which is the issue's own row when the fact
+	// names a tree root, read once rather than queried a second time for it (the rule treeRoot
+	// states for a caller that has read neither).
+	root := issue
+	if issue.Tree != issue.Key {
+		if root, err = e.store.Issue(ctx, tx, issue.Tree); err != nil || root == nil {
+			return intake.Result{}, err
+		}
+	}
+	// The tree's design gate as the record builds one (record.Store.GatesOf), for the one issue
 	// this fact names: the engine's own configured steps, and the rows of its root.
-	rows, err := e.store.Gates(ctx, tx, []string{issue.Tree})
+	rows, err := e.store.GatesOf(ctx, tx, issue.Tree)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	gate := record.TreeGate{Steps: e.cfg.Steps, Rows: rows[issue.Tree]}
+	gate := record.TreeGate{Steps: e.cfg.Steps, Rows: rows}
 	project, err := claim.ProjectToken(e.cfg.Project)
 	if err != nil {
 		return intake.Result{}, err
@@ -73,12 +90,12 @@ func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.Worker
 	if err != nil {
 		return intake.Result{}, nil
 	}
-	runs, err := e.store.RoleRuns(ctx, tx, []record.RoleRunKey{{Token: token, Issue: issue.Key, Role: fact.Role, Generation: issue.Generation}})
+	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, fact.Role, issue.Generation)
 	if err != nil {
 		return intake.Result{}, err
 	}
 	now := e.now()
-	if !SilentPhaseWorker(*issue, *root, gate, fact.Role, runs[token], fact.LastStep, fact.Bound, now) {
+	if !SilentPhaseWorker(*issue, *root, gate, fact.Role, run, fact.LastStep, fact.Bound, now) {
 		return intake.Result{}, nil
 	}
 	return intake.Result{}, e.repairSilence(ctx, tx, *issue, fact, now)
@@ -95,6 +112,9 @@ func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.Worker
 // completion still in flight is never refused for an assignment nothing ever delivered. A row
 // that names none gets no start row at all: a start under no assignment would hand the worker a
 // fence it can never satisfy, and the notice says plainly that the worker is left with nothing.
+// The row is therefore read twice, once here and once inside ResumeSlottedWorker's own restart:
+// the repair goes through the one named entry point both its callers go through rather than
+// through a copy of it that reads the row once.
 //
 // The record it writes goes to the daemon's log at Warn as well, in this same step, through
 // warnOnCommit: a fact that rolls back writes no line claiming a silence was repaired. An

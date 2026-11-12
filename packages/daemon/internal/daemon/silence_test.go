@@ -19,7 +19,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -706,7 +706,7 @@ func (r *podUpdateRig) refusesTheStartRow() {
 }
 
 // refusedStart is the error the staged store answers that write with.
-var refusedStart = fmt.Errorf("the store refused the start row")
+var refusedStart = errors.New("the store refused the start row")
 
 type refusingStartStore struct {
 	record.Store
