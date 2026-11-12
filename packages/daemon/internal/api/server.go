@@ -736,9 +736,18 @@ type stateNarrowing struct {
 
 // stateNarrowings are the twelve, lowest contract first, which is the order stateFor applies
 // them in: a caller below all of them is served a body with every one of these keys gone. The
-// order is the history of the route and nothing a strip depends on — no two of them touch the
-// same key — but it is kept so a reader of this table and a reader of version.go walk the
-// contracts the same way.
+// order is the history of the route and nothing a strip depends on, so a row added at the end
+// needs no reading of the rows before it. One pair does touch one key, and it is the reason
+// this sentence names a pair rather than claiming none: waitingLineContract's row drops the
+// issues' `waitingLine` whole, and whyAndLineFieldsContract's takes the members this change
+// added from inside that same field. They still do not depend on their order, because a caller
+// below both is served no `waitingLine` at all whichever runs first — the later one then finds
+// the key gone and does nothing — and a caller below only the higher one keeps the field with
+// its `place` and its `length`, which is what the lower row's own contract describes. A
+// thirteenth row that takes something out of a field an earlier row drops whole is sound on
+// those same terms; one that puts a key back, or reads what an earlier row left, is not, and
+// this table is the wrong shape for it. The order is kept beyond that so a reader of this
+// table and a reader of version.go walk the contracts the same way.
 var stateNarrowings = []stateNarrowing{
 	{supervise.PodUpdateContract, carriesUpdateRounds, withoutUpdateRounds, "the claim views' updateRound and updateHead"},
 	{memoryContract, carriesMemory, withoutMemory, "the issues' memoryGroup, memoryDrawMode and memoryDrawnAt"},

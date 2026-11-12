@@ -973,8 +973,11 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 	return append(line, starting...)
 }
 
-// WaitingIssues is the issues of a waiting line, in its order: what a reader of the line that
-// does not act on it wants (the state's admission.waiting, the controller's blocked report).
+// WaitingIssues is the issues of a waiting line, in its order, for a reader that wants the
+// issues rather than the entries. One reader is left: blockers.judgeAgain, which hands them to
+// Judged to learn which Dispatch mirror rows the rebuilt line needs read. The state's
+// `admission.waiting` was the other until the projection began reading each entry's own fields
+// (projection's Project), and it now walks the entries and takes the key off each.
 func WaitingIssues(line []LineEntry) []Issue {
 	issues := make([]Issue, len(line))
 	for i, entry := range line {
