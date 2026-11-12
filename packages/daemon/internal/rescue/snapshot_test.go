@@ -176,23 +176,71 @@ func pinsNameKeysThisJJKnows(t *testing.T, d *rescuetest.Disk, snapshot ran) {
 	}
 }
 
-// readsTheWorktreeThroughJJAlone asserts the check read dir's files through jj's snapshot and
-// through nothing of git's: no `add` and no `update-index`, which the whole-tree git read it
-// replaces runs, and no `status`. Every other jj it ran there carries --ignore-working-copy, so
-// it reads jj's view and snapshots nothing.
-func readsTheWorktreeThroughJJAlone(t *testing.T, c *commands, dir string) {
+// gitSubcommand is the subcommand of one git the check ran, with the arguments after it: every
+// git it starts opens with its global options, a `-c <key>=<value>` pair among them, and the
+// first argument that is none of those is the subcommand.
+func gitSubcommand(args []string) (string, []string) {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-c":
+			i++
+		case strings.HasPrefix(args[i], "-"):
+		default:
+			return args[i], args[i+1:]
+		}
+	}
+	return "", nil
+}
+
+// readsTheWorktreeThroughJJAndNamedPaths asserts the check read dir's files through jj's
+// snapshot, with no whole-tree read of git's but the one git's own rule for new files is: no
+// `add --all` and no add without `--` and at least one path after it, none of those paths `.`,
+// so every add names the files it adds; no `update-index --refresh`, which hashes every tracked
+// file; no `status`; and no `ls-files` listing the files the index does not track but the one
+// `ls-files -z --others --exclude-standard -- .` the carry reads them by (rescue.carried). Every
+// other jj it ran there carries --ignore-working-copy, so it reads jj's view and snapshots
+// nothing.
+func readsTheWorktreeThroughJJAndNamedPaths(t *testing.T, c *commands, dir string) {
 	t.Helper()
 	snapshot := theSnapshotOf(t, c, dir)
+	others := []string{"-z", "--others", "--exclude-standard", "--", "."}
 	for _, r := range c.in(dir) {
-		if r.name == "git" {
-			for _, read := range []string{"add", "update-index", "status"} {
-				if slices.Contains(r.args, read) {
-					t.Errorf("the check ran `git %s` over %s, which is the whole-tree read jj's snapshot replaces: %v", read, dir, r.args)
-				}
-			}
-		}
 		if r.name == "jj" && !slices.Equal(r.args, snapshot.args) && !slices.Contains(r.args, "--ignore-working-copy") {
 			t.Errorf("the check ran jj over %s without --ignore-working-copy, which is a second snapshot of the working copy: %v", dir, r.args)
+		}
+		if r.name != "git" {
+			continue
+		}
+		sub, rest := gitSubcommand(r.args)
+		switch sub {
+		case "add":
+			flags, paths, named := rest, []string(nil), false
+			if at := slices.Index(rest, "--"); at >= 0 {
+				flags, paths, named = rest[:at], rest[at+1:], true
+			}
+			for _, all := range []string{"--all", "-A", "--no-ignore-removal"} {
+				if slices.Contains(flags, all) {
+					t.Errorf("the check ran `git add %s` over %s, which is the whole-tree read jj's snapshot replaces: %v", all, dir, r.args)
+				}
+			}
+			if !named || len(paths) == 0 {
+				t.Errorf("the check ran a `git add` over %s that names no path after `--`: %v", dir, r.args)
+			}
+			if slices.Contains(paths, ".") {
+				t.Errorf("the check ran a `git add` over %s naming `.`, the whole tree, where it names the files it adds: %v", dir, r.args)
+			}
+		case "update-index":
+			for _, refresh := range []string{"--refresh", "--really-refresh"} {
+				if slices.Contains(rest, refresh) {
+					t.Errorf("the check ran `git update-index %s` over %s, which hashes every tracked file: %v", refresh, dir, r.args)
+				}
+			}
+		case "status":
+			t.Errorf("the check ran `git status` over %s, a whole-tree read of git's: %v", dir, r.args)
+		case "ls-files":
+			if (slices.Contains(rest, "--others") || slices.Contains(rest, "-o")) && !slices.Equal(rest, others) {
+				t.Errorf("the check ran `git ls-files %s` over %s, want the one read of the files the index does not track to be `ls-files %s`", strings.Join(rest, " "), dir, strings.Join(others, " "))
+			}
 		}
 	}
 }
@@ -269,7 +317,8 @@ func jjRead(t *testing.T, d *rescuetest.Disk, revision string) string {
 // rescuedBySnapshot is what the snapshot route is read by, over a workspace whose files hold
 // edits that no commit holds: the check pushes one commit, whose tree is the working copy jj
 // snapshotted and whose parent is the worktree's own git HEAD; it read that worktree through jj
-// alone; the workspace's files and its git HEAD are what the role left; and the only refs it
+// and through no whole-tree read of git's (readsTheWorktreeThroughJJAndNamedPaths); the
+// workspace's files and its git HEAD are what the role left; and the only refs it
 // wrote in the clone are jj's own and the pushed branch's. It answers the commits those jj refs
 // name.
 func rescuedBySnapshot(t *testing.T, d *rescuetest.Disk, edits map[string]string) []string {
@@ -301,7 +350,7 @@ func rescuedBySnapshot(t *testing.T, d *rescuetest.Disk, edits map[string]string
 			t.Errorf("the rescued commit's %s holds %q, want %q", file, got, body)
 		}
 	}
-	readsTheWorktreeThroughJJAlone(t, started, d.Workspace)
+	readsTheWorktreeThroughJJAndNamedPaths(t, started, d.Workspace)
 	pinsNameKeysThisJJKnows(t, d, theSnapshotOf(t, started, d.Workspace))
 	for file, body := range edits {
 		if got, err := os.ReadFile(filepath.Join(d.Workspace, filepath.FromSlash(file))); err != nil || string(got) != body {
@@ -510,18 +559,57 @@ func TestTheSnapshotsPinsOutrankTheWorkspacesOwnBytesAndModeConfiguration(t *tes
 	}
 }
 
+// rescuedWithEveryFileCarried is what a workspace holding files jj's snapshot leaves out is read
+// by: it writes each of files new in the worktree, with its body, and a role's own jj then
+// snapshots the workspace and leaves every one of them out, so what the rescued commit holds of
+// them is the carry's doing and not jj's. Then the check rescues the workspace as one branch;
+// that commit holds each file, by its whole name, with the worktree's own bytes; the check read
+// the worktree through jj's snapshot and git reads that name the paths they add
+// (readsTheWorktreeThroughJJAndNamedPaths); and the working copy jj holds the workspace at tracks
+// no more after the check than before it: the carry is made in a scratch index of its own and
+// tracks nothing of the role's. It answers the rescued commit.
+func rescuedWithEveryFileCarried(t *testing.T, d *rescuetest.Disk, files map[string]string) string {
+	t.Helper()
+	for name, body := range files {
+		d.Write(d.Workspace, name, body)
+	}
+	d.JJ("status")
+	wasAt := workingCopy(t, d)
+	tracked := d.Git("ls-tree", "-r", "-z", "--name-only", wasAt)
+	for name := range files {
+		if slices.Contains(strings.Split(tracked, "\x00"), name) {
+			t.Fatalf("the working copy a role's own jj wrote holds %q, want it left out of jj's snapshot", name)
+		}
+	}
+	started := recorded(t)
+
+	w := only(t, d, d.Check(context.Background(), prefix))
+	if w.Status != rescue.Rescued || len(w.Branches) != 1 {
+		t.Fatalf("the check reported %+v, want one rescued branch holding every file jj's snapshot left out", w)
+	}
+	commit := w.Branches[0].Commit
+	for name, body := range files {
+		if got, err := os.ReadFile(filepath.Join(d.Workspace, name)); err != nil || string(got) != body {
+			t.Fatalf("the workspace's %q holds %d bytes (%v) after the check, want the %d the role wrote", name, len(got), err, len(body))
+		}
+		if got, want := d.Run(d.Remote, "git", "rev-parse", commit+":"+name), d.Git("hash-object", "--no-filters", "--", name); got != want {
+			t.Errorf("the rescued commit's %q is the blob %s, want %s, the %d bytes the workspace holds under that whole name", name, got, want, len(body))
+		}
+	}
+	readsTheWorktreeThroughJJAndNamedPaths(t, started, d.Workspace)
+	if now := d.Git("ls-tree", "-r", "-z", "--name-only", workingCopy(t, d)); now != tracked {
+		t.Errorf("the role's working copy (%s, was %s) tracks %q after the check, want the %q it tracked before", workingCopy(t, d), wasAt, now, tracked)
+	}
+	return commit
+}
+
 // Fifteen files jj refused whose own names hold `: ` are carried, every one of them, and the
-// workspace is rescued. jj writes a refusal as `<path>: <size> (<n> bytes); the maximum size
-// allowed is <limit>`, and the path is read as the longest text that leaves the rest of that
-// shape standing (rescue.refusedLine), so a name holding `: ` of its own is read whole.
-// Measured on this build, a file named `huge-01: notes.bin` of 4800 bytes under a 1 KiB limit
-// is refused as the one line
+// workspace is rescued. Measured on this build, a file named `huge-01: notes.bin` of 4800 bytes
+// under a 1 KiB limit is refused as the one line
 // `  huge-01: notes.bin: 4.7KiB (4800 bytes); the maximum size allowed is 1.0KiB (1024 bytes)`,
-// which a read that cut the path at its first `: ` took for the path `huge-01`: no path of the
-// worktree, nothing for the carry to add, and the workspace failed for fifteen files it holds.
-//
-// Fifteen of them is what a failure would name ten of (rescue.maxNamedPaths), so a workspace
-// that fails at one of them is read here as the failure it would write.
+// which a read of that line that cut the path at its first `: ` took for the path `huge-01`. The
+// carry reads no line jj writes: it reads the names git's own `ls-files -z --others` answers,
+// NUL-separated, each whole (rescue.carried).
 func TestTheRefusedPathsWhoseNamesHoldAColonAreCarriedAndTheWorkspaceIsRescued(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	d.JJ("config", "set", "--repo", "snapshot.max-new-file-size", `"1KiB"`)
@@ -529,91 +617,68 @@ func TestTheRefusedPathsWhoseNamesHoldAColonAreCarriedAndTheWorkspaceIsRescued(t
 	for i := 1; i <= 15; i++ {
 		name := fmt.Sprintf("huge-%02d: notes.bin", i)
 		refused[name] = strings.Repeat(strconv.Itoa(i%10), 4800)
-		d.Write(d.Workspace, name, refused[name])
 	}
-	// A role's own jj refuses every one of them for the workspace's own limit, so what the
-	// rescued commit holds is the carry's doing and not jj's.
-	d.JJ("status")
-	tracked := d.Git("ls-tree", "-r", "--name-only", workingCopy(t, d))
-	for name := range refused {
-		if strings.Contains(tracked, name) {
-			t.Fatalf("the working copy a role's own jj wrote holds %q (%q), want it refused for the workspace's own limit", name, tracked)
-		}
-	}
-
-	w := only(t, d, d.Check(context.Background(), prefix))
-	if w.Status != rescue.Rescued || len(w.Branches) != 1 {
-		t.Fatalf("the check reported %+v, want one rescued branch holding the fifteen files jj refused", w)
-	}
-	commit := w.Branches[0].Commit
-	for name, body := range refused {
-		if got := d.Run(d.Remote, "git", "rev-parse", commit+":"+name); got != d.Git("hash-object", "--no-filters", "--", name) {
-			t.Errorf("the rescued commit's %q is the blob %s, want the %d bytes the workspace holds under that whole name", name, got, len(body))
-		}
-	}
+	rescuedWithEveryFileCarried(t, d, refused)
 }
 
-// A workspace whose snapshot said it left out paths in lines this check cannot read fails, and
-// nothing of it is pushed: a line read wrongly is a file left out of the commit the check
-// pushes while the workspace is reported clean, and a workspace reported clean has its pod
-// replaced and that file lost with it. The failure names ten of those lines and counts the
-// rest, which is what keeps the message inside what Dispatch takes (rescue.maxNamedPaths).
-//
-// jj writes a refused path raw, so a file whose own name holds a newline is written over two
-// lines and the first of them carries none of the shape a refusal has. Measured on this build,
-// a file named `refused-01\n  spill.bin` of 4800 bytes under a 1 KiB limit is refused as the
-// two lines `  refused-01` and
-// `  spill.bin: 4.7KiB (4800 bytes); the maximum size allowed is 1.0KiB (1024 bytes)`: the
-// name's own two spaces are what keeps the second inside jj's warning block (rescue.warned),
-// where a name holding a bare newline would end that block and take every refusal under it out
-// of the check's reach, and the first is the line nothing can read a path out of.
-func TestAWorkspaceWhoseRefusalsJJWroteInLinesTheCheckCannotReadFailsNamingTenOfThem(t *testing.T) {
+// Fifteen files jj refused whose own names hold a newline are carried, every one of them, and
+// the workspace is rescued. jj writes a refused path raw, so such a name is written over two
+// lines, the first with none of the shape a refusal has: measured on this build, a file named
+// `refused-01\n  spill.bin` of 4800 bytes under a 1 KiB limit is refused as the two lines
+// `  refused-01` and
+// `  spill.bin: 4.7KiB (4800 bytes); the maximum size allowed is 1.0KiB (1024 bytes)`. The
+// check reads none of what jj prints: git's own NUL-separated read of the files the index does
+// not track lists each such file by its whole name (rescue.carried).
+func TestRefusedFilesWhoseNamesJJWritesOverTwoLinesAreCarriedAndTheWorkspaceIsRescued(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	d.JJ("config", "set", "--repo", "snapshot.max-new-file-size", `"1KiB"`)
-	var unread []string
+	refused := map[string]string{}
 	for i := 1; i <= 15; i++ {
-		d.Write(d.Workspace, fmt.Sprintf("refused-%02d\n  spill.bin", i), strings.Repeat("x", 4800))
-		unread = append(unread, fmt.Sprintf("refused-%02d", i))
+		name := fmt.Sprintf("refused-%02d\n  spill.bin", i)
+		refused[name] = strings.Repeat(strconv.Itoa(i%10), 4800)
 	}
-	before := d.RemoteBranches()
-
-	w := only(t, d, d.Check(context.Background(), prefix))
-	if w.Status != rescue.Failed || len(w.Branches) != 0 {
-		t.Fatalf("the check reported %+v, want the workspace failed with nothing pushed", w)
-	}
-	failedAt(t, w, rescuetest.FileStep)
-	if !strings.Contains(w.Error, "jj's snapshot of "+d.Workspace+" said it left out paths in lines this check cannot read") {
-		t.Errorf("the failure says %q, want it to name the workspace whose lines the check could not read", w.Error)
-	}
-	named := 0
-	for _, line := range unread {
-		if strings.Contains(w.Error, strconv.Quote(line)) {
-			named++
-		}
-	}
-	if named != 10 {
-		t.Errorf("the failure names %d of the %d lines the check could not read, want ten of them: %q", named, len(unread), w.Error)
-	}
-	if !strings.Contains(w.Error, "and 5 more") {
-		t.Errorf("the failure says %q, want it to count the five lines it does not name", w.Error)
-	}
-	if after := d.RemoteBranches(); !slices.Equal(after, before) {
-		t.Errorf("the remote's branches are %v, want %v unchanged: a workspace whose refusals this check cannot read pushes nothing", after, before)
-	}
+	rescuedWithEveryFileCarried(t, d, refused)
 }
 
-// A path jj names that the worktree does not hold fails the workspace, and nothing of it is
-// pushed: the path jj named is not the one this check read, so the file jj refused is in no
-// commit it can push (rescue.carried). A name holding a newline the name follows with two spaces
-// can make jj write two lines that both have the refusal's shape. Measured on this build, a file
-// named `big: 1B (1 bytes); the maximum size allowed is 1B\n  z` of 4800 bytes under a 1 KiB
-// limit is refused as `  big: 1B (1 bytes); the maximum size allowed is 1B` and
+// A file jj refused whose name jj writes as two refused paths the worktree does not hold is
+// carried by its own name, and the workspace is rescued. Measured on this build, a file named
+// `big: 1B (1 bytes); the maximum size allowed is 1B\n  z` of 4800 bytes under a 1 KiB limit is
+// refused as `  big: 1B (1 bytes); the maximum size allowed is 1B` and
 // `  z: 4.7KiB (4800 bytes); the maximum size allowed is 1.0KiB (1024 bytes)`, which read as the
-// paths `big` and `z`, and the worktree holds neither.
-func TestARefusedNameThatReadsAsTwoPathsTheWorktreeDoesNotHoldFailsTheWorkspace(t *testing.T) {
+// paths `big` and `z`. The check reads neither line: git lists the file by its whole name
+// (rescue.carried).
+func TestARefusedFileWhoseNameJJWritesAsTwoRefusedPathsIsCarriedAndTheWorkspaceIsRescued(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	d.JJ("config", "set", "--repo", "snapshot.max-new-file-size", `"1KiB"`)
-	d.Write(d.Workspace, "big: 1B (1 bytes); the maximum size allowed is 1B\n  z", strings.Repeat("n", 4800))
+	const name = "big: 1B (1 bytes); the maximum size allowed is 1B\n  z"
+	commit := rescuedWithEveryFileCarried(t, d, map[string]string{name: strings.Repeat("n", 4800)})
+	for _, path := range []string{"big", "z"} {
+		if held := d.Run(d.Remote, "git", "ls-tree", commit, "--", path); held != "" {
+			t.Errorf("the rescued commit holds %q, want no %s: the worktree holds no such path", held, path)
+		}
+	}
+}
+
+// A file the carry cannot add fails the workspace, and nothing of it is pushed: the file is in no
+// commit this check can push, and a workspace reported clean would have its pod replaced and the
+// file lost with it. The file here is one jj refused for the workspace's own size limit and that
+// no one may read (mode 000): jj refuses it from its size alone, git lists it among the files the
+// index does not track, and the add that names it exits 128. Measured on this build, `git add --
+// refused.bin` over it wrote `error: open("refused.bin"): Permission denied` and `fatal: adding
+// files failed`, as the whole-tree `git add --all` the route replaces did over the same file.
+func TestAFileTheCarryCannotAddFailsTheWorkspaceAndPushesNothing(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	d.JJ("config", "set", "--repo", "snapshot.max-new-file-size", `"1KiB"`)
+	d.Write(d.Workspace, "refused.bin", strings.Repeat("u", 4800))
+	unreadable := filepath.Join(d.Workspace, "refused.bin")
+	if err := os.Chmod(unreadable, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(unreadable, 0o644) })
+	if f, err := os.Open(unreadable); err == nil {
+		f.Close()
+		t.Skip("this process reads a file of mode 000, as root does, so no file it writes is one git cannot read")
+	}
 	before := d.RemoteBranches()
 
 	w := only(t, d, d.Check(context.Background(), prefix))
@@ -621,20 +686,20 @@ func TestARefusedNameThatReadsAsTwoPathsTheWorktreeDoesNotHoldFailsTheWorkspace(
 		t.Fatalf("the check reported %+v, want the workspace failed with nothing pushed", w)
 	}
 	failedAt(t, w, rescuetest.FileStep)
-	if !strings.Contains(w.Error, "left out paths that git could not carry into the tree this check pushes") {
-		t.Errorf("the failure says %q, want it to say the paths jj named could not be carried", w.Error)
-	}
-	if !strings.Contains(w.Error, `"big", "z"`) {
-		t.Errorf("the failure says %q, want it to name the two paths jj's lines read as, big and z", w.Error)
+	for _, want := range []string{`"add", "--", "refused.bin"`, `open("refused.bin"): Permission denied`} {
+		if !strings.Contains(w.Error, want) {
+			t.Errorf("the failure says %q, want it to name the add that could not carry the file, %s", w.Error, want)
+		}
 	}
 	if after := d.RemoteBranches(); !slices.Equal(after, before) {
-		t.Errorf("the remote's branches are %v, want %v unchanged: a workspace whose refused path is not there pushes nothing", after, before)
+		t.Errorf("the remote's branches are %v, want %v unchanged: a workspace whose file could not be carried pushes nothing", after, before)
 	}
 }
 
-// The files jj refused are carried, every one of them, and the workspace is rescued. A refusal
-// stops no other file: measured on this build, a second new file was snapshotted all the same,
-// so the rescued commit holds what jj took and what the carry added alike.
+// The files jj refused are carried, every one of them, and the workspace is rescued, by adds that
+// name each file (readsTheWorktreeThroughJJAndNamedPaths). A refusal stops no other file:
+// measured on this build, a second new file was snapshotted all the same, so the rescued commit
+// holds what jj took and what the carry added alike.
 func TestTheFilesTheSnapshotRefusedAreCarriedAndTheWorkspaceIsRescued(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	d.JJ("config", "set", "--repo", "snapshot.max-new-file-size", `"1KiB"`)
@@ -645,8 +710,10 @@ func TestTheFilesTheSnapshotRefusedAreCarriedAndTheWorkspaceIsRescued(t *testing
 		d.Write(d.Workspace, name, refused[name])
 	}
 	d.Write(d.Workspace, "notes.txt", "a file small enough for the workspace's own limit\n")
+	started := recorded(t)
 
 	w := only(t, d, d.Check(context.Background(), prefix))
+	readsTheWorktreeThroughJJAndNamedPaths(t, started, d.Workspace)
 	if w.Status != rescue.Rescued || len(w.Branches) != 1 {
 		t.Fatalf("the check reported %+v, want one rescued branch holding the files jj refused", w)
 	}
@@ -663,9 +730,8 @@ func TestTheFilesTheSnapshotRefusedAreCarriedAndTheWorkspaceIsRescued(t *testing
 
 // A file jj refused whose own name is git's pathspec magic is carried under that name, and the
 // tracked file the magic stands for is left as it is. Every path this check hands git is a name
-// a role wrote, read out of jj's own warning or off the worktree's own directory entries, and
-// never a pattern, so every git the package starts carries --literal-pathspecs
-// (rescue.gitPins).
+// a role wrote, read out of git's own NUL-separated answers, and never a pattern, so every git
+// the package starts carries --literal-pathspecs (rescue.gitPins).
 //
 // Measured on this build, over a worktree holding a refused 2 MiB file named `:aa` beside a
 // tracked `aa`: `git add -- ':aa'` without that option exited 0 with the index holding `aa`
@@ -705,12 +771,12 @@ func TestARefusedPathWhoseNameIsGitsPathspecMagicIsCarriedIntoTheRescuedCommit(t
 }
 
 // A file whose name is not valid UTF-8 is skipped by jj's snapshot, with a warning and an exit
-// status of 0, and is carried into the tree the check pushes by its name's own bytes. The
-// workspace does not fail for it: the file is in the commit the check pushes, read back out of
-// it by that same name.
+// status of 0, and is carried into the tree the check pushes by its name's own bytes, which git
+// lists among the files the index does not track. The workspace does not fail for it: the file
+// is in the commit the check pushes, read back out of it by that same name.
 //
 // Measured on this build, jj writes the skip as `  .: "bad\xFD.txt"` — the directory, then the
-// name as Rust debug-quotes it — which is the one place it says anything of the file.
+// name as Rust debug-quotes it. The check reads nothing jj prints (rescue.snapshot).
 func TestAPathWhoseNameIsNotValidUTF8IsCarriedIntoTheRescuedCommit(t *testing.T) {
 	const skipped = "bad\xfd.txt"
 	d := rescuetest.New(t, issue)
@@ -733,10 +799,9 @@ func TestAPathWhoseNameIsNotValidUTF8IsCarriedIntoTheRescuedCommit(t *testing.T)
 }
 
 // A directory whose own name holds `: "` is carried whole, the file in it whose name is not valid
-// UTF-8 among it. jj writes the skip as the directory, then `: `, then the quoted name, so the
-// directory's own `: "` stands in the line before the cut, and the cut is at the line's last
-// `: "` (rescue.skippedPath). Measured on this build, a file `w\xFE` in a directory `q: "z` is
-// skipped as the line `  q: "z: "w\xFE"`.
+// UTF-8 among it. Measured on this build, a file `w\xFE` in a directory `q: "z` is skipped as the
+// line `  q: "z: "w\xFE"`, which a read of jj's line would have to cut in the right place; the
+// carry reads git's NUL-separated name of the file instead (rescue.carried).
 func TestADirectoryWhoseNameHoldsAColonAndAQuoteIsCarriedWholeIntoTheRescuedCommit(t *testing.T) {
 	const dir, skipped = `q: "z`, "w\xfe"
 	d := rescuetest.New(t, issue)
@@ -801,8 +866,9 @@ func TestADirectoryHoldingANestedJJIsCarriedIntoTheRescuedCommit(t *testing.T) {
 
 // A directory whose nested .jj is a regular file, and one whose nested .jj is a symlink, are
 // left out of jj's snapshot whole, as a directory holding a nested .jj directory is, and both
-// are carried into the tree the check pushes. jj says nothing of either, so the worktree is
-// walked for the name .jj whatever kind of file that entry is (rescue.nestedJJ).
+// are carried into the tree the check pushes. jj says nothing of either, and the carry needs it
+// to say nothing: git lists every file of both directories among those the index does not
+// track, whatever kind of file the .jj entry is (rescue.carried).
 //
 // What jj leaves out is read here first, so the case stands on the carry and not on jj:
 // measured on this build, with e/.jj a regular file and h/.jj a symlink, each beside a
@@ -854,15 +920,15 @@ func TestADirectoryWhoseNestedJJIsAFileOrASymlinkIsCarriedIntoTheRescuedCommit(t
 }
 
 // The carry keeps git's own ignore rules. A directory holding a nested .jj is left out of jj's
-// snapshot whole and the carry adds it, and what it adds under it is what `git add --all`
-// would have added there: the nested .jj's own files as the plain files they are to git, the
+// snapshot whole and the carry adds what is under it, and what it adds there is what `git add
+// --all` would have added: the nested .jj's own files as the plain files they are to git, the
 // files beside them, and nothing an ignore rule covers. A commit of this check holding an
 // ignored file would push what a role's own push would not (rescue.edits).
 //
 // Measured on this build, over a worktree holding `*.log` in .gitignore beside d/.jj/f,
-// d/keep.txt and d/x.log: `git ls-files --others --exclude-standard -- d` answered d/.jj/f and
-// d/keep.txt, an add of d put those two in the index, and the same add with -f put d/x.log
-// there as well.
+// d/keep.txt and d/x.log: `git ls-files --others --exclude-standard` answered d/.jj/f and
+// d/keep.txt and no d/x.log, and an add with -f would have put d/x.log in the index as well,
+// which is why the carry's add of those files carries none.
 func TestAnIgnoredFileBesideANestedJJIsLeftOutOfTheRescuedCommit(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	d.Write(d.Workspace, ".gitignore", "*.log\n")
@@ -898,8 +964,9 @@ func TestAnIgnoredFileBesideANestedJJIsLeftOutOfTheRescuedCommit(t *testing.T) {
 // `*.log` is ignored, and then edited under a d that gains a nested .jj. jj's snapshot leaves d
 // out whole and records d/x.log as deleted, and `git ls-files --others --exclude-standard`
 // names no d/x.log, since an ignore rule covers it; the `git add --all` this read replaces
-// updates it all the same, as the tracked file it is. So the carry adds the files head tracks
-// under d by name (rescue.trackedUnder).
+// updates it all the same, as the tracked file it is. So the carry seeds it from the copy of the
+// worktree's index the check made before the snapshot, and adds it by name with -f
+// (rescue.seeds, rescue.carried).
 //
 // The nested .jj is either a directory holding a file, or a real jj repository, made with `jj
 // git init d`, whose .jj/.gitignore is `/*`. Measured on this build, that init colocates, so d
@@ -937,7 +1004,9 @@ func TestATrackedFileAnIgnoreRuleCoversUnderADirectoryThatGainsANestedJJIsRescue
 			nested := tc.nest(t, d)
 			d.Write(d.Workspace, "d/x.log", "edited under the nested .jj\n")
 
+			started := recorded(t)
 			w := only(t, d, d.Check(context.Background(), prefix))
+			readsTheWorktreeThroughJJAndNamedPaths(t, started, d.Workspace)
 			if w.Status != rescue.Rescued || len(w.Branches) != 1 {
 				t.Fatalf("the check reported %+v, want one rescued branch holding the edited d/x.log", w)
 			}
@@ -968,11 +1037,10 @@ func TestATrackedFileAnIgnoreRuleCoversUnderADirectoryThatGainsANestedJJIsRescue
 
 // An ignored directory holding a .jj of its own reaches no commit of this check, and the
 // workspace does not fail for it. jj leaves the directory out of its snapshot for that nested
-// .jj, so the carry is handed it, and what the directory would carry is read before anything
-// is added: an ignore rule covers every file of it, so the expected set holds nothing and the
-// path is passed over with no add and no failure (rescue.carried). Adding it would push what a
-// role's own push would not, and failing for it would hold a pod's replacement back for
-// content `git add --all` leaves out — a `git add` naming an ignored path fails besides.
+// .jj, and git's own read of the files the index does not track lists nothing of it, since an
+// ignore rule covers every file of it: the carry adds nothing of it and reads back nothing of it
+// as missing (rescue.carried). Adding it would push what a role's own push would not, and
+// failing for it would hold a pod's replacement back for content `git add --all` leaves out.
 func TestAnIgnoredDirectoryHoldingANestedJJIsLeftOutOfTheRescuedCommitAndFailsNothing(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	d.Write(d.Workspace, ".gitignore", "ignored/\n")
@@ -1026,15 +1094,12 @@ func TestAnUntrackedNestedGitRepositoryIsRescuedAsNoGitlinkAndFailsNothing(t *te
 
 // A path inside an embedded git repository is carried by neither read, and the workspace fails
 // for it no more than for the repository itself. A nested .jj inside such a repository is a
-// directory jj's snapshot leaves out, so the carry is handed it, and `git ls-files --others
-// --exclude-standard` answers nothing under an embedded repository: the expected set holds
-// nothing and the path is passed over with no add and no failure (rescue.carried). That is the
-// same nothing the `git add --all` this read stands in for carries, which records the
-// repository as a gitlink whose commit no object of this repository holds and no file of it at
-// all.
-//
-// Measured on this build, over a worktree holding b/.git with b/sub/.jj: the expected set of
-// b/sub was empty, and an add of it put nothing in the index.
+// directory jj's snapshot leaves out, and `git ls-files --others --exclude-standard` lists the
+// embedded repository as itself, `b/`, with a trailing slash, and no file under it: the carry
+// leaves that entry out, adds nothing of it and reads back nothing of it as missing
+// (rescue.carried). That is the same nothing the `git add --all` this read stands in for
+// carries, which records the repository as a gitlink whose commit no object of this repository
+// holds and no file of it at all.
 func TestANestedJJInsideAnEmbeddedGitRepositoryIsRescuedAsNoGitlinkAndFailsNothing(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	embedded := filepath.Join(d.Workspace, "b")

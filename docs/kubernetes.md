@@ -4347,23 +4347,23 @@ That bookmark move is the move any `jj` command of any role makes in that same w
 The worktree's git HEAD is unchanged in each case.
 The shared clone is on the pod's own disk, which goes with the pod.
 The snapshot writes the colocated git index, so a role's own staged git index in that workspace can be overwritten, while the file content of that role's work is still carried.
-One file of that index is not carried: a file `.gitignore` ignores that a role forced in with `git add -f`.
-jj never commits such a file, a snapshot alone leaves it in the index, and it goes at the next jj command that checks out a new working-copy commit.
-Today's whole-tree git read keeps it, so this is a file the snapshot loses and the check does not name.
-The snapshot answers seven cases differently from the git read, and three of them are carried rather than lost.
-A file above the workspace's own `snapshot.max-new-file-size`, which jj refuses with a warning and an exit status of 0, is carried into the rescued tree through a scratch git index seeded with jj's own tree (`git read-tree`, then one `git add` for each path, then `git write-tree`).
-The check does not raise that limit: a snapshot that raised it would make jj track the file in the role's own working-copy commit, where it would stay, and the role's next push would carry it.
-A path whose name is not valid UTF-8, which jj skips with a warning of its own, is carried the same way.
-A directory holding a nested `.jj`, which jj leaves out whole and with no warning, is carried the same way, the whole directory with it; the `.jj` may be a directory, a regular file or a symlink, and jj drops the directory holding any of the three.
-What the carry adds for a path is what git itself would carry there, which is two sets: the files under it that git would add as new, read with `git ls-files --others --exclude-standard` against that same index, and the files under it that the worktree's git HEAD tracks and the worktree still holds.
-The first set is added file by file and keeps the ignore rules the whole-tree git read keeps, carrying nothing more; an embedded git repository it lists, which git names as a directory with a trailing slash, is left out of it, as `git add --all` records one as a gitlink at most and carries no file of it.
-The second set is put into that index as HEAD holds it and then updated with `git add -f`, because `git add --all` updates every file the index tracks whatever an ignore rule says, so a tracked file an ignore rule covers, under a directory jj drops, is carried with its edit and not deleted, even where that directory has since become a git or jj repository of its own.
-A path with nothing to carry is passed over and fails nothing: an ignored file, an ignored directory, and a path inside an embedded git repository, which the `git add --all` this read replaces records as a gitlink and carries no file of either.
-A path jj names that the worktree does not hold is never passed over: it is a path the check read wrongly out of jj's warning, and it fails the workspace.
-Every git command of the check runs with `--literal-pathspecs`, because a path here is a name a role wrote and never a pattern.
-After the adds the carry reads the two sets again, the new files that git would still add and the tracked files the index must now hold, and a path of either that was not carried, with one git could not add, fails the workspace, whose failure names up to ten such paths and counts the rest.
-That read-back is defence in depth: git gives each set immediately before the add of the same path, so no test of the check reaches the read-back's failing branch, and it stays for a later change that takes a set from somewhere else.
-A line of either warning that jj did not write in the shape this check reads fails the workspace too, naming the lines; a file name holding a newline makes one, and where its second line happens to read as a refused path of its own, that path is not in the worktree and fails the workspace by the rule above, so a path read wrongly is never a file carried by nothing.
+The check copies the worktree's git index before the snapshot, and carries into the rescued tree what the `git add --all` it replaces would have kept and jj's tree lacks.
+It builds that in a scratch git index that starts as jj's own tree (`git read-tree`), so neither the worktree's index nor any ref moves, and `git write-tree` gives the answer.
+Both halves come from that read's own input and its own rule, rather than from a model of what the snapshot leaves out, so every path today's read keeps is kept, with one exception named below.
+The tracked half is every file the index copy holds that jj's tree lacks and the worktree still holds as a file.
+Each is written into the scratch index as the copy records it (`git update-index --index-info`) and then updated from the worktree with `git add -f -- <file>`, because `git add --all` updates every file the index tracks whatever an ignore rule says.
+So a file `.gitignore` ignores that a role forced in with `git add -f`, which jj never commits, is carried, and so is a tracked file under a directory that has since become a jj or git repository of its own, which jj leaves out.
+A file of the copy that the worktree no longer holds is a deletion and is not carried; so is one that is now a directory, whose files the untracked half reads by the ignore rules, as today's read does.
+The untracked half is one `git ls-files -z --others --exclude-standard -- .` over the worktree against the scratch index, after the tracked half: git's own rule for what `git add --all` adds as new.
+That read walks the worktree's directories and compares names against the index; it hashes no file and refreshes no entry, and on the fixture of 290,000 files below it took 2.6 to 2.9 s.
+Each file it lists is added by name with `git add -- <file>` and no `-f`.
+A file above the workspace's own `snapshot.max-new-file-size`, which jj refuses with a warning and an exit status of 0, a name that is not valid UTF-8, which jj skips, and the files of a directory holding a nested `.jj`, which jj leaves out whole, are all among what that read lists, and the check reads none of jj's warnings.
+The check does not raise jj's size limit: a snapshot that raised it would make jj track the file in the role's own working-copy commit, where it would stay, and the role's next push would carry it.
+The one exception is an embedded git repository: the read lists one as its directory with a trailing slash, and the check leaves that entry out, where `git add --all` records it as a gitlink and carries no file of it.
+The check drops an entry only where that read itself answers a name ending in a slash, and has no rule of its own for a `.git` or a `.jj`, so a directory git walks into because the tracked half holds an entry under it has its files carried, as today's read keeps them.
+Every git command of the check runs with `--literal-pathspecs`, because a path here is a name a role wrote and never a pattern, and every `git add` names the files it adds.
+After the adds the carry makes the same whole-tree read again and reads each tracked-half file by its exact name, and a file of either that the index does not hold fails the workspace, whose failure names up to ten such paths and counts the rest.
+That read-back is defence in depth: `git add` exits 0 for a path it added nothing of, so git's exit status alone does not say a file was carried.
 A workspace whose jj sparse patterns do not cover its tree fails, with nothing snapshotted, because a file outside those patterns is one the git read kept; a set holding `.` covers the tree, and an empty set, which an unfinished checkout leaves, fails with words of its own.
 A snapshot that fails fails the workspace, and no second snapshot is made.
 A stale working copy is one such failure, and its message names `jj workspace update-stale` as what a person runs.
@@ -4384,8 +4384,10 @@ On the architect's fixture the add alone cost 1.8 to 3.9 times the refresh alone
 So 30 minutes is about nine times the slowest read measured directly on a pod, and under what that ratio suggests for the slowest: a workspace whose read is slower than the term fails as it does today and waits for a person.
 The bound keeps that term for two reads.
 The daemon sends the bound to every pod, and a pod whose shim predates this build still makes the whole-worktree read over a jj workspace, which is what those measurements are of.
-A worktree with no `.jj` directory takes that git read in this build too, and a worktree jj holds takes the snapshot above in its place, which costs what any `jj` command of a role costs.
-That read is cut while the guard's run and the push's reserve are still in hand, so a read that still cannot finish loses the files it was reading and not the commits the check has already found: those are pushed, and the workspace's entry fails naming the step that did not finish.
+A worktree with no `.jj` directory takes that git read in this build too, and a worktree jj holds takes the snapshot above in its place, with the one `git ls-files --others` read over its directories.
+Measured on 2026-11-12 on a fixture of 290,000 tracked files and 3.2 GB whose index carries no stat data, the snapshot took 21 to 27 s and that read 2.6 to 2.9 s, where `git add --all` took 183.5 s.
+The first snapshot after a colocated `jj git init` took 62.5 s there, because it also imports the git repository; the live check pays such an import only where git HEAD moved behind jj's back.
+The read of a worktree's files is cut while the guard's run and the push's reserve are still in hand, so a read that still cannot finish loses the files it was reading and not the commits the check has already found: those are pushed, and the workspace's entry fails naming the step that did not finish.
 The daemon logs one line per workspace: `push check of a workspace before its pod is replaced: clean`, `…: rescued` with each `<branch>@<commit>`, or `…: error` with the error.
 A failed workspace's error names the step of the check that failed and how long that step ran, so the read of a worktree's files is told from the push that follows it by the step's name.
 The replacement's own line, `the pod is replaced and the round is over`, names every rescued branch (`rescued`), and the daemon writes on the issue a message naming each rescued branch, its commit and its workspace:

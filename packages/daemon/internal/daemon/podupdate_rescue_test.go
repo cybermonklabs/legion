@@ -528,24 +528,29 @@ func TestPodUpdateHoldsTheRoundWhenAWorkspaceCheckFails(t *testing.T) {
 		step: rescuetest.FileStep,
 		says: "holds part of its tree",
 	}, {
-		name: "a refusal jj wrote in a line this check cannot read",
+		name: "a file the carry cannot add",
 		// The snapshot runs under the workspace's own size limit, and what jj refuses for it is
-		// carried into the tree the check pushes — except where jj wrote the refusal in a line
-		// nothing can read a path out of. jj writes a refused path raw, so a file whose own name
-		// holds a newline is written over two lines and the first carries none of the shape a
-		// refusal has: the workspace fails naming that line, which is the fail-closed answer and
-		// loses no file silently (the check's own package reads the same fixture, with fifteen
-		// of them, in
-		// TestAWorkspaceWhoseRefusalsJJWroteInLinesTheCheckCannotReadFailsNamingTenOfThem).
-		disk: func(_ *testing.T, d *rescuetest.Disk) {
+		// carried into the tree the check pushes by an add that names the file. A refused file
+		// no one may read (mode 000) is one that add cannot carry: git exits 128 for it, and the
+		// workspace fails naming that add, which is the fail-closed answer and loses no file
+		// silently (the check's own package reads the same fixture in
+		// TestAFileTheCarryCannotAddFailsTheWorkspaceAndPushesNothing). A process that reads
+		// such a file all the same, as root does, has no row here to drive.
+		disk: func(t *testing.T, d *rescuetest.Disk) {
 			d.JJ("config", "set", "--repo", "snapshot.max-new-file-size", `"1MiB"`)
-			d.Write(d.Workspace, "refused\n  spill.bin", strings.Repeat("x", 2*1024*1024))
+			d.Write(d.Workspace, "refused.bin", strings.Repeat("x", 2*1024*1024))
+			unreadable := filepath.Join(d.Workspace, "refused.bin")
+			if err := os.Chmod(unreadable, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chmod(unreadable, 0o644) })
+			if f, err := os.Open(unreadable); err == nil {
+				f.Close()
+				t.Skip("this process reads a file of mode 000, as root does, so no file it writes is one git cannot read")
+			}
 		},
 		step: rescuetest.FileStep,
-		// The failure says what it could not read and names the line itself, quoted: the name's
-		// own two spaces keep jj's second line inside its warning block, so the line left
-		// unread is the first, `refused`.
-		says: `in lines this check cannot read, so what they name is in no commit it can push: "refused"`,
+		says: `open("refused.bin"): Permission denied`,
 	}, {
 		name: "a read of a worktree's files the bound cuts",
 		// Another worktree of the clone, whose files the check reads with the whole-tree git
