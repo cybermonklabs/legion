@@ -262,6 +262,19 @@ export interface FreshReport {
   startedAt: string;
   finishedAt: string;
   wallMs: number;
+  /**
+   * How many judgements this run asked the model for: one task per arm and case it ran. A held
+   * row carrying a fault is asked again, so it is counted here and never under `read`, the
+   * model having been called for it. Zero says this run measured nothing of its own, and every
+   * number beside it is an earlier run's, read again.
+   */
+  asked: number;
+  /**
+   * How many judgements this run read from the answers `--out` already held, which are the
+   * held rows it asked no task for. With `asked` it sums to one judgement per arm and case,
+   * which is what the reading below is taken over.
+   */
+  read: number;
   /** The model both arms were asked for, beside the model each reports it ran on. */
   model: string;
   caseIds: string[];
@@ -685,7 +698,9 @@ async function settleAnswers(
 
 /**
  * The run itself: every case put to both arms, one judgement each, with the answers appended as
- * they come so a run that stopped resumes rather than paying for what it already has.
+ * they come so a run that stopped resumes rather than paying for what it already has. The run
+ * writes its own record as it ends, so what `fresh-agent.json` holds for a shape is what the
+ * run that made it counted, down to how much of it that run asked for.
  */
 export async function runFresh(plan: FreshPlan, deps: FreshDeps): Promise<FreshReport> {
   const startedAt = deps.now();
@@ -714,11 +729,15 @@ export async function runFresh(plan: FreshPlan, deps: FreshDeps): Promise<FreshR
   });
   const finishedAt = deps.now();
   const paired = pairedOf(rows, plan.cases);
-  return {
+  // One judgement per arm and case: the tasks this run ran are the ones it asked for, and the
+  // rest were read off the disk, a faulted held row having been asked again and so a task.
+  const report: FreshReport = {
     neighbours: plan.neighbours,
     startedAt: new Date(startedAt).toISOString(),
     finishedAt: new Date(finishedAt).toISOString(),
     wallMs: finishedAt - startedAt,
+    asked,
+    read: plan.cases.length * ARMS.length - asked,
     model: MODEL,
     caseIds: plan.cases.map((one) => one.row.caseId),
     arms: ARMS.map((arm) => readingOf(arm, rows, plan.cases)),
@@ -726,6 +745,30 @@ export async function runFresh(plan: FreshPlan, deps: FreshDeps): Promise<FreshR
     round: plan.round,
     verdict: verdictLineOf(paired),
   };
+  await writeReport(plan.out, report);
+  return report;
+}
+
+/**
+ * How much of one shape's reading this run measured, in the words the readout prints, so no
+ * reader takes a reprint for a measurement: a run that asked nothing says whose numbers these
+ * are, and a run that asked some of them says how many it asked and how many it read.
+ */
+function measuredLines(report: FreshReport): string[] {
+  const judgements = report.asked + report.read;
+  if (report.asked === 0) {
+    return [
+      `                  asked the model nothing: all ${judgements} judgements were read from`,
+      "                  answers already held, so these numbers are an earlier run's",
+    ];
+  }
+  if (report.read === 0) {
+    return [`                  asked the model every one of ${judgements} judgements`];
+  }
+  return [
+    `                  asked the model ${report.asked} of ${judgements} judgements and read ` +
+      `${report.read} from answers already held`,
+  ];
 }
 
 /** One shape's reading, as the readout prints it. */
@@ -733,6 +776,7 @@ function shapeLines(report: FreshReport): string[] {
   const lines = [
     `shape ${report.neighbours.padEnd(12)}${SHAPE_SAYS[report.neighbours]}`,
     `                  wall ${Math.round(report.wallMs / 1000)}s`,
+    ...measuredLines(report),
   ];
   for (const arm of report.arms) {
     lines.push(
@@ -1151,6 +1195,19 @@ async function heldShapes(path: string): Promise<FreshShapes> {
   }
 }
 
+/** Where both shapes' reports are written, which is the file a reader of a run reads alone. */
+function reportPath(out: string): string {
+  return join(out, "fresh-agent.json");
+}
+
+/** One shape's report added to the shapes the file holds, replacing that shape's and no other. */
+async function writeReport(out: string, report: FreshReport): Promise<FreshShapes> {
+  const path = reportPath(out);
+  const shapes: FreshShapes = { ...(await heldShapes(path)), [report.neighbours]: report };
+  await writeFile(path, `${JSON.stringify(shapes, null, 2)}\n`, "utf8");
+  return shapes;
+}
+
 /** The run as the command makes it: the real corpus, the real round and the real agent. */
 async function fresh(flags: Flags): Promise<number> {
   const log = (line: string): void => {
@@ -1191,11 +1248,8 @@ async function fresh(flags: Flags): Promise<number> {
       log,
     }
   );
-  const path = join(out, "fresh-agent.json");
-  const held = await heldShapes(path);
-  const shapes: FreshShapes = { ...held, [flags.neighbours]: report };
-  await writeFile(path, `${JSON.stringify(shapes, null, 2)}\n`, "utf8");
-  console.log(reportLines(report, shapes).join("\n"));
+  // The run wrote the file as it ended; this reads it back for the shape it did not make.
+  console.log(reportLines(report, await heldShapes(reportPath(out))).join("\n"));
   return report.verdict.passes ? EXIT_PASSES : EXIT_FAILS;
 }
 
