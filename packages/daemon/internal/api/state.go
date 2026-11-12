@@ -281,9 +281,10 @@ type ControllerLocator struct {
 	RegisteredAt time.Time `json:"registeredAt"`
 	// PluginContract is the contract the registered session's plugin declared, 0 when none
 	// recorded, always emitted. It is never an earlier process's: the record's registration and
-	// its contract are written by one statement and the capability's next mint clears the
-	// registration, so this view exists only while the session it names holds the current
-	// capability (ControllerLocatorOf).
+	// its contract are written by one statement, the capability's next mint clears the
+	// registration, and the daemon mints at each launch of its own controller, before the new
+	// process starts, so this view exists only while the session it names holds the current
+	// capability (ControllerLocatorOf, ControllerRelaunchHook).
 	PluginContract int `json:"pluginContract"`
 }
 
@@ -294,8 +295,11 @@ type ControllerLocator struct {
 // own the way a claim's does (PluginContractOf): one statement writes the session, its secret
 // hash and its contract together (store.RegisterController), a mint of the capability clears the
 // session that answers Registered, and a record no session has registered with shows as no
-// locator at all rather than as a session with a contract. So there is no state here in which an
-// earlier process's contract could be given as this one's.
+// locator at all rather than as a session with a contract. One state could still give an earlier
+// process's contract: a daemon-launched controller relaunched and not yet registered, whose
+// record names the process the launch replaced until a mint. The daemon mints at that launch,
+// before the new process starts (ControllerRelaunchHook, supervise.Deps.BeforeStart), so the
+// state reads no locator from then until the new generation registers (dispatch://INFRA-2883 R7).
 func ControllerLocatorOf(runtimeName string, record controller.Record) *ControllerLocator {
 	if !record.Registered() {
 		return nil

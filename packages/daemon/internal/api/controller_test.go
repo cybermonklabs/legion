@@ -25,10 +25,15 @@ import (
 
 // newControllerHarness is a harness that mints controller grants, whose daemon launches the
 // project's controller itself (`controller: daemon`) when launched is true and leaves it to the
-// operator (`controller: operator`) otherwise.
+// operator (`controller: operator`) otherwise. A daemon that launches its controller ends the
+// record's registration at each launch of it, before the process starts, as the daemon's boot
+// wires its machines (ControllerRelaunchHook, internal/daemon's openSupervision).
 func newControllerHarness(t *testing.T, launched bool) *harness {
 	t.Helper()
 	h := newHarness(t)
+	if launched {
+		h.supervisor.deps.BeforeStart = ControllerRelaunchHook(h.store, testProject)
+	}
 	h.serve(launched)
 	return h
 }
@@ -385,18 +390,23 @@ func TestAnOperatorsDaemonRefusesTheRegistrationOfALaunchedController(t *testing
 // A daemon that launches its own controller (`controller: daemon`) registers no controller through
 // the capability path, which is the operator's: a token no launch resolves is refused there before
 // the controller record is read. A daemon restart forgets the tokens of launches since replaced, so
-// the token of a controller pod the daemon replaced is such a token, and the record's registration
-// is left as it was.
+// the token of a controller pod the daemon replaced is such a token, and the record is left as the
+// relaunch left it. The relaunch itself ends ses_first's registration, before the new process
+// starts (ControllerRelaunchHook, dispatch://INFRA-2883 R7), so the record is read after it: what
+// this row holds is that the stale token's attempt adds nothing to that.
 func TestASupersededControllerLaunchNeverRegistersAfterARestart(t *testing.T) {
 	h := newControllerHarness(t, true)
 	token, first := h.launchController()
 	h.registeredController(first, "ses_first")
+	h.relaunch(token)
+	h.restartAPI(true)
 	before, _, err := h.store.Controller(context.Background(), testProject)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.relaunch(token)
-	h.restartAPI(true)
+	if before.Registered() {
+		t.Fatalf("controller record after the relaunch = %+v, want ses_first's registration ended by it", before)
+	}
 
 	wantRefusal(t, h.register(first, "ses_stale"), claim.InvalidBootToken.Status, claim.InvalidBootToken.Message)
 
@@ -404,8 +414,8 @@ func TestASupersededControllerLaunchNeverRegistersAfterARestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Session != "ses_first" || after.Generation != before.Generation {
-		t.Fatalf("controller record = %+v, want ses_first's registration at generation %d untouched", after, before.Generation)
+	if after.Registered() || after.Session != before.Session || after.Generation != before.Generation {
+		t.Fatalf("controller record = %+v, want it as the relaunch left it, %+v", after, before)
 	}
 }
 

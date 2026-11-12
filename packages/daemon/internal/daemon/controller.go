@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/controller"
@@ -197,31 +198,20 @@ func (s *supervision) stopLaunchedController(ctx context.Context) error {
 	return s.endLaunchedRegistration(ctx, m.Claim())
 }
 
-// endLaunchedRegistration mints the controller record controller.UnheldCapability while the record
-// still names c's session, the stopped controller's registration: the state's controllerLocator
-// then names no dead pod's session, no grant mints for it, and no capability a launch registered
-// under survives the switch. A record naming any other session, the operator's controller's after a
-// `legion controller start`, or none, is left as it is. A record with no registration is left as it
-// is even though a claim whose agent never registered has no session either: that record can hold
-// the capability `legion controller start` minted for an
-// operator's controller that has not registered yet, and matching the two empty sessions would
-// replace it, so that controller's registration would then be refused. The guard on the record's
-// registration is correct only beside the session comparison, in one condition: alone it would let
-// a claim with no session through against a record naming one, which the comparison refuses, and
-// alone the comparison would let the two empty sessions through, which the guard refuses. It runs
-// at boot, before the API serves, so no registration can come between the read and the mint.
+// endLaunchedRegistration ends the registration of c, the controller an earlier boot under
+// `controller: daemon` launched, by the rule api.EndControllerRegistration states: the record is
+// minted controller.UnheldCapability while it still names c's session, and left as it is
+// otherwise. The state's controllerLocator then names no dead pod's session, no grant mints for
+// it, and no capability a launch registered under survives the switch. It runs at boot, before the
+// API serves, so no registration can come between the read and the mint.
 func (s *supervision) endLaunchedRegistration(ctx context.Context, c supervise.Claim) error {
-	record, found, err := s.supervisor.store.Controller(ctx, s.plan.project)
+	ended, err := api.EndControllerRegistration(ctx, s.supervisor.store, s.plan.project, c.Session)
 	if err != nil {
-		return fmt.Errorf("read the controller record to end the registration of %s, the controller an earlier boot under controller: daemon launched: %w", c.Token, err)
-	}
-	if !found || !record.Registered() || record.Session != c.Session {
-		return nil
-	}
-	s.log.Warn("controller: ending the registration of the controller an earlier boot under controller: daemon launched; this daemon leaves the controller to its operator",
-		"claim", c.Token, "session", c.Session)
-	if _, err := s.supervisor.store.MintController(ctx, s.plan.project, controller.UnheldCapability()); err != nil {
 		return fmt.Errorf("end the registration of %s, the controller an earlier boot under controller: daemon launched, since this daemon leaves the controller to its operator (controller: operator): %w", c.Token, err)
+	}
+	if ended {
+		s.log.Warn("controller: ended the registration of the controller an earlier boot under controller: daemon launched; this daemon leaves the controller to its operator",
+			"claim", c.Token, "session", c.Session)
 	}
 	return nil
 }

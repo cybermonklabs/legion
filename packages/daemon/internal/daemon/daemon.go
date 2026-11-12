@@ -1421,6 +1421,14 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		LaunchEnded:  answering.LaunchEnded,
 		LaunchWaived: answering.LaunchWaived,
 	}
+	// The daemon's own controller resumes the same session at every launch, so the record's
+	// registration of the process a launch replaces is ended before the new one starts, and the
+	// controller locator never gives that process's contract as the new one's (dispatch://INFRA-2883
+	// R7). Under `controller: operator` the record is the operator's controller's, which no launch of
+	// this daemon replaces, so nothing is wired.
+	if cfg.ControllerLaunch == config.ControllerLaunchDaemon {
+		sup.deps.BeforeStart = api.ControllerRelaunchHook(st, p.project)
+	}
 	stopping, beginStop := context.WithCancel(context.Background())
 	supervisionOf := &supervision{
 		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,

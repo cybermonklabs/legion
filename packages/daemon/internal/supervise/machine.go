@@ -777,6 +777,17 @@ type Deps struct {
 	// generation that is over. nil records nothing, and a daemon that records nothing never
 	// reaches that bound. It is called inside the machine's decision, so it returns at once.
 	LaunchWaived func(c Claim)
+	// BeforeStart is told of each launch once its claim write has landed and before the runtime
+	// starts or resumes the process (launchNow): the one moment the claim stands in a generation
+	// whose process does not exist yet. The daemon ends the daemon-launched controller's
+	// registration here, which the controller locator would otherwise go on showing for the
+	// process this launch replaces until the new one registers (api.ControllerRelaunchHook,
+	// dispatch://INFRA-2883 R7). It must come before the start: a relaunch resumes the same
+	// session, so the new process registers under the very session id the record names, and a
+	// mint after that registration would end it. An error is logged and the launch goes on,
+	// since what the hook repairs is a view, and a launch refused for it would leave the claim
+	// with no process. nil tells nobody. It is called inside the machine's decision.
+	BeforeStart func(ctx context.Context, c Claim) error
 }
 
 func (d Deps) check() error {
@@ -2007,6 +2018,14 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 		if charged {
 			if err := m.backOff(ctx); err != nil {
 				return err
+			}
+		}
+		// The launch is written and no process of it exists yet: what the daemon ends of the
+		// process this launch replaces it ends now, before the new one can register (BeforeStart).
+		if m.deps.BeforeStart != nil {
+			if err := m.deps.BeforeStart(ctx, m.current()); err != nil {
+				m.log.Error("supervise: the launch's before-start hook failed; launching all the same",
+					"generation", m.claim.Generation, "error", err)
 			}
 		}
 		loc, err := m.start(ctx, token)

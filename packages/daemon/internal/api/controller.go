@@ -27,6 +27,60 @@ type ControllerStore interface {
 	RegisterController(ctx context.Context, project string, generation uint64, session string, secretHash []byte, at time.Time, pluginContract int) (bool, error)
 }
 
+// EndControllerRegistration mints the project's controller record controller.UnheldCapability
+// while the record still names session's registration, and reports whether it did: the
+// controller locator then names no gone process's session or contract (ControllerLocatorOf), no
+// grant mints for it, and no capability that registration held survives. A record naming any
+// other session, an operator's controller's after a `legion controller start`, or none, is left
+// as it is. A record with no registration is left as it is even when session is empty too: such
+// a record can hold the capability `legion controller start` minted for an operator's controller
+// that has not registered yet, and matching the two empty sessions would replace it, so that
+// controller's registration would then be refused. The guard on the record's registration is
+// correct only beside the session comparison, in one condition: alone it would let an empty
+// session through against a record naming one, which the comparison refuses, and alone the
+// comparison would let two empty sessions through, which the guard refuses.
+//
+// It is the one rule both of its callers apply: the boot of a daemon that leaves the controller
+// to its operator, ending the registration of the controller an earlier boot launched
+// (internal/daemon's endLaunchedRegistration), and the relaunch of the daemon's own controller
+// (ControllerRelaunchHook).
+func EndControllerRegistration(ctx context.Context, st ControllerStore, project, session string) (bool, error) {
+	record, found, err := st.Controller(ctx, project)
+	if err != nil {
+		return false, fmt.Errorf("read the controller record: %w", err)
+	}
+	if !found || !record.Registered() || record.Session != session {
+		return false, nil
+	}
+	if _, err := st.MintController(ctx, project, controller.UnheldCapability()); err != nil {
+		return false, fmt.Errorf("mint the controller record's unheld capability: %w", err)
+	}
+	return true, nil
+}
+
+// ControllerRelaunchHook is supervise.Deps.BeforeStart for a daemon that launches its own
+// controller (`controller: daemon`): at each launch of the controller's claim, once the launch is
+// written and before its process starts, it ends the registration the record holds for the
+// session that launch resumes (EndControllerRegistration). Without it the record goes on naming
+// the process the launch replaced until the new one registers, and the controller locator gives
+// that process's session and plugin contract as the current controller's (dispatch://INFRA-2883
+// R7). It acts on the controller's claim alone: a worker's launch touches no controller record.
+//
+// It runs before the start because the launch resumes the same Oh My Pi session, so the new
+// process registers under the very session id the record names, and a mint after that
+// registration would end it (supervise.Machine.launchNow). A daemon that leaves the controller to
+// its operator wires no hook: its record names the operator's controller, which no launch of
+// this daemon replaces.
+func ControllerRelaunchHook(st ControllerStore, project string) func(context.Context, supervise.Claim) error {
+	return func(ctx context.Context, c supervise.Claim) error {
+		if !claim.IsController(c.Role, c.Issue, c.Tree) {
+			return nil
+		}
+		_, err := EndControllerRegistration(ctx, st, project, c.Session)
+		return err
+	}
+}
+
 // ControllerSecretRequest is `POST /legion/v1/controller/secret`'s body: the daemon API contract
 // `legion controller start` held the controller's plugin to before it asked (its own
 // DaemonAPIVersion, which its probe found the plugin's manifest declares). The daemon compares it
