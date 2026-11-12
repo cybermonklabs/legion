@@ -101,7 +101,7 @@ func TestARefusalAfterTheBoundStillTakesTheTaskBackUnread(t *testing.T) {
 	}
 }
 
-// The run, the assignment and the production check look a claim's worker is on, which is what a
+// The run, the phase entry and the production check look a claim's worker is on, which is what a
 // completion is attributed to and what says whether it is a phase completion or a report on the
 // check. The order matters in all three: a task whose turn is running answers over what the claim
 // was left serving, and a task the agent may have read answers only for a claim that has served

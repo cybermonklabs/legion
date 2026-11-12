@@ -18,13 +18,13 @@ import (
 // A phase entered again, whose start is written over a start row the claim has already taken a
 // task from, still reaches that worker.
 //
-// Two rules met and the task fell between them. record.Store.ReplaceOwedStart writes the later
-// task over the start an issue already owes and the row keeps its place in the waiting line,
-// while supervise.Machine.queue gives a claim nothing from a row it has already queued a task
-// from (supervise.Claim.DeliveredRows), so that a retry of a row never prompts the same work
-// twice. Keyed on the row alone, that second rule cannot tell a retry of the row from the row
-// rewritten with another phase entry's task: the start ran, the claim recognised the row, and
-// the new task was dropped with the row finishing clean.
+// Two rules met and the task fell between them. The start of a phase entered again stands in
+// the place of the start an issue already owes, so that the issue keeps its place in the
+// waiting line, while supervise.Machine.queue gives a claim nothing from a row it has already
+// queued a task from (supervise.Claim.DeliveredRows), so that a retry of a row never prompts
+// the same work twice. Keyed on the row alone, that second rule cannot tell a retry of the row
+// from the row rewritten with another phase entry's task: the start ran, the claim recognised
+// the row, and the new task was dropped with the row finishing clean.
 //
 // What that costs is a phase with no task and no sign of one. Nothing errored and no row was
 // left behind, so the state showed a working tree with a quiet worker; the claim was never given
@@ -42,9 +42,10 @@ import (
 // again, as a red or a sign-off enters one, and the transition writes its start through
 // workflow.StartOrOwe exactly as the engine does.
 //
-// The negative control is the fix reverted (record.Store.ReplaceOwedStart writing the payload
-// over the row in place): the start then finishes without giving the worker anything, which this
-// test reads at the claim's pending task.
+// The negative control is the fix reverted — the later task written over the owed row in
+// place, under its own id, as the daemon wrote it before a start became a row of its own
+// (record.Store.EnqueueStart): the start then finishes without giving the worker anything,
+// which this test reads at the claim's pending task.
 func TestAStartWrittenOverAnOwedRowStillReachesTheWorker(t *testing.T) {
 	const firstTask, nextTask = "Implement the plan.", "Implement it again. Reason: the checks went red."
 	const firstEntry, nextEntry int64 = 1, 2

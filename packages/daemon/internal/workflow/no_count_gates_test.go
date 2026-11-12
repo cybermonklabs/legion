@@ -19,10 +19,10 @@ import (
 const noGateMoves = 30
 
 // startWriteMark is when the issue's start row was last written: the number an insert of an
-// outbox row takes, which record.Store.ReplaceOwedStart's replacement of the start the issue
-// owes takes afresh with it. It is what tells the start one move wrote from the start of the
-// move before it, which it replaces while no lane has delivered it, the replacement carrying
-// the creation time that holds the issue's place in the waiting line.
+// outbox row takes, which the start record.Store.EnqueueStart writes in place of the one the
+// issue owes takes afresh with it. It is what tells the start one move wrote from the start of
+// the move before it, which it takes out while no lane has delivered it, carrying that row's
+// creation time, which holds the issue's place in the waiting line.
 func startWriteMark(t *testing.T, pool *pgxpool.Pool, id int64) int64 {
 	t.Helper()
 	var mark int64

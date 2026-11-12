@@ -199,7 +199,7 @@ func assertNotStranded(t *testing.T, pool *pgxpool.Pool, role claim.Role, token 
 // and nothing else of the issue, so one task is delivered however many transitions wrote it, and
 // that task is the last transition's. The row that carries it is of the later entry while the
 // claim has served only the earlier one, which is the pair api/handoff.go refuses a completion
-// on (internal/api's TestAStaleAssignmentsCompletionDoesNotTakeTheNextTestingPhases drives that
+// on (internal/api's TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases drives that
 // refusal through the route).
 func assertTheSlotDeliversOnce(t *testing.T, pool *pgxpool.Pool, role claim.Role, entry int64, task string, now time.Time) {
 	t.Helper()

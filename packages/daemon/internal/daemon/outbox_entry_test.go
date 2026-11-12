@@ -283,3 +283,64 @@ func TestAnAppendOnlyStartThatDeliversNothingRecordsTheEntryAsGiven(t *testing.T
 		t.Fatalf("the claim was given entry %d, want 2: the start that delivered nothing records the entry it carried", got.GivenEntry)
 	}
 }
+
+// A re-admission leaves the role's entry where it stood and takes the work of it away: the task
+// is the ended generation's and goes with that generation's handoffs (record.ClearGeneration,
+// which workflow's Adopt and enterChild run for each member), while the number stays, because it
+// counts the entries the role has been handed on this issue and nothing of a re-admission unhands
+// one (record.PhaseRow.Entry and EntryTask).
+//
+// What writes the work again is the promotion of the re-admitted tree's member
+// (workflow.Engine.StartPromotedWorker): it raises the entry, writes that entry's task beside the
+// number in the same transaction and writes the start that carries both, so the worker is started
+// under an entry above every entry a completion still in flight could name.
+func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *testing.T) {
+	ctx := context.Background()
+	rig := newOneStartRig(t)
+	rows := entryStartRows(t, rig.pool, rig.issue.Key)
+	if len(rows) != 1 || rows[0].request.Role != claim.RoleImplementer || rows[0].request.Entry != 1 {
+		t.Fatalf("the start rows after the planner's completion = %+v, want the implementer's one row of entry 1", rows)
+	}
+	before := rolePhaseRow(t, rig.pool, rig.issue.Key, claim.RoleImplementer)
+	if before.Entry != 1 || before.EntryTask != rows[0].request.Task || before.EntryRaisedAt.IsZero() {
+		t.Fatalf("the implementer's phases row = entry %d raised at %s with task %q, want entry 1 carrying the start's task %q: the case's own premise",
+			before.Entry, before.EntryRaisedAt, before.EntryTask, rows[0].request.Task)
+	}
+
+	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+		return record.NewStore().ClearGeneration(ctx, tx, rig.issue.Key, time.Now().UTC())
+	}); err != nil {
+		t.Fatalf("clear the generation the re-admission ends: %v", err)
+	}
+
+	readmitted := rolePhaseRow(t, rig.pool, rig.issue.Key, claim.RoleImplementer)
+	if readmitted.Entry != before.Entry || !readmitted.EntryRaisedAt.Equal(before.EntryRaisedAt) {
+		t.Fatalf("the implementer's phases row after the re-admission = entry %d raised at %s, want the entry %d raised at %s it stood on",
+			readmitted.Entry, readmitted.EntryRaisedAt, before.Entry, before.EntryRaisedAt)
+	}
+	if readmitted.EntryTask != "" {
+		t.Fatalf("the implementer's phases row still names the work %q of the generation that ended, want none: its promotion writes the task it is given",
+			readmitted.EntryTask)
+	}
+
+	issue := readIssue(t, rig.pool, rig.issue.Key)
+	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+		return entryEngine(t).StartPromotedWorker(ctx, tx, *issue, claim.RoleImplementer)
+	}); err != nil {
+		t.Fatalf("promote the re-admitted tree's implementer: %v", err)
+	}
+
+	promoted := rolePhaseRow(t, rig.pool, rig.issue.Key, claim.RoleImplementer)
+	if promoted.Entry != before.Entry+1 || promoted.EntryTask == "" {
+		t.Fatalf("the implementer's phases row after the promotion = entry %d with task %q, want entry %d carrying the work it is owed",
+			promoted.Entry, promoted.EntryTask, before.Entry+1)
+	}
+	// The promotion's start takes out the start the issue still owed, whose task the re-admission
+	// cleared, and writes its own in its place (record.Store.EnqueueStart), so one start stands
+	// and it is the one the phases row names.
+	rows = entryStartRows(t, rig.pool, rig.issue.Key)
+	if len(rows) != 1 || rows[0].request.Entry != promoted.Entry || rows[0].request.Task != promoted.EntryTask {
+		t.Fatalf("the start rows after the promotion = %+v, want the one row of entry %d carrying the task %q its phases row names",
+			rows, promoted.Entry, promoted.EntryTask)
+	}
+}

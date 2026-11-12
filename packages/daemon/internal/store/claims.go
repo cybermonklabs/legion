@@ -191,9 +191,9 @@ func (s *Store) ClaimStep(ctx context.Context, token claim.Token) (supervise.Ste
 // <> 'retired'` on the update — so a second write of a claim that is already retired leaves the
 // stop's own moment untouched. What reads it is admit's stopOutlivedStart, against the write
 // mark of a start row the issue owes: outbox rows take their numbers from that same sequence,
-// through the column's own default on every insert — the replacement of an owed start among
-// them (record.Store.ReplaceOwedStart) — and explicitly in ReplaceOutboxPayload's rewrite of a
-// ready_merge row, so one sequence numbers both sides.
+// through the column's own default on every insert — the start written in place of one an
+// issue already owed among them (record.Store.EnqueueStart) — and explicitly in
+// ReplaceOutboxPayload's rewrite of a ready_merge row, so one sequence numbers both sides.
 //
 // An upsert of a claim already in the table evaluates its insert's case too, since the row to
 // insert is built before the conflict is found, so a write of a retired claim takes a number

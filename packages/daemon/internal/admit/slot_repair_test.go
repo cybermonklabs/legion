@@ -556,13 +556,13 @@ func theOwedStart(t *testing.T, pool *pgxpool.Pool, key string) record.OwedStart
 // claims stop` hands the machine RequestStop and applies no fact, so no pass runs between the stop
 // and what follows and the mark the retirement takes is above the row the issue already owes. The
 // retry then reaches the workflow (api's retryStart, restartWorkedPhase, intake.RestartPhase,
-// workflow's restart and started), whose one write is StartOrOwe's, and that replaces the row the
-// issue already owes (record.Store.ReplaceOwedStart): the replacement keeps the created_at that
-// holds the issue's place in the waiting line, and takes a write mark of its own. Weighed by that
-// created_at, the retry's start would read as a row from before the stop and the pass would end
-// it — which costs the issue the line with nothing left to start its phase, the repair of a slot
-// passing over a retired claim on purpose (resumeSlottedWorkers) and the retry having already
-// answered its 202.
+// workflow's restart and started), whose one write is StartOrOwe's, and that takes out the row the
+// issue already owes and writes its own in its place (record.Store.EnqueueStart): the row written
+// keeps the created_at that holds the issue's place in the waiting line, and takes a write mark of
+// its own. Weighed by that created_at, the retry's start would read as a row from before the
+// stop and the pass would end it — which costs the issue the line with nothing left to start
+// its phase, the repair of a slot passing over a retired claim on purpose
+// (resumeSlottedWorkers) and the retry having already answered its 202.
 //
 // The fixture is the third group's own stopped worker, with the retry's write between the stop
 // and the pass.

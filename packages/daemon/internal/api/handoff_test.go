@@ -1641,7 +1641,7 @@ func TestACompletionFromATurnThatStartedLateNamesTheTaskTheWorkerHolds(t *testin
 // at all. Either way the refusal leaves the claim serving no run, and what becomes of a
 // completion arriving in whatever turn follows is decided by the task the claim still holds
 // rather than by the refusal: a task the route can place in the issue's current work — its own
-// generation and its own phase — carries the run and the assignment that completion is recorded
+// generation and its own phase — carries the run and the entry that completion is recorded
 // against, and a claim holding anything else is refused HANDOFF_NO_RUN. The two refused cases
 // here hold a task that names no phase, which places it in no phase's work; the third holds a
 // task of the issue's own generation and phase, and the worker that went on and did that phase's

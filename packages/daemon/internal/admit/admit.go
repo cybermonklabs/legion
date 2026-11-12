@@ -2340,8 +2340,8 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 // one sequence (store's putClaim, whose doc holds what that sequence orders and what it does
 // not): a row's write mark is the write that last set its payload, and the claim's is the write
 // that recorded its retirement. A creation time cannot stand in for it, because
-// record.Store.ReplaceOwedStart gives the start an issue already owes to a replacement carrying
-// that earlier row's creation time — so a start written after a stop can carry a creation time
+// record.Store.EnqueueStart writes the start an issue already owes as a row of its own carrying
+// the earlier row's creation time — so a start written after a stop can carry a creation time
 // from before it, which is exactly what `legion claims stop` and then `legion claims retry`,
 // with no admission pass between them, writes.
 func stopOutlivedStart(held *record.RoleClaim, owed record.OwedStart) bool {
