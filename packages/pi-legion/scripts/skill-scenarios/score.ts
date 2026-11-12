@@ -20,6 +20,10 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
+// The opening of the sentence a claim boot leaves when it stops its session, read from the
+// module that writes it (`stopAfterRegistration`): a rewording there would otherwise leave this
+// rig reading nothing and failing no test.
+import { CLAIM_BOOT_FAILED_OPENING } from "@legion/pi-shared/legion-claim-core";
 import { z } from "zod";
 // The gate's own names for its rules and the line its refusal opens with, read from the module
 // that writes them, so this rig scores what AskGate actually says. The rigs are not shipped
@@ -27,6 +31,9 @@ import { z } from "zod";
 // (`src/no-cross-import.test.ts`).
 import { RULE_NAMES, RULE_REFUSAL_OPENING } from "../../../pi-envoy/extensions/askgate/rules-check";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
+// How gh reads a call's verb, its body and the two review endpoints, in the module the gh
+// stand-in answers that same call by (gh-call.ts).
+import { flagValue, isPost, reviewsRoute, sentBody, submitsReview } from "./gh-call";
 import {
   CheckableFile,
   CheckableOutput,
@@ -42,6 +49,9 @@ import {
   SharedRunsFile,
 } from "./judge-prompts";
 import { byCreatedAt, parseInstant } from "./production-dispatch";
+// The calls record's name and the line each record is opened with, read from the module the
+// stand-ins write that line by (run-records.ts).
+import { CALLS, Opened } from "./run-records";
 import {
   CREATED,
   SessionEntry,
@@ -160,7 +170,6 @@ function lines(file: string): string[] {
     .split("\n")
     .filter((line) => line.trim() !== "");
 }
-const CALLS = "calls.jsonl";
 const PUSHES = "pushes.log";
 const DAEMON = "daemon.log";
 /** The three records a worker run leaves of what it did, each named by what it holds: the gh
@@ -175,14 +184,12 @@ const RECORDS: Record<string, string> = {
   [PUSHES]: "the pushes its remote took",
   [DAEMON]: "its daemon stand-in's answers",
 };
-/** The line the writer of a record opens it with: the gh stand-in's, written the first time it
- * is invoked, and the daemon stand-in's, written when it starts listening, as
- * record-publishes.ts writes its `recording` line. It says its writer was there and records no
- * act of the run, so no score reads it and every reader below passes it over: a record holding
- * it alone is the run that called nothing or moved nothing, where a record nothing wrote at all
- * is the rig error. */
-const Opened = z.looseObject({ at: z.string(), opened: z.string() });
-/** Whether this line is that opening line. A record whose lines are no JSON (the push log, which
+/** Whether this line is the line the writer of a record opened it with (`openingLine`, written
+ * by the gh stand-in the first time it is invoked and by the daemon stand-in when it starts
+ * listening, as record-publishes.ts writes its `recording` line). It says its writer was there
+ * and records no act of the run, so no score reads it and every reader below passes it over: a
+ * record holding it alone is the run that called nothing or moved nothing, where a record
+ * nothing wrote at all is the rig error. A record whose lines are no JSON (the push log, which
  * its remote's hook writes) holds none. */
 function opening(line: string): boolean {
   if (!line.startsWith("{")) return false;
@@ -931,7 +938,7 @@ const REVIEW_FLAGS: Record<string, string> = {
 };
 /** One review a run submitted, as the score reads it: the verdict, the head it names, "" for a
  * route that carries none, the file of each inline comment on it, and whether the call that
- * carried it submitted a pending review the round had already created (`submitRoute`). */
+ * carried it submitted a pending review the round had already created (`submitsReview`). */
 type Submission = {
   at: string;
   event: string;
@@ -939,150 +946,6 @@ type Submission = {
   comments: string[];
   submits: boolean;
 };
-/** Whether `arg` is the reviews route of `repo`'s pull request: `repos/<owner>/<repo>/pulls/<n>/
- * reviews`, with or without the leading slash `gh api` takes either way, and of that repository
- * alone. A route read without the repository counts a review submitted anywhere as this round's
- * verdict, and a review of another repository's pull request approves nothing of this one: the
- * deep pass of 2026-11-10 moved a recorded submission to
- * `repos/sjawhar/legion-smoke/pulls/1/reviews` and the run still scored one. The stand-in matches
- * its routes on the pull request's number alone, so it answers such a call as GitHub would answer
- * the right one, and the agent is never told: six of the 40 runs recorded on 2026-11-10
- * submitted to a repository their world does not name, and this rule read each of those reviews
- * as none. Where those names came from, and why every part of the rig now reads the world's
- * own: rig.sh's worker world comment. */
-function reviewsRoute(arg: string, repo: string): boolean {
-  return /^\/?repos\/(.+)\/pulls\/\d+\/reviews$/.exec(arg)?.[1] === repo;
-}
-/** Whether `arg` submits a pending review of `repo`'s pull request:
- * `repos/<owner>/<repo>/pulls/<n>/reviews/<id>/events`, the second call of the two-step route
- * GitHub documents beside the one-step one — a POST to `…/reviews` whose body names no event
- * creates a pending review, and this call submits it with the verdict. The gh stand-in serves
- * both, the create from the world's route and this call from the review's own state, which is
- * the stand-in's own answer and no world's (gh-standin.ts's `reviewSubmission`), so a round can
- * take that route and be told nothing. A reader of the create alone scored such a round
- * `event=""`, which prints as
- * `event=none`: the row of a round that submitted nothing, which is the one thing that round
- * did not do. None of the 40 runs recorded on 2026-11-10 took it; the reviewer's prompt
- * prescribes the one-step POST. */
-function submitRoute(arg: string, repo: string): boolean {
-  return /^\/?repos\/(.+)\/pulls\/\d+\/reviews\/\d+\/events$/.exec(arg)?.[1] === repo;
-}
-/** The text `flag` carries in `arg`, or undefined when `arg` is not that flag: "" where the flag
- * stands alone and its value is the argument after it, and the value where it is written against
- * the flag — `--flag=value`, and `-Xvalue` for a short flag, both of which gh takes. */
-function written(arg: string, flag: string): string | undefined {
-  if (arg === flag) return "";
-  if (arg.startsWith(`${flag}=`)) return arg.slice(flag.length + 1);
-  return !flag.startsWith("--") && arg.startsWith(flag) && arg.length > flag.length
-    ? arg.slice(flag.length)
-    : undefined;
-}
-/** Whether `argv` carries any of `flags`, in any of the spellings gh takes it in (`written`). */
-function carries(argv: readonly string[], flags: readonly string[]): boolean {
-  return argv.some((arg) => flags.some((flag) => written(arg, flag) !== undefined));
-}
-/** The value the last of `flags` carries in `argv`, or undefined when the call names none of
- * them: the argument after the flag, which is how gh takes `--method GET`, `-X GET`,
- * `-R owner/repo` and `--repo owner/repo`, or the value written against the flag itself
- * (`--method=GET`, `-XGET`, `--repo=owner/repo`), which gh takes just as well.
- *
- * The last and not the first, since that is what gh does with a flag written twice: its flag
- * parser sets the value each time it reads one, so `gh pr review -R other/x -R example/widgets`
- * reviews example/widgets, and a reader of the first took such a call for a review of a
- * repository the round never touched. */
-export function flagValue(argv: readonly string[], flags: readonly string[]): string | undefined {
-  let last: string | undefined;
-  for (const [index, arg] of argv.entries())
-    for (const flag of flags) {
-      const value = written(arg, flag);
-      if (value !== undefined) last = value === "" ? argv[index + 1] : value;
-    }
-  return last;
-}
-/** The flags gh names a call's verb with, the flags it takes one field by, and those two with
- * the flag it reads a whole body from: the body of a call is its `--input` where it names one,
- * and its fields otherwise (`sentBody`). */
-const METHOD_FLAGS = ["-X", "--method"];
-const FIELD_FLAGS = ["-f", "-F", "--field", "--raw-field"];
-const BODY_FLAGS = [...FIELD_FLAGS, "--input"];
-/** The verb gh sends `argv` with: the method it names when it names one — `-X POST`, `-XPOST`,
- * `--method POST` or `--method=POST`, at any position and in any case, as gh reads it, and the
- * last of them where it names more than one — and otherwise `POST` when it carries a body and
- * `GET` when it carries none, since gh sends a call with a field or an input as a POST and one
- * with neither as a GET.
- *
- * The gh stand-in reads the call it is about to answer with this same function, for its own
- * answers and for the route it chooses (gh-standin.ts), so one spelling of one verb is read one
- * way by the world and by the score: a stand-in that answered a call as a submission the score
- * then read as a read of the route would leave a submission no row counts, and the other way
- * round would count one the world never made. */
-export function methodOf(argv: readonly string[]): string {
-  if (carries(argv, METHOD_FLAGS)) return (flagValue(argv, METHOD_FLAGS) ?? "").toUpperCase();
-  return carries(argv, BODY_FLAGS) ? "POST" : "GET";
-}
-/** Whether `argv` is a POST, which is the call that submits something rather than reading it
- * (`methodOf`). */
-export function isPost(argv: readonly string[]): boolean {
-  return methodOf(argv) === "POST";
-}
-/** Each field `argv` carries, as the key and the value its `key=value` names. A `-F` whose value
- * the stand-in read out of a file is recorded with that file's text in its place
- * (gh-standin.ts), so what is read here is what gh sent. */
-function fieldsOf(argv: readonly string[]): Map<string, string> {
-  const fields = new Map<string, string>();
-  for (const [index, arg] of argv.entries()) {
-    const written_ = FIELD_FLAGS.map((flag) => written(arg, flag)).find(
-      (value) => value !== undefined
-    );
-    if (written_ === undefined) continue;
-    const pair = written_ === "" ? argv[index + 1] : written_;
-    if (pair === undefined) continue;
-    const [key = "", ...value] = pair.split("=");
-    fields.set(key, value.join("="));
-  }
-  return fields;
-}
-/** The JSON body `call` sent, or undefined when it sent none: the object `--input <file>` holds
- * (the stand-in records the file it read) or `--input -` (its stdin), and the fields the call
- * carries where it names no `--input` at all.
- *
- * The two are never merged, since gh does not merge them: with `--input`, `gh api --help` says
- * the field flags go to the query string, so `--input r.json -f event=APPROVE` sends the file
- * as the body and `event=APPROVE` as a query parameter. A reader that merged them counted that
- * call an APPROVE where GitHub left the review pending — a false pass — and the gh stand-in,
- * reading the same create through this function, recorded no pending review for it and refused
- * the submit that followed.
- *
- * A body that is not JSON, or JSON that is no object, holds nothing this can read: the call did
- * send one, and the row says what the submission holds rather than making a rig error of a
- * round whose verdict is known. An `--input` whose text the record does not hold is read the
- * same way.
- *
- * The gh stand-in reads a create's body through this same function (gh-standin.ts's
- * `pendingReview`), since a create the world read as pending and the score read as a verdict —
- * or the other way round — is a run scored against a world that answered it something else. */
-export function sentBody(call: {
-  argv: readonly string[];
-  stdin?: string | undefined;
-  files?: Record<string, string> | undefined;
-}): Record<string, unknown> | undefined {
-  const input = flagValue(call.argv, ["--input"]);
-  const text = input === undefined ? undefined : input === "-" ? call.stdin : call.files?.[input];
-  const fields = fieldsOf(call.argv);
-  if (input === undefined && fields.size === 0) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = text === undefined ? {} : JSON.parse(text);
-  } catch {
-    parsed = {};
-  }
-  const body: Record<string, unknown> =
-    typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? { ...(parsed as Record<string, unknown>) }
-      : {};
-  if (input === undefined) for (const [key, value] of fields) body[key] = value;
-  return body;
-}
 /** The review `call` submitted, or undefined when it submitted none: the
  * `gh api --method POST repos/{owner}/{repo}/pulls/{n}/reviews` the reviewer's prompt prescribes,
  * on the run's own repository and no other (`reviewsRoute`),
@@ -1090,7 +953,7 @@ export function sentBody(call: {
  * `--input -` (its stdin) or its fields, read as the stand-in reads one (`sentBody`); or a
  * `gh pr review` of that same repository, which carries its event as a flag and can name
  * neither the head nor an inline
- * comment; or the call that submits a pending review (`submitRoute`), whose body carries the
+ * comment; or the call that submits a pending review (`submitsReview`), whose body carries the
  * verdict and whose create carries the rest (`reviewsIn`). A call on the reviews route that
  * carries no body submits nothing here: `gh api repos/…/pulls/<n>/reviews` is the read of the
  * reviews already there, which a round often makes after it submitted, and a POST that sends
@@ -1121,7 +984,7 @@ function reviewOf(call: z.infer<typeof Call>, repo: string): Submission | undefi
   // read to tell an explicit GET — a read of the route — from a submission, by the one reader
   // the gh stand-in answers that call with (`isPost`).
   if (call.argv[0] !== "api" || !isPost(call.argv)) return undefined;
-  const submits = call.argv.some((arg) => submitRoute(arg, repo));
+  const submits = call.argv.some((arg) => submitsReview(arg, repo) !== undefined);
   if (!submits && !call.argv.some((arg) => reviewsRoute(arg, repo))) return undefined;
   const body = sentBody(call);
   if (body === undefined) return undefined;
@@ -1458,11 +1321,19 @@ function namesHead(sha: string, named: string): boolean {
 const CONTRACT_REFUSED =
   /([A-Z]+ \/legion\/\S+) answered \d+ with a body the daemon API contract does not describe: ([^"\\\n]+)/;
 /** The sentence the claim boot leaves in a half's own output when a session that registered
- * could not finish booting: `claim boot failed …`, naming the step, the daemon it dialled and
- * why (`stopAfterRegistration` in `packages/pi-shared/src/legion-claim-core.ts`). The agent then
+ * could not finish booting, or undefined when `text` holds none: the line opening
+ * `CLAIM_BOOT_FAILED_OPENING`, which names the step, the daemon it dialled and why
+ * (`stopAfterRegistration` in `packages/pi-shared/src/legion-claim-core.ts`). The agent then
  * exits so the daemon would launch it again, which no run of this rig does, so the half is gone
- * from the middle of the run (`unscored`). */
-const CLAIM_BOOT_FAILED = /claim boot failed [^\n]*/;
+ * from the middle of the run (`unscored`). The opening is imported from the module that writes
+ * it rather than written again here, since a rewording there would otherwise leave this reading
+ * nothing with no test failing. */
+function claimBootFailure(text: string): string | undefined {
+  const opened = text.indexOf(CLAIM_BOOT_FAILED_OPENING);
+  if (opened < 0) return undefined;
+  const ended = text.indexOf("\n", opened);
+  return ended < 0 ? text.slice(opened) : text.slice(opened, ended);
+}
 /** Every word of a transcript: each text part of each message, the tool results among them. */
 function transcriptText(entries: SessionEntry[]): string {
   return entries
@@ -4296,7 +4167,7 @@ function lastDaemonRequest(runDir: string): string | undefined {
  *   - it never finished: out.txt has no `exit=` line;
  *   - a half of it died in its claim boot: it registered with the daemon and could not finish
  *     the boot, and the pane then exited so the daemon would launch it again, which no run of
- *     this rig does (CLAIM_BOOT_FAILED). The half is gone from the middle of the run, so what
+ *     this rig does (claimBootFailure). The half is gone from the middle of the run, so what
  *     it had done by then answers nothing the scenario asks of it;
  *   - its agent got no model turn: it left no transcript, or one with no assistant message, as when
  *     the profile's gateway key command ran past its budget. The key command's own record of each
@@ -4375,9 +4246,9 @@ function unscored(
   // by its own output file, the sentence it left, and when the run last reached its daemon,
   // which is where a reader of the rig looks next.
   for (const [file, text] of outputs(runDir)) {
-    const failed = CLAIM_BOOT_FAILED.exec(text);
-    if (failed !== null)
-      return `the agent of <run>/${file} died in its claim boot, so nothing it did is its own behaviour: ${failed[0]} (the run's last recorded daemon request: ${lastDaemonRequest(runDir) ?? "none"})`;
+    const failed = claimBootFailure(text);
+    if (failed !== undefined)
+      return `the agent of <run>/${file} died in its claim boot, so nothing it did is its own behaviour: ${failed} (the run's last recorded daemon request: ${lastDaemonRequest(runDir) ?? "none"})`;
   }
   const entries = session(runDir);
   if (!entries.some((entry) => entry.message?.role === "assistant"))

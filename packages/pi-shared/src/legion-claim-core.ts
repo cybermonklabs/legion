@@ -169,13 +169,38 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
   return { claimed: claimRoleAtFirstTurn(host, claim.claimToken, firstTurn) };
 }
 
+/** The opening of the sentence below, which the skill-scenario rig reads a stopped half's own
+ * output for (`scripts/skill-scenarios/score.ts`'s `unscored`, telling an agent that was stopped
+ * from one that chose). The rig imports this constant rather than writing the words again: a
+ * rewording here would otherwise turn that reading off with no test failing anywhere. */
+export const CLAIM_BOOT_FAILED_OPENING = "claim boot failed at ";
+
+/** `endpoint` with nothing of a credential in it: its scheme, its host and its port, and no
+ * userinfo, path, query or fragment. A `daemon_url` may carry userinfo — the daemon's own
+ * `baseURL` refuses a query and a fragment and nothing else
+ * (`packages/daemon/internal/config/config.go`) — and the line below goes to the pane's stderr,
+ * where an operator and every later reader of the log see it, so the address is masked as the
+ * daemon masks that same setting wherever it shows it (`internal/api/settings.go`'s
+ * `endpointOf`). An address that is no URL is reported in the daemon's own word for one,
+ * `xxxxx`, since printing it as it stands is what this exists to stop. */
+function addressOf(endpoint: string): string {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return "xxxxx";
+  }
+  return url.host === "" ? "xxxxx" : `${url.protocol}//${url.host}`;
+}
+
 /** The one path every failure after a registration takes, wherever it happens: the boot's own
  * steps and the deferred role claim, which runs after the boot has settled, report it in the
  * same sentence and stop the session, since neither changes on retry. The sentence names `step`
  * because one sentence over four of them leaves a reader of the log unable to say which stopped
  * the session: six runs of 2026-11-11 reported `ECONNREFUSED` with no step in the line, and
  * whether the refused dial was the daemon's or Envoy's could be read from nothing. It names the
- * daemon the registration was made with too, the address every step of the boot itself dials;
+ * daemon the registration was made with too, the address every step of the boot itself dials,
+ * masked to its scheme, host and port (`addressOf`);
  * the Envoy listener the role claim dials is the host's own and this module never sees it, so
  * the step is what tells the two addresses apart. */
 function stopAfterRegistration(
@@ -185,7 +210,7 @@ function stopAfterRegistration(
   error: unknown
 ): void {
   host.log(
-    `claim boot failed at ${step} after claims/register registered ${role} with the daemon at ${host.daemon.endpoint}; ${host.stopping}: ${messageFor(error)}`
+    `${CLAIM_BOOT_FAILED_OPENING}${step} after claims/register registered ${role} with the daemon at ${addressOf(host.daemon.endpoint)}; ${host.stopping}: ${messageFor(error)}`
   );
   host.stop();
 }

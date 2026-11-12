@@ -7,12 +7,34 @@
  * table has not always had the same name; its comment says so. `workerPane` builds a phase
  * worker's whole pane environment over it.
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { LegionRole } from "@legion/contracts";
 import { DEFAULT_ENVOY_URL } from "@legion/envoy-client/envoy-settings";
 import { sessionConfigFile, sessionEnvoySettings } from "@legion/envoy-client/session-settings";
+import { z } from "zod";
+
+/** The part of rig.sh's <run>/world.json the pane and the daemon stand-in each read: the
+ * repository the world is on and the branch its pull request is open against, which the record
+ * the stand-in answers names and the pane's own addressing names. Neither has a default, here or
+ * in the gh stand-in that reads the same file: fixture_write writes both into every world it
+ * builds, so a world missing one is a world no part of the run can serve. */
+const World = z.looseObject({ repo: z.string(), base: z.string() });
+
+/** The world `runDir` holds, read here for every program of a run that needs it rather than by
+ * each of them: the pane composer's caller (worker-pane.ts) and the daemon stand-in read the one
+ * world, and two readings of it are two worlds. A file that is no world ends the program with 2,
+ * naming it and `program`, the caller's own name, since a reader of the run's output has to know
+ * which program stopped. */
+export function worldOf(runDir: string, program: string): z.infer<typeof World> {
+  const read = World.safeParse(
+    JSON.parse(readFileSync(path.join(runDir, "world.json"), "utf8")) as unknown
+  );
+  if (read.success) return read.data;
+  console.error(`${program}: ${runDir}/world.json is no world: ${read.error.message}`);
+  process.exit(2);
+}
 
 /** This checkout's daemon module, the one the rig reads unless a run names another checkout's. */
 export const DAEMON_MODULE = path.resolve(import.meta.dir, "../../../daemon");

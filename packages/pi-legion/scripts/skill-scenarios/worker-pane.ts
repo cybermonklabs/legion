@@ -10,18 +10,12 @@
 //                  <checkout>
 //
 // The repository the pane's addressing names and the branch it gives as the default are the run's
-// own world's, read from <run dir>/world.json as the gh and daemon stand-ins read them (rig.sh's
-// worker world comment).
+// own world's, read from <run dir>/world.json through the one reader the daemon stand-in reads it
+// with (daemon-pane.ts's `worldOf`; rig.sh's worker world comment).
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { isLegionRole } from "@legion/contracts";
-import { z } from "zod";
-import { workerPane } from "./daemon-pane";
-
-/** The part of rig.sh's <run>/world.json this reads: the repository the world is on and the
- * branch its pull request is open against. Neither has a default, here or in the stand-ins that
- * read the same file: fixture_write writes both into every world it builds. */
-const World = z.looseObject({ repo: z.string(), base: z.string() });
+import { workerPane, worldOf } from "./daemon-pane";
 
 const [runDir, baseEnvFile, port, profile, project, issue, role, checkout] = Bun.argv.slice(2);
 if (
@@ -53,17 +47,11 @@ for (const line of readFileSync(baseEnvFile, "utf8").split("\n")) {
   }
   base[line.slice(0, equals)] = line.slice(equals + 1);
 }
-const world = World.safeParse(
-  JSON.parse(readFileSync(path.join(runDir, "world.json"), "utf8")) as unknown
-);
-if (!world.success) {
-  console.error(`worker-pane.ts: ${runDir}/world.json is no world: ${world.error.message}`);
-  process.exit(2);
-}
+const world = worldOf(runDir, "worker-pane.ts");
 const pane = workerPane(
   { rig: runDir, port: Number(port), profile },
   base,
-  { project, issue, role, repository: world.data.repo, defaultBranch: world.data.base },
+  { project, issue, role, repository: world.repo, defaultBranch: world.base },
   // The pane's real gh is the recording stand-in rig.sh's standins writes to $R/bin/gh, named as
   // an operator names one with LEGION_GH_PATH: it is a script, which the daemon's own resolution
   // on PATH refuses.

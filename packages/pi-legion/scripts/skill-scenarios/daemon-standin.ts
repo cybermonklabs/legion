@@ -62,7 +62,7 @@
  * pick).
  */
 import { randomUUID } from "node:crypto";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { isLegionRole, roleToken } from "@legion/contracts";
 import {
@@ -71,8 +71,8 @@ import {
   LegionPhaseBackwardRequest,
   LegionStateResponse,
 } from "@legion/contracts/legion-api";
-import { z } from "zod";
-import { DAEMON_MODULE, runDaemonPane } from "./daemon-pane";
+import { DAEMON_MODULE, runDaemonPane, worldOf } from "./daemon-pane";
+import { openingLine } from "./run-records";
 
 const GRANT_TTL_MS = 60_000;
 const [portArg, logFile, bootTokenFile, project, issue, runDir, role, phaseArg = ""] =
@@ -95,18 +95,11 @@ if (!isLegionRole(role)) {
   console.error(`${role} is not a Legion role`);
   process.exit(2);
 }
-/** The part of rig.sh's <run>/world.json this stand-in answers a `read_record` out of: the
- * repository the world is on and the branch its pull request is open against, which the
- * record's `repo` and `defaultBranch` are. Neither has a default, here or in the gh stand-in
- * that reads the same file: fixture_write writes both into every world it builds, so a world
- * missing one is a world this cannot serve. */
-const World = z.looseObject({ repo: z.string(), base: z.string() });
-const world = World.safeParse(JSON.parse(readFileSync(`${runDir}/world.json`, "utf8")) as unknown);
-if (!world.success) {
-  console.error(`daemon-standin: ${runDir}/world.json is no world: ${world.error.message}`);
-  process.exit(2);
-}
-const { repo, base } = world.data;
+/** The run's world, read through the one reader every program of the run reads it with
+ * (daemon-pane.ts's `worldOf`): this stand-in answers a `read_record` out of it, the record's
+ * `repo` and `defaultBranch` being the repository the world is on and the branch its pull
+ * request is open against. */
+const { repo, base } = worldOf(runDir, "daemon-standin");
 /** The owner of the run's repository, which is the one owner the project maps. */
 const [REPO_OWNER = ""] = repo.split("/");
 if (REPO_OWNER === "" || !repo.includes("/")) {
@@ -132,13 +125,30 @@ const PHASE = phaseArg === "" ? ROLE_PHASE : phaseArg;
  * message, read from the daemon's code at boot (daemon-pane.go's `refusal`) rather than written
  * here: the skill has the worker quote that sentence to its architect. It is read only for a
  * run started in a phase its role does not work, which is the only run that can serve it, and a
- * daemon whose refusal this cannot read fails the boot rather than the completion. */
-const NOT_CURRENT_PHASE =
-  PHASE === ROLE_PHASE
-    ? undefined
-    : runDaemonPane(DAEMON_MODULE, ["refusal", "not-current-phase", role, PHASE, issue]).split(
-        "\n"
-      );
+ * daemon whose refusal this cannot read fails the boot rather than the completion — including
+ * one that prints anything but the two lines, since a refusal half read is a sentence the
+ * daemon never sends. */
+interface Refusal {
+  readonly code: string;
+  readonly message: string;
+}
+function refusalAtBoot(phase: string): Refusal {
+  const [code, message] = runDaemonPane(DAEMON_MODULE, [
+    "refusal",
+    "not-current-phase",
+    role,
+    phase,
+    issue,
+  ]).split("\n");
+  if (code === undefined || code === "" || message === undefined || message === "") {
+    console.error(
+      `daemon-standin: daemon-pane printed no code and message for the refusal of ${role}'s completion in ${phase}`
+    );
+    process.exit(2);
+  }
+  return { code, message };
+}
+const NOT_CURRENT_PHASE = PHASE === ROLE_PHASE ? undefined : refusalAtBoot(PHASE);
 /** `GET /legion/v1/state`: the one issue the worker holds, standing in the phase this stand-in
  * was started for, on the run's own world: its repository and the branch its pull request is
  * open against, both read from that world and written nowhere else here. A record that named
@@ -332,8 +342,7 @@ function handle(path: string, body: unknown): { response: Response; mintedGrantI
       // the daemon's own, read from its code at boot (NOT_CURRENT_PHASE), because the skill has
       // the worker quote them to its architect.
       if (NOT_CURRENT_PHASE !== undefined) {
-        const [code = "", message = ""] = NOT_CURRENT_PHASE;
-        return { response: failure(409, code, message) };
+        return { response: failure(409, NOT_CURRENT_PHASE.code, NOT_CURRENT_PHASE.message) };
       }
       const { handoffId, handoffVersion } = parsed.data;
       if (HANDOFF_WORD !== "" && (handoffId === undefined || handoffVersion === undefined)) {
@@ -421,7 +430,8 @@ const server = Bun.serve({
 // else — the reading "no move" — while a log nothing wrote is absent and is the rig error it
 // has always been (score.ts's `unscored`). It is written synchronously, between the socket
 // opening and the first handler turn, so it is the record's first line whatever arrives next.
-/** The record's own name, the one the score knows it by (score.ts's RECORDS). */
+/** The record's own name, the one the score knows it by (score.ts's RECORDS). The line itself
+ * is the one every record of a run is opened with (run-records.ts's `openingLine`). */
 const record = logFile.slice(logFile.lastIndexOf("/") + 1);
-appendFileSync(logFile, `${JSON.stringify({ at: new Date().toISOString(), opened: record })}\n`);
+appendFileSync(logFile, openingLine(record));
 console.log(`listening on http://127.0.0.1:${server.port}`);

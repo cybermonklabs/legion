@@ -214,6 +214,28 @@ test("a create's --input is its whole body, and the fields beside it are the que
   });
 });
 
+// `--input=<file>` is the same flag written against its value, which gh takes as it takes
+// `--input <file>`. Catches: a recorder that reads its flags by exact match, which stored the
+// file of the second spelling and not of the first, so the body reader found nothing under the
+// name the call gave and read this create as one that named no head — a pending review at the
+// pull request's own tip rather than at the commit the body names, and a submit answered with
+// an approval at a head the reviewer never approved.
+test("a create whose --input is written against the flag is read from that file too", () => {
+  const { dir, second } = runDir({ fixture: true });
+  const body = path.join(dir, "pending.json");
+  // A commit the pull request's branch does not point at, so a create read as one that named no
+  // head is answered the tip instead and this row fails.
+  writeFileSync(body, JSON.stringify({ commit_id: second, body: "two findings" }));
+  expect(apiPost(dir, REVIEWS, `--input=${body}`).exitCode).toBe(0);
+  const submit = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
+  expect(submit.exitCode).toBe(0);
+  expect(JSON.parse(submit.stdout.toString())).toEqual({
+    id: 6001,
+    commit_id: second,
+    state: "APPROVED",
+  });
+});
+
 // A create that sends no body at all creates a review with nothing in it on GitHub, which is a
 // pending review, and the call that submits it is answered 200. Catches: a stand-in that reads
 // a bodyless create as no create, which recorded no pending review for it and refused that

@@ -31,11 +31,21 @@
 //   gh-standin.ts --open
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { z } from "zod";
-// How a call's verb and its body are read is the score's own reader, imported rather than
-// written again here: a call this stand-in answered as a submission and the score read as a
-// read of the route — or the other way round — is a run scored against a world that answered it
-// something else.
-import { isPost, methodOf, sentBody } from "./score";
+// How a call's verb, its flags and its body are read, and the two review endpoints: one reader
+// for this stand-in and for the score, imported rather than written again here. A call this
+// stand-in answered as a submission and the score read as a read of the route — or the other
+// way round — is a run scored against a world that answered it something else.
+import {
+  FIELD_FLAGS,
+  flagValue,
+  isPost,
+  methodOf,
+  reviewsRoute,
+  sentBody,
+  submitsReview,
+  valueAt,
+} from "./gh-call";
+import { CALLS, openingLine } from "./run-records";
 
 /** rig.sh's worker_fixture writes each route as {match, methods?, stdout?, stderr?, exit?}.
  * `methods` is the verbs that route answers, where it answers some and not others: the create of
@@ -68,14 +78,14 @@ if (!run) {
   console.error("gh-standin: SKILL_SCENARIO_RUN is unset");
   process.exit(2);
 }
+/** This run's record of every call this stand-in answered, which it opens and reads back (the
+ * pending review the run left) and the score reads after it. */
+const RECORD = `${run}/${CALLS}`;
 /** Opens the record with this stand-in's own line, which says it was there, and does nothing to
  * a record that is already open. */
 function openRecord(): void {
-  if (existsSync(`${run}/calls.jsonl`)) return;
-  appendFileSync(
-    `${run}/calls.jsonl`,
-    `${JSON.stringify({ at: new Date().toISOString(), opened: "calls.jsonl" })}\n`
-  );
+  if (existsSync(RECORD)) return;
+  appendFileSync(RECORD, openingLine(CALLS));
 }
 const invocation = Bun.argv.slice(2);
 // `--open` is rig.sh asking for that line alone, before any agent of the run has made a call:
@@ -114,27 +124,39 @@ const prPatch =
 let body: string | undefined;
 /** The body this call left the pull request with, once the routes serve it. */
 let kept: string | undefined;
-for (let index = 0; index < args.length; index += 1) {
-  const arg = args[index] ?? "";
-  const next = args[index + 1];
-  if (!next) continue;
-  if (prEdit && (arg === "-b" || arg === "--body")) body = next;
-  else if (prEdit && (arg === "-F" || arg === "--body-file")) {
-    files[next] = await readSource(next);
-    body = files[next];
-  } else if (arg === "--input" || arg === "--body-file") files[next] = await readSource(next);
-  else if (arg === "-F" || arg === "--field" || arg === "-f" || arg === "--raw-field") {
-    const [key = "", ...rest] = next.split("=");
+/** The flags each file and each field is read by: `gh pr edit` takes the body's text by
+ * `-b/--body` and its file by `-F/--body-file`, while the `-F` of a `gh api` call is a field
+ * whose `@path` value is read out of a file, and `--input`/`--body-file` name a whole body's
+ * file. Each is read in every spelling gh takes it in (`valueAt`), the spellings the body
+ * reader reads too: read by exact match, an `--input=<file>` written against the flag was never
+ * stored here, and `sentBody` then read the create that named it as a body of nothing. */
+const PR_BODY_FLAGS = ["-b", "--body"];
+const PR_BODY_FILE_FLAGS = ["-F", "--body-file"];
+const INPUT_FLAGS = ["--input", "--body-file"];
+const FILE_FIELD_FLAGS = ["-F", "--field"];
+for (const index of args.keys()) {
+  const edited = prEdit ? valueAt(args, index, PR_BODY_FLAGS) : undefined;
+  const bodyFile = prEdit ? valueAt(args, index, PR_BODY_FILE_FLAGS) : undefined;
+  const source = valueAt(args, index, INPUT_FLAGS);
+  const field = valueAt(args, index, FIELD_FLAGS);
+  // A flag with nothing after it, and one written against an empty value, names no file and no
+  // field.
+  if (edited) body = edited;
+  else if (bodyFile) {
+    files[bodyFile] = await readSource(bodyFile);
+    body = files[bodyFile];
+  } else if (source) files[source] = await readSource(source);
+  else if (field) {
+    const [key = "", ...rest] = field.split("=");
     let value = rest.join("=");
-    if ((arg === "-F" || arg === "--field") && value.startsWith("@")) {
+    if (valueAt(args, index, FILE_FIELD_FLAGS) !== undefined && value.startsWith("@")) {
       files[value.slice(1)] = await readSource(value.slice(1));
       value = files[value.slice(1)] ?? "";
     }
     if (prPatch && key === "body") body = value;
   }
 }
-const inputIndex = args.indexOf("--input");
-const input = inputIndex >= 0 ? args[inputIndex + 1] : undefined;
+const input = flagValue(args, ["--input"]);
 if (prPatch && input !== undefined) {
   const parsed: unknown = JSON.parse(files[input] ?? "null");
   if (
@@ -161,7 +183,7 @@ const route = routes.find(
 function exit(status: number): never {
   const by = process.env.SKILL_SCENARIO_AGENT;
   appendFileSync(
-    `${run}/calls.jsonl`,
+    RECORD,
     `${JSON.stringify({ at, as, by, argv: args, files, stdin, route: route?.match ?? null, body: kept, exit: status })}\n`
   );
   process.exit(status);
@@ -219,23 +241,12 @@ function branchDiff(nameOnly: boolean): string | undefined {
  * append. A ref may carry dots, and `...` is the separator, so each side is everything up to the
  * last `...`. */
 const COMPARE = /^\/?repos\/[^/]+\/[^/]+\/compare\/([^?]+)\.\.\.([^?]+)(?:\?.*)?$/;
-/** GitHub's submit endpoint of one review, and the create endpoint of a review of one pull
- * request: `…/pulls/<n>/reviews/<id>/events` and `…/pulls/<n>/reviews`. Each carries the
- * repository it is of, which is read against the run's own world's (`worldOf`): a review of
- * another repository's pull request is no review of this one, and answering such a call from this
- * record would tell a round that posted to `other/widgets` that this world's review was
- * submitted. */
-const SUBMIT_REVIEW = /^\/?repos\/(.+)\/pulls\/\d+\/reviews\/(\d+)\/events$/;
-const CREATE_REVIEW = /^\/?repos\/(.+)\/pulls\/\d+\/reviews$/;
-/** The review id `arg` submits on `repo`'s pull request, or undefined when it submits none. */
-function submitsReview(arg: string, repo: string): string | undefined {
-  const named = SUBMIT_REVIEW.exec(arg);
-  return named?.[1] === repo ? named[2] : undefined;
-}
-/** Whether `arg` creates a review of `repo`'s pull request. */
-function createsReview(arg: string, repo: string): boolean {
-  return CREATE_REVIEW.exec(arg)?.[1] === repo;
-}
+// The submit endpoint of one review and the reviews route of one pull request —
+// `…/pulls/<n>/reviews/<id>/events` and `…/pulls/<n>/reviews` — are read by `submitsReview` and
+// `reviewsRoute` (gh-call.ts). Each carries the repository it is of, which is read against the
+// run's own world's (`worldOf`): a review of another repository's pull request is no review of
+// this one, and answering such a call from this record would tell a round that posted to
+// `other/widgets` that this world's review was submitted.
 /** Whether the call asks for the comparison as a diff rather than as JSON: `gh api -H "Accept:
  * application/vnd.github.v3.diff"`, the media type the API documents for a diff, and the
  * `vnd.github.diff` spelling GitHub takes for the same answer. */
@@ -344,9 +355,14 @@ function comparison(): string | Record<string, unknown> | undefined {
  * read before the route check, since no route answers a comparison and a 404 there reads to the
  * agent as a repository that does not hold the two commits its own run made. */
 const compared = comparison();
-/** What this stand-in answers a submit with: the review GitHub answers a pending one with, or
- * the 422 it answers every other. */
-type Submitted = { review: Record<string, unknown> } | { refusal: string };
+/** Refuses this call with GitHub's own text and its own status, where that refusal is decided:
+ * the text goes to stderr as the call's whole answer and the record keeps the status, as the 404
+ * below does. The answer the rest of this file shapes is the answer of a call that was taken, so
+ * a refusal carried through it would have to be stepped around at each turn of that pipeline. */
+function refuse(text: string): never {
+  process.stderr.write(text);
+  exit(1);
+}
 /** GitHub's own text for the submit of a review that is no longer pending. */
 const NOT_PENDING =
   "gh: Unprocessable Entity (HTTP 422)\nCan not submit a review that is not pending.\n";
@@ -400,7 +416,7 @@ function createdState(body: Record<string, unknown>): string | undefined {
  * A submit that names no event, or an event GitHub does not take, is refused here too (NO_EVENT)
  * rather than left to the routes: the create route answered such a call `{id}` and exit 0, so a
  * round that submitted nothing GitHub would take was told its review had been submitted. */
-function reviewSubmission(): Submitted | undefined {
+function reviewSubmission(): Record<string, unknown> | undefined {
   if (as !== "gh" || args[0] !== "api" || !isPost(args)) return undefined;
   // The repository of the run's own world: a submit on another repository's pull request is no
   // submit of this run's review, and a run that builds no world has no review of its own.
@@ -409,11 +425,11 @@ function reviewSubmission(): Submitted | undefined {
   const id = args.map((arg) => submitsReview(arg, repo)).find((named) => named !== undefined);
   if (id === undefined) return undefined;
   const pending = pendingReview(repo);
-  if (pending === undefined || pending.id !== id) return { refusal: NOT_PENDING };
+  if (pending === undefined || pending.id !== id) refuse(NOT_PENDING);
   const body = sentBody({ argv: args, stdin, files }) ?? {};
   const state = SUBMITTED_STATE[typeof body.event === "string" ? body.event : ""];
-  if (state === undefined) return { refusal: NO_EVENT };
-  return { review: { id: Number(id), commit_id: pending.head, state } };
+  if (state === undefined) refuse(NO_EVENT);
+  return { id: Number(id), commit_id: pending.head, state };
 }
 /** The review this run has left pending on `repo`'s pull request, or `undefined` when it has
  * none: the id GitHub gave it and the head it was created at. A create whose body names no
@@ -440,7 +456,7 @@ function reviewSubmission(): Submitted | undefined {
  * pending review here. */
 function pendingReview(repo: string): { id: string; head: string } | undefined {
   let pending: { id: string; head: string } | undefined;
-  for (const line of readFileSync(`${run}/calls.jsonl`, "utf8").split("\n")) {
+  for (const line of readFileSync(RECORD, "utf8").split("\n")) {
     if (line.trim() === "") continue;
     const call = JSON.parse(line) as {
       argv?: string[];
@@ -457,7 +473,7 @@ function pendingReview(repo: string): { id: string; head: string } | undefined {
       if (pending?.id === submitted && state !== undefined) pending = undefined;
       continue;
     }
-    if (!argv.some((arg) => createsReview(arg, repo))) continue;
+    if (!argv.some((arg) => reviewsRoute(arg, repo))) continue;
     if (createdState(body) !== "PENDING") continue;
     const id = answeredId(call.route);
     const head = typeof body.commit_id === "string" ? body.commit_id : branchTip();
@@ -516,13 +532,12 @@ if (body !== undefined) {
   writeFileSync(`${run}/fixtures.json`, JSON.stringify({ ...fixtures, routes: edited }));
   kept = body;
 }
-// The comparison, where the call asked for one, is the answer; a submit is this stand-in's own
-// answer and stands over whatever route matched it, with the review for the one review this run
-// left pending and nothing printed for the 422 every other submit gets; every other call is its
-// route's.
+// The comparison, where the call asked for one, is the answer; a submit this stand-in took is
+// its own answer, the review itself, and stands over whatever route matched it, while every
+// other submit was refused where that was decided (`refuse`); every other call is its route's.
 let output: unknown;
 if (compared !== undefined) output = compared;
-else if (submitted !== undefined) output = "review" in submitted ? submitted.review : "";
+else if (submitted !== undefined) output = submitted;
 else output = route?.stdout ?? "";
 // What GitHub answers the create of a review with is the review it created, and two of its
 // fields are the call's own and no world's: the state, which is `PENDING` for a create that
@@ -535,7 +550,7 @@ else output = route?.stdout ?? "";
 const createRepo = as === "gh" && args[0] === "api" && isPost(args) ? worldOf()?.repo : undefined;
 if (
   createRepo !== undefined &&
-  args.some((arg) => createsReview(arg, createRepo)) &&
+  args.some((arg) => reviewsRoute(arg, createRepo)) &&
   typeof output === "object" &&
   output !== null &&
   !Array.isArray(output)
@@ -588,8 +603,7 @@ if (filter !== undefined) {
 }
 if (text !== "") process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
 if (route?.stderr && submitted === undefined) process.stderr.write(route.stderr);
-// A submit this stand-in answered is GitHub's own answer, whatever the route behind it says: the
-// review and 200 for the one review this run left pending, and 422 for every other, which is
-// every review of these worlds but one a run left pending itself.
-if (submitted !== undefined && "refusal" in submitted) process.stderr.write(submitted.refusal);
-exit(submitted === undefined ? (route?.exit ?? 0) : "refusal" in submitted ? 1 : 0);
+// A submit this stand-in answered is GitHub's own answer, whatever the route behind it says:
+// the review and 200 for the one review this run left pending, which is every review of these
+// worlds a run left pending itself.
+exit(submitted === undefined ? (route?.exit ?? 0) : 0);
