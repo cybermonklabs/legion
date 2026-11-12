@@ -295,7 +295,11 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "held",
       ],
     },
-    reason: { type: "string" },
+    reason: {
+      type: "string",
+      description:
+        "close_root's and request_backward_move's why; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it",
+    },
     decision: { type: "string", enum: ["retry", "escalate"] },
     summary: { type: "string" },
     verdict: { type: "string", enum: ["pass", "pending", "fail"] },
@@ -356,7 +360,7 @@ test("a root architect's handoff_complete is refused as unavailable before its a
     content: [
       {
         type: "text",
-        text: 'handoff_complete does not accept field "phase"; handoff_complete is not available to a root architect session, which runs no phase',
+        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, ready, wake_at; handoff_complete is not available to a root architect session, which runs no phase',
       },
     ],
   });
@@ -604,6 +608,58 @@ test("retry_or_escalate takes a reason", async () => {
   expect(calls).toHaveLength(before);
 });
 
+// Architects sent park_child a `reason`, as close_root and request_backward_move take one, and
+// were told only that the field is refused: five refusals over four days of architect sessions,
+// each sent again without it and its why lost. The daemon keeps no why for a park or a rerun, so
+// a refusal of their `reason` names the fields the operation takes and the dispatch comment on
+// the child the why goes in, before any grant is minted. Any other operation's refusal names the
+// fields it takes alone: it may name no single issue (release_children, read_state).
+test("park_child refuses a reason before any grant, naming issue and the dispatch comment the why goes in", async () => {
+  const { calls, daemon } = recordingDaemon({});
+  const tool = createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => undefined,
+    onUpdateAnswered: () => undefined,
+    handoffReport: noHandoffReport,
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("architect"),
+  });
+  const refusals = [
+    [
+      { op: "park_child", issue: "LEGION-209", reason: "Folded into LEGION-208's pull request" },
+      'park_child does not accept field "reason"; it takes issue. Say why in a dispatch comment on the child',
+    ],
+    [
+      { op: "rerun_child", issue: "LEGION-209", reason: "The spec changed" },
+      'rerun_child does not accept field "reason"; it takes issue. Say why in a dispatch comment on the child',
+    ],
+    // Every field the operation does not take is named, as a phase op's refusal names them.
+    [
+      { op: "sign_off", issue: "LEGION-208", reason: "approved", note: "x" },
+      'sign_off does not accept field "reason"; sign_off does not accept field "note"; it takes issue',
+    ],
+    [
+      { op: "release_children", issues: ["LEGION-209"], reason: "wave 2" },
+      'release_children does not accept field "reason"; it takes issues',
+    ],
+    // A field other than `reason` is refused naming what the operation takes, and nothing more.
+    [
+      { op: "register_gate", issue: "LEGION-208", artifactId: "spec", version: 1, steps: "spec" },
+      'register_gate does not accept field "steps"; it takes issue, artifactId, version, step',
+    ],
+  ] as const;
+  for (const [parameters, text] of refusals) {
+    await expect(tool.execute("", parameters, undefined, undefined, context())).resolves.toEqual({
+      content: [{ type: "text", text }],
+      details: {},
+      isError: true,
+    });
+  }
+  expect(calls).toEqual([]);
+});
 // The records the production check of a deployment's idle release counts, read by the pod's own
 // claim: the daemon takes the claim token and the claim's secret, which stay in this process.
 test("read_release_records reads the window with this session's claim, and reports a refusal as read_record does", async () => {
@@ -1395,9 +1451,12 @@ test("the controller reads the whole state without a grant and sets an issue's s
     [{ op: "fresh_session", role: "implementer" }, "fresh_session requires issue"],
     [
       { op: "fresh_session", issue: "LEGION-209", role: "implementer", status: "todo" },
-      'fresh_session does not accept field "status"',
+      'fresh_session does not accept field "status"; it takes issue, role',
     ],
-    [{ op: "read_state", issue: "LEGION-208" }, 'read_state does not accept field "issue"'],
+    [
+      { op: "read_state", issue: "LEGION-208" },
+      'read_state does not accept field "issue"; it takes none',
+    ],
     [{ op: "read_record", issue: "LEGION-208" }, "not available to a controller session"],
     [
       { op: "read_release_records", since: "2026-11-01T00:00:00Z" },
@@ -1411,6 +1470,13 @@ test("the controller reads the whole state without a grant and sets an issue's s
     expect(result.isError).toBe(true);
     expect(result.content).toEqual([{ type: "text", text: expect.stringContaining(message) }]);
   }
+  // read_state takes no field and names no issue, so its refusal of a `reason` is the field list
+  // alone.
+  await expect(run({ op: "read_state", reason: "why" })).resolves.toEqual({
+    content: [{ type: "text", text: 'read_state does not accept field "reason"; it takes none' }],
+    details: {},
+    isError: true,
+  });
   expect(calls).toHaveLength(before);
   expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller"]);
 });
