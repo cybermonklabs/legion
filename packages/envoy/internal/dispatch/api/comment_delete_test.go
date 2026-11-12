@@ -321,6 +321,56 @@ func TestAPinnedBlockReferenceToADeletedCommentGivesNoText(t *testing.T) {
 	requirePinnedText("the comment that stands, after the delete", standingRef, standing)
 }
 
+// R3: every read that quotes a post says that it is deleted. A block of a deleted comment is
+// gone with the body, so neither block read can give text; what each must not do is answer that
+// the block is missing and leave the deletion unsaid. Both reads of the withdrawn comment's
+// block - the unpinned one and a pin to the revision that recorded it - name the deletion in
+// the words every refusal of a deleted post uses, and give no part of the body. The same two
+// reads of a comment that stands are the control: unchanged, text and all.
+func TestABlockReferenceToADeletedCommentNamesTheDeletion(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Blocks of a deleted comment", "before")
+	const withdrawn = "The second paragraph of the withdrawn claim."
+	const standing = "The second paragraph of the claim that stands."
+	withdrawnComment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Alpha.\n\n" + withdrawn}, "alice")
+	standingComment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Gamma.\n\n" + standing}, "alice")
+	withdrawnRef := "dispatch://" + issue.Key + "/comment/" + withdrawnComment.ID + "#b-b2"
+	standingRef := "dispatch://" + issue.Key + "/comment/" + standingComment.ID + "#b-b2"
+
+	deleteThreadComment(t, handler, withdrawnComment.ID, "alice")
+
+	deletion := `: this comment is deleted`
+	for _, read := range []struct{ name, ref, want string }{
+		{
+			name: "the unpinned read of a deleted comment's block",
+			ref:  withdrawnRef,
+			want: `no block \"b2\" in comment ` + withdrawnComment.ID + deletion,
+		},
+		{
+			name: "a pin to the revision that recorded a deleted comment's block",
+			ref:  withdrawnRef + "@v1",
+			want: `no block \"b2\" in comment ` + withdrawnComment.ID + " at revision 1" + deletion,
+		},
+	} {
+		response := graphRequest(t, handler, url.Values{"to": {read.ref}})
+		if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), `"code":"NOT_FOUND"`) ||
+			!strings.Contains(response.Body.String(), read.want) {
+			t.Fatalf("%s: status=%d body=%s, want 404 NOT_FOUND saying %q", read.name, response.Code, response.Body.String(), read.want)
+		}
+		if strings.Contains(response.Body.String(), withdrawn) {
+			t.Fatalf("%s gives its text: %s", read.name, response.Body.String())
+		}
+	}
+
+	if node := readGraph(t, handler, url.Values{"to": {standingRef}}).Node; node.Text != standing || node.Pin != nil {
+		t.Fatalf("the unpinned read of a standing comment's block = %#v, want the text %q and no pin", node, standing)
+	}
+	pinned := readGraph(t, handler, url.Values{"to": {standingRef + "@v1"}}).Node
+	if pinned.Pin == nil || pinned.Pin.Text != standing || pinned.Pin.State != "unchanged" {
+		t.Fatalf("the pinned read of a standing comment's block = %#v, want its text unchanged", pinned.Pin)
+	}
+}
+
 // A pending suggestion is proof in the document as much as a row: its mark says the suggestion
 // stands, and an insert suggestion's text is in the document's own body. The delete rejects it,
 // so the mark goes and an insert's text goes with it; nothing else could, since an accept and a

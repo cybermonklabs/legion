@@ -5859,7 +5859,15 @@ export async function executeDispatchTool(
         }
         const messageIssue = ownerArguments.ref.owner.issue;
         if (history) {
-          const id = ownerArguments.ref.id;
+          // The history is read of the message the reference names, resolved as the edit and
+          // the delete resolve their own `message` argument: a prefix resolves against the
+          // issue's messages, and a message on another issue is refused rather than read.
+          const id = await resolveMessageArgument(
+            input.tool,
+            stringArg(args, "ref"),
+            client,
+            hostSession
+          );
           return {
             text: postHistorySummary(
               "Message",

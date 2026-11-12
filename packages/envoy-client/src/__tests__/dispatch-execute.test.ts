@@ -5894,6 +5894,11 @@ describe("executeDispatchTool", () => {
       expect(await problemsOf("dispatch_read", { ref: onDocument })).toEqual([
         `${onDocument} names comment ${commentID} on CORE/runbook-md, but it is on OTHER-9; name it dispatch://OTHER-9/comment/${commentID}`,
       ]);
+      // --history of a message resolves its reference as the message edit and delete do, so a
+      // message on another issue is refused before any history is read.
+      expect(await problemsOf("dispatch_read", { ref: message, history: true })).toEqual([
+        offMessage,
+      ]);
     });
 
     test("the writes refuse it before writing", async () => {
@@ -13717,11 +13722,26 @@ test("the history of a deleted message carries the mark, the times and no body",
   const { result, requests } = await runCorrection(
     "dispatch_read",
     { ref: `dispatch://DSP-42/message/${correctedMessage}`, history: true },
-    () => ({
-      deleted_at: "2026-11-11T10:00:00Z",
-      deleted_by: sessionA,
-      entries: [{ body: "", edited_by: sessionA, edited_at: "2026-11-11T09:00:00Z" }],
-    })
+    (pathname) => {
+      if (pathname === `/api/v1/messages/${correctedMessage}`) {
+        return {
+          message: messageRow({
+            body: "",
+            deleted_at: "2026-11-11T10:00:00Z",
+            deleted_by: sessionA,
+          }),
+          replies: [],
+        };
+      }
+      if (pathname === `/api/v1/messages/${correctedMessage}/history`) {
+        return {
+          deleted_at: "2026-11-11T10:00:00Z",
+          deleted_by: sessionA,
+          entries: [{ body: "", edited_by: sessionA, edited_at: "2026-11-11T09:00:00Z" }],
+        };
+      }
+      throw new Error(`unexpected request: ${pathname}`);
+    }
   );
 
   expect(result).toEqual({
@@ -13732,8 +13752,11 @@ test("the history of a deleted message carries the mark, the times and no body",
     ].join("\n"),
     details: { issue: "DSP-42", message: correctedMessage },
   });
-  // The route is read under the message read's rule, so the host session goes with it.
+  // The message named by a reference is read first, to hold it to the issue the reference
+  // names; the history route is then read under the message read's rule, so the host session
+  // goes with it.
   expect(requests).toEqual([
+    { method: "GET", pathname: `/api/v1/messages/${correctedMessage}`, body: undefined },
     {
       method: "GET",
       pathname: `/api/v1/messages/${correctedMessage}/history`,

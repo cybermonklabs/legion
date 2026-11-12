@@ -374,6 +374,10 @@ func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref t
 // (refs.RemovedItemBlockNode). A pin past the item's current revision, or to one that did not
 // hold the block, answers 404, each saying which. A message never changes, so no reference pins
 // a message's block (parseReferencesQuery refuses one).
+//
+// A block of a post its author deleted is gone with the body (refs.TombstoneItem), so the two
+// 404s that answer for it name the deletion as well (itemBlockNotFound): every read of a
+// deleted post says that it is deleted and gives no part of what it said.
 func (s *server) itemBlockReferenceNode(ctx context.Context, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	kind := refs.ItemKind(ref.Item)
@@ -396,7 +400,8 @@ func (s *server) itemBlockReferenceNode(ctx context.Context, query refs.Query, r
 	}
 	if ref.Pin == 0 {
 		if !current {
-			return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no %s %q in %s %s", noun, ref.Block, ref.Item, item.ID)
+			return model.GraphNode{}, s.itemBlockNotFound(ctx, kind, item.ID,
+				fmt.Sprintf("no %s %q in %s %s", noun, ref.Block, ref.Item, item.ID))
 		}
 		return node, nil
 	}
@@ -408,7 +413,8 @@ func (s *server) itemBlockReferenceNode(ctx context.Context, query refs.Query, r
 	case ref.Pin > at.Current:
 		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no revision %d of %s %s; its current revision is %d", ref.Pin, ref.Item, item.ID, at.Current)
 	case at.Text == nil:
-		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no %s %q in %s %s at revision %d", noun, ref.Block, ref.Item, item.ID, ref.Pin)
+		return model.GraphNode{}, s.itemBlockNotFound(ctx, kind, item.ID,
+			fmt.Sprintf("no %s %q in %s %s at revision %d", noun, ref.Block, ref.Item, item.ID, ref.Pin))
 	}
 	pin := &model.BlockPin{Version: ref.Pin, Ref: refs.BlockRef(item.Ref, ref.Block) + "@v" + strconv.Itoa(ref.Pin), Text: *at.Text}
 	if !current {
@@ -438,6 +444,53 @@ func itemBlockNoun(kind string) string {
 		return "part"
 	}
 	return "block"
+}
+
+// itemBlockNotFound is the 404 a block reference answers when the item holds no such block:
+// `missing`, the words the read's own case wrote, and after them the deletion when the item is
+// a post its author withdrew. The delete clears the body, the block index and the text each
+// revision recorded (refs.TombstoneItem), so a read of a deleted post's block would otherwise
+// say that the block is missing and leave the deletion unsaid, where every read that quotes a
+// post says that it is deleted. The status stays 404: the reference names a node no read can
+// give, which is what NOT_FOUND says here, and the words are deletedPostError's, the one place
+// this server says a post is deleted. The mark is read on this path alone, so a reference to a
+// block that is there costs no query for it.
+func (s *server) itemBlockNotFound(ctx context.Context, kind refs.ItemKind, itemID, missing string) error {
+	deleted, err := s.postIsDeleted(ctx, kind, itemID)
+	if err != nil {
+		return err
+	}
+	if deleted {
+		return errorf(http.StatusNotFound, "NOT_FOUND", "%s: this %s is deleted", missing, kind)
+	}
+	return errorf(http.StatusNotFound, "NOT_FOUND", "%s", missing)
+}
+
+// postIsDeleted reports whether comment or message itemID carries a delete mark (deleted_at).
+// A comment and a message are the only posts a delete marks - the columns are theirs alone
+// (20261110224508_post_corrections.up.sql) - so an ask, the third item kind, answers false and
+// reads nothing. The table of a kind is refs', which owns the map of an item kind to its
+// storage (refs.ItemKind.ItemTable), as postHistoryOwner reads it. A row deleted outright
+// between the caller's read and this one answers false, and the caller's own refusal then
+// stands as it wrote it.
+func (s *server) postIsDeleted(ctx context.Context, kind refs.ItemKind, itemID string) (bool, error) {
+	if kind != refs.ItemComment && kind != refs.ItemMessage {
+		return false, nil
+	}
+	items, _, err := kind.ItemTable()
+	if err != nil {
+		return false, err
+	}
+	var deleted bool
+	if err := s.deps.Store.Pool.QueryRow(ctx, `
+		select deleted_at is not null from `+items+` where id = $1
+	`, itemID).Scan(&deleted); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read the delete mark of %s %s: %w", kind, itemID, err)
+	}
+	return deleted, nil
 }
 
 // blockPin is a trailing `@v<N>` pin, as a block reference writes one.
