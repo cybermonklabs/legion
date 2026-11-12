@@ -237,3 +237,30 @@ func (s *Store) DeleteRestoredRunningWorkspaceCopy(ctx context.Context, restoreI
 	}
 	return nil
 }
+
+// SavedWorkspaceCopies is what both copies of issue's workspace say of themselves, neither
+// carrying its bytes: the bundle its last idle release saved (WorkspaceBundleFacts) and the copy
+// its cadence took while the pod ran (RunningWorkspaceCopy). It is the read the restore of a new
+// pod decides on (runtime.SavedWorkspaceCopies, sandbox's launchers.restoreWorkspace), and it is
+// one call because that decision is one question: which of the two holds the newer work.
+//
+// It reads rather than takes because a take is spent. Each copy is offered to one pod only, and
+// the ask that reaches that pod closes it whether a byte was sent or not
+// (TakeWorkspaceBundleForRestore, TakeRunningWorkspaceCopyForRestore), so a restore that decided
+// by taking would spend the loser's one attempt on a copy it never sent, and the work of that
+// copy would be closed to the pod that could still have used it.
+//
+// The two reads are two statements and not one join: they are two tables keyed by the issue, the
+// rows are independent of each other, and an issue that holds one holds it whatever the other
+// table says. The restore runs once per pod, before its first role, so two indexed reads there
+// cost nothing worth a join's shape.
+func (s *Store) SavedWorkspaceCopies(ctx context.Context, issue string) (bundle, running runtime.WorkspaceCopyFacts, err error) {
+	if bundle, err = s.WorkspaceBundleFacts(ctx, issue); err != nil {
+		return runtime.WorkspaceCopyFacts{}, runtime.WorkspaceCopyFacts{}, err
+	}
+	facts, held, err := s.RunningWorkspaceCopy(ctx, issue)
+	if err != nil {
+		return runtime.WorkspaceCopyFacts{}, runtime.WorkspaceCopyFacts{}, err
+	}
+	return bundle, runtime.WorkspaceCopyFacts{Held: held, At: facts.At, Size: facts.Size}, nil
+}

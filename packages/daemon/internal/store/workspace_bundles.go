@@ -137,20 +137,29 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID
 	return b, runtime.WorkspaceBundleSend, nil
 }
 
-// WorkspaceBundleSize is the size in bytes of the bundle issue's last release saved, and false
-// when the issue has none. The release's teardown wants the size alone, and a bundle runs to
-// tens of megabytes: reading the row's size_bytes rather than its bundle keeps those bytes out
-// of the pool and out of the daemon's memory.
-func (s *Store) WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error) {
-	var size int
-	err := s.pool.QueryRow(ctx, `select size_bytes from workspace_bundles where issue = $1`, issue).Scan(&size)
+// WorkspaceBundleFacts is what the bundle issue's last release saved says of itself without its
+// bytes: whether the issue holds one at all, when the shim took it and how large it is. A bundle
+// runs to tens of megabytes, so every caller that wants neither the body nor the restore attempt
+// reads this instead of the row — the release's teardown, which records how much work it saved,
+// and the restore of a new pod, which compares this `at` with the running copy's to decide which
+// of the two copies is the newer work (SavedWorkspaceCopies). One read serves both, because they
+// read one row: taking the size alone and the time separately would be two reads of it.
+//
+// It answers the runtime's own shape (runtime.WorkspaceCopyFacts) because that is what the
+// restore compares: the daemon hands the pair straight to the runtime, which has no business
+// knowing which table either came off.
+func (s *Store) WorkspaceBundleFacts(ctx context.Context, issue string) (runtime.WorkspaceCopyFacts, error) {
+	var facts runtime.WorkspaceCopyFacts
+	err := s.pool.QueryRow(ctx, `select at, size_bytes from workspace_bundles where issue = $1`, issue).
+		Scan(&facts.At, &facts.Size)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, nil
+		return runtime.WorkspaceCopyFacts{}, nil
 	}
 	if err != nil {
-		return 0, false, fmt.Errorf("read the size of the workspace bundle of %s: %w", issue, err)
+		return runtime.WorkspaceCopyFacts{}, fmt.Errorf("read the workspace bundle of %s: %w", issue, err)
 	}
-	return size, true, nil
+	facts.Held = true
+	return facts, nil
 }
 
 // DeleteWorkspaceBundle drops issue's bundle whatever release saved it: the release saved a

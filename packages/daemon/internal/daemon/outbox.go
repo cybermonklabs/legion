@@ -139,8 +139,8 @@ type outbox struct {
 }
 
 // outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
-// suspension, an idle release's own two decisions and the bundle it saves, a stop's wait for a
-// stored claim's machine, and a workflow tree close's cleanup.
+// suspension, an idle release's own two decisions and the two copies of a workspace it saves and
+// drops, a stop's wait for a stored claim's machine, and a workflow tree close's cleanup.
 type outboxTrees interface {
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
 	IssueRelease(ctx context.Context, project string, release store.IssueReleased, outOfWorkflow func(status string) bool) (store.ReleaseDecision, error)
@@ -150,8 +150,9 @@ type outboxTrees interface {
 	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool) ([]claim.Role, error)
 	ClearIssueRelease(ctx context.Context, project, issue string) error
 	PutWorkspaceBundle(ctx context.Context, issue string, release int64, bundle runtime.WorkspaceBundle) error
-	WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error)
+	WorkspaceBundleFacts(ctx context.Context, issue string) (runtime.WorkspaceCopyFacts, error)
 	DeleteWorkspaceBundle(ctx context.Context, issue string) error
+	DeleteRunningWorkspaceCopy(ctx context.Context, issue string) error
 	StoredClaimMayRun(ctx context.Context, token claim.Token, row int64) (bool, error)
 	ReserveWorkflowTreeCleanup(ctx context.Context, project, tree string, rootGeneration uint64) (treelifecycle.Lifecycle, bool, error)
 	CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser store.TreeReleaser) error
@@ -1637,6 +1638,16 @@ func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, t
 // the cost of a pod. A workspace with nothing unpushed bundles to nothing, and the row the
 // previous release stored goes with it, so the next pod never restores stale work.
 //
+// The copy the cadence took while this pod ran goes whichever way the save falls
+// (store.DeleteRunningWorkspaceCopy). This bundle is the newer copy of the same workspace — it is
+// taken after the roles stopped, from the disk that copy came off — so from this moment the
+// running copy is stale, and leaving it would mean a pod after the next one being sent work older
+// than the bundle the next one restored. A save that found nothing unpushed says the same thing
+// more strongly: there is no unpushed work to put back at all, so a copy of a few minutes ago is
+// work that has since been pushed, and restoring it would move the issue's bookmarks back over
+// it. Either delete failing cancels the release, as the save's own does, and the cancel drops
+// both copies in its own transaction (store.CancelIssueRelease).
+//
 // A save of a release that is over stores nothing: the bundle of the issue belongs to whichever
 // release the store's mark names, never to a row of one that was cancelled and is still on the
 // lane (store.IssueReleaseSave).
@@ -1673,11 +1684,18 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 		if err := r.trees.DeleteWorkspaceBundle(ctx, row.Issue); err != nil {
 			return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
 		}
+		if err := r.trees.DeleteRunningWorkspaceCopy(ctx, row.Issue); err != nil {
+			return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
+		}
 		return nil
 	}
 	// The bundle is stored under the release that took it, so the restore of the pod that
-	// replaces this one names the release whose work it put back (store.PutWorkspaceBundle).
+	// replaces this one names the release whose work it put back (store.PutWorkspaceBundle), and
+	// the running copy this bundle supersedes goes with the save.
 	if err := r.trees.PutWorkspaceBundle(ctx, row.Issue, decision.Release, bundle); err != nil {
+		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
+	}
+	if err := r.trees.DeleteRunningWorkspaceCopy(ctx, row.Issue); err != nil {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
 	}
 	return nil
@@ -1738,10 +1756,11 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		decision = inner
 		return inner.Act == store.ReleaseActs, nil
 	}
-	savedBytes, _, err := r.trees.WorkspaceBundleSize(ctx, row.Issue)
+	saved, err := r.trees.WorkspaceBundleFacts(ctx, row.Issue)
 	if err != nil {
 		return err
 	}
+	savedBytes := saved.Size
 	if err := suspender.SuspendIssue(ctx, row.Issue, payload.Tree, authorize); err != nil {
 		return err
 	}

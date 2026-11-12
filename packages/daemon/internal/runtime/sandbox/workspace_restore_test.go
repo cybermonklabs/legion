@@ -7,16 +7,58 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // testRelease is the id of the idle release whose save the fixture's bundle carries: the daemon
 // deletes the bundle of the release a launcher's restore report names, so a stored bundle has one.
 const testRelease int64 = 11
+
+// withSavedWorkspace gives the rig's runtime the four halves of a restore over st: the facts of
+// the two copies an issue may hold, the take of each, and the delete the launcher's report runs,
+// routed on the restore id alone as the daemon routes it (daemon's restoredWorkspaceCopy, whose
+// own test lives there, since the daemon package is the one that may not be imported here).
+func withSavedWorkspace(st *store.Store) rigOption {
+	return withOptions(func(o *Options) {
+		o.SavedWorkspaceCopies = st.SavedWorkspaceCopies
+		o.SavedWorkspaceBundle = st.TakeWorkspaceBundleForRestore
+		o.SavedRunningWorkspaceCopy = st.TakeRunningWorkspaceCopyForRestore
+		o.WorkspaceBundleRestored = restoredCopyOf(st)
+	})
+}
+
+// restoredCopyOf is the daemon's routing of a restore report, as these tests need it: an id at or
+// above store.MinRunningWorkspaceCopyRestoreID names a running copy, one below it the bundle of
+// that release.
+func restoredCopyOf(st *store.Store) runtime.WorkspaceBundleRestored {
+	return func(ctx context.Context, issue string, restore int64) error {
+		if restore >= store.MinRunningWorkspaceCopyRestoreID {
+			return st.DeleteRestoredRunningWorkspaceCopy(ctx, restore)
+		}
+		return st.DeleteRestoredWorkspaceBundle(ctx, issue, restore)
+	}
+}
+
+// runningWorkspaceCopy is the copy of a live pod's workspace as the daemon's cadence takes it:
+// the same shape as a release's bundle, with its own body and its own head, taken off the pod
+// named. It carries no release id, the table giving every copy a restore id of its own
+// (store.PutRunningWorkspaceCopy).
+func runningWorkspaceCopy(at time.Time, pod string) runtime.WorkspaceBundle {
+	return runtime.WorkspaceBundle{
+		Bundle:    bytes.Repeat([]byte("PACKjj\x00\x03"), (300<<10)/8),
+		Head:      "9c0dd4f0ba3d8e7a1f4b2c6e5d8a9b0c1d2e3f40",
+		Tips:      []string{"7b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f708192"},
+		Bookmarks: map[string]string{"legion/" + testTree: "5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081"},
+		At:        at,
+		PodUID:    pod,
+	}
+}
 
 // savedWorkspaceBundle is a release's saved work as the store holds it: more than one
 // shimwire.LauncherBundlePayloadBytes of git bundle, so the hop to the launcher is a sequence of
@@ -58,9 +100,7 @@ func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *tes
 	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, saved); err != nil {
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
-	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
-	}))
+	g := newRig(t, nil, withSavedWorkspace(st))
 	spec := workerSpec(t)
 	g.spawn(spec)
 
@@ -105,8 +145,8 @@ func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *tes
 		t.Fatalf("the bundle crossed as taken at %s, want %s", read.At, saved.At)
 	}
 	// The launcher restored it and said so, so the daemon's copy has done its work.
-	if _, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || held {
-		t.Fatalf("after the launcher reported its restore the store holds the bundle = %t (%v), want it deleted", held, err)
+	if facts, err := st.WorkspaceBundleFacts(g.ctx, testTree); err != nil || facts.Held {
+		t.Fatalf("after the launcher reported its restore the store holds the bundle = %t (%v), want it deleted", facts.Held, err)
 	}
 }
 
@@ -128,9 +168,7 @@ func TestAFailedRestoreKeepsTheSavedWorkAndSendsItToNoPodAgain(t *testing.T) {
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
 	const refusal = "git bundle unbundle: object not found"
-	g := newRig(t, nil, withFailedRestore(refusal), withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
-	}))
+	g := newRig(t, nil, withFailedRestore(refusal), withSavedWorkspace(st))
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
 	if loc.Sandbox.Generation != spec.Generation {
@@ -141,13 +179,13 @@ func TestAFailedRestoreKeepsTheSavedWorkAndSendsItToNoPodAgain(t *testing.T) {
 	if start := slices.IndexFunc(sent, func(f shimwire.Frame) bool { _, ok := f.(shimwire.LauncherStart); return ok }); start < 1 {
 		t.Fatalf("the launcher was sent %v, want the bundle's slices and then the role's start", frameTypes(sent))
 	}
-	size, held, err := st.WorkspaceBundleSize(g.ctx, testTree)
+	facts, err := st.WorkspaceBundleFacts(g.ctx, testTree)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !held || size != len(saved.Bundle) {
+	if !facts.Held || facts.Size != len(saved.Bundle) {
 		t.Fatalf("after a restore the launcher could not run the store holds %d bytes (held=%t), want the %d saved kept",
-			size, held, len(saved.Bundle))
+			facts.Size, facts.Held, len(saved.Bundle))
 	}
 
 	// The roles container restarts in the same pod, and the start of the next role is what
@@ -161,8 +199,8 @@ func TestAFailedRestoreKeepsTheSavedWorkAndSendsItToNoPodAgain(t *testing.T) {
 				slice.Index, slice.Count, slice.Release)
 		}
 	}
-	if size, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || !held || size != len(saved.Bundle) {
-		t.Fatalf("after the restart the store holds %d bytes (held=%t, %v), want the %d saved kept", size, held, err, len(saved.Bundle))
+	if facts, err := st.WorkspaceBundleFacts(g.ctx, testTree); err != nil || !facts.Held || facts.Size != len(saved.Bundle) {
+		t.Fatalf("after the restart the store holds %d bytes (held=%t, %v), want the %d saved kept", facts.Size, facts.Held, err, len(saved.Bundle))
 	}
 }
 
@@ -176,9 +214,7 @@ func TestAFailedRestoreKeepsTheSavedWorkAndSendsItToNoPodAgain(t *testing.T) {
 // so it is the pod's identity and not its clock that leaves the attempt where it belongs.
 func TestARelaunchInThePodBeingReleasedLeavesTheAttemptForItsReplacement(t *testing.T) {
 	st := migratedStore(t)
-	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
-	}))
+	g := newRig(t, nil, withSavedWorkspace(st))
 	spec := workerSpec(t)
 	g.spawn(spec)
 	released := g.pod(SandboxName(spec.Claim))
@@ -257,8 +293,8 @@ func TestARelaunchInThePodBeingReleasedLeavesTheAttemptForItsReplacement(t *test
 				slice.Index, slice.Count, slice.Release)
 		}
 	}
-	if size, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || !held || size != len(saved.Bundle) {
-		t.Fatalf("the store holds %d bytes (held=%t, %v), want the %d saved kept until a launcher reports the restore", size, held, err, len(saved.Bundle))
+	if facts, err := st.WorkspaceBundleFacts(g.ctx, testTree); err != nil || !facts.Held || facts.Size != len(saved.Bundle) {
+		t.Fatalf("the store holds %d bytes (held=%t, %v), want the %d saved kept until a launcher reports the restore", facts.Size, facts.Held, err, len(saved.Bundle))
 	}
 }
 
@@ -282,7 +318,8 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 		t.Fatalf("save the second release's bundle: %v", err)
 	}
 
-	d := newLaunchers(st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d := newLaunchers(st.SavedWorkspaceCopies, st.TakeWorkspaceBundleForRestore,
+		st.TakeRunningWorkspaceCopyForRestore, restoredCopyOf(st), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	spec := workerSpec(t)
 	session := d.accept(spec.Claim, testTree, rigNow, shimwire.LauncherHello{LauncherID: "late", PodUID: "pod-uid"})
 	frames, err := bundleFrames(testTree, first)
@@ -305,8 +342,8 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.restoreReported(session, shimwire.LauncherRestored{ID: later[0].ID, Release: second.Release, OK: true})
-	if _, held, err := st.WorkspaceBundleSize(ctx, testTree); err != nil || held {
-		t.Fatalf("after the second release's report the store holds the bundle = %t (%v), want it deleted", held, err)
+	if facts, err := st.WorkspaceBundleFacts(ctx, testTree); err != nil || facts.Held {
+		t.Fatalf("after the second release's report the store holds the bundle = %t (%v), want it deleted", facts.Held, err)
 	}
 }
 
@@ -323,9 +360,7 @@ func TestARefusedBundleSliceStillStartsTheRoleAndKeepsTheSavedWork(t *testing.T)
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
 	const refusal = "launcher_bundle sequence rebuilt to another digest than its slices declared"
-	g := newRig(t, nil, withRefusedBundle(refusal), withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
-	}))
+	g := newRig(t, nil, withRefusedBundle(refusal), withSavedWorkspace(st))
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
 	if loc.Sandbox.Generation != spec.Generation {
@@ -350,12 +385,12 @@ func TestARefusedBundleSliceStillStartsTheRoleAndKeepsTheSavedWork(t *testing.T)
 	if bundleSlices != 1 {
 		t.Fatalf("the launcher was sent %v, want one slice and no more after its refusal", frameTypes(frames))
 	}
-	size, held, err := st.WorkspaceBundleSize(g.ctx, testTree)
+	facts, err := st.WorkspaceBundleFacts(g.ctx, testTree)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !held || size != len(saved.Bundle) {
-		t.Fatalf("after the refusal the store holds %d bytes (held=%t), want the %d saved kept", size, held, len(saved.Bundle))
+	if !facts.Held || facts.Size != len(saved.Bundle) {
+		t.Fatalf("after the refusal the store holds %d bytes (held=%t), want the %d saved kept", facts.Size, facts.Held, len(saved.Bundle))
 	}
 }
 
@@ -379,9 +414,7 @@ func TestAReplacementPodRefusedByClockSkewLeavesNothingForThePodAfterIt(t *testi
 	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, saved); err != nil {
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
-	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
-	}))
+	g := newRig(t, nil, withSavedWorkspace(st))
 	spec := workerSpec(t)
 	g.spawn(spec)
 	refused := g.pod(SandboxName(spec.Claim))
@@ -424,7 +457,198 @@ func TestAReplacementPodRefusedByClockSkewLeavesNothingForThePodAfterIt(t *testi
 	}
 	// The work is kept whole, for a person to carry out of the database, and it holds the
 	// issue's pod until the issue's work is over (workflow.IdleHoldBundleUnrestored).
-	if size, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || !held || size != len(saved.Bundle) {
-		t.Fatalf("after the refusal the store holds %d bytes (held=%t, %v), want the %d saved kept", size, held, err, len(saved.Bundle))
+	if facts, err := st.WorkspaceBundleFacts(g.ctx, testTree); err != nil || !facts.Held || facts.Size != len(saved.Bundle) {
+		t.Fatalf("after the refusal the store holds %d bytes (held=%t, %v), want the %d saved kept", facts.Size, facts.Held, err, len(saved.Bundle))
+	}
+}
+
+// loggedAs is the value slog's text handler writes for an instant, which a test that reads one of
+// the restore's own lines compares against (slog.TextHandler writes RFC 3339 to milliseconds).
+func loggedAs(at time.Time) string { return at.Format("2006-01-02T15:04:05.000Z07:00") }
+
+// restoreLine is the one line of the log that carries fragment, and fails the test when no line
+// does: a restore writes one line about what it did with each copy, and a test that read "some
+// line contains this" would pass on the wrong one.
+func restoreLine(t *testing.T, logs *logBuffer, fragment string) string {
+	t.Helper()
+	var found []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, fragment) {
+			found = append(found, line)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("the log holds %d lines carrying %q, want one:\n%s", len(found), fragment, logs.String())
+	}
+	return found[0]
+}
+
+// bundleBody is the whole of what the launcher was sent before the role's start, parsed back out
+// of its slices, and the number of slices it took.
+func bundleBody(t *testing.T, frames []shimwire.Frame) (shimwire.WorkspaceBundle, int) {
+	t.Helper()
+	var body []byte
+	count := 0
+	for _, frame := range frames {
+		slice, ok := frame.(shimwire.LauncherBundle)
+		if !ok {
+			break
+		}
+		body = append(body, slice.Payload...)
+		count++
+	}
+	if count == 0 {
+		t.Fatalf("the launcher was sent %v, want a saved copy's slices before the role's start", frameTypes(frames))
+	}
+	read, err := shimwire.ParseWorkspaceBundle(body)
+	if err != nil {
+		t.Fatalf("the %d slices rebuilt no workspace bundle: %v", count, err)
+	}
+	return read, count
+}
+
+// A pod whose issue holds no release bundle at all is still sent work: the copy the daemon took
+// while the pod that held it was running. That is the case this whole change exists for — a pod
+// the cluster ended without a release, by an eviction, a node drain or an OOM kill, whose issue
+// therefore has no release bundle — and the hop is the same one a release's bundle takes, down to
+// the launcher's report, which drops the copy because its restore id names it
+// (store.MinRunningWorkspaceCopyRestoreID).
+func TestAPodWhoseIssueHoldsOnlyARunningWorkspaceCopyRestoresIt(t *testing.T) {
+	st := migratedStore(t)
+	logs := &logBuffer{}
+	taken := runningWorkspaceCopy(rigNow.Add(-time.Minute), "pod-the-cadence-copied")
+	if err := st.PutRunningWorkspaceCopy(context.Background(), testTree, taken); err != nil {
+		t.Fatalf("take the running copy of the workspace: %v", err)
+	}
+	g := newRig(t, nil, withLog(logs), withSavedWorkspace(st))
+	spec := workerSpec(t)
+	g.spawn(spec)
+
+	read, slices := bundleBody(t, g.sent(spec.Claim))
+	if !bytes.Equal(read.Bundle, taken.Bundle) || read.Head != taken.Head ||
+		!maps.Equal(read.Bookmarks, taken.Bookmarks) || !read.At.Equal(taken.At) {
+		t.Fatalf("the pod was sent %d bytes at head %s with bookmarks %v taken at %s, want the %d of the running copy at %s with %v",
+			len(read.Bundle), read.Head, read.Bookmarks, read.At, len(taken.Bundle), taken.At, taken.Bookmarks)
+	}
+	// The line an operator reads says which of the two copies went back and when it was taken,
+	// since the two differ in nothing else that is visible from outside.
+	line := restoreLine(t, logs, "the issue's saved workspace work reached the pod that restores it")
+	for _, want := range []string{"issue=" + testTree, `copy="running copy"`, "taken=" + loggedAs(taken.At)} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("the restore logged %s, want it to carry %s", line, want)
+		}
+	}
+	// The launcher reported the restore, and the report's id named the running copy: that row is
+	// gone and the issue holds nothing of either kind.
+	if _, held, err := st.RunningWorkspaceCopy(g.ctx, testTree); err != nil || held {
+		t.Fatalf("after the launcher reported its restore the store holds the running copy = %t (%v), want it dropped", held, err)
+	}
+	if facts, err := st.WorkspaceBundleFacts(g.ctx, testTree); err != nil || facts.Held {
+		t.Fatalf("the store holds a release bundle = %t (%v), want none: the issue was never released", facts.Held, err)
+	}
+	if slices < 2 {
+		t.Fatalf("the running copy crossed in %d slices, want the sequence a copy of its size takes", slices)
+	}
+}
+
+// An issue can hold both copies at once: a release saved a bundle, a wake cancelled it, the pod
+// worked on and the cadence copied it again; or the cadence copied a pod minutes before the
+// release that saved the bundle. The pod that replaces it is sent the newer of the two, and the
+// older is closed to every later pod without being sent to this one.
+//
+// Closing it is the point. A copy left with its attempt unspent is a copy the pod after this one
+// can still be sent, and that pod's workspace holds the descendants of the work this restore puts
+// back, so the older copy would be applied over everything pushed in between. Its bytes stay in
+// the database all the same, for an operator who wants them.
+func TestAPodWhoseIssueHoldsBothSavedCopiesRestoresTheNewerAndClosesTheOlder(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	logs := &logBuffer{}
+	// The release saved its bundle, a wake cancelled nothing of it, and the cadence took a copy
+	// of the same workspace a minute later: the copy is the newer work.
+	saved := savedWorkspaceBundle()
+	saved.At = rigNow.Add(-2 * time.Minute)
+	if err := st.PutWorkspaceBundle(ctx, testTree, saved.Release, saved); err != nil {
+		t.Fatalf("save the released workspace's bundle: %v", err)
+	}
+	taken := runningWorkspaceCopy(rigNow.Add(-time.Minute), "pod-the-cadence-copied")
+	if err := st.PutRunningWorkspaceCopy(ctx, testTree, taken); err != nil {
+		t.Fatalf("take the running copy of the workspace: %v", err)
+	}
+	g := newRig(t, nil, withLog(logs), withSavedWorkspace(st))
+	spec := workerSpec(t)
+	g.spawn(spec)
+
+	read, _ := bundleBody(t, g.sent(spec.Claim))
+	if !bytes.Equal(read.Bundle, taken.Bundle) || read.Head != taken.Head {
+		t.Fatalf("the pod was sent %d bytes at head %s, want the %d of the newer running copy at %s",
+			len(read.Bundle), read.Head, len(taken.Bundle), taken.Head)
+	}
+	line := restoreLine(t, logs, "the older of the issue's two saved workspace copies is closed unsent")
+	for _, want := range []string{"issue=" + testTree, `copy="release bundle"`, "taken=" + loggedAs(saved.At), `restoring="running copy"`} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("the closed copy logged %s, want it to carry %s", line, want)
+		}
+	}
+	// The older copy's bytes are where they were, and no pod of this issue is ever sent them.
+	facts, err := st.WorkspaceBundleFacts(g.ctx, testTree)
+	if err != nil || !facts.Held || facts.Size != len(saved.Bundle) {
+		t.Fatalf("the store holds %d bytes of the release bundle (held=%t, %v), want its %d kept for an operator",
+			facts.Size, facts.Held, err, len(saved.Bundle))
+	}
+	later, take, err := st.TakeWorkspaceBundleForRestore(g.ctx, testTree, "pod-after-this-one", rigNow.Add(time.Hour))
+	if err != nil || take != runtime.WorkspaceBundleNone {
+		t.Fatalf("the pod after this one was answered %d bytes of the release bundle (%v, %v), want nothing: this restore spent its attempt",
+			len(later.Bundle), take, err)
+	}
+	// The newer copy went back and its report dropped it, so the issue is left holding the one
+	// copy nothing restored.
+	if _, held, err := st.RunningWorkspaceCopy(g.ctx, testTree); err != nil || held {
+		t.Fatalf("after the launcher reported its restore the store holds the running copy = %t (%v), want it dropped", held, err)
+	}
+}
+
+// A restore of a running copy that fails leaves the work where the launcher's notice says it is,
+// in the daemon's database, spends that copy's one attempt and names the issue on the daemon's
+// log. What it must not do is hold the issue's pod: the idle rule reads the release bundles alone
+// (store.workspaceBundleUnrestored, workflow.IdleHoldBundleUnrestored), and this issue has no
+// release bundle, so its pod is still released when it next goes idle — which is right, since the
+// work in the copy is also on the disk the copy was taken off, and that release would save it
+// again. The store's own side of this is TestTheIdleViewHoldsNoPodForARunningWorkspaceCopy.
+func TestAFailedRestoreOfARunningWorkspaceCopyKeepsItAndHoldsNoPod(t *testing.T) {
+	st := migratedStore(t)
+	logs := &logBuffer{}
+	taken := runningWorkspaceCopy(rigNow.Add(-time.Minute), "pod-the-cadence-copied")
+	if err := st.PutRunningWorkspaceCopy(context.Background(), testTree, taken); err != nil {
+		t.Fatalf("take the running copy of the workspace: %v", err)
+	}
+	const refusal = "git bundle unbundle: object not found"
+	g := newRig(t, nil, withLog(logs), withFailedRestore(refusal), withSavedWorkspace(st))
+	spec := workerSpec(t)
+	loc := g.spawn(spec)
+	if loc.Sandbox.Generation != spec.Generation {
+		t.Fatalf("the failed restore left the launch at %+v, want generation %d", loc, spec.Generation)
+	}
+
+	line := restoreLine(t, logs, "could not restore the issue's saved workspace work")
+	for _, want := range []string{"issue=" + testTree, refusal} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("the failed restore logged %s, want it to carry %s", line, want)
+		}
+	}
+	facts, held, err := st.RunningWorkspaceCopy(g.ctx, testTree)
+	if err != nil || !held || facts.Size != len(taken.Bundle) {
+		t.Fatalf("after the failed restore the store holds %d bytes of the running copy (held=%t, %v), want its %d kept",
+			facts.Size, held, err, len(taken.Bundle))
+	}
+	// That send was the copy's one attempt: the pod after this one is sent nothing of it.
+	after, take, err := st.TakeRunningWorkspaceCopyForRestore(g.ctx, testTree, "pod-after-the-failure", rigNow.Add(time.Hour))
+	if err != nil || take != runtime.WorkspaceBundleNone {
+		t.Fatalf("the pod after the failed restore was answered %d bytes (%v, %v), want nothing", len(after.Bundle), take, err)
+	}
+	// Nothing of this issue holds its pod: there is no release bundle, which is the only row the
+	// idle rule reads.
+	if facts, err := st.WorkspaceBundleFacts(g.ctx, testTree); err != nil || facts.Held {
+		t.Fatalf("the store holds a release bundle = %t (%v), want none: a failed restore of a running copy saves no bundle", facts.Held, err)
 	}
 }

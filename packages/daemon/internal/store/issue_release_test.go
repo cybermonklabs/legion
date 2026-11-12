@@ -552,16 +552,17 @@ func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
 	}
 }
 
-// The bundle a cancelled release saved goes in the cancel's own transaction, with the resumes and
-// the mark. The pod that work came off is the pod the resumes bring back, with the work in its own
-// workspace, so the row is a second copy of a live disk's work: left behind it would hold the
-// issue's pod (workflow.IdleHoldBundleUnrestored) and wait for whatever pod the issue made next —
-// an eviction's, an update round's, a park and unpark's — to restore it over everything those
-// roles pushed in the meantime.
+// Both saved copies of a cancelled release's workspace go in the cancel's own transaction, with
+// the resumes and the mark: the bundle the release saved and the copy its cadence took while the
+// pod ran. The pod that work came off is the pod the resumes bring back, with the work in its own
+// workspace, so each row is a second copy of a live disk's work: left behind, either would wait
+// for whatever pod the issue made next — an eviction's, an update round's, a park and unpark's —
+// to restore it over everything those roles pushed in the meantime, and the bundle would hold the
+// issue's pod until then (workflow.IdleHoldBundleUnrestored).
 //
 // One transaction is what makes that true of a cancel that fails too: a resume the store cannot
-// queue leaves the mark standing and the bundle with it, so the row's retry runs the whole cancel
-// again rather than going on with the bundle already gone or already kept.
+// queue leaves the mark standing and both copies with it, so the row's retry runs the whole cancel
+// again rather than going on with one copy already gone and the other kept.
 func TestACancelDeletesTheBundleItsReleaseSavedInTheSameTransaction(t *testing.T) {
 	const first, boundary, last = 18, 20, 22
 	st := migratedStore(t)
@@ -578,6 +579,13 @@ func TestACancelDeletesTheBundleItsReleaseSavedInTheSameTransaction(t *testing.T
 	if err := st.PutWorkspaceBundle(ctx, rootIssue, release, saved); err != nil {
 		t.Fatalf("save the release's bundle: %v", err)
 	}
+	// The cadence took its own copy of the same workspace minutes before the release: the newer
+	// of the two, and so the one the issue's next pod would be sent.
+	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the cadence copied"),
+		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: time.Now().UTC(), PodUID: "pod-being-released"}
+	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, taken); err != nil {
+		t.Fatalf("take the running copy of the workspace: %v", err)
+	}
 
 	refused := errors.New("the resume could not be encoded")
 	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64) (IdleReleaseRow, error) {
@@ -585,15 +593,22 @@ func TestACancelDeletesTheBundleItsReleaseSavedInTheSameTransaction(t *testing.T
 	}, record.OutOfWorkflow); !errors.Is(err, refused) {
 		t.Fatalf("a cancel whose resume could not be built = %v, want %v", err, refused)
 	}
-	if _, held, err := st.WorkspaceBundleSize(ctx, rootIssue); err != nil || !held {
-		t.Fatalf("after a cancel that failed the store holds the bundle = %t (%v), want it kept with the mark", held, err)
+	facts, err := st.WorkspaceBundleFacts(ctx, rootIssue)
+	if err != nil || !facts.Held {
+		t.Fatalf("after a cancel that failed the store holds the bundle = %t (%v), want it kept with the mark", facts.Held, err)
+	}
+	if _, held, err := st.RunningWorkspaceCopy(ctx, rootIssue); err != nil || !held {
+		t.Fatalf("after a cancel that failed the store holds the running copy = %t (%v), want it kept with the mark", held, err)
 	}
 
 	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow); err != nil {
 		t.Fatalf("carry the cancel out: %v", err)
 	}
-	if _, held, err := st.WorkspaceBundleSize(ctx, rootIssue); err != nil || held {
-		t.Fatalf("after the cancel the store holds the bundle = %t (%v), want it deleted with the mark", held, err)
+	if facts, err := st.WorkspaceBundleFacts(ctx, rootIssue); err != nil || facts.Held {
+		t.Fatalf("after the cancel the store holds the bundle = %t (%v), want it deleted with the mark", facts.Held, err)
+	}
+	if _, held, err := st.RunningWorkspaceCopy(ctx, rootIssue); err != nil || held {
+		t.Fatalf("after the cancel the store holds the running copy = %t (%v), want it deleted with the mark", held, err)
 	}
 }
 

@@ -175,10 +175,12 @@ func TestABundleIsTakenForOneRestoreAttemptAndThenKept(t *testing.T) {
 			t.Fatalf("%s was answered %q (%v, %v) after the bundle's one attempt, want nothing to send", pod, again.Bundle, take, err)
 		}
 	}
-	// The work is kept, and it holds the issue's pod until the issue's work is over.
-	size, held, err := s.WorkspaceBundleSize(ctx, "INFRA-945")
-	if err != nil || !held || size != len(saved.Bundle) {
-		t.Fatalf("after the attempt the store holds %d bytes (held=%t, %v), want the %d saved kept", size, held, err, len(saved.Bundle))
+	// The work is kept, with the minute it was taken, and it holds the issue's pod until the
+	// issue's work is over.
+	facts, err := s.WorkspaceBundleFacts(ctx, "INFRA-945")
+	if err != nil || !facts.Held || facts.Size != len(saved.Bundle) || !facts.At.Equal(at) {
+		t.Fatalf("after the attempt the store holds %d bytes taken at %s (held=%t, %v), want the %d saved at %s kept",
+			facts.Size, facts.At, facts.Held, err, len(saved.Bundle), at)
 	}
 	// The issue's next release saves work of its own, which has an attempt of its own.
 	newer := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of the next release"), Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9", At: at.Add(time.Hour), PodUID: "pod-uid-3"}
@@ -318,9 +320,9 @@ func TestAPodNotNewerThanTheSaveSpendsTheAttemptAndClosesTheBundleToEveryLaterPo
 	}
 	// The work is kept whole for a person to carry out of the database, and the row goes on
 	// holding the issue's pod.
-	size, held, err := s.WorkspaceBundleSize(ctx, "INFRA-945")
-	if err != nil || !held || size != len(saved.Bundle) {
-		t.Fatalf("after the refusal the store holds %d bytes (held=%t, %v), want the %d saved kept", size, held, err, len(saved.Bundle))
+	facts, err := s.WorkspaceBundleFacts(ctx, "INFRA-945")
+	if err != nil || !facts.Held || facts.Size != len(saved.Bundle) {
+		t.Fatalf("after the refusal the store holds %d bytes (held=%t, %v), want the %d saved kept", facts.Size, facts.Held, err, len(saved.Bundle))
 	}
 }
 

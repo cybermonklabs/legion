@@ -505,15 +505,17 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.Mapped = listener, address, st, mapped
-		// The two halves of the release's saved work: an idle release puts the issue's unpushed
-		// work here (outbox's release), and the runtime hands it to the launcher of the pod that
-		// replaces the released one before any role of that pod starts. The confirmation deletes
-		// the bundle of the release the launcher's report names and no other, so a report that
-		// arrives late takes no newer release's work with it. The read is the bundle's one restore
-		// attempt: the first pod that is not the one the work came off takes it, whether the
-		// bundle is sent or that pod is refused as no newer than the save, and nothing is
-		// answered for that bundle again.
-		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
+		// The restore of a new pod and the two copies of an issue workspace it chooses between:
+		// an idle release puts the issue's unpushed work in one (outbox's release) and the
+		// cadence of a running pod in the other, and the runtime reads the facts of both, hands
+		// the newer to the launcher of the pod that replaces the one the work came off before any
+		// role of that pod starts, and closes the older unsent. Each take is that copy's one
+		// restore attempt: the first pod that is not the one the work came off takes it, whether
+		// the copy is sent or that pod is refused as no newer, and nothing is answered for that
+		// copy again.
+		opts.SavedWorkspaceCopies = st.SavedWorkspaceCopies
+		opts.SavedWorkspaceBundle, opts.SavedRunningWorkspaceCopy = st.TakeWorkspaceBundleForRestore, st.TakeRunningWorkspaceCopyForRestore
+		opts.WorkspaceBundleRestored = restoredWorkspaceCopy(st)
 		if apps != nil {
 			// One record per project, written by the two credentials and read by the directory
 			// set for the Apps of the pod it answers for, so no pod is replaced for a directory
@@ -532,6 +534,31 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		}
 		listener.SetLauncherResolver(rt.LauncherResolver())
 		return rt, nil
+	}
+}
+
+// restoredWorkspaceCopy drops the copy of an issue's workspace a pod's launcher reports it
+// restored, routing on the restore id alone. That id is all such a report carries that is
+// certain of the row: a launcher holds its report until some connection carries it
+// (internal/launcher's bundleRestore.owed), so one can reach a daemon that has restarted since
+// the send, with no memory of what it sent that pod.
+//
+// The id says which of the two tables the copy is in, because the two draw from disjoint spaces
+// and the schema keeps them so (store.MinRunningWorkspaceCopyRestoreID): an id at or above the
+// boundary is a running copy's, and the delete reads the id alone, since the issue's cadence may
+// have taken a newer copy since and that row must stay for the issue's next pod. An id below it
+// is the id of the release whose teardown saved the bundle, and that delete names the issue and
+// the release together, which is the same rule: a bundle a later release saved stays.
+//
+// An id of either kind that no row holds deletes nothing, which is the ordinary end of a late
+// report, and the runtime is told the delete succeeded, because it did: the row the report
+// confirmed is gone.
+func restoredWorkspaceCopy(st *store.Store) runtime.WorkspaceBundleRestored {
+	return func(ctx context.Context, issue string, restore int64) error {
+		if restore >= store.MinRunningWorkspaceCopyRestoreID {
+			return st.DeleteRestoredRunningWorkspaceCopy(ctx, restore)
+		}
+		return st.DeleteRestoredWorkspaceBundle(ctx, issue, restore)
 	}
 }
 

@@ -211,18 +211,21 @@ type WorkspaceBundler interface {
 	BundleWorkspace(ctx context.Context, issue string, role claim.Role) (WorkspaceBundle, error)
 }
 
-// SavedWorkspaceBundle answers the bundle an issue's last release saved for the pod of podUID,
-// created at podCreated, to restore, and what that ask did to the bundle. It is the other half
-// of WorkspaceBundler: the save's own store (store.Store.TakeWorkspaceBundleForRestore), handed
-// to the runtime so that the runtime, which alone knows when a replacement pod's launcher is up,
-// can carry the saved work back into the new workspace before any role of that pod starts.
+// SavedWorkspaceBundle answers one of the two copies of an issue's workspace the daemon holds for
+// the pod of podUID, created at podCreated, to restore, and what that ask did to that copy. Both
+// kinds are answered through this one type, because both are the same act on the same shape of
+// row: the bundle an idle release saved (store.Store.TakeWorkspaceBundleForRestore) and the copy
+// taken while the pod ran (store.Store.TakeRunningWorkspaceCopyForRestore). It is the other half
+// of WorkspaceBundler, handed to the runtime so that the runtime, which alone knows when a
+// replacement pod's launcher is up, can carry the saved work back into the new workspace before
+// any role of that pod starts.
 //
-// WorkspaceBundleNone is nothing to send and nothing recorded: an issue never released, one
-// whose restore the launcher confirmed, one whose release a wake cancelled, one whose bundle has
-// had its one attempt already, and the pod the work was taken off asking for its own workspace's
-// work back. The runtime calls this at every start of every role, and a release stops the roles
-// of the pod it is releasing, so a role relaunched in that pod before the teardown deletes it is
-// one of those calls; the store knows that pod by the uid the save recorded
+// WorkspaceBundleNone is nothing to send and nothing recorded: an issue never released and whose
+// cadence took nothing, one whose restore the launcher confirmed, one whose release a wake
+// cancelled, one whose copy has had its one attempt already, and the pod the work was taken off
+// asking for its own workspace's work back. The runtime calls this at every start of every role,
+// and both the pod a release is stopping and the pod a cadence copies go on starting roles, so
+// such a start is one of those calls; the store knows that pod by the uid the copy recorded
 // (WorkspaceBundle.PodUID) and leaves the row untouched for the pod that replaces it.
 //
 // WorkspaceBundleSend is the attempt, and the call is where it is spent: the store records
@@ -233,23 +236,54 @@ type WorkspaceBundler interface {
 // work.
 //
 // WorkspaceBundleRefusedOlder is that same one attempt, spent on a pod that was not created
-// after the save: nothing is sent, and no later pod is sent the bundle either. Such a pod is one
-// the release's teardown did not replace, or the replacement under a node clock running ahead of
-// the API server's; either way its roles go on working and pushing from the workspace its own
-// fetch provisioned, and a bundle the daemon kept open for the pod after it would be applied
-// over that work. The saved work stays in the database for a person to recover and holds the
-// issue's pod (workflow.IdleHoldBundleUnrestored).
+// after the copy was taken: nothing is sent, and no later pod is sent the copy either. Such a pod
+// is one the release's teardown did not replace, or one that replaced it under a node clock
+// running ahead of the API server's; either way its roles go on working and pushing from the
+// workspace its own fetch provisioned, and a copy the daemon kept open for the pod after it would
+// be applied over that work. The work stays in the database for a person to recover; a release
+// bundle nothing restored also holds the issue's pod (workflow.IdleHoldBundleUnrestored), and a
+// running copy holds no pod, its work being on the disk it was taken off.
 type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCreated time.Time) (WorkspaceBundle, WorkspaceBundleTake, error)
 
 // WorkspaceBundleRestored is the runtime's confirmation that the pod replacing the released one
 // has put the issue's saved work back: its launcher ran the restore and reported that it
-// succeeded, naming the release whose save it restored. It drops that release's saved copy and no
-// other (store.Store.DeleteRestoredWorkspaceBundle), so it is called only on that report, and a
-// report that arrives after a later release has saved again finds nothing of its own to delete —
-// a bundle no launcher has restored, because none took it, because the restore failed, or because
-// its confirmation named a release the store no longer holds, stays in the daemon's database for
-// the issue's next pod.
-type WorkspaceBundleRestored func(ctx context.Context, issue string, release int64) error
+// succeeded, naming by its restore id the copy it put back. It drops that copy and no other, and
+// it is called only on that report.
+//
+// The id is all the runtime passes on, and all it knows: a launcher holds its report until some
+// connection carries it, so a report can reach a daemon that has restarted since the send, and
+// the id the slices carried is the only thing in it that is certain of its copy. The daemon routes
+// on it alone, since the two kinds of copy draw their ids from disjoint spaces
+// (store.MinRunningWorkspaceCopyRestoreID): one names a release's bundle, the other a running
+// copy, and one of neither kind deletes nothing — a copy whose issue has saved again since is
+// another row, and the work it holds stays for the issue's next pod.
+type WorkspaceBundleRestored func(ctx context.Context, issue string, restore int64) error
+
+// SavedWorkspaceCopies answers the facts of both copies of issue's workspace the daemon may hold,
+// the release bundle's and the running copy's, neither carrying its bytes
+// (store.Store.SavedWorkspaceCopies). It is the read the restore of a new pod decides on
+// (sandbox's launchers.restoreWorkspace): the newer of the two is the work that pod must be sent,
+// and deciding by taking would spend the other's one restore attempt on a copy nothing reads.
+type SavedWorkspaceCopies func(ctx context.Context, issue string) (bundle, running WorkspaceCopyFacts, err error)
+
+// WorkspaceCopyFacts is what one of those two copies says of itself without its bytes: whether
+// the issue holds it at all, when it was taken, and how large it is.
+//
+// The restore of a new pod reads both before it takes either. A take spends a copy's one restore
+// attempt, so which of the two is the newer work has to be decided from facts that cost no
+// attempt; and a copy runs to tens of megabytes, so a read that wants neither the bytes nor the
+// attempt reads this instead of the row.
+type WorkspaceCopyFacts struct {
+	// Held is whether the issue holds this copy. The other two members mean nothing when it is
+	// false.
+	Held bool
+	// At is when the shim took the copy, by the clock of the node its pod ran on
+	// (WorkspaceBundle.At). It is the whole of the comparison between the two copies.
+	At time.Time
+	// Size is the copy's length in bytes, which the restore's log line carries so that an
+	// operator reading it knows how much work each copy held.
+	Size int
+}
 
 // RegistrationDeadline is the registration deadline's base Boot×RegistrationIntervals bound plus
 // grace: the supervisor's armRegistration calls it with ProvisionBound before a claim's hello and

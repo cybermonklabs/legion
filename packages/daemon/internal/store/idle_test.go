@@ -139,6 +139,42 @@ func TestTheIdleViewReadsTheUnrestoredBundleAndTheRunningHoldStreak(t *testing.T
 	}
 }
 
+// A running copy holds no pod, whatever became of its one restore attempt. The row that holds a
+// pod is the release bundle's (workspaceBundleUnrestored, workflow.IdleHoldBundleUnrestored),
+// because the work in it is in the database alone: the pod it came off is gone, and a release of
+// the pod that holds it instead would take a disk nothing put the work back on. A running copy is
+// the other way round — the work is on the disk it was copied from, and an idle release of that
+// pod saves it again as a bundle — so an issue whose only copy is a running one is released when
+// it goes idle, and a failed restore of that copy changes nothing: the row stays, its attempt is
+// spent, and no pod waits on it.
+func TestTheIdleViewHoldsNoPodForARunningWorkspaceCopy(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	now := time.Now().UTC()
+
+	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the cadence copied"), Head: "abc",
+		At: now, PodUID: "pod-still-running"}
+	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, taken); err != nil {
+		t.Fatalf("take the running copy of %s: %v", rootIssue, err)
+	}
+	if view := idleViewOf(t, st, rootIssue); view.BundleUnrestored {
+		t.Fatalf("view = %+v, want no hold: a running copy is not a bundle no pod restored", view)
+	}
+
+	// The pod that replaced the one the copy came off was sent it and its restore failed: the
+	// attempt is spent and the row stays, which is the state a hold would be read from.
+	if _, take, err := st.TakeRunningWorkspaceCopyForRestore(ctx, rootIssue, "pod-that-replaced-it", now.Add(time.Minute)); err != nil || take != runtime.WorkspaceBundleSend {
+		t.Fatalf("the replacement pod was answered %v (%v), want the running copy", take, err)
+	}
+	if _, held, err := st.RunningWorkspaceCopy(ctx, rootIssue); err != nil || !held {
+		t.Fatalf("the failed restore left the running copy = %t (%v), want it kept", held, err)
+	}
+	if view := idleViewOf(t, st, rootIssue); view.BundleUnrestored {
+		t.Fatalf("view = %+v, want no hold: the idle rule reads the release bundles alone", view)
+	}
+}
+
 // idleViewOf is the pod's view as the release's own transaction reads it (readIdleView, which
 // ReleaseIdleIssue hands to the rule): the store serves no view of its own, because nothing but
 // that decision reads one.

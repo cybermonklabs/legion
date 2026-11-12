@@ -266,14 +266,21 @@ type Options struct {
 	// sweep makes or repairs each one's cache (EnsureRepositoryCache), and retires the cache of a
 	// repository it no longer names once that cache's retention passes. Required for supervision.
 	Mapped func() []ghrepo.Repository
-	// SavedWorkspaceBundle is the bundle an issue's last release saved, and WorkspaceBundleRestored
-	// the confirmation that drops it once the issue's new pod holds it. The pair carries the work a
-	// release took off the released pod's disk back into the pod that replaces it: the runtime
-	// sends it to that pod's launcher before any role of the pod starts (launchers.restoreWorkspace),
-	// and confirms it on the launcher's Held. The daemon fills them from its store; a runtime given
-	// neither restores nothing, which is what a pod whose issue was never released does anyway.
-	SavedWorkspaceBundle    runtime.SavedWorkspaceBundle
-	WorkspaceBundleRestored runtime.WorkspaceBundleRestored
+	// SavedWorkspaceCopies reads what the two copies of an issue's workspace the daemon may hold
+	// say of themselves without their bytes, SavedWorkspaceBundle takes the bundle its last idle
+	// release saved, SavedRunningWorkspaceCopy takes the copy taken while its pod ran, and
+	// WorkspaceBundleRestored is the confirmation that drops whichever copy the new pod's
+	// launcher put back. Together they carry the work a release took off a pod's disk, or a
+	// cadence took off a pod the cluster ended without one, back into the pod that replaces it:
+	// the runtime reads the facts of both, sends the newer to that pod's launcher before any role
+	// of the pod starts and closes the older unsent (launchers.restoreWorkspace), and confirms it
+	// on the launcher's own report. The daemon fills all four from its store; a runtime given
+	// less than the set restores nothing, which is what a pod whose issue holds no copy does
+	// anyway.
+	SavedWorkspaceCopies      runtime.SavedWorkspaceCopies
+	SavedWorkspaceBundle      runtime.SavedWorkspaceBundle
+	SavedRunningWorkspaceCopy runtime.SavedWorkspaceBundle
+	WorkspaceBundleRestored   runtime.WorkspaceBundleRestored
 	// Now stamps observations and ages pods and orphans; time.Now when nil.
 	Now func() time.Time
 	// Log receives what the runtime decides without being asked; slog.Default() when nil.
