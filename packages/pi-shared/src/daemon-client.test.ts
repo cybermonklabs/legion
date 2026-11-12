@@ -299,6 +299,9 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly signOff: (body: object) => Promise<unknown>;
     readonly childPark: (body: object) => Promise<unknown>;
     readonly childRerun: (body: object) => Promise<unknown>;
+    readonly mergeJump: (body: object) => Promise<unknown>;
+    readonly mergeJumpClear: (body: object) => Promise<unknown>;
+    readonly mergeHolds: (body: object) => Promise<unknown>;
   };
   const calls: ReadonlyArray<readonly [keyof WorkflowClient, string, object, string]> = [
     [
@@ -390,6 +393,36 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "/legion/v1/children/rerun",
       { grantId: "grant-208", issue: "LEGION-209" },
       "child-rerun.json",
+    ],
+    // The controller's merge marks: the jump mark on one issue, its clearing, and the whole
+    // hold list, which one call replaces.
+    [
+      "mergeJump",
+      "/legion/v1/merge/jump",
+      { grantId: "grant-208", issue: "LEGION-208", reason: "the release blocker goes in first" },
+      "merge-jump.json",
+    ],
+    [
+      "mergeJumpClear",
+      "/legion/v1/merge/jump/clear",
+      { grantId: "grant-208", issue: "LEGION-208" },
+      "merge-jump-clear.json",
+    ],
+    [
+      "mergeHolds",
+      "/legion/v1/merge/holds",
+      {
+        grantId: "grant-208",
+        holds: [
+          {
+            paths: ["packages/daemon/"],
+            repository: "acme/widgets",
+            reason: "the release window runs until 20:00",
+            endsAt: "2026-09-22T20:00:00Z",
+          },
+        ],
+      },
+      "merge-holds.json",
     ],
   ];
   const { fetch, requests } = daemon((url) => {

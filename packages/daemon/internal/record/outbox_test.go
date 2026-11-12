@@ -41,6 +41,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		}},
 		ControllerNotice{Kind: ProviderErrorsNotice, Role: claim.RoleImplementer,
 			Reason: "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"},
+		ControllerNotice{Kind: MergeJumpRefusedNotice,
+			Reason: "GitHub refused the jump mark Legion spent on LEGION-208: the merge of pull request #42 of acme/widgets at READY's head c0de was not sent to the head of the merge queue"},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Task: "Write the spec."},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
 		LingerClose{Generation: 7},
@@ -53,6 +55,9 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
 		AutoMergeDisable{Number: 42},
 		ReadyMerge{Number: 42, Head: "c0de"},
+		ReadyMerge{Number: 42, Head: "c0de", Queued: now, Held: 25 * time.Minute, HeldSince: now.Add(time.Hour),
+			HeldTold: MergeHoldTold(MergeHold{Paths: []string{"packages/daemon/"}, Reason: "the release window",
+				Session: "ses_controller", EndsAt: now.Add(2 * time.Hour)})},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Task: "Production check of LEGION-208", CheckLook: 2, CheckOpenedAt: now},
 		CheckWakeDue{Look: 2, OpenedAt: now, Reason: "the tester's own wake"},
 		CheckWakeDue{Look: 3, Reason: "a look nobody reported"},
@@ -420,6 +425,58 @@ func TestAStartTheReleaseBeforeWroteWithTheRelaunchMarkStillDecodes(t *testing.T
 	}
 }
 
+// A READY merge whose submission one of the project's merge holds has held carries its three hold
+// marks through the outbox row and back: the time it has spent held, the moment of the open held
+// stretch and the hold it has told of (ReadyMerge.Held, HeldSince, HeldTold). A submission no
+// hold has caught carries none of the three fields, so the payload every daemon before the holds
+// wrote is the payload still written for it, and the row such a daemon left decodes to the zero
+// value of each: a submission that has never been held.
+func TestAHeldREADYMergeCarriesItsHoldMarksThroughTheRow(t *testing.T) {
+	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	told := MergeHoldTold(MergeHold{Paths: []string{"packages/daemon/"}, Reason: "the release window",
+		Session: "ses_controller", EndsAt: now.Add(2 * time.Hour)})
+	for _, tc := range []struct {
+		name    string
+		payload ReadyMerge
+		marks   bool
+	}{
+		{"a submission a hold holds now", ReadyMerge{Number: 42, Head: "c0de", Queued: now, Held: 25 * time.Minute, HeldSince: now.Add(time.Hour), HeldTold: told}, true},
+		{"a submission a hold held and let go", ReadyMerge{Number: 42, Head: "c0de", Queued: now, Held: 25 * time.Minute, HeldTold: told}, true},
+		{"a submission no hold has caught", ReadyMerge{Number: 42, Head: "c0de", Queued: now}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row, err := NewOutboxRow("LEGION-208", tc.payload, now)
+			if err != nil {
+				t.Fatalf("NewOutboxRow: %v", err)
+			}
+			marks := strings.Contains(string(row.Payload), `"held"`) || strings.Contains(string(row.Payload), `"heldSince"`) ||
+				strings.Contains(string(row.Payload), `"heldTold"`)
+			if marks != tc.marks {
+				t.Fatalf("payload %s carries a hold mark: %t, want %t", row.Payload, marks, tc.marks)
+			}
+			got, err := DecodeOutboxPayload(row)
+			if err != nil {
+				t.Fatalf("DecodeOutboxPayload: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.payload) {
+				t.Fatalf("payload = %#v, want %#v", got, tc.payload)
+			}
+		})
+	}
+	// The submission the release before the merge holds queued: its payload carries none of the
+	// three marks, and it decodes to the zero value of each rather than being refused.
+	before := OutboxRow{ID: 43, Kind: OutboxKindReadyMerge, Issue: "LEGION-208",
+		Payload: json.RawMessage(`{"number":42,"head":"c0de","armed":true,"queued":"2026-11-10T09:00:00Z"}`)}
+	got, err := DecodeOutboxPayload(before)
+	if err != nil {
+		t.Fatalf("decoding the submission the release before the merge holds queued = %v, want it accepted", err)
+	}
+	want := ReadyMerge{Number: 42, Head: "c0de", Armed: true, Queued: now}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("payload = %#v, want %#v", got, want)
+	}
+}
+
 // A tick notice carries the names of the deployment capabilities with no decision through the
 // outbox row and back, and a notice with none carries no such field: the controller's payload
 // reads `openCapabilities` only when there is a gap to name.
@@ -692,6 +749,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "merge-stalled", Role: claim.RoleArchitect, Reason: "GitHub has shown pull request #42 open at another head since 2026-11-08T09:00:00Z"},
 		{Kind: "merge-removed", Role: claim.RoleArchitect, Reason: "pull request #42 left the merge queue"},
 		{Kind: "merge-waiting", Role: claim.RoleArchitect, Reason: "Legion submitted the merge of pull request #42 an hour ago and GitHub has not completed it"},
+		{Kind: "merge-held", Role: claim.RoleArchitect, Reason: "the merge of pull request #42 at READY's head c0de is held until 2026-11-08T12:00:00Z by a merge hold of LEGION: the release window"},
 		{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec"},
 		{Kind: "design-changes-requested", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec", Reason: "name the rollback path"},
 		{Kind: "carried-gate-opened", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec", Reason: "the gate came with the hand-over"},

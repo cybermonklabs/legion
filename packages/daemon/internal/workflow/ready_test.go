@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -97,7 +98,7 @@ func TestTheDaemonQueuesAMergeForTheREADYHead(t *testing.T) {
 				apply("approval", intake.DispatchArtifact{Key: "LEGION-208", ArtifactID: "artifact-208", Kind: intake.DispatchArtifactApproved, Version: 4})
 			}
 			assertPhase(t, pool, phase.AwaitingMerge)
-			if got := readyMerges(t, pool); !slices.Equal(got, tc.want) {
+			if got := readyMerges(t, pool); !slices.EqualFunc(got, tc.want, sameReadyMerge) {
 				t.Fatalf("READY merges = %v, want %v", got, tc.want)
 			}
 		})
@@ -125,6 +126,11 @@ func readyMerges(t *testing.T, pool *pgxpool.Pool) []record.ReadyMerge {
 	}
 	return merges
 }
+
+// sameReadyMerge says whether two ready_merge payloads are the same payload. A ReadyMerge
+// carries the merge hold it has told of (record.ReadyMerge.HeldTold), whose path patterns are a
+// slice, so the payload is not comparable and slices.Equal cannot be asked for a list of them.
+func sameReadyMerge(a, b record.ReadyMerge) bool { return reflect.DeepEqual(a, b) }
 
 // A pull request closed while its READY awaits the merge ends that READY's merge row once the close
 // reaches the record. Reopened at the READY head, the READY still stands, so the daemon submits its
@@ -158,7 +164,7 @@ func TestAReopenAtTheREADYHeadSubmitsTheMergeAgain(t *testing.T) {
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "head", Summary: readyPacket, MergeNote: tc.mergeNote})
 			applyRefusingNothing(t, pool, readyEngine(""), intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: tc.head, Reopened: true})
-			if got := readyMerges(t, pool); !slices.Equal(got, tc.want) {
+			if got := readyMerges(t, pool); !slices.EqualFunc(got, tc.want, sameReadyMerge) {
 				t.Fatalf("READY merges after the reopen = %v, want %v", got, tc.want)
 			}
 		})
@@ -185,7 +191,7 @@ func TestAReopenAtTheREADYHeadReusesItsWaitingMergeRow(t *testing.T) {
 		t.Fatalf("queue the waiting READY merge: %v", err)
 	}
 	applyRefusingNothing(t, pool, readyEngine(""), intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", Reopened: true})
-	if got, want := readyMerges(t, pool), []record.ReadyMerge{{Number: 42, Head: "head"}}; !slices.Equal(got, want) {
+	if got, want := readyMerges(t, pool), []record.ReadyMerge{{Number: 42, Head: "head"}}; !slices.EqualFunc(got, want, sameReadyMerge) {
 		t.Fatalf("READY merges after the reopen = %v, want one row %v", got, want)
 	}
 }

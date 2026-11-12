@@ -77,6 +77,27 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	for _, check := range openChecks {
 		checks[check.Issue] = check
 	}
+	// The controller's merge marks, all four read inside this one snapshot transaction like
+	// every other fact here. The holds are read with LiveMergeHolds and never MergeHolds: the
+	// second deletes the project's ended holds, and the transaction this runs in must write
+	// nothing. An ended hold is left to the daemon's own read of the list, and is no part of
+	// this answer either way, which names the live holds alone.
+	jumps, err := s.MergeJumps(ctx, tx, project)
+	if err != nil {
+		return api.State{}, err
+	}
+	holds, err := s.LiveMergeHolds(ctx, tx, project, now)
+	if err != nil {
+		return api.State{}, err
+	}
+	heldMerges, err := s.MergeHeldIssues(ctx, tx, project)
+	if err != nil {
+		return api.State{}, err
+	}
+	jumpRecords, err := s.MergeJumpRecords(ctx, tx, project)
+	if err != nil {
+		return api.State{}, err
+	}
 
 	claimViews := make(map[claim.Token]api.ClaimView, len(claims))
 	for _, current := range claims {
@@ -383,6 +404,15 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			WaitsOn:       row.WaitsOn,
 		}
 	}
+	// The four merge-mark keys, each in the order its read answered: the jump marks and the held
+	// merges by issue, the holds in the list's own order, and the jump records by repository.
+	// They are set from the reads above rather than judged here, because nothing about them is
+	// a join: a mark stands until the merge it governs spends it, and a record is the account of
+	// one that was spent.
+	projected.MergeJumps = api.MergeJumpViewsOf(jumps)
+	projected.MergeHolds = api.MergeHoldViewsOf(holds)
+	projected.MergeHeld = api.MergeHeldViewsOf(heldMerges)
+	projected.MergeJumpRecords = api.MergeJumpRecordViewsOf(jumpRecords)
 	return projected, nil
 }
 

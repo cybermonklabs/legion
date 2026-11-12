@@ -1,7 +1,8 @@
-import { GATED_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
+import { GATED_STEPS, LEGION_ROLES, type LegionRole, zodSchemaApi } from "@legion/contracts";
 import {
   LegionGateRegisterRequest,
   type LegionGrant,
+  LegionMergeHoldsRequest,
   type LegionPhase,
 } from "@legion/contracts/legion-api";
 import {
@@ -65,7 +66,15 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "handoff_complete",
     "ready_for_update",
   ],
-  controller: ["read_state", "set_status", "fresh_session", "compact"],
+  controller: [
+    "read_state",
+    "set_status",
+    "fresh_session",
+    "compact",
+    "set_merge_jump",
+    "clear_merge_jump",
+    "set_merge_holds",
+  ],
 };
 
 /** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'. */
@@ -81,6 +90,9 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   set_status: ["issue", "status"],
   fresh_session: ["issue", "role"],
   compact: ["issue", "role"],
+  set_merge_jump: ["issue", "reason"],
+  clear_merge_jump: ["issue"],
+  set_merge_holds: ["holds"],
 };
 
 const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
@@ -93,6 +105,7 @@ const jsonSuccess = (details: Readonly<Record<string, unknown>>): ToolResult =>
 function toolSchema(pi: PiApi): unknown {
   const z = pi.zod;
   const phase = phaseOpParameters(z);
+  const schema = zodSchemaApi(z);
   return z.object({
     op: z.enum([...OPERATIONS.architect, ...OPERATIONS.controller]),
     issue: phase.issue,
@@ -133,6 +146,24 @@ function toolSchema(pi: PiApi): unknown {
     round: phase.round,
     status: z.enum(ISSUE_STATUSES).optional(),
     role: z.enum(LEGION_ROLES).optional(),
+    holds: z
+      .array(
+        z.object({
+          // The contract takes one path at least and no blank one
+          // (`LegionMergeHoldsRequest`), so the schema the agent is given says the same: a hold
+          // with no path keeps back nothing, and a blank path matches every file of every pull
+          // request. The bounds are set through the shared facade, since the host's own `pi.zod`
+          // need carry no `min` of its own (`contracts`' `zodSchemaApi`).
+          paths: schema.array(schema.string({ min: 1 }), { min: 1 }),
+          repository: z.string().optional(),
+          reason: z.string(),
+          endsAt: z.string(),
+        })
+      )
+      .describe(
+        "set_merge_holds' whole hold list, which replaces the list that stands. Each hold names paths, one or more regular expressions matched unanchored against the paths a pull request changes, a reason, and endsAt, an RFC 3339 time with seconds later than now. A hold may also name a repository as owner/name, one this project serves. A hold that names no repository holds its paths in every repository the project serves. An empty list clears every hold"
+      )
+      .optional(),
   });
 }
 
@@ -164,12 +195,57 @@ function assertOperationInput(parameters: Record<string, unknown>, operation: st
   );
 }
 
+/** The holds `set_merge_holds` is to send, each parsed with the contract's own schema before the
+ * grant is minted, as the daemon checks them before it redeems one (`api.server.holdList`). The
+ * contract is strict, so a key no hold has — `repositry` for `repository` — is refused here
+ * rather than dropped on the way out, which would send a hold meant for one repository as one
+ * that holds its paths in every repository the project serves. Each refusal names the hold by
+ * its place in the list the agent wrote, since a hold has no identifier the two sides share, and
+ * says what is wrong in this file's own words, as `assertOperationInput` does for an unknown
+ * top-level field. A list with no hold in it is the request that clears every hold, so it
+ * passes. */
+function holdList(parameters: Record<string, unknown>) {
+  const holds = parameters.holds;
+  if (!Array.isArray(holds)) throw new Error("set_merge_holds requires holds");
+  return holds.map((hold, index) => {
+    const where = `hold ${index + 1} of set_merge_holds`;
+    const parsed = LegionMergeHoldsRequest.shape.holds.element.safeParse(hold);
+    if (parsed.success) return parsed.data;
+    // The schema decides what is wrong; the sentence is this file's, because zod's own names
+    // the check that failed and never what a hold is for. A problem no sentence here names —
+    // a field a later contract adds — keeps zod's message rather than being swallowed.
+    const problems = parsed.error.issues.map((issue) => {
+      if (issue.code === "unrecognized_keys") {
+        return issue.keys.map((key) => `does not accept field "${key}"`).join("; ");
+      }
+      switch (issue.path[0]) {
+        case undefined:
+          return "is no hold: name its paths, its reason and when it ends";
+        case "paths":
+          return issue.path.length > 1
+            ? "names an empty path, which matches every file of every pull request"
+            : "names no path: a hold with no path keeps back nothing";
+        case "repository":
+          return "names an empty repository: name one this project serves, or leave it out to hold its paths in every one of them";
+        case "reason":
+          return "requires reason";
+        case "endsAt":
+          return "needs endsAt, an RFC 3339 time with seconds, as 2026-11-02T09:00:00Z is";
+        default:
+          return issue.message;
+      }
+    });
+    throw new Error(`${where} ${problems.join("; ")}`);
+  });
+}
+
 /** The daemon's role-local workflow surface: no operation can schedule a worker. Every operation
  * that writes mints its own grant in-process and posts it with the request; nothing is written
  * to the pane. The phase ops run on the executor every harness shares (`executePhaseOp`):
  * `handoff_complete` belongs to every session but the root architect's (a phase worker, and a
  * sub-architect: an architect whose issue is not its tree), and finds what it reports in the pane
- * first (`handoffReport`); `read_state` and `set_status` belong to the controller. */
+ * first (`handoffReport`); `read_state`, `set_status`, the two claim recoveries and the three
+ * merge marks belong to the controller. */
 export function createLegionTool(deps: {
   readonly pi: PiApi;
   readonly daemon: () => LegionDaemonClient;
@@ -266,7 +342,55 @@ export function createLegionTool(deps: {
         "and for role controller. " +
         "Each refusal says what the claim does now and which operation reaches each state. It " +
         "names no moment to come back at: ask again later, and read the claim's state in " +
-        "read_state. ",
+        "read_state. " +
+        "set_merge_jump (issue, reason) marks one issue so that the daemon asks GitHub to put the next merge it " +
+        "submits for that issue at the head of GitHub's merge queue, ahead of the pull requests already in it. The " +
+        "reason stays in the record of the jump after the mark is spent, so the account of what Legion asked GitHub " +
+        "for names the decision. " +
+        "One issue carries at most one mark, and a second set of the same issue replaces the first. Only a merge that " +
+        "goes into a merge queue spends the mark, which is a merge whose base branch requires one. Where the base " +
+        "requires no merge queue there is no queue to jump: the daemon submits that merge as it always does, and the " +
+        "mark stands until clear_merge_jump takes it off or the issue leaves the workflow. " +
+        "The daemon refuses an issue it does not record " +
+        "(ISSUE_NOT_RECORDED), an issue of another project (ISSUE_OUTSIDE_PROJECT), an issue that has left the " +
+        "workflow, which submits no merge to mark (ISSUE_LEFT_WORKFLOW, which also answers an issue whose departure " +
+        "commits while the call is in flight, leaving no mark written), and a call that leaves the reason out. A " +
+        "jump that does not go through does not stop the merge: the daemon submits it without the jump in the same " +
+        "attempt and records what became of the jump's own request — refused where GitHub's answer decided it, " +
+        "unknown where what came back decided nothing and where nothing came back at all — with the words that came " +
+        "back either way. " +
+        "clear_merge_jump (issue) takes an issue's mark off before the merge it was about is submitted. It answers the " +
+        "same whether a mark went or no mark was there, and the daemon refuses an issue it does not record " +
+        "(ISSUE_NOT_RECORDED) or an issue of another project (ISSUE_OUTSIDE_PROJECT). A mark on an issue that has " +
+        "left the workflow is taken off by this call as by any other, which is how such a mark goes. " +
+        "set_merge_holds (holds) replaces the project's whole merge hold list. While a hold stands, the daemon submits " +
+        "no merge whose pull request changes a file one of that hold's paths matches, and the issue waits in " +
+        "awaiting_merge with its architect told which hold holds it. A hold keeps back a merge the daemon has not " +
+        "submitted yet and reaches no merge GitHub already holds: a pull request already in the merge queue, or " +
+        "already armed, merges into the held path on GitHub's own clock, because the daemon sends no dequeue. A hold " +
+        "has no identifier of its own, so one call carries the whole list: send the list without a hold to drop that " +
+        "hold, and an empty list to clear every hold, which is the only way to clear it, since a body that names no " +
+        "list at all is refused (HOLD_LIST_REQUIRED). " +
+        "Each hold names paths, regular expressions matched unanchored against the paths the pull request changes " +
+        "(HOLD_WITHOUT_PATH for a hold that names none, INVALID_HOLD_PATH for a path that is no regular expression), a " +
+        "reason, which the architect of a held issue is told (HOLD_WITHOUT_REASON), and endsAt, an RFC 3339 time later " +
+        "than now (HOLD_ALREADY_ENDED). A hold may also name a repository as owner/name, and this project must serve it " +
+        "(REPOSITORY_NOT_SERVED). A hold that names no repository holds its paths in every repository the project " +
+        "serves. A hold ends by itself at endsAt, and taking a hold off makes every merge a hold was holding back due " +
+        "at once, while a merge GitHub's own rate limit put off keeps the moment GitHub named. The daemon checks every " +
+        "hold before it writes anything, so a list with one bad hold in it leaves the list that stands exactly as it " +
+        "was. " +
+        "All three need the controller's grant, which this session mints, and the daemon refuses a call without one " +
+        "(CONTROLLER_REQUIRED). Each answers an empty object, and read_state reads back what they wrote: mergeJumps the " +
+        "marks that still stand, mergeHolds the hold list, mergeHeld the issues a hold held when their merge row " +
+        "last ran, which is the merges a hold caught and not every merge a held path has. An issue stays in " +
+        "mergeHeld until its row runs again, so a hold that ended or was replaced leaves the issue there with " +
+        "mergeHolds already empty. mergeJumpRecords is the newest jump of each " +
+        "repository, with the queue it asked to go ahead of and, in outcome, what became of the request: asked, " +
+        "which is Legion having asked and never learned; accepted, which is GitHub taking the request; refused, " +
+        "which is an answer that decided it; and unknown, which is an answer that decided nothing or a request " +
+        "nothing came back for, answer carrying the words for those last two. A jump record is what Legion asked " +
+        "GitHub for and never where a merge stands in the queue, accepted included: read GitHub for that. ",
     }),
     defaultInactive: true,
     parameters: toolSchema(pi),
@@ -312,8 +436,30 @@ export function createLegionTool(deps: {
         const client = daemon();
         if (active.kind === "controller") {
           if (operation === "read_state") return jsonSuccess(await client.state());
-          // The controller's three writes: each validated whole before its grant is minted.
+          // The project's whole hold list, which names no issue: every hold is checked before
+          // the grant is minted, as the daemon checks them before it redeems one, so a list with
+          // one bad hold in it writes nothing. The daemon's answer is an empty object.
+          if (operation === "set_merge_holds") {
+            const holds = holdList(parameters);
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(await client.mergeHolds({ grantId, holds }));
+          }
+          // The controller's writes of one issue: each validated whole before its grant is
+          // minted.
           const issue = requiredString(parameters, operation, "issue");
+          if (operation === "set_merge_jump") {
+            // The reason outlives the mark: the record of the jump keeps it after the merge
+            // spends the mark, so a jump the daemon asked GitHub for names the decision behind it.
+            const reason = requiredString(parameters, operation, "reason");
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(await client.mergeJump({ grantId, issue, reason }));
+          }
+          if (operation === "clear_merge_jump") {
+            // The daemon answers the same whether a mark went or none was there: the controller
+            // asked for an issue with no mark, and that is what it has.
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(await client.mergeJumpClear({ grantId, issue }));
+          }
           if (operation === "fresh_session" || operation === "compact") {
             const role = LEGION_ROLES.find((candidate) => candidate === parameters.role);
             if (role === undefined) {

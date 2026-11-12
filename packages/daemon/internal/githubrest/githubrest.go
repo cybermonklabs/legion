@@ -115,9 +115,20 @@ func (e *GraphQLError) NotFoundAt(path ...string) bool {
 	return len(e.Failures) != 0
 }
 
+// ErrGraphQLNoData is GitHub answering a GraphQL request 2xx with no `data` of its own: an empty
+// document, or one whose `data` is `null` and whose `errors` is empty or absent. GitHub answered
+// the request, and nothing of what it did with the operation is in the answer, so a caller that
+// sorts a failure by what it decides (ghautomerge's jumpEnded) matches this and reads it as an
+// answer that decides nothing rather than as a transport failure. It is a sentinel because that
+// is the only way such a caller can tell it from one: the answer carries no status and no
+// GraphQL failure to read it off.
+var ErrGraphQLNoData = errors.New("GitHub GraphQL answered without data")
+
 // GraphQL sends query and variables to the client's API, and reads the answer's data into into when
-// into is not nil. An answer that carries errors is a *GraphQLError, and one other than 2xx an
-// *Answer. GitHub answers its RATE_LIMITED with 200, so the *GraphQLError carries the limit its
+// into is not nil. An answer that carries errors is a *GraphQLError, one other than 2xx an
+// *Answer, and a 2xx carrying no data at all ErrGraphQLNoData — three shapes GitHub answered in,
+// which is what tells each of them from a request nothing came back for.
+// GitHub answers its RATE_LIMITED with 200, so the *GraphQLError carries the limit its
 // headers name. GitHub's GraphQL documentation tells the two apart: a primary limit reports its
 // budget spent (x-ratelimit-remaining: 0), and a secondary limit says so in its message, and may
 // leave the primary budget unspent. Only a limit that spent the primary budget and does not name
@@ -148,7 +159,7 @@ func (c Client) GraphQL(ctx context.Context, query string, variables map[string]
 		return failed
 	}
 	if len(response.Data) == 0 || string(response.Data) == "null" {
-		return errors.New("GitHub GraphQL answered without data")
+		return ErrGraphQLNoData
 	}
 	if into == nil {
 		return nil

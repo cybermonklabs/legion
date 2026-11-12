@@ -97,10 +97,12 @@ func narrowingsExpected(contract int) []string {
 // no line fail here: a body with the keys gone and nothing anywhere saying so is the state this
 // requirement exists to end, where an absent fact and a withheld fact read alike.
 func TestANarrowedBodySaysSo(t *testing.T) {
-	// A caller one contract below the mark is below that narrowing and below every row of
-	// stateNarrowings above it, so its request writes one line for each of them, the mark's own
-	// first, since the table is applied lowest contract first and the line below names the keys
-	// of that one arm.
+	// A caller one contract below the decided record's narrowing is below that row and below
+	// every row of stateNarrowings above it — the issues' answers with the waiting line's own
+	// fields, and the merge marks — so its request writes one line for each of them, the
+	// record's own first, since the table is applied lowest contract first. Between them they
+	// name every key the body is checked for: the `contract` mark and the record's keys from
+	// the first line, the four merge-mark keys from the last.
 	t.Run("a caller below the contract is told nothing, and the log says what was taken", func(t *testing.T) {
 		const remote = statePodAddr + ":41000"
 		body, narrowings := stateNarrowed(t, populatedState(t), remote, podClaims(recordFieldsContract-1))
@@ -109,7 +111,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			t.Errorf("the body served to a pod below %d carries the mark %v; a key in a narrowed body is what the narrowing exists to prevent",
 				recordFieldsContract, mark)
 		}
-		for _, key := range append([]string{"contract"}, recordFieldKeys...) {
+		taken := append(append([]string{"contract"}, recordFieldKeys...), MergeMarkFields...)
+		for _, key := range taken {
 			if bytes.Contains(body, []byte(`"`+key+`"`)) {
 				t.Errorf("the body served to a pod below %d carries %q, which its plugin's schema does not name: %s",
 					recordFieldsContract, key, body)
@@ -121,53 +124,57 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, the mark's own and one for each contract above it: %+v",
 				len(narrowings), recordFieldsContract-1, len(want), narrowings)
 		}
-		line := narrowings[0]
-		if line.Caller != remote || line.Pod != statePodUID {
-			t.Errorf("the line names the caller %q in pod %q, want %q in %q", line.Caller, line.Pod, remote, statePodUID)
+		dropped := ""
+		for _, line := range narrowings {
+			if line.Caller != remote || line.Pod != statePodUID {
+				t.Errorf("the line names the caller %q in pod %q, want %q in %q", line.Caller, line.Pod, remote, statePodUID)
+			}
+			if line.PluginContract != recordFieldsContract-1 || line.DaemonContract != DaemonAPIVersion {
+				t.Errorf("the line names the contracts %d and %d, want the caller's %d and the daemon's %d",
+					line.PluginContract, line.DaemonContract, recordFieldsContract-1, DaemonAPIVersion)
+			}
+			dropped += " " + line.Dropped
 		}
-		if line.PluginContract != recordFieldsContract-1 || line.DaemonContract != DaemonAPIVersion {
-			t.Errorf("the line names the contracts %d and %d, want the caller's %d and the daemon's %d",
-				line.PluginContract, line.DaemonContract, recordFieldsContract-1, DaemonAPIVersion)
-		}
-		// What was dropped, key by key, so a line that named the contract alone — or one arm's
-		// keys under another arm's narrowing — fails here.
-		for _, key := range append([]string{"contract"}, recordFieldKeys...) {
-			if !strings.Contains(line.Dropped, key) {
-				t.Errorf("the line says it dropped %q, which does not name %s", line.Dropped, key)
+		// What was dropped, key by key, so a line that named the contract alone fails here.
+		for _, key := range taken {
+			if !strings.Contains(dropped, key) {
+				t.Errorf("the lines say they dropped%q, which does not name %s", dropped, key)
 			}
 		}
 	})
 
-	// The body of a caller at the contract: the two numbers stand beside the record whose keys
-	// the same contract added, so a reader that has the record can say which contract it reads.
+	// The body of a caller at the contract: the two numbers stand beside the keys the newest
+	// narrowings added, the decided record's among them, so a reader that has the record can say
+	// which contract it reads.
 	t.Run("a caller at the contract carries the two numbers beside the record", func(t *testing.T) {
-		body, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(recordFieldsContract))
+		body, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(mergeMarksContract))
 
 		mark, carried := contractServed(t, body)
 		if !carried {
-			t.Fatalf("the body served to a pod at %d carries no `contract` mark: %s", recordFieldsContract, body)
+			t.Fatalf("the body served to a pod at %d carries no `contract` mark: %s", mergeMarksContract, body)
 		}
-		want := map[string]any{"daemon": float64(DaemonAPIVersion), "caller": float64(recordFieldsContract)}
+		want := map[string]any{"daemon": float64(DaemonAPIVersion), "caller": float64(mergeMarksContract)}
 		if len(mark) != len(want) || mark["daemon"] != want["daemon"] || mark["caller"] != want["caller"] {
 			t.Errorf("the mark is %v, want %v: the contract the daemon declares and the one the caller's pod records", mark, want)
 		}
-		for _, key := range recordFieldKeys {
+		for _, key := range append(append([]string{}, recordFieldKeys...), MergeMarkFields...) {
 			if !bytes.Contains(body, []byte(`"`+key+`"`)) {
 				t.Errorf("the body served to a pod at %d carries no %q; the mark is meant to stand beside the record: %s",
-					recordFieldsContract, key, body)
+					mergeMarksContract, key, body)
 			}
 		}
-		// A caller at this contract stands below the contracts above it and is narrowed by those
-		// alone: the log names every one of them and never the mark's own arm, whose line would
-		// mean the record had been taken out of the body just read.
-		wantLines := narrowingsExpected(recordFieldsContract)
+		// A caller at this contract is narrowed by the rows above it alone, of which there are
+		// none while this contract is the highest the table holds: the log names each of them
+		// and never the mark's own arm, whose line would mean the record had been taken out of
+		// the body just read.
+		wantLines := narrowingsExpected(mergeMarksContract)
 		if len(narrowings) != len(wantLines) {
 			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
-				len(narrowings), recordFieldsContract, len(wantLines), narrowings)
+				len(narrowings), mergeMarksContract, len(wantLines), narrowings)
 		}
 		for i, line := range narrowings {
 			if line.Dropped != wantLines[i] {
-				t.Errorf("line %d of a caller at %d says it dropped %q, want %q", i, recordFieldsContract, line.Dropped, wantLines[i])
+				t.Errorf("line %d of a caller at %d says it dropped %q, want %q", i, mergeMarksContract, line.Dropped, wantLines[i])
 			}
 		}
 	})

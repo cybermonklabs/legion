@@ -245,6 +245,22 @@ one held — what the worker learned of its issue, and what it had not yet pushe
 and cures nothing in a provider outage, where the next session's turns are refused as the last
 one's were.
 
+## `merge-jump-refused on <KEY>` (`{kind: "merge-jump-refused", reason}`)
+
+A marked merge's own jump request did not come back accepted.
+`reason` names the issue, its pull request, `READY`'s head and what became of the jump: GitHub answered and that answer decided it, or Legion does not know whether GitHub took the request, which is an answer that decided nothing as much as a request nothing came back for.
+The daemon submitted that merge without the jump in the same attempt and posted the same account on the Dispatch issue, so the merge is on its way.
+Nothing is held, nothing failed, and no status moved.
+
+What is left to you is a decision: whether the issue still needs a jump.
+The mark is spent, and the merge it governed is submitted, so `set_merge_jump` on that issue marks the next merge the daemon submits for it.
+Read in the `reason` which of the two happened, because a jump GitHub refused says something about the repository's merge-queue rules and a jump whose end nobody knows says nothing at all.
+Read `mergeJumpRecords` in `read_state` too, which holds the newest jump of each repository with the queue that jump was asked of, its `outcome` — `asked`, `accepted`, `refused` or `unknown` — and, in `answer`, the same words.
+It keeps one row for each repository, so the row you find there may be a later jump of the same repository.
+Check the row's `issue` and `head` against the issue and the head the notice named before you read the row as this jump's.
+No outcome says where that merge stands in the queue, `accepted` included: it is GitHub taking the request, and the queue after it is GitHub's to read.
+`clear_merge_jump` takes a mark off again while the merge it is about is still unsubmitted.
+
 ## GitHub mentions
 
 Read the mention and its artifact. Answer a mention that asks you for triage or for information

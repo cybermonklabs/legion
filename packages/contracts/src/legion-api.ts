@@ -827,6 +827,125 @@ const legionConsumerLag = z.object({
   unavailable: nonEmptyString.optional(),
 });
 
+/** `api.MergeJumpView` — one issue's live jump mark (contract 86): the issue, what the controller
+ * said the jump is for, the controller session that set it and when. It carries no state of its
+ * own, because the mark has none: a mark the state shows has not been spent, and one the daemon
+ * spent or the controller took off is gone. `session` is empty for a project whose controller has
+ * not registered, which is the only reader the daemon has for a mark's author. */
+const legionMergeJump = z.object({
+  issue: issueKey,
+  reason: nonEmptyString,
+  session: z.string(),
+  setAt: timestamp,
+});
+
+/** `api.MergeHoldView` — one live merge hold (contract 86): the unanchored regular expressions it
+ * matches against the paths a pull request changes, the repository it holds them in, what the
+ * controller said the hold is for, when it stops holding, and the controller session that set the
+ * list and when. `repository` is `owner/name`, and the empty string is every repository the
+ * project serves, so it is a plain string here; it is spelled `repository` and not `repo`, as the
+ * route that sets it spells it (`api.MergeHoldRequest`). `paths` is never null: the daemon writes
+ * an empty array for a hold whose paths it has none of, which no hold the record answers is. */
+const legionMergeHold = z.object({
+  paths: z.array(nonEmptyString),
+  repository: z.string(),
+  reason: nonEmptyString,
+  endsAt: timestamp,
+  session: z.string(),
+  setAt: timestamp,
+});
+
+/** `api.MergeHeldView` — one issue whose merge a hold held when its `ready_merge` row last ran
+ * (contract 86): the issue, and when that row runs again, which is when the daemon reads the
+ * holds once more. The row keeps the moment a hold caught it until its next run finds no hold,
+ * so the hold that caught this row may have ended or been replaced since, and `mergeHolds` can
+ * be empty while this key names an issue. Nothing else of the row is here: the row's payload is
+ * the submission's own business, and a reader of this key asks which merges the holds are
+ * costing and when each is tried next.
+ *
+ * It is the merges a hold caught and not every merge a held path has. A hold stops a submission
+ * the daemon has not made yet, so a pull request already in the merge queue or already armed
+ * merges into the held path on GitHub's own clock and stands in no key of this state: the daemon
+ * sends no dequeue (the spec's R6). */
+const legionMergeHeld = z.object({
+  issue: issueKey,
+  dueAt: timestamp,
+});
+
+/** `api.MergeQueueEntryView` (`record.MergeQueueEntryRecord`) — one entry of GitHub's merge queue
+ * as it stood before a jump: the pull request's number, its place in the queue as the daemon read
+ * it, whether that entry itself jumped, GitHub's own state of it (`QUEUED`, `MERGEABLE` and the
+ * rest, in GitHub's spelling, so a state this build does not know is read rather than refused),
+ * and when GitHub says it joined the queue.
+ *
+ * `number` is 0 for an entry whose pull request GitHub did not answer. GitHub's queue read
+ * declares each entry's pull request as nullable, and the daemon keeps such an entry rather than
+ * dropping it, because the entry's place in the queue is the whole of what the record exists to
+ * report (`ghautomerge.QueueEntries`). So the number is nonnegative rather than positive: a jump
+ * record is kept indefinitely, one per repository, and one unanswered entry in one of them must
+ * not make the whole state body unreadable. */
+const legionMergeQueueEntry = z.object({
+  number: z.number().int().nonnegative(),
+  position: z.number().int().nonnegative(),
+  jump: z.boolean(),
+  state: nonEmptyString,
+  enqueuedAt: timestamp,
+});
+
+/** The four values `api.MergeJumpRecordView.outcome` takes (`record.MergeJumpOutcome`), which a
+ * jump record carries from the moment it is written:
+ *
+ * - `asked`: the daemon asked GitHub and has not learned what came of it. It is written in the
+ *   transaction that spends the mark, before the mutation is sent, and a stopped daemon or a
+ *   lease that moved on leaves it standing, where it says what is true of both.
+ * - `accepted`: the enqueue mutation came back with no error, which is GitHub taking the
+ *   request.
+ * - `refused`: an answer came back that decides it — GitHub's own GraphQL error, or the 4xx it
+ *   decided the request itself with.
+ * - `unknown`: an answer came back and decided nothing — a 5xx of GitHub's own edge, a 2xx
+ *   carrying no data — or nothing came back at all — a dial that failed, a timeout, a
+ *   connection closed before any status arrived. `answer` tells those apart in its own words,
+ *   and no reader branches on the difference. */
+const legionMergeJumpOutcome = z.enum(["asked", "accepted", "refused", "unknown"]);
+
+/** `api.MergeJumpRecordView` — the newest jump of one repository (contract 86): the repository,
+ * the issue whose mark was spent, the pull request's number and head, when the daemon asked, the
+ * reason the mark carried, the queue as it stood before the request (oldest entry first, which
+ * is what names whose merge the jump asked to go ahead of), how long that queue was, whether the
+ * daemon has no reading of that queue at all, and what became of the jump's own request, with
+ * the words that decided it.
+ *
+ * `entriesTotal` and `entriesUnknown` are both here because `entries` alone cannot be read: it may
+ * hold less of the queue than the queue had, and an empty `entries` is a queue of nothing only
+ * when `entriesUnknown` is false. `entriesUnknown` is the daemon having no reading of that queue:
+ * the read failed — GitHub refused it, it ran out of time, or its body would not read — or
+ * GitHub answered that the branch has no merge queue at all. A queue GitHub answered empty was
+ * read and found empty, so it leaves `entriesUnknown` false.
+ *
+ * `outcome` is one of four and never empty (`legionMergeJumpOutcome`), so no reader has to tell
+ * what became of a jump from a field nobody wrote: a record that carried a flag set only on
+ * failure read the same for a jump GitHub took, a jump still in flight and a jump whose failure
+ * the daemon could not write down, and every reader took the most hopeful of them. `answer`
+ * carries GitHub's status and words, or the transport failure's own text, for `refused` and
+ * `unknown`, and is empty for `asked` and `accepted`.
+ *
+ * None of the four says where the merge stands, `accepted` least of all: that is the mutation
+ * answering, and GitHub's queue after it is read on GitHub. Nor does `entries` say it — that is
+ * the queue as the daemon read it before the request. */
+const legionMergeJumpRecord = z.object({
+  repository: nonEmptyString,
+  issue: issueKey,
+  number: z.number().int().positive(),
+  head: nonEmptyString,
+  at: timestamp,
+  reason: nonEmptyString,
+  entries: z.array(legionMergeQueueEntry),
+  entriesTotal: z.number().int().nonnegative(),
+  entriesUnknown: z.boolean(),
+  outcome: legionMergeJumpOutcome,
+  answer: z.string(),
+});
+
 /** `api.State`, the body of `GET /legion/v1/state`. `controllerLocator` is absent until a session
  * registers as the project's controller: with the capability `legion controller start` fetched, or,
  * under `controller: daemon`, with the boot token of the daemon's own controller launch;
@@ -855,13 +974,24 @@ const legionConsumerLag = z.object({
  * for a caller in a pod below 73, and for that caller alone, since a reader before 73 refuses the
  * key when it is 0 as surely as when it names a number (`api.stateFor`, `withoutClaimsToRefresh`).
  * A caller in a pod whose claims record no contract at all is served the count, as is a caller the
- * daemon can place in no pod. The two strips compose on one body: a caller below 53 is below 73 too
- * and is served neither key. `contract` is the mark of the narrowing, the two contract numbers
+ * daemon can place in no pod. `contract` is the mark of the narrowing, the two contract numbers
  * the daemon's own log line names (contract 75), optional for the same reason the other two are:
  * the route strips it for a caller in a pod below 75, and for that caller alone, since a reader
  * before 75 refuses the key (`api.stateFor`, `withoutRecordFields`). A caller in a pod whose
  * claims record no contract and a caller the daemon can place in no pod are served the mark, and
- * the shapes `internal/projection` answers before the route marks them carry none either. */
+ * the shapes `internal/projection` answers before the route marks them carry none either.
+ * `mergeJumps`, `mergeHolds`, `mergeHeld` and `mergeJumpRecords` are
+ * the controller's merge marks (contract 86): the issues whose next merge the daemon asks GitHub
+ * to put at the head of its merge queue, the project's live holds, the issues whose merge a hold
+ * held when their `ready_merge` row last ran, and the newest jump of each repository that has had
+ * one — what Legion asked GitHub for, never where a merge stands — each never null and each empty
+ * while the project carries none of it. All four are optional here for the reason `wakesWaiting`
+ * is: a reader before 86 knows none of them and refuses each as surely when it is empty as when
+ * it names a mark, so the route leaves all four off the one body it serves a caller in a pod
+ * whose claims record a contract below 86 (`api.stateFor`, `withoutMergeMarks`). A reader that
+ * finds them absent has been served that stripped body and learns nothing about the marks rather
+ * than losing the whole state. The four strips compose on one body: a caller below 53 is below
+ * 73, below 75 and below 86 as well, and is served none of these keys. */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo,
   contract: legionContract.optional(),
@@ -878,6 +1008,10 @@ export const LegionStateResponse = z.object({
   repositories: legionRepositories,
   settings: legionSettings,
   consumers: z.array(legionConsumerLag),
+  mergeJumps: z.array(legionMergeJump).optional(),
+  mergeHolds: z.array(legionMergeHold).optional(),
+  mergeHeld: z.array(legionMergeHeld).optional(),
+  mergeJumpRecords: z.array(legionMergeJumpRecord).optional(),
 });
 
 export type LegionState = z.output<typeof LegionStateResponse>;
@@ -1242,7 +1376,7 @@ export type LegionGrant = z.output<typeof LegionGrantResponse>;
 /** Every completed fact route returns an intentional empty JSON object. The shape names no field,
  * so it accepts any JSON object and refuses a body that is not one (an array, a string); a field
  * the daemon adds to a fact route is caught by the golden drift test in `legion-api.test.ts`,
- * where each of the eight fact-route goldens is `{}`, not at runtime. */
+ * where each of the eleven fact-route goldens is `{}`, not at runtime. */
 export const LegionEmptyResponse = z.object({});
 /** `api.HandoffCompleteResponse`: `note` is what READY answers when it has something to say about
  * the merge it publishes - the pull request was already merged, so its head's handoffs went
@@ -1313,6 +1447,69 @@ export const LegionIssueStatusRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
   status: z.enum(["todo", "backlog", "icebox"]),
+});
+
+/** `api.MergeJumpRequest`, the controller's jump mark on one issue, posted to
+ * `POST /legion/v1/merge/jump`: the daemon asks GitHub to put the next merge it submits for
+ * `issue` at the head of GitHub's merge queue, and `reason` is what the controller says the jump
+ * is for, which the record of the jump keeps after the mark is spent. The daemon refuses a
+ * request without a controller grant (`CONTROLLER_REQUIRED`), one naming an issue of another
+ * Dispatch project (`ISSUE_OUTSIDE_PROJECT`, since the daemons of several projects share one
+ * database and a mark is kept under the issue's key alone), one naming an issue it does not
+ * record (`ISSUE_NOT_RECORDED`), one naming an issue that has left the workflow and so submits
+ * no merge to mark (`ISSUE_LEFT_WORKFLOW`), and one leaving a field empty, each before the grant
+ * is redeemed. `ISSUE_LEFT_WORKFLOW` also answers a departure that commits while the request is
+ * in flight: the write of the mark is conditional on the issue still being one the daemon runs,
+ * so nothing is written and the caller is told the same thing. An issue holds at most one mark,
+ * so a second set of the same issue replaces the first rather than being refused: the route
+ * takes the controller's newest word. */
+export const LegionMergeJumpRequest = z.strictObject({
+  grantId: nonEmptyString,
+  issue: nonEmptyString,
+  reason: nonEmptyString,
+});
+
+/** `api.MergeJumpClearRequest`, the controller taking an issue's jump mark off again
+ * (`POST /legion/v1/merge/jump/clear`), which is how it undoes a decision before the merge the
+ * mark was about is submitted. It carries no reason: the mark that carried one is gone, and
+ * nothing keeps the account of a jump that never happened. The daemon answers the same whether a
+ * mark went or none was there, and refuses the request without a controller grant
+ * (`CONTROLLER_REQUIRED`), for an issue of another project (`ISSUE_OUTSIDE_PROJECT`) and for an
+ * issue it does not record (`ISSUE_NOT_RECORDED`). It takes no `ISSUE_LEFT_WORKFLOW`: a mark on
+ * an issue that has left the workflow is exactly what this route is for. */
+export const LegionMergeJumpClearRequest = z.strictObject({
+  grantId: nonEmptyString,
+  issue: nonEmptyString,
+});
+
+/** One hold of the list `api.MergeHoldsRequest` carries (`api.MergeHoldRequest`). `paths` are
+ * regular expressions matched, unanchored, against the paths a pull request changes, and the hold
+ * catches a merge when one of them matches one changed file; the daemon refuses a hold that names
+ * none and one whose path is blank (`HOLD_WITHOUT_PATH`) or is no regular expression
+ * (`INVALID_HOLD_PATH`), so the list here is never empty. `repository` is `owner/name` and must be
+ * one the project serves (`REPOSITORY_NOT_SERVED`); left out, the hold holds its paths in every
+ * repository the project serves, which is what a hold of a path several repositories carry wants.
+ * `reason` is what the controller says the hold is for, which the architect of a held issue is
+ * told (`HOLD_WITHOUT_REASON`), and `endsAt` when it stops holding, an absolute time that must be
+ * after the moment of the call (`HOLD_ALREADY_ENDED`): a hold ends by itself, so a controller that
+ * forgets one stops nobody for longer than it said. `endsAt` is a `LegionInstant`, not a
+ * `timestamp`, because the daemon's decode of it refuses a time with no seconds. */
+const legionMergeHoldRequest = z.strictObject({
+  paths: z.array(nonEmptyString).min(1),
+  repository: nonEmptyString.optional(),
+  reason: nonEmptyString,
+  endsAt: LegionInstant,
+});
+
+/** `api.MergeHoldsRequest`, the project's whole merge hold list (`POST /legion/v1/merge/holds`).
+ * One call replaces the list: a hold has no identifier of its own, so a controller that wants to
+ * drop one sends the list without it, and an empty list clears every hold. The daemon refuses the
+ * request without a controller grant (`CONTROLLER_REQUIRED`), and checks every hold before the
+ * grant is redeemed, naming each refusal by the hold's place in the list sent, so a list with one
+ * bad hold in it leaves the list that stands exactly as it was. */
+export const LegionMergeHoldsRequest = z.strictObject({
+  grantId: nonEmptyString,
+  holds: z.array(legionMergeHoldRequest),
 });
 
 /** `api.GateRegisterRequest`, the architect's current Dispatch document approval target, for one

@@ -113,5 +113,9 @@
       }
     ]
   },
-  "consumers": []
+  "consumers": [],
+  "mergeJumps": [],
+  "mergeHolds": [],
+  "mergeHeld": [],
+  "mergeJumpRecords": []
 }

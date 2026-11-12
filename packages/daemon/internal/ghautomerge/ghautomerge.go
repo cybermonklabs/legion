@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -57,6 +58,20 @@ const (
 	merge = `mutation MergeREADYHead($id: ID!, $head: GitObjectID!, $method: PullRequestMergeMethod!) {
   mergePullRequest(input: {pullRequestId: $id, expectedHeadOid: $head, mergeMethod: $method}) { clientMutationId }
 }`
+	// The enqueue is the one document sent for a jump mark, and nothing else sends it: that is why
+	// its jump is a literal of the document rather than a variable, and why it declares only the
+	// two variables it uses, which GraphQL's "All Variables Used" and "All Variable Uses Defined"
+	// rules (sections 5.8.4 and 5.8.3) require of every document GitHub reads an input of.
+	//
+	// GitHub's EnqueuePullRequestInput carries clientMutationId, pullRequestId, jump and
+	// expectedHeadOid and no merge method at all (read from GitHub's own GraphQL schema on
+	// 2026-11-10), so the merge queue's own rule decides how the entry merges, where the enable
+	// above names SQUASH. An entry already in the queue cannot be moved to its front this way —
+	// GitHub refuses a jump on a queued entry, and only a dequeue and a fresh enqueue move one —
+	// which this package never meets: it decides the jump before the entry exists.
+	enqueue = `mutation EnqueueREADYHead($id: ID!, $head: GitObjectID!) {
+  enqueuePullRequest(input: {pullRequestId: $id, expectedHeadOid: $head, jump: true}) { clientMutationId }
+}`
 )
 
 // Outcome is how Submit ended: a submission it asks to run again is a wait it returns instead.
@@ -76,6 +91,127 @@ const (
 // Keep answers the READY head an arm is legitimate for, empty when none is. Disarm asks it only
 // after reading GitHub.
 type Keep func(context.Context) (string, error)
+
+// Marks is what the caller decides about one submission the moment before it is sent: the
+// controller's own marks on the issue, which this package knows nothing of and reads nothing of.
+// Submit asks it once it has chosen a submission from GitHub's answer and before it sends that
+// submission's mutation, so a mark is spent against the submission GitHub's own rules called for
+// and never against one the caller guessed.
+//
+// Hold is asked first, of every submission. An error it answers is the submission's whole answer,
+// returned by Submit as it stands and nothing sent on that run, so the caller can hand back a wait
+// carrying the hold's own end time (Held) and have its row run again then. A nil answer is a
+// submission no hold catches.
+//
+// Jump is asked only where the chosen submission is the enqueue on a merge-queue base, the one
+// place a jump means anything: everywhere else the plain merge and the auto-merge arm go out
+// unchanged, so a jump mark on a pull request whose base has no merge queue is left where it is
+// for the submission that can spend it. branch is the base branch the pull request merges into,
+// from the read Submit has just made, so a caller that reads the queue before the jump
+// (QueueEntries) needs no further read of its own to learn which queue it is about to jump. An
+// error it answers is the submission's whole answer, returned as it stands.
+//
+// JumpEnded is told what became of the jump's own mutation, for every jump Jump answered true
+// to and nothing else: the outcome (JumpOutcome) and the words that decided it. A jump GitHub
+// took is told at once, before Submit answers its wait; a jump that did not take is told before
+// the submission Submit chose goes out in its place, in the same attempt. The caller is told
+// both ways because an outcome nobody wrote is one every reader of the caller's account has to
+// guess at, and the guess is always the hopeful one.
+//
+// An error it answers is the submission's whole answer, returned as it stands. A caller answers
+// nil for JumpAccepted whatever its own write did: the entry is in GitHub's queue by then, and a
+// row failed there would submit the same merge again over an account it could not write down.
+//
+// Jump answers no reason. The caller's own record of why a jump was made is the mark it read to
+// answer Jump, which it still holds at that moment, and Submit sends the enqueue for every true
+// answer: the moment Jump answers true is the moment the mark is spent, so the caller can write
+// its account there. A reason returned to Submit would be a value Submit never reads, which no
+// compiler checks and no test of this package can pin.
+type Marks interface {
+	Hold(ctx context.Context) error
+	Jump(ctx context.Context, branch string) (jump bool, err error)
+	JumpEnded(ctx context.Context, outcome JumpOutcome, answer string) error
+}
+
+// JumpOutcome is what became of the jump's own mutation, told to the caller (Marks.JumpEnded)
+// with the words that decided it. There are three, because the fourth state a jump can be in —
+// asked, and nothing learned — is what the caller's own record says before this package is
+// reached at all.
+//
+// JumpAccepted is the mutation answering with no error: GitHub took the request. It says that
+// and no more, since where the merge then stands in GitHub's queue is nothing this package reads.
+//
+// JumpRefused is an answer that decides the mutation: GitHub's own GraphQL error, a rate limit
+// among them, which GitHub sends with 200; and the 4xx GitHub decides the request itself with
+// before any GraphQL document is read — a 401 or a 403 the token is refused by, a 403 secondary
+// rate limit, a 429. Each is GitHub answering about this very request and settling it.
+//
+// JumpUnknown is everything else, which is two things the caller writes down the same way. An
+// answer came back and decided nothing: the 500 or 502 GitHub's own edge sends for an API of
+// its that decided nothing, and the 2xx that carried no data at all
+// (githubrest.ErrGraphQLNoData). Or no answer Legion could read came back at all: a dial that
+// failed, a timeout, a body that would not read, a connection closed before any status
+// arrived, so what became of the mutation is what nobody knows. The answer's own words tell the
+// two apart — GitHub's status and words where GitHub sent any, and a sentence saying no answer
+// could be read where it did not — and no reader branches on the difference, because what may
+// be said of either is the one thing: Legion asked, and what GitHub did with the request is not
+// known.
+//
+// Every outcome but JumpAccepted falls back to the submission Submit chose, in the same attempt,
+// and the mark is spent either way.
+type JumpOutcome string
+
+const (
+	JumpAccepted JumpOutcome = "accepted"
+	JumpRefused  JumpOutcome = "refused"
+	JumpUnknown  JumpOutcome = "unknown"
+)
+
+// jumpEnded is what a failed jump mutation is, as JumpEnded is told it: the outcome and the
+// words that go with it. failure is never nil here, since an accepted mutation is answered
+// where it is sent.
+//
+// An answer whose text already names GitHub's own status is handed on as it stands, because the
+// account that quotes it has to read as the answer GitHub gave: a 502 renders as "GitHub
+// answered POST /graphql with 502", and calling that a request nothing came back for would
+// disagree with the very words it quotes. What is left is every failure that left the client no
+// answer to read: a dial that failed, a timeout after the request was written, a connection
+// reset, a body that would not read once the status had arrived (githubrest's GraphQL), a 2xx
+// whose body is not JSON. Its sentence says that and no more — the request may well have
+// reached GitHub, and where the status arrived first GitHub did answer — so it claims no
+// failure to deliver, and it is still what keeps these apart from GitHub's own 5xx once both
+// are the one outcome.
+func jumpEnded(failure error) (JumpOutcome, string) {
+	var refusal *githubrest.GraphQLError
+	var answer *githubrest.Answer
+	switch {
+	case errors.As(failure, &refusal):
+		return JumpRefused, failure.Error()
+	case errors.As(failure, &answer):
+		if answer.Status >= http.StatusBadRequest && answer.Status < http.StatusInternalServerError {
+			return JumpRefused, failure.Error()
+		}
+		return JumpUnknown, failure.Error()
+	case errors.Is(failure, githubrest.ErrGraphQLNoData):
+		return JumpUnknown, failure.Error()
+	}
+	return JumpUnknown, "No answer Legion could read came back from GitHub: " + failure.Error()
+}
+
+// NoMarks is the Marks of a caller that has none: it holds nothing and jumps nothing, and every
+// submission goes out as it did before marks existed. It is a named type with the three methods
+// rather than a nil Marks, so a caller passes ghautomerge.NoMarks{} and Submit nil-checks nothing
+// on the one path every merge of this daemon runs through.
+type NoMarks struct{}
+
+// Hold holds nothing.
+func (NoMarks) Hold(context.Context) error { return nil }
+
+// Jump jumps nothing.
+func (NoMarks) Jump(context.Context, string) (bool, error) { return false, nil }
+
+// JumpEnded has no jump to end, so it is never called; it answers nothing.
+func (NoMarks) JumpEnded(context.Context, JumpOutcome, string) error { return nil }
 
 // Disarm turns off what would merge pull request number of repo without a person, through github,
 // a GraphQL client (githubrest.GraphQLAPI): its auto-merge where GitHub has it enabled, then its
@@ -161,16 +297,16 @@ type FailingRun struct {
 // failed in, with what its log said after them where it has been read.
 //
 // Name, Result and URL come out of GitHub's own check list, and this is the one place any of
-// them is written, so all three pass through cutLine here: that is the rule every string of
+// them is written, so all three pass through CutLine here: that is the rule every string of
 // GitHub's this package renders is held to, one cut each at one place (jobFailures). Log
 // arrives cut, by the read that wrote it. The cut costs GitHub's own run link nothing, since
-// cutLine leaves a string of failureLineUnits runes or fewer exactly as it stands and that
+// CutLine leaves a string of failureLineUnits runes or fewer exactly as it stands and that
 // link is of a fixed shape and some seventy characters. What it holds is the link of no fixed
 // shape: a third-party App's check run is named by the details URL that App wrote and a commit
 // status by its target URL (failingRuns), each as long as whoever posted the check made it,
 // and the first run of a removal is named however long its line is (FailingRuns).
 func (f FailingRun) String() string {
-	return fmt.Sprintf("%s (%s, %s)%s", cutLine(f.Name), cutLine(f.Result), cutLine(f.URL), f.Log)
+	return fmt.Sprintf("%s (%s, %s)%s", CutLine(f.Name), CutLine(f.Result), CutLine(f.URL), f.Log)
 }
 
 // failingRunsUnits is how long the runs of one removal are named for before the rest are
@@ -254,13 +390,32 @@ func FailingRuns(runs []FailingRun) string {
 // the refusal as its context, so a rate limit it meets reaches the caller (githubrest.RetryAfter).
 // Any other failure, an HTTP or network one included, is returned as it is, for the row to retry.
 //
+// marks is what the caller decides about this one submission (Marks), asked once the submission is
+// chosen and before its mutation is sent: a hold, which answers the whole submission with the
+// caller's own error and sends nothing at all, and a jump, which sends GitHub's enqueue with jump
+// in place of the enable on a merge-queue base. A caller with no marks passes NoMarks{} and every
+// mutation is the one it was before. GitHub's acceptance of a jump is the same outcome as its
+// acceptance of that enable: an entry in the queue, which is a wait (Armed), not a merge.
+//
+// What became of the jump's own mutation is told to the caller every time, accepted as much as
+// failed (Marks.JumpEnded, JumpOutcome): an outcome told only on failure would leave the caller
+// writing "no failure recorded" for a jump GitHub took, a jump still in flight and a jump whose
+// failure nobody could write down alike. An accepted mutation is told at once and Submit then
+// answers its wait; any error at all — a refusal no retry repairs as much as a rate limit or a
+// network failure — is told and then the submission chosen is sent in the same attempt, exactly
+// as it is sent without a mark.
+// The jump's failure never becomes a *Refused and never ends the row; the fallback's
+// refusal still does, on the path every submission's refusal takes. The mark is spent by the time
+// the mutation goes out, so a transient failure that did not fall back would lose the jump and
+// delay the merge for nothing.
+//
 // github is GitHub's GraphQL route, and the one client Submit calls: deciding a submission reads
 // and changes the pull request and nothing else, so a removal it reads names each failing run
 // with its Actions job (MergeFailed, Removed, ConflictRemoval) and leaves the log of that job to
 // its caller, which reads it once the decision is made and only where it tells of it
 // (ReadFailingTests). A read of a 54 MB log cannot finish inside a merge row's own budget, so
 // deciding a removal must never wait on one.
-func Submit(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, number int, head string, armed bool, keep Keep) (Outcome, error) {
+func Submit(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, number int, head string, armed bool, keep Keep, marks Marks) (Outcome, error) {
 	answer, err := readRepository(ctx, github, repo, number)
 	if err != nil {
 		return "", err
@@ -294,8 +449,40 @@ func Submit(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 	if !ok {
 		return "", &Unmergeable{Number: number, Repo: repo, Head: head, State: pull.MergeStateStatus, Queue: pull.IsMergeQueueEnabled}
 	}
-	variables := map[string]any{"id": pull.ID, "head": head, "method": "SQUASH"}
-	sent := github.GraphQL(ctx, chosen.mutation, variables, nil)
+	if err := marks.Hold(ctx); err != nil {
+		return "", err
+	}
+	if chosen == enqueueSubmission {
+		jumping, err := marks.Jump(ctx, pull.baseName())
+		if err != nil {
+			return "", err
+		}
+		if jumping {
+			jumpFailure := github.GraphQL(ctx, jumpSubmission.mutation, jumpSubmission.variables(pull.ID, head), nil)
+			if jumpFailure == nil {
+				// GitHub took the request, and the caller is told so before anything else:
+				// nothing after this point can learn it, and the caller's account would
+				// otherwise stand at what it wrote before the mutation went out.
+				if err := marks.JumpEnded(ctx, JumpAccepted, ""); err != nil {
+					return "", err
+				}
+				// The read before this mutation found nothing armed, so the wait carries no
+				// entry: GitHub has just made one, and the next run reads it, exactly as it
+				// does for the enable this jump was sent in place of.
+				return "", pull.armedWait(repo, number, head)
+			}
+			// Any failure at all falls back, a refusal no retry repairs as much as a rate limit
+			// or a network failure: the mark is spent, and a run that did not fall back would
+			// lose it and delay the merge for nothing. What the failure decides, and the words
+			// that decide it, travel together (jumpEnded), because the caller writes an answer
+			// GitHub gave and a jump nothing came back for in different words.
+			outcome, answered := jumpEnded(jumpFailure)
+			if err := marks.JumpEnded(ctx, outcome, answered); err != nil {
+				return "", err
+			}
+		}
+	}
+	sent := github.GraphQL(ctx, chosen.mutation, chosen.variables(pull.ID, head), nil)
 	switch {
 	case sent == nil && chosen.merges:
 		return Merged, nil
@@ -621,11 +808,86 @@ func (d *Disappeared) Error() string {
 
 func (d *Disappeared) Is(target error) bool { return target == wait.ErrWaiting }
 
-// submission is the mutation Submit sends for a pull request, what it asks GitHub to do, and
-// whether GitHub's acceptance of it merges the pull request now.
+// Held is a submission one of the project's merge holds keeps back: pull request Number of Repo
+// at READY's Head changes a file the hold's path patterns match, so nothing is submitted until
+// Ends, when the hold stops holding. Reason is what the hold was set for, in the controller's own
+// words, and it is what a reader of the held row is told.
+//
+// Submit never builds one. The hold is the caller's decision and the caller's record
+// (Marks.Hold), and Submit returns the error that decision answers with as it stands; this type
+// is the shape that decision needs, kept here beside the other waits of a submission so that
+// every way one can end reads in one place.
+//
+// It is a wait (wait.ErrWaiting), and a routine one: a hold ends by its own clock, and nobody has
+// to act for Legion in the meantime, so a held row stays at debug however many attempts it makes
+// rather than reaching WARN from its seventh (the outbox's waitWarnAttempts, routineWait). Its
+// Unwrap is wait.Until at Ends, which is how the row's next run is set to the moment the hold
+// ends instead of to the outbox's backoff (wait.UntilAt). wait.Until on its own would carry that
+// moment just as well, but it answers no Routine, so a hold built from it alone would log a
+// held merge as something an operator should look at.
+type Held struct {
+	Number int
+	Repo   ghrepo.Repository
+	Head   string
+	Reason string
+	Ends   time.Time
+}
+
+func (h *Held) Error() string {
+	return fmt.Sprintf("the merge of pull request #%d of %s at READY's head %s is held until %s: %s",
+		h.Number, h.Repo, h.Head, h.Ends.UTC().Format(time.RFC3339), h.Reason)
+}
+
+func (h *Held) Is(target error) bool { return target == wait.ErrWaiting }
+
+// Routine is always true: the hold ends on its own clock.
+func (h *Held) Routine() bool { return true }
+
+// Unwrap is the wait that names when the hold ends, which the outbox reads back (wait.UntilAt)
+// and writes as the row's next_at. It is built here rather than kept in a field so that a Held
+// written as a plain literal, as every other wait of this package is, carries its moment.
+func (h *Held) Unwrap() error { return wait.Until(h.Ends, h.Error()) }
+
+// submission is the mutation Submit sends for a pull request, what it asks GitHub to do, whether
+// GitHub's acceptance of it merges the pull request now, and whether its document declares a
+// merge method. It stays a comparable value, with no map of its own, because the refusal path
+// decides by comparing the submission a second read chooses with the one that was refused.
 type submission struct {
 	mutation, action string
 	merges           bool
+	method           bool
+}
+
+// The submissions this package sends, each named so that Submit tells the one a jump mark
+// replaces (enqueueSubmission) from the ones it leaves alone, and so that a reader sees the four
+// documents' uses in one place.
+//
+// jumpSubmission is the enqueue a jump mark sends in place of enqueueSubmission, and it is the
+// one submission with no action text: a refused jump is never rendered as a *Refused and never
+// ends the row — the submission chosen is sent after it in the same attempt — so nothing ever
+// names it.
+var (
+	enqueueSubmission = submission{mutation: enable, action: "enqueue", method: true}
+	mergeSubmission   = submission{mutation: merge, action: "merge", merges: true, method: true}
+	armSubmission     = submission{mutation: enable, action: "enable auto-merge for", method: true}
+	jumpSubmission    = submission{mutation: enqueue}
+)
+
+// variables is the input this submission's document is sent with: the pull request's node id as
+// $id and the READY head as $head, which every document here declares, and SQUASH as $method for
+// the documents that declare one.
+//
+// Each submission carries its own variables rather than all of them sharing one map because the
+// enqueue declares no $method — GitHub's EnqueuePullRequestInput carries no merge method — and a
+// document whose declared and used variables disagree is refused before GitHub reads any input of
+// it (GraphQL's rules 5.8.3 and 5.8.4). A shared map would send $method to the enqueue, which
+// declares none, and that merge would never be submitted at all.
+func (s submission) variables(id, head string) map[string]any {
+	variables := map[string]any{"id": id, "head": head}
+	if s.method {
+		variables["method"] = "SQUASH"
+	}
+	return variables
 }
 
 // choose is the submission GitHub's answer calls for: an enqueue on a base that requires a merge
@@ -637,13 +899,13 @@ func choose(answer repository) (submission, bool) {
 	pull := answer.PullRequest
 	switch {
 	case pull.IsMergeQueueEnabled && mergeableNow(pull.MergeStateStatus):
-		return submission{enable, "enqueue", false}, true
+		return enqueueSubmission, true
 	case pull.IsMergeQueueEnabled:
 		return submission{}, false
 	case mergeableNow(pull.MergeStateStatus):
-		return submission{merge, "merge", true}, true
+		return mergeSubmission, true
 	case answer.AutoMergeAllowed:
-		return submission{enable, "enable auto-merge for", false}, true
+		return armSubmission, true
 	default:
 		return submission{}, false
 	}
@@ -727,6 +989,17 @@ func (p *pullRequest) armedWait(repo ghrepo.Repository, number int, head string)
 		}
 	}
 	return armed
+}
+
+// baseName is the branch the pull request merges into, and "" where GitHub answered none, which
+// it does for a base branch someone has deleted. It is the branch whose merge queue a jump jumps,
+// and Submit hands it to the caller's Marks so that reading that queue costs no further read of
+// the pull request (Marks.Jump, QueueEntries).
+func (p *pullRequest) baseName() string {
+	if p.BaseRef == nil {
+		return ""
+	}
+	return p.BaseRef.Name
 }
 
 // kept says whether the pull request's head is head, the READY head an arm is legitimate for.

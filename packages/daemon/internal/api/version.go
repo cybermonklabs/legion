@@ -962,6 +962,19 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
+// 63, 65 and 67: gaps. 63 and 65 were taken by open pull requests of this repository while this
+// branch was open — 63 by cybermonklabs/legion#3573, which declared it beside this branch, and 65
+// by #3511, each read at 2026-11-11T08:59Z from `const DaemonAPIVersion` in that pull request's
+// own copy of this file at refs/pull/<n>/head, over every open pull request of the repository —
+// and neither carries the merge marks, so this branch took a number above them rather than one of
+// theirs, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. 64 was the third of them at that reading and is no gap: INFRA-312's entry above is it,
+// which cybermonklabs/legion#3521 landed on main on 2026-11-11, between that reading and the
+// forward merge of main 3956a7a66c10 into this branch. 66 is this entry's own earlier number,
+// left behind when main's 68 passed it at the forward merge of main 0a97f26cfa4f below, and 67 is
+// a gap this branch never held. Three gaps, left so the history reads as it happened.
+//
 // 73: INFRA-2712 -- the stale-plugin lane asks its worker nothing, and what it has left to do is
 // readable. `api.State` gains `claimsToRefresh`, how many claims the lane still has to relaunch
 // onto this daemon's plugin: a claim with a recorded session, whose process holds a capability,
@@ -1172,4 +1185,80 @@ package api
 // of a file list: GitHub cuts a pull request's file list short, so one that changes more files
 // than the page holds answers without this path. Read the base's own number and every open
 // pull request again at every forward merge rather than from this line.)
-const DaemonAPIVersion = 85
+//
+// 86: dispatch://INFRA-1578 -- the controller can mark a Legion issue so the daemon asks GitHub
+// to put its enqueue at READY at the head of the merge queue, and can hold a path still while a
+// window runs. `GET
+// /legion/v1/state` gains four keys: `mergeJumps`, every live jump mark of the project by issue
+// (the issue, the reason, the controller session that set it and when); `mergeHolds`, every live
+// hold in the list's own order (its paths, its repository — "" for every repository the project
+// serves — its reason, its end time, the session that set the list and when); `mergeHeld`, every
+// issue whose merge a hold held when that issue's ready_merge row last ran, with the moment that
+// row is due again, since a hold that ended or was replaced since leaves the issue here until
+// the row runs once more;
+// and `mergeJumpRecords`, the newest jump of each repository that has had one (the repository,
+// the issue, the pull request's number and head, the time, the reason, the entries GitHub's
+// queue held just before the request — each with its number, position, jump, state and when
+// GitHub enqueued it — the queue's total count, whether the entries are unknown, and what became
+// of the request: `outcome`, one of `asked`, `accepted`, `refused` and `unknown`, with the words
+// that came with it in `answer`; the record is what Legion asked GitHub for and never where a
+// merge stands). None of the four is ever null, so a plugin built before this refuses the
+// state over them: the route serves a caller whose pod's claims record a contract below 86 the
+// state with none of the four keys at all (api's stateFor, withoutMergeMarks), as it serves a
+// caller below 85 one with no issue's rendered answer and every member of the waiting line with
+// its place and its length alone, one below 75 one with none of the record's own fields, one
+// below 73 one with no
+// `claimsToRefresh`, one below 62 the workers without their counted moves back, one below 58 one
+// with no `waitingLine`, one below 57 one with no `step`, one below 56 the stranded report
+// without its retired entries, one below 55 the issues without the gated steps, one below 53 a
+// body with no wakes waiting and one below 49 no memory group. The three
+// controller routes are the number's other surfaces: `POST /legion/v1/merge/jump` sets one
+// issue's mark, `POST /legion/v1/merge/jump/clear` takes it off, and `POST
+// /legion/v1/merge/holds` replaces the project's whole hold list and makes every merge it was
+// holding back due at once. They need no gate of their own — the boot gate holds plugin and
+// daemon equal, so a controller whose tool posts them never meets a daemon that serves none —
+// and they are named here because this number is what a reader asks when a post is refused.
+// This change ships two store migrations, `20261110235352_merge_marks.up.sql` (the marks, the
+// hold list and the jump records) and `20261111124500_merge_jump_outcome.up.sql` (the jump
+// record's outcome column), and three new `record.ReadyMerge` payload fields, `held`,
+// `heldSince` and `heldTold`, which say how long one of the project's merge holds has held this
+// merge, when the open held stretch began, and which hold the issue's line and the architect's
+// notice were written for. A rollback is not free: an older daemon's payload decoder is strict,
+// so it refuses those three fields on every retry of every ready_merge row this daemon wrote,
+// and that daemon's reader knows neither of the two new notice kinds, `merge-held` and
+// `merge-jump-refused`.
+// (Every number below that this branch does not own is written here as a
+// dated event rather than as a present state, because a sentence saying what main carries now
+// goes stale with nobody touching the file, and twice on 2026-11-11 one did. This branch was cut
+// from a main that declared 59. INFRA-2551 landed 62 as cybermonklabs/legion#3522 at 07:47Z on
+// 2026-11-11, and the forward merge that took that tip renumbered this entry from 59's successor
+// to 66. INFRA-312 landed 64 as #3521 later that day, and the forward merge of main 3956a7a66c10
+// brought it in without renumbering this entry, since 66 still stood above it. INFRA-1282 landed
+// 68 as the entry above this one, and the forward merge of main 0a97f26cfa4f at 15:13Z on
+// 2026-11-11 renumbered this entry from 66 to 72, because that number stood above this one and a
+// number at or below the base's is what this repository's gate refuses
+// (.github/scripts/check-daemon-api-contract.sh). Every entry above this one is main's, absorbed
+// at those six merges and renumbered at none of them. Read at 2026-11-11T15:13Z with `gh api`
+// over every one of the 152 open pull requests of this repository — by each one's `version.go` at
+// refs/pull/<n>/head, since a file list GitHub cuts short reads as not touching the file — #2539,
+// #3519 and #3536 declared 69, #3573 declared 70 and #3577 declared 71, and 72 was the lowest
+// number above the base's 68 that none of them declared. INFRA-2712 landed 73 as the entry two
+// above this one, and the forward merge of main 1826da13 on 2026-11-12 renumbered this entry
+// from 72 to 84, because the base had reached 73. That reading was the gate's own
+// (.github/scripts/check-daemon-api-contract.sh), which reads `const DaemonAPIVersion` at
+// refs/pull/<n>/head for every open pull request and never a file list: above the base's 73,
+// #3519 and #3575 declared 74, #3662 declared 75, #3718 declared 76, #3677 declared 77, #3708
+// declared 78, #3712 declared 79, #3730 declared 80, #3659 declared 81, #3573 declared 82 and
+// #2539 declared 83, so 84 was the lowest number above the base's that none of them declared.
+// INFRA-2554 landed 85 as #3718, the entry right above this one, and the forward merge of main
+// fbe970ee on 2026-11-12 renumbered this entry from 84 to 86, because the base had reached 85.
+// That reading was the gate's own again, run over this working copy: it refused 84 as not above
+// the base's 85 and named 86, the lowest number above the base's that no open pull request
+// declares. 86
+// is held from here on and through every forward merge, with another tree's entry absorbed
+// beside it rather than moved out of the way: only main's own DaemonAPIVersion reaching 86 moves
+// this number, and a number another open pull request declares moves it not at all, since
+// whichever of the two lands second renumbers then and a renumber made earlier is a change to
+// this branch's own diff, which costs its tester a full round. Read main's own number, and this
+// file on every open pull request, again at the next forward merge rather than from this line.)
+const DaemonAPIVersion = 86

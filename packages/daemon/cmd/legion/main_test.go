@@ -1623,6 +1623,229 @@ func TestPlainStateSummarizesTheHeldLifecycleRows(t *testing.T) {
 	}
 }
 
+// An operator reading plain `legion state` is told which paths the controller is holding still
+// and what those holds have caught: each hold with its paths, its repository, its reason, the
+// session that set the list and when it ends, then the issues a hold held when their merge row
+// last ran, each with the moment that row runs again. A hold of no named repository holds every
+// repository the project serves, and says so. With no hold and no held merge the line says so; a
+// held merge outliving the hold that caught it is a real moment, so the line names it rather
+// than reading as nothing held.
+func TestPlainStateNamesTheMergeHoldsAndWhatTheyHold(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	window := `{"paths":["packages/daemon/"],"repository":"acme/widgets","reason":"the release window",` +
+		`"endsAt":"2026-11-10T18:00:00Z","session":"controller-2","setAt":"2026-11-10T09:00:00Z"}`
+	migration := `{"paths":["migrations/","db/"],"repository":"","reason":"the migration lands by hand",` +
+		`"endsAt":"2026-11-10T19:00:00Z","session":"controller-2","setAt":"2026-11-10T09:00:00Z"}`
+	for _, tc := range []struct {
+		name, holds, held, want string
+	}{
+		{
+			name:  "two holds and the merge one of them caught",
+			holds: `[` + window + `,` + migration + `]`,
+			held:  `[{"issue":"LEGION-211","dueAt":"2026-11-10T18:01:00Z"}]`,
+			want: `merge holds: 2 — "packages/daemon/" in acme/widgets, "the release window", set by controller-2 until 2026-11-10T18:00:00Z; ` +
+				`"migrations/" "db/" in every repository, "the migration lands by hand", set by controller-2 until 2026-11-10T19:00:00Z; ` +
+				"held at their last run 1: LEGION-211 due 2026-11-10T18:01:00Z\n",
+		},
+		{
+			name:  "a hold that has caught nothing",
+			holds: `[` + window + `]`,
+			held:  `[]`,
+			want: `merge holds: 1 — "packages/daemon/" in acme/widgets, "the release window", set by controller-2 until 2026-11-10T18:00:00Z; ` +
+				"no merge is held\n",
+		},
+		{
+			name:  "a held merge whose hold has ended",
+			holds: `[]`,
+			held:  `[{"issue":"LEGION-211","dueAt":"2026-11-10T18:01:00Z"}]`,
+			want:  "merge holds: none set; held at their last run 1: LEGION-211 due 2026-11-10T18:01:00Z\n",
+		},
+		{name: "none", holds: `[]`, held: `[]`, want: "merge holds: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"mergeHolds":` + tc.holds + `,"mergeHeld":` + tc.held + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
+// An operator reading plain `legion state` is told which issues carry a live jump mark, each
+// with its reason and the session that set it, and the newest jump of each repository that has
+// had one: the queue it was asked to go ahead of — the entries GitHub's queue held before the
+// request and how long that queue was, a queue this daemon read none of told apart from an empty
+// one — and then what became of that request, a line of its own for each of the four outcomes
+// a record carries, since the mark is spent whichever way the jump ended. With no mark and no
+// record the line says so.
+//
+// No outcome's line says where the merge stands, `accepted` least of all: the record is written
+// before the mutation is sent and read again here long after, and GitHub taking the request is
+// the mutation answering and no place in a queue.
+func TestPlainStateNamesTheMergeJumps(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	marked := `[{"issue":"LEGION-208","reason":"the release blocker","session":"controller-2","setAt":"2026-11-10T09:00:00Z"}]`
+	// A jump the daemon asked for and never learned the end of, which is what every record says
+	// between its own write and GitHub's answer, a daemon that stopped in that window included.
+	asked := `{"repository":"acme/widgets","issue":"LEGION-207","number":412,"head":"c0ffee1","at":"2026-11-10T08:00:00Z",` +
+		`"reason":"the earlier blocker","entries":[{"number":401,"position":1,"jump":false,"state":"QUEUED","enqueuedAt":"2026-11-10T07:00:00Z"},` +
+		`{"number":402,"position":2,"jump":false,"state":"MERGEABLE","enqueuedAt":"2026-11-10T07:30:00Z"}],` +
+		`"entriesTotal":3,"entriesUnknown":false,"outcome":"asked","answer":""}`
+	accepted := `{"repository":"acme/widgets","issue":"LEGION-214","number":415,"head":"1ce1ce1","at":"2026-11-10T09:30:00Z",` +
+		`"reason":"the taken jump","entries":[{"number":401,"position":1,"jump":false,"state":"QUEUED","enqueuedAt":"2026-11-10T07:00:00Z"}],` +
+		`"entriesTotal":1,"entriesUnknown":false,"outcome":"accepted","answer":""}`
+	// A queue GitHub never answered and an empty one, each still asked and nothing learned: the
+	// queue clause and the outcome clause are read apart.
+	unread := `{"repository":"acme/widgets","issue":"LEGION-211","number":413,"head":"beefbee","at":"2026-11-10T09:10:00Z",` +
+		`"reason":"the unread queue","entries":[],"entriesTotal":0,"entriesUnknown":true,"outcome":"asked","answer":""}`
+	empty := `{"repository":"acme/widgets","issue":"LEGION-212","number":414,"head":"ba5eba11","at":"2026-11-10T09:20:00Z",` +
+		`"reason":"the empty queue","entries":[],"entriesTotal":0,"entriesUnknown":false,"outcome":"asked","answer":""}`
+	refused := `{"repository":"zeta/tools","issue":"LEGION-209","number":77,"head":"deadbee","at":"2026-11-10T08:30:00Z",` +
+		`"reason":"the hotfix","entries":[],"entriesTotal":0,"entriesUnknown":true,"outcome":"refused",` +
+		`"answer":"the merge queue is not enabled on this repository"}`
+	// The other shape a jump that did not take leaves: nothing of GitHub's came back, so the
+	// outcome decides nothing and the answer's own words are what say which it was. The record
+	// keeps one outcome for both, so the line reads the words rather than asserting who refused.
+	undelivered := `{"repository":"zeta/tools","issue":"LEGION-210","number":78,"head":"facade1","at":"2026-11-10T08:45:00Z",` +
+		`"reason":"the second hotfix","entries":[],"entriesTotal":0,"entriesUnknown":true,"outcome":"unknown",` +
+		`"answer":"No answer Legion could read came back from GitHub: Post \"https://api.github.com/graphql\": dial tcp: i/o timeout"}`
+	for _, tc := range []struct {
+		name, jumps, records, want string
+	}{
+		{
+			name:    "a mark, a jump asked of two queued and a jump GitHub's answer decided",
+			jumps:   marked,
+			records: `[` + asked + `,` + refused + `]`,
+			want: `merge jumps: 1 marked — LEGION-208 "the release blocker", set by controller-2; the newest of each repository: ` +
+				`acme/widgets LEGION-207 #412 at 2026-11-10T08:00:00Z "the earlier blocker", asked to go ahead of 3 queued: #401 QUEUED, #402 MERGEABLE, and Legion never learned what GitHub did with the request; ` +
+				`zeta/tools LEGION-209 #77 at 2026-11-10T08:30:00Z "the hotfix", asked to go ahead of a queue this daemon read none of, and the jump did not take: "the merge queue is not enabled on this repository"` + "\n",
+		},
+		{
+			name:    "a jump GitHub took, which is the request answered and no place in the queue",
+			jumps:   `[]`,
+			records: `[` + accepted + `]`,
+			want: `merge jumps: no issue is marked; the newest of each repository: ` +
+				`acme/widgets LEGION-214 #415 at 2026-11-10T09:30:00Z "the taken jump", asked to go ahead of 1 queued: #401 QUEUED, and GitHub took the request` + "\n",
+		},
+		{
+			name:    "a jump nothing came back for, whose words are the only thing that tells it apart",
+			jumps:   `[]`,
+			records: `[` + undelivered + `]`,
+			want: `merge jumps: no issue is marked; the newest of each repository: ` +
+				`zeta/tools LEGION-210 #78 at 2026-11-10T08:45:00Z "the second hotfix", asked to go ahead of a queue this daemon read none of, and what became of the request is unknown: ` +
+				`"No answer Legion could read came back from GitHub: Post \"https://api.github.com/graphql\": dial tcp: i/o timeout"` + "\n",
+		},
+		{
+			name:    "a jump whose queue this daemon read none of",
+			jumps:   `[]`,
+			records: `[` + unread + `]`,
+			want: `merge jumps: no issue is marked; the newest of each repository: ` +
+				`acme/widgets LEGION-211 #413 at 2026-11-10T09:10:00Z "the unread queue", asked to go ahead of a queue this daemon read none of, and Legion never learned what GitHub did with the request` + "\n",
+		},
+		{
+			name:    "a jump asked of an empty queue",
+			jumps:   `[]`,
+			records: `[` + empty + `]`,
+			want: `merge jumps: no issue is marked; the newest of each repository: ` +
+				`acme/widgets LEGION-212 #414 at 2026-11-10T09:20:00Z "the empty queue", asked to go ahead of an empty queue, and Legion never learned what GitHub did with the request` + "\n",
+		},
+		{
+			name:    "a mark nothing has spent yet",
+			jumps:   marked,
+			records: `[]`,
+			want:    `merge jumps: 1 marked — LEGION-208 "the release blocker", set by controller-2; none has been spent` + "\n",
+		},
+		{name: "none", jumps: `[]`, records: `[]`, want: "merge jumps: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"mergeJumps":` + tc.jumps + `,"mergeJumpRecords":` + tc.records + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+			// The daemon knows what the jump asked for and what came back of the request, and
+			// never where the merge then stood: the record is written before the mutation is
+			// sent and read again here long after. None of these words may reach an operator
+			// from it, for an accepted jump as much as for any other.
+			for _, claimed := range []string{"went ahead of", "in front of", "displaced", "went through", "at the head of", "waits in the queue"} {
+				if strings.Contains(out.String(), claimed) {
+					t.Fatalf("legion state printed %q, which says %q of a merge whose place in the queue the daemon never read", out.String(), claimed)
+				}
+			}
+		})
+	}
+}
+
+// A jump no answer came back for is not printed as one GitHub refused. The daemon falls back
+// to the plain submission for any failure of the jump's own mutation, and a request nothing
+// came back for and an answer that decided nothing are the one outcome, `unknown`: which of
+// the two happened is in the answer's own words, since the record keeps no column for it
+// (`record.MergeJumpOutcome`). So the one line an operator reads must not assert who refused: a
+// request no answer came back for, printed as "refused by GitHub", tells the operator the
+// repository's merge queue answered something it never saw, and sends them to GitHub's settings
+// for a fault in the network. This is the sentence review round 1's third finding was raised
+// about; `legion state` renders the same fact and is the reader that does not assert it.
+func TestPlainStateDoesNotCallAJumpGitHubNeverAnsweredARefusal(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	// The record a jump GitHub never answered leaves: the outcome `unknown`, and an answer
+	// saying no answer of GitHub's could be read rather than quoting anything GitHub said
+	// (`ghautomerge.jumpEnded`).
+	undelivered := `{"repository":"zeta/tools","issue":"LEGION-209","number":77,"head":"deadbee","at":"2026-11-10T08:30:00Z",` +
+		`"reason":"the hotfix","entries":[],"entriesTotal":0,"entriesUnknown":true,"outcome":"unknown",` +
+		`"answer":"No answer Legion could read came back from GitHub: Post \"https://api.github.com/graphql\": dial tcp: i/o timeout"}`
+	served := "{" + daemon + `,"mergeJumps":[],"mergeJumpRecords":[` + undelivered + `]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	t.Chdir(t.TempDir())
+	t.Setenv("LEGION_DAEMON_URL", server.URL)
+	t.Setenv("LEGION_ISSUE", "")
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+	}
+	printed := out.String()
+	if strings.Contains(printed, "refused by GitHub") {
+		t.Fatalf("legion state printed %q: a jump GitHub never answered is named a refusal of GitHub's, which is the one thing the line must not assert", printed)
+	}
+	// The answer's own words still reach the operator, so the line says what happened; only the
+	// assertion of who refused is gone.
+	if !strings.Contains(printed, "No answer Legion could read came back from GitHub") {
+		t.Fatalf("legion state printed %q, want the answer's own words, which are what tell the two apart", printed)
+	}
+}
+
 // An operator reading plain `legion state` is told which agents are in a tool call right now:
 // each by issue and role with the call its stream named and when that call started, read from
 // each claim view's `step`. A call whose end the daemon received is over, so the claim that made

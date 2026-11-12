@@ -38,7 +38,11 @@ const removalLogReads = 3 * time.Minute
 
 // mergeWaitWarn is how long a ready_merge row waits before its issue's architect is told once that
 // GitHub has not completed the merge Legion submitted (readyMergeWaiting). It runs from
-// record.ReadyMerge.Queued, the moment the workflow queued that submission: nothing in the daemon
+// record.ReadyMerge.Queued, the moment the workflow queued that submission, less the time one of
+// the project's merge holds held that submission back (record.ReadyMerge.Held and the open
+// stretch HeldSince names, rememberWait): a hold is Legion's own decision not to submit, so a row
+// held for a day has waited on GitHub for none of it, and counting it would tell the architect
+// GitHub is slow about a merge GitHub was never asked for. Nothing in the daemon
 // records when GitHub was first asked, and the queue time lives on the payload beside the flag that
 // records the telling (record.ReadyMerge.Warned), so a reopen's upsert of the same issue and head,
 // which replaces the payload on purpose (readyMergeConflict), resets the two together and they can
@@ -53,6 +57,20 @@ const removalLogReads = 3 * time.Minute
 // measured on 2026-10-23, main required lint, typecheck, test and pr-title, test took 12-16
 // minutes, and the 90th percentile of every pull_request run was 17.
 const mergeWaitWarn = time.Hour
+
+// jumpQueueRead is how long the read of the merge queue a jump asks to go ahead of may take
+// before the jump is made without it (readyMergeMarks.Jump). The read is one GraphQL call for at
+// most ghautomerge's queuePage entries, and it is the one read that is nobody's business but the
+// record of the jump: GitHub's own answer to the enqueue is what merges the pull request, and a
+// queue nobody could read costs the record its entries and nothing else (R3,
+// record.MergeJumpRecord.EntriesUnknown).
+//
+// Five seconds is a bound off the row's own autoMergeTimeout, thirty seconds, which still has to
+// pay for the submission's read of the pull request, the enqueue mutation, the plain submission
+// every jump that does not come back accepted falls back to, and the one transaction that spends
+// the mark. A read this bound cuts short leaves the jump as it would have been with no queue at
+// all, so the mark is never held back by a slow read.
+const jumpQueueRead = 5 * time.Second
 
 // queueConflictBound is how long GitHub's merge queue must keep reporting a ready_merge row's
 // entry UNMERGEABLE, built all that time on the same commit, before the row takes the entry's own
@@ -150,7 +168,7 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 	// the same head, with nothing armed: it is built here, where keep is, so the decision that
 	// makes it takes the submission rather than the four values it is made of.
 	resubmit := func(ctx context.Context) (ghautomerge.Outcome, error) {
-		return ghautomerge.Submit(ctx, github, repo, payload.Number, payload.Head, false, keep)
+		return ghautomerge.Submit(ctx, github, repo, payload.Number, payload.Head, false, keep, ghautomerge.NoMarks{})
 	}
 	// logs is the repository's REST base, where a failing job's log lives, under this row's own
 	// token (readFailures). The budget everything the row does after those reads runs on comes
@@ -158,7 +176,17 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 	// run opened with can be long spent by the time they answer, and a write on it would fail
 	// after a submission that succeeded.
 	logs := githubrest.Client{Token: github.Token, API: githubrest.RepositoryAPI(r.githubAPI, repo)}
-	outcome, err := ghautomerge.Submit(ctx, github, repo, payload.Number, payload.Head, payload.Armed, keep)
+	// The controller's marks are read for this one submission and spent against it
+	// (readyMergeMarks): the project's merge holds, which keep the submission back, and the
+	// issue's jump mark, which asks GitHub's enqueue to go at the head of the merge queue. The further
+	// submission a conflict removal calls for keeps ghautomerge.NoMarks{} (resubmit above), so a
+	// resubmission never jumps: the mark is the controller's instruction about READY's merge, and
+	// the row has already spent it or left it where it was on the submission that was chosen.
+	marks := &readyMergeMarks{runner: r, row: row, payload: &payload, repo: repo, github: github, rest: logs}
+	outcome, err := ghautomerge.Submit(ctx, github, repo, payload.Number, payload.Head, payload.Armed, keep, marks)
+	if closed := marks.closeHeld(ctx, err); closed != nil {
+		return closed
+	}
 	// The queue's conflict removal is decided before the arms below, since what the row does with
 	// it — a further submission, a wait for GitHub's merge state, or the end of the row — is read
 	// off that decision's own answer, which those arms then handle as any other. The reading, the
@@ -175,6 +203,17 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 		case decided == conflictWaits:
 			err = conflicted
 		default:
+			// GitHub's queue removal for a conflict is answered inside Submit before it chooses
+			// a submission, so the hold seam above never sees one: the same decision is asked
+			// here, before the failing jobs' logs are read and before the further submission is
+			// spent and posted. A hold that matches answers this run, with nothing spent, no log
+			// read and no message written, and the row decides the removal again when the hold
+			// ends. The decision is the one the run already made where it made one
+			// (readyMergeMarks.Hold caches it), so this costs no second read of the changed
+			// files.
+			if held := marks.Hold(ctx); held != nil {
+				return held
+			}
 			// The message names what failed on the commit the queue built, so those logs are read
 			// once the decision to submit again is made and before the message is written. What
 			// the further submission then answers is handled by the arms below, which write the
@@ -296,7 +335,7 @@ func (r *outbox) queueConflict(ctx context.Context, row record.OutboxRow, payloa
 	now := r.now().UTC()
 	if payload.Unmergeable.IsZero() || payload.UnmergeableBase != armed.QueueBase {
 		payload.Unmergeable, payload.UnmergeableBase = now, armed.QueueBase
-		if _, err := r.replacePayload(ctx, row, *payload, nil); err != nil {
+		if _, err := r.replacePayload(ctx, row, *payload); err != nil {
 			return false, fmt.Errorf("record the merge-queue entry outbox row %d found unmergeable: %w", row.ID, err)
 		}
 		return false, nil
@@ -376,7 +415,7 @@ func (r *outbox) conflictRemoval(ctx context.Context, row record.OutboxRow, payl
 		return conflictResubmits, nil
 	case payload.ConflictUnknown.IsZero():
 		payload.ConflictUnknown = now
-		if _, err := r.replacePayload(ctx, row, *payload, nil); err != nil {
+		if _, err := r.replacePayload(ctx, row, *payload); err != nil {
 			return conflictWaits, fmt.Errorf("record the merge state GitHub had not computed when outbox row %d read its conflict removal: %w", row.ID, err)
 		}
 		return conflictWaits, nil
@@ -415,7 +454,7 @@ func (r *outbox) resubmitAfterConflict(ctx context.Context, row record.OutboxRow
 	}
 	// The message is enqueued in the payload's own transaction (replacePayload), so its lane is
 	// woken as the payload commits and a replacement that did not take writes neither.
-	replaced, err := r.replacePayload(ctx, row, *payload, &told)
+	replaced, err := r.replacePayload(ctx, row, *payload, told)
 	if err != nil {
 		return "", fmt.Errorf("record the further submission outbox row %d makes after the merge queue's conflict: %w", row.ID, err)
 	}
@@ -469,28 +508,42 @@ func (r *outbox) readFailures(lane context.Context, logs githubrest.Client, runs
 	return budget, cancel, nil
 }
 
-// replacePayload writes payload back to row under the row's lease, with told enqueued in the same
-// transaction where there is one to enqueue (nil where there is none), and answers whether the
-// replacement took. It is the one lease-guarded payload write a merge row makes: the marks a
-// decision leaves for the row's next run (queueConflict's unmergeable entry, conflictRemoval's
-// uncomputed merge state), the message the further submission is told by
-// (resubmitAfterConflict) and the notice of a wait (rememberWait).
+// replacePayload writes payload back to row under the row's lease, with every row of told enqueued
+// in the same transaction, in the order given, and answers whether the replacement took. It is the
+// one lease-guarded payload write a merge row makes: the marks a decision leaves for the row's
+// next run (queueConflict's unmergeable entry, conflictRemoval's uncomputed merge state), the
+// message the further submission is told by (resubmitAfterConflict) and the notice of a wait
+// (rememberWait).
+//
+// told is variadic because a caller can owe a row beside the payload write, and owes it in the
+// same transaction: the message a further submission is told by, and the notice of a wait,
+// which is enqueued with the payload that records the architect as told, so a row is never
+// recorded as having told without the row that tells it. A caller that owes none passes
+// nothing. The telling of a merge hold is no caller of this at all: it owes two rows and more
+// than a payload — the held moment, the line on the Dispatch issue, the architect's notice and
+// the row's deferral to the hold's end — and writes them in one transaction of its own, under
+// the project's merge-hold lock (readyMergeMarks.holdAndTell).
 //
 // A replacement that did not take — the row's lease gone to another worker — is no failure, since
-// that worker reads GitHub itself; nothing at all is written then, told included, so a payload
-// never records something as told without the row that tells it. A write that failed is a
+// that worker reads GitHub itself; nothing at all is written then, the told rows included, so a
+// payload never records something as told without the rows that tell it. A write that failed is a
 // failure, and each caller says in its own sentence which write it was. The transaction owns the
-// commit hook write registers (projectRecords, intake.OnCommit), so an enqueued row's lane is
+// commit hook write registers (projectRecords, intake.OnCommit), so each enqueued row's lane is
 // woken as the payload commits.
-func (r *outbox) replacePayload(ctx context.Context, row record.OutboxRow, payload record.ReadyMerge, told *record.OutboxRow) (bool, error) {
+func (r *outbox) replacePayload(ctx context.Context, row record.OutboxRow, payload record.ReadyMerge, told ...record.OutboxRow) (bool, error) {
 	scoped, committed := intake.WithCommitHooks(ctx)
 	var replaced bool
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		var err error
-		if replaced, err = r.records.ReplaceOutboxPayload(scoped, tx, row.ID, row.LeaseToken, payload); err != nil || !replaced || told == nil {
+		if replaced, err = r.records.ReplaceOutboxPayload(scoped, tx, row.ID, row.LeaseToken, payload); err != nil || !replaced {
 			return err
 		}
-		return r.records.Enqueue(scoped, tx, *told)
+		for _, enqueue := range told {
+			if err := r.records.Enqueue(scoped, tx, enqueue); err != nil {
+				return err
+			}
+		}
+		return nil
 	}); err != nil {
 		return false, err
 	}
@@ -559,7 +612,17 @@ func (r *outbox) rememberWait(ctx context.Context, row record.OutboxRow, payload
 	if queued.IsZero() {
 		queued = row.CreatedAt
 	}
-	waited := now.Sub(queued)
+	// The wait is the time since that queueing less every stretch a merge hold held the
+	// submission back: the stretches already closed (record.ReadyMerge.Held) and the one still
+	// open, where the row is held now (HeldSince). A hold is Legion's own decision not to submit
+	// the merge, so none of it is GitHub taking long over one, and the notice says exactly that
+	// (readyMergeWaiting). The open stretch is counted here rather than closed, because the row
+	// is still inside it: readyMerge closes it on the first run that is not held, and a run that
+	// asks this while held measures the same wait either way.
+	waited := now.Sub(queued) - payload.Held
+	if !payload.HeldSince.IsZero() {
+		waited -= now.Sub(payload.HeldSince)
+	}
 	warn := !payload.Warned && waited > mergeWaitWarn && waitingOnGitHub(cause)
 	if !arm && !warn {
 		return nil
@@ -569,15 +632,15 @@ func (r *outbox) rememberWait(ctx context.Context, row record.OutboxRow, payload
 	// The notice is enqueued in the payload's own transaction (replacePayload), so the row is
 	// never recorded as warned without it, a replacement that did not take writes neither, and
 	// the notice's lane is woken as the payload commits.
-	var notice *record.OutboxRow
+	var notice []record.OutboxRow
 	if warn {
 		told, err := record.NewOutboxRow(row.Issue, readyMergeWaiting(payload, waited, cause), now)
 		if err != nil {
 			return err
 		}
-		notice = &told
+		notice = append(notice, told)
 	}
-	replaced, err := r.replacePayload(ctx, row, payload, notice)
+	replaced, err := r.replacePayload(ctx, row, payload, notice...)
 	if err != nil {
 		return fmt.Errorf("record what outbox row %d learned while it waits: %w", row.ID, err)
 	}

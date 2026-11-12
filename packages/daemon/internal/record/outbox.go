@@ -581,16 +581,27 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // tree's root, Decision what the person did, Ref where in Dispatch, Actor who; a spec decision
 // carries its Version, a changes request its Reason. The controller decides whether the tree runs
 // again (skill://legion-controller/references/parked-decisions.md).
+//
+// A merge-jump-refused notice names a jump mark (MergeJump) the daemon spent on a jump whose own
+// mutation did not come back accepted: the issue, its pull request, the head the jump was asked
+// for, and what came back — GitHub's own answer where one decided it, and the failure's own
+// words where nothing did. It is the controller's and no architect's because the jump was the
+// controller's instruction and the mark is gone — the daemon submits the plain merge in the
+// same attempt, and a refusal of that submission is told on its own, so nothing of the issue's
+// own work changed. The controller reads it to decide whether to mark the issue again
+// (MergeJumpRecord, whose Outcome is MergeJumpRefused or MergeJumpUnknown and whose Answer
+// carries the same words).
 const (
-	TriageNotice         NoticeKind = "triage"
-	SlotFreeNotice       NoticeKind = "slot-free"
-	TodoNotice           NoticeKind = "todo"
-	TickNotice           NoticeKind = "tick"
-	UnslottedNotice      NoticeKind = "unslotted"
-	AwaitingPersonNotice NoticeKind = "awaiting-person"
-	ParkedDecisionNotice NoticeKind = "parked-decision"
-	UpdateStalledNotice  NoticeKind = "update-stalled"
-	ProviderErrorsNotice NoticeKind = "provider-errors"
+	TriageNotice           NoticeKind = "triage"
+	SlotFreeNotice         NoticeKind = "slot-free"
+	TodoNotice             NoticeKind = "todo"
+	TickNotice             NoticeKind = "tick"
+	UnslottedNotice        NoticeKind = "unslotted"
+	AwaitingPersonNotice   NoticeKind = "awaiting-person"
+	ParkedDecisionNotice   NoticeKind = "parked-decision"
+	UpdateStalledNotice    NoticeKind = "update-stalled"
+	ProviderErrorsNotice   NoticeKind = "provider-errors"
+	MergeJumpRefusedNotice NoticeKind = "merge-jump-refused"
 )
 
 // NoticePerClaim is whether one unpublished controller notice of kind stands per claim — the
@@ -890,17 +901,78 @@ func (AutoMergeDisable) OutboxKind() OutboxKind { return OutboxKindAutoMergeDisa
 // reopen resets the clock, the once-flag and the marks together and they can never disagree, as
 // they would were the wait measured from the row's created_at, which the upsert leaves at the
 // original queueing. A row a daemon before Queued enqueued carries the zero time, and its
-// executor measures that one from created_at, which is what it was measured from then.
+// executor measures that one from created_at, which is what it was measured from then. Held is the
+// total time this submission has spent held by one of the project's merge holds (MergeHold). The
+// daemon takes it off the wait the merge-waiting notice is measured from, so a hold never reads as
+// GitHub being slow. HeldSince is the moment the open held stretch began, and the zero time when
+// the row is not held now: a run that finds a matching hold with HeldSince zero writes the moment,
+// and the first run that finds no matching hold adds now - HeldSince to Held and clears HeldSince.
+// The two are written together, so the open stretch is never counted twice and never lost.
+// HeldTold is the hold this row has told of (MergeHoldTelling), and the one key both tellings of
+// a hold are made under: the line on the Dispatch issue and the architect's merge-held notice are
+// written together, for the hold the run found holding this merge, and written for no hold the
+// row has already told of. Both name that hold — its paths, the reason the controller set it
+// for, the session that set it and when it ends — so a second hold catching the same merge, the
+// controller having replaced the list while the merge waited, leaves nothing either of them says
+// true of the wait the issue is now in, and the row tells of that second hold as it told of the
+// first. A run under the hold already told of writes neither row, and a run under any other hold
+// writes both. A queue of a new READY replaces the whole payload, so a new submission tells
+// again: that is a new submission and not a repeat. A row a daemon before these three fields
+// wrote carries none of them, which is a row that has never been held, and an older daemon's
+// strict decoder refuses a payload that carries them (DecodeOutboxPayload refuses an unknown
+// field), which is why a rollback needs the SQL that strips them. Nothing here is required: a
+// payload with none of the three is the payload every daemon before them wrote.
 type ReadyMerge struct {
-	Number          int       `json:"number"`
-	Head            string    `json:"head"`
-	Armed           bool      `json:"armed,omitempty"`
-	Warned          bool      `json:"warned,omitempty"`
-	Queued          time.Time `json:"queued,omitzero"`
-	Unmergeable     time.Time `json:"unmergeable,omitzero"`
-	UnmergeableBase string    `json:"unmergeableBase,omitempty"`
-	Resubmitted     bool      `json:"resubmitted,omitempty"`
-	ConflictUnknown time.Time `json:"conflictUnknown,omitzero"`
+	Number          int              `json:"number"`
+	Head            string           `json:"head"`
+	Armed           bool             `json:"armed,omitempty"`
+	Warned          bool             `json:"warned,omitempty"`
+	Queued          time.Time        `json:"queued,omitzero"`
+	Unmergeable     time.Time        `json:"unmergeable,omitzero"`
+	UnmergeableBase string           `json:"unmergeableBase,omitempty"`
+	Resubmitted     bool             `json:"resubmitted,omitempty"`
+	ConflictUnknown time.Time        `json:"conflictUnknown,omitzero"`
+	Held            time.Duration    `json:"held,omitempty"`
+	HeldSince       time.Time        `json:"heldSince,omitzero"`
+	HeldTold        MergeHoldTelling `json:"heldTold,omitzero"`
+}
+
+// MergeHoldTelling identifies the merge hold a ready_merge row has told of (ReadyMerge.HeldTold):
+// the hold's path patterns, the reason the controller set it for, the session that set it and
+// when it ends — the facts the two tellings carry, and nothing else.
+//
+// A hold has no identifier of its own (MergeHold), so what one hold is told apart by is what the
+// two sentences say about it: a list replaced with a hold that says something else about this
+// merge is a hold the issue has not been told of, and a list resent unchanged says nothing new
+// however often it is sent. SetAt is left out for that second reason — it is the moment the list
+// was written and no part of either sentence, so a hold resent in a new list would otherwise be
+// told of a second time. Repository is left out because neither sentence names it and a hold of
+// another repository cannot hold this merge at all (daemon's coveringHolds, which compares a
+// repository without regard to case where a comparison here would be exact): kept, it would have
+// two holds differing only in the case of a repository name tell the same words twice.
+//
+// The zero value is a row that has told of no hold at all, which no live hold can be mistaken
+// for: a hold the daemon acts on always ends in the future, so its EndsAt is never the zero time.
+type MergeHoldTelling struct {
+	Paths   []string  `json:"paths,omitempty"`
+	Reason  string    `json:"reason,omitempty"`
+	Session string    `json:"session,omitempty"`
+	EndsAt  time.Time `json:"endsAt,omitzero"`
+}
+
+// MergeHoldTold is hold as the payload records having told of it (ReadyMerge.HeldTold).
+func MergeHoldTold(hold MergeHold) MergeHoldTelling {
+	return MergeHoldTelling{Paths: hold.Paths, Reason: hold.Reason, Session: hold.Session,
+		EndsAt: hold.EndsAt.UTC()}
+}
+
+// Tells says whether t is the telling of hold, so that neither the line on the issue nor the
+// architect's notice is written for it again. The times are compared with Equal, as every time
+// this package reads back is in UTC and a comparison by == would turn one written in another
+// zone into a second hold.
+func (t MergeHoldTelling) Tells(hold MergeHold) bool {
+	return slices.Equal(t.Paths, hold.Paths) && t.Reason == hold.Reason &&
+		t.Session == hold.Session && t.EndsAt.Equal(hold.EndsAt)
 }
 
 func (ReadyMerge) OutboxKind() OutboxKind { return OutboxKindReadyMerge }
@@ -1452,7 +1524,7 @@ func validateOutboxPayload(payload OutboxPayload) error {
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
-	"merge-refused", "merge-stalled", "merge-removed", "merge-waiting",
+	"merge-refused", "merge-stalled", "merge-removed", "merge-waiting", "merge-held",
 	"design-approved", "design-changes-requested", "carried-gate-opened", "ready-refused",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted",
@@ -1468,6 +1540,18 @@ var validNoticeKinds = []NoticeKind{
 // stalled process as well, where the end let it go: that it was stopped, or that the runtime
 // did not confirm the stop and it may be running still (internal/daemon's stallBackstopEnds,
 // stallStopClause).
+// `merge-held` is the merge of an accepted READY the daemon did not submit because one of the
+// project's merge holds (MergeHold) matches a file its pull request changes: the controller set
+// that hold, and the issue's architect is told that its merge waits on that hold and until when
+// (the daemon's readyMerge). It is the architect's notice rather than the controller's because
+// the architect is the one whose issue stands still; the controller already knows, having set
+// the hold. The row goes on running and submits the merge once the hold ends, so the notice is
+// written once for each hold that holds this merge and never again for that one hold
+// (ReadyMerge.HeldTold): it names the hold, its paths, its reason, the session that set it and
+// when it ends, and a second hold — the controller replaced the list while the merge waited —
+// is a second wait with none of those facts true of it. The line the daemon posts on the issue
+// itself carries the same facts and is written under that same key, in the same transaction, so
+// the two tell of exactly the same holds.
 func validNoticeKind(kind NoticeKind) bool {
 	return slices.Contains(validNoticeKinds, kind)
 }
@@ -1517,7 +1601,8 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 // architect's.
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
-	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice, UpdateStalledNotice, ProviderErrorsNotice:
+	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice, UpdateStalledNotice, ProviderErrorsNotice,
+		MergeJumpRefusedNotice:
 		return true
 	default:
 		return false

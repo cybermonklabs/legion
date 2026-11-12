@@ -2289,22 +2289,41 @@ func (s *Postgres) HeldRows(ctx context.Context, tx pgx.Tx, project, issue strin
 }
 
 func (s *Postgres) WaitingNotices(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]OutboxRow, error) {
-	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox
-		where kind = $1 and next_at > $2 and split_part(issue, '-', 1) = $3 order by id`, string(OutboxKindNotice), now, project)
+	return waitingRowsOfKind(ctx, tx, OutboxKindNotice, project, now, "", "list waiting notices")
+}
+
+// waitingRowsOfKind is every outbox row of kind belonging to project that is not due at now,
+// oldest row first, with everything of the row the outbox holds. condition is a further SQL
+// predicate on the row, "" for none, and what opens the sentence of every error it answers,
+// since each caller names its own rows.
+//
+// Two reads are this one query: the notices a project's issues are waiting on (WaitingNotices
+// above) and the merges a hold caught when their rows last ran (HeldReadyMerges, in
+// merge_marks_store.go, which is where its condition lives, beside the other read that asks for
+// a held row). They differ in nothing but the kind they ask for, that condition and the sentence
+// they fail with, so the body lives here once, beside outboxColumns and scanOutbox, which is
+// where a reader of either method looks for what reads an outbox row.
+func waitingRowsOfKind(ctx context.Context, tx pgx.Tx, kind OutboxKind, project string, now time.Time, condition, what string) ([]OutboxRow, error) {
+	query := `select ` + outboxColumns + ` from outbox
+		where kind = $1 and next_at > $2 and split_part(issue, '-', 1) = $3`
+	if condition != "" {
+		query += ` and ` + condition
+	}
+	rows, err := tx.Query(ctx, query+` order by id`, string(kind), now, project)
 	if err != nil {
-		return nil, fmt.Errorf("list waiting notices: %w", err)
+		return nil, fmt.Errorf("%s: %w", what, err)
 	}
 	defer rows.Close()
 	waiting := []OutboxRow{}
 	for rows.Next() {
 		row, err := scanOutbox(rows)
 		if err != nil {
-			return nil, fmt.Errorf("list waiting notices: %w", err)
+			return nil, fmt.Errorf("%s: %w", what, err)
 		}
 		waiting = append(waiting, row)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list waiting notices: %w", err)
+		return nil, fmt.Errorf("%s: %w", what, err)
 	}
 	return waiting, nil
 }

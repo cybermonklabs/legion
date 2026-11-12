@@ -29,6 +29,30 @@ func ChangedPaths(files []ChangedFile) []string {
 	return paths
 }
 
+// PullRequestFilesLimit is the most changed files GitHub lists for a pull request: a pull request
+// that reaches it may change a path the list never shows. It is GitHub's own cap on the list, not
+// a page size this client chooses, so the read below cannot ask for more; what a caller can do is
+// read that its list was cut and decide for the paths it never saw.
+const PullRequestFilesLimit = 3000
+
+// PullRequestPaths is every path pull request number's change touches, both names of a renamed
+// file among them (ChangedPaths), and whether GitHub cut that list at PullRequestFilesLimit,
+// which leaves a path the caller asks about unread.
+//
+// The cut is decided here rather than by each caller, so the limit and the read cannot drift
+// apart: both callers judge a path a change touches — READY's by_hand merge policy
+// (packages/daemon/internal/api/ready.go, mergeReadyPolicy) and the daemon's merge holds
+// (packages/daemon/internal/daemon/merge_marks.go, readyMergeMarks.holding) — and a caller
+// comparing the file count with a limit of its own would judge a truncated list as a complete one
+// the day either changed.
+func PullRequestPaths(ctx context.Context, c Client, number int) ([]string, bool, error) {
+	files, err := GetPages[ChangedFile](ctx, c, fmt.Sprintf("/pulls/%d/files", number))
+	if err != nil {
+		return nil, false, err
+	}
+	return ChangedPaths(files), len(files) >= PullRequestFilesLimit, nil
+}
+
 // CompareFilesLimit is the most changed files GitHub's compare of two commits lists: "it includes
 // up to 300 changed files for the entire comparison" (REST API, Compare two commits,
 // https://docs.github.com/en/rest/commits/commits#compare-two-commits). A comparison that reaches

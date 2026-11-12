@@ -109,6 +109,39 @@ type State struct {
 	// NATS at the request after the state's transaction commits, so no NATS read holds the
 	// snapshot open. Never null: a daemon with no workflow has none (contract 43).
 	Consumers []ConsumerLagView `json:"consumers"`
+	// MergeJumps is every live jump mark the project's issues carry (record.Store.MergeJumps),
+	// by issue: the issues whose next merge the daemon asks GitHub to put at the head of its
+	// merge queue rather than behind it. A mark is spent by the merge it governs, so this key is
+	// what the controller has asked for and not yet had; the account of what a spent one asked
+	// for is MergeJumpRecords. Never null; empty while no issue carries a mark (contract 86).
+	MergeJumps []MergeJumpView `json:"mergeJumps"`
+	// MergeHolds is the project's live merge holds, in the list's own order
+	// (record.Store.LiveMergeHolds): while one of them stands, the daemon submits no merge whose
+	// pull request changes a file that hold's patterns match. The read behind it is the one that
+	// deletes nothing, because this state is projected inside one snapshot transaction; an ended
+	// hold leaves the record at the next read the daemon or the controller makes
+	// (record.Store.MergeHolds), and is in no body here, since this key lists the live holds
+	// alone. Never null; empty while the project holds no path (contract 86).
+	MergeHolds []MergeHoldView `json:"mergeHolds"`
+	// MergeHeld is every issue whose merge a hold held when that issue's ready_merge row last ran
+	// (record.Store.MergeHeldIssues), by issue: what the holds are costing, which no other key of
+	// this state says — such an issue waits on its own ready_merge row and shows nothing of the
+	// wait in its issue record. The row keeps the moment a hold caught it until its next run
+	// finds no hold, so an issue stands here after the hold that caught it ended or was replaced,
+	// and `mergeHolds` can be empty while this key names an issue. Never null; empty while no
+	// row's last run was held (contract 86).
+	MergeHeld []MergeHeldView `json:"mergeHeld"`
+	// MergeJumpRecords is the newest jump of each repository that has had one
+	// (record.Store.MergeJumpRecords), by repository: what the daemon asked GitHub for when it
+	// spent a mark, what GitHub's queue held at that moment, which is what names whose merge
+	// the jump asked to go ahead of, and what became of the request (MergeJumpRecordView's
+	// Outcome, one of four and never empty). It is the request and its end, and never where the
+	// merge stands: the queue in it is the queue as it was read before the request, and an
+	// outcome of `accepted` is GitHub taking the request and no place in a queue. The record
+	// outlives the mark and the issue, so this key answers a reader after the fact; there is one
+	// row per repository and no history. Never null; empty until the project's first jump
+	// (contract 86).
+	MergeJumpRecords []MergeJumpRecordView `json:"mergeJumpRecords"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
 	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below server.go's
 	// wakesWaitingContract): that reader knows no `wakesWaiting` and refuses the key as surely
@@ -122,6 +155,15 @@ type State struct {
 	// leaves it off that one body. The two flags compose on one body: a caller below
 	// wakesWaitingContract is below this contract too, and is served neither key.
 	claimsToRefreshHidden bool
+	// mergeMarksHidden is set on the copy the state route serves a caller whose plugin is older
+	// than the contract that added the four merge-mark keys (api's withoutMergeMarks, below
+	// server.go's mergeMarksContract): that reader knows none of `mergeJumps`, `mergeHolds`,
+	// `mergeHeld` and `mergeJumpRecords` and refuses each as surely when it is empty as when it
+	// names a mark, so MarshalJSON leaves all four off that one body rather than writing them
+	// empty, as wakesWaitingHidden does for `wakesWaiting`. It composes with the two above it:
+	// a caller below either of their contracts is below this one as well, and is served no key
+	// of any of the three.
+	mergeMarksHidden bool
 }
 
 // ClaimsToRefreshField is the name ClaimsToRefresh carries on the wire, read from here by the
@@ -302,27 +344,29 @@ type AgentSecretsLoginView struct {
 }
 
 // MarshalJSON keeps `issues` an object and `pendingStatusWrites`, `heldOutboxRows`,
-// `strandedClaims`, `wakesWaiting`, `capabilities` and `consumers` arrays on the wire: a nil Go map
-// or slice is `null`, which the plugin's reader refuses. The exceptions are the two keys a
-// contract band hides from a caller below it, `wakesWaiting` and `claimsToRefresh`: such a body
-// carries no key of that name at all, and is marshaled through a value whose own field of that
-// name shadows the embedded one, which is how Admission.MarshalJSON leaves off `trees`.
+// `strandedClaims`, `wakesWaiting`, `capabilities`, `consumers`, `mergeJumps`, `mergeHolds`,
+// `mergeHeld` and `mergeJumpRecords` arrays on the wire: a nil Go map or slice is `null`, which
+// the plugin's reader refuses. The exceptions are the keys a contract band hides from a caller
+// below it, `wakesWaiting`, `claimsToRefresh` and the four merge-mark keys: such a body carries
+// no key of that name at all, and is marshaled through a value whose own field of that name
+// shadows the embedded one, which is how Admission.MarshalJSON leaves off `trees`.
 //
-// One shadow type carries both keys, and both its fields are pointers. `omitempty` leaves out a
-// nil pointer, and a pointer at a value writes that value whatever it holds: `[]` for the empty
-// `wakesWaiting` every other body carries, `0` for the `claimsToRefresh` of a drained lane. A
-// `[]WakeWaiting` field could not write the empty array, since an empty slice is what
-// `omitempty` drops, so the pointer is what lets one type serve both keys — each field set when
-// its key is not hidden and left nil when it is — rather than a struct per pair of flags. The
-// two bands compose, so a caller below wakesWaitingContract (53) is below claimsToRefreshContract
-// (73) as well and is served neither key; a third banded key is one more field here, not four
-// more shapes.
+// One shadow type carries every banded key, and all its fields are pointers. `omitempty` leaves
+// out a nil pointer, and a pointer at a value writes that value whatever it holds: `[]` for the
+// empty `wakesWaiting` every other body carries, `0` for the `claimsToRefresh` of a drained
+// lane, `[]` for the merge-mark keys of a project carrying no mark. A `[]WakeWaiting` field
+// could not write the empty array, since an empty slice is what `omitempty` drops, so the
+// pointer is what lets one type serve every banded key — each field set when its key is not
+// hidden and left nil when it is — rather than a struct per combination of flags. The three
+// bands compose, so a caller below wakesWaitingContract (53) is below claimsToRefreshContract
+// (73) and mergeMarksContract (86) as well and is served none of the keys; a fourth banded key
+// is one more field here, not twice as many shapes.
 //
-// A body that hides neither key is marshaled through the embedded value alone. The shadow's own
+// A body that hides no key is marshaled through the embedded value alone. The shadow's own
 // fields are declared after the embedded one, so encoding/json writes a key that comes from them
 // after every other key of the body, and the fixtures under `packages/contracts/fixtures/daemon-api`
-// pin bodies that hide nothing: marshaling those through the shadow would move both keys to the
-// end of each pinned body.
+// pin bodies that hide nothing: marshaling those through the shadow would move every banded key
+// to the end of each pinned body.
 func (s State) MarshalJSON() ([]byte, error) {
 	type wire State
 	out := wire(s)
@@ -344,22 +388,44 @@ func (s State) MarshalJSON() ([]byte, error) {
 	if out.Consumers == nil {
 		out.Consumers = []ConsumerLagView{}
 	}
+	if out.MergeJumps == nil {
+		out.MergeJumps = []MergeJumpView{}
+	}
+	if out.MergeHolds == nil {
+		out.MergeHolds = []MergeHoldView{}
+	}
+	if out.MergeHeld == nil {
+		out.MergeHeld = []MergeHeldView{}
+	}
+	if out.MergeJumpRecords == nil {
+		out.MergeJumpRecords = []MergeJumpRecordView{}
+	}
 	if out.WakesWaiting == nil {
 		out.WakesWaiting = []WakeWaiting{}
 	}
-	if !s.wakesWaitingHidden && !s.claimsToRefreshHidden {
+	if !s.wakesWaitingHidden && !s.claimsToRefreshHidden && !s.mergeMarksHidden {
 		return json.Marshal(out)
 	}
 	shadow := struct {
 		wire
-		WakesWaiting    *[]WakeWaiting `json:"wakesWaiting,omitempty"`
-		ClaimsToRefresh *int           `json:"claimsToRefresh,omitempty"`
+		WakesWaiting     *[]WakeWaiting         `json:"wakesWaiting,omitempty"`
+		ClaimsToRefresh  *int                   `json:"claimsToRefresh,omitempty"`
+		MergeJumps       *[]MergeJumpView       `json:"mergeJumps,omitempty"`
+		MergeHolds       *[]MergeHoldView       `json:"mergeHolds,omitempty"`
+		MergeHeld        *[]MergeHeldView       `json:"mergeHeld,omitempty"`
+		MergeJumpRecords *[]MergeJumpRecordView `json:"mergeJumpRecords,omitempty"`
 	}{wire: out}
 	if !s.wakesWaitingHidden {
 		shadow.WakesWaiting = &shadow.wire.WakesWaiting
 	}
 	if !s.claimsToRefreshHidden {
 		shadow.ClaimsToRefresh = &shadow.wire.ClaimsToRefresh
+	}
+	if !s.mergeMarksHidden {
+		shadow.MergeJumps = &shadow.wire.MergeJumps
+		shadow.MergeHolds = &shadow.wire.MergeHolds
+		shadow.MergeHeld = &shadow.wire.MergeHeld
+		shadow.MergeJumpRecords = &shadow.wire.MergeJumpRecords
 	}
 	return json.Marshal(shadow)
 }
@@ -1301,6 +1367,12 @@ func WakesWaitingOf(held []supervise.WaitingWake, queued []WakeWaiting) []WakeWa
 	slices.SortStableFunc(wakes, func(a, b WakeWaiting) int { return cmp.Compare(a.Claim, b.Claim) })
 	return wakes
 }
+
+// MergeMarkFields are the four keys the merge marks are served under, read from here by the
+// tests that look for the keys rather than repeating the strings, as WaitingLineField is. They
+// are one list because the strip takes all four together: a caller below mergeMarksContract is
+// served none of them, so a test of the strip asks the same question of each.
+var MergeMarkFields = []string{"mergeJumps", "mergeHolds", "mergeHeld", "mergeJumpRecords"}
 
 // StateSource maps the daemon's durable and live facts through the transaction the state route
 // owns. It does not commit it: the route can refuse one failed projection without publishing a

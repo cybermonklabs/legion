@@ -1,0 +1,864 @@
+package api
+
+import (
+	"context"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/credential"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
+
+// mergeNow is the moment the merge-mark harness's daemon clock stands at. The routes read the
+// clock the server was given (Options.Now), and a mark records the moment of the call, so a test
+// that reads a mark back compares it against this and never against the wall clock.
+var mergeNow = time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
+
+// newMergeHarness serves the three merge-mark routes over a real store, with the project's
+// Dispatch key (the merge holds are kept under it), the repositories the project serves (a hold
+// may name one of them and no other), and a clock the test holds still and may move. It records
+// the tree the marks are about, so the issue checks have a recorded issue to find.
+//
+// The clock is answered through a pointer the test may write: the holds route reads "now" once
+// per call, for the hold list's own end-time check and for the moment it expedites to, so a test
+// that wants a later call moves the clock between the two.
+func newMergeHarness(t *testing.T) (*harness, *time.Time) {
+	t.Helper()
+	h := newHarness(t)
+	clock := mergeNow
+	serveMergeRoutes(t, h, func() time.Time { return clock })
+	seedTree(t, h, "LEGION-208", "LEGION-209")
+	return h, &clock
+}
+
+// serveMergeRoutes points h's handler at a server of the merge-mark routes reading now for its
+// clock. It is apart from newMergeHarness for the one test that needs the clock to be a seam
+// rather than a value: the jump route reads it between its check of the issue and the
+// transaction that writes the mark, which is the window a departure can commit in.
+func serveMergeRoutes(t *testing.T, h *harness, now func() time.Time) {
+	t.Helper()
+	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Steps:           config.DesignGateRootIssues.Steps(),
+		Supervisor:      h.supervisor,
+		BootTokens:      h.tokens,
+		Project:         testProject,
+		DispatchProject: testDispatchProject,
+		OperatorToken:   testOperatorToken,
+		Controller:      h.store,
+		Grants:          credential.New(nil),
+		Pool:            h.store.Pool(),
+		Record:          record.NewStore(),
+		GitHubRepositories: func() []ghrepo.Repository {
+			return []ghrepo.Repository{ghrepo.MustParse("acme/widgets"), ghrepo.MustParse("sjawhar/legion")}
+		},
+		Now: now,
+	}).Handler
+}
+
+// controllerSessionOf registers a controller session with a freshly minted capability, as
+// `legion controller start` and the controller's own registration do, and answers its session id:
+// the session a mark this harness writes records as its author.
+func controllerSessionOf(t *testing.T, h *harness) string {
+	t.Helper()
+	h.registeredController(h.mintedSecret(), "ses_controller")
+	return "ses_controller"
+}
+
+// jumpOf is the jump mark the record holds for issue, nil when it holds none.
+func jumpOf(t *testing.T, h *harness, issue string) *record.MergeJump {
+	t.Helper()
+	var mark *record.MergeJump
+	if err := pgx.BeginFunc(context.Background(), h.store.Pool(), func(tx pgx.Tx) error {
+		var err error
+		mark, err = record.NewStore().MergeJumpOf(context.Background(), tx, issue)
+		return err
+	}); err != nil {
+		t.Fatalf("read the jump mark of %s: %v", issue, err)
+	}
+	return mark
+}
+
+// markInRecord writes a jump mark straight into the record, as another project's daemon writes
+// its own: the shared table is keyed by the issue alone, and a test that asks whether a refused
+// call took a mark off needs one there that this project's routes would not have set. The write
+// lands only while the issue is still one a daemon runs (record.Store.SetMergeJump), so it is
+// read here: a seeded issue that had departed would leave the test with no mark and nothing
+// saying why.
+func markInRecord(t *testing.T, h *harness, issue, reason string) {
+	t.Helper()
+	var wrote bool
+	if err := pgx.BeginFunc(context.Background(), h.store.Pool(), func(tx pgx.Tx) error {
+		var err error
+		wrote, err = record.NewStore().SetMergeJump(context.Background(), tx, record.MergeJump{
+			Issue: issue, Reason: reason, Session: "ses_other_controller", SetAt: mergeNow})
+		return err
+	}); err != nil {
+		t.Fatalf("write the jump mark of %s: %v", issue, err)
+	}
+	if !wrote {
+		t.Fatalf("the jump mark of %s was not written, want it on an issue still in the workflow", issue)
+	}
+}
+
+// departIssue writes issue's record where a departure leaves it, change naming the state it left
+// in. It writes the record rather than running the workflow because the workflow's own departure
+// takes the issue's mark with it (workflow's leave), and these tests are about the mark that is
+// there when it has not.
+func departIssue(t *testing.T, h *harness, issue string, change func(*record.Issue)) {
+	t.Helper()
+	recorded := recordedChild(t, h, issue)
+	if recorded == nil {
+		t.Fatalf("no record of %s to send out of the workflow", issue)
+	}
+	change(recorded)
+	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		return record.NewStore().PutIssue(context.Background(), tx, *recorded)
+	}); err != nil {
+		t.Fatalf("record %s out of the workflow: %v", issue, err)
+	}
+}
+
+// holdsAt is the project's merge hold list as the daemon and the controller read it at at: the
+// read that deletes the holds that have ended by then (record.Store.MergeHolds).
+func holdsAt(t *testing.T, h *harness, at time.Time) []record.MergeHold {
+	t.Helper()
+	var holds []record.MergeHold
+	if err := pgx.BeginFunc(context.Background(), h.store.Pool(), func(tx pgx.Tx) error {
+		var err error
+		holds, err = record.NewStore().MergeHolds(context.Background(), tx, testDispatchProject, at)
+		return err
+	}); err != nil {
+		t.Fatalf("read the merge holds of %s: %v", testDispatchProject, err)
+	}
+	return holds
+}
+
+// enqueueReadyMerge queues one ready_merge row for issue, deferred to nextAt, as a submission the
+// daemon has put off does, and answers its id. heldSince is the moment a merge hold caught it
+// (record.ReadyMerge.HeldSince), and the zero time a submission no hold has caught: the payload
+// of that one carries no heldSince at all, as the payload of a row GitHub's rate limit deferred
+// does not.
+func enqueueReadyMerge(t *testing.T, h *harness, issue string, nextAt, heldSince time.Time) int64 {
+	t.Helper()
+	row, err := record.NewOutboxRow(issue, record.ReadyMerge{Number: 42, Head: "ready-head", HeldSince: heldSince}, nextAt)
+	if err != nil {
+		t.Fatalf("build the ready_merge row of %s: %v", issue, err)
+	}
+	if err := pgx.BeginFunc(context.Background(), h.store.Pool(), func(tx pgx.Tx) error {
+		return record.NewStore().Enqueue(context.Background(), tx, row)
+	}); err != nil {
+		t.Fatalf("queue the ready_merge row of %s: %v", issue, err)
+	}
+	var id int64
+	if err := h.store.Pool().QueryRow(context.Background(),
+		"select id from outbox where kind = 'ready_merge' and issue = $1", issue).Scan(&id); err != nil {
+		t.Fatalf("read the id of the ready_merge row of %s: %v", issue, err)
+	}
+	return id
+}
+
+// outboxNextAt is when outbox row id runs next.
+func outboxNextAt(t *testing.T, h *harness, id int64) time.Time {
+	t.Helper()
+	var next time.Time
+	if err := h.store.Pool().QueryRow(context.Background(), "select next_at from outbox where id = $1", id).Scan(&next); err != nil {
+		t.Fatalf("read the next_at of outbox row %d: %v", id, err)
+	}
+	return next.UTC()
+}
+
+// liveHold is one hold of a request list that passes every check: a path, a reason, and an end
+// time after the call.
+func liveHold(endsAt time.Time) MergeHoldRequest {
+	return MergeHoldRequest{Paths: []string{"packages/daemon/"}, Reason: "the release is going out", EndsAt: endsAt}
+}
+
+// Each of the three merge-mark routes answers the empty object, and each has a fixture of its
+// own, as every other route of this package does: the plugin parses these exact answers, so a
+// route whose wire shape changed would have to change its fixture here and say so.
+func TestMergeJumpAndMergeHoldRouteGoldens(t *testing.T) {
+	golden(t, "merge-jump.json", EmptyResponse{})
+	golden(t, "merge-jump-clear.json", EmptyResponse{})
+	golden(t, "merge-holds.json", EmptyResponse{})
+}
+
+// A jump mark records what the controller decided, who decided it and when: the issue, the
+// reason, the controller session the grant was minted for, and the daemon's own clock at the
+// call. The account of a pull request that jumped the queue is written from those, so a mark that
+// recorded neither author nor moment would leave that account anonymous.
+func TestMergeJumpRecordsTheMarkWithItsSessionAndTheTimeOfTheCall(t *testing.T) {
+	h, _ := newMergeHarness(t)
+	session := controllerSessionOf(t, h)
+	grant := controllerGrant(t, h)
+
+	recorder := h.request(http.MethodPost, "/legion/v1/merge/jump", MergeJumpRequest{
+		GrantID: grant.GrantID, Issue: "LEGION-208", Reason: "the release waits on this merge",
+	}, nil)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("merge jump = %d: %s", recorder.Code, recorder.Body)
+	}
+	var response EmptyResponse
+	decodeInto(t, recorder, &response)
+	mark := jumpOf(t, h, "LEGION-208")
+	if mark == nil {
+		t.Fatal("the jump mark of LEGION-208 reads as none, want the mark the route wrote")
+	}
+	if mark.Reason != "the release waits on this merge" || mark.Session != session || !mark.SetAt.Equal(mergeNow) {
+		t.Fatalf("the jump mark = %+v, want the reason of the call, the session %s and %s", *mark, session, mergeNow)
+	}
+}
+
+// A second mark of the same issue is the controller's newer word and replaces the first: an issue
+// holds one mark, and the merge about to be submitted is the one it governs.
+func TestMergeJumpReplacesTheMarkTheIssueHolds(t *testing.T) {
+	h, clock := newMergeHarness(t)
+	controllerSessionOf(t, h)
+	mark := func(reason string) {
+		t.Helper()
+		grant := controllerGrant(t, h)
+		recorder := h.request(http.MethodPost, "/legion/v1/merge/jump", MergeJumpRequest{
+			GrantID: grant.GrantID, Issue: "LEGION-208", Reason: reason,
+		}, nil)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("merge jump = %d: %s", recorder.Code, recorder.Body)
+		}
+	}
+
+	mark("the release waits on this merge")
+	*clock = mergeNow.Add(time.Hour)
+	mark("the incident fix goes first")
+
+	held := jumpOf(t, h, "LEGION-208")
+	if held == nil || held.Reason != "the incident fix goes first" || !held.SetAt.Equal(mergeNow.Add(time.Hour)) {
+		t.Fatalf("the jump mark after a second set = %+v, want the second mark alone", held)
+	}
+}
+
+// Taking a mark off leaves the issue carrying none, and taking off a mark that is not there is
+// the same answer: the controller asked for an issue with no mark, and that is what it has.
+func TestMergeJumpClearTakesTheMarkOff(t *testing.T) {
+	h, _ := newMergeHarness(t)
+	controllerSessionOf(t, h)
+	set := controllerGrant(t, h)
+	if recorder := h.request(http.MethodPost, "/legion/v1/merge/jump", MergeJumpRequest{
+		GrantID: set.GrantID, Issue: "LEGION-208", Reason: "the release waits on this merge",
+	}, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("merge jump = %d: %s", recorder.Code, recorder.Body)
+	}
+
+	for _, round := range []string{"the mark the controller set", "an issue that carries none"} {
+		grant := controllerGrant(t, h)
+		recorder := h.request(http.MethodPost, "/legion/v1/merge/jump/clear", MergeJumpClearRequest{
+			GrantID: grant.GrantID, Issue: "LEGION-208",
+		}, nil)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("merge jump clear of %s = %d: %s", round, recorder.Code, recorder.Body)
+		}
+		var response EmptyResponse
+		decodeInto(t, recorder, &response)
+		if mark := jumpOf(t, h, "LEGION-208"); mark != nil {
+			t.Fatalf("the jump mark after clearing %s = %+v, want none", round, *mark)
+		}
+	}
+}
+
+// What the two jump routes refuse, each by a code of its own and with a sentence naming what it
+// refused, and each leaving the record exactly as it was: a mark already standing is still the
+// mark the issue holds after every refusal below.
+func TestMergeJumpRefusesWhatItCannotMark(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		route  string
+		body   func(grant string) any
+		status int
+		code   string
+		// names is what the refusal's sentence must name, so the answer says what was refused.
+		names string
+	}{
+		{
+			name:  "a mark with no grant",
+			route: "/legion/v1/merge/jump",
+			body: func(string) any {
+				return MergeJumpRequest{Issue: "LEGION-208", Reason: "the release waits on this merge"}
+			},
+			status: http.StatusBadRequest, code: "MISSING_FIELD", names: "grantId",
+		},
+		{
+			name:  "a mark naming no issue",
+			route: "/legion/v1/merge/jump",
+			body: func(grant string) any {
+				return MergeJumpRequest{GrantID: grant, Reason: "the release waits on this merge"}
+			},
+			status: http.StatusBadRequest, code: "MISSING_FIELD", names: "issue",
+		},
+		{
+			name:   "a mark with no reason",
+			route:  "/legion/v1/merge/jump",
+			body:   func(grant string) any { return MergeJumpRequest{GrantID: grant, Issue: "LEGION-208"} },
+			status: http.StatusBadRequest, code: "MISSING_FIELD", names: "reason",
+		},
+		{
+			name: "a mark of an issue the daemon does not record",
+			body: func(grant string) any {
+				return MergeJumpRequest{GrantID: grant, Issue: "LEGION-404", Reason: "the release waits on this merge"}
+			},
+			route: "/legion/v1/merge/jump", status: http.StatusNotFound, code: "ISSUE_NOT_RECORDED", names: "LEGION-404",
+		},
+		{
+			name:  "taking a mark off an issue the daemon does not record",
+			route: "/legion/v1/merge/jump/clear",
+			body: func(grant string) any {
+				return MergeJumpClearRequest{GrantID: grant, Issue: "LEGION-404"}
+			},
+			status: http.StatusNotFound, code: "ISSUE_NOT_RECORDED", names: "LEGION-404",
+		},
+		{
+			name:   "taking a mark off no issue",
+			route:  "/legion/v1/merge/jump/clear",
+			body:   func(grant string) any { return MergeJumpClearRequest{GrantID: grant} },
+			status: http.StatusBadRequest, code: "MISSING_FIELD", names: "issue",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := newMergeHarness(t)
+			controllerSessionOf(t, h)
+			standing := controllerGrant(t, h)
+			if recorder := h.request(http.MethodPost, "/legion/v1/merge/jump", MergeJumpRequest{
+				GrantID: standing.GrantID, Issue: "LEGION-209", Reason: "the mark that was already there",
+			}, nil); recorder.Code != http.StatusOK {
+				t.Fatalf("the standing mark = %d: %s", recorder.Code, recorder.Body)
+			}
+			grant := controllerGrant(t, h)
+
+			recorder := h.request(http.MethodPost, tc.route, tc.body(grant.GrantID), nil)
+
+			refusal := recorder.Body.String()
+			assertFailure(t, recorder, tc.status, tc.code)
+			assertNames(t, refusal, tc.names)
+			if mark := jumpOf(t, h, "LEGION-209"); mark == nil || mark.Reason != "the mark that was already there" {
+				t.Fatalf("the standing mark after the refusal = %+v, want it where it was", mark)
+			}
+			if mark := jumpOf(t, h, "LEGION-208"); mark != nil {
+				t.Fatalf("a refused request wrote the mark %+v of LEGION-208, want nothing written", *mark)
+			}
+		})
+	}
+}
+
+// A jump mark is this daemon's own project's to set and to take off. The daemons of several
+// projects share one database and a mark is kept under the issue's key alone, so a controller
+// naming another project's issue is refused by both routes and nothing is written: a mark set
+// there would be spent by that project's daemon on its next submission, against a decision its
+// controller never made, and a clear would take off one its controller did make. The refusal
+// stands ahead of the read of the record, which is why an issue of another project the daemon
+// records and one it does not are refused by the same code. This project's own issue is marked
+// and cleared by the same two calls.
+func TestMergeJumpRoutesRefuseAnotherProjectsIssue(t *testing.T) {
+	h, _ := newMergeHarness(t)
+	controllerSessionOf(t, h)
+	seedTree(t, h, "OTHER-7")
+	markInRecord(t, h, "OTHER-7", "another project's own decision")
+	for _, tc := range []struct {
+		name  string
+		route string
+		body  func(grant, issue string) any
+	}{
+		{name: "setting a mark on", route: "/legion/v1/merge/jump", body: func(grant, issue string) any {
+			return MergeJumpRequest{GrantID: grant, Issue: issue, Reason: "another project's release waits on this merge"}
+		}},
+		{name: "taking a mark off", route: "/legion/v1/merge/jump/clear", body: func(grant, issue string) any {
+			return MergeJumpClearRequest{GrantID: grant, Issue: issue}
+		}},
+	} {
+		for _, issue := range []string{"OTHER-7", "OTHER-404"} {
+			t.Run(tc.name+" "+issue, func(t *testing.T) {
+				grant := controllerGrant(t, h)
+
+				recorder := h.request(http.MethodPost, tc.route, tc.body(grant.GrantID, issue), nil)
+
+				refusal := recorder.Body.String()
+				assertFailure(t, recorder, http.StatusForbidden, "ISSUE_OUTSIDE_PROJECT")
+				assertNames(t, refusal, issue)
+				assertNames(t, refusal, testDispatchProject)
+				if mark := jumpOf(t, h, "OTHER-7"); mark == nil || mark.Reason != "another project's own decision" {
+					t.Fatalf("the other project's mark after the refusal = %+v, want it where it was", mark)
+				}
+				if mark := jumpOf(t, h, "OTHER-404"); mark != nil {
+					t.Fatalf("the refused request wrote the mark %+v of OTHER-404, want nothing written", *mark)
+				}
+			})
+		}
+	}
+
+	set := controllerGrant(t, h)
+	if recorder := h.request(http.MethodPost, "/legion/v1/merge/jump", MergeJumpRequest{
+		GrantID: set.GrantID, Issue: "LEGION-208", Reason: "the release waits on this merge",
+	}, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("the mark of this project's own issue = %d: %s", recorder.Code, recorder.Body)
+	}
+	if mark := jumpOf(t, h, "LEGION-208"); mark == nil || mark.Reason != "the release waits on this merge" {
+		t.Fatalf("the mark of this project's own issue = %+v, want the one the route wrote", mark)
+	}
+	clear := controllerGrant(t, h)
+	if recorder := h.request(http.MethodPost, "/legion/v1/merge/jump/clear", MergeJumpClearRequest{
+		GrantID: clear.GrantID, Issue: "LEGION-208",
+	}, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("taking the mark off this project's own issue = %d: %s", recorder.Code, recorder.Body)
+	}
+	if mark := jumpOf(t, h, "LEGION-208"); mark != nil {
+		t.Fatalf("the mark after the clear = %+v, want none", *mark)
+	}
+}
+
+// A mark is refused on an issue that has left the workflow, and one it still carries is taken off
+// all the same. Such an issue submits no merge, and the departure's own clear (workflow's leave)
+// has already taken its mark off, so a mark set after it would stand until a re-admission brought
+// the issue back and be spent by whatever merge that run reached. The three states are the three
+// halves of record.Stopped, the one reading the refusal and the departure share: a status out of
+// the workflow, a phase of done, and a tree lingering after its close.
+func TestMergeJumpRefusesAnIssueThatHasLeftTheWorkflowAndStillTakesItsMarkOff(t *testing.T) {
+	lingerUntil := mergeNow.Add(24 * time.Hour)
+	for _, tc := range []struct {
+		name   string
+		change func(*record.Issue)
+	}{
+		{name: "closed as done", change: func(issue *record.Issue) { issue.Status, issue.Phase = "done", phase.Done }},
+		{name: "parked in backlog", change: func(issue *record.Issue) { issue.Status = "backlog" }},
+		{name: "lingering after its close", change: func(issue *record.Issue) { issue.LingerUntil = &lingerUntil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := newMergeHarness(t)
+			controllerSessionOf(t, h)
+			set := controllerGrant(t, h)
+			if recorder := h.request(http.MethodPost, "/legion/v1/merge/jump", MergeJumpRequest{
+				GrantID: set.GrantID, Issue: "LEGION-208", Reason: "the mark it carried while it ran",
+			}, nil); recorder.Code != http.StatusOK {
+				t.Fatalf("the mark set while the issue ran = %d: %s", recorder.Code, recorder.Body)
+			}
+			departIssue(t, h, "LEGION-208", tc.change)
+			grant := controllerGrant(t, h)
+
+			recorder := h.request(http.MethodPost, "/legion/v1/merge/jump", MergeJumpRequest{
+				GrantID: grant.GrantID, Issue: "LEGION-208", Reason: "a merge this issue will never submit",
+			}, nil)
+
+			refusal := recorder.Body.String()
+			assertFailure(t, recorder, http.StatusConflict, "ISSUE_LEFT_WORKFLOW")
+			assertNames(t, refusal, "LEGION-208")
+			if mark := jumpOf(t, h, "LEGION-208"); mark == nil || mark.Reason != "the mark it carried while it ran" {
+				t.Fatalf("the mark after the refusal = %+v, want the one it carried while it ran", mark)
+			}
+
+			off := controllerGrant(t, h)
+			if recorder := h.request(http.MethodPost, "/legion/v1/merge/jump/clear", MergeJumpClearRequest{
+				GrantID: off.GrantID, Issue: "LEGION-208",
+			}, nil); recorder.Code != http.StatusOK {
+				t.Fatalf("taking the mark off an issue that has left the workflow = %d: %s", recorder.Code, recorder.Body)
+			}
+			if mark := jumpOf(t, h, "LEGION-208"); mark != nil {
+				t.Fatalf("the mark of an issue that has left the workflow after the clear = %+v, want none", *mark)
+			}
+		})
+	}
+}
+
+// A departure that commits while the request is in flight takes no mark. The route reads the
+// issue's record and refuses a stopped one before it writes anything (runningMarkIssue), and
+// that read is a transaction of its own: between its commit and the transaction that writes the
+// mark there is a window, and the workflow's own departure commits in it — it clears the mark it
+// finds and then nothing clears one written after it (workflow's leave, whose comment names the
+// harm: such a mark "would be spent weeks later by whatever merge a re-admission of this issue
+// reaches, against a decision nobody made about that merge").
+//
+// The window is driven through the clock the route reads between the two: s.now() is the last
+// call the request makes before it opens the write's transaction, so a clock that records the
+// departure commits it exactly there. The write then reads the issue again under its row lock
+// and writes nothing (record.Store.SetMergeJump), and the route answers the same 409
+// ISSUE_LEFT_WORKFLOW the early check answers, since the caller asked to mark an issue the
+// daemon submits no merge for.
+func TestMergeJumpWritesNoMarkForADepartureThatCommitsDuringTheRequest(t *testing.T) {
+	h := newHarness(t)
+	departed := false
+	serveMergeRoutes(t, h, func() time.Time {
+		if !departed {
+			departed = true
+			departIssue(t, h, "LEGION-208", func(issue *record.Issue) { issue.Status, issue.Phase = "done", phase.Done })
+		}
+		return mergeNow
+	})
+	seedTree(t, h, "LEGION-208", "LEGION-209")
+	controllerSessionOf(t, h)
+	grant := controllerGrant(t, h)
+
+	recorder := h.request(http.MethodPost, "/legion/v1/merge/jump", MergeJumpRequest{
+		GrantID: grant.GrantID, Issue: "LEGION-208", Reason: "a merge this issue will never submit",
+	}, nil)
+
+	if !departed {
+		t.Fatal("the request never read the clock, so the departure never committed inside it: the seam this test drives is gone")
+	}
+	refusal := recorder.Body.String()
+	assertFailure(t, recorder, http.StatusConflict, "ISSUE_LEFT_WORKFLOW")
+	assertNames(t, refusal, "LEGION-208")
+	if mark := jumpOf(t, h, "LEGION-208"); mark != nil {
+		t.Fatalf("the mark %+v stands for an issue whose departure committed during the request, want none written", *mark)
+	}
+}
+
+// What the hold list refuses, each by a code of its own and with a sentence naming the hold it
+// refused, and each leaving the list that stands exactly as it was: the list is replaced whole,
+// so one bad hold in a list must leave the whole of the old list in force rather than half of
+// the new one. Every one is a 400: each is the caller's own request being wrong about a hold,
+// and holdList writes no other status.
+func TestMergeHoldsRefusesAListItCannotKeep(t *testing.T) {
+	ended := mergeNow.Add(-time.Minute)
+	for _, tc := range []struct {
+		name  string
+		holds []MergeHoldRequest
+		code  string
+		names string
+	}{
+		{
+			name:  "a hold with no path",
+			holds: []MergeHoldRequest{{Reason: "the release is going out", EndsAt: mergeNow.Add(time.Hour)}},
+			code:  "HOLD_WITHOUT_PATH", names: "hold 1 of the list",
+		},
+		{
+			name: "a hold whose path is empty",
+			holds: []MergeHoldRequest{liveHold(mergeNow.Add(time.Hour)),
+				{Paths: []string{""}, Reason: "the release is going out", EndsAt: mergeNow.Add(time.Hour)}},
+			code: "HOLD_WITHOUT_PATH", names: "hold 2 of the list",
+		},
+		{
+			name:  "a hold with no reason",
+			holds: []MergeHoldRequest{{Paths: []string{"packages/daemon/"}, EndsAt: mergeNow.Add(time.Hour)}},
+			code:  "HOLD_WITHOUT_REASON", names: "hold 1 of the list",
+		},
+		{
+			name:  "a hold that has ended already",
+			holds: []MergeHoldRequest{liveHold(ended)},
+			code:  "HOLD_ALREADY_ENDED", names: ended.Format(time.RFC3339),
+		},
+		{
+			name:  "a hold that ends at the moment of the call",
+			holds: []MergeHoldRequest{liveHold(mergeNow)},
+			code:  "HOLD_ALREADY_ENDED", names: "is not after",
+		},
+		{
+			name: "a hold whose path is no regular expression",
+			holds: []MergeHoldRequest{{Paths: []string{"packages/daemon/", "charts/[a-"},
+				Reason: "the release is going out", EndsAt: mergeNow.Add(time.Hour)}},
+			code: "INVALID_HOLD_PATH", names: "charts/[a-",
+		},
+		{
+			name: "a hold of a repository the project does not serve",
+			holds: []MergeHoldRequest{{Paths: []string{"packages/daemon/"}, Repository: "acme/gadgets",
+				Reason: "the release is going out", EndsAt: mergeNow.Add(time.Hour)}},
+			code: "REPOSITORY_NOT_SERVED", names: "acme/gadgets",
+		},
+		{
+			name: "a hold whose repository is not owner/name",
+			holds: []MergeHoldRequest{{Paths: []string{"packages/daemon/"}, Repository: "widgets",
+				Reason: "the release is going out", EndsAt: mergeNow.Add(time.Hour)}},
+			code: "REPOSITORY_NOT_SERVED", names: "widgets",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := newMergeHarness(t)
+			controllerSessionOf(t, h)
+			standing := controllerGrant(t, h)
+			if recorder := h.request(http.MethodPost, "/legion/v1/merge/holds", MergeHoldsRequest{
+				GrantID: standing.GrantID,
+				Holds:   &[]MergeHoldRequest{{Paths: []string{"infra/"}, Reason: "a migration lands by hand", EndsAt: mergeNow.Add(3 * time.Hour)}},
+			}, nil); recorder.Code != http.StatusOK {
+				t.Fatalf("the standing list = %d: %s", recorder.Code, recorder.Body)
+			}
+			grant := controllerGrant(t, h)
+
+			recorder := h.request(http.MethodPost, "/legion/v1/merge/holds", MergeHoldsRequest{GrantID: grant.GrantID, Holds: &tc.holds}, nil)
+
+			refusal := recorder.Body.String()
+			assertFailure(t, recorder, http.StatusBadRequest, tc.code)
+			assertNames(t, refusal, tc.names)
+			holds := holdsAt(t, h, mergeNow)
+			if len(holds) != 1 || holds[0].Reason != "a migration lands by hand" {
+				t.Fatalf("the hold list after the refusal = %+v, want the one hold that stood before it", holds)
+			}
+		})
+	}
+}
+
+// Every merge mark is the controller's: a phase worker's grant redeems on all three routes and
+// is refused by each of them, after every check on its request has passed, and writes nothing.
+func TestMergeJumpAndMergeHoldRoutesRefuseAPhaseWorkersGrant(t *testing.T) {
+	h, _ := newMergeHarness(t)
+	controllerSessionOf(t, h)
+	worker := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	for _, tc := range []struct {
+		route string
+		body  func(grant string) any
+	}{
+		{route: "/legion/v1/merge/jump", body: func(grant string) any {
+			return MergeJumpRequest{GrantID: grant, Issue: "LEGION-208", Reason: "the release waits on this merge"}
+		}},
+		{route: "/legion/v1/merge/jump/clear", body: func(grant string) any {
+			return MergeJumpClearRequest{GrantID: grant, Issue: "LEGION-208"}
+		}},
+		{route: "/legion/v1/merge/holds", body: func(grant string) any {
+			return MergeHoldsRequest{GrantID: grant, Holds: &[]MergeHoldRequest{liveHold(mergeNow.Add(time.Hour))}}
+		}},
+	} {
+		t.Run(tc.route, func(t *testing.T) {
+			recorder := h.request(http.MethodPost, tc.route, tc.body(worker.grant(t)), nil)
+
+			assertFailure(t, recorder, http.StatusForbidden, "CONTROLLER_REQUIRED")
+			if mark := jumpOf(t, h, "LEGION-208"); mark != nil {
+				t.Fatalf("the phase worker's request wrote the mark %+v, want nothing written", *mark)
+			}
+			if holds := holdsAt(t, h, mergeNow); len(holds) != 0 {
+				t.Fatalf("the phase worker's request wrote the holds %+v, want nothing written", holds)
+			}
+		})
+	}
+}
+
+// The list is replaced whole: the second call is the list, so a hold the first call carried and
+// the second does not is gone, and an empty list clears every hold. Each hold comes back as the
+// controller sent it, with the session that set it and the time of the call.
+func TestMergeHoldsReplacesTheWholeListAndAnEmptyListClearsIt(t *testing.T) {
+	h, clock := newMergeHarness(t)
+	session := controllerSessionOf(t, h)
+	replace := func(holds []MergeHoldRequest) {
+		t.Helper()
+		grant := controllerGrant(t, h)
+		recorder := h.request(http.MethodPost, "/legion/v1/merge/holds", MergeHoldsRequest{GrantID: grant.GrantID, Holds: &holds}, nil)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("merge holds = %d: %s", recorder.Code, recorder.Body)
+		}
+		var response EmptyResponse
+		decodeInto(t, recorder, &response)
+	}
+
+	replace([]MergeHoldRequest{
+		{Paths: []string{"packages/daemon/", "charts/"}, Repository: "ACME/Widgets", Reason: "the release is going out", EndsAt: mergeNow.Add(time.Hour)},
+		{Paths: []string{"docs/"}, Reason: "the handbook is being rewritten", EndsAt: mergeNow.Add(2 * time.Hour)},
+	})
+	if holds := holdsAt(t, h, mergeNow); len(holds) != 2 {
+		t.Fatalf("the hold list = %+v, want the two holds the first call carried", holds)
+	}
+
+	*clock = mergeNow.Add(time.Minute)
+	replace([]MergeHoldRequest{{Paths: []string{"infra/"}, Reason: "a migration lands by hand", EndsAt: mergeNow.Add(3 * time.Hour)}})
+
+	holds := holdsAt(t, h, mergeNow)
+	if len(holds) != 1 {
+		t.Fatalf("the hold list after the second call = %+v, want the second list alone", holds)
+	}
+	if holds[0].Reason != "a migration lands by hand" || holds[0].Session != session || !holds[0].SetAt.Equal(mergeNow.Add(time.Minute)) {
+		t.Fatalf("the hold = %+v, want it with the session %s and the time of its own call", holds[0], session)
+	}
+	if holds[0].Repository != "" {
+		t.Fatalf("the hold's repository = %q, want every repository the project serves", holds[0].Repository)
+	}
+
+	replace([]MergeHoldRequest{})
+
+	if holds := holdsAt(t, h, mergeNow); len(holds) != 0 {
+		t.Fatalf("the hold list after an empty list = %+v, want none", holds)
+	}
+}
+
+// A hold whose end time has passed is no longer in the list the daemon and the controller read:
+// the read deletes it (record.Store.MergeHolds), so a controller reading the list before it
+// replaces it never copies a dead hold forward, and the live hold beside it stays.
+func TestMergeHoldsAreAbsentFromTheListOnceTheyHaveEnded(t *testing.T) {
+	h, _ := newMergeHarness(t)
+	controllerSessionOf(t, h)
+	grant := controllerGrant(t, h)
+	if recorder := h.request(http.MethodPost, "/legion/v1/merge/holds", MergeHoldsRequest{
+		GrantID: grant.GrantID,
+		Holds: &[]MergeHoldRequest{
+			{Paths: []string{"packages/daemon/"}, Reason: "the release is going out", EndsAt: mergeNow.Add(time.Hour)},
+			{Paths: []string{"docs/"}, Reason: "the handbook is being rewritten", EndsAt: mergeNow.Add(3 * time.Hour)},
+		},
+	}, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("merge holds = %d: %s", recorder.Code, recorder.Body)
+	}
+
+	holds := holdsAt(t, h, mergeNow.Add(2*time.Hour))
+
+	if len(holds) != 1 || holds[0].Reason != "the handbook is being rewritten" {
+		t.Fatalf("the hold list two hours on = %+v, want the hold that had not ended", holds)
+	}
+}
+
+// A replacement releases the merges the project is holding back: every ready_merge row of the
+// project a hold caught is made due at the moment of the call, in the same transaction that
+// writes the list. Without it a merge deferred to the end of a hold the controller has just
+// taken off would wait until a moment the record no longer holds. A row of another project is
+// left where it is, and a row already due is not moved back.
+func TestMergeHoldsExpeditesTheProjectsDeferredMerges(t *testing.T) {
+	h, _ := newMergeHarness(t)
+	controllerSessionOf(t, h)
+	seedTree(t, h, "OTHER-7")
+	caught := mergeNow.Add(-time.Hour)
+	deferred := enqueueReadyMerge(t, h, "LEGION-208", mergeNow.Add(30*time.Minute), caught)
+	due := enqueueReadyMerge(t, h, "LEGION-209", mergeNow.Add(-time.Minute), caught)
+	other := enqueueReadyMerge(t, h, "OTHER-7", mergeNow.Add(30*time.Minute), caught)
+	grant := controllerGrant(t, h)
+
+	if recorder := h.request(http.MethodPost, "/legion/v1/merge/holds",
+		MergeHoldsRequest{GrantID: grant.GrantID, Holds: &[]MergeHoldRequest{}}, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("merge holds = %d: %s", recorder.Code, recorder.Body)
+	}
+
+	if next := outboxNextAt(t, h, deferred); !next.Equal(mergeNow) {
+		t.Fatalf("the deferred merge runs at %s, want the moment of the call %s", next, mergeNow)
+	}
+	if next := outboxNextAt(t, h, due); !next.Equal(mergeNow.Add(-time.Minute)) {
+		t.Fatalf("the merge already due runs at %s, want it where it was", next)
+	}
+	if next := outboxNextAt(t, h, other); !next.Equal(mergeNow.Add(30 * time.Minute)) {
+		t.Fatalf("another project's merge runs at %s, want it where it was", next)
+	}
+}
+
+// The replacement is made under the project's merge-hold lock, taken before the list is touched
+// (record.Store.SerializeMergeHolds). That lock is one half of a pair: the other is the merge
+// run's own decision that a hold holds its submission, which takes it before it reads the list
+// again and writes the held moment the scan above looks for (the daemon's
+// readyMergeMarks.holdAndTell). Without it the two interleave — a run that read the list, then
+// called GitHub for the pull request's changed files, writes its held moment after this route's
+// scan has run — and the merge sleeps out the whole of a hold the controller has just taken
+// off, with nothing left to wake it.
+//
+// What is pinned here is that the route takes the lock, which is the half this package owns: a
+// transaction holding the project's lock holds the route, which writes nothing while it waits
+// and lands the moment the lock is released. The interleaving itself is driven where the run is
+// (the daemon's TestAHoldListReplacedWhileAMergeRunDecidesLeavesNoMergeAsleep).
+func TestMergeHoldsWaitsOnTheProjectsHoldLockBeforeItWrites(t *testing.T) {
+	h, _ := newMergeHarness(t)
+	controllerSessionOf(t, h)
+	grant := controllerGrant(t, h)
+	ctx := context.Background()
+	lock, err := h.store.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatalf("open the transaction that holds the project's merge-hold lock: %v", err)
+	}
+	defer func() { _ = lock.Rollback(ctx) }()
+	if _, err := lock.Exec(ctx, "select pg_advisory_xact_lock(hashtext('legion.merge_holds:' || $1::text))", testDispatchProject); err != nil {
+		t.Fatalf("take the project's merge-hold lock: %v", err)
+	}
+
+	answered := make(chan int, 1)
+	go func() {
+		answered <- h.request(http.MethodPost, "/legion/v1/merge/holds",
+			MergeHoldsRequest{GrantID: grant.GrantID, Holds: &[]MergeHoldRequest{liveHold(mergeNow.Add(3 * time.Hour))}}, nil).Code
+	}()
+	select {
+	case code := <-answered:
+		t.Fatalf("the route answered %d while the project's merge-hold lock was held: it replaced the list without taking the lock", code)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if holds := holdsAt(t, h, mergeNow); len(holds) != 0 {
+		t.Fatalf("the hold list while the lock was held = %+v, want it untouched", holds)
+	}
+
+	if err := lock.Rollback(ctx); err != nil {
+		t.Fatalf("release the project's merge-hold lock: %v", err)
+	}
+
+	select {
+	case code := <-answered:
+		if code != http.StatusOK {
+			t.Fatalf("merge holds = %d once the lock was released, want 200", code)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the route never answered once the project's merge-hold lock was released")
+	}
+	if holds := holdsAt(t, h, mergeNow); len(holds) != 1 {
+		t.Fatalf("the hold list once the lock was released = %+v, want the hold the call carried", holds)
+	}
+}
+
+// A deferred ready_merge row GitHub's own rate limit put off keeps the moment GitHub named: the
+// Retry-After the submission's retry wrote is GitHub's deadline and not a hold's, so the
+// controller's replacement of the hold list leaves it where it is, as a duplicate enqueue does
+// (record's readyMergeConflict). The row a hold caught beside it, whose payload carries the held
+// moment, is made due by the same call: the two are told apart by that mark alone.
+func TestMergeHoldsLeavesARateLimitedMergeWhereGitHubPutIt(t *testing.T) {
+	h, _ := newMergeHarness(t)
+	controllerSessionOf(t, h)
+	held := enqueueReadyMerge(t, h, "LEGION-208", mergeNow.Add(30*time.Minute), mergeNow.Add(-time.Hour))
+	limited := enqueueReadyMerge(t, h, "LEGION-209", mergeNow.Add(45*time.Minute), time.Time{})
+	grant := controllerGrant(t, h)
+
+	if recorder := h.request(http.MethodPost, "/legion/v1/merge/holds",
+		MergeHoldsRequest{GrantID: grant.GrantID, Holds: &[]MergeHoldRequest{}}, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("merge holds = %d: %s", recorder.Code, recorder.Body)
+	}
+
+	if next := outboxNextAt(t, h, held); !next.Equal(mergeNow) {
+		t.Fatalf("the merge a hold caught runs at %s, want the moment of the call %s", next, mergeNow)
+	}
+	if next := outboxNextAt(t, h, limited); !next.Equal(mergeNow.Add(45 * time.Minute)) {
+		t.Fatalf("the rate-limited merge runs at %s, want the %s GitHub named", next, mergeNow.Add(45*time.Minute))
+	}
+}
+
+// A body that names no list is refused and writes nothing: the call replaces the whole list, so
+// a request that forgot the key would otherwise read as a request to clear every hold, which is
+// the one thing a controller has to say for itself. Saying it — an empty list — still clears
+// them.
+func TestMergeHoldsRefusesABodyThatNamesNoList(t *testing.T) {
+	h, _ := newMergeHarness(t)
+	controllerSessionOf(t, h)
+	standing := controllerGrant(t, h)
+	if recorder := h.request(http.MethodPost, "/legion/v1/merge/holds", MergeHoldsRequest{
+		GrantID: standing.GrantID,
+		Holds:   &[]MergeHoldRequest{{Paths: []string{"infra/"}, Reason: "a migration lands by hand", EndsAt: mergeNow.Add(3 * time.Hour)}},
+	}, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("the standing list = %d: %s", recorder.Code, recorder.Body)
+	}
+	grant := controllerGrant(t, h)
+
+	recorder := h.request(http.MethodPost, "/legion/v1/merge/holds", map[string]any{"grantId": grant.GrantID}, nil)
+
+	refusal := recorder.Body.String()
+	assertFailure(t, recorder, http.StatusBadRequest, "HOLD_LIST_REQUIRED")
+	assertNames(t, refusal, "holds")
+	holds := holdsAt(t, h, mergeNow)
+	if len(holds) != 1 || holds[0].Reason != "a migration lands by hand" {
+		t.Fatalf("the hold list after the refusal = %+v, want the one hold that stood before it", holds)
+	}
+
+	empty := controllerGrant(t, h)
+	if recorder := h.request(http.MethodPost, "/legion/v1/merge/holds",
+		map[string]any{"grantId": empty.GrantID, "holds": []any{}}, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("merge holds with an empty list = %d: %s", recorder.Code, recorder.Body)
+	}
+
+	if holds := holdsAt(t, h, mergeNow); len(holds) != 0 {
+		t.Fatalf("the hold list after an empty list = %+v, want none", holds)
+	}
+}
+
+// assertNames holds a refusal's sentence to naming what it refused: the field, the issue, the
+// hold, the path or the repository the caller sent, so the answer tells a controller what to
+// change without reading the daemon's log. It takes the body as text, read before the refusal
+// was decoded: the recorder's body is a reader, and decoding it leaves nothing to read.
+func assertNames(t *testing.T, refusal, named string) {
+	t.Helper()
+	if !strings.Contains(refusal, named) {
+		t.Fatalf("the refusal %s does not name %q", refusal, named)
+	}
+}

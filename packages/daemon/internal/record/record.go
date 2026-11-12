@@ -1621,6 +1621,70 @@ type Store interface {
 	// without its first, for a caller that judges a run by its claim and reads no queued start
 	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.
 	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
+	// SetMergeJump sets issue's jump mark (MergeJump), replacing the one the issue holds: an
+	// issue carries at most one. It writes only while the issue's own record, read under its row
+	// lock in this same transaction, is still one the daemon runs (Stopped), and answers whether
+	// it wrote: false is an issue whose departure committed while the request was in flight, and
+	// one whose record is gone altogether.
+	SetMergeJump(ctx context.Context, tx pgx.Tx, jump MergeJump) (bool, error)
+	// ClearMergeJump deletes issue's jump mark and answers the mark it deleted. Nil is a mark
+	// another transaction already spent, or one a controller took off, which is what the
+	// transaction that submits a jumping merge reads to know the mark was still there when it
+	// submitted. The mark it answers is the one that transaction writes its record and its
+	// message from, since a controller may have replaced the mark it read before it called
+	// GitHub. It takes the issue's row lock before it deletes, as SetMergeJump takes it
+	// before it writes: one lock order for every writer of the marks, whichever of them runs.
+	ClearMergeJump(ctx context.Context, tx pgx.Tx, issue string) (*MergeJump, error)
+	// MergeJumps is every jump mark of project's issues, by issue key.
+	MergeJumps(ctx context.Context, tx pgx.Tx, project string) ([]MergeJump, error)
+	// MergeJumpOf is issue's jump mark, nil when the issue carries none.
+	MergeJumpOf(ctx context.Context, tx pgx.Tx, issue string) (*MergeJump, error)
+	// SerializeMergeHolds takes project's merge-hold lock for the rest of tx. Every transaction
+	// that replaces the hold list, and every one that decides a merge is held by it and writes
+	// that on the merge's row, takes it first, so the two can only commit one after the other:
+	// a merge is never held against a hold the replacement has already taken off, and a row the
+	// run held is always one the replacement's own scan can expedite.
+	SerializeMergeHolds(ctx context.Context, tx pgx.Tx, project string) error
+	// ReplaceMergeHolds replaces project's whole merge hold list with holds, in the order given.
+	// The list is written whole and never a row at a time, so a hold's place in it is the only
+	// identity it has (MergeHold).
+	ReplaceMergeHolds(ctx context.Context, tx pgx.Tx, project string, holds []MergeHold) error
+	// MergeHolds deletes project's holds that ended at or before now and answers the rest in
+	// their list order. This read WRITES: a caller inside a read-only snapshot must call
+	// LiveMergeHolds instead, which answers the same list and deletes nothing. The delete is what
+	// keeps an ended hold out of the list a controller reads before it replaces the list, so
+	// nobody copies a dead hold forward.
+	MergeHolds(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]MergeHold, error)
+	// LiveMergeHolds is project's holds still live at now, in their list order: MergeHolds
+	// without its delete, for the state projection, which runs inside the state's one snapshot
+	// transaction and must write nothing.
+	LiveMergeHolds(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]MergeHold, error)
+	// PutMergeJumpRecord records the newest jump of (project, the record's repository),
+	// replacing the one that repository holds: the record keeps the last jump of each repository
+	// and no history (MergeJumpRecord). It is written by the jump's own transaction, which is
+	// the newest jump of that repository by construction, so it replaces whatever stood there,
+	// and the outcome it writes is MergeJumpAsked, since at that moment nothing has been sent.
+	PutMergeJumpRecord(ctx context.Context, tx pgx.Tx, project string, record MergeJumpRecord) error
+	// SetMergeJumpOutcome writes what became of one jump — its outcome and the answer that
+	// decided it — and answers whether it landed: it writes only while the repository's row is
+	// still that jump's own, by its issue and its head, so what became of an older jump cannot
+	// overwrite the record a newer jump of the same repository has written. False is a row that
+	// has moved on, left as it stands, and a jump this write never reached keeps the
+	// MergeJumpAsked its own transaction wrote.
+	SetMergeJumpOutcome(ctx context.Context, tx pgx.Tx, project string, record MergeJumpRecord) (bool, error)
+	// MergeJumpRecords is project's jump records, by repository.
+	MergeJumpRecords(ctx context.Context, tx pgx.Tx, project string) ([]MergeJumpRecord, error)
+	// MergeHeldIssues is every issue of project whose ready_merge row a merge hold caught when
+	// that row last ran — the row's payload carries a heldSince — each with the moment that row
+	// is due again, by issue. A hold may have ended or been replaced since; the row carries that
+	// state until it runs.
+	MergeHeldIssues(ctx context.Context, tx pgx.Tx, project string) ([]MergeHeldIssue, error)
+	// HeldReadyMerges is every ready_merge row of project that a merge hold caught — the row's
+	// payload carries a heldSince — and that is due later than now, oldest first: the merges the
+	// daemon deferred to a hold's end, which the controller's replacement of the hold list expedites
+	// so that a hold it took off or shortened releases its merge at once. A row deferred by a
+	// GitHub rate limit or a backoff is no part of it and keeps the next_at it was given.
+	HeldReadyMerges(ctx context.Context, tx pgx.Tx, project string, now time.Time) ([]OutboxRow, error)
 }
 
 // RoleRunKey identifies one role's run of an issue generation.

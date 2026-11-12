@@ -53,6 +53,30 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if err := e.untellUnresumedChanges(ctx, tx, issue); err != nil {
 		return err
 	}
+	// The issue's jump mark goes with its departure. A mark is the controller's instruction about
+	// a merge that is about to be submitted (record.MergeJump), and an issue that has left the
+	// workflow submits none: a mark left behind would be spent weeks later by whatever merge a
+	// re-admission of this issue reaches, against a decision nobody made about that merge. The
+	// clear stands ahead of every branch below, including the one that returns through
+	// leaveUnderOperator, so no departure this function makes can leave a mark standing and no
+	// branch clears one of its own.
+	//
+	// This is the only place that clears a mark for a departure, because the one other way an
+	// issue leaves the record takes the mark with it: the mark's row is bound to the issue's
+	// with `on delete cascade` (migration 20261110235352), so the deletion of an issue's record,
+	// by a tree's cleanup, deletes its mark in the same statement.
+	//
+	// The clear takes the issue row's lock before it deletes (record.Store.ClearMergeJump), so
+	// this transaction locks issues and then merge_jumps, which is the order the mark's own
+	// write takes (record.Store.SetMergeJump). That is what makes the clear hold against a mark
+	// written while this departure is open — the write waits here and then reads a record this
+	// departure stopped — and what keeps the two off a deadlock, which the opposite orders drove
+	// (40P01). The lock is the store's rather than this function's because the daemon's own
+	// spending of a mark and the controller's route for taking one off clear marks too, and the
+	// order has to hold for all three.
+	if _, err := e.store.ClearMergeJump(ctx, tx, issue.Key); err != nil {
+		return err
+	}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		if issue.Lingers() {
 			return nil
@@ -171,9 +195,14 @@ func (e *Engine) releaseParkedClaim(ctx context.Context, tx pgx.Tx, issue record
 
 // leaveUnderOperator takes a waiting root out of the workflow while the operator runs a tree under
 // its key: its record's phase is done, so todo with the label re-admits it as a closed root's does,
-// and nothing else is written. Its claims, its pod and its tree's cleanup are the operator's, which
-// share the root's tokens and names, so no suspend, IssueSuspend, linger close or disarm is queued
-// for the workflow's record, and the workflow never ran a phase of it to check in production.
+// and nothing is written but that record. Its claims, its pod and its tree's cleanup are the
+// operator's, which share the root's tokens and names, so no suspend, IssueSuspend, linger close
+// or disarm is queued for the workflow's record, and the workflow never ran a phase of it to
+// check in production.
+//
+// The root's jump mark is gone before this runs: leave clears it ahead of every branch, this one
+// among them, so the departure under an operator takes the mark with it as every other departure
+// does without clearing it a second time here.
 func (e *Engine) leaveUnderOperator(ctx context.Context, tx pgx.Tx, root record.Issue, status string) error {
 	e.logOnCommit(ctx, "workflow: a waiting root left the workflow while the operator runs a tree under its key; the operator's tree is left alone",
 		"issue", root.Key, "tree", root.Tree, "status", status)

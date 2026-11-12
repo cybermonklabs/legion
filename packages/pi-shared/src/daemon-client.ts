@@ -15,6 +15,9 @@ import {
   LegionHandoffCompleteRequest,
   LegionHandoffCompleteResponse,
   LegionIssueStatusRequest,
+  LegionMergeHoldsRequest,
+  LegionMergeJumpClearRequest,
+  LegionMergeJumpRequest,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
   type LegionReadyForUpdateRequest,
@@ -159,6 +162,24 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   readonly childRerun: (
     input: z.input<typeof LegionChildRequest>
+  ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  /** The controller's jump mark on one issue: the daemon asks GitHub to put the next merge it
+   * submits for that issue at the head of GitHub's merge queue, with `reason` the account the
+   * jump record keeps after the mark is spent. A second set of the same issue replaces the
+   * first. */
+  readonly mergeJump: (
+    input: z.input<typeof LegionMergeJumpRequest>
+  ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  /** The controller taking one issue's jump mark off, before the merge it was about is
+   * submitted. The daemon answers the same whether a mark went or none was there. */
+  readonly mergeJumpClear: (
+    input: z.input<typeof LegionMergeJumpClearRequest>
+  ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  /** The project's whole merge hold list, which this call replaces: a hold has no identifier of
+   * its own, so a controller drops one by sending the list without it, and an empty list clears
+   * every hold. */
+  readonly mergeHolds: (
+    input: z.input<typeof LegionMergeHoldsRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
 }
 
@@ -519,5 +540,11 @@ export function createLegionDaemonClient(
       post("/legion/v1/children/park", LegionChildRequest, LegionEmptyResponse, input),
     childRerun: (input) =>
       post("/legion/v1/children/rerun", LegionChildRequest, LegionEmptyResponse, input),
+    mergeJump: (input) =>
+      post("/legion/v1/merge/jump", LegionMergeJumpRequest, LegionEmptyResponse, input),
+    mergeJumpClear: (input) =>
+      post("/legion/v1/merge/jump/clear", LegionMergeJumpClearRequest, LegionEmptyResponse, input),
+    mergeHolds: (input) =>
+      post("/legion/v1/merge/holds", LegionMergeHoldsRequest, LegionEmptyResponse, input),
   };
 }
