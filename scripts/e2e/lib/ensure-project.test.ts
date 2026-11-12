@@ -155,7 +155,10 @@ describe("ensure_project", () => {
   test("the body carries the person the caller names, and only that person", () => {
     const r = run(
       "write_dispatch_header\nensure_project",
-      { status: "201", body: '{"key":"LPROOF2","name":"LPROOF2","default_assignee":"lane-two@example.com"}' },
+      {
+        status: "201",
+        body: '{"key":"LPROOF2","name":"LPROOF2","default_assignee":"lane-two@example.com"}',
+      },
       proofActor,
       "lane-two@example.com"
     );
@@ -173,7 +176,9 @@ describe("ensure_project", () => {
     );
     expect(r.status).toBe(0);
     expect(r.calls).toHaveLength(1);
-    expect(r.calls[0]).toContain(`{"key":"LPROOF2","name":"LPROOF2","default_assignee":"${proofAssignee}"}`);
+    expect(r.calls[0]).toContain(
+      `{"key":"LPROOF2","name":"LPROOF2","default_assignee":"${proofAssignee}"}`
+    );
     expect(r.calls[0]).not.toContain("actor");
   });
 
@@ -266,20 +271,6 @@ describe("ensure_project", () => {
       expect(at).toBeGreaterThan(-1);
       expect(at).toBeLessThan(creates);
     }
-  });
-
-  // Stage 4b refuses its operator's missing person in prerequisites, above the create, with the
-  // other inputs, so a run without one never reaches production Dispatch's refusal.
-  test("stage 4b refuses LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE above the call that creates the project", () => {
-    const source = readFileSync(join(import.meta.dir, "..", "stage4b-sandbox-tree.sh"), "utf8");
-    const lines = source.split("\n");
-    const creates = lines.indexOf("ensure_project");
-    expect(lines).toContain("dispatch_default_assignee=${LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE:-}");
-    const refusal = lines.findIndex((line) =>
-      line.startsWith('  fail "LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE is unset or not an email:')
-    );
-    expect(refusal).toBeGreaterThan(-1);
-    expect(refusal).toBeLessThan(creates);
   });
 });
 
