@@ -2442,6 +2442,9 @@ bounded rather than deterministic - and catches nothing on its own; a reopen tha
 page's two-second default would still pass it, so that
 row asserts the resume's content and order alone, and the backoff's own shape is held by the unit
 row in `web/src/api/live-socket.test.ts`.
+A third row reads the wait each close line reports (`wait_ms`): at `--reconnect-spread-ms 0`, two
+1012 closes report 0 ms each only while the parsed option reaches the probe's `reconnectWaitMs`
+and a restart close sets the attempt counter back to 0.
 
 The `webkit` Playwright project runs the rows tagged `@webkit` (`webkitTagged` in
 `e2e/playwright.config.ts`) of `e2e/collab-cursor.e2e.ts`, `e2e/deep-links.e2e.ts`,

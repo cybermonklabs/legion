@@ -621,9 +621,9 @@ test(
   PROCESS_TEST_MS
 );
 
-// What the probe's own `reconnectWaitMs` promises for whatever spread it is handed, which no row
-// above observes. The step that carries `--reconnect-spread-ms` into that helper stays unobserved:
-// this row calls the helper itself. It catches both ways the scaling goes wrong: a draw missing
+// What the probe's own `reconnectWaitMs` promises for whatever spread it is handed and for a later
+// attempt; the close-line row above observes the parsed option reaching it, at a spread of 0.
+// This row calls the helper itself. It catches both ways the scaling goes wrong: a draw missing
 // the division by the page's own window, which makes the option mean something other than the
 // milliseconds it names, and a scaled draw reaching an attempt it must not, which would bend a
 // later attempt's backoff and jitter away from the page's. It drives the helper against the page's
