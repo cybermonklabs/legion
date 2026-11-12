@@ -1120,9 +1120,14 @@ func (r runner) indexTree(dir, head string) (string, error) {
 //
 // The snapshot itself fails the workspace where it fails, and is not made twice: it leaves the
 // working copy as the last jj command of a role wrote it, and no retry of ours makes a lock or
-// a stale working copy any newer. A stale one is the single case a person can clear, so the
-// failure says what they run, since nothing else tells them. Nothing the snapshot prints is
-// read: what it left out is found by the carry, from the index copy and git's own rule.
+// a stale working copy any newer. A stale one is the single case whose cure is a jj command, so
+// the failure says what a person runs, since nothing else tells them. A directory a role made
+// unreadable is another such failure, and a deliberate one: jj's snapshot fails on it (measured
+// on this build on 2026-11-12: `Failed to read directory …: Permission denied`), where
+// the `git add --all` this replaces warned `could not open directory`, exited 0 and lost what
+// was inside, so the failure is this check telling a person rather than a regression. Nothing
+// the snapshot prints is read: what it left out is found by the carry, from the index copy and
+// git's own rule.
 //
 // Then jj's tree, the tree of the working-copy commit the snapshot wrote, and the carry into it.
 func (r runner) snapshotTree(dir string) (string, error) {

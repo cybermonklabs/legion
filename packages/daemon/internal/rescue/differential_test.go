@@ -626,6 +626,29 @@ var differentialRows = []differentialRow{
 		fails: "holds no sparse pattern",
 	},
 	{
+		// The git read warns that it cannot open shut, exits 0 and answers a tree without
+		// shut/inside.txt; the route refuses, since a step that cannot tell whether there is
+		// work to save refuses the replacement rather than lose that work with the pod (R4).
+		name: "a directory this process cannot read",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, "shut/inside.txt", "a file under a directory no one may read\n")
+			d.Write(d.Workspace, "open.txt", "a file beside it\n")
+			d.JJ("status")
+			shut := filepath.Join(d.Workspace, "shut")
+			if err := os.Chmod(shut, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chmod(shut, 0o755) })
+			if f, err := os.Open(shut); err == nil {
+				f.Close()
+				t.Skip("this process opens a directory of mode 000, as root does, so no directory it makes is one jj cannot read")
+			}
+		},
+		fails:  "Failed to read directory",
+		holds:  []string{"open.txt"},
+		absent: []string{"shut/inside.txt"},
+	},
+	{
 		// conflict.txt is conflicted over a base that holds it, added.txt over one that does
 		// not, and notes.txt, written once the merge is made, is no conflict at all.
 		name: "a conflicted working copy",
@@ -996,6 +1019,7 @@ func TestTheJJRouteKeepsEveryEntryTheWholeWorktreeGitReadKeeps(t *testing.T) {
 				if !strings.Contains(err.Error(), row.fails) {
 					t.Fatalf("the jj route failed saying %q, want %q", err, row.fails)
 				}
+				heldAndAbsent(t, d, row, map[string]string{"git read's": today})
 				return
 			}
 			if err != nil {

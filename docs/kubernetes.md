@@ -4366,6 +4366,7 @@ After the adds the carry makes the same whole-tree read again and reads each tra
 That read-back is defence in depth: `git add` exits 0 for a path it added nothing of, so git's exit status alone does not say a file was carried.
 A workspace whose jj sparse patterns do not cover its tree fails, with nothing snapshotted, because a file outside those patterns is one the git read kept; a set holding `.` covers the tree, and an empty set, which an unfinished checkout leaves, fails with words of its own.
 A snapshot that fails fails the workspace, and no second snapshot is made.
+A directory a role made unreadable is one such failure: jj's snapshot fails with `Failed to read directory`, where the `git add --all` this read replaces warned `could not open directory`, exited 0 and lost what was inside, so the failure is the check telling a person rather than a regression.
 A stale working copy is one such failure, and its message names `jj workspace update-stale` as what a person runs.
 A conflicted working copy is carried in jj's own shape (`.jjconflict-base-0/`, `.jjconflict-side-0/`, `.jjconflict-side-1/`, `JJ-CONFLICT-README` and the one-sided file) and does not fail, so no content is lost.
 An untracked nested git repository is carried by neither read and fails neither.
