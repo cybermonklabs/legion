@@ -159,6 +159,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	defer ledger.Discard()
 
 	dependencyWrite := input.BlockedBy != nil || parentProvided
+	// A credential that names one project is refused a target outside it where a target's
+	// project is read, since this route's own address names no target (project_scope.go): the
+	// lock step refuses it before any lock, and writeBlockedBy again under them.
+	callerProject, _ := s.callerProject(r)
 	if dependencyWrite || input.Rank != nil {
 		var project string
 		if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
@@ -166,13 +170,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if dependencyWrite {
-			// The write's own ends are the issue and, where one is proposed, its parent; its
-			// targets are the blockers (lockIssueDependencyWrite).
-			ends := []string{key}
-			if parent != nil {
-				ends = append(ends, *parent)
-			}
-			if err := lockIssueDependencyWrite(r.Context(), tx, project, blockers, ends...); err != nil {
+			if err := lockIssueDependencyWrite(r.Context(), tx, project, callerProject, blockers); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
@@ -344,9 +342,6 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if input.BlockedBy != nil {
-		// A credential that names one project is refused a target outside it where the target's
-		// project is read, since this route's own address names no target (project_scope.go).
-		callerProject, _ := s.callerProject(r)
 		if err := writeBlockedBy(r.Context(), tx, key, before.Project, callerProject, blockers); err != nil {
 			s.writeHandlerError(w, err)
 			return

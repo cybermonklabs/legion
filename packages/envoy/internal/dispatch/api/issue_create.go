@@ -135,8 +135,8 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// respondWithExistingExternalIssue would also record a related-check outcome on. Nothing
 	// is written before this point.
 	// callerProject is empty for a credential that names none, which is every caller that
-	// exists today; writeBlockedBy below reads it again, since a blocked_by target's project
-	// is no part of this address.
+	// exists today; the dependency lock step and writeBlockedBy below read it again, since a
+	// blocked_by target's project is no part of this address.
 	callerProject, scoped := s.callerProject(r)
 	if scoped && callerProject != input.Project {
 		refuseWriteOutsideProjectScope(w, callerProject, input.Project)
@@ -269,11 +269,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	// A create with blockers can close a wait cycle, and a create with a parent adds a link the
 	// depth cap counts (refuseParentTooDeep): both take the dependency locks before the number
-	// or the rank (lockIssueDependencyWrite). A new issue with neither takes none. The new issue
-	// is not an end of the probe: it has no row yet, so nothing waits on it and the component it
-	// joins is its targets' and its parent's.
+	// or the rank (lockIssueDependencyWrite). A new issue with neither takes none. Only the
+	// blockers can name another project, since a parent is of the issue's own project.
 	if len(blockers) > 0 || parentKey != "" {
-		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, blockers, parentKey); err != nil {
+		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, callerProject, blockers); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

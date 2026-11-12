@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,8 +14,9 @@ import (
 )
 
 // crossProjectRaceRounds is how many times each concurrent scenario below is replayed. The
-// writes race on an unlocked probe read, so one round can miss the interleaving that matters;
-// each round clears the ring and lays its committed edges again first.
+// writers race each other once the lock they meet on lets them through, so one round can miss
+// the interleaving that matters; each round clears the ring and lays its committed edges again
+// first.
 const crossProjectRaceRounds = 8
 
 // dependencyEdge is one `blocked_by` link, written as the issue that waits and the issue it
@@ -26,11 +28,13 @@ type dependencyEdge struct{ issue, target string }
 // (INFRA-3036). Every refusal that stood before stands across projects too — a ring, a child
 // waiting on its parent, a parent waiting on its descendant and an issue waiting on itself —
 // and concurrent writers that would close a ring between projects meet on the deployment-wide
-// dependency lock, so each ends with the write applied or with the cycle refusal, never with a
-// deadlock and never with the ring committed. A caller whose credential names one project is
+// dependency lock every dependency write takes exclusively, so each ends with the write applied
+// or with the cycle refusal, never with a deadlock and never with the ring committed — the pair
+// whose every target is its own project's included, which shares no project lock with the other
+// and has nothing but that one lock to order it. A caller whose credential names one project is
 // still refused a target outside it.
 func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
-	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	alpha := createListedIssues(t, handler, "ALPHA", 8)
 	beta := createListedIssues(t, handler, "BETA", 8)
 	gamma := createListedIssues(t, handler, "GAMMA", 2)
@@ -154,9 +158,21 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 		}
 		return true
 	}
+	// expectWriteOrCycle holds a racing write's answer to 200 or 409 DEPENDENCY_CYCLE: any other
+	// answer is a deadlock or a lost write wearing a refusal's clothes.
+	expectWriteOrCycle := func(name string, round int, response *httptest.ResponseRecorder) {
+		t.Helper()
+		if response.Code == http.StatusOK {
+			return
+		}
+		if response.Code == http.StatusConflict && strings.Contains(response.Body.String(), `"code":"DEPENDENCY_CYCLE"`) {
+			return
+		}
+		t.Fatalf("%s round %d: status=%d body=%s, want 200 or 409 DEPENDENCY_CYCLE",
+			name, round, response.Code, response.Body.String())
+	}
 	// raceOverRing lays the ring's committed edges, then runs writes at once and holds each
-	// answer to 200 or 409 DEPENDENCY_CYCLE: any other answer is a deadlock or a lost write
-	// wearing a refusal's clothes. The ring itself must never be whole afterwards.
+	// answer to what expectWriteOrCycle allows. The ring itself must never be whole afterwards.
 	raceOverRing := func(name string, ring, committed, writes []dependencyEdge) {
 		t.Helper()
 		for round := range crossProjectRaceRounds {
@@ -176,16 +192,60 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 			}
 			close(start)
 			for range writes {
-				response := awaitResponse(t, responses)
-				if response.Code == http.StatusOK {
-					continue
-				}
-				if response.Code == http.StatusConflict && strings.Contains(response.Body.String(), `"code":"DEPENDENCY_CYCLE"`) {
-					continue
-				}
-				t.Fatalf("%s round %d: status=%d body=%s, want 200 or 409 DEPENDENCY_CYCLE",
-					name, round, response.Code, response.Body.String())
+				expectWriteOrCycle(name, round, awaitResponse(t, responses))
 			}
+			if ringLanded(ring) {
+				t.Fatalf("%s round %d: the ring committed whole: %v", name, round, ring)
+			}
+		}
+	}
+	// raceOverRingJoinedUnderTheLock is raceOverRing for the pair no project lock orders: two
+	// writers whose every target is its own project's, in two different projects, which only the
+	// committed cross-project edges join into one component. A gate transaction of the test's own
+	// stands in for the cross-project writers those edges come from: it holds the deployment-wide
+	// dependency lock exclusively, as such a write does, waits until both writers have queued
+	// behind it — which is past every read either makes with no lock held — writes their edges,
+	// and commits, so the edges and the lock are released together. Each writer therefore walks a
+	// graph that gained the joining edges after it read anything outside a lock, which is the
+	// ordering a protocol deciding its lock from such a read would walk into. The edges are
+	// written as SQL rather than through the API because an API write of them would queue behind
+	// this very gate.
+	raceOverRingJoinedUnderTheLock := func(name string, ring, committed, writes []dependencyEdge) {
+		t.Helper()
+		for round := range crossProjectRaceRounds {
+			for _, link := range ring {
+				setBlockers(name+": clear "+link.issue, link.issue, nil)
+			}
+			func() {
+				gate, err := database.Pool.Begin(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer gate.Rollback(context.Background())
+				if err := lockDeploymentIssueDependencies(context.Background(), gate); err != nil {
+					t.Fatal(err)
+				}
+				responses := make(chan *httptest.ResponseRecorder, len(writes))
+				for _, link := range writes {
+					go func() {
+						responses <- patchBlockers(link.issue, []string{link.target})
+					}()
+				}
+				waitForDatabaseLocks(t, gate, len(writes))
+				for _, link := range committed {
+					if _, err := gate.Exec(context.Background(), `
+						insert into issue_links (issue_key, kind, target_key) values ($1, 'blocked_by', $2)
+					`, link.issue, link.target); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := gate.Commit(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				for range writes {
+					expectWriteOrCycle(name, round, awaitResponse(t, responses))
+				}
+			}()
 			if ringLanded(ring) {
 				t.Fatalf("%s round %d: the ring committed whole: %v", name, round, ring)
 			}
@@ -201,11 +261,9 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 	}
 	raceOverRing("a ring over three projects", threeWay, nil, threeWay)
 
-	// One cross-project writer and one writer whose every target is its own project's, which
-	// the deployment-wide lock alone would not serialize: the second takes the shared lock, and
-	// the project lock they share is what orders them. The second writer's probe sees only its
-	// own project until the first writer commits, so this is the stale probe the protocol rests
-	// on.
+	// One cross-project writer and one writer whose every target is its own project's, over a
+	// committed edge that closes the ring through the other project: the deployment lock orders
+	// them, and so would the project lock they share.
 	mixed := []dependencyEdge{
 		{alpha[4], beta[4]},
 		{beta[4], alpha[5]},
@@ -216,15 +274,18 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 		[]dependencyEdge{{alpha[4], beta[4]}, {alpha[5], alpha[4]}})
 
 	// Two writers whose every target is its own project's, in two different projects, over
-	// committed cross-project edges that join their components. Neither write crosses a
-	// boundary and the two share no project, so only the probe puts them on one lock.
+	// committed cross-project edges that join their components. Neither write crosses a boundary
+	// and the two share no project, so no project lock holds them apart and the deployment lock
+	// is all there is: a protocol that took it shared for a write whose own targets stay inside
+	// one project would let both commit and close the ring, since the edges that join them land
+	// after each has read anything it reads unlocked.
 	joined := []dependencyEdge{
 		{alpha[6], beta[5]},
 		{beta[5], beta[6]},
 		{beta[6], alpha[7]},
 		{alpha[7], alpha[6]},
 	}
-	raceOverRing("two writers inside their own projects over cross-project edges", joined,
+	raceOverRingJoinedUnderTheLock("two writers inside their own projects over cross-project edges", joined,
 		[]dependencyEdge{{alpha[6], beta[5]}, {beta[6], alpha[7]}},
 		[]dependencyEdge{{beta[5], beta[6]}, {alpha[7], alpha[6]}})
 

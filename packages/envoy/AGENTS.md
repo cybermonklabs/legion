@@ -1836,12 +1836,15 @@ a document is owed a block index instead (`document_block_versions.version` null
 and a `scope` row goes through its document's sources, each read with no lock first (`refs.SourceText`) and locked only where its text holds a `#id` candidate at all, so the sources the drain passes over - most of a scope - never wait behind an edit nor hold one up, settled once they are all re-read.
 A row the drain cannot index is logged and left owed without holding back its batch.
 
-Every dependency write - a `blocked_by` write and a reparent alike - takes its locks in one order (`lockIssueDependencyWrite`, `api/issue_parent.go`): the deployment's own dependency lock first and always (`lockDeploymentIssueDependencies`, the two-key advisory namespace `dispatch-issue-dependencies-deployment`), exclusive when a target is in another project or when an unlocked probe walk of the write's own component saw another project and shared otherwise;
-then the project lock of the issue's own project and of each foreign target's project in key order (`lockProjectIssueDependencies`, the namespace `dispatch-issue-dependencies`);
+Every dependency write - a `blocked_by` write and a reparent alike - takes its locks in one order (`lockIssueDependencyWrite`, `api/issue_parent.go`): the project lock of the issue's own project and of each foreign target's project in key order (`lockProjectIssueDependencies`, the two-key advisory namespace `dispatch-issue-dependencies`);
+then the deployment's own dependency lock, always and exclusively (`lockDeploymentIssueDependencies`, the namespace `dispatch-issue-dependencies-deployment`);
 then the number, the rank and the row locks; then the write, whose own walk under those locks decides the cycle.
-The shared side is enough for a write whose component is inside one project.
-A write that can close a ring across projects has a component that spans projects, which the probe sees, so it holds the exclusive lock, and two such writes never run at once; a write whose component is inside one project can close a ring inside that project alone, and the project lock serializes those as it does today.
-A probe that saw one project where the component spans by the time the locks are held can only have become stale through a write that held the exclusive lock and committed before this write's shared lock was granted, while this write holds the shared lock no spanning write can run, and a write whose own component is inside one project cannot add an edge of a ring that crosses projects, because such an edge would make its own component span.
+Every dependency write takes that one deployment lock exclusively, so no two dependency walks ever run at once and no ring can be closed by two writes that each walk a graph the other is changing - whatever projects their components touch, and with nothing read before a lock deciding it.
+The order never inverts, because every dependency write takes its project locks first, in key order, and the deployment lock last, so no two writes can hold what the other waits for.
+What it costs is that dependency writes serialize across the deployment rather than per project; every other write takes neither lock.
+The project locks keep their own meaning: one project's dependency writes still serialize on their own lock, and a caller that holds a project's dependency lock still fences that project's dependency writes (`TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks`).
+Each target's project is read before any lock is taken, which is sound because no route moves an issue between projects and `writeBlockedBy`'s own read inside the transaction refuses an unknown key;
+a caller whose credential names one project is refused a target outside it there, before the deployment lock is taken, and again under the locks in `writeBlockedBy`, both through the one wording `refuseBlockedByOutsideCallerProject` writes.
 A PATCH then locks every issue row it names `for no key update` in one key order, the order `LockOwners` takes event owners (`lockPatchRows`, `lockIssueRows`):
 the issue; its current parent when a status change or a reparent appends to it; the proposed parent; and the rank neighbours.
 `LockOwners` then re-locks rows already held, so no PATCH holds one of these rows while waiting for another that a second write holds.
@@ -1849,7 +1852,7 @@ The current parent is read before the lock and again under it:
 a parent a concurrent reparent moved in between releases the attempt's locks (a savepoint) and is locked again in key order, and one that moves at both attempts is `409 PARENT_CONTENDED`, with nothing applied.
 The bounded dependency walk uses plain reads rather than contending on unrelated issue rows.
 Status-only, title, labels and rank writes take no dependency lock.
-Creation takes these locks with non-empty `blocked_by` or a `parent`, before allocating the issue number or rank, and the new issue is no end of the probe: it has no row yet, so the component it joins is its targets' and its parent's;
+Creation takes these locks with non-empty `blocked_by` or a `parent`, before allocating the issue number or rank, and only its blockers can name another project, since a parent is of the issue's own project;
 creation without either takes no dependency lock, and no creation takes an explicit parent-row lock.
 An issue sits at most `parentDepthCap` (32) links below its root:
 a create under a parent, or a reparent whose subtree's deepest issue would sit deeper, is `409 PARENT_INPUT` (`refuseParentTooDeep`, under the dependency lock, so two writes cannot each pass alone and together pass it), and every recursive issue walk stops at that depth.
@@ -2417,7 +2420,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - Every issue has a nullable `parent_key` (`graph_edges.child_of` is a live view over it).
   `POST /api/v1/issues` validates a supplied `parent` exists in the same project (`400 PARENT_INPUT`) and leaves the new issue at most `parentDepthCap` (32) links below its root (`409 PARENT_INPUT`), and `PATCH /api/v1/issues/{key}` accepts a tri-state `parent`:
   absent leaves it, `null` clears it, a key reparents.
-  Parent changes, and creates with a parent, take the project's dependency advisory lock, serializing with blocker writes;
+  Parent changes, and creates with a parent, take the project's dependency advisory lock and then the deployment's, serializing with blocker writes;
   a parent change then locks the issue, its old parent and the proposed parent together in one key order, as a status write locks the issue and its parent (`409 PARENT_CONTENDED` when a concurrent reparent moves the parent at both attempts).
   Plain, depth-capped reads refuse a missing, self, or foreign-project parent (`400 PARENT_INPUT`), a parent cycle (`409 PARENT_INPUT`), a parent that would put the deepest issue under the moved one more than 32 links below its root (`409 PARENT_INPUT`), or a wait cycle through parent and `blocked_by` edges (`409 DEPENDENCY_CYCLE`); unrelated row activity adds no refusal.
   A reparent of a closed issue is `409 ISSUE_CLOSED` (a closed issue takes only `rank`, `components`, a reopening `status` — any status but `done` — and an `external_links` write that adds no new URL, so a link can move to the issue that replaced it;

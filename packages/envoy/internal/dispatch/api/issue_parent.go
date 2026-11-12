@@ -115,159 +115,107 @@ func lockProjectIssueDependencies(ctx context.Context, tx pgx.Tx, project string
 }
 
 // lockDeploymentIssueDependencies is the one dependency lock that is not a project's, and the
-// first every dependency write takes: it is what two writers that share no project meet on. A
-// write whose dependency component spans projects takes it exclusively, one whose component is
-// inside a single project takes it shared, so the writes that stay inside one project conflict
-// with nothing but a cross-project write and run beside each other as they always did.
+// last lock every dependency write takes. Every one of them takes it exclusively, so no two
+// dependency walks ever run at once and no ring can be closed by two writes that each walk a
+// graph the other is changing — whatever projects their components touch, and with nothing read
+// before a lock deciding it. What it costs is that dependency writes — a blocked_by write and a
+// reparent — serialize across the deployment rather than per project; every other write takes
+// neither this lock nor a project's.
+//
+// The project locks keep their own meaning beside it: one project's dependency writes still
+// serialize on their own lock, and a caller that holds a project's dependency lock still fences
+// that project's dependency writes (TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks).
 //
 // The key is its own name rather than lockProjectIssueDependencies' namespace with a literal
 // second key, so a project whose key happens to hash to that literal cannot collide with it; the
 // two-key shape with a literal is the one refuseRepoRenameChain already uses for a
 // deployment-wide lock.
-func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx, exclusive bool) error {
-	statement := `select pg_advisory_xact_lock_shared(hashtext('dispatch-issue-dependencies-deployment'), 0)`
-	if exclusive {
-		statement = `select pg_advisory_xact_lock(hashtext('dispatch-issue-dependencies-deployment'), 0)`
-	}
-	if _, err := tx.Exec(ctx, statement); err != nil {
+func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `
+		select pg_advisory_xact_lock(hashtext('dispatch-issue-dependencies-deployment'), 0)
+	`); err != nil {
 		return fmt.Errorf("lock deployment issue dependencies: %w", err)
 	}
 	return nil
 }
 
 // lockIssueDependencyWrite takes every lock a blocker or parent write needs, in the one order
-// every such write takes them: the deployment-wide dependency lock first and always, then the
-// project lock of the issue's own project and of each project a target of this write belongs to,
-// in key order. project is the issue's own project, targets are its blocked_by targets, and ends
-// are the write's other ends — the issue itself where it already has a row, and a proposed
-// parent; an empty end is skipped. The number, rank and row locks follow, as they did before.
+// every such write takes them: the project lock of the issue's own project and of each project a
+// target of this write belongs to, in key order (lockProjectIssueDependencies), and then the
+// deployment-wide dependency lock (lockDeploymentIssueDependencies). The number, rank and row
+// locks follow, as they did before. project is the issue's own project, targets are its
+// blocked_by targets, and caller is the one project the request's credential may write, empty
+// for a credential that names none.
 //
-// Both reads it makes run with no lock held. Reading a target's project unlocked is sound
-// because no route moves an issue between projects (project_scope.go's file doc), and a key
-// created between that read and the lock is still refused by writeBlockedBy's own read inside
-// the transaction. The second read is a probe, and answers one question: does the component this
-// write joins touch a project other than the issue's own? That is what decides the deployment
-// lock, and the decision holds even when the probe is stale:
+// That order never inverts, because every dependency write takes its project locks first, in key
+// order, and the deployment lock last, so no two writes can hold what the other waits for.
 //
-//   - A write that can close a ring across projects has a component that spans projects, since
-//     the whole of such a ring is reachable from the write's own ends, so it holds the exclusive
-//     lock and two such writes never run at once.
-//   - A write whose component is inside one project can close a ring inside that project alone,
-//     and the project lock serializes those, as it does today.
-//   - A probe that saw one project where the component spans by the time the locks are held can
-//     only have become stale through a write that held the exclusive lock and committed before
-//     this write's shared lock was granted. While this write holds the shared lock no spanning
-//     write can run, and a write whose own component is inside one project cannot add an edge of
-//     a ring that crosses projects, because such an edge would make its own component span.
+// The one read it makes runs with no lock held, and nothing that read says decides which locks
+// are taken: the projects it names are locked on top of the issue's own, and the deployment lock
+// is taken exclusively whatever it said. Reading a target's project unlocked is sound because no
+// route moves an issue between projects (project_scope.go's file doc), and a key created between
+// that read and the lock is still refused by writeBlockedBy's own read inside the transaction.
 //
-// What it costs is one unlocked walk per dependency write, bounded by parentDepthCap as every
-// issue walk is.
-func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project string, targets []string, ends ...string) error {
-	foreign, err := foreignTargetProjects(ctx, tx, project, targets)
+// A caller whose credential names one project is refused a target outside it here, before any
+// lock is taken: the pre-handler check reads the project of the object the path names and no key
+// of the body (project_scope.go), so this is the first point at which a target's project is
+// known, and a caller that may not write at all would otherwise take the deployment-wide lock
+// first. writeBlockedBy refuses it again under the locks, which is the authoritative refusal;
+// both word it through refuseBlockedByOutsideCallerProject.
+func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller string, targets []string) error {
+	foreign, err := foreignTargets(ctx, tx, project, targets)
 	if err != nil {
 		return err
 	}
-	spans := len(foreign) > 0
-	if !spans {
-		probe := make([]string, 0, len(ends)+len(targets))
-		probe = append(probe, ends...)
-		probe = append(probe, targets...)
-		if spans, err = dependencyComponentLeavesProject(ctx, tx, project, probe); err != nil {
-			return err
-		}
+	if caller != "" && len(foreign) > 0 {
+		return refuseBlockedByOutsideCallerProject(caller, foreign[0].key, foreign[0].project)
 	}
-	if err := lockDeploymentIssueDependencies(ctx, tx, spans); err != nil {
-		return err
+	projects := make([]string, 0, len(foreign)+1)
+	projects = append(projects, project)
+	for _, target := range foreign {
+		projects = append(projects, target.project)
 	}
-	projects := append(foreign, project)
 	slices.Sort(projects)
 	for _, locked := range slices.Compact(projects) {
 		if err := lockProjectIssueDependencies(ctx, tx, locked); err != nil {
 			return err
 		}
 	}
-	return nil
+	return lockDeploymentIssueDependencies(ctx, tx)
 }
 
-// foreignTargetProjects is the project of every target belonging to one other than project, each
-// named once. A target with no row is left out: writeBlockedBy's own read refuses it inside the
+// foreignTarget is a blocked_by target of a project other than the issue's own, and the project
+// it belongs to.
+type foreignTarget struct{ key, project string }
+
+// foreignTargets is every target belonging to a project other than project, in key order, which
+// is the order writeBlockedBy reads its targets in, so a scoped caller is refused the same target
+// by both. A target with no row is left out: writeBlockedBy's own read refuses it inside the
 // transaction, which is where an unknown key is answered.
-func foreignTargetProjects(ctx context.Context, q queryer, project string, targets []string) ([]string, error) {
+func foreignTargets(ctx context.Context, q queryer, project string, targets []string) ([]foreignTarget, error) {
 	if len(targets) == 0 {
 		return nil, nil
 	}
 	rows, err := q.Query(ctx, `
-		select distinct project_key from issues where key = any($1) and project_key <> $2
+		select key, project_key from issues where key = any($1) and project_key <> $2 order by key
 	`, targets, project)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowTo[string])
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (foreignTarget, error) {
+		var target foreignTarget
+		return target, row.Scan(&target.key, &target.project)
+	})
 }
 
-// dependencyComponentLeavesProject answers whether the wait graph reachable from ends holds an
-// issue of any project but project. It walks waitStepSQL, the step assertNoWaitPath walks, from
-// both halves of each end, and stops at parentDepthCap as that walk does: a graph deeper than
-// the cap only decides which deployment lock the refusal assertNoWaitPath then writes is taken
-// under.
-func dependencyComponentLeavesProject(ctx context.Context, q queryer, project string, ends []string) (bool, error) {
-	seen := map[waitNode]bool{}
-	reached := map[string]bool{}
-	var visited []string
-	var frontier []waitNode
-	for _, end := range ends {
-		if end != "" {
-			frontier = append(frontier, waitNode{key: end, done: true})
-		}
-	}
-	for depth := 0; len(frontier) > 0 && depth <= parentDepthCap; depth++ {
-		var starts, dones []string
-		for _, node := range frontier {
-			halves := []waitNode{node, {key: node.key}}
-			if !node.done {
-				halves = halves[:1]
-			}
-			for _, half := range halves {
-				if seen[half] {
-					continue
-				}
-				seen[half] = true
-				if !reached[half.key] {
-					reached[half.key] = true
-					visited = append(visited, half.key)
-				}
-				if half.done {
-					dones = append(dones, half.key)
-				} else {
-					starts = append(starts, half.key)
-				}
-			}
-		}
-		// Every half of this round was already seen, so the step below would be asked for the
-		// waits of nothing and could only answer nothing: the walk has exhausted its component.
-		if len(starts) == 0 && len(dones) == 0 {
-			break
-		}
-		rows, err := q.Query(ctx, waitStepSQL, starts, dones)
-		if err != nil {
-			return false, err
-		}
-		frontier, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (waitNode, error) {
-			var node waitNode
-			return node, row.Scan(&node.key, &node.done)
-		})
-		if err != nil {
-			return false, err
-		}
-	}
-	if len(visited) == 0 {
-		return false, nil
-	}
-	var leaves bool
-	err := q.QueryRow(ctx, `
-		select exists (select 1 from issues where key = any($1) and project_key <> $2)
-	`, visited, project).Scan(&leaves)
-	return leaves, err
+// refuseBlockedByOutsideCallerProject is what a caller whose credential names one project is
+// answered for a blocked_by target outside it. Two steps of the same write refuse it — the lock
+// step before any lock is taken, and writeBlockedBy under the locks — so the wording lives here
+// once and the two cannot drift.
+func refuseBlockedByOutsideCallerProject(caller, target, targetProject string) error {
+	return errorf(http.StatusForbidden, codeProjectScope,
+		"this request's credential may write project %s; blocked_by issue %s belongs to project %s",
+		caller, target, targetProject)
 }
 
 // lockIssueRows locks key and the rows in others `for no key update` in one key order, the order
@@ -458,10 +406,9 @@ func assertParentLeavesNoDependencyCycle(ctx context.Context, tx pgx.Tx, child, 
 // wait, and the walk below is what refuses a ring, between projects as inside one.
 //
 // caller is the one project the request's credential may write, empty for a credential that
-// names none (callerProject). Such a caller is refused a target outside its project here rather
-// than in the pre-handler check, because that check reads the project of the object the path
-// names and no key in the body (project_scope.go): this is the first point at which a target's
-// project is known, and the write has still made no change.
+// names none (callerProject). A target outside it is refused here, under the locks, which is the
+// authoritative refusal: lockIssueDependencyWrite refuses the same caller before any lock is
+// taken, and both word it through refuseBlockedByOutsideCallerProject.
 func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue, project, caller string, targets []string) error {
 	if slices.Contains(targets, issue) {
 		return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "%s cannot be blocked by itself", issue)
@@ -476,9 +423,7 @@ func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue, project, caller strin
 			return err
 		}
 		if targetProject != project && caller != "" {
-			return errorf(http.StatusForbidden, codeProjectScope,
-				"this request's credential may write project %s; blocked_by issue %s belongs to project %s",
-				caller, target, targetProject)
+			return refuseBlockedByOutsideCallerProject(caller, target, targetProject)
 		}
 	}
 	from := make([]waitNode, len(targets))
@@ -500,18 +445,6 @@ func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue, project, caller strin
 	`, issue, targets)
 	return err
 }
-
-// waitStepSQL is one step of the wait graph: what the start halves named in $1 wait on, and what
-// the done halves named in $2 wait on. assertNoWaitPath walks it to refuse a ring and
-// dependencyComponentLeavesProject walks it to see which projects a write's component reaches,
-// so both read one definition of an edge.
-const waitStepSQL = `
-			select parent_key, false from issues where key = any($1) and parent_key is not null
-			union
-			select target_key, true from issue_links where issue_key = any($1) and kind = 'blocked_by'
-			union
-			select key, true from issues where parent_key = any($2)
-		`
 
 // assertNoWaitPath refuses a wait whose head reaches its tail, stopping at parentDepthCap.
 // The caller serializes blocker and parent changes, so traversal needs only plain reads.
@@ -543,7 +476,13 @@ func assertNoWaitPath(ctx context.Context, tx pgx.Tx, from []waitNode, goal wait
 				}
 			}
 		}
-		rows, err := tx.Query(ctx, waitStepSQL, starts, dones)
+		rows, err := tx.Query(ctx, `
+			select parent_key, false from issues where key = any($1) and parent_key is not null
+			union
+			select target_key, true from issue_links where issue_key = any($1) and kind = 'blocked_by'
+			union
+			select key, true from issues where parent_key = any($2)
+		`, starts, dones)
 		if err != nil {
 			return err
 		}

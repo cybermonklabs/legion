@@ -28,9 +28,10 @@ type Leases interface {
 // to. Within the two-key space the other namespaces are the copy locks'
 // (docs.copiedAsksLockNamespace, "COPY"), the test hooks' (the api package's
 // testHookLockNamespace, "HOOK", taken only under DISPATCH_TEST_HOOKS), a conditional edit's
-// admission's (docs.conditionalEditQueueLockNamespace) and the issue dependencies' (api's
-// lockProjectIssueDependencies), each a first key of its own, so a lease's second key, its name's
-// hashtext, separates the leases from each other and from nothing else.
+// admission's (docs.conditionalEditQueueLockNamespace), the issue dependencies' (api's
+// lockProjectIssueDependencies) and the deployment's own issue dependencies' (api's
+// lockDeploymentIssueDependencies), each a first key of its own, so a lease's second key, its
+// name's hashtext, separates the leases from each other and from nothing else.
 const leaseNamespace int32 = 0x4C4F4F50
 
 // takeLease tries for a lease without queueing behind its holder, and freeLease gives it back. Both

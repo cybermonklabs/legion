@@ -24,8 +24,9 @@ const maxQueuedConditionalEdits = 32
 // takes ("QUEU"), its second the artifact id's hashtext. It is the two-key form, which Postgres
 // keeps apart from the single-key locks (a document's room, lockDocumentRoom, among them), so an
 // are the copy locks' (copiedAsksLockNamespace), the loop leases' (duty.leaseNamespace), the test
-// hooks' (the api package's testHookLockNamespace) and the issue dependencies' (api's
-// lockProjectIssueDependencies), none of them this one.
+// hooks' (the api package's testHookLockNamespace), the issue dependencies' (api's
+// lockProjectIssueDependencies) and the deployment's own issue dependencies' (api's
+// lockDeploymentIssueDependencies), none of them this one.
 const conditionalEditQueueLockNamespace int32 = 0x51554555
 
 // conditionalEditReleaseTimeout bounds the write of a process's count when one of its conditional
