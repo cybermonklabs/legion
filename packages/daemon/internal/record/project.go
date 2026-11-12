@@ -250,9 +250,11 @@ const (
 )
 
 // String is the word the wire carries for this kind (api.WaitingLineView.Kind): `returning`,
-// `answered`, `queued_root` and `first_phase`. These four are the line's whole vocabulary on the
-// wire, which a reader of the state branches on, so a kind added to the list above needs its
-// word here; anything else gives the empty string, which is no word at all.
+// `answered`, `queued_root`, `first_phase` and `waiting_on_issue`. These five are the line's
+// whole vocabulary on the wire, which a reader of the state branches on, so a kind added to the
+// list above needs its word here, and a new contract with it, since a reader before it refuses
+// a word it does not name (api's waitingOnIssueContract); anything else gives the empty string,
+// which is no word at all.
 func (k LineKind) String() string {
 	switch k {
 	case LineReturning:
@@ -263,6 +265,8 @@ func (k LineKind) String() string {
 		return "queued_root"
 	case LineFirstPhase:
 		return "first_phase"
+	case LineWaitingOnIssue:
+		return "waiting_on_issue"
 	}
 	return ""
 }

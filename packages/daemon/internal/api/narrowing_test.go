@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"strings"
 	"testing"
 
@@ -69,15 +70,36 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 	return mark, true
 }
 
+// narrowingState is the state golden with one more member of the waiting line, LEGION-213, a
+// started issue that gave its slot back to wait on another issue (waitingOnIssueContract): the
+// golden itself stands no member of that kind, so without it the row of that contract would
+// find nothing to narrow and write no line, and the rows below could not say that every row of
+// stateNarrowings writes its own.
+func narrowingState(t *testing.T) State {
+	t.Helper()
+	state := populatedState(t)
+	issues := make(map[string]Issue, len(state.Issues)+1)
+	maps.Copy(issues, state.Issues)
+	issues["LEGION-213"] = waitingOnIssueMember()
+	state.Issues = issues
+	return state
+}
+
 // narrowingsExpected is what the daemon's log holds for a caller at contract, in the order
-// stateFor applies them: the `dropped` of every row of stateNarrowings that caller stands below.
-// The fixture's state carries something of every row, so each of them writes its line. It is
-// read from the table rather than written out here, so a narrowing added above the contract a
-// row below reads is counted by that row rather than failing it.
-func narrowingsExpected(contract int) []string {
+// stateFor applies them: the `dropped` of every row of stateNarrowings that caller stands below
+// and that still finds something of its own in narrowingState once the rows before it have run.
+// The fixture carries something of every row, and every row writes its line but one: a caller
+// below whyAndLineFieldsContract has lost every member's `kind` to that row before
+// waitingOnIssueContract's row asks for the word. It is read from the table rather than written
+// out here, so a narrowing added above the contract a row below reads is counted by that row
+// rather than failing it.
+func narrowingsExpected(t *testing.T, contract int) []string {
+	t.Helper()
+	state := narrowingState(t)
 	var dropped []string
 	for _, narrowing := range stateNarrowings {
-		if contract < narrowing.contract {
+		if contract < narrowing.contract && narrowing.carries(state) {
+			state = narrowing.without(state)
 			dropped = append(dropped, narrowing.dropped)
 		}
 	}
@@ -103,7 +125,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// of that one arm.
 	t.Run("a caller below the contract is told nothing, and the log says what was taken", func(t *testing.T) {
 		const remote = statePodAddr + ":41000"
-		body, narrowings := stateNarrowed(t, populatedState(t), remote, podClaims(recordFieldsContract-1))
+		body, narrowings := stateNarrowed(t, narrowingState(t), remote, podClaims(recordFieldsContract-1))
 
 		if mark, carried := contractServed(t, body); carried {
 			t.Errorf("the body served to a pod below %d carries the mark %v; a key in a narrowed body is what the narrowing exists to prevent",
@@ -116,7 +138,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			}
 		}
 
-		want := narrowingsExpected(recordFieldsContract - 1)
+		want := narrowingsExpected(t, recordFieldsContract-1)
 		if len(narrowings) != len(want) {
 			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, the mark's own and one for each contract above it: %+v",
 				len(narrowings), recordFieldsContract-1, len(want), narrowings)
@@ -141,7 +163,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// The body of a caller at the contract: the two numbers stand beside the record whose keys
 	// the same contract added, so a reader that has the record can say which contract it reads.
 	t.Run("a caller at the contract carries the two numbers beside the record", func(t *testing.T) {
-		body, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(recordFieldsContract))
+		body, narrowings := stateNarrowed(t, narrowingState(t), statePodAddr+":41000", podClaims(recordFieldsContract))
 
 		mark, carried := contractServed(t, body)
 		if !carried {
@@ -160,7 +182,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		// A caller at this contract stands below the contracts above it and is narrowed by those
 		// alone: the log names every one of them and never the mark's own arm, whose line would
 		// mean the record had been taken out of the body just read.
-		wantLines := narrowingsExpected(recordFieldsContract)
+		wantLines := narrowingsExpected(t, recordFieldsContract)
 		if len(narrowings) != len(wantLines) {
 			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
 				len(narrowings), recordFieldsContract, len(wantLines), narrowings)
@@ -176,7 +198,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// so it is served the state whole and narrowed by nothing, and the mark names the contract it
 	// was built at and no caller's.
 	t.Run("the operator's own answer says which contract it was built at", func(t *testing.T) {
-		body, narrowings := stateNarrowed(t, populatedState(t), "192.0.2.1:41000", podClaims(recordFieldsContract-1))
+		body, narrowings := stateNarrowed(t, narrowingState(t), "192.0.2.1:41000", podClaims(recordFieldsContract-1))
 
 		mark, carried := contractServed(t, body)
 		if !carried {
@@ -194,28 +216,37 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	})
 
 	// Every narrowing says what it dropped, not only the mark's own: a caller below every
-	// contract in stateNarrowings is served one line per row of it, each naming its own keys.
-	// One line for all of them, or a line that named the contract and nothing else, would leave
-	// a reader of the log to find out elsewhere what left the body.
+	// contract in stateNarrowings is served one line per row that finds something of its own,
+	// each naming its own keys, and a caller at whyAndLineFieldsContract the line of the one row
+	// the first caller's body no longer reaches. Between them every row writes its line. One line
+	// for all of them, or a line that named the contract and nothing else, would leave a reader of
+	// the log to find out elsewhere what left the body.
 	t.Run("each narrowing names its own keys", func(t *testing.T) {
-		_, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(supervise.PodUpdateContract-1))
-
-		if len(narrowings) != len(stateNarrowings) {
-			t.Fatalf("the daemon wrote %d narrowing lines for a caller below every contract, want %d: %+v",
-				len(narrowings), len(stateNarrowings), narrowings)
-		}
 		dropped := map[string]bool{}
-		for i, line := range narrowings {
-			if line.Dropped == "" {
-				t.Errorf("the line for contract %d says nothing of what it dropped", stateNarrowings[i].contract)
+		for _, contract := range []int{supervise.PodUpdateContract - 1, whyAndLineFieldsContract} {
+			_, narrowings := stateNarrowed(t, narrowingState(t), statePodAddr+":41000", podClaims(contract))
+			want := narrowingsExpected(t, contract)
+			if len(narrowings) != len(want) {
+				t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d: %+v",
+					len(narrowings), contract, len(want), narrowings)
 			}
-			if dropped[line.Dropped] {
-				t.Errorf("two narrowings report the same keys, %q: each arm names its own", line.Dropped)
+			for i, line := range narrowings {
+				if line.Dropped == "" {
+					t.Errorf("line %d of a caller at %d says nothing of what it dropped", i, contract)
+				}
+				if dropped[line.Dropped] {
+					t.Errorf("two narrowings report the same keys, %q: each arm names its own", line.Dropped)
+				}
+				dropped[line.Dropped] = true
+				if line.Dropped != want[i] {
+					t.Errorf("the lines are out of the table's order: line %d of a caller at %d says %q, want %q",
+						i, contract, line.Dropped, want[i])
+				}
 			}
-			dropped[line.Dropped] = true
-			if line.Dropped != stateNarrowings[i].dropped {
-				t.Errorf("the lines are out of the table's order: line %d says %q, want %q",
-					i, line.Dropped, stateNarrowings[i].dropped)
+		}
+		for _, narrowing := range stateNarrowings {
+			if !dropped[narrowing.dropped] {
+				t.Errorf("no caller was told the row of contract %d dropped %q", narrowing.contract, narrowing.dropped)
 			}
 		}
 	})

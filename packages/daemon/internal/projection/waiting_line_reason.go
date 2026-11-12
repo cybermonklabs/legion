@@ -7,6 +7,7 @@ package projection
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -39,6 +40,11 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 			came = "A person answered it, and its work came back"
 		case record.LineFirstPhase:
 			came = "Its design gate opened"
+		case record.LineWaitingOnIssue:
+			came = "It gave its admission slot back to wait on another issue"
+			if len(entry.Waits) > 0 {
+				came = "It gave its admission slot back to wait on " + strings.Join(entry.Waits, ", ")
+			}
 		}
 		if !entry.Since.IsZero() {
 			came += " at " + entry.Since.UTC().Format(time.RFC3339)
@@ -46,6 +52,11 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 		place := fmt.Sprintf("It is %s of %s whose work came back", englishOrdinal(entry.PartPlace), issuesCounted(partLength))
 		if entry.Holds {
 			return came + ". " + place + "." + holdsItsSlot
+		}
+		// The promotion passes over a member that waits on an issue while the wait lasts, so it
+		// does not take the free slots first; it takes one again by itself once the wait ends.
+		if entry.Kind == record.LineWaitingOnIssue {
+			return came + ". " + place + "." + waitsItsTurn
 		}
 		takes := "they take"
 		if partLength == 1 {
@@ -93,6 +104,12 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 // this truth instead (waitingLineReason). It opens on a space because it follows the full stop
 // the place clause ends on.
 const holdsItsSlot = " It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+
+// waitsItsTurn is the last clause of a member that gave its slot back to wait on another issue
+// and holds none (record.LineWaitingOnIssue): the promotion passes over it while the wait lasts,
+// so telling it that it takes the free slots first would be false, and the clause says when it
+// does take one instead. It opens on a space for the reason holdsItsSlot does.
+const waitsItsTurn = " The promotion passes over it while that wait lasts, and it takes a slot again by itself at the first pass after the wait ends."
 
 // englishOrdinal is n as a person writes a place: 1st, 2nd, 3rd and `th` for the rest, with 11,
 // 12 and 13 taking `th` whatever their last digit says — so 11th, 12th and 13th, and 21st, 22nd,

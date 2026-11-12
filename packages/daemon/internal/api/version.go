@@ -1172,4 +1172,22 @@ package api
 // of a file list: GitHub cuts a pull request's file list short, so one that changes more files
 // than the page holds answers without this path. Read the base's own number and every open
 // pull request again at every forward merge rather than from this line.)
-const DaemonAPIVersion = 85
+//
+// 86: INFRA-3036 (cybermonklabs/legion) -- the waiting line's `kind` (`api.WaitingLineView`) on
+// `GET /legion/v1/state` gains a fifth word, `waiting_on_issue`: an issue the daemon has started
+// that gave its admission slot back to wait on another issue — a Dispatch blocker of it that is
+// not done, or an open child its own first phase waits for (record.LineWaitingOnIssue). It
+// stands in the returned part with `since` the moment its row was taken
+// (record.Issue.ReleasedForWaitAt) and `holdsSlot` false, the promotion passes over it while
+// the wait lasts, and it takes a row again at the first pass after the wait ends. A plugin from
+// 85 reads `kind` with a `z.enum` of the four words before it, which refuses a word it does not
+// name and with it the whole state body, so a caller from a pod whose claims record a contract
+// below 86 is served every member of that kind without its `kind` (api's stateFor,
+// withoutWaitingOnIssue), which that schema takes as optional; every other field of the member
+// is 85's, and a caller below 85 has lost `kind` with the rest of them already
+// (withoutWhyAndLineFields). Nothing else of this change is on the wire.
+// (This branch takes 86 at the forward merge of 2026-11-12 that brought main in at fbe970ee,
+// which declares 85: no open pull request of cybermonklabs/legion declared a number above 85
+// when read on 2026-11-12. Read the base's own number and every open pull request again at
+// every forward merge rather than from this line.)
+const DaemonAPIVersion = 86

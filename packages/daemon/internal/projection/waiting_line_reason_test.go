@@ -83,6 +83,21 @@ func TestWaitingLineReasonNamesTheMembersPlaceInWords(t *testing.T) {
 			want: "It has not started. It is 5th of 18 issues that have not started, " +
 				"by the Dispatch rank of its tree root LEGION-10, and 7 issues whose work came back stand ahead of all of them.",
 		},
+		// A member that gave its slot back to wait on another issue is passed over while it
+		// waits, so it is told when it takes a slot again rather than that it takes them first.
+		{
+			name: "a started issue waiting on another issue in the returned part",
+			entry: func() record.LineEntry {
+				entry := since(lineEntry(record.PartReturned, record.LineWaitingOnIssue, 2, false, "LEGION-10"), cameBack)
+				entry.Waits = []string{"LEGION-7", "LEGION-8"}
+				return entry
+			}(),
+			partLength: 3,
+			otherPart:  18,
+			want: "It gave its admission slot back to wait on LEGION-7, LEGION-8 at 2026-11-10T15:11:32Z. " +
+				"It is 2nd of 3 issues whose work came back. The promotion passes over it while that wait lasts, " +
+				"and it takes a slot again by itself at the first pass after the wait ends.",
+		},
 		// A holder takes no free slot and waits for none, so the clause about the free slots is
 		// replaced by that truth — read from the entry's Holds and never from the kind, since
 		// every kind can hold a slot and every kind can stand in the line without one.

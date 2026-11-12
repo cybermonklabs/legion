@@ -109,8 +109,9 @@ var (
 // answers; a pod from 62 to 72 the counts of the moves back too, and still no refresh count; a
 // pod at 73 or 74 the refresh count too, and none of the nine keys the decided record added; a
 // pod from 75 to 84 those nine too, and no issue's answer and no field of the line beside its
-// place and its length; a pod below 46 none of the twelve; and a pod at 85, this daemon's
-// declared contract, a pod whose claims record no contract and a caller in no pod — the
+// place and its length; a pod below 46 none of the twelve; and a pod at 85 or 86, the last
+// two contracts — the fixture stands no member of the line of the one kind 86 added, so 86's
+// strip finds nothing here (waiting_on_issue_test.go reads it) — a pod whose claims record no contract and a caller in no pod — the
 // operator's `legion state`, whose memory line reads the draws, whose queue line reads the wakes
 // and whose tool-call line reads the step records — are served all of them.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
@@ -164,8 +165,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// is served none of the nine, whatever this daemon declares.
 		failure bool
 		// answers is whether the caller is served each issue's one rendered answer and the
-		// waiting line's own fields beside each member's place (whyAndLineFieldsContract, this
-		// daemon's own contract): one strip takes both, so a pod below it reads every member
+		// waiting line's own fields beside each member's place (whyAndLineFieldsContract): one strip takes both, so a pod below it reads every member
 		// with its `place` and its `length` alone and no issue with a `why`.
 		answers bool
 	}{

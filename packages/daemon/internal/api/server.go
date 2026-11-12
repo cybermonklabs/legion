@@ -645,8 +645,11 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 // contract that added the one rendered answer an issue that is not working now carries and the
 // waiting line's own fields beside it, is served every issue without `why` and every member of
 // the line with its `place` and its `length` alone (withoutWhyAndLineFields), which is the body
-// waitingLineContract's own schema describes.
-// The twelve compose: each is applied when the state carries something of its own, so a caller
+// waitingLineContract's own schema describes; and a caller below waitingOnIssueContract, the
+// contract that added `waiting_on_issue` to the line's `kind`, is served every member of that
+// kind without its `kind` (withoutWaitingOnIssue), a word and not a key, so it adds none to the
+// count below.
+// The thirteen compose: each is applied when the state carries something of its own, so a caller
 // below all of them — a pod below supervise.PodUpdateContract — is served a body carrying none
 // of the twenty-four keys, the line's own fields being fields of a view such a caller is served
 // none of at all, each of them absent rather than empty, since a strict reader before the
@@ -722,7 +725,7 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 // (TestANarrowedBodySaysSo).
 const narrowedTheState = "api: narrowed the state to the caller's plugin contract"
 
-// stateNarrowing is one of the twelve narrowings stateFor applies: the contract that added the
+// stateNarrowing is one of the thirteen narrowings stateFor applies: the contract that added the
 // keys to this route, whether a state carries anything of it, the body served without it, and
 // what the log line names as dropped. Each arm carries its own `dropped` rather than the
 // contract number alone, because a reader of the log who is told only a number has to find out
@@ -734,20 +737,23 @@ type stateNarrowing struct {
 	dropped  string
 }
 
-// stateNarrowings are the twelve, lowest contract first, which is the order stateFor applies
+// stateNarrowings are the thirteen, lowest contract first, which is the order stateFor applies
 // them in: a caller below all of them is served a body with every one of these keys gone. The
 // order is the history of the route and nothing a strip depends on, so a row added at the end
-// needs no reading of the rows before it. One pair does touch one key, and it is the reason
-// this sentence names a pair rather than claiming none: waitingLineContract's row drops the
-// issues' `waitingLine` whole, and whyAndLineFieldsContract's takes the members this change
-// added from inside that same field. They still do not depend on their order, because a caller
-// below both is served no `waitingLine` at all whichever runs first — the later one then finds
-// the key gone and does nothing — and a caller below only the higher one keeps the field with
-// its `place` and its `length`, which is what the lower row's own contract describes. A
-// thirteenth row that takes something out of a field an earlier row drops whole is sound on
-// those same terms; one that puts a key back, or reads what an earlier row left, is not, and
-// this table is the wrong shape for it. The order is kept beyond that so a reader of this
-// table and a reader of version.go walk the contracts the same way.
+// needs no reading of the rows before it. Three rows do touch one key, and they are the reason
+// this sentence names them rather than claiming none: waitingLineContract's row drops the
+// issues' `waitingLine` whole, whyAndLineFieldsContract's takes the members it added from inside
+// that same field, `kind` among them, and waitingOnIssueContract's takes `kind` from the members
+// of one kind. They still do not depend on their order, because each takes something out and
+// none puts anything back or reads what another left: a caller below the lowest is served no
+// `waitingLine` at all whichever runs first, the later ones then finding the key gone and doing
+// nothing; a caller between the lowest and the middle one keeps the field with its `place` and
+// its `length` alone, which no word of `kind` is left in; and a caller below only the highest
+// keeps every field but that one word. A later row that takes something out of a field an
+// earlier row drops whole is sound on those same terms; one that puts a key back, or reads what
+// an earlier row left, is not, and this table is the wrong shape for it. The order is kept
+// beyond that so a reader of this table and a reader of version.go walk the contracts the same
+// way.
 var stateNarrowings = []stateNarrowing{
 	{supervise.PodUpdateContract, carriesUpdateRounds, withoutUpdateRounds, "the claim views' updateRound and updateHead"},
 	{memoryContract, carriesMemory, withoutMemory, "the issues' memoryGroup, memoryDrawMode and memoryDrawnAt"},
@@ -764,6 +770,8 @@ var stateNarrowings = []stateNarrowing{
 		"lingerUntil and ancestry, and the contract mark"},
 	{whyAndLineFieldsContract, carriesWhyAndLineFields, withoutWhyAndLineFields, "the issues' why and " +
 		"every field of the waiting line beside place and length"},
+	{waitingOnIssueContract, carriesWaitingOnIssue, withoutWaitingOnIssue, "the waiting line's kind " +
+		"of every member waiting on another issue"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -862,6 +870,14 @@ const recordFieldsContract = 75
 // caller reading at all.
 const whyAndLineFieldsContract = 85
 
+// waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
+// line's `kind` (version.go's 86): a started issue that gave its admission slot back to wait on
+// another issue (record.LineWaitingOnIssue). A plugin from 85 up to it reads `kind` with a
+// `z.enum` of the four words before it, which refuses a word it does not name and with it the
+// whole state body, so a caller below 86 is served such a member without its `kind`
+// (withoutWaitingOnIssue), which that schema takes as optional.
+const waitingOnIssueContract = 86
+
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
 	carries := func(v ClaimView) bool { return v.UpdateRound != "" || v.UpdateHead != "" }
@@ -895,7 +911,7 @@ func carriesMemory(state State) bool {
 // is true of every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
 // carriesWakesWaiting, carriesGatedSteps, carriesRetiredStranded, carriesStallRecord,
 // carriesWaitingLine, carriesBackwardMoves, carriesClaimsToRefresh, carriesRecordFields and
-// carriesWhyAndLineFields all the same, because stateFor puts the same question to the twelve
+// carriesWhyAndLineFields all the same, because stateFor puts the same question to the thirteen
 // and because a later contract that stops writing `trees` on every body answers it here.
 func carriesTrees(State) bool { return true }
 
@@ -906,7 +922,7 @@ func carriesTrees(State) bool { return true }
 // every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
 // carriesTrees, carriesGatedSteps, carriesRetiredStranded, carriesStallRecord,
 // carriesWaitingLine, carriesBackwardMoves, carriesClaimsToRefresh, carriesRecordFields and
-// carriesWhyAndLineFields all the same, because stateFor puts the same question to the twelve
+// carriesWhyAndLineFields all the same, because stateFor puts the same question to the thirteen
 // and because a later contract that stops writing `wakesWaiting` on every body answers it here.
 func carriesWakesWaiting(State) bool { return true }
 
@@ -916,7 +932,7 @@ func carriesWakesWaiting(State) bool { return true }
 // absent (State.MarshalJSON), and the strict reader before the contract refuses the key when it
 // is 0 as surely as when it names a number. So this is true of every state the route writes, as
 // carriesWakesWaiting is; it is asked beside the other eleven all the same, because stateFor
-// puts the same question to the twelve and because a later contract that stops writing
+// puts the same question to the thirteen and because a later contract that stops writing
 // `claimsToRefresh` on every body answers it here.
 func carriesClaimsToRefresh(State) bool { return true }
 
@@ -957,7 +973,7 @@ func carriesStallRecord(state State) bool {
 // route puts the question to; it is asked beside carriesUpdateRounds, carriesMemory,
 // carriesTrees, carriesWakesWaiting, carriesGatedSteps, carriesRetiredStranded,
 // carriesStallRecord, carriesWaitingLine, carriesBackwardMoves, carriesClaimsToRefresh and
-// carriesWhyAndLineFields all the same, because stateFor puts the same question to the twelve
+// carriesWhyAndLineFields all the same, because stateFor puts the same question to the thirteen
 // and because a later contract that stops writing the mark on every body answers it here, as
 // carriesTrees answers for `admission.trees`. The question the mark pre-empts is
 // issueCarriesRecordFields, which that contract would ask of every issue here and which the
@@ -1227,6 +1243,45 @@ func withoutWhyAndLineFields(state State) State {
 		issue.Why = nil
 		if line := issue.WaitingLine; line != nil && lineFieldsCarried(*line) {
 			issue.WaitingLine = &WaitingLineView{Place: line.Place, Length: line.Length}
+		}
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
+
+// waitingOnIssueKind is the word record.LineWaitingOnIssue writes on the wire, named once for
+// the question and the strip of waitingOnIssueContract below.
+var waitingOnIssueKind = record.LineWaitingOnIssue.String()
+
+// carriesWaitingOnIssue is whether any member of the waiting line in state is of the kind
+// waitingOnIssueContract added. It is asked of the state, as carriesWhyAndLineFields is, because
+// only an issue that gave its slot back for a wait carries that word, and a state with none of
+// them is the body an older caller reads already.
+func carriesWaitingOnIssue(state State) bool {
+	for _, issue := range state.Issues {
+		if issue.WaitingLine != nil && issue.WaitingLine.Kind == waitingOnIssueKind {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutWaitingOnIssue is state with every member of the waiting line whose kind is
+// `waiting_on_issue` served without its `kind`, the one word waitingOnIssueContract added; the
+// rest of the member stays, since every other field of it is a field of the contract before, and
+// `kind` is omitempty, so the emptied field writes no key. The issue map is copied and the member
+// is a new view rather than a write through the pointer the snapshot holds, so the state the
+// source answered is left as it was for the next caller, as withoutWhyAndLineFields leaves it. A
+// caller below whyAndLineFieldsContract is below this contract too and has lost `kind` already,
+// so this finds nothing to take there.
+func withoutWaitingOnIssue(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		if line := issue.WaitingLine; line != nil && line.Kind == waitingOnIssueKind {
+			member := *line
+			member.Kind = ""
+			issue.WaitingLine = &member
 		}
 		issues[key] = issue
 	}

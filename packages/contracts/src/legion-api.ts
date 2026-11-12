@@ -387,13 +387,17 @@ const legionSlotView = z.object({
  * one declares a new contract for it, as the ninth answer did at contract 68, which is what keeps
  * this reader away from a body that carries it. Nothing older reaches them either: both words are
  * rendered afresh from `record.LinePart` and `record.LineKind` at each read and never stored, so no
- * retired word comes back off a row, and naming the four kinds is what lets a reader branch on
- * them. */
+ * retired word comes back off a row, and naming the five kinds is what lets a reader branch on
+ * them. `waiting_on_issue`, a started issue that gave its admission slot back to wait on another
+ * issue, is the fifth, added at contract 86; a caller below 86 is served such a member without
+ * its `kind`. */
 const legionWaitingLineView = z.object({
   place: z.number().int().positive(),
   length: z.number().int().positive(),
   part: z.enum(["returned", "starting"]).optional(),
-  kind: z.enum(["returning", "answered", "queued_root", "first_phase"]).optional(),
+  kind: z
+    .enum(["returning", "answered", "queued_root", "first_phase", "waiting_on_issue"])
+    .optional(),
   partPlace: z.number().int().positive().optional(),
   partLength: z.number().int().positive().optional(),
   holdsSlot: z.boolean().optional(),
