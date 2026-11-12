@@ -729,7 +729,7 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 		Title: summary.Title, Parent: summary.Parent, Rank: summary.Rank,
 		Status: status, Shown: summary.Status, Ancestry: summary.Ancestry, HandedOver: handed, Seq: seq,
 	}
-	if summary.Status == "todo" && handed && readmittable(*stored) {
+	if summary.Status == "todo" && handed && stored.Readmittable() {
 		return a.readmit(ctx, tx, *stored, o, false)
 	}
 	// A todo echo of an issue the record shows running is the boot listing catching a status the
@@ -779,7 +779,7 @@ func (a *Admission) applyObservation(ctx context.Context, tx pgx.Tx, stored reco
 			}
 		}
 	}
-	if observation.Status == "todo" && handed && readmittable(stored) {
+	if observation.Status == "todo" && handed && stored.Readmittable() {
 		return a.readmit(ctx, tx, stored, o, false)
 	}
 	orphan, err := a.orphan(ctx, tx, stored, observation.Status, handed)
@@ -890,12 +890,6 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 		return fmt.Errorf("record observation of %s: %w", stored.Key, err)
 	}
 	return nil
-}
-
-// readmittable says whether a todo on this record starts a new generation of its tree: it is a
-// root, and its tree lingers after its sign-off or was closed. A child's done is only the child's.
-func readmittable(stored record.Issue) bool {
-	return claim.IsTreeRoot(stored.Key, stored.Tree) && (stored.Lingers() || stored.Phase == phase.Done)
 }
 
 // readmit records a lingering or closed root's todo, or an orphan's, as a new generation waiting
