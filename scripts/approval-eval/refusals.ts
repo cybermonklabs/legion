@@ -40,11 +40,11 @@ import type { ReplayedDocument } from "./replay";
  * dispatch://INFRA-2897.
  *
  * The rule is `neverDecide` in `never-decide.ts`, which the eval's draw and the shipped skill
- * both read, and which is the prose of `distillation/never-decide.md` applied by a model. This
- * command drives it over every fixture and records two things side by side: what the rule
- * answered, and what the agent would have answered had the rule not held the document. The
- * second half is one model call per fixture, on the recipe a scored arm uses, so a reader sees
- * the rule holding cases the agent was willing to decide.
+ * both read, and which is the prose of `skills/approval-review/references/never-decide.md`
+ * applied by a model. This command drives it over every fixture and records two things side by
+ * side: what the rule answered, and what the agent would have answered had the rule not held
+ * the document. The second half is one model call per fixture, on the recipe a scored arm uses,
+ * so a reader sees the rule holding cases the agent was willing to decide.
  *
  * Four things make the record worth reading. The share held is printed per kind, against the
  * plan's bar of ten in ten and the check's floor of nine in ten. The model's own reason is

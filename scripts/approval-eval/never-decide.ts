@@ -9,8 +9,8 @@ import { askClaude, type ClaudeAsk, type ModelAnswer } from "./models";
  * What the agent never decides, whatever its confidence.
  *
  * This is requirement Q7 of dispatch://INFRA-2897/spec. The rule itself is prose, in
- * `distillation/never-decide.md`, and that file is the only statement of it: the skill the round
- * ships carries that prose in its `references/`, and this module applies the same bytes by
+ * `skills/approval-review/references/never-decide.md`, and that file is the only statement of
+ * it: it is a reference file of the shipped skill, and this module applies those same bytes by
  * asking a model. One definition, one reading, so the coverage the eval reports is the coverage
  * the skill can deliver.
  *
@@ -55,9 +55,9 @@ export type NeverDecideKind = (typeof NEVER_DECIDE_KINDS)[number];
 /** The model the rule is put to where no caller names another. */
 export const DEFAULT_NEVER_DECIDE_MODEL = "anthropic/claude-opus-5-5";
 
-/** The prose that is the rule, which this module reads and the shipped skill carries. */
+/** The prose that is the rule: the reference file of the skill that ships it, read from there. */
 export const NEVER_DECIDE_DEFINITION_PATH = fileURLToPath(
-  new URL("./distillation/never-decide.md", import.meta.url)
+  new URL("../../skills/approval-review/references/never-decide.md", import.meta.url)
 );
 
 /** The statuses at which a root waits for a person rather than running, and how to say each. */
