@@ -186,12 +186,14 @@ const copiedAsksLockNamespace int32 = 0x434F5059
 // time running its periodic pass, the test hooks' (the api package's testHookLockNamespace, under
 // DISPATCH_TEST_HOOKS alone), under which each process marks itself as one a hook call must reach,
 // a conditional edit's admission's (conditionalEditQueueLockNamespace), the issue dependencies'
-// (api's lockProjectIssueDependencies, hashtext('dispatch-issue-dependencies')) and the one
+// (api's lockProjectIssueDependencies, hashtext('dispatch-issue-dependencies')), the one
 // dependency lock that is no project's, which every dependency write takes last (api's
-// lockDeploymentIssueDependencies, hashtext('dispatch-issue-dependencies-deployment')), so a copy
-// lock cannot collide with one of those. hashtext is 32 bits wide, so two projects can still share
-// the second key. They then take turns on their copy bookkeeping and on nothing else, and cannot
-// deadlock: a holder takes the copy lock before any doc_settlements_pending row and before any
+// lockDeploymentIssueDependencies, hashtext('dispatch-issue-dependencies-deployment')), one
+// repository mapping's write (api's lockRepoProjectWrite, hashtext('dispatch-repo-project')) and
+// the rename graph's own (api's refuseRepoRenameChain, hashtext('dispatch-repo-rename')), so a
+// copy lock cannot collide with one of those. hashtext is 32 bits wide, so two projects can still
+// share the second key. They then take turns on their copy bookkeeping and on nothing else, and
+// cannot deadlock: a holder takes the copy lock before any doc_settlements_pending row and before any
 // event append (TestCopyLockComesBeforeEveryPendingRowAndEvent), and an append locks only its event
 // owner's row, which for the holder's appends is the owner row it took before the copy lock, so the
 // transaction waiting on it holds nothing the holder goes on to take. A settlement takes it right
