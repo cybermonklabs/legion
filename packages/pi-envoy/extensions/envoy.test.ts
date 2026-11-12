@@ -40,6 +40,10 @@ import {
 } from "@legion/envoy-client/askgate-marker";
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
+import type {
+  DeliveryLedgerHost,
+  DeliveryLedgerOptions,
+} from "@legion/envoy-client/delivery-ledger";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
 import { forgetKeyedLayerMemory } from "@legion/envoy-client/dispatch-http";
@@ -499,6 +503,36 @@ mock.module("@legion/envoy-client/tmux-place", () => ({
     return tmuxPlaceState.reading(env, exec);
   },
 }));
+// The delivery ledger, which calls the host with the session the frame a failure notice names
+// was relayed to (`DeliveryLedgerHost.showFailureNotice`). Everything passes straight through;
+// `beforeFailureNotice` is the one seam: the ledger binds the give-up to that session before it
+// calls, so the session the notice names and the conversation the host has open can part company
+// only inside the call, and a row that drives that moves the host from this hook. The ledger
+// awaits the host's answer, and pi-envoy's own call awaits before it hands the card, so this
+// widens a window the running process has rather than making one up. The module is read here,
+// and not imported at the top, because the mock below replaces it: this is the real one it
+// passes through to, copied out as the tmux reader above is.
+const realDeliveryLedger = await import("@legion/envoy-client/delivery-ledger");
+// The function itself, taken now: the namespace above is live, so once the mock below replaces
+// the module, `realDeliveryLedger.createDeliveryLedger` names the mock, and a mock that called
+// through it would call itself without end (measured: one row of this file grew past 2.5 GB in
+// 9 s, against 422 MB without the seam).
+const realCreateDeliveryLedger = realDeliveryLedger.createDeliveryLedger;
+const ledgerSeam: { beforeFailureNotice?: (addressed: string) => Promise<void> } = {};
+mock.module("@legion/envoy-client/delivery-ledger", () => ({
+  ...realDeliveryLedger,
+  createDeliveryLedger: (options: DeliveryLedgerOptions) => {
+    const host: DeliveryLedgerHost = {
+      ...options.host,
+      showFailureNotice: async (addressed, notice) => {
+        await ledgerSeam.beforeFailureNotice?.(addressed);
+        const outcome = await options.host.showFailureNotice(addressed, notice);
+        return outcome === "queued" ? "queued" : "shown";
+      },
+    };
+    return realCreateDeliveryLedger({ ...options, host });
+  },
+}));
 // Reads the host package, so it loads only after the mock above is in place.
 const { recordBootstrappedSession } = await import("@legion/pi-shared/subagent-session");
 
@@ -705,6 +739,7 @@ afterEach(async () => {
   natsState.failFlushOnSubject = undefined;
   natsState.failFlushClosesConnection = false;
   hostBuiltins.length = 0;
+  ledgerSeam.beforeFailureNotice = undefined;
 });
 
 function createPi(options: { readonly clipboardError?: Error; readonly zod?: typeof z } = {}) {
@@ -20300,6 +20335,10 @@ describe("consumer delivery", () => {
       /** The session the host has open, read at each call: a row moves the host by changing what
        *  it answers, with no session event fired for the move. */
       readonly hostSessionID?: () => string;
+      /** The host refuses every card this answers true for, as a host that cannot take one
+       *  does: the frame fails, and its third delivery is given up on, which is when the
+       *  session is told what it was never shown (`@legion/envoy-client/consumer-delivery`). */
+      readonly refuseCard?: (message: SentCard) => boolean;
     } = {}
   ) {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
@@ -20392,6 +20431,7 @@ describe("consumer delivery", () => {
     envoyExtension({
       ...fixture.pi,
       sendMessage: (message: SentCard, sendOptions: unknown) => {
+        if (options.refuseCard?.(message) === true) throw new Error("the host refused the card");
         fixture.pi.sendMessage(message, sendOptions);
         events.push(`handed ${message.details?.event_id ?? message.content}`);
         if (turn === "idle") void write(message);
@@ -20800,6 +20840,88 @@ describe("consumer delivery", () => {
       );
       expect(session.replies(inbox)).toEqual(["received", "nak"]);
     } finally {
+      stopSink();
+    }
+  });
+
+  // The notice naming a frame the session was never shown is that session's: the ledger hands
+  // the host the session the frame was relayed to (`DeliveryLedgerHost.showFailureNotice`), and
+  // the host shows it there and nowhere else. The host moves while the notice is in flight -
+  // the one window where the session the notice names and the conversation the host has open
+  // part company, the ledger having bound the give-up to that session before it called - and the
+  // notice is still held to the session it names: it is handed to nobody, the conversation the
+  // host moved to is shown nothing of the frame, and the frame goes back to the stream for
+  // whoever takes ses_delivery next (dispatch://INFRA-771).
+  test("holds a give-up's notice to the session its frame was relayed to, showing the conversation the host moved to nothing of it", async () => {
+    const moved = "ses_moved_notice";
+    const warnings: logger.LogEvent[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn") warnings.push(entry);
+    });
+    try {
+      const session = await bootConsumer("consumer-notice-addressed", {
+        // Every card of this row's frames is refused, so each of their deliveries fails; the
+        // notice naming a frame is no card of it, and is taken. The host's own messages - the
+        // card wake's among them - are left alone, since refusing those tests nothing here and
+        // throws where nothing is waiting to catch it.
+        refuseCard: (message) =>
+          String(message.details?.event_id ?? "").startsWith("evt-notice-") &&
+          !message.content.includes("message not shown"),
+      });
+      // One frame's three deliveries: the third is given up on, and what comes back is what the
+      // session answered the listener on that delivery's inbox.
+      const givenUp = async (seq: number, label: string): Promise<string[]> => {
+        let inbox = "";
+        for (const delivered of [1, 2, 3]) {
+          inbox = session.relay(seq, peer(label), { delivered });
+          await until(
+            () => session.replies(inbox).length > 1,
+            `the answer to delivery ${delivered} of ${label}`
+          );
+        }
+        return session.replies(inbox);
+      };
+
+      // The host stays on the session the frame was relayed to: the notice is carded there, and
+      // the frame is settled on it.
+      expect(await givenUp(9, "notice-shown")).toEqual(["received", "done"]);
+      const shown = session.cards("evt-notice-shown");
+      expect(shown).toHaveLength(1);
+      expect(shown[0]?.content).toContain("notice: message not shown");
+
+      // The host moves to another conversation while the next frame's notice is in flight.
+      ledgerSeam.beforeFailureNotice = async () => {
+        ledgerSeam.beforeFailureNotice = undefined;
+        await session.fixture.handlers.get("session_switch")?.(
+          { reason: "new" },
+          { ...sessionContext(moved), hasPendingMessages: () => false, isIdle: () => true }
+        );
+      };
+      expect(await givenUp(10, "notice-moved")).toEqual(["received", "nak"]);
+
+      // The conversation the host moved to was shown nothing of that frame: no card of it, and
+      // no notice naming it.
+      expect(session.cards("evt-notice-moved")).toHaveLength(0);
+      expect(
+        session.fixture.deliveries.filter((delivery) =>
+          JSON.stringify(delivery).includes("evt-notice-moved")
+        )
+      ).toEqual([]);
+      // Which is because the notice was addressed to the session the frame was relayed to, with
+      // another conversation open here: the one card not shown is that notice.
+      expect(
+        warnings
+          .filter(
+            (entry) =>
+              entry.message === "envoy: a card was not shown here; the session it names is closed"
+          )
+          .map((entry) => entry.context)
+      ).toEqual([{ addressed: SESSION, eventID: "evt-notice-moved", open: moved }]);
+      // The first frame's notice is still there, so the row above reads a session that is shown
+      // notices, not one that is shown nothing at all.
+      expect(session.cards("evt-notice-shown")).toHaveLength(1);
+    } finally {
+      ledgerSeam.beforeFailureNotice = undefined;
       stopSink();
     }
   });

@@ -598,6 +598,44 @@ describe("frames already written", () => {
     expect(seqs(second.handed)).toEqual([8]);
   });
 
+  // The receive-side guard, which runs first and is the one a reader takes for the protection,
+  // held by a row of its own: dropping it alone reds nothing otherwise, because the pump's own
+  // guard catches the repeat before the hand-off (measured by the tester: 47 pass / 0 fail with
+  // only the receive-side guard gone). What the receive-side guard decides on its own is when
+  // the repeat is answered: a frame the ledger already holds is answered and its sequence passed
+  // over as it arrives, rather than queued behind whatever the host is still working on. A
+  // restart at the ack floor hands back everything above the floor at once, so a session with
+  // one slow frame in its host would otherwise hold the server's answers for all of them.
+  test("answers a frame the ledger holds as it arrives, not behind the frame the host still holds", async () => {
+    const written = new Set(["evt-2"]);
+    const { delivery, handed, replies, state, settled } = setup({
+      ledger: { delivered: (frame) => frame.event_id !== undefined && written.has(frame.event_id) },
+    });
+    const working = Promise.withResolvers<void>();
+    state.deliver = (frame) => (frame.streamSeq === 1 ? working.promise : undefined);
+    // `settled` waits on every hand-off the host started, and this row holds one open on
+    // purpose, so it waits on the microtasks of its own sends instead until that frame is let go.
+    const quiet = async () => {
+      for (let tick = 0; tick < 5; tick += 1) await Promise.resolve();
+    };
+
+    delivery.receive(relay({ seq: 1, reply: "_INBOX.slow" }));
+    await quiet();
+    // The host is still holding frame 1, so nothing else may be handed over.
+    expect(seqs(handed)).toEqual([1]);
+
+    delivery.receive(relay({ seq: 2, eventID: "evt-2", reply: "_INBOX.held" }));
+    await quiet();
+
+    // Answered while the host is still busy, and never queued behind it.
+    expect(repliesTo(replies, "_INBOX.held")).toEqual(["received", "done"]);
+    expect(seqs(handed)).toEqual([1]);
+
+    working.resolve();
+    await settled();
+    expect(seqs(handed)).toEqual([1]);
+  });
+
   // The architect's ship condition for the ack-floor change, driven at the recipient rather than
   // at the stream. A frame this session cannot take sits unacked below frames it took and acked,
   // so the server's contiguous ack floor stays under it, and a restart at that floor hands back

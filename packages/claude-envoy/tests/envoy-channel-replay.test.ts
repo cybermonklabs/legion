@@ -6,9 +6,13 @@
  * `@legion/envoy-client/delivery-ledger` and `/consumer-delivery`, tested there; here they are
  * wired to this server.
  */
-import { expect, spyOn, test } from "bun:test"
+import { expect, mock, spyOn, test } from "bun:test"
 import { mkdir, open, readdir, readFile, stat } from "node:fs/promises"
 import { agentSubject } from "@legion/contracts"
+import type {
+  DeliveryLedgerHost,
+  DeliveryLedgerOptions,
+} from "@legion/envoy-client/delivery-ledger"
 import type { Interest, SubscribeResult } from "@legion/envoy-client/transport"
 import { type ChannelNotification, startChannelSession } from "../src/envoy-channel-server"
 import { type ReplayStateFile, replayStateFile, writeReplayState } from "../src/replay-state"
@@ -25,6 +29,35 @@ import {
 import { isolatePaneEnvironment } from "./pane-environment"
 
 isolatePaneEnvironment()
+
+// The delivery ledger, which calls the host with the session the frame a failure notice names
+// was relayed to (`DeliveryLedgerHost.showFailureNotice`). Everything passes straight through;
+// `beforeFailureNotice` is the one seam: the ledger binds the give-up to that session before it
+// calls, so the session the notice names and the id this process serves can part company only
+// inside the call, and the row that drives that changes the id from this hook. The module is
+// read here, and not imported at the top, because the mock replaces it: this is the real one it
+// passes through to.
+const realDeliveryLedger = await import("@legion/envoy-client/delivery-ledger")
+// The function itself, taken now: the namespace above is live, so once the mock below replaces
+// the module, `realDeliveryLedger.createDeliveryLedger` names the mock, and a mock that called
+// through it would call itself without end (measured: one row of this file grew past 2.5 GB in
+// 9 s, against 422 MB without the seam).
+const realCreateDeliveryLedger = realDeliveryLedger.createDeliveryLedger
+const ledgerSeam: { beforeFailureNotice?: ((addressed: string) => Promise<void>) | undefined } = {}
+mock.module("@legion/envoy-client/delivery-ledger", () => ({
+  ...realDeliveryLedger,
+  createDeliveryLedger: (options: DeliveryLedgerOptions) => {
+    const host: DeliveryLedgerHost = {
+      ...options.host,
+      showFailureNotice: async (addressed, notice) => {
+        await ledgerSeam.beforeFailureNotice?.(addressed)
+        const outcome = await options.host.showFailureNotice(addressed, notice)
+        return outcome === "queued" ? "queued" : "shown"
+      },
+    }
+    return realCreateDeliveryLedger({ ...options, host })
+  },
+}))
 
 const scratchState = useScratchState()
 
@@ -465,6 +498,83 @@ test("a /clear handoff to a new session id starts a fresh delivery state in a fi
     })
     await waitFor(async () => cards(sink.shown, taken.eventId).length === 1, "the new id's frame")
   } finally {
+    await session.shutdown()
+  }
+})
+
+// The notice naming a frame the session was never shown is that session's: the ledger hands the
+// host the session the frame was relayed to (`DeliveryLedgerHost.showFailureNotice`), and this
+// process cards it only while that is the id it serves. A `/clear` moves the id while the notice
+// is in flight - the one window where the session the notice names and the conversation open
+// here part company, the ledger having bound the give-up to that session before it called - and
+// the new conversation is shown nothing of the old id's frame; the frame goes back to the stream
+// for whoever takes ses_old next (dispatch://INFRA-771).
+test("shows the id a /clear moved to nothing of a frame whose notice was in flight", async () => {
+  const directory = scratchState()
+  const handoff = sessionHandoffFile(directory, 932)
+  await writeSessionHandoff(handoff, "ses_old")
+  const registry = registryClient()
+  // Every card of a frame fails, so each of its deliveries fails; the notice naming a frame is
+  // no card of it, and is taken.
+  const sink = channelSink((shown) => !shown.content.includes(NOTICE))
+  const nats = new FakeNats()
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity("ses_old", "/tmp"), directory, {
+      connection: nats,
+      notifier: sink.notifier,
+      client: registry.client,
+      heartbeatMs: 20,
+      handoffPid: 932,
+    }),
+  )
+  try {
+    // One frame's three deliveries: the third is given up on, and what comes back is what the
+    // session answered the listener on that delivery's inbox.
+    const givenUp = async (sessionID: string, label: string, seq: number): Promise<string[]> => {
+      const frame = peerMessage(sessionID, label)
+      let reply = ""
+      for (const delivered of [1, 2, 3]) {
+        reply = `_INBOX.${label}-${delivered}`
+        nats.emitRelay(sessionID, {
+          subject: agentSubject(sessionID),
+          seq,
+          raw: frame.raw,
+          reply,
+          delivered,
+        })
+        await waitFor(
+          async () => nats.repliesOn(reply).length > 1,
+          `the answer to delivery ${delivered} of ${label}`,
+        )
+      }
+      return nats.repliesOn(reply)
+    }
+
+    // The `/clear` lands while the old id's frame has been given up on and its notice is in
+    // flight: the handoff file names the new id, and the heartbeat adopts it.
+    ledgerSeam.beforeFailureNotice = async () => {
+      ledgerSeam.beforeFailureNotice = undefined
+      await writeSessionHandoff(handoff, "ses_new")
+      await waitFor(
+        async () => nats.subscriptions.has("notifications.envoy.deliver.ses_new"),
+        "the new id's relay subscription",
+      )
+    }
+    expect(await givenUp("ses_old", "moved-notice", 11)).toEqual(["received", "nak"])
+
+    // The conversation this process serves now was shown nothing of the old id's frame: no card
+    // of it, and no notice naming it.
+    const old = peerMessage("ses_old", "moved-notice")
+    expect(notices(sink.shown, old.eventId)).toHaveLength(0)
+    expect(cards(sink.shown, old.eventId)).toHaveLength(0)
+
+    // The new id's own give-up is carded there, so the rows above read a conversation that is
+    // shown notices, not one that is shown nothing at all.
+    expect(await givenUp("ses_new", "after-move", 12)).toEqual(["received", "done"])
+    const after = peerMessage("ses_new", "after-move")
+    expect(notices(sink.shown, after.eventId)).toHaveLength(1)
+  } finally {
+    ledgerSeam.beforeFailureNotice = undefined
     await session.shutdown()
   }
 })
