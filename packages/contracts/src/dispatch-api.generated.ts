@@ -13217,3 +13217,18 @@ export type WhoamiAgent = components["schemas"]["WhoamiAgent"];
 export type WhoamiUser = components["schemas"]["WhoamiUser"];
 export type WriteAdvice = components["schemas"]["WriteAdvice"];
 export type WriteSuggestion = components["schemas"]["WriteSuggestion"];
+
+/** Every schema name whose exported type the hand-written split owns, which
+ * `dispatch-api-owned.ts` holds to the shape this module declares for it. */
+export type SplitOwnedSchemaName =
+  | "ActorOrigin"
+  | "Anchor"
+  | "AskAnchorArtifact"
+  | "AskApprovalDocument"
+  | "AskBlockArtifact"
+  | "AskOption"
+  | "BlockPathEntry"
+  | "ExternalLink"
+  | "InboxDocument"
+  | "ReplyBlock"
+  | "Suggestion";

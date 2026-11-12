@@ -97,10 +97,12 @@ const CONSTANT_LIST_TYPES = [
  * already describes it is a failure rather than a slow return to two spellings of one shape.
  *
  * Most rows the route table holds are named by the generated module rather than by a type here,
- * so what a schema yields is mostly what only the bus carries. Eleven are the exception, and the
- * measurement that made them one is `tsc` over both directions: where a schema's output and the
- * alias the document would render are mutually assignable, the schema is the one spelling and
- * `scripts/gen-api.ts` leaves that alias out. A twelfth is added the same way or not at all.
+ * so what a schema yields is mostly what only the bus carries. Eleven are the exception, and what
+ * makes them one is not a measurement taken once but `src/dispatch-api-owned.ts`, which holds
+ * each of those names to the shape the document declares for it, in both directions and at
+ * compile time, over the union `scripts/gen-api.ts` renders from the same list it filters the
+ * aliases by. So a regeneration that moves one of the eleven reds the typecheck by that name, and
+ * a twelfth is added by passing that assertion rather than by being written here.
  */
 const SCHEMA_DERIVATIONS = 57;
 
