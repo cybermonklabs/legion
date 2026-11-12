@@ -184,9 +184,8 @@ func unmarked(t *testing.T, body []byte) string {
 // pacing holds, the count of claims the refresh lane has left, the gated steps, the claim views'
 // step record, the places in the admission line, the workers' counts of the moves back and the
 // issues the record holds in the workflow among the keys it is served without, since such a pod
-// is below treeContract, wakesWaitingContract, claimsToRefreshContract, gatedStepsContract,
-// stallRecordContract, waitingLineContract, backwardMovesContract and heldContract too. A pod at
-// this contract, and a caller in no
+// is below every row of stateNarrowings. A pod at the newest contract the route narrows by, and
+// a caller in no
 // pod — the operator's `legion state`, whose open-rounds line reads both fields, whose queue
 // line reads those wakes and whose tool-call line reads the step records — are served
 // everything. The claims are the state snapshot's own,
@@ -286,8 +285,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// and an issue's `heldFrom`, `lingerUntil` and `ancestry` (withoutRecordFields),
 			// with the mark of that same contract gone with them, and with `admission.held`
 			// gone, the list contract 78 added (withoutHeld, held_test.go holds that half).
-			// Every row that reaches here is below all of them, so those eleven keys go
-			// whatever the row is.
+			// Every row that reaches here is below all of them, so those twelve strips
+			// take their keys whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)

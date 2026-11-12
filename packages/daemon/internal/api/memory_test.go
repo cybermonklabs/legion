@@ -16,12 +16,13 @@ var memoryDrawnAt = time.Date(2026, 9, 20, 11, 4, 5, 0, time.UTC)
 
 // The state the fixture builds carries one drawn tree (populatedState): the root LEGION-208 and
 // LEGION-209, a child of it, both showing the root's draw as internal/projection fills them,
-// beside the issues no draw has reached. Its claim views carry the pod's update round and the
-// record of what each claim's agent last did, its admission block names the live trees and the
-// issues the record holds in the workflow that neither of its other lists names, its stranded
-// claims hold a retired one, it carries the wakes the pacing holds, every root of it carries
-// the deployment's gated step and the two issues of its admission line carry their place in it,
-// so one state proves all ten downgrades and that they compose.
+// beside the issues no draw has reached. Its claim views carry the pod's update round, the
+// record of what each claim's agent last did and the nine keys of the decided record, its
+// admission block names the live trees and the issues the record holds in the workflow that
+// neither of its other lists names, its stranded claims hold a retired one, it carries the wakes
+// the pacing holds, every root of it carries the deployment's gated step and the two issues of
+// its admission line carry their place in it, so one state proves every downgrade the route
+// makes and that they compose.
 
 // issueViews is every issue of a state body, decoded as the plugin's reader sees it, by key.
 func issueViews(t *testing.T, body []byte) map[string]map[string]any {
@@ -101,15 +102,15 @@ var (
 // list; a pod at 49 or 50 the memory draws as well, and still none of the rest; a pod at 51 or
 // 52 the trees too; a pod at 53 or 54 the wakes too; a pod at 55 the steps too, and still none
 // of the retired entries, the step records, the places, the counts of the moves back, the
-// refresh count, the keys of the decided record and the held list; a pod at 56 the retired
-// entries too; a pod at 57 the step records too; a pod at 58 to 61 the places too, and neither
-// count, nor the record, nor the held list; a pod from 62 to 72 the counts of the moves back
-// too, and still no refresh count; a pod at 73 or 74 the refresh count too, and none of the
-// nine keys the decided record added; a pod from 75 to 77 those nine keys too, and still no
-// held list; a pod below 46 none of the twelve; and a pod at 78, this daemon's declared
-// contract, a pod whose claims record no contract and a caller in no pod — the operator's
-// `legion state`, whose memory line reads the draws, whose queue line reads the wakes and whose
-// tool-call line reads the step records — are served all of them.
+// refresh count, the nine keys of the decided record and the held list; a pod at 56 the retired
+// entries too; a pod at 57 the step records too; a pod at 58 to 61 the places too, and still
+// none of the two counts, the nine keys of the decided record and the held list; a pod from 62
+// to 72 the counts of the moves back too, and still no refresh count; a pod at 73 or 74 the
+// refresh count too, and none of the nine keys the decided record added; a pod from 75 to 77
+// those nine keys too, and still no held list; a pod below 46 none of the twelve; and a pod at
+// 78, this daemon's declared contract, a pod whose claims record no contract and a caller in no
+// pod — the operator's `legion state`, whose memory line reads the draws, whose queue line reads
+// the wakes and whose tool-call line reads the step records — are served all of them.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
