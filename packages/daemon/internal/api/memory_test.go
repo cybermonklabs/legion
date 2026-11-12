@@ -120,6 +120,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// moves is whether the caller is served each worker's counts of the moves back its issue
 		// has made (backwardMovesContract), this daemon's own contract.
 		moves bool
+		// answers is whether the caller is served each issue's one rendered answer and the
+		// waiting line's own fields beside each member's place (whyAndLineFieldsContract, this
+		// daemon's own contract): one strip takes both, so a pod below it reads every member
+		// with its `place` and its `length` alone and no issue with a `why`.
+		answers bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
 		{name: "a pod below PodUpdateContract, below all nine", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -149,12 +154,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// record is served too, and neither a place nor a count is.
 		{name: "a pod at stallRecordContract", remote: statePodAddr + ":41000", claims: podClaims(stallRecordContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true},
 		// The band from waitingLineContract to below backwardMovesContract: the places in the
-		// admission line are served too, and the counts of the moves back are the one key held
-		// back.
+		// admission line are served too, and the counts of the moves back, each issue's answer
+		// and the line's own fields are held back.
 		{name: "a pod at waitingLineContract", remote: statePodAddr + ":41000", claims: podClaims(waitingLineContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, answers: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, answers: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, answers: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -239,6 +244,19 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 				}
 				if !tc.line {
 					delete(issue, "waitingLine")
+				}
+				// The issues' answer and the line's own fields are one contract and one strip:
+				// below it a member keeps the place and the length waitingLineContract added
+				// and carries no other field, and no issue carries a `why`.
+				if !tc.answers {
+					delete(issue, "why")
+					if line, carried := issue["waitingLine"].(map[string]any); carried {
+						for name := range line {
+							if name != "place" && name != "length" {
+								delete(line, name)
+							}
+						}
+					}
 				}
 				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {
