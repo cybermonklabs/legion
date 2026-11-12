@@ -340,8 +340,9 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		closedBefore = &parsed
 	}
-	// The window is judged as the caller wrote it: two bounds inside one microsecond are a window
-	// no stored time falls in, which the statement answers empty, not a backwards one.
+	// The window is judged as the caller wrote it, before rounding: two bounds inside one
+	// microsecond are a valid window, not a backwards one, and the statement answers whatever
+	// stored times fall between their rounded values (none, unless the lower bound is whole).
 	if closedSince != nil && closedBefore != nil && !closedSince.Before(*closedBefore) {
 		writeError(w, "INVALID_CLOSED_WINDOW", http.StatusBadRequest, "closed_since must be before closed_before")
 		return
