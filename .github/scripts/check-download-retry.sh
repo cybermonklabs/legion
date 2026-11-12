@@ -3255,9 +3255,10 @@ for path in sorted(set(budget.path for budget in budgets)):
 #   - a sum that DOES NOT ADD UP (`1200 + 1281 = 1941 s`): it is passed over rather than
 #     refused, since a clause that recomputed a total it cannot trust would be guessing;
 #   - a job whose comment derives its key by a CONSTRUCTION rather than a sum: `tool-fallback`
-#     states `114 is the 104 this construction gives with ten minutes added` and carries a
-#     position rule, and a clause that refused it would be a correct job refused, which is how
-#     a check gets silenced.
+#     carries a position rule, and .github/ci-budgets.md's "The tool-fallback job's budget,
+#     part by part" states the construction its key comes from — `114 is the 104 this
+#     construction gives with ten minutes added`. A clause that refused that job would be a
+#     correct job refused, which is how a check gets silenced.
 # A KEY LOWERED ON ITS OWN IS NOT IN THAT LIST ANY MORE: it leaves an arrow its key no longer
 # matches, which the clause above refuses by name. Before that clause existed, each of the nine
 # keys this issue raised could be put back with its comment left alone and this check stayed

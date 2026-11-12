@@ -2055,7 +2055,8 @@ check "names the sum and says the key is under it" \
 check "says what to write" "$(contains "$out" 'timeout-minutes: 38. or more')"
 
 # The stand-aside, which is the clause's whole design: `tool-fallback` of this repository states
-# `114 is the 104 this construction gives with ten minutes added` and carries a position rule,
+# `114 is the 104 this construction gives with ten minutes added`, which .github/ci-budgets.md
+# holds for that job, and carries a position rule,
 # so no `<a> + <b> = <c> s -> <key> min` ties a sum to its key, and a clause that refused it
 # would be a correct job refused — which is how a check gets silenced.
 # The arrow rule, which is this issue's own control moved into the check: a key lowered while
