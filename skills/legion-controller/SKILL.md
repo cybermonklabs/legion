@@ -64,6 +64,8 @@ because Envoy keeps no copy of a wake sent while no controller ran.
    (`skill://legion-controller/references/finding-asks.md#catch-up-at-every-start`).
 4. Run the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`),
    because a decision a person made on a parked tree while no controller ran reaches you only there.
+   The walk also checks the cause or the event of each park you marked
+   `Parked by Legion while it waits on:`.
 
 ## Wakes
 

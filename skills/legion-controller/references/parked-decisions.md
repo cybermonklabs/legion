@@ -21,6 +21,7 @@ says (the `held` and `worker-died` wakes, and
 [A tree that waits on an event outside Legion](skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion)):
 you set it to `todo` with a comment on the root that cites the park's mark and says what you
 checked.
+[The walk](#the-walk) makes that check at every start and on each `tick`.
 Every other park, a person's, another session's or an operator's `legion status`, stays parked
 until whoever parked it sets it to `todo`.
 
@@ -226,3 +227,21 @@ At every start (step 4 of the start procedure) and on each `tick`:
    notice does not depend on that window.
 4. Decide each tree's decisions as **Deciding** says, its step 1 included. An event of those types
    that is older than the park goes in your summary when **Deciding** step 2 says so.
+5. Take each root of step 1's list whose park is your own hold (**Deciding**, step 2) and that
+   step 4 left parked: a person's decision comes first. Its mark, the first line of its
+   `Parked by Legion while it waits on:` comment, names the cause or the event that the tree waits
+   on. That comment cites the answer of an ask. The root's `Asked whether to park:` comment that
+   names that ask gives the `<key>` of the same wait on its second line
+   (`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`). Check that wait
+   now:
+   - For an `event:` key, read the issue, the pull request, the release or the deploy run that
+     its reference names.
+   - For a `held` or an `architect failed:` key, check what the cause names (the capability, the
+     provider, the credential), as the `held` and `worker-died` wakes of
+     [the wakes reference](skill://legion-controller/references/wakes.md) describe the cause.
+
+   When the event has happened or the cause is gone, set the root to `todo` (`set_status`). Post
+   one comment on the root (`dispatch comment --issue <root> --body-file -`) that cites the mark
+   and says what you checked, as the wakes reference says. When the event has not happened, the
+   cause stays, or you cannot tell, move nothing. Name the root and what it waits on in your
+   summary.

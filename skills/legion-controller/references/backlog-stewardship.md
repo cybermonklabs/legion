@@ -108,14 +108,14 @@ defer that root instead:
    `Asked whether to defer: ` in place of `Asked whether to park: `, and take the newest whose
    second line is exactly that plan row. Compare that line alone. A comment or a reply from any
    session counts as yours. When its ask is open, open nothing and post nothing. When it is
-   resolved with no answer, open nothing and post nothing for that row, and name the row and
-   that ask in the day's report. When it is answered, and no reply of yours under it starts
-   `Deferred dispatch://`,
+   resolved with no answer, open nothing and post nothing for that row. The day's report names
+   the root and that ask, as `skill://legion-controller/references/daily-report.md` says. When it
+   is answered, and no reply of yours under it starts `Deferred dispatch://`,
    `Not deferred dispatch://` or `Let run dispatch://`, act on its answer now (step 4). When your
    reply under it starts `Deferred dispatch://` or `Let run dispatch://`, the person decided
    already: open nothing and post nothing. When your reply under it starts
-   `Not deferred dispatch://`, that ask is spent, because its `Defer it` came when the root was
-   `done` or Legion no longer ran it. Go on to step 2.
+   `Not deferred dispatch://`, that ask is spent, because its `Defer it` came when the check of
+   step 2 failed. Go on to step 2.
 2. Otherwise, and when step 1 sends you here, check first that Legion runs the root: it carries
    the `legion` label, it stands in `admission.active` or `admission.waiting` of `read_state` (the
    `active` and `waiting` lines of its summary), and
@@ -128,7 +128,7 @@ defer that root instead:
    `Asked whether to defer: dispatch://<REPORT KEY>/ask/<id>`. Make its second line the plan row,
    exactly as the plan gives it: that line is the key that step 1 compares.
 3. Name the row and that ask in the day's report until the person answers.
-4. On `Defer it`, when the root's status is not `done` and Legion still runs it, park the root as
+4. On `Defer it`, when the check of step 2 still holds, park the root as
    above, and cite the answer in a comment on the issue. On `Defer it` in any other case, move
    nothing, and say in your reply what you checked. On `Let it run`, move nothing, and take the
    deferral off that plan row with `dispatch doc-edit`, as step 4 of

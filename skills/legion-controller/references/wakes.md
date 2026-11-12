@@ -166,7 +166,7 @@ at every run, while the text of `<cause>` can change from one run to the next. T
 admitted and keeps its slot while you ask. A comment or a reply from any session counts as yours
 here, because the controller's session id changes when it restarts or is taken over.
 
-1. Look for the ask you opened for this cause already. List the root's comments that name an ask:
+1. Look for the ask you opened for this key already. List the root's comments that name an ask:
 
    ```text
    notes=$(curl -sS --fail-with-body -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<root>/comments") || { echo "Dispatch read failed" >&2; exit 1; }
@@ -177,12 +177,12 @@ here, because the controller's session id changes when it restarts or is taken o
    the `<cause>` text under it. Read the ask its first line names
    (`dispatch read --ref '<that reference>'`):
    - It is open: open nothing and post nothing.
-   - It is resolved with no answer: open nothing and post nothing for this key. Name the tree and
-     that ask in the day's report.
+   - It is resolved with no answer: open nothing and post nothing for this key. The day's report
+     names the tree and that ask, as `skill://legion-controller/references/daily-report.md` says.
    - It is answered, and no reply of yours under it starts `Parked dispatch://`,
      `Not parked dispatch://` or `Left admitted dispatch://`: act on its answer now (step 4).
    - Your reply under it starts `Left admitted dispatch://`: the person chose to leave the tree
-     admitted for this cause. Open nothing and post nothing.
+     admitted for this key. Open nothing and post nothing.
    - Your reply under it starts `Parked dispatch://`: the tree runs again after that park, so its
      wait now is a new one. Go on to step 2.
    - Your reply under it starts `Not parked dispatch://`: that ask is spent, because its `Park it`
@@ -209,13 +209,10 @@ here, because the controller's session id changes when it restarts or is taken o
    - `Leave it admitted`: move nothing.
 
    That `<key>` is the second line of the root's comment that names this ask. The tree still has
-   the wait of a `held` key when `<ISSUE>` still stands at `phase: held` from that `<heldFrom>`,
-   with the failure the key names. It still has the wait of an `architect failed:` key when
-   `issues.<root>.architect.state` is still `failed`, with the failure the key names. A claim has
-   the failure the key names when its `failure.at` is the key's time, or, for a key that ends
-   `generation <n>`, when its `failure` still has no `at` and that issue's `generation` is still
-   `<n>`. The tree still has the wait of
-   an `event:` key when it still waits on that event.
+   the wait that `<key>` names when the section of its cause, applied to `read_state` now, builds
+   that same `<key>`. Compare the two keys exactly, as step 1 compares the second line. An issue
+   no longer at `phase: held`, or an architect no longer `failed`, builds no key. For an `event:`
+   key, that is when the tree still waits on that event.
 
    In each case, reply under the ask with what you did, its first line exactly
    `Parked dispatch://<root>`, `Not parked dispatch://<root>` or `Left admitted dispatch://<root>`:

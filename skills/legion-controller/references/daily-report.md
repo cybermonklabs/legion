@@ -74,6 +74,14 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
 - **Waiting on a person.** Each tree whose next step waits on a person's answer, with that ask's
   `dispatch://` reference, until they answer. Each row of the weekly plan that moved nothing,
   because no person's request stands behind it.
+- **Asks resolved with no answer.** For each root in `admission.active` or `admission.waiting`,
+  read its `Asked whether to park:` and `Asked whether to defer:` comments with step 1's command
+  of `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`, once with each
+  prefix. Take the newest comment of each key (the comment's second line). When the ask that its
+  first line names is resolved with no answer (`dispatch read --ref '<that reference>'`), name the
+  root, the key and that ask's `dispatch://` reference. The line stays until the wait or the plan
+  deferral that the key names ends, the tree leaves the workflow, or you open a new ask for that
+  key.
 - **Free slots.** Counted as the skill's "Free slots" says, in issues rather than trees; each
   stays free until an issue in the line takes it.
 - **Open capabilities.** Each row of `read_state`'s `capabilities` whose `status` is `open`: its
