@@ -27,7 +27,7 @@ export function IssueTabs({
   // A key the reader pressed while the page was still holding this strip is done here, in the
   // commit that mounts the tablist it was reaching for (`reaching-the-chrome.ts`). The layout
   // phase, so a chord that switches tabs does it before the strip it switched is painted.
-  useLayoutEffect(theChromeIsHere, []);
+  useLayoutEffect(() => theChromeIsHere("tabs"), []);
 
   return (
     <div data-testid="issue-tabs">

@@ -74,6 +74,7 @@ import { gatedStepEntries } from "./gated-steps";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
 import {
+  issueClosedCalloutClassName,
   issueHeaderFrameClassName,
   issueKeyBadgeClassName,
   issueStatusPillClassName,
@@ -132,7 +133,7 @@ export function IssueHeader({
   // A key the reader pressed while the page was still holding this header is done here, in the
   // commit that mounts the controls it was reaching for (`reaching-the-chrome.ts`). The layout
   // phase, so the control it focuses or presses is theirs before this header is painted.
-  useLayoutEffect(theChromeIsHere, []);
+  useLayoutEffect(() => theChromeIsHere("header"), []);
   const [editingTitle, setEditingTitle] = useState(false);
   const [routeEditing, setRouteEditing] = useState(false);
   const routeInputRef = useRef<HTMLInputElement>(null);
@@ -425,9 +426,12 @@ export function IssueHeader({
       data-issue-header=""
       data-testid="issue-header"
     >
+      {/* The closed block, from the one place the space the page keeps for this header builds
+          it too (`issue-header-classes.ts`, `issue-page-skeleton.tsx`), so what stood there and
+          what lands here are the same block. */}
       {isClosed ? (
         <div
-          className={`mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg p-3 text-sm ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
+          className={`${issueClosedCalloutClassName} ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
         >
           <span>This issue is closed.</span>
           <button

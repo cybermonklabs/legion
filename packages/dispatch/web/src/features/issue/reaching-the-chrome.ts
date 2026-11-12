@@ -21,6 +21,23 @@ import { afterTheFirstBatch, theFirstBatchIsAwaited } from "../doc/first-batch";
 let queued: (() => boolean) | undefined;
 
 /**
+ * The two parts of the chrome a queued press can be waiting for, each telling this module as it
+ * mounts. They are named rather than counted because a part that mounts twice is still one
+ * part, and what drops a press is the other part going past it.
+ */
+export type ChromePart = "header" | "tabs";
+
+const PART_MOUNTED: Record<ChromePart, number> = { header: 1, tabs: 2 };
+const BOTH_PARTS = PART_MOUNTED.header | PART_MOUNTED.tabs;
+
+/** Which parts have mounted since `queued` was taken. A press neither of them could do is a
+ *  press for a control this issue does not offer - the status pick of a closed issue, which is
+ *  disabled, so `usableControl` answers null and the press is still owed after the header has
+ *  landed. Kept past that, it would be done by the next issue's header on a move through the
+ *  cache, where that header mounts in the commit this page leaves in (`IssuePage.tsx`). */
+let mounted = 0;
+
+/**
  * Does what a binding came to do, drawing the chrome first where the page is still holding it.
  * `act` answers whether it found its control, and is kept until a commit of the chrome lets it
  * find one.
@@ -34,19 +51,27 @@ export function reachingTheChrome(act: () => boolean): void {
     return;
   }
   queued = act;
+  mounted = 0;
   theFirstBatchIsAwaited(false);
 }
 
 /** What the header and the tab strip tell this module as they mount (`IssueHeader`,
  *  `IssueTabs`): a press waiting for either is done now. One that still finds nothing - a tab
- *  chord answered by the header's commit, which draws no tablist - waits for the other. */
-export function theChromeIsHere(): void {
-  if (queued?.() === true) {
-    queued = undefined;
+ *  chord answered by the header's commit, which draws no tablist - waits for the other, and is
+ *  let go once that other has mounted past it too: there is no third commit for it to wait
+ *  for, and this issue's chrome is the only chrome it was reaching for. */
+export function theChromeIsHere(part: ChromePart): void {
+  if (queued === undefined) {
+    return;
+  }
+  mounted |= PART_MOUNTED[part];
+  if (queued() || mounted === BOTH_PARTS) {
+    forgetTheReach();
   }
 }
 
 /** The page letting go of a press whose chrome never came, as it leaves (`IssuePage.tsx`). */
 export function forgetTheReach(): void {
   queued = undefined;
+  mounted = 0;
 }

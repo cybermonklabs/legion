@@ -17,6 +17,7 @@ import {
   textTransparent,
 } from "../../theme/classes";
 import {
+  issueClosedCalloutClassName,
   issueHeaderFrameClassName,
   issueKeyBadgeClassName,
   issueTitleBoxClassName,
@@ -74,13 +75,14 @@ export function IssueHeaderSkeleton({
     // The header's own frame, from the one place both are built from
     // (`issue-header-classes.ts`): 26 px of border and padding and 12 px of margin under it.
     <header className={`${issueHeaderFrameClassName} ${card}`} data-testid="issue-header-box">
-      {/* The closed block, at the header's own size: the same callout classes around the same
-          sentence, and the Reopen button's own 44 px box kept beside it (`IssueHeader.tsx`).
-          The button itself waits with the other controls - a press anywhere here hands the
-          reader the header, and Reopen comes with it. */}
+      {/* The closed block, at the header's own size: the same callout box from the one place
+          both are built from (`issue-header-classes.ts`), around the same sentence, and the
+          Reopen button's own 44 px box kept beside it (`IssueHeader.tsx`). The button itself
+          waits with the other controls - a press anywhere here hands the reader the header, and
+          Reopen comes with it. */}
       {isClosed ? (
         <div
-          className={`mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg p-3 text-sm ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
+          className={`${issueClosedCalloutClassName} ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
         >
           <span>This issue is closed.</span>
           <span

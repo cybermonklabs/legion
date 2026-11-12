@@ -23,6 +23,11 @@ export const issueKeyBadgeClassName = "rounded-md px-2.5 py-1.5";
 /** The title heading's box: its border and padding around its 28 px line. */
 export const issueTitleBoxClassName = "min-w-0 flex-1 rounded-lg border px-2 py-1 md:py-0";
 
+/** The closed issue's callout: the block above the header's three rows holding the sentence and
+ *  Reopen, which the space keeps at that height too (`issue-page-skeleton.tsx`). */
+export const issueClosedCalloutClassName =
+  "mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg p-3 text-sm";
+
 /** The status pill's box, which the header's own status pick stands in and the space's pill
  *  repeats, so the pick landing in its place moves nothing beside it. */
 export const issueStatusPillClassName =

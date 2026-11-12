@@ -4,7 +4,6 @@ import {
   type ReactNode,
   Suspense,
   useCallback,
-  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -264,6 +263,18 @@ function pressTheControl(selector: string): boolean {
 }
 
 /**
+ * Whether the binding whose control `find` looks up is offered, which is one question asked of
+ * two pages. While this page is still holding its chrome every binding is offered: the press is
+ * how a reader with no pointer asks for that chrome, and `reachingTheChrome` draws it and then
+ * does what the press came for (`reaching-the-chrome.ts`). Once the chrome is there, a binding
+ * is offered exactly while its control would take a click, so the palette lists what a press
+ * would do and nothing else. Written here once, because every binding below asks it.
+ */
+function reachable(find: () => Element | null): boolean {
+  return !afterTheFirstBatch() || find() !== null;
+}
+
+/**
  * Whether focus is outside every `<input>` and outside every ask card. `0`-`3` and `Shift+P` are
  * the two keys that write the issue without focusing a control, so they are the two that have to
  * say where the reader is not: a digit typed straight after pressing the Conversation's `Open`
@@ -422,14 +433,14 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       keys: "s",
       label: "Focus the status",
       run: () => reachingTheChrome(() => focusTheControl(STATUS_SELECT)),
-      when: () => !afterTheFirstBatch() || usableControl(STATUS_SELECT) !== null,
+      when: () => reachable(() => usableControl(STATUS_SELECT)),
     },
     {
       id: "priority",
       keys: "p",
       label: "Focus the priority",
       run: () => reachingTheChrome(() => focusTheControl(PRIORITY_SELECT)),
-      when: () => !afterTheFirstBatch() || usableControl(PRIORITY_SELECT) !== null,
+      when: () => reachable(() => usableControl(PRIORITY_SELECT)),
     },
     {
       id: "set-priority",
@@ -447,16 +458,14 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           return true;
         });
       },
-      when: () =>
-        (!afterTheFirstBatch() || usableControl(PRIORITY_SELECT) !== null) &&
-        outsideInputsAndAskCards(),
+      when: () => reachable(() => usableControl(PRIORITY_SELECT)) && outsideInputsAndAskCards(),
     },
     {
       id: "labels",
       keys: "l",
       label: "Edit labels",
       run: () => reachingTheChrome(() => pressTheControl(LABELS_TRIGGER)),
-      when: () => !afterTheFirstBatch() || usableControl(LABELS_TRIGGER) !== null,
+      when: () => reachable(() => usableControl(LABELS_TRIGGER)),
     },
     {
       // The heading takes focus only while the issue is open: closed, its `tabIndex` is -1 and
@@ -465,15 +474,14 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       keys: "e",
       label: "Edit the title",
       run: () => reachingTheChrome(() => focusTheControl(TITLE_HEADING)),
-      when: () => !afterTheFirstBatch() || usableControl(TITLE_HEADING) !== null,
+      when: () => reachable(() => usableControl(TITLE_HEADING)),
     },
     {
       id: "pin",
       keys: "Shift+P",
       label: "Pin or unpin the issue",
       run: () => reachingTheChrome(() => pressTheControl(PIN_TOGGLE)),
-      when: () =>
-        (!afterTheFirstBatch() || usableControl(PIN_TOGGLE) !== null) && outsideInputsAndAskCards(),
+      when: () => reachable(() => usableControl(PIN_TOGGLE)) && outsideInputsAndAskCards(),
     },
     {
       // `s` and `p` put focus in a native select, where every single-key binding is suspended
@@ -500,14 +508,16 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           button?.click();
           return button !== null;
         }),
-      when: () =>
-        !afterTheFirstBatch() || document.getElementById(tabButtonId("issue", tab)) !== null,
+      when: () => reachable(() => document.getElementById(tabButtonId("issue", tab))),
     })),
   ]);
 
   // A press still waiting for chrome that never came goes with the page that took it
-  // (`reaching-the-chrome.ts`): the next page's own header is not what it was reaching for.
-  useEffect(() => forgetTheReach, []);
+  // (`reaching-the-chrome.ts`): the next page's own header is not what it was reaching for. The
+  // layout phase, because that is the phase the next page's header answers a press from: React
+  // runs a leaving tree's passive cleanups after the arriving tree's layout effects, so a
+  // passive forget here let issue B's header do what was pressed on issue A (dispatch://INFRA-341).
+  useLayoutEffect(() => forgetTheReach, []);
 
   useLayoutEffect(() => {
     const top = panelScroll.current[activeTab];
