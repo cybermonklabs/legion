@@ -254,10 +254,6 @@ func TestTheArchitectSweepRefusesEveryRootItsReachLeavesOut(t *testing.T) {
 			name: "a root whose architect claim was given this entry", change: func(f *architectSweepFixture) { f.given = seededEntry },
 			why: "the claim was queued this entry's work already (workflow.OwedEntry)",
 		},
-		{
-			name: "a root whose architect holds no phases row", change: func(f *architectSweepFixture) { f.entry = 0 },
-			why: "a role no transition has ever handed work on is owed none",
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -274,6 +270,100 @@ func TestTheArchitectSweepRefusesEveryRootItsReachLeavesOut(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A root architect whose phases row names no entry is handed one: the sweep raises the entry
+// with the task the derivation composes over the record as it stands, writes that task as the
+// work of the entry on the row, and the start it writes carries both
+// (workflow.RaiseArchitectEntryAndStart). Two roots stand in that shape — one the daemon of the
+// release before this one admitted after this release's migration ran, and one whose architect
+// claim exists while no transition of this generation raised an entry for it — and each would
+// otherwise hold its slot with an architect that was handed nothing at all.
+//
+// A second pass raises no second entry and writes no second row: by then the row names entry 1
+// and the claim's own start is on its way (workflow.ArchitectStartPending).
+//
+// The claim's skips stand in front of the raise. An architect holding a task it has not
+// confirmed — the old release's own start, still unanswered — is passed over until it confirms
+// it, so no second prompt reaches a worker that is reading the first.
+//
+// A phase worker of the same shape is owed nothing, which is the rule as it was: no transition
+// of its issue has ever handed that role work, and nothing here composes work for a role the
+// workflow has not started (workflow.OwedEntry).
+func TestTheArchitectSweepRaisesTheEntryOfARootWhoseArchitectRowNamesNone(t *testing.T) {
+	t.Run("the root whose architect row names no entry", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := quiet(t, 1)
+		const root = "LEGION-812"
+		fixture := architectSweepRoot(root)
+		fixture.entry, fixture.given = 0, 0
+		seedArchitectSweepRoot(t, pool, fixture)
+
+		applySweep(t, pool, admission, "architect-raise-1")
+
+		row := architectRow(t, pool, root)
+		if row.Entry != 1 || row.EntryTask == "" || row.EntryRaisedAt.IsZero() {
+			t.Fatalf("the architect row of %s = entry %d, task %q, raised at %s; want entry 1 carrying the derivation's own work",
+				root, row.Entry, row.EntryTask, row.EntryRaisedAt)
+		}
+		if want := architectStart(t, pool, admission, root, ""); row.EntryTask != want {
+			t.Fatalf("the work the raise wrote = %q, want the derivation's %q", row.EntryTask, want)
+		}
+		starts := architectSweepStarts(t, pool, root)
+		if len(starts) != 1 || starts[0].entry != 1 || starts[0].task != row.EntryTask {
+			t.Fatalf("the architect starts of %s = %+v, want the one of entry 1 carrying %q", root, starts, row.EntryTask)
+		}
+		if !workflow.CarriesArchitectStart(starts[0].task) {
+			t.Fatalf("the task sent to %s = %q, want the first-task instruction the derivation writes", root, starts[0].task)
+		}
+
+		applySweep(t, pool, admission, "architect-raise-2")
+
+		if after := architectRow(t, pool, root); after.Entry != 1 {
+			t.Fatalf("the architect row of %s after a second pass = entry %d, want the 1 the first raised: one entry is raised once", root, after.Entry)
+		}
+		if again := architectSweepStarts(t, pool, root); len(again) != 1 || again[0] != starts[0] {
+			t.Fatalf("the architect starts of %s after a second pass = %+v, want the one row the first wrote", root, again)
+		}
+	})
+
+	t.Run("the architect still holding the older release's task", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := quiet(t, 1)
+		const root = "LEGION-813"
+		fixture := architectSweepRoot(root)
+		fixture.entry, fixture.given = 0, 0
+		fixture.state, fixture.holdsTask, fixture.confirmed = supervise.StateReady, true, false
+		seedArchitectSweepRoot(t, pool, fixture)
+
+		applySweep(t, pool, admission, "architect-raise-pending")
+
+		if row := architectRow(t, pool, root); row.Entry != 0 {
+			t.Fatalf("the architect row of %s = entry %d, want none raised: a task in the claim's hands is not owed again", root, row.Entry)
+		}
+		if starts := architectSweepStarts(t, pool, root); len(starts) != 0 {
+			t.Fatalf("the architect starts of %s = %+v, want none while its claim holds an unconfirmed task", root, starts)
+		}
+	})
+
+	t.Run("the phase worker whose row names no entry", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := quiet(t, 2)
+		const root, member = "LEGION-814", "LEGION-815"
+		seedArchitectSweepRoot(t, pool, architectSweepRoot(root))
+		putIssue(t, pool, record.Issue{Key: member, Tree: root, Parent: &[]string{root}[0], Repo: "acme/widgets",
+			DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "the member " + member,
+			Phase: phase.Testing, Generation: architectSweepGeneration, Status: "in_progress", DispatchStatus: "in_progress",
+			Rank: member, HandedOver: true, LastDispatchSeq: 1})
+		takeSlot(t, pool, member)
+		putWorkerClaim(t, pool, root, member, claim.RoleTester, architectSweepGeneration, supervise.StateIdle, "")
+
+		applySweep(t, pool, admission, "worker-no-row")
+
+		if starts := convergeStarts(t, pool, member); len(starts) != 0 {
+			t.Fatalf("the starts of %s = %+v, want none: a phase worker whose row names no entry is owed none", member, starts)
+		}
+	})
 }
 
 // Ten passes write one start row. The rule writes a root architect's start directly, so no

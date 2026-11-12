@@ -2223,7 +2223,15 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 	for _, held := range holders {
 		run := runs[held.token]
 		row := entries[record.PhaseRole{Issue: held.issue.Key, Role: held.role}]
-		if !workflow.OwedEntry(run, held.root, row.Entry) {
+		// A root architect whose phases row names no entry, beside a claim the daemon holds, is
+		// weighed here though OwedEntry reads nothing as owed of it: that rule compares two
+		// numbers, and this role is the one the sweep hands an entry rather than resumes
+		// (sendArchitectEntry's raise). The claim is part of it because a claim is what says
+		// this architect was started: a root with neither claim nor entry was started by
+		// nothing, and the promotion that starts it is what hands it its first work. Every
+		// other role of a row with no entry is owed none, and is passed over by that rule.
+		raises := held.role == claim.RoleArchitect && row.Entry == 0 && run.Claim != nil
+		if !raises && !workflow.OwedEntry(run, held.root, row.Entry) {
 			continue
 		}
 		if c := run.Claim; c != nil && c.Pending != nil && c.Pending.StillWorked(held.issue.Generation, held.issue.Phase, c.State) {
@@ -2277,6 +2285,11 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 			given = c.GivenEntry
 		}
 		intake.OnCommit(ctx, func() {
+			if raises {
+				a.log.Warn("admission: a root architect's phases row named no entry, so the pass raised one and sent its work",
+					"issue", held.issue.Key, "role", held.role, "phase", held.issue.Phase, "given", given)
+				return
+			}
 			a.log.Warn("admission: a role was behind the entry its phases row names, so that entry's work is sent again",
 				"issue", held.issue.Key, "role", held.role, "phase", held.issue.Phase, "entry", row.Entry, "given", given)
 		})
@@ -2303,6 +2316,23 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 // is derived again from the record rather than taken off the row (workflow's
 // SendArchitectStart). Where the root's architect claim does not exist, that start is what
 // creates it, exactly as admission's queued-root branch does.
+//
+// An architect whose phases row names no entry at all is handed one here, rather than resumed:
+// the entry is raised with the task the derivation gives over the record as it stands, and the
+// start carries that entry (workflow.RaiseArchitectEntryAndStart, over the EnterArchitect call
+// admission's own promotion makes). Two roots stand in that shape and no others. One is a root
+// the daemon of the release before this one admitted after this release's migration had run and
+// before this daemon served: that promotion wrote no entry, so its architect holds a claim with
+// no row and the fill of the migration never saw it. The other is a root whose architect claim
+// exists while no transition of this generation ever raised an entry for it. Raising here is
+// safe because admission raises the entry for every root it starts: an entry of 0 beside a live
+// architect claim is a root no transition of this release ever handed work to, so there is no
+// work of an earlier entry that this could write over. Both shapes hold an architect claim, and
+// the caller weighs no root without one: a root with neither claim nor entry was started by
+// nothing, and its promotion is what hands its architect the tree.
+//
+// Every other role is left as it was: a phase worker whose row names no entry is owed none
+// (workflow.OwedEntry), because no transition of its issue has ever handed that role work.
 //
 // Three things stop it. A root outside the reach is sent nothing (workflow.ArchitectAtWork):
 // the rule reaches a root standing at admitted, whatever its design gate, and a root a
@@ -2334,6 +2364,13 @@ func (a *Admission) sendArchitectEntry(ctx context.Context, tx pgx.Tx, root reco
 	}
 	if _, pending := workflow.ArchitectStartPending(run); pending {
 		return false, nil
+	}
+	if entry == 0 {
+		raised, err := a.engine.RaiseArchitectEntryAndStart(ctx, tx, root, gate)
+		if err != nil {
+			return false, fmt.Errorf("raise the phase entry of the architect of slotted root %s: %w", root.Key, err)
+		}
+		return raised != 0, nil
 	}
 	if err := a.engine.SendArchitectStart(ctx, tx, root, gate, entry); err != nil {
 		return false, fmt.Errorf("start the architect of slotted root %s again: %w", root.Key, err)
