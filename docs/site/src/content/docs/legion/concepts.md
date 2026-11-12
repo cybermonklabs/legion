@@ -185,10 +185,12 @@ work came back, or `rootRank`, `ownRank` and `rootKey` for an issue that has not
 `reason`, the daemon's own sentence for that place. Every issue that is not working now carries
 `why` beside that: a `state`, one of `claim_stopped` (a claim nothing will wake), `waiting`,
 `blocked` and `unlisted` (the record holds it in the workflow and no list places it), with a
-`reason` sentence. An issue holding an admission slot carries no `why` unless a stranded claim
-names it — one at work, one `held`, one in `accepting`, and a root whose ask a person has not
-answered yet, which `waitingOn` answers for — and neither does an issue the record does not
-hold in the workflow. So the daemon says why an issue stands where it does, and nobody has to
+`reason` sentence. An issue holding an admission slot carries no `why` unless it
+also stands in `admission.waiting` or `admission.blocked`, or a stranded claim names it: an
+answered root reads `waiting`, a root whose open children hold its own first phase reads
+`blocked`, and an issue at work whose worker runs, one `held` and a root whose ask a person has
+not answered yet, which `waitingOn` answers for, read nothing. Neither does an issue the record
+does not hold in the workflow. So the daemon says why an issue stands where it does, and nobody has to
 work it out from the order.
 
 An issue gets the label in one of three ways:
@@ -251,8 +253,12 @@ decision: it stays on the ask for the person who asked, and nothing wakes.
 
 By default (`gates.design: [spec]`), no phase starts until a person approves the root issue's
 spec. The architect settles the spec's decision blocks with you first, then asks for approval with a
-summary of what the tree will do. You approve from the document's header or from the approval
-question in your Dispatch Inbox; **Request changes** sends it back with your reason.
+summary of what the tree will do. Where the tree builds a page you open, or changes one a lot, the
+architect shows you that page first — pictures, or a page you can click — and gets your answer
+before it asks you to approve the spec; a small change, such as a label or a style fix, usually
+carries no pictures, unless the architect is unsure what you want. You approve from the document's
+header or from the approval question in your Dispatch Inbox; **Request changes** sends it back with
+your reason.
 
 Approval is pinned to a version: a later edit to the spec closes the gate again until someone
 approves the new version. Your own answer to a decision block in the approved spec is the one

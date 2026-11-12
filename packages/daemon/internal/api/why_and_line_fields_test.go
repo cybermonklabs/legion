@@ -189,7 +189,7 @@ func TestWaitingLineContractBands(t *testing.T) {
 // between the two is the whole reason the second strip exists: a caller there is served the
 // field the earlier contract describes and no field of this one.
 func TestWhyAndLineFieldsContractIsTheContractThatAddedThem(t *testing.T) {
-	const addedWhyAndLineFields = 76
+	const addedWhyAndLineFields = 84
 	if whyAndLineFieldsContract != addedWhyAndLineFields {
 		t.Fatalf("whyAndLineFieldsContract = %d, want %d, the contract whose entry in version.go added each issue's answer and the waiting line's own fields",
 			whyAndLineFieldsContract, addedWhyAndLineFields)

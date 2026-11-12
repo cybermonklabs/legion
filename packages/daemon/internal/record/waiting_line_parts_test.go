@@ -20,10 +20,11 @@ func linePartIssue(key, tree, status string, stands phase.Phase, rank string) Is
 // Every entry of the waiting line says which part it stands in, why it stands there, where it
 // stands within that part and whether it already holds a slot, and each part's entries carry
 // what placed them there: a member of the returned part the moment its work came back and no
-// rank, a member of the starting part the two Dispatch ranks and its tree root's key and no
-// moment at all. The part is carried and not derived from the kind, which is what the two
-// first_phase entries here show: the tree's own root stands in the returned part and its child
-// in the starting one.
+// rank, a member of the starting part its tree root's Dispatch rank and no moment at all. The
+// issue's own rank and its tree root's key are no fields of the entry, since the entry's issue
+// holds both (LineEntry.RootRank), and the part is carried and not derived from the kind, which
+// is what the two first_phase entries here show: the tree's own root stands in the returned
+// part and its child in the starting one.
 //
 // The line holds one issue of every kind — an owed start, an answered root and a tree root's own
 // first phase in the returned part, a queued root and a child's first phase in the starting one
@@ -61,10 +62,8 @@ func TestWaitingLinePartAndKeyOnEveryEntry(t *testing.T) {
 		{Issue: issues[0], Kind: LineFirstPhase, Part: PartReturned, PartPlace: 1, Since: opened, Holds: true},
 		{Issue: issues[2], Kind: LineReturning, Part: PartReturned, PartPlace: 2, Since: owedAt},
 		{Issue: answered, Kind: LineAnswered, Part: PartReturned, PartPlace: 3, Since: answeredAt, Holds: true},
-		{Issue: issues[3], Kind: LineQueuedRoot, Part: PartStarting, PartPlace: 1,
-			RootRank: "A", OwnRank: "A", RootKey: "LEGION-20"},
-		{Issue: issues[1], Kind: LineFirstPhase, Part: PartStarting, PartPlace: 2,
-			RootRank: "M", OwnRank: "N", RootKey: "LEGION-10"},
+		{Issue: issues[3], Kind: LineQueuedRoot, Part: PartStarting, PartPlace: 1, RootRank: "A"},
+		{Issue: issues[1], Kind: LineFirstPhase, Part: PartStarting, PartPlace: 2, RootRank: "M"},
 	}
 	words := []struct{ part, kind string }{
 		{"returned", "first_phase"}, {"returned", "returning"}, {"returned", "answered"},
@@ -99,10 +98,9 @@ func TestWaitingLinePartAndKeyOnEveryEntry(t *testing.T) {
 			t.Errorf("%s came back at %v, want %v: the moment that placed it in its part",
 				entry.Issue.Key, entry.Since, expected.Since)
 		}
-		if entry.RootRank != expected.RootRank || entry.OwnRank != expected.OwnRank || entry.RootKey != expected.RootKey {
-			t.Errorf("%s carries root rank %q, own rank %q and root %q; want %q, %q and %q",
-				entry.Issue.Key, entry.RootRank, entry.OwnRank, entry.RootKey,
-				expected.RootRank, expected.OwnRank, expected.RootKey)
+		if entry.RootRank != expected.RootRank {
+			t.Errorf("%s carries root rank %q, want %q: the rank of the tree root that placed its part",
+				entry.Issue.Key, entry.RootRank, expected.RootRank)
 		}
 	}
 }

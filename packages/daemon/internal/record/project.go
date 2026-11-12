@@ -268,7 +268,7 @@ const (
 	// come back to them, placed by the moment it did (LineEntry.Since).
 	PartReturned LinePart = iota + 1
 	// PartStarting is the second part: the issues whose first phase has never started, placed by
-	// the Dispatch rank of their tree's root and then their own (LineEntry.RootRank, OwnRank).
+	// the Dispatch rank of their tree's root and then their own (LineEntry.RootRank, Issue.Rank).
 	PartStarting
 )
 
@@ -303,14 +303,15 @@ type LineEntry struct {
 	// reading of those records, and it is zero on an entry of PartStarting, whose work never
 	// started.
 	Since time.Time
-	// RootRank, OwnRank and RootKey are the Dispatch rank of the issue's tree root, the issue's
-	// own rank and that root's key: what the starting part is ordered by (RankLess over the
-	// root's record and then the issue's), so a reader of one entry can say what placed it
-	// without the records the line was built from. They are set on an entry of PartStarting
-	// alone; the returned part is ordered by Since.
+	// RootRank is the Dispatch rank of the issue's tree root: with the issue's own rank it is
+	// what the starting part is ordered by (RankLess over the root's record and then the
+	// issue's), so a reader of one entry can say what placed it without the records the line
+	// was built from. It is set on an entry of PartStarting alone; the returned part is ordered
+	// by Since. The other two halves of that reading are read off the entry's own issue and are
+	// no fields of this struct: the issue's rank is Issue.Rank and its tree root's key is
+	// Issue.Tree, which is what the projection serves as `ownRank` and `rootKey`
+	// (api.WaitingLineView) and what the sentence of a child's first phase names.
 	RootRank string
-	OwnRank  string
-	RootKey  string
 	// Holds says the issue held a slot row when the line was built, which the grant reads
 	// (admit's slotFor): such a candidate is promoted without taking a second row. Three kinds
 	// of entry can hold one: an answered root (LineAnswered); a root that arrived from another
@@ -808,7 +809,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 			// (KeepsSlot), and its place is the moment its work came back, which is its answer
 			// or, when a person's approval opened its gate later than that, the approval.
 			_, holds := slotted[issue.Key]
-			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineAnswered, Part: PartReturned, Holds: holds},
+			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineAnswered, Holds: holds},
 				at: later(*issue.Awaiting.AnsweredAt, facts.Gates[issue.Tree].OpenedAt())})
 			continue
 		}
@@ -840,19 +841,9 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		}
 		// This issue holds no row: the skip above took every holder out of the line, so the
 		// entry says so and its promotion takes one for it.
-		returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineReturning, Part: PartReturned}, at: owed.CreatedAt, id: owed.ID})
+		returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineReturning}, at: owed.CreatedAt, id: owed.ID})
 	}
 
-	// starts is one entry of the second part, which is ordered by the Dispatch rank of the
-	// issue's tree root and then by the issue's own (the sort below): the entry carries both
-	// ranks and the root's key, so a reader of one entry can say what placed it without the
-	// records the line was read from. It is written once here because two loops fill that part,
-	// the queued roots and the children whose first phase can start.
-	starts := func(entry LineEntry) LineEntry {
-		entry.Part, entry.RootRank = PartStarting, byKey[entry.Issue.Tree].Rank
-		entry.OwnRank, entry.RootKey = entry.Issue.Rank, entry.Issue.Tree
-		return entry
-	}
 	var starting []LineEntry
 	for _, issue := range queued {
 		if issue.Answered() {
@@ -883,7 +874,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		}) {
 			continue
 		}
-		starting = append(starting, starts(LineEntry{Issue: issue, Kind: LineQueuedRoot, Holds: holds}))
+		starting = append(starting, LineEntry{Issue: issue, Kind: LineQueuedRoot, Holds: holds})
 	}
 	for _, issue := range issues {
 		if issue.Phase != phase.Admitted || issue.AwaitingPerson() || OutOfWorkflow(issue.Status) {
@@ -935,11 +926,10 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		// root's rank; a child the daemon started and a person set back to todo stands here
 		// holding the row of that run, and its promotion takes no second one either.
 		if claim.IsTreeRoot(issue.Key, issue.Tree) {
-			entry.Part = PartReturned
 			returned = append(returned, timed{entry: entry, at: gate.OpenedAt()})
 			continue
 		}
-		starting = append(starting, starts(entry))
+		starting = append(starting, entry)
 	}
 	sort.Slice(returned, func(i, j int) bool {
 		left, right := returned[i], returned[j]
@@ -961,18 +951,23 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		return RankLess(left, right)
 	})
 
-	// Each entry's place within its own part is the order the part was just sorted into, not the
-	// order the loops above found it, so it is set here; and the moment that placed a returned
-	// entry is the sort key itself, taken from the timed value rather than read a second time
-	// from the records (LineEntry.Since).
+	// Each entry's part is the slice it ended in, set here rather than where the entry was
+	// built, so that a loop added above cannot leave an entry with no part at all: an entry at
+	// LinePart(0) would be served no sentence and no `why` and nothing would say so
+	// (projection's waitingLineReason). Its place within that part is the order the part was
+	// just sorted into and not the order the loops above found it; the moment that placed a
+	// returned entry is the sort key itself, taken from the timed value rather than read a
+	// second time from the records (LineEntry.Since); and the rank that placed a starting entry
+	// is its tree root's, which the sort above read the same record for.
 	line := make([]LineEntry, 0, len(returned)+len(starting))
 	for i, waiting := range returned {
 		entry := waiting.entry
-		entry.PartPlace, entry.Since = i+1, waiting.at
+		entry.Part, entry.PartPlace, entry.Since = PartReturned, i+1, waiting.at
 		line = append(line, entry)
 	}
 	for i := range starting {
-		starting[i].PartPlace = i + 1
+		starting[i].Part, starting[i].PartPlace, starting[i].RootRank =
+			PartStarting, i+1, byKey[starting[i].Issue.Tree].Rank
 	}
 	return append(line, starting...)
 }

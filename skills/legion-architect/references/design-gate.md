@@ -14,14 +14,19 @@ own status are visible from the issue tree and the handoffs; do not narrate them
 Extend the primary document in place: a new version adds only the evidence each decision needs and
 what the human decides, each as a [decision block](skill://dispatch/SKILL.md#asks-and-ask-blocks).
 Never post a second "spec" artifact beside it: `dispatch artifact` with the primary document's name
-replaces the human's document.
+replaces the human's document. The command refuses an upload under the name of a document the
+issue already holds and names `--force`, so that flag is what writes over such a document: pass it
+only where you mean to replace the whole text, and edit a document with `dispatch doc-edit`.
 
 Mark each requirement of the spec as a `requirement` block, and write the issue's Verification
-document (`verification.md`) with it: one `check` block per thing that must be proved, each with
+document (`verification.md`) with it, uploading each version after the first with `--force`: one
+`check` block per thing that must be proved, each with
 `serves` naming the requirements it serves, its `surface`, its `run`, its `when` and its
 `negative_control`. The human approves both documents in one request (step 4 below), and every
 later role reads the checks: the implementer and the tester record a result against each, and the
-reviewer approves only once every `before_merge` check has a passing result current at the head.
+reviewer approves only once a pass stands for every `before_merge` check at the head, which is the
+check's own answer in `dispatch results --issue <issue>`, and never a pass at another commit, a
+pass recorded under an older wording of the check or a retracted one.
 
 On your first pass over the spec, cut each requirement carried over from an earlier issue's spec or
 decisions that no source of this issue states: those were decided for that issue. This issue's
@@ -29,6 +34,85 @@ sources are the words a person wrote in it, and its `Filed for` line with what t
 answer, Slack message or direct message of a `Filed for <person> at their request:` line, or the
 evidence of a controller's `Filed for Legion from <role> on <issue>:` line
 ([The `Filed for` line](skill://legion-controller/references/finding-asks.md#the-filed-for-line)).
+
+## Show the surface before you ask
+
+Where this tree builds or changes a surface a person opens — a page, a screen, a dashboard — that
+person sees it and answers before you ask them to approve the spec. A spec for a surface they have not
+seen is refused, and the refusal costs a spec version, a closed gate, a second request and their time
+twice.
+
+Whether a change needs the round is your judgement. These readings inform it:
+
+- A new surface a person opens, and a large visual change to one, need it. The larger the visual
+  change, the more a page the person can click is worth over a picture: a person judges a layout from
+  a picture, and judges a flow only by acting on it.
+- A small change inside a shape that stands — a label, a copy change, a style fix, a bug fix — does
+  not, unless you are unsure what the person wants, which is itself a reason to show them.
+- A change whose only reader surface is text — an alert message, a report, a command's printed output
+  — carries that literal text in the spec, at the values it will carry, and needs no round. The person
+  reads the spec before the build; a pull request body reaches a reviewer after it.
+- A change with no surface a person reads needs nothing, and nothing in this section applies to it.
+
+The round is standard user research run on one reader: show the surface rather than describe it, let
+them act on it where the flow is the question, ask what they expected rather than whether they
+approve, and show another round on an answer that asks for changes
+(https://www.nngroup.com/articles/ux-prototype-hi-lo-fidelity). Before you first ask the person to
+approve the spec:
+
+1. Build the surface as a page, from real readings of the real system. Draw the empty state and the
+   worst realistic data, or say which states you did not draw. Mark every invented figure in the
+   picture itself, the way a check names its negative control: a picture whose figures are all
+   plausible is the hardest one to judge. Where the surface exists already, draw it as it is now
+   beside the new one: a picture a person cannot place is a round spent for nothing.
+2. Take the picture with the pod's own Chromium, then put each one on the issue:
+
+   ```bash
+   chromium --headless --disable-gpu --no-sandbox --window-size=1440,900 \
+     --screenshot=<file.png> file://<page.html>
+   dispatch artifact --issue <KEY> --name <name>.png --path <file.png>
+   ```
+
+   The upload stores it as an `image` artifact and prints its slug.
+3. For a large visual change, or where the question is about a flow rather than a layout, build the
+   page so the person can click it, put that one file up beside the pictures as a `file` artifact, and
+   say in your question what works in it and what does not.
+4. Ask one question with two to four answers, one of which says this is the wrong surface. Write no
+   code on the branch for the round, and end your turn as for any question to a person.
+5. The agreed pictures go in the spec, in line, each with a line of prose under it saying what it
+   shows and which of its readings are real:
+
+   ```md
+   ![the priorities page with no priority set](dispatch://<KEY>/artifact/<slug>)
+   The page as a reader opens it. The 529 issues and their ages are read from this deployment; the
+   two ranks on the right are invented.
+   ```
+
+   One further line says what the pictures do not show: the states you did not draw. The words of the
+   spec still govern the build, because a reader on the command line gets the link text and not the
+   picture.
+
+You end the round, not the person: when their answer is carried into the pictures or into the spec,
+go on to the approval request with the pictures as they then stand. A person who stops answering
+holds nothing up.
+
+The picture is the cheapest thing that answers the question. A labelled sketch is enough where it
+answers it. Where the real surface, built read-only, costs no more than the mock-up, build that and
+show that.
+
+The ordering, which this rule needs and does not change:
+
+- A spec written before the picture is fine. What may not happen is reaching the gate with no picture.
+- A tree whose gate is already open starts no round for the work in flight and writes no spec version
+  for a picture: a new version closes the gate and stops the phase under it ("After approval").
+- The round writes no spec version of its own. The agreed pictures go into the version you first
+  submit for approval.
+- A picture that must change after approval follows "After approval": it is a new version only when
+  what is built changes, and then you request approval again.
+- Where the `Design gate steps` sentence of your `Legion addressing` line says `none`, nobody approves
+  the spec. Make the picture, put it in the spec for whoever builds it, and ask nobody.
+- The surfaces this tree's children build are yours. Their pictures go in the root spec, and a
+  sub-architect that finds a surface the root spec never drew tells the root architect.
 
 ## Which steps are gated
 

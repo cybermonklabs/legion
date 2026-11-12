@@ -166,6 +166,7 @@
   "heldOutboxRows": [],
   "strandedClaims": [],
   "wakesWaiting": [],
+  "claimsToRefresh": 0,
   "controllerLocator": {
     "runtime": "kubernetes",
     "external": true,

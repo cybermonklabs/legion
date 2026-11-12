@@ -13,14 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// whyIssue is one record of the `why` fixture below: lineIssue (project_test), this package's
-// one builder of a record with the fields every judgement of the pass reads, taken in the order
-// this fixture reads them, since here the phase is the fact under test and the status rides
-// with it.
-func whyIssue(key, tree string, stands phase.Phase, status, rank string) record.Issue {
-	return lineIssue(key, tree, status, stands, rank)
-}
-
 // Every issue that is not working now carries one rendered answer on its own view (api.WhyView),
 // and the fixture below holds an issue of every state and of every fill the daemon can render
 // from this record:
@@ -31,7 +23,8 @@ func whyIssue(key, tree string, stands phase.Phase, status, rank string) record.
 //     clause for a member a link holds as well (LEGION-201);
 //   - blocked, the three judgements the published list has merged by then: the cycle of
 //     LEGION-301, whose own blocked_by link holds it under its parent, the open children below
-//     LEGION-300, and the Dispatch links LEGION-110 waits on;
+//     LEGION-300, and the Dispatch links LEGION-110 waits on — and LEGION-601, which both of
+//     the last two hold at once and which reads both sentences, the children and then the link;
 //   - unlisted, the issue waiting only for its merge (LEGION-400) and the issue this build
 //     records no cause for (LEGION-401).
 //
@@ -40,6 +33,9 @@ func whyIssue(key, tree string, stands phase.Phase, status, rank string) record.
 // LEGION-502, which is done; and LEGION-503, which a person left on the backlog. The three states
 // that read a list are proved against the lists the same projection published, so a fixture that
 // stops placing an issue where this test says it stands fails here rather than drifting.
+//
+// Every record is built by lineIssue (project_test), this package's one builder of a record
+// with the fields each judgement of the pass reads.
 func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 	opened := projectedAt.Add(-2 * time.Hour)
 	approved := 1
@@ -47,37 +43,43 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 		issues: []record.Issue{
 			// The tree whose work has stopped: its architect's claim is stranded, and its child
 			// LEGION-101's implementer is. LEGION-110 is held at admitted by two Dispatch links.
-			whyIssue("LEGION-100", "LEGION-100", phase.Accepting, "in_progress", "A"),
-			whyIssue("LEGION-101", "LEGION-100", phase.Implementing, "in_progress", "B"),
-			whyIssue("LEGION-110", "LEGION-100", phase.Admitted, "todo", "C"),
+			lineIssue("LEGION-100", "LEGION-100", "in_progress", phase.Accepting, "A"),
+			lineIssue("LEGION-101", "LEGION-100", "in_progress", phase.Implementing, "B"),
+			lineIssue("LEGION-110", "LEGION-100", "todo", phase.Admitted, "C"),
 			// The two queued roots of the line, the second of them held by a link as well.
-			whyIssue("LEGION-200", "LEGION-200", phase.Admitted, "todo", "D"),
-			whyIssue("LEGION-201", "LEGION-201", phase.Admitted, "todo", "E"),
+			lineIssue("LEGION-200", "LEGION-200", "todo", phase.Admitted, "D"),
+			lineIssue("LEGION-201", "LEGION-201", "todo", phase.Admitted, "E"),
 			// The tree whose gate has opened and whose own first phase waits for the Dispatch
 			// children under it, one of which waits for the parent above it in turn.
-			whyIssue("LEGION-300", "LEGION-300", phase.Admitted, "in_progress", "F"),
-			whyIssue("LEGION-301", "LEGION-300", phase.Admitted, "todo", "G"),
+			lineIssue("LEGION-300", "LEGION-300", "in_progress", phase.Admitted, "F"),
+			lineIssue("LEGION-301", "LEGION-300", "todo", phase.Admitted, "G"),
+			// The second such tree, whose child LEGION-601 both halves hold at once: the open
+			// Dispatch children below it, and a link of its own that is not done.
+			lineIssue("LEGION-600", "LEGION-600", "in_progress", phase.Admitted, "N"),
+			lineIssue("LEGION-601", "LEGION-600", "todo", phase.Admitted, "O"),
 			// The two issues the lists do not place: one waiting for its merge, one the record
 			// holds in the workflow with no cause this build can name.
-			whyIssue("LEGION-400", "LEGION-400", phase.AwaitingMerge, "in_progress", "H"),
-			whyIssue("LEGION-401", "LEGION-401", phase.Implementing, "in_progress", "I"),
+			lineIssue("LEGION-400", "LEGION-400", "in_progress", phase.AwaitingMerge, "H"),
+			lineIssue("LEGION-401", "LEGION-401", "in_progress", phase.Implementing, "I"),
 			// The four that carry no answer: at work, held in a slot, done, and on the backlog.
-			whyIssue("LEGION-500", "LEGION-500", phase.Implementing, "in_progress", "J"),
-			whyIssue("LEGION-501", "LEGION-500", phase.Held, "in_progress", "K"),
-			whyIssue("LEGION-502", "LEGION-502", phase.Done, "done", "L"),
-			whyIssue("LEGION-503", "LEGION-503", phase.Admitted, "backlog", "M"),
+			lineIssue("LEGION-500", "LEGION-500", "in_progress", phase.Implementing, "J"),
+			lineIssue("LEGION-501", "LEGION-500", "in_progress", phase.Held, "K"),
+			lineIssue("LEGION-502", "LEGION-502", "done", phase.Done, "L"),
+			lineIssue("LEGION-503", "LEGION-503", "backlog", phase.Admitted, "M"),
 		},
 		slots: []record.Slot{
 			{Issue: "LEGION-100", Index: 0, AdmittedAt: opened},
 			{Issue: "LEGION-500", Index: 1, AdmittedAt: opened},
 			{Issue: "LEGION-501", Index: 2, AdmittedAt: opened},
 		},
-		// LEGION-300's tree runs with its design gate approved, which is what makes its own first
-		// phase a member of the line the children-first wait then holds back.
-		lifecycles: []string{"LEGION-300"},
+		// Each of the two trees runs with its design gate approved, which is what makes a first
+		// phase of theirs a member of the line the children-first wait then holds back.
+		lifecycles: []string{"LEGION-300", "LEGION-600"},
 		gates: map[string]map[record.DesignStep]record.DesignGate{
 			"LEGION-300": {record.DesignStepSpec: {Issue: "LEGION-300", Step: record.DesignStepSpec,
 				LatestVersion: 1, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 7, At: opened}, EverOpened: true}},
+			"LEGION-600": {record.DesignStepSpec: {Issue: "LEGION-600", Step: record.DesignStepSpec,
+				LatestVersion: 1, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 8, At: opened}, EverOpened: true}},
 		},
 		mirror: []record.DispatchIssueRow{
 			{Key: "LEGION-110", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-900", "LEGION-901"}},
@@ -90,6 +92,12 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 			{Key: "LEGION-303", Project: "LEGION", Status: "todo", Parent: "LEGION-300"},
 			{Key: "LEGION-900", Project: "LEGION", Status: "in_progress"},
 			{Key: "LEGION-901", Project: "LEGION", Status: "todo"},
+			// The tree of LEGION-601, whose own two open children stand below it while
+			// LEGION-900 holds it by a link: the two halves of `blocked` on one issue.
+			{Key: "LEGION-600", Project: "LEGION", Status: "in_progress"},
+			{Key: "LEGION-601", Project: "LEGION", Status: "todo", Parent: "LEGION-600", Blockers: []string{"LEGION-900"}},
+			{Key: "LEGION-602", Project: "LEGION", Status: "todo", Parent: "LEGION-601"},
+			{Key: "LEGION-603", Project: "LEGION", Status: "todo", Parent: "LEGION-601"},
 		},
 	}
 	// The stranded set is the daemon's own judgement, handed to the projection: the tree
@@ -133,6 +141,8 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 		{Issue: "LEGION-201", BlockedBy: []string{"LEGION-900"}},
 		{Issue: "LEGION-300", BlockedBy: []string{"LEGION-301", "LEGION-302", "LEGION-303"}},
 		{Issue: "LEGION-301", BlockedBy: []string{"LEGION-300"}},
+		{Issue: "LEGION-600", BlockedBy: []string{"LEGION-601"}},
+		{Issue: "LEGION-601", BlockedBy: []string{"LEGION-900", "LEGION-602", "LEGION-603"}},
 	}
 	if !reflect.DeepEqual(got.Admission.Blocked, want) {
 		t.Fatalf("admission.blocked = %#v, want %#v", got.Admission.Blocked, want)
@@ -160,6 +170,14 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 			Reason: "Its own first phase waits for the open issues below it: LEGION-301, LEGION-302 and LEGION-303."},
 		"LEGION-301": {State: api.WhyBlocked,
 			Reason: "A blocked_by link holds it under LEGION-300, which stands above it in its own tree."},
+		"LEGION-600": {State: api.WhyBlocked,
+			Reason: "Its own first phase waits for the open issues below it: LEGION-601."},
+		// Both halves hold this one, and it reads both sentences in the order `blocked` merges
+		// them: closing the children alone would not free it, which the children sentence on
+		// its own would tell a reader it would.
+		"LEGION-601": {State: api.WhyBlocked,
+			Reason: "Its own first phase waits for the open issues below it: LEGION-602 and LEGION-603. " +
+				"It waits on LEGION-900, which is not done."},
 		"LEGION-400": {State: api.WhyUnlisted, Reason: "It waits for its merge, and for nothing else."},
 		"LEGION-401": {State: api.WhyUnlisted,
 			Reason: "The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, " +

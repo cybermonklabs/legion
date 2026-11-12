@@ -1138,13 +1138,24 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   The `wakes waiting` line appears only while the daemon's pacing is holding a wake
   (`worker_wakes_per_minute`, above): how many wait, and each by claim token with the kind of wake
-  it is — `launch`, a role process about to start; `plugin-task`, the update task a stale-plugin
-  round queues to a session that already runs; `catch-up`, the notice a start writes to an
+  it is — `launch`, a role process about to start; `plugin-refresh`, the relaunch of a session
+  whose plugin speaks an earlier daemon contract, which the daemon replaces at that one wake and
+  asks nothing of first; `catch-up`, the notice a start writes to an
   architect that is already running — and the moment the pacing gave it (`wakes waiting: 2 —
-  legion-widgets-widgets-12-implementer launch due 2026-10-03T09:13:08Z; …`). Nothing waits
-  outside a restart, a re-admission or a plugin wave, which is why an ordinary read has no such
-  line. It is what says whether a wave is still going out, and the last `due` on it is when the
-  last of that wave goes.
+  legion-widgets-widgets-12-implementer launch due 2026-10-03T09:13:08Z; …`).
+  Nothing waits outside a restart, a re-admission or a stale-plugin wave, which is why an
+  ordinary read has no such line.
+  It is what says whether a wave is still going out, and the last `due` on it is when
+  the last of that wave goes.
+
+  The plain line does not say how much of a stale-plugin wave is still to come, and the JSON body
+  does: `legion state --json | jq .claimsToRefresh` is how many sessions the lane still has to
+  relaunch onto this daemon's plugin.
+  The lane holds at most one minute of the pacing at a time, so its `plugin-refresh` wakes are the
+  share of that count the pacing holds now, not a second number beside it: a claim keeps its place
+  in the count until the wake it is reserved for has run.
+  It is 0 whenever no session is on an earlier plugin, which is every moment but the minutes
+  after a boot onto a new plugin contract.
 
   The `consumer` lines are the lag of the daemon's durable consumers on the
   `ENVOY_NOTIFICATIONS` stream: `legion-go-<project>-dispatch` (Dispatch's issue events and the
@@ -1184,10 +1195,11 @@ Closing the terminal leaves the project without one, and the daemon logs
   `why`, one answer with a `state` — `claim_stopped`, a claim nothing will wake; `waiting`, the
   line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue the record
   holds in the workflow that stands in none of the three lists — and a `reason` sentence; an
-  issue holding an admission slot carries no `why` unless a stranded claim names it — one at
-  work, one `held`, one in `accepting`, and a root whose ask a person has not answered yet,
-  which `waitingOn` answers for — and neither does an issue the record does
-  not hold in the workflow. A caller from a pod whose claims record a contract below 76 is
+  issue holding an admission slot carries no `why` unless it also stands in `admission.waiting`
+  or `admission.blocked`, or a stranded claim names it: an answered root reads `waiting`, a root
+  whose open children hold its own first phase reads `blocked`, and an issue at work whose
+  worker runs, one `held` and a root whose ask a person has not answered yet, which `waitingOn`
+  answers for, read nothing. Neither does an issue the record does not hold in the workflow. A caller from a pod whose claims record a contract below 84 is
   served every issue without `why`, and the `waitingLine` of each member of the line with its
   `place` and its `length` alone, and no `partPlace`. Then, for a closed
   issue whose
