@@ -850,27 +850,34 @@ function targetedDispatchEnvelope(
   });
 }
 
-/** A Dispatch comment delivery frame addressed to ses_delivery, on issue CORE-1.
- *  `bodyTruncated` says the event carries the body's first part alone, so the session reads the
- *  comment whole before it renders it (`wholeCarriedBody`). */
+type DispatchCardActor = {
+  readonly act?: { readonly session?: string };
+  readonly kind: string;
+  readonly id: string;
+};
+
+/** A Dispatch comment delivery frame addressed to ses_delivery, on issue CORE-1, written by
+ *  `actor` (a person by default). `bodyTruncated` says the event carries the body's first part
+ *  alone, so the session reads the comment whole before it renders it (`wholeCarriedBody`). */
 function targetedCommentEnvelope(
   mode: "aside" | "btw" | "steer",
   dedupeKey: string,
-  frame: { readonly bodyTruncated?: boolean } = {}
+  frame: { readonly actor?: DispatchCardActor; readonly bodyTruncated?: boolean } = {}
 ): string {
+  const actor = frame.actor ?? { id: "alice", kind: "user" };
   return JSON.stringify({
     dedupe_key: dedupeKey,
     event_id: `dispatch-${dedupeKey}`,
     issued_at: 1,
     payload: JSON.stringify({
       event: {
-        actor: { id: "alice", kind: "user" },
+        actor,
         issue_key: "CORE-1",
         payload: {
           artifact_id: null,
           artifact_name: "spec.md",
           artifact_slug: "spec",
-          author: { id: "alice", kind: "user" },
+          author: actor,
           body: `Comment ${dedupeKey}`,
           ...(frame.bodyTruncated === true ? { body_truncated: true } : {}),
           created_at: "2026-09-12T00:00:00Z",
@@ -1350,6 +1357,58 @@ function response(body: unknown): Response {
     headers: { "Content-Type": "application/json" },
     status: 200,
   });
+}
+
+/**
+ * Delivers one Dispatch comment card written by `actor` (a person by default) over NATS, then
+ * drives the agent-initiated run it starts through its stop, against a Dispatch with no open asks
+ * and a host whose hidden self-check answers WAITING. Returns each open-asks query string, each
+ * self-check prompt and the custom type of each delivery the host was handed.
+ */
+async function stopAfterDispatchCard(query: string, actor?: DispatchCardActor) {
+  const checks: string[] = [];
+  const openAskQueries: string[] = [];
+  let armedBeforeCard = false;
+  let sends = 0;
+  const { agent, context, delivered, fixture } = await bootDirectSession(query, {
+    beforeSend: () => {
+      if (sends === 0) armedBeforeCard = openAskQueries.length === 1;
+      sends += 1;
+    },
+    dispatch: (url) => {
+      if (url.pathname !== "/api/v1/asks/open") return undefined;
+      openAskQueries.push(url.search);
+      return response({
+        session_id: "ses_delivery",
+        as_of: "2026-11-10T00:00:00Z",
+        opened_since: false,
+        count: 0,
+        waiting_on_human: 0,
+        waiting_on_agent: 0,
+        asks: [],
+      });
+    },
+    idle: () => true,
+    sideTurn: (prompt) => {
+      checks.push(prompt);
+      return "WAITING";
+    },
+  });
+  const card = delivered(1);
+  agent.push(targetedCommentEnvelope("aside", query, actor === undefined ? {} : { actor }));
+  await card;
+  await fixture.handlers.get("agent_start")?.({}, context);
+  await fixture.handlers.get("agent_end")?.(
+    { messages: [{ role: "assistant", stopReason: "stop" }] },
+    context
+  );
+  await Promise.all(contextTimers.splice(0));
+  return {
+    armedBeforeCard,
+    checks,
+    deliveries: fixture.deliveries.map((delivery) => delivery.customType),
+    openAskQueries,
+  };
 }
 
 /** The client instance id one extension instance mints, read by its shape alone: a test that
@@ -1910,8 +1969,10 @@ describe("envoy OMP extension", () => {
       },
     ]);
 
-    // The nudge's own continuation: it replies and stops, having called no tool, so it owes the
-    // period no check and cannot nudge itself. This is the whole loop safety of the design.
+    // The host starts the nudge's agent-attributed custom continuation directly, without
+    // `before_agent_start`; it replies and stops, having called no tool, so it owes the period no
+    // check and cannot nudge itself. This is the whole loop safety of the design.
+    await session.runStart();
     await session.stop();
     expect(session.fixture.deliveries).toHaveLength(1);
 
@@ -1941,6 +2002,217 @@ describe("envoy OMP extension", () => {
       session.fixture.entries.filter((entry) => !entry.customType.startsWith("envoy-replay-"))
     ).toEqual([]);
   });
+
+  test("arms the nudge from a human Dispatch card that starts a run", async () => {
+    const run = await stopAfterDispatchCard("human-card-nudge");
+    expect(run.armedBeforeCard).toBe(true);
+    expect(run.openAskQueries).toEqual([
+      "?author_session=ses_delivery",
+      "?author_session=ses_delivery&since=2026-11-10T00%3A00%3A00Z",
+    ]);
+    expect(run.checks).toEqual([expect.stringContaining("WAITING or PROCEEDING")]);
+    expect(run.deliveries).toEqual(["envoy-message", ASK_REMINDER_TYPE]);
+  });
+
+  /** An open-asks answer with no open asks, at a fixed server clock. */
+  const noOpenAsks = (sessionID: string) =>
+    response({
+      session_id: sessionID,
+      as_of: "2026-11-10T00:00:00Z",
+      opened_since: false,
+      count: 0,
+      waiting_on_human: 0,
+      waiting_on_agent: 0,
+      asks: [],
+    });
+
+  /** A person's Dispatch event on the session's agent subject that is no delivery: a status
+   *  change, which follows the conversation the host has open (`cardSession`). */
+  const personStatusEvent = (key: string): string =>
+    JSON.stringify({
+      event_id: `dispatch-${key}`,
+      source: "dispatch",
+      source_event_id: "1",
+      topic: "notifications.agent.ses_delivery",
+      dedupe_key: `dispatch-${key}`,
+      issued_at: 1,
+      payload_summary: `CORE-1 moved (${key})`,
+      trace_id: `trace-${key}`,
+      payload: JSON.stringify({
+        issue_key: "CORE-1",
+        type: "issue.updated",
+        actor: { kind: "user", id: "alice" },
+        notify: true,
+        payload: { status: "in_progress" },
+      }),
+    });
+
+  test("arms the session a person's card goes to when the host moves during the arming read", async () => {
+    let host = "ses_delivery";
+    const queries: string[] = [];
+    const checks: string[] = [];
+    const { agent, context, delivered, fixture } = await bootDirectSession("human-card-host-moves", {
+      dispatch: (url) => {
+        if (url.pathname !== "/api/v1/asks/open") return undefined;
+        queries.push(url.search);
+        // A `/new` lands while the first arming read is out.
+        if (queries.length === 1) host = "ses_moved";
+        return noOpenAsks(host);
+      },
+      hostSessionID: () => host,
+      idle: () => true,
+      sideTurn: (prompt) => {
+        checks.push(prompt);
+        return "WAITING";
+      },
+    });
+
+    const card = delivered(1);
+    agent.push(personStatusEvent("human-card-host-moves"));
+    await card;
+    await fixture.handlers.get("agent_start")?.({}, context);
+    await fixture.handlers.get("agent_end")?.(
+      { messages: [{ role: "assistant", stopReason: "stop" }] },
+      context
+    );
+    await Promise.all(contextTimers.splice(0));
+
+    expect(queries).toEqual([
+      "?author_session=ses_delivery",
+      "?author_session=ses_moved",
+      "?author_session=ses_moved&since=2026-11-10T00%3A00%3A00Z",
+    ]);
+    expect(checks).toEqual([expect.stringContaining("WAITING or PROCEEDING")]);
+    expect(fixture.deliveries.map((delivery) => delivery.customType)).toEqual([
+      "envoy-message",
+      ASK_REMINDER_TYPE,
+    ]);
+  });
+
+  test("a stop during a person's card arming read sends no reminder for the run it supersedes", async () => {
+    const queries: string[] = [];
+    const checks: string[] = [];
+    const holding = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    const { agent, context, delivered, fixture } = await bootDirectSession(
+      "human-card-supersedes-stop",
+      {
+        dispatch: async (url) => {
+          if (url.pathname !== "/api/v1/asks/open") return undefined;
+          queries.push(url.search);
+          const armingReads = queries.filter((query) => !query.includes("since=")).length;
+          // The person's card makes the second arming read: hold it open.
+          if (!url.search.includes("since=") && armingReads === 2) {
+            holding.resolve();
+            await gate.promise;
+          }
+          return noOpenAsks("ses_delivery");
+        },
+        idle: () => true,
+        sideTurn: (prompt) => {
+          checks.push(prompt);
+          return "WAITING";
+        },
+      }
+    );
+    const stop = async (): Promise<void> => {
+      await fixture.handlers.get("agent_end")?.(
+        { messages: [{ role: "assistant", stopReason: "stop" }] },
+        context
+      );
+      await Promise.all(contextTimers.splice(0));
+    };
+
+    // A typed turn arms a period and its run starts.
+    await fixture.handlers.get("before_agent_start")?.({ prompt: "finish the task" }, context);
+    await fixture.handlers.get("agent_start")?.({}, context);
+    // The person's card arrives while that run streams, and its arming read is held.
+    const card = delivered(1);
+    agent.push(targetedCommentEnvelope("aside", "human-card-supersedes-stop"));
+    await holding.promise;
+    // The typed turn's run stops inside that read: the card supersedes it, so no check runs.
+    await stop();
+    expect(checks).toEqual([]);
+    expect(fixture.deliveries).toEqual([]);
+
+    gate.resolve();
+    await card;
+    await fixture.handlers.get("agent_start")?.({}, context);
+    await stop();
+
+    expect(checks).toEqual([expect.stringContaining("WAITING or PROCEEDING")]);
+    expect(fixture.deliveries.map((delivery) => delivery.customType)).toEqual([
+      "envoy-message",
+      ASK_REMINDER_TYPE,
+    ]);
+  });
+
+  test("a person's card arming read for a session the host left holds back no stop of the session it moved to", async () => {
+    let host = "ses_delivery";
+    const queries: string[] = [];
+    const checks: string[] = [];
+    const holding = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    const { agent, context, fixture } = await bootDirectSession("human-card-left-session", {
+      dispatch: async (url) => {
+        if (url.pathname !== "/api/v1/asks/open") return undefined;
+        queries.push(url.search);
+        // The card's arming read for the session the host is about to leave: hold it open.
+        if (queries.length === 1) {
+          holding.resolve();
+          await gate.promise;
+        }
+        return noOpenAsks(host);
+      },
+      hostSessionID: () => host,
+      idle: () => true,
+      sideTurn: (prompt) => {
+        checks.push(prompt);
+        return "WAITING";
+      },
+    });
+
+    agent.push(targetedCommentEnvelope("aside", "human-card-left-session"));
+    await holding.promise;
+    // The host switches to another session, whose typed turn arms it and runs.
+    host = "ses_moved";
+    await fixture.handlers.get("session_switch")?.({ reason: "new" }, context);
+    await fixture.handlers.get("before_agent_start")?.({ prompt: "finish the task" }, context);
+    await fixture.handlers.get("agent_start")?.({}, context);
+    // That run stops while the left session's arming read is still out: its check is owed.
+    await fixture.handlers.get("agent_end")?.(
+      { messages: [{ role: "assistant", stopReason: "stop" }] },
+      context
+    );
+    await Promise.all(contextTimers.splice(0));
+    gate.resolve();
+    await settle();
+    await Promise.all(contextTimers.splice(0));
+
+    expect(queries).toEqual([
+      "?author_session=ses_delivery",
+      "?author_session=ses_moved",
+      "?author_session=ses_moved&since=2026-11-10T00%3A00%3A00Z",
+    ]);
+    expect(checks).toEqual([expect.stringContaining("WAITING or PROCEEDING")]);
+    expect(fixture.deliveries.map((delivery) => delivery.customType)).toEqual([ASK_REMINDER_TYPE]);
+  });
+
+  for (const [name, actor] of [
+    ["agent", { id: "ses_peer", kind: "session" }],
+    ["Dispatch system", { id: "dispatch", kind: "system" }],
+    ["agent acting for a person", { act: { session: "ses_peer" }, id: "alice", kind: "user" }],
+  ] as const satisfies readonly (readonly [string, DispatchCardActor])[]) {
+    test(`does not arm the nudge from a ${name} Dispatch card`, async () => {
+      const run = await stopAfterDispatchCard(`${name.replaceAll(" ", "-")}-card-nudge`, actor);
+      expect(run).toEqual({
+        armedBeforeCard: false,
+        checks: [],
+        deliveries: ["envoy-message"],
+        openAskQueries: [],
+      });
+    });
+  }
 
   test("runs the stop-time check on the managed timer, after agent_end has returned", async () => {
     const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-after-handler");
@@ -13940,7 +14212,7 @@ console.log(JSON.stringify(args));
       // The same move, made before the command is asked for: the delivery awaits the whole body
       // and then the Dispatch accept, and a host that leaves inside that window is already on
       // another conversation when the command starts. This row expected the command to run and
-      // the agent's copy alone to be withheld; the architect's ruling of 2026-11-09T14:17Z made
+      // the agent's copy alone to be withheld; the architect's decision of 2026-11-09T14:17Z made
       // it a refusal. The half of `sessionOpen` that fails here is the host's live id: no
       // session event fired, so this instance's own `sessionID`, and the `sessionDirectory` it
       // recorded beside it, both still read ses_delivery. The command is the addressed
@@ -14812,7 +15084,7 @@ console.log(JSON.stringify(args));
     // session, and every await before the work - the acknowledgement, the read of the body
     // whole, the accept, the picture load - is a window a `/new` or a `/resume` lands in. The
     // conversation the host moved to must neither run a person's line nor answer for it
-    // (dispatch://INFRA-812, the architect's ruling of 2026-11-09T17:28Z).
+    // (dispatch://INFRA-812, the architect's decision of 2026-11-09T17:28Z).
     describe("a delivery whose session the host leaves", () => {
       /** The sentence each branch refuses with, the `!` path's own with the person's message in
        *  place of their command (`MOVED_SESSION_REFUSAL`, in `extensions/envoy.ts`). */

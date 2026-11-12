@@ -1137,10 +1137,21 @@ The timed cases run against a profile whose model catalog is already built: a fr
 builds it beside its first turn, holding the host's event loop for one to two seconds whatever
 the extension does.
 
-`before_agent_start` injects nothing into the conversation; its open-asks query arms the run-end
-nudge only for a turn carrying the user's own text, its snapshot `as_of` becoming the period's first
-window. It runs only for a session the stop could actually nudge — the host awaits this handler, so
-an excluded session does not pay up to `OPEN_ASKS_TIMEOUT_MS` for an answer nothing reads.
+`before_agent_start` injects nothing into the conversation; a nonempty typed user turn uses its
+open-asks query to arm the run-end nudge, its snapshot `as_of` becoming the period's first window.
+A Dispatch card whose parsed event actor has kind `user` and no `act` uses that same arming
+transition before the extension hands the card to the host: Dispatch records `act` when an agent or
+personal token acted for a person, so those cards are not human input. The transition aborts a
+self-check in flight, bumps the awareness generation, queries open asks, and arms the period. The
+host does not emit `before_agent_start` for that agent-initiated card run. A card arms the session
+it goes to: a delivery's own session, armed only while the host is on it, or, for a frame that is
+no delivery, the session the host has open, armed again when a `/new` or a `/resume` lands inside
+the open-asks read. A replayed card arms only once its claim shows no live copy is delivering it.
+While a person's open-asks read is out, a stop on that session owes no check, since the run that
+stopped is the one that input supersedes; a read that a newer input or a session change has moved
+past holds back no stop. The period is armed only if the generation and the host's session are
+still the ones the read began under. Both paths skip a session the stop could never nudge, so
+neither pays up to `OPEN_ASKS_TIMEOUT_MS` for an answer nothing reads.
 
 `agent_end` is the nudge's stop signal. Every normally settled, UI-hosted session with an armed
 period runs one **silent self-check**: one side turn — the host's one-shot, tool-free model call
@@ -1216,23 +1227,26 @@ so a latch spans the Dispatch read and self-check; a settle recorded while it is
 when the first check ends only if it is still current under the same test the timer applies. Every
 run the host starts increments the run count that test reads, so an Envoy delivery or another newer
 run makes an old verdict stale and unsteerable. The latch, period, and budget are in memory only; a
-cold start or session change begins at period 0, which nudges nothing until the next genuine user
-turn arms one. The normal-settle, UI-host, Legion-managed, task-subagent, generation, staleness, and
-one-check-at-a-time guards remain load-bearing.
+cold start or session change begins at period 0, which nudges nothing until a person's typed turn
+or Dispatch card arms one. The normal-settle, UI-host, Legion-managed, task-subagent, generation,
+staleness, and one-check-at-a-time guards remain load-bearing.
 
-What the arming rule excludes is as load-bearing as what it covers. An Envoy delivery wakes a session through the
-same agent-initiated path the nudge itself uses, which emits no `before_agent_start`, so an event-woken turn arms
-no period: a standing role-holder that works only when Envoy wakes it is never nudged, and is covered by the
-skill norm alone. A run the host gave no UI context (`omp -p`, and any other headless launch) is never nudged
-either: the host disposes the session when that one run ends, so the nudge only buys a provider turn nobody
-reads. An RPC pane and an ACP session both have a UI context; on an ACP client that defers agent-initiated turns
-the steer is queued as hidden next-turn context and consumed when the user next prompts, rather than running a
-turn of its own. A `task` subagent is skipped outright. A Legion-driven session is never nudged, having the
-design gate and its architect instead: `claimEnvoyRole` records it on the role-claim bridge and in the transcript
-(`legion-managed-session`), which is what a fresh process reads — and neither record is matched against the
-session id, so the exclusion survives a `/fork` or `/handoff` that mints a new one. An unavailable open-asks
-query warns once per session until that session's subsequent query succeeds, and arms nothing — an unknown ask
-state never nudges.
+What the arming rule excludes is as load-bearing as what it covers. A card from an agent or from
+Dispatch itself has no Dispatch event actor that is both kind `user` and without `act`, so its
+agent-initiated run arms no period; a standing role-holder's agent-authored Envoy traffic is covered
+by the skill norm alone. The nudge's own agent-attributed `dispatch-ask-reminder`
+continuation also emits no `before_agent_start` and has no human Dispatch actor, so it cannot
+re-arm itself. A run the host gave no UI context (`omp -p`, and any other headless launch) is never
+nudged either: the host disposes the session when that one run ends, so the nudge only buys a
+provider turn nobody reads. An RPC pane and an ACP session both have a UI context; on an ACP client
+that defers agent-initiated turns the steer is queued as hidden next-turn context and consumed when
+the user next prompts, rather than running a turn of its own. A `task` subagent is skipped
+outright. A Legion-driven session is never nudged, having the design gate and its architect instead:
+`claimEnvoyRole` records it on the role-claim bridge and in the transcript
+(`legion-managed-session`), which is what a fresh process reads — and neither record is matched
+against the session id, so the exclusion survives a `/fork` or `/handoff` that mints a new one. An
+unavailable open-asks query warns once per session until that session's subsequent query succeeds,
+and arms nothing — an unknown ask state never nudges.
 
 ## Where to look
 
