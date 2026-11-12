@@ -562,6 +562,9 @@ var routeShapes = map[string]routeShape{
 	// A delete answers no body: the state it wrote is `gone` and the row is still there, which
 	// the listing and the priority's own read already say (priorities.go).
 	"DELETE /api/v1/priorities/{id}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
+	// The history is a bare list, newest act first: the acts are the whole answer, and the
+	// priority they belong to is the id the path already names (priorities.go).
+	"GET /api/v1/priorities/{id}/history": {Status: http.StatusOK, Response: []model.PriorityAct{}},
 	"GET /api/v1/issues": {
 		Status: http.StatusOK, Response: []model.IssueSummary{}, Params: issueListQuery{},
 		// A request naming limit or offset is answered the page wrapper instead

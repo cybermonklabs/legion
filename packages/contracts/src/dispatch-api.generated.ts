@@ -2185,6 +2185,23 @@ export interface paths {
     patch: operations["patchApiV1PrioritiesById"];
     trace?: never;
   };
+  "/api/v1/priorities/{id}/history": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One priority's own history, newest first: every act stated about it as {field, value, issue, asserted, actor, at}. field is what was stated — title, description, owner and rank, the four a person writes, state (live when it was made, gone when it was deleted) and visibility; advances is the relation an issue states on it. value is what an attribute write wrote and is empty on an advances act; issue is the issue at the other end of an advances act and is empty on an attribute write; asserted is false on the act that retracted an advances and true on every other. A priority belongs to no project, so any authenticated caller reads this, the shared token every pod carries included. A deleted priority still answers its history, the delete its newest act; an id no priority carries is 404 PRIORITY_NOT_FOUND. */
+    get: operations["getApiV1PrioritiesByIdHistory"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/projects": {
     parameters: {
       query?: never;
@@ -5079,6 +5096,15 @@ export interface components {
       rank: string;
       state: string;
       title: string;
+    };
+    PriorityAct: {
+      actor: components["schemas"]["Actor"];
+      asserted: boolean;
+      /** Format: date-time */
+      at: string;
+      field: string;
+      issue: string;
+      value: string;
     };
     PriorityIssue: {
       assignee: null | string;
@@ -11249,6 +11275,40 @@ export interface operations {
       };
     };
   };
+  getApiV1PrioritiesByIdHistory: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PriorityAct"][];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1Projects: {
     parameters: {
       query?: {
@@ -13098,6 +13158,7 @@ export type PersonSignInRevokedResponse = components["schemas"]["PersonSignInRev
 export type PersonSignInsResponse = components["schemas"]["PersonSignInsResponse"];
 export type Priorities = components["schemas"]["Priorities"];
 export type Priority = components["schemas"]["Priority"];
+export type PriorityAct = components["schemas"]["PriorityAct"];
 export type PriorityIssue = components["schemas"]["PriorityIssue"];
 export type PriorityRow = components["schemas"]["PriorityRow"];
 export type PriorityWork = components["schemas"]["PriorityWork"];

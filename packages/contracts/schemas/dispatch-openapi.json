@@ -8742,6 +8742,56 @@
         "x-write-scope": "deployment"
       }
     },
+    "/api/v1/priorities/{id}/history": {
+      "get": {
+        "description": "One priority's own history, newest first: every act stated about it as {field, value, issue, asserted, actor, at}. field is what was stated — title, description, owner and rank, the four a person writes, state (live when it was made, gone when it was deleted) and visibility; advances is the relation an issue states on it. value is what an attribute write wrote and is empty on an advances act; issue is the issue at the other end of an advances act and is empty on an attribute write; asserted is false on the act that retracted an advances and true on every other. A priority belongs to no project, so any authenticated caller reads this, the shared token every pod carries included. A deleted priority still answers its history, the delete its newest act; an id no priority carries is 404 PRIORITY_NOT_FOUND.",
+        "operationId": "getApiV1PrioritiesByIdHistory",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PriorityAct"
+                  },
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/projects": {
       "get": {
         "description": "List projects.",
@@ -21664,6 +21714,38 @@
           "state",
           "made_at",
           "made_by"
+        ],
+        "type": "object"
+      },
+      "PriorityAct": {
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "asserted": {
+            "type": "boolean"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "value",
+          "issue",
+          "asserted",
+          "actor",
+          "at"
         ],
         "type": "object"
       },

@@ -1,4 +1,4 @@
-// priorities.go serves the four routes of a priority: the deployment-wide node work in any
+// priorities.go serves the five routes of a priority: the deployment-wide node work in any
 // project advances. Every row it reads and writes belongs to internal/dispatch/prioritystore,
 // which is the one place in the tree that touches `priority_nodes` and `priority_tuples`; this
 // file is the HTTP shape of those calls and the refusals they map to.
@@ -315,6 +315,65 @@ func (s *server) deletePriority(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// priorityHistory is GET /api/v1/priorities/{id}/history: every act stated about one priority,
+// newest first, which is what the priority page's margin lists. It is prioritystore.Timeline —
+// each attribute the priority was written with and each `advances` relation an issue asserted or
+// retracted on it, with its writer and its moment — and no act of any other node.
+//
+// It is a read, so no write class stands on it (writeClasses, routes_table.go) and every
+// authenticated caller makes it, as the listing is read: a priority belongs to no project, so a
+// credential held to one reads this as it reads the listing.
+//
+// An id no priority row carries is 404 PRIORITY_NOT_FOUND, in the wording the two writes of an
+// id answer (refusePriorityWrite). A priority somebody deleted still answers its history: the
+// row is there, and the delete is the last act of it.
+func (s *server) priorityHistory(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	_, held, err := prioritystore.Read(r.Context(), s.deps.Store.Pool, id)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if !held {
+		writeError(w, codePriorityNotFound, http.StatusNotFound, fmt.Sprintf("no priority of the id %q", id))
+		return
+	}
+	tuples, err := prioritystore.Timeline(r.Context(), s.deps.Store.Pool, id)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	acts := make([]model.PriorityAct, 0, len(tuples))
+	for _, tuple := range tuples {
+		acts = append(acts, priorityActFrom(tuple, id))
+	}
+	WriteJSON(w, http.StatusOK, acts)
+}
+
+// priorityActFrom is one tuple of the log as the history answers it. An attribute tuple holds its
+// value in the far end itself (ToKind KindValue), and a relation names the node at the end that
+// is not this priority, which for `advances` is the issue that states it.
+func priorityActFrom(tuple prioritystore.Tuple, id string) model.PriorityAct {
+	act := model.PriorityAct{
+		Field:    tuple.Kind,
+		Asserted: tuple.Asserted,
+		Actor:    tuple.Who,
+		At:       tuple.At,
+	}
+	switch {
+	case tuple.ToKind == prioritystore.KindValue:
+		act.Value = tuple.ToID
+	case tuple.ToKind == prioritystore.KindPriority && tuple.ToID == id:
+		act.Issue = tuple.FromID
+	default:
+		act.Issue = tuple.ToID
+	}
+	return act
 }
 
 // refusePriorityWrite is the answer a store refusal gives a caller: an id no row carries is 404,

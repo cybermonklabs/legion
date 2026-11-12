@@ -139,6 +139,7 @@ GET /api/v1/priorities any
 POST /api/v1/priorities any
 DELETE /api/v1/priorities/{id} any
 PATCH /api/v1/priorities/{id} any
+GET /api/v1/priorities/{id}/history any
 GET /api/v1/projects any
 POST /api/v1/projects any
 GET /api/v1/projects/{key}/architecture any

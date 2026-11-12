@@ -469,7 +469,9 @@ func ageSeededIssue(t *testing.T, database *store.Store, key string, at time.Tim
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
-		update issues set created_at = $2, updated_at = $2, closed_at = case when closed_at is null then null else $2 end
+		update issues
+		set created_at = $2::timestamptz, updated_at = $2::timestamptz,
+		    closed_at = case when closed_at is null then null else $2::timestamptz end
 		where key = $1
 	`, key, at); err != nil {
 		t.Fatalf("age %s: %v", key, err)

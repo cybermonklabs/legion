@@ -284,6 +284,26 @@ type Priority struct {
 	MadeBy      Actor     `json:"made_by"`
 }
 
+// PriorityAct is one act of a priority's own history, as GET /api/v1/priorities/{id}/history
+// answers it: one tuple of the log the priority is the projection of
+// (internal/dispatch/prioritystore). Field is what was stated — `title`, `description`, `owner`,
+// `rank`, `state` and `visibility` are the attributes, `advances` the one relation — and the act
+// carries Value or Issue by which of the two it is: an attribute write carries the value it
+// wrote in Value and no Issue, and an `advances` act carries the issue at the other end in Issue
+// and no Value.
+//
+// Asserted is false on an act that ended what an earlier one stated, which is how a retracted
+// `advances` reads; an attribute write asserts, because the log holds no retraction of one.
+// Actor is who stated it and At is when, so the margin names every act's writer and moment.
+type PriorityAct struct {
+	Field    string    `json:"field"`
+	Value    string    `json:"value"`
+	Issue    string    `json:"issue"`
+	Asserted bool      `json:"asserted"`
+	Actor    Actor     `json:"actor"`
+	At       time.Time `json:"at"`
+}
+
 // Priorities is the body GET /api/v1/priorities answers: every live priority, in rank order,
 // each with the work under it, and the two fault lists. It is an object rather than a bare array
 // because the counts of the work under each priority and the two fault lists — work in flight
