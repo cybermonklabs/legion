@@ -23,6 +23,8 @@
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 
+import { runBounded } from "./bounded-subprocess";
+
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 
 /** Two spawns of about a second and a half each. */
@@ -37,19 +39,15 @@ async function webServerCommand(argv: readonly string[]): Promise<string | null>
     "const server = config.webServer ?? null;" +
     "const declared = Array.isArray(server) ? (server[0] ?? null) : server;" +
     "console.log(JSON.stringify(declared === null ? null : declared.command));";
-  const child = Bun.spawn(["bun", "--eval", script, "--", ...argv], {
+  const { code, named, stderr, stdout } = await runBounded({
+    argv: ["bun", "--eval", script, "--", ...argv],
+    bound: "short",
     cwd: dispatchPackage,
     env: { HOME: process.env.HOME ?? "", PATH: process.env.PATH ?? "" },
-    stderr: "pipe",
-    stdout: "pipe",
+    from: import.meta.url,
   });
-  const [code, stderr, stdout] = await Promise.all([
-    child.exited,
-    new Response(child.stderr).text(),
-    new Response(child.stdout).text(),
-  ]);
   if (code !== 0) {
-    throw new Error(`reading the config with ${argv.join(" ")} exited ${code}:\n${stderr}`);
+    throw new Error(`reading the config ${named} exited ${code}:\n${stderr}`);
   }
   return JSON.parse(stdout) as string | null;
 }

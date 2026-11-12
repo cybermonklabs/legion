@@ -14,6 +14,7 @@ import {
   stackValue,
   withoutHarnessPort,
 } from "../harness-ports";
+import { runBounded } from "./bounded-subprocess";
 
 const psqlModule = fileURLToPath(new URL("../psql.ts", import.meta.url));
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
@@ -29,8 +30,10 @@ const manifest = JSON.stringify([
   { DATABASE_URL: "postgres://stack-1", FAKE_ENVOY_PORT: "9101", PLAIN_HTTP_PORT: "9301" },
 ]);
 
-async function run(argv: string[], env: Record<string, string>) {
-  const child = Bun.spawn(argv, {
+function run(argv: string[], env: Record<string, string>) {
+  return runBounded({
+    argv,
+    bound: "short",
     cwd: dispatchPackage,
     env: {
       PATH: process.env.PATH ?? "",
@@ -40,15 +43,8 @@ async function run(argv: string[], env: Record<string, string>) {
       TMPDIR: tmpdir(),
       ...env,
     },
-    stderr: "pipe",
-    stdout: "pipe",
+    from: import.meta.url,
   });
-  const [code, stderr, stdout] = await Promise.all([
-    child.exited,
-    new Response(child.stderr).text(),
-    new Response(child.stdout).text(),
-  ]);
-  return { code, stderr, stdout };
 }
 
 test("a worker reads the manifest record its own index selects", () => {

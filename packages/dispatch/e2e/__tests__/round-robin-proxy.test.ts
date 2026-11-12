@@ -6,6 +6,7 @@ import type { Server, Subprocess } from "bun";
 
 import type { DispatchProcess } from "../harness-processes";
 import type { ProxiedRequest, ProxiedSocket } from "../round-robin-proxy";
+import { runBounded } from "./bounded-subprocess";
 
 // The proxy runs as the harness runs it, a `bun` process of its own, and this file answers as the
 // two Dispatch processes it proxies and opens its websockets with `ws`'s client.
@@ -347,15 +348,13 @@ describe("round-robin proxy", () => {
 });
 
 describe("DISPATCH_E2E_PROCESSES", () => {
-  const run = async (argv: string[], env: Record<string, string>) => {
-    const child = Bun.spawn(argv, {
+  const run = (argv: string[], env: Record<string, string>) =>
+    runBounded({
+      argv,
+      bound: "short",
       env: { PATH: process.env.PATH ?? "", HOME: childHome, TMPDIR: tmpdir(), ...env },
-      stderr: "pipe",
-      stdout: "pipe",
+      from: import.meta.url,
     });
-    const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
-    return { code, stderr };
-  };
   // A process of its own per import: the refusal is the module's evaluation, which runs once.
   const importPorts = (env: Record<string, string>) =>
     run(["bun", "-e", `await import(${JSON.stringify(harnessPortsModule)})`], env);

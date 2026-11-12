@@ -21,6 +21,8 @@
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 
+import { runBounded } from "./bounded-subprocess";
+
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const committed = fileURLToPath(new URL("../__recordings__", import.meta.url));
 
@@ -30,17 +32,13 @@ const refusalTimeout = 60_000;
 /** What the tool did with `fresh` as its one argument, run from the package root as every
  *  command of this package is. */
 async function comparing(fresh: string): Promise<{ code: number; output: string }> {
-  const child = Bun.spawn(["bun", "e2e/tools/compare-recordings.ts", fresh], {
+  const { code, stderr, stdout } = await runBounded({
+    argv: ["bun", "e2e/tools/compare-recordings.ts", fresh],
+    bound: "short",
     cwd: dispatchPackage,
     env: { HOME: process.env.HOME ?? "", PATH: process.env.PATH ?? "" },
-    stderr: "pipe",
-    stdout: "pipe",
+    from: import.meta.url,
   });
-  const [code, stderr, stdout] = await Promise.all([
-    child.exited,
-    new Response(child.stderr).text(),
-    new Response(child.stdout).text(),
-  ]);
   return { code, output: `${stdout}${stderr}` };
 }
 

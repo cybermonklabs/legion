@@ -3,25 +3,21 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import type { HarnessListener } from "../harness-listeners";
+import { runBounded } from "./bounded-subprocess";
 
 const module = (name: string) => fileURLToPath(new URL(`../${name}`, import.meta.url));
 const runServer = module("run-server.sh");
 const runSignInIssuer = module("run-signin-issuer.sh");
 
-async function run(argv: string[], env: Record<string, string>) {
-  const child = Bun.spawn(argv, {
+function run(argv: string[], env: Record<string, string>) {
+  return runBounded({
+    argv,
+    bound: "short",
     // TMPDIR: the child writes under its temporary directory, which on a machine whose TMPDIR
     // names the only writable volume is not /tmp.
     env: { PATH: process.env.PATH ?? "", TMPDIR: tmpdir(), ...env },
-    stderr: "pipe",
-    stdout: "pipe",
+    from: import.meta.url,
   });
-  const [code, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  return { code, stderr, stdout };
 }
 
 // A process of its own per import: the refusal is the module's evaluation, which runs once.

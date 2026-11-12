@@ -8,6 +8,7 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import type { ServerWebSocket } from "bun";
 
 import { databaseUrlRefusal, Interrupted, Supervisor, shellQuote } from "../local-instance-support";
+import { runBounded } from "./bounded-subprocess";
 
 const makeDirectory = temporaryDirectories("local-instance-support");
 
@@ -179,8 +180,13 @@ describe("shellQuote", () => {
 
   test.each(quoteCases)("quotes $word as $quoted, which reads back whole in bash", async (row) => {
     expect(shellQuote(row.word)).toBe(row.quoted);
-    const echoed = await Bun.$`bash -c ${`printf %s ${shellQuote(row.word)}`}`.text();
-    expect(echoed).toBe(row.word);
+    const { code, named, stderr, stdout } = await runBounded({
+      argv: ["bash", "-c", `printf %s ${shellQuote(row.word)}`],
+      bound: "short",
+      from: import.meta.url,
+    });
+    if (code !== 0) throw new Error(`${named} exited ${code}: ${stderr}`);
+    expect(stdout).toBe(row.word);
   });
 });
 
@@ -204,18 +210,17 @@ describe("agentViewRefusal", () => {
     headers: Record<string, string>,
     sessionId: string
   ): Promise<string | null> {
-    const code =
+    const script =
       `const { agentViewRefusal } = await import(${JSON.stringify(supportModule)});\n` +
       `const answer = await agentViewRefusal(${JSON.stringify(baseUrl)}, ` +
       `${JSON.stringify(headers)}, ${JSON.stringify(sessionId)});\n` +
       "process.stdout.write(JSON.stringify(answer ?? null));\n";
-    const child = Bun.spawn([process.execPath, "-e", code], { stderr: "pipe", stdout: "pipe" });
-    const [code_, stdout, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    if (code_ !== 0) throw new Error(`the child exited ${code_}: ${stderr}`);
+    const { code, named, stderr, stdout } = await runBounded({
+      argv: [process.execPath, "-e", script],
+      bound: "short",
+      from: import.meta.url,
+    });
+    if (code !== 0) throw new Error(`the child ${named} exited ${code}: ${stderr}`);
     return JSON.parse(stdout) as string | null;
   }
 

@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { movedRowNotes, unchangedByTheMove } from "../stub/moved-row-notes";
+import { runBounded } from "./bounded-subprocess";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const mapPath = fileURLToPath(new URL("../row-map.md", import.meta.url));
@@ -26,22 +27,21 @@ const generationTimeout = 90_000;
 test(
   "the committed row map is what a fresh generation writes",
   async () => {
-    const child = Bun.spawn(["bun", "e2e/tools/row-map.ts"], {
+    const { code, named, stderr, stdout } = await runBounded({
+      argv: ["bun", "e2e/tools/row-map.ts"],
+      bound: "generation",
       cwd: dispatchPackage,
       // The generation lists the config in a subprocess of its own, and a listing runs no
       // `globalSetup`, so it starts no stack and nothing of this shell's environment reaches it.
       env: { HOME: process.env.HOME ?? "", PATH: process.env.PATH ?? "" },
-      stderr: "pipe",
-      stdout: "pipe",
+      from: import.meta.url,
+      // The two listings are bounded children of the generation, so their cost lines are in its
+      // stderr. This brings them up to the reader rather than losing them with the rest of it.
+      relaysLines: true,
     });
-    const [code, stderr, fresh] = await Promise.all([
-      child.exited,
-      new Response(child.stderr).text(),
-      new Response(child.stdout).text(),
-    ]);
-    expect(code, `generating the row map exited ${code}:\n${stderr}`).toBe(0);
+    expect(code, `the generation ${named} exited ${code}:\n${stderr}`).toBe(0);
     expect(
-      fresh,
+      stdout,
       "e2e/row-map.md is not what the suite says any more. Run `bun e2e/tools/row-map.ts --write` " +
         "in packages/dispatch and commit what it writes."
     ).toBe(readFileSync(mapPath, "utf8"));

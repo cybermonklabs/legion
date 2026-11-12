@@ -22,6 +22,7 @@
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { optionValueClasses, valuesTakenAt } from "../playwright-argv";
+import { runBounded } from "./bounded-subprocess";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -43,17 +44,13 @@ interface HelpOption {
  *  continuation line starts with a dash in column 3, so the signature of each line is all this
  *  reads. */
 async function helpOptions(): Promise<readonly HelpOption[]> {
-  const child = Bun.spawn(["bunx", "playwright", "test", "--help"], {
+  const { code, named, stderr, stdout } = await runBounded({
+    argv: ["bunx", "playwright", "test", "--help"],
+    bound: "short",
     cwd: dispatchPackage,
-    stderr: "pipe",
-    stdout: "pipe",
+    from: import.meta.url,
   });
-  const [code, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  expect(code, stderr).toBe(0);
+  expect(code, `${named} exited ${code}:\n${stderr}`).toBe(0);
   const options: HelpOption[] = [];
   for (const line of stdout.split("\n")) {
     const signature = /^ {2}(-\S.*?)(?: {2,}|\s*$)/.exec(line)?.[1];
