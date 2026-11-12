@@ -4678,6 +4678,8 @@ The 5 minutes run from the end of the copy before it and not from its start, and
 Neither trigger copies an issue between turns:
 the turn that ended took the copy that holds that work, and a workspace nobody writes would store the same bundle every period for as long as the pod stands.
 One copy of an issue is in flight at a time, since the six roles of an issue share one workspace and two bundlers in one workspace would collide.
+A turn that ends while a copy of its issue is in flight is owed one, and that copy is taken as soon as the one in flight ends:
+the copy in flight read the workspace before the turn's last work was written, and no trigger copies an issue between turns, so dropping it would leave the idle pod's newest copy short of the work its last turn ended with.
 No turn waits for a copy:
 the daemon hands each copy to a goroutine of its own, and the turn's end, the next task and the claim's own state write all go on while the copy is built.
 
@@ -4689,6 +4691,13 @@ A copy that is not taken or not stored holds nothing back:
 the daemon logs `running copy: no copy of the issue workspace was stored` with the reason by name
 — `claims_unread`, `no_live_role`, `bundler_failed`, `budget_spent`, `bundle_too_large`, `save_failed` or `drop_failed` —
 the issue keeps the copy it had, and the next period tries again.
+
+A copy runs the shim's own `jj` in the workspace a role is working in, and two `jj` commands at once in one workspace can leave a divergent change there, which a role then has to clean up in its own turn.
+That race is not new — another role's `jj` makes it today — and the copy raises how often the workspace is inside a `jj` command of somebody else's.
+Measured in an issue pod on 2026-11-12: the shim's one snapshotting command takes about 1.36 s in this repository's workspace (five runs, 1.318 s to 1.416 s), so at 12 copies an hour a workspace is inside a copy for about 16 s of each hour, which is 0.45% of it.
+At that count, with every one of the 12 copies of a simulated hour forced to run concurrently with a role's own `jj describe`, 600 forced overlaps over 50 such hours left no divergent change.
+A stress rig of 400 snapshots against 150 `jj describe` commands left one divergent change in one of four runs, which is the rate under continuous contention and not the fleet's.
+So the daemon logs nothing for it: there was nothing at that count to log.
 
 An issue therefore holds up to two kinds of copy, and the two are rows in two tables.
 The release bundle is what an idle release saves, in `workspace_bundles` ([Idle release](#idle-release)).

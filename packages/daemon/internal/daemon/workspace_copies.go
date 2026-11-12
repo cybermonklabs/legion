@@ -104,12 +104,30 @@ type runningCopies struct {
 type runningCopy struct {
 	// running is whether a copy of the issue is in flight now.
 	running bool
+	// owed is whether a copy of the issue was asked for while the one in flight was being built
+	// and so is still to be taken: that copy read the workspace before the work which asked for
+	// this one was written, so it holds none of that work.
+	//
+	// It is one flag and not a queue on purpose. Six roles ending their turns while one copy is
+	// being built owe one copy between them and not six, because the copy taken after the one in
+	// flight reads the workspace as it stands then and so holds the work of all six turns; a
+	// queue would buy nothing but one `git bundle create` per turn end in a workspace a role is
+	// working in.
+	owed bool
 	// ended is when the last copy of the issue finished, whatever it stored; zero for an issue
 	// this daemon has copied none of. The period is measured from it.
 	ended time.Time
 }
 
-// begin takes the issue's one place in flight, answering false when a copy of it already runs.
+// begin takes the issue's one place in flight, answering false when a copy of it already runs,
+// and marking that refused copy owed so that the copy in flight takes it when it ends (done).
+//
+// A refused copy is owed and not dropped because the copy in flight read the workspace before
+// the work that asked for this one was written. The copy which closes a turn is the case that
+// decides it: the cadence copies no issue between turns, so a turn's end that was dropped would
+// leave the newest copy of a pod whose roles have all gone idle short of the work its last turn
+// ended with, and an eviction of that idle pod would then lose the end of the turn — which is
+// exactly what the daemon holds itself to (R1).
 func (c *runningCopies) begin(issue string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -118,6 +136,8 @@ func (c *runningCopies) begin(issue string) bool {
 	}
 	held := c.issues[issue]
 	if held.running {
+		held.owed = true
+		c.issues[issue] = held
 		return false
 	}
 	held.running = true
@@ -125,22 +145,29 @@ func (c *runningCopies) begin(issue string) bool {
 	return true
 }
 
-// done gives the issue's place back and starts its next period at at, and drops the entry of
-// every issue whose copy is not in flight and whose period has passed by at. Only the caller
-// whose begin answered true calls it.
+// done gives the issue's place back and starts its next period at at, and answers whether a copy
+// of the issue is owed: one was asked for while this one was in flight, and the caller takes it
+// now. It drops the entry of every issue whose copy is not in flight and whose period has passed
+// by at. Only the caller whose begin answered true calls it.
 //
 // Such an entry answers due exactly as a missing one does, so keeping it says nothing the map
 // would not say without it, and a daemon that runs for weeks would hold one word per issue it
 // has ever copied for ever. It is pruned where the map is written, as the runtime's two records
 // of a pod's end are (sandbox's prunePodEnds), so nothing has to sweep it. The entry this call
 // writes ends at at, so no period of its own has passed and it stays.
-func (c *runningCopies) done(issue string, at time.Time, period time.Duration) {
+//
+// The owed copy it reports is cleared by the reading: the copy the caller then starts takes the
+// issue's place in flight again and is owed another only if a third is asked for while it runs,
+// so a storm of turn ends is one copy after the one in flight rather than one copy per end.
+func (c *runningCopies) done(issue string, at time.Time, period time.Duration) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	owed := c.issues[issue].owed
 	c.issues[issue] = runningCopy{ended: at}
 	maps.DeleteFunc(c.issues, func(_ string, held runningCopy) bool {
 		return !held.running && at.Sub(held.ended) >= period
 	})
+	return owed
 }
 
 // due is whether the cadence takes a copy of issue now: none of it is in flight, and the period
@@ -243,7 +270,9 @@ func (w *workflowRuntime) copyWorkspaceAtTurnEnd(c supervise.Claim, state superv
 // startRunningCopy hands one copy of issue's workspace to a goroutine of its own, under the
 // budget one copy is given. Nothing waits on it: a copy is a saving against an eviction, never a
 // step of the turn or of the tick that asked for it. claims is the caller's own read of the
-// project's claims where it has one, and nil where it has not.
+// project's claims where it has one, and nil where it has not. It is how the owed copy is taken
+// too (takeRunningCopy), so a copy owed to a turn's end holds up neither the copy that owed it
+// nor anything else.
 func (w *workflowRuntime) startRunningCopy(parent context.Context, issue string, claims []supervise.Claim) {
 	go func() {
 		ctx, cancel := context.WithTimeout(parent, w.runningCopyBudget())
@@ -265,16 +294,31 @@ func (w *workflowRuntime) startRunningCopy(parent context.Context, issue string,
 // It takes the issue's one place in flight first and holds it until the call has answered, so no
 // second copy of the issue is ever being built: a copy abandoned at its budget while the shim went
 // on building would leave exactly the two runs in one workspace that the ref prefix cannot carry.
+// A copy refused by that mark is owed rather than dropped, and this call takes it as it returns:
+// the copy in flight read the workspace before the work that asked for the refused one was
+// written, and the cadence copies no issue between turns, so a turn's end that was dropped would
+// leave the newest copy of a pod whose roles have all gone idle short of the work its last turn
+// ended with, and an eviction of that idle pod would lose the end of the turn (R1).
 // The next period runs from the moment this returns.
 //
 // Every way it can come to nothing is logged under its own reason and holds nothing: the issue
 // keeps the copy it had, and the next period tries again.
 func (w *workflowRuntime) takeRunningCopy(ctx context.Context, issue string, claims []supervise.Claim) {
 	if !w.copies.begin(issue) {
-		w.log.Debug("running copy: a copy of this issue's workspace is already being taken", "issue", issue)
+		w.log.Debug("running copy: a copy of this issue's workspace is already being taken, so this one is owed and will be taken when that one ends", "issue", issue)
 		return
 	}
-	defer func() { w.copies.done(issue, time.Now(), w.runningCopyPeriod()) }()
+	defer func() {
+		if !w.copies.done(issue, time.Now(), w.runningCopyPeriod()) {
+			return
+		}
+		// The owed copy is a copy like every other: a goroutine of its own and a budget of its
+		// own, because nothing of a turn waits for a copy. The context it runs under is not this
+		// one's, which is cancelled the moment this call returns, and it is handed no claims —
+		// the claims this copy was given were read before the work that owed the copy was
+		// written, and the role it asks is read as the turn's end reads it.
+		w.startRunningCopy(context.Background(), issue, nil)
+	}()
 
 	if claims == nil {
 		read, err := w.idleStore.Claims(ctx)

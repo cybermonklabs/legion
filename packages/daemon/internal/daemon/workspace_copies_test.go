@@ -320,17 +320,41 @@ func TestNoWorkspaceCopyIsBundledBetweenTurnsOfAnIdleIssuesPod(t *testing.T) {
 	rig.awaitCopy(t, len(copyRigBundle.Bundle))
 }
 
-// A copy still running when the next period falls due starts no second. One workspace belongs to
-// one issue and its six roles share it, so the daemon holds one copy in flight per issue: two
-// runs of the shim's bundler in one workspace share the ref prefix `refs/legion-bundle/`, and one
-// run's delete would land inside the other's `git bundle create`.
-func TestACopyStillRunningStartsNoSecondWorkspaceBundle(t *testing.T) {
+// A copy still running when another falls due starts no second bundle of the same workspace.
+// One workspace belongs to one issue and its six roles share it, so the daemon holds one copy
+// in flight per issue: two runs of the shim's bundler in one workspace share the ref prefix
+// `refs/legion-bundle/`, and one run's delete would land inside the other's `git bundle
+// create`.
+//
+// What moved: the copy that mark refuses used to be dropped, and this test pinned the one
+// bundle as the whole of what the daemon took. It is owed now and taken when the copy in flight
+// ends, so what is pinned here is the invariant itself — the bundler is never in two runs of
+// one workspace at once — and that the refusals owe one copy between them rather than one copy
+// each. That the owed copy is what holds the work a turn ended with is the next test's
+// (TestATurnThatEndsWhileACopyIsInFlightIsCopiedAgainOnceThatCopyEnds).
+func TestACopyStillRunningStartsNoSecondWorkspaceBundleAndOwesTheRefusedOne(t *testing.T) {
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	release := make(chan struct{})
 	taken := copyRigBundle
 	taken.At = time.Now().UTC()
+	// live is how many bundlers of this workspace are running now, and overlapped counts every
+	// time a second one started while one was still building, which is the thing the ref prefix
+	// cannot carry and so the thing no owed copy may buy.
+	var mu sync.Mutex
+	var live, overlapped int
 	rig.bundler.holds(func(ctx context.Context) (runtime.WorkspaceBundle, error) {
+		mu.Lock()
+		live++
+		if live > 1 {
+			overlapped++
+		}
+		mu.Unlock()
+		defer func() {
+			mu.Lock()
+			live--
+			mu.Unlock()
+		}()
 		select {
 		case <-release:
 			return taken, nil
@@ -344,10 +368,12 @@ func TestACopyStillRunningStartsNoSecondWorkspaceBundle(t *testing.T) {
 	rig.awaitAsks(t, 1)
 
 	// Two more passes while the first copy is still being built, and the issue's turn is still
-	// in flight for each of them.
+	// in flight for each of them. A pass finds the issue not due while a copy of it runs, so
+	// neither reaches the mark and neither owes anything: a copy the period skipped is taken by
+	// the period that follows it.
 	rig.w.copyWorkingWorkspaces(ctx)
 	rig.w.copyWorkingWorkspaces(ctx)
-	// The turn's end asks for one too, and is refused by the same mark.
+	// The turn's end asks for one, which the mark refuses and the issue owes.
 	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
 	if asked := rig.bundler.reads(); len(asked) != 1 {
 		t.Fatalf("the bundler was asked %v while one copy was still running, want the one in flight", asked)
@@ -355,8 +381,16 @@ func TestACopyStillRunningStartsNoSecondWorkspaceBundle(t *testing.T) {
 
 	close(release)
 	rig.awaitCopy(t, len(taken.Bundle))
-	if asked := rig.bundler.reads(); len(asked) != 1 {
-		t.Fatalf("the bundler was asked %v in all, want the one copy", asked)
+	// The copy in flight ends and the owed one follows it, one and not one per refusal.
+	rig.awaitAsks(t, 2)
+	rig.awaitQuiet(t)
+	if asked := rig.bundler.reads(); len(asked) != 2 {
+		t.Fatalf("the bundler was asked %v in all, want the copy in flight and the one it owed after it", asked)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if overlapped != 0 {
+		t.Fatalf("a second bundler of the workspace started %d times while one was still building, want none", overlapped)
 	}
 }
 
