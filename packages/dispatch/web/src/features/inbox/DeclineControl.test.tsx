@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: one row needs a write that passes maxLength.
+import { fireEvent, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -282,6 +283,51 @@ test("the decline dialog counts what is left to write, and sends no note when em
     expect(record.textContent).toContain("alice declined to answer");
     // A decline with no note holds no reason, so the line ends with the act itself.
     expect(record.textContent).not.toContain("declined to answer -");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A pick writes into the box without typing, so a note can pass the bound the field's own
+// `maxLength` holds typing to. Both ways out of the box answer to one test of that: the button
+// and Ctrl+Enter, which has no form to submit and so reaches `onFormlessSubmit`.
+test("a note past the bound sends by neither the button nor Ctrl+Enter", async () => {
+  const user = userEvent.setup();
+  const open = openAsk();
+  const sent: DeclineAskInput[] = [];
+  const { view } = renderCard(
+    <AskCard
+      ask={open}
+      declineAsk={async (_id, input) => {
+        sent.push(input);
+        return declinedAsk("");
+      }}
+      getAskThread={async () => thread(declinedAsk(""))}
+      initialThread={thread(open)}
+    />
+  );
+  const card = within(view.container);
+  try {
+    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
+    const dialog = card.getByRole("dialog", { name: "Decline to answer" });
+    const field = within(dialog).getByLabelText("Note (optional)") as HTMLTextAreaElement;
+    // What a pick does and typing cannot: a write that passes the box's own `maxLength`, which
+    // user-event honours as a browser does, so there is no user-event form for this one.
+    fireEvent.change(field, { target: { value: "x".repeat(DISPATCH_EVENT_BODY_MAX + 5) } });
+    expect(within(dialog).getByText("-5 characters left")).toBeTruthy();
+
+    const decline = within(dialog).getByRole("button", { name: "Decline to answer" });
+    expect(decline).toBeDisabled();
+    await user.click(decline);
+    await user.click(field);
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+    // A send this box let through would reach `declineAsk` through the write's own queue, which
+    // is a tick away, so the row waits before it reads that nothing was sent.
+    await new Promise((settled) => setTimeout(settled, 100));
+    expect(sent).toEqual([]);
+    expect(within(dialog).getByText("-5 characters left")).toBeTruthy();
   } finally {
     view.unmount();
   }

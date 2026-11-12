@@ -74,6 +74,9 @@ function DeclineDialog({
     open: true,
   });
   const left = DISPATCH_EVENT_BODY_MAX - note.length;
+  // One answer for both ways out of this box, the button and Ctrl/Cmd+Enter: a decline is sent
+  // while none is out and the note is within the bound a pick may have carried it past.
+  const canSend = !saving && left >= 0;
 
   return (
     <>
@@ -106,7 +109,7 @@ function DeclineDialog({
             onKeyDown={(event) =>
               submitOnModifiedEnter(event, {
                 onFormlessSubmit: () => {
-                  if (!saving) onSubmit(note.trim());
+                  if (canSend) onSubmit(note.trim());
                 },
               })
             }
@@ -134,7 +137,7 @@ function DeclineDialog({
             </button>
             <button
               className={`rounded-lg px-3 py-1.5 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={saving || left < 0}
+              disabled={!canSend}
               onClick={() => onSubmit(note.trim())}
               type="button"
             >

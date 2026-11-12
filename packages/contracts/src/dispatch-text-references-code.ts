@@ -236,9 +236,10 @@ export const CODE_CONTEXT: readonly DispatchTextReferenceRow[] = [
   },
   // A paragraph ends where CommonMark ends one without a blank line too, and the rows under
   // this comment are one body per ender: the next list item's marker, a line blank past the
-  // containers it carries (a bare `>` inside a quote), an ATX heading, a thematic break, and a
-  // setext heading's underline. The span search ends at each of them as well, so one backtick
-  // nothing closes in an item, in a quote or above a heading mutes no party written under it
+  // containers it carries (a bare `>` inside a quote), a blank line, an ATX heading, a
+  // thematic break, and a setext heading's underline, written as `--` and as `===`. The span
+  // search ends at each of them as well, so one backtick nothing closes in an item, in a
+  // quote, above a heading or above an underline mutes no party written under it
   // (INFRA-1702 R2).
   {
     body: "- Rename `foo field\n- ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
@@ -258,6 +259,14 @@ export const CODE_CONTEXT: readonly DispatchTextReferenceRow[] = [
   },
   {
     body: "Rename `foo field\n***\nask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
+  },
+  {
+    body: "Rename `foo field\n--\nask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
+  },
+  {
+    body: "Rename `foo field\n===\nask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
     refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
   },
   // An ATX heading is no paragraph's line and opens none, so the indented line under it opens a
@@ -286,6 +295,14 @@ export const CODE_CONTEXT: readonly DispatchTextReferenceRow[] = [
     body: "[^who]: who to ask\n\n    dispatch://role/reviewer\n",
     refs: ["dispatch://role/reviewer"],
   },
+  // Those four columns are counted from where the definition's own container's content begins,
+  // not from its marker, so a definition the writer indented one to three spaces holds its
+  // note's lines as text too. goldmark with its footnote extension and remark with
+  // gfm-footnote both read it that way (measured 2026-11-12, INFRA-1702 round 5).
+  {
+    body: "  [^who]: who to ask\n\n      dispatch://role/reviewer\n",
+    refs: ["dispatch://role/reviewer"],
+  },
   // Item 2 of a numbered list ends item 1's paragraph, as a bullet does, so one backtick
   // nothing closes in item 1 mutes no party written in item 2. CommonMark holds an ordered
   // marker that does not count from 1 back only where the paragraph is the open tip, which
@@ -298,9 +315,12 @@ export const CODE_CONTEXT: readonly DispatchTextReferenceRow[] = [
     body: "1) Rename `foo field\n2) ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
     refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
   },
-  // An empty item's marker is the same rule: it ends the paragraph of the item above it.
+  // An empty item's marker is the same rule: it ends the paragraph of the item above it. The
+  // party stands on a line of that empty item's own, indented to its content column, so the
+  // marker is the only thing that can end the paragraph above it: a third line opening a
+  // bullet of its own would end that paragraph whatever this rule said.
   {
-    body: "- Rename `foo\n-\n- ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    body: "- Rename `foo\n-\n  ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
     refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
   },
   // A `-` run is an underline as much as an `=` run, whatever its length, so the indented line

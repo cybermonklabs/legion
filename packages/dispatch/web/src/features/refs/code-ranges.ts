@@ -8,9 +8,11 @@
  * it does on every row of `DISPATCH_TEXT_REFERENCES`.
  *
  * Every line is read through the containers open at it - a block quote's `>` with the one space
- * after it, a list item's own content indentation - so a block begins and ends where CommonMark
- * begins and ends it inside the container holding it: a fence written inside a quote or an item
- * is code, and the four spaces an ordinary nested bullet carries are the item's own text.
+ * after it, a list item's own content indentation, a footnote definition's four columns - so a
+ * block begins and ends where CommonMark begins and ends it inside the container holding it: a
+ * fence written inside a quote or an item is code, and the four spaces an ordinary nested bullet
+ * carries, like the four a footnote definition's content stands in, are that container's own
+ * text.
  *
  * The three contexts, and nothing else:
  *
@@ -64,8 +66,13 @@
  *     code.
  *   - A block of HTML or a link reference definition, with an indented line under it: this
  *     reader, goldmark and the editor all read that line as prose, and pmdoc refuses the body.
- *     Nothing is measurably wrong here today; it stays unread because the construct above it
- *     is.
+ *     Nothing is measurably wrong there today; it stays unread because the construct above it
+ *     is. A link reference definition with an underline under it is the one shape of this class
+ *     this reader reads differently: a paragraph holding only definitions takes no setext
+ *     underline in goldmark or in remark, while this reader has no paragraph-level state to see
+ *     that, so it reads the underline and the indented line under it as code, muting a party
+ *     both parsers draw as a link. Closing it needs that state rather than a condition, and the
+ *     shape is exotic, so it is recorded here rather than fixed (INFRA-1702 round 5).
  *   - Tab stops a container's marker splits. A tab is measured to the next four-column stop, but
  *     one straddling a container's own content column is taken whole by that container, so a tab
  *     after a list marker is the item's indentation rather than indented code inside it. All
@@ -588,12 +595,14 @@ function codeBlocks(text: string): Blocks {
       }
       const note = footnoteDefinition(text, indent, end);
       if (note !== undefined) {
-        // A footnote definition is a container whose content stands four columns in, so the
-        // indented lines under it are the note's own text rather than an indented code block:
-        // a party written there is named to every reader of the record, and every parser
-        // measured for INFRA-1702 reads those lines as prose.
+        // A footnote definition is a container whose content stands four columns past where
+        // its own container's content begins - not four past the marker, which a definition
+        // indented one to three spaces would put too far right, reading its note's lines as an
+        // indented code block. So the indented lines under it are the note's own text: a party
+        // written there is named to every reader of the record, and every parser measured for
+        // INFRA-1702 reads those lines as prose.
         stack.length = depth;
-        stack.push({ content: reached + 4, quote: false });
+        stack.push({ content: column + 4, quote: false });
         depth += 1;
         content = note;
         column = reached + (note - indent);

@@ -11,10 +11,10 @@ type codeRange struct {
 	end   int
 }
 
-// container is one block quote or list item open at the line being read: what the line carries
-// before its own content. A block quote is held by its `>` marker; a list item by the column its
-// own content starts at, which the lines under it carry as indentation and which is where code
-// inside that item opens from.
+// container is one container open at the line being read - a block quote, a list item or a
+// footnote definition - which is what the line carries before its own content. A block quote is
+// held by its `>` marker; the other two by the column their own content starts at, which the
+// lines under them carry as indentation and which is where code inside them opens from.
 type container struct {
 	quote   bool
 	content int
@@ -38,9 +38,11 @@ const (
 // extraction goes through (extractSpans), and read with inCode.
 //
 // Every line is read through the containers open at it - a block quote's `>` with the one space
-// after it, a list item's own content indentation - so a block begins and ends where CommonMark
-// begins and ends it inside the container holding it: a fence written inside a quote or an item
-// is code, and the four spaces an ordinary nested bullet carries are the item's own text.
+// after it, a list item's own content indentation, a footnote definition's four columns - so a
+// block begins and ends where CommonMark begins and ends it inside the container holding it: a
+// fence written inside a quote or an item is code, and the four spaces an ordinary nested bullet
+// carries, like the four a footnote definition's content stands in, are that container's own
+// text.
 //
 // The three contexts, and nothing else:
 //
@@ -95,7 +97,13 @@ const (
 //   - A block of HTML or a link reference definition, with an indented line under it: this
 //     reader, goldmark and the editor all read that line as prose, and pmdoc refuses the body
 //     (block HTML and a link reference definition are outside Proof's schema). Nothing is
-//     measurably wrong here today; it stays unread because the construct above it is.
+//     measurably wrong there today; it stays unread because the construct above it is.
+//     A link reference definition with an underline under it is the one shape of this class
+//     this reader reads differently: a paragraph holding only definitions takes no setext
+//     underline in goldmark or in remark, while this reader has no paragraph-level state to
+//     see that, so it reads the underline and the indented line under it as code, muting a
+//     party both parsers draw as a link. Closing it needs that state rather than a condition,
+//     and the shape is exotic, so it is recorded here rather than fixed (INFRA-1702 round 5).
 //   - Tab stops a container's marker splits. A tab is measured to the next four-column stop, but
 //     one straddling a container's own content column is taken whole by that container, so a tab
 //     after a list marker is the item's indentation rather than indented code inside it. All
@@ -215,11 +223,13 @@ func codeBlocks(body string) (blocks []codeRange, breaks []int) {
 				break
 			}
 			if past, ok := footnoteDefinition(body, indent, end); ok {
-				// A footnote definition is a container whose content stands four columns in, so
-				// the indented lines under it are the note's own text rather than an indented
-				// code block: a party written there is named to every reader of the record, and
-				// every parser measured for INFRA-1702 reads those lines as prose.
-				stack = append(stack[:depth], container{content: column + 4})
+				// A footnote definition is a container whose content stands four columns past
+				// where its own container's content begins - not four past the marker, which a
+				// definition indented one to three spaces would put too far right, reading its
+				// note's lines as an indented code block. So the indented lines under it are
+				// the note's own text: a party written there is named to every reader of the
+				// record, and every parser measured for INFRA-1702 reads those lines as prose.
+				stack = append(stack[:depth], container{content: col + 4})
 				depth++
 				content, col = past, column+(past-indent)
 				paragraph = false
@@ -514,10 +524,9 @@ func indentTo(body string, at, end, col, want int) (int, int) {
 
 // appendCodeSpans appends the code spans of body[from:to] to spans, in order, each read inside
 // the paragraph that holds it: the search for a span's closing run ends where that paragraph
-// ends, at the first of breaks past where the search began, so an unmatched backtick mutes
-// nothing written past its own paragraph. The breaks are the ones codeBlocks read, in order
-// (a blank line, a line blank past its containers, a list item's marker, an ATX heading, a
-// thematic break), and the dashboard's codeSpans reads the same rule
+// ends, at the first of breaks past where the search began, which codeBlocks writes one of for
+// every line that ends a paragraph, so an unmatched backtick mutes nothing written past its own
+// paragraph. The dashboard's codeSpans reads the same rule
 // (`packages/dispatch/web/src/features/refs/code-ranges.ts`).
 func appendCodeSpans(spans []codeRange, body string, from, to int, breaks []int) []codeRange {
 	// A break on from itself cuts nothing, the paragraph starting there.
