@@ -66,12 +66,11 @@ const Freshness = time.Minute
 // issues one event of a worker session states 2.8 keys on average and 6 at most, against 1.8
 // and 2 before the pass descended. A sweep pass that finds nothing new states the same keys as
 // before the descent: 84 over those 252 issues and 336 over the 1,008 of the larger population,
-// because an open issue of the rig holds no issue below it. A pass over the same keys measures
-// nothing of the descent, so the two times below say only that the sweep did not become slower.
-// Such a pass takes 69 ms against the 78 ms it took before the descent over the 252 issues, and
-// 188 ms against 197 ms over the 1,008, best of three runs before and of seven after against
-// the pod's test Postgres. The 9 ms of each pair is run-to-run spread, and no saving the
-// descent made.
+// because an open issue of the rig holds no issue below it. The descent costs no read a pass did
+// not make before it. metrics.ReadIssues reads the whole tree of every key it is given
+// (treeScopeKeys), so an issue below a key is read whether or not the set names it. upsert writes
+// a row only where a value of that row moved. A row the descent added and the computation left
+// where it stood is therefore written by nothing.
 const SweepEvery = 30 * time.Second
 
 // feedPage is the most rows one transaction reads of each feed. A pass whose page was full reads
@@ -101,6 +100,14 @@ type Deps struct {
 	// Horizon is the process's one events.Horizon, the Horizon the live event feed reads
 	// through: the events feed is paged by a global id, so it must stop at a safe horizon.
 	Horizon *events.Horizon
+	// Build names the build this process is, which the loop records against each project it
+	// reads whole and compares on every pass after that (legionProjects). The server gives it
+	// the commit the image build stamped into the binary, and every other build gives it the
+	// string internal/buildversion answers (cmd/dispatch's processBuild). A Deps that leaves
+	// it empty names no build at all, as a test rig does: the loop then reads each project
+	// whole once and sweeps it from then on, because one empty string compares equal to the
+	// next.
+	Build string
 	// Leases is the pool a pass takes its lease connection from (duty.Exclusive).
 	Leases duty.Leases
 	// Events is signalled when an event commits, whichever process wrote it: in the server the
@@ -287,7 +294,7 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 	if err != nil {
 		return nil, false, err
 	}
-	projects, err := legionProjects(ctx, deps.Pool, read.lost)
+	projects, err := legionProjects(ctx, deps.Pool, deps.Build, read.lost)
 	if err != nil {
 		return nil, false, err
 	}
@@ -358,7 +365,7 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		observationsCursor: read.observations.position,
 		changesCursor:      read.changes.position,
 	}
-	changed, err := writePass(ctx, deps.Pool, computed, positions, now)
+	changed, err := writePass(ctx, deps.Pool, computed, positions, now, deps.Build)
 	if err != nil {
 		return changed, false, err
 	}
@@ -409,7 +416,7 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 // because a row that went is a change of the stored facts as much as a row that moved. A
 // failure leaves the cursors and the marks where they were, so the next pass reads the same
 // rows again.
-func writePass(ctx context.Context, pool *store.Pool, computed []ProjectWrite, positions map[string]int64, now time.Time) ([]string, error) {
+func writePass(ctx context.Context, pool *store.Pool, computed []ProjectWrite, positions map[string]int64, now time.Time, build string) ([]string, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open the Legion facts' write: %w", err)
@@ -423,7 +430,7 @@ func writePass(ctx context.Context, pool *store.Pool, computed []ProjectWrite, p
 		}
 		changed = append(changed, written...)
 	}
-	if err := markComputedWhole(ctx, tx, computed, now); err != nil {
+	if err := markComputedWhole(ctx, tx, computed, now, build); err != nil {
 		return nil, err
 	}
 	if err := advanceCursors(ctx, tx, positions, now); err != nil {
@@ -435,17 +442,22 @@ func writePass(ctx context.Context, pool *store.Pool, computed []ProjectWrite, p
 	return changed, nil
 }
 
-// markComputedWhole records that each project this write read whole was computed whole as of now
-// and how many rows that computation answered, which is what legionProjects reads a project's
-// backfill from. It runs in the transaction that wrote those rows (writePass), so a pass that
-// failed leaves no mark and the next pass reads the project whole again.
+// markComputedWhole records that each project this write read whole was computed whole as of now,
+// how many rows that computation answered and which build made it, which is what legionProjects
+// reads a project's backfill from. It runs in the transaction that wrote those rows (writePass),
+// so a pass that failed leaves no mark and the next pass reads the project whole again.
 //
 // The mark is a record rather than the absence of a stored row, because a project whose issues
 // carry no Legion phase work is computed whole and answers no row at all: read from an absence,
 // such a project would be computed whole again every SweepEvery for ever. The count is what
 // still answers for the rows of a project going missing under the consumer, which is the other
 // thing an absence used to say (migration 20261111153000).
-func markComputedWhole(ctx context.Context, tx pgx.Tx, computed []ProjectWrite, now time.Time) error {
+//
+// The build is the one the pass ran under (Deps.Build), the same string the read that sent
+// this project to a whole read compared against (legionProjects). The pass carries that one
+// value through both steps rather than reading it a second time, so a project read whole is
+// marked as read whole by the build that read it and the next pass of that build sweeps it.
+func markComputedWhole(ctx context.Context, tx pgx.Tx, computed []ProjectWrite, now time.Time, build string) error {
 	projects := []string{}
 	answered := []int32{}
 	for _, write := range computed {
@@ -459,11 +471,13 @@ func markComputedWhole(ctx context.Context, tx pgx.Tx, computed []ProjectWrite, 
 		return nil
 	}
 	_, err := tx.Exec(ctx, `
-		insert into issue_facts_computed (project_key, computed_at, computed_rows)
-		select project, $3, rows from unnest($1::text[], $2::integer[]) as given(project, rows)
+		insert into issue_facts_computed (project_key, computed_at, computed_rows, computed_build)
+		select project, $3, rows, $4 from unnest($1::text[], $2::integer[]) as given(project, rows)
 		on conflict (project_key) do update
-		set computed_at = excluded.computed_at, computed_rows = excluded.computed_rows
-	`, projects, answered, now)
+		set computed_at = excluded.computed_at,
+		    computed_rows = excluded.computed_rows,
+		    computed_build = excluded.computed_build
+	`, projects, answered, now, build)
 	if err != nil {
 		return fmt.Errorf("record the %d projects computed whole: %w", len(projects), err)
 	}

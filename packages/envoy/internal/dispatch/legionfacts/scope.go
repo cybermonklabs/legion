@@ -26,10 +26,10 @@ import (
 // backfill then computes it.
 //
 // A project is a backfill - a pass of this same loop that runs ComputeProject over the project
-// rather than Compute over a key set - where its mark says it was never computed whole, where
-// the rows that mark counted have gone, or where lost says the change cursor fell below the
-// log, which loses the changes of every project at once. The first run on an empty table is
-// the first of those cases and needs no second code path.
+// rather than Compute over a key set - where this build has not read it whole, where the rows
+// that mark counted have gone, or where lost says the change cursor fell below the log, which
+// loses the changes of every project at once. The first run on an empty table is the first of
+// those cases and needs no second code path.
 //
 // The mark is a row of issue_facts_computed, which the pass that read the project whole writes
 // (markComputedWhole). "Never computed" is read from that record and not from "this project
@@ -38,23 +38,61 @@ import (
 // whole on every pass for as long as it held no worked issue, which is the whole-project read
 // this loop exists to make rare.
 //
+// The mark names the build that made that whole read, and a pass under another build reads the
+// project whole again. A left join gives a project with no mark a null build, which is distinct
+// from the build of any pass, so one comparison answers both the project this build has not
+// read whole and the project no build has. The rule that decides which issues carry Legion
+// phase work lives in the build: the six role names and the title shape of
+// legion/session_title.go, which legion.ParseSessionTitle reads, and legion.PhaseWorkKeys's
+// reading of handoffs. A release that takes an issue's phase work away is caught by the mirror
+// read of the stored rows (staleStoredRows), because the issue that lost the work still holds
+// its row. A release that gives an issue phase work is caught by nothing else: that issue holds
+// no row for the mirror read to find, writes no event of its own, and is named by no feed, so
+// the whole-project read is the one pass that reaches it. The daemon's own copy of the title
+// shape (packages/pi-legion/src/session-title.ts) is no such release: a plugin that writes
+// another title writes a session and its events, which the feeds carry as they carry every
+// other write.
+//
+// The build the pass compares is the one the process runs under. The server gives it to the
+// loop (Deps.Build), and the pass carries it both to this read and to the record it writes
+// (markComputedWhole). In the image it is the commit the image build stamped into the binary:
+// 40 hex characters, which packages/envoy/docker/Dockerfile refuses to leave short. Two releases
+// are two commits, so a release compares different from the record the release before it left,
+// and reads each project whole once under its own commit.
+//
+// A build no release stamped answers one string of its own, which cmd/dispatch reads from
+// internal/buildversion (processBuild). A developer's `go run`, a `go build` with no ldflags
+// and a test binary therefore all answer something, and that answer holds for as long as the
+// process runs. Two such builds may answer the same string. That costs them one whole read of
+// each project and nothing after it, because a developer's database is not the deployment this
+// rule protects.
+//
+// A settled deployment pays one whole project read per build per project: the build that read a
+// project whole sweeps that project on every pass after it. Over the pod's test Postgres a
+// whole read takes 286 ms over 252 issues, 554 ms over 1,008, 844 ms over 2,016, 1.17 s over
+// 4,032 and 2.59 s over 13,104 issues and 10,920 rows, which is 1.72 s to compute and 868 ms to
+// write, against the 30 s a pass has (SweepEvery). While a release rolls, the old build and the
+// new one take the lease in turn and this one record holds one build, so each pass reads the
+// projects whole again under its own build. The roll costs one whole read a pass until the
+// older process stops, and the deployment settles on one whole read per project once it has.
+//
 // The count the mark carries is what still answers for a project whose stored rows went
 // missing under the consumer, an emptied table among them: a project whose last whole read
 // answered rows and which now holds none has lost them to something this loop did not do, and
 // no narrow pass can name rows that are not there. It costs one whole read, because that read
 // writes the count it answered: a project that truly holds no row any more is marked with none
 // and is left alone from then on.
-func legionProjects(ctx context.Context, q Querier, lost bool) (map[string]bool, error) {
+func legionProjects(ctx context.Context, q Querier, build string, lost bool) (map[string]bool, error) {
 	rows, err := q.Query(ctx, `
 		select project.key,
-		       mark.project_key is null
+		       mark.computed_build is distinct from $1
 		       or (mark.computed_rows > 0
 		           and not exists (select 1 from issue_facts where project_key = project.key))
 		from projects project
 		left join issue_facts_computed mark on mark.project_key = project.key
 		where exists (select 1 from legion_observations where project = project.key)
 		   or exists (select 1 from issue_facts where project_key = project.key)
-	`)
+	`, build)
 	if err != nil {
 		return nil, fmt.Errorf("read the projects Legion works: %w", err)
 	}
@@ -300,11 +338,6 @@ func leftTrees(ctx context.Context, q Querier, project string, keys []string, mo
 //     session, by a handoff, by the daemon's first report of an issue and by a release or a
 //     retitle that takes an issue's phase work away (legion.TreeNode's Legion field holds the
 //     rule). Each of those names the parent alone.
-//
-// The second kind is what a walk that descended from the moved issues alone left behind. The
-// sweep recomputes an issue of that kind while it is open, and a closed issue below such a
-// parent is named by nothing again: its row then stands at a root the computation of that
-// issue does not answer, which is what this descent answers.
 //
 // A narrower descent would start from the keys whose Legion standing moved, and the stored
 // rows cannot answer which keys those are. A row is held for an issue that carries Legion

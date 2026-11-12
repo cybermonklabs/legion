@@ -2379,18 +2379,14 @@ Two sets of rows take no part in it: the stubbed layer, which declares its `test
 (`POST /api/v1/artifacts/_test/quiesce`, mounted by `DISPATCH_TEST_HOOKS=1`), which closes every
 live document and waits for the settlements in flight, so the documents the previous scenario had
 open finish writing before the delete rather than failing against the emptied tables after it.
-It then empties, in one statement, only the tables that hold rows among the ones
-it empties at all — every ordinary table of the `public` schema except the few
-`keptTables` names in `e2e/seed.ts`, each beside the reason it stays, which is
-104 of this schema's 114 tables — and restarts the identity sequences of the
-tables it emptied, which is what `TRUNCATE ... RESTART IDENTITY CASCADE` did for
-all of
-them. Emptying the tables that held nothing was most of the old reset's 441 ms.
-The 49 ms set against it was measured on the probe-and-delete reset over an
-84-table closure, before this reset locked and probed 104, so that reading is
-of the earlier shape and not of this one. It also puts `alice`'s and `bob`'s
-`user_sessions` rows back at generation 0, so a worker mints their sign-in
-cookie once rather than once per row. The delete locks its tables one at a
+It then empties, in one statement, only the tables that hold rows among the ones it empties at
+all — every ordinary table of the `public` schema except the few `keptTables` names in
+`e2e/seed.ts`, each beside the reason it stays, a set the reset reads from `pg_class` each time
+it runs — and restarts the identity sequences of the tables it emptied, which is what
+`TRUNCATE ... RESTART IDENTITY CASCADE` did for all of them. Emptying the tables that held
+nothing was most of the old reset's 441 ms. It also puts `alice`'s and `bob`'s `user_sessions`
+rows back at generation 0, so a worker mints their sign-in cookie once rather than once per row.
+The delete locks its tables one at a
 time, in its own order, so a transaction that reads two of them in another order can close a cycle
 with it, and PostgreSQL aborts one side: a settlement (which locks its document's owner row and
 then reads `artifact_versions`), a request from a page an earlier scenario left open, or one of

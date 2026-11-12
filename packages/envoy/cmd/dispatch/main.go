@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
@@ -72,6 +73,21 @@ const (
 // and refuses anything but a full commit sha); every other build leaves it empty, and /healthz
 // then reports the commit as null rather than naming one it cannot vouch for.
 var buildCommit string
+
+// processBuild names the build this process is, for the Legion facts consumer's record of the
+// build that last read each project whole (legionfacts.Deps.Build). legionfacts/scope.go's
+// legionProjects says why a pass under a build that record does not name reads the project
+// whole again.
+//
+// It is buildCommit where the image build stamped one. Every other build leaves buildCommit
+// empty and takes buildversion.String(), which answers one string for as long as the process
+// runs.
+func processBuild() string {
+	if buildCommit != "" {
+		return buildCommit
+	}
+	return buildversion.String()
+}
 
 type bootConfig struct {
 	DatabaseURL string
@@ -911,6 +927,7 @@ func main() {
 	// reads, for the same reason.
 	go legionfacts.Run(ctx, legionfacts.Deps{
 		Pool:         database.Pool,
+		Build:        processBuild(),
 		Horizon:      background.EventHorizon(),
 		Leases:       leases,
 		Events:       factsEventsWake,

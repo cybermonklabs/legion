@@ -12,6 +12,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 )
 
+// testBuild is the build every test's loop runs under unless the test moves it: one string for
+// one process, as a build is (Deps.Build). A test that needs two builds over one database sets
+// run.deps.Build before each pass (build_identity_test.go).
+const testBuild = "legion-envoy-v0.0.0-test-build"
+
 // consumer is one test's loop: the seeded history, the Deps a pass reads through, and the clock
 // each pass computes as of, which the test moves rather than the wall clock. A pass computed as
 // of a moment the test chose is what lets a check say which rows a change moved: with the clock
@@ -27,7 +32,7 @@ func newConsumer(t *testing.T, trees int) *consumer {
 	t.Helper()
 	seeded := seed(t, trees)
 	run := &consumer{history: seeded, at: seeded.now}
-	run.deps = Deps{Pool: seeded.database.Pool, Horizon: events.NewHorizon(seeded.database.Pool)}
+	run.deps = Deps{Pool: seeded.database.Pool, Build: testBuild, Horizon: events.NewHorizon(seeded.database.Pool)}
 	run.sched = schedule{every: SweepEvery, page: feedPage, now: func() time.Time { return run.at }}
 	return run
 }

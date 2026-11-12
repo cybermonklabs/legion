@@ -75,7 +75,7 @@ func TestAProjectWhoseIssuesCarryNoWorkIsComputedWholeOnceAndNotAgain(t *testing
 		t.Errorf("the second pass computed %s whole again, marking it as of %s, and it had been computed whole at %s",
 			quiet, again[quiet], at)
 	}
-	projects, err := legionProjects(t.Context(), run.database.Pool, false)
+	projects, err := legionProjects(t.Context(), run.database.Pool, run.deps.Build, false)
 	if err != nil {
 		t.Fatalf("read the projects Legion works: %v", err)
 	}

@@ -94,17 +94,11 @@ const keptTables: readonly { table: string; why: string }[] = [
 // reader that expects exactly one row with none.
 //
 // The rest of what the reset empties beside a scenario's own rows is per-scenario data or a
-// cache of it - document_search, embedding_window_states, doc_compaction_owed,
-// refs_grammar_owed, block_grammar_owed, request_keys, going_requests and going_events,
-// delivery_run_warnings, delivery_reconcile_progress, ci_reconcile_passes,
-// reference_excerpt_backoff, dpop_proofs, github_rate_limits, route_roster and
-// server_build_announcements - each keyed by a row the reset deletes, or written again by the
-// process that reads it. Eleven of them held no row in any of 40 samples taken through one run
-// of the chromium project, on this pod on 2026-11-12: block_grammar_owed,
-// ci_reconcile_passes, delivery_reconcile_progress, dpop_proofs, github_rate_limits, going_events,
-// going_requests, reference_excerpt_backoff, route_roster, server_build_announcements and
-// duty_holds, which is kept above for what one row of it would mean rather than for the rows it
-// holds here.
+// cache of it: each such table is keyed by a row the reset deletes, or is written again by the
+// process that reads it. No name of that rest is written here. The reset reads its targets from
+// pg_class each time it runs, so a table a later migration adds is emptied the day it exists,
+// and a list of today's names repeated in this comment is a thing that migration would make
+// false with nobody reading it.
 
 /** `value` as a SQL string literal, with every quote of its own doubled. psql interpolates no
  *  variable inside a quoted literal, so text reaches Postgres as written. */
@@ -162,8 +156,8 @@ export async function clearIssueCreator(issueKey: string): Promise<void> {
 // request or sweep. Such a transaction can start at any moment: a page an earlier scenario left
 // open refetches whenever the live stream tells it to, and the server runs its own sweeps on
 // timers. So before the delete, the reset takes ACCESS EXCLUSIVE on every table it empties: each
-// ordinary table of the `public` schema that `keptTables` does not name, which is 104 of the 114
-// tables this schema's migrations create. It never waits while it holds one of those locks. Each
+// ordinary table of the `public` schema that `keptTables` does not name, which the block reads
+// from pg_class at the moment it runs. It never waits while it holds one of those locks. Each
 // try takes them all with NOWAIT. When one is held, the try lets go of every lock it took, and
 // the next try first waits for that one table while it holds none, so the wait cannot close a
 // cycle. Once it holds them all, nothing

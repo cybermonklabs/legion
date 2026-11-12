@@ -2,8 +2,8 @@
 --
 -- What the Legion facts consumer's last whole read of each project answered
 -- (dispatch://INFRA-2915). The consumer reads a project whole (legionfacts.ComputeProject) the
--- first time it works that project, and after that it computes the issues its feeds name. This
--- table is the record that the whole read happened and of how many rows it wrote.
+-- first time a build works that project, and after that it computes the issues its feeds name.
+-- This table is the record that the whole read happened and of how many rows it wrote.
 --
 -- Before it, "this project has never been computed" was read from "this project holds no
 -- issue_facts row", which a project whose issues carry no Legion phase work can never clear: the

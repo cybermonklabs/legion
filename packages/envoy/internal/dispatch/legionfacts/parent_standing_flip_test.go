@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 )
 
@@ -14,21 +15,22 @@ import (
 // placement rule stops a chain below a parent that is not a Legion issue (legion.TreeChain), so
 // an issue stands under its parent while that parent is a Legion issue and under itself once
 // that parent is not. An issue is a Legion issue where the daemon reports it or where it carries
-// Legion phase work (metrics' isLegionIssue), and a parent gains that work and loses it.
+// Legion phase work (legion.TreeNode's Legion field holds the rule), and a parent gains that
+// standing and loses it.
 //
-// Neither flip writes a change that names any issue beneath the parent. The pass reaches those
-// issues by descending the links from the parent (rowsTouchedBy), and the two checks below are
-// that descent read from the stored rows: each one flips the parent one way and then holds the
-// stored row of every issue beneath the parent against a computation of that issue.
+// No flip writes a change that names any issue beneath the parent. The pass reaches those
+// issues by descending the links from the parent (rowsTouchedBy), and the three checks below
+// are that descent read from the stored rows: each one flips the parent one way and then holds
+// the stored row of every issue beneath the parent against a computation of that issue.
 //
-// The issue beneath is closed in both checks. A closed issue is the case the descent answers
-// for: the sweep recomputes the open issues alone (openStoredRows), so an open issue's row is
-// rewritten on the next pass whatever the scope states, and a closed issue's row stands as the
-// pass left it.
+// The issue beneath is closed in all three checks. A closed issue is the case the descent
+// answers for: the sweep recomputes the open issues alone (openStoredRows), so an open issue's
+// row is rewritten on the next pass whatever the scope states, and a closed issue's row stands
+// as the pass left it.
 //
-// TestAParentGainingPhaseWorkMovesAClosedChildsRoot states the gain over the one child. These
-// two state both flips over every issue beneath the parent, and each one records how many stood
-// there.
+// The three drive three of the ways the standing flips: a worker session's event on the parent,
+// a retitle that takes the parent's phase work away, and the daemon's first report of the
+// parent, which is the one flip no event names.
 
 // trackingParentOverAClosedChild gives the rig a tracking parent with a closed child beneath it
 // and answers the two keys.
@@ -60,7 +62,8 @@ func trackingParentOverAClosedChild(t *testing.T, run *consumer) (parent, child 
 		select $2, project_key, $3, 'A tracking issue', status, rank || 'x', priority, null, created_by, created_at, closed_at
 		from issues where key = $1`, child, parent, number)
 	run.exec(t, "reparent the child", `update issues set parent_key = $2 where key = $1`, child, parent)
-	run.exec(t, "drop the child's reported tree", `delete from legion_observations where issue_key = $1 and field = 'tree'`, child)
+	run.exec(t, "drop the child's reported tree",
+		`delete from legion_observations where issue_key = $1 and field = $2`, child, legion.FieldTree)
 	return parent, child
 }
 
@@ -221,4 +224,53 @@ func TestAParentLosingLegionStandingMovesEveryIssueBeneathItBack(t *testing.T) {
 			child, placed.RootKey, parent)
 	}
 	storedRowsBeneathAgree(t, run, parent, "after it stopped being a Legion issue")
+}
+
+// TestTheDaemonsFirstReportOfAParentMovesEveryIssueBeneathIt: the daemon reports a tracking
+// parent no Legion role worked, and the stored row of every issue beneath that parent then
+// places that issue where a computation of it places it.
+//
+// This is the one flip of the standing that no event names. An issue is a Legion issue where
+// the daemon reports it or where it carries Legion phase work, so one row of
+// legion_observations under the parent's key is the whole gain: the rig writes no event of the
+// parent and no event of any issue beneath it. The pass reads that row from the observations
+// feed (readObservationPage), which names the parent and marks no move, because the field is
+// `phase` and not `tree`.
+//
+// The pass before the report is the project's whole computation, so every stored row is right
+// before the gain, and the clock moves one minute, which no placement reads.
+func TestTheDaemonsFirstReportOfAParentMovesEveryIssueBeneathIt(t *testing.T) {
+	run := newConsumer(t, 3)
+	parent, child := trackingParentOverAClosedChild(t, run)
+
+	run.pass(t)
+	before := run.rows(t)[child]
+	if before.RootKey != child {
+		t.Fatalf("the stored row of %s places it under %q while the daemon reports %s not at all, want itself, so this test examined nothing",
+			child, before.RootKey, parent)
+	}
+	var reported int
+	if err := run.database.Pool.QueryRow(t.Context(),
+		`select count(*) from legion_observations where project = $1 and issue_key = $2`,
+		run.fixture.Project, parent).Scan(&reported); err != nil {
+		t.Fatalf("count what the daemon reports of %s: %v", parent, err)
+	}
+	if reported != 0 {
+		t.Fatalf("the daemon already reports %s in %d row(s) of legion_observations, so the row below is no first report and this test examined nothing",
+			parent, reported)
+	}
+
+	run.exec(t, "report "+parent+" for the first time", `
+		insert into legion_observations (project, issue_key, field, value, observed_at)
+		values ($1, $2, $3, $4::jsonb, $5)
+	`, run.fixture.Project, parent, legion.FieldPhase, `"implementing"`, run.at.Add(-time.Hour))
+	run.at = run.at.Add(time.Minute)
+	run.pass(t)
+
+	placed := computedPlacement(t, run, child)
+	if placed.RootKey != parent {
+		t.Fatalf("the computation places %s under %q and not under %s, so the report did not move the parent's standing and this test examined nothing",
+			child, placed.RootKey, parent)
+	}
+	storedRowsBeneathAgree(t, run, parent, "after the daemon first reported it")
 }
