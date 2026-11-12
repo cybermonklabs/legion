@@ -65,14 +65,14 @@ export function scrollBlockToTop(blockId: string, container: HTMLElement): boole
   if (container.querySelector(selector) === null) {
     return false;
   }
-  const scroll = () => {
+  const placeTheBlock = () => {
     const block = container.querySelector(selector);
     if (block === null) {
       return;
     }
     scrollElementToTop(block, container);
   };
-  scroll();
-  disposeRerun = refocusWhenSettled(scroll);
+  placeTheBlock();
+  disposeRerun = refocusWhenSettled(placeTheBlock);
   return true;
 }

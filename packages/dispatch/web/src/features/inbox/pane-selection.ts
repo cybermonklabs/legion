@@ -1,6 +1,7 @@
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
+import { placeInView } from "../doc/readers-place";
 import { buildInboxPath, type InboxRoute } from "../refs/routes";
 import { answerDraft } from "./answer-drafts";
 import { draftEmpty } from "./draft-store";
@@ -288,12 +289,20 @@ export function usePaneSelection({
   });
 
   // The selected row is kept on screen as the reader walks the list: the column beside it shows
-  // the row they cannot see otherwise.
+  // the row they cannot see otherwise. The move is the page placing what it draws, so it goes
+  // through the one call that records it (`placeInView`, `features/doc/readers-place.ts`),
+  // which measures what the browser's own `scrollIntoView({ block: "nearest" })` would do and
+  // writes it through `moveTheBox`: the browser's own call tells nobody, and a landing
+  // correction watching the same box would read it as the reader taking the list over
+  // (`refocus-when-settled.ts`).
   useEffect(() => {
     if (!paneShown || selectedId === undefined) {
       return;
     }
-    selectedRow()?.scrollIntoView?.({ block: "nearest" });
+    const row = selectedRow();
+    if (row !== null) {
+      placeInView(row, { block: "nearest" });
+    }
   }, [paneShown, selectedId, selectedRow]);
 
   return {

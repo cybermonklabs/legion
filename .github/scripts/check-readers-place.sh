@@ -14,27 +14,38 @@
 # reader wherever a late-drawn diagram or panel pushed them (dispatch://INFRA-341, R11, A12).
 #
 # Nothing in the type system says so. Each of these is one plain line, every browser offers it on
-# every element, and the two packages had sixteen of them between them before this issue closed
-# the class: each one read right on the page it was written for and wrongly on the other surface.
+# every element, and the two packages had forty of them between them at this branch's merge base
+# (1826da13), counted there by the patterns below: each one read right on the page it was written
+# for and wrongly on the other surface.
 # Closing a class of defect in the tree does not keep it closed, so this check holds the tree to
 # the one module.
 #
 # Its reach is the product code of the two packages: every .ts and .tsx file under
 # packages/dispatch/web/src and packages/proof-editor/src, less the module itself. It refuses
-#   * a read of `window.scrollY`, `window.pageYOffset` or `documentElement.scrollTop`, which are
-#     the three spellings of "how far down the page the reader is", and
-#   * a write of `scrollTop` (`.scrollTop = n`, `+=`, `-=`), or a call of `scrollTo(`,
-#     `scrollBy(` or `scrollIntoView(`, which are the ways a scroll is moved.
+#   * a read of `scrollY` or `pageYOffset` by any spelling - `window.scrollY`, or the bare name
+#     a destructuring leaves behind (`const { scrollY } = window`) - a read of
+#     `documentElement.scrollTop`, or a mention of `scrollingElement`, which is that same box of
+#     the page under another name: these are "how far down the page the reader is", and
+#   * a write of `scrollTop` (`.scrollTop = n`, `+=`, `-=`, the `=` ending its own line where a
+#     formatter has put a long value on the next one), or a call of `scrollTo(`, `scrollBy(`,
+#     `scrollIntoView(`, `scrollIntoViewIfNeeded(` or `.scroll(` - the alias of `scrollTo` -
+#     each of them optional (`scrollIntoView?.(`) or not, which are the ways a scroll is moved.
 # Reads of `element.scrollTop` other than the document element's are left alone: that is a box's
 # own geometry, which `whereTheReaderIs` is itself written in terms of and which a scroller may
 # legitimately measure (`use-live-follow.ts` asks how far from its live end it stands).
+# One further shape is outside the rule rather than missed by it: `scrollLeft` is how far across
+# a box stands, which is not where a reader is in a document. A `scroll(` with no receiver is
+# read as a site, because `scroll({ top: 0 })` on its own is the window's own alias, and a local
+# function of that name is renamed rather than excused - the tree holds none today. One shape it
+# cannot see is a site the formatter has split over two lines so that neither line holds a shape
+# above - that one is a reviewer's to catch.
 #
 # Test files are outside that reach - `*.test.ts`, `*.test.tsx`, and anything under a `__tests__`
 # directory. A unit test of this behaviour is the browser: its harness defines `window.scrollY`,
 # writes `scrollTop` to stand for the reader's own hand on the scrollbar, and asserts on both to
-# say where the page left the reader. Those 112 sites are the measurement rather than the thing
-# measured, and 88 of them carry no comment above them today, so a check that refused them would
-# be answered by 88 reason lines that each said "this is a test", which buys a reader nothing. A
+# say where the page left the reader. Those 273 sites are the measurement rather than the thing
+# measured, and 225 of them carry no comment above them today, so a check that refused them would
+# be answered by 225 reason lines that each said "this is a test", which buys a reader nothing. A
 # test cannot introduce the defect either: the class is a surface reading or writing the wrong
 # box, and no test ships.
 #
@@ -51,17 +62,20 @@
 # sites is a statement of its own and the reason has to stand against the site it excuses: a
 # reason five lines up is a reason for whatever was there when it was written.
 #
-# What it buys and what it does not. It makes an unexamined reading or write impossible to add:
-# the only way one lands is under a line of prose a reviewer can read and judge. Any comment
-# satisfies it, so whether a reason is a true one is the reviewer's to judge, as it is for the
-# fireEvent gate. A gate checks what a program can check.
+# What it buys and what it does not. It makes an unexamined reading or write, in any of the
+# spellings above, impossible to add: the only way one lands is under a line of prose a reviewer
+# can read and judge. Any comment with something in it satisfies the check, so whether a reason
+# is a true one is the reviewer's to judge, as it is for the fireEvent gate. A gate checks what
+# a program can check.
 #
 # A comment is a line whose trimmed text begins with `//`, `/*`, `*` or JSX's `{/*`, and nothing
 # else is: a `//` inside a string, or a `*` in arithmetic, is code in both places this reads a
 # line - on the site's own line, where a URL would otherwise make the site prose, and on the line
 # above it, where the same URL would otherwise count as a reason. A site written inside a real
 # comment is prose and is not counted, which is what lets this file's own siblings name
-# `scrollIntoView(` while explaining a rule.
+# `scrollIntoView(` while explaining a rule. The one comment that is no reason is a line holding
+# nothing but the ` */` that closes a doc comment: what it ends was written about whatever stood
+# above the site, so a site under it is bare.
 #
 # Run from anywhere: .github/scripts/check-readers-place.sh
 # CI runs it in ci.yaml's lint job.
@@ -78,14 +92,28 @@ ROOTS = (Path("packages/dispatch/web/src"), Path("packages/proof-editor/src"))
 # The one module a reader's place is read and written through.
 PLACE = Path("packages/dispatch/web/src/features/doc/readers-place.ts")
 
-READ = re.compile(r"\bwindow\.scrollY\b|\bwindow\.pageYOffset\b|\bdocumentElement\.scrollTop\b")
-WRITE = re.compile(r"\.scrollTop\s*(?:=[^=]|\+=|-=)|\bscrollTo\(|\bscrollBy\(|\bscrollIntoView\(")
+READ = re.compile(
+    r"\bscrollY\b|\bpageYOffset\b|\bdocumentElement\.scrollTop\b|\bscrollingElement\b"
+)
+WRITE = re.compile(
+    r"\.scrollTop\s*(?:=(?!=)|\+=|-=)"
+    r"|\b(?:scrollTo|scrollBy|scrollIntoView|scrollIntoViewIfNeeded)\s*(?:\?\.)?\("
+    r"|(?:\.|\b)scroll\s*(?:\?\.)?\("
+)
 # A comment line, and the only thing this reads as one: the trimmed text begins a comment.
 COMMENT = re.compile(r"^\s*(//|/\*|\*|\{/\*)")
+# The line that closes a doc comment and holds nothing else. It is a comment, so a site written
+# on it is prose; it is no reason for the site under it, since what it ends was written about
+# whatever stood before that site.
+CLOSER = re.compile(r"^\s*\*/\s*$")
 
 
 def is_test(path: Path) -> bool:
     return ".test." in path.name or "__tests__" in path.parts
+
+
+def is_reason(line: str) -> bool:
+    return COMMENT.match(line) is not None and CLOSER.match(line) is None
 
 
 files = 0
@@ -108,7 +136,7 @@ for root in ROOTS:
             if reads is None and writes is None:
                 continue
             sites += 1
-            if index > 0 and COMMENT.match(lines[index - 1]):
+            if index > 0 and is_reason(lines[index - 1]):
                 continue
             what = "reads where the reader is" if reads is not None else "writes a scroll"
             bare.append((path, index + 1, what, line.strip()))

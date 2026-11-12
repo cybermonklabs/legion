@@ -4,12 +4,18 @@
 # fails too, so both roots are really scanned; a reason on the line directly above passes, and
 # one two lines up does not, which is the whole of the one-line window; the two shapes a reader
 # could satisfy the check with without writing a reason - an arithmetic `*` line and a `//`
-# inside a string - both fail; a site named inside a comment is prose and is not counted; the
-# module the rule exists for, and the suite's own test files, are outside the reach; a read of a
-# box's own `scrollTop` is not a reading of a reader's place while `documentElement.scrollTop`
-# is; each of the three calls that move a scroll counts; and the real repository passes over a
-# count of sites it actually found, so a run that scanned nothing fails rather than reporting a
-# clean scan.
+# inside a string - both fail, and so does the ` */` that closes a doc comment about something
+# else; a site named inside a comment is prose and is not counted; the module the rule exists
+# for, and the suite's own test files, are outside the reach; a read of a box's own `scrollTop`
+# is not a reading of a reader's place while `documentElement.scrollTop` is; every call that
+# moves a scroll counts, by each of its spellings - `scrollTo(`, `scrollBy(`, `scrollIntoView(`,
+# `scrollIntoViewIfNeeded(`, the `.scroll(` alias, any of them written as an optional call, and
+# a `.scrollTop =` whose value a formatter has put on the next line - and so does every spelling
+# of the reader's own place, `scrollY` destructured off the window and `scrollingElement`
+# included, while a bare `scroll(` counts too, since that is the window's own alias and a local
+# function of that name is renamed rather than excused;
+# and the real repository passes over a count of sites it actually found, so a run that scanned
+# nothing fails rather than reporting a clean scan.
 #
 # Each case builds a miniature tree under a temporary directory and symlinks the real script into
 # it, so the script under test is the file CI runs: it resolves its root from its own path, which
@@ -211,6 +217,109 @@ check "names the scrollTo" "$(contains "$out" 'Surface.tsx:2')"
 check "names the scrollBy" "$(contains "$out" 'Surface.tsx:3')"
 check "names the scrollIntoView" "$(contains "$out" 'Surface.tsx:4')"
 check "names the pageYOffset" "$(contains "$out" 'Surface.tsx:5')"
+
+echo "case: a call that moves a scroll counts when it is written as an optional call"
+root=$(fixture optional_call)
+surface "$root" <<'EOF'
+export function show(row: HTMLElement): void {
+  row.scrollIntoView?.({ block: "nearest" });
+  window.scrollTo?.({ top: 0 });
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts both" "$(contains "$out" '2 of 2 scroll sites')"
+check "names the optional scrollIntoView" "$(contains "$out" 'Surface.tsx:2')"
+check "names the optional scrollTo" "$(contains "$out" 'Surface.tsx:3')"
+
+echo "case: the .scroll( alias of scrollTo counts, on a box and on the window"
+root=$(fixture scroll_alias)
+surface "$root" <<'EOF'
+export function toTop(box: HTMLElement): void {
+  box.scroll({ top: 0 });
+  window.scroll(0, 0);
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts both" "$(contains "$out" '2 of 2 scroll sites')"
+check "names the box's" "$(contains "$out" 'Surface.tsx:2')"
+check "names the window's" "$(contains "$out" 'Surface.tsx:3')"
+
+echo "case: a bare scroll( is the window's own alias and counts, so a local function of that name is renamed rather than excused"
+root=$(fixture bare_scroll)
+surface "$root" <<'EOF'
+export function toTheTop(): void {
+  scroll({ top: 0 });
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the site" "$(contains "$out" 'Surface.tsx:2')"
+
+echo "case: scrollIntoViewIfNeeded counts, as the call it is an older name for does"
+root=$(fixture if_needed)
+surface "$root" <<'EOF'
+export function show(row: HTMLElement): void {
+  row.scrollIntoViewIfNeeded(true);
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the site" "$(contains "$out" 'Surface.tsx:2')"
+check "says what the site does" "$(contains "$out" 'writes a scroll')"
+
+echo "case: a scrollTop write whose value a formatter put on the next line counts"
+root=$(fixture wrapped_write)
+surface "$root" <<'EOF'
+export function toEnd(box: HTMLElement, rows: readonly number[]): void {
+  box.scrollTop =
+    rows.reduce((total, row) => total + row, 0) - box.clientHeight;
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the line the write begins on" "$(contains "$out" 'Surface.tsx:2')"
+check "says what the site does" "$(contains "$out" 'writes a scroll')"
+
+echo "case: the page's scrollingElement is a reading of where the reader is"
+root=$(fixture scrolling_element)
+surface "$root" <<'EOF'
+export function place(): number {
+  return document.scrollingElement?.scrollTop ?? 0;
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the site" "$(contains "$out" 'Surface.tsx:2')"
+check "says what the site does" "$(contains "$out" 'reads where the reader is')"
+
+echo "case: scrollY counts under the bare name a destructuring leaves it"
+root=$(fixture destructured_read)
+surface "$root" <<'EOF'
+export function place(): number {
+  const { scrollY } = window;
+  return scrollY;
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts both" "$(contains "$out" '2 of 2 scroll sites')"
+check "names the destructuring" "$(contains "$out" 'Surface.tsx:2')"
+check "names the use" "$(contains "$out" 'Surface.tsx:3')"
+
+echo "case: the line closing a doc comment about something else is not a reason"
+root=$(fixture comment_closer)
+surface "$root" <<'EOF'
+export function show(row: HTMLElement): void {
+  /** What this function is for, which is no reason for the line under this comment's end.
+   */
+  row.scrollIntoView({ block: "start" });
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the site" "$(contains "$out" 'Surface.tsx:4')"
 
 # The count matters as much as the exit status here: a script that resolved the wrong root would
 # scan nothing, find nothing bare, and print the same cheerful line.
