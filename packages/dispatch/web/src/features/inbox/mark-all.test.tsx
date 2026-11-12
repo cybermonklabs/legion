@@ -143,7 +143,7 @@ test("the button shows only while the list holds an unread Reply or Agent row", 
   expect(screen.getByRole("button", { name: "Mark all read" })).toBeTruthy();
 });
 
-test("one press draws the rows read at once and its own read sets the count, without taking one out of the list", async () => {
+test("one press drops the count and draws the rows read at once, without taking one out of the list", async () => {
   const user = userEvent.setup();
   const marked = answerInboxReads();
   const settle = Promise.withResolvers<{ marked: number }>();
@@ -160,12 +160,12 @@ test("one press draws the rows read at once and its own read sets the count, wit
     expect(inboxCount()).toBe("2");
     await user.click(screen.getByRole("button", { name: "Mark all read" }));
 
-    // At once, with the request still out: no row is unread any more - and both rows are still
-    // in the list, where a thread stays until it is dismissed. The shared count is the server's
-    // until the press's own read of it.
+    // At once, with the request still out: every badge reading the shared count is at zero and no
+    // row is unread any more - and both rows are still in the list, where a thread stays until it
+    // is dismissed.
     await waitFor(() => expect(unread()).toBe("0"));
     expect(listed()).toBe("2");
-    expect(inboxCount()).toBe("2");
+    expect(inboxCount()).toBe("0");
     expect(screen.queryByRole("button", { name: "Mark all read" })).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
@@ -183,28 +183,35 @@ test("one press draws the rows read at once and its own read sets the count, wit
   }
 });
 
-// R7. A read of the count can land while the press is out and already count the mark: Dispatch
-// made it, and the press's own answer is still on its way. A count holds no rows a change could
-// find the mark in, so the press shows nothing on it, and that answer is the count - the mark is
-// never taken off it a second time.
-test("a count answer that already counts the mark, landing while the press is out, is the count", async () => {
+// R7. A read of the count can land while the press is out, and a count holds no rows a change
+// could find the mark in: one answer may already count it (Dispatch made it and the press's own
+// answer is still on its way), another may not (a read that left before Dispatch made it). The
+// press holds the count at what it stood at when the reader pressed less the rows it marked, so
+// each answer gives the same count - lowered once, never twice.
+test("a count answer landing while the press is out is lowered once, whether or not it already counts the mark", async () => {
   const user = userEvent.setup();
   const marked = answerInboxReads();
   const settle = Promise.withResolvers<{ marked: number }>();
   marked.mockReturnValue(settle.promise);
   // Five unread threads, the two in the list among them.
   const client = renderBar([replyRow("c1"), replyRow("c2")], 5);
-  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
-    ...threadsRead([]),
-    total: 3,
-  });
+  const listMyReplies = spyOn(api, "listMyReplies");
+  const readCount = (total: number) => {
+    listMyReplies.mockResolvedValueOnce({ ...threadsRead([]), total });
+    return act(() =>
+      client.refetchQueries({ exact: true, queryKey: myRepliesCountQuery().queryKey })
+    );
+  };
   try {
     await user.click(screen.getByRole("button", { name: "Mark all read" }));
     await waitFor(() => expect(unread()).toBe("0"));
+    expect(inboxCount()).toBe("3");
 
-    await act(() =>
-      client.refetchQueries({ exact: true, queryKey: myRepliesCountQuery().queryKey })
-    );
+    // An answer read before Dispatch made the mark: the count is still five there.
+    await readCount(5);
+    expect(inboxCount()).toBe("3");
+    // An answer that already counts the mark: three, which is not lowered again.
+    await readCount(3);
     expect(inboxCount()).toBe("3");
 
     settle.resolve({ marked: 2 });

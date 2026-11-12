@@ -5,10 +5,9 @@
  * One press is one `POST /api/v1/me/inbox/read` (`markInboxReadRequest`), carrying the read mark
  * the list was read at (`as_of`) and the narrowing the list is under, so the server marks exactly
  * the threads the reader is looking at: no row that arrived after that read is swallowed, and no
- * row the Filter hid is marked. The press is applied here first - the rows are drawn as read -
- * because the reader pressed it, and is taken back whole when the request fails, which an old
- * server with no such route is one way of doing. The unread count is the server's: the press's
- * own read of it, once the answer lands, is what lowers it.
+ * row the Filter hid is marked. The press is applied here first - the rows are drawn as read and
+ * the unread count every badge shares drops - because the reader pressed it, and is taken back
+ * whole when the request fails, which an old server with no such route is one way of doing.
  *
  * It takes no row out of the list. A thread stays in the Inbox, read or not, until it is
  * dismissed (`useInboxDismiss.ts`), as an email stays until it is archived.
@@ -18,7 +17,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { markInboxReadRequest } from "../../api/client";
-import { inboxThreadsQuery, myRepliesKey, userAgentStateQuery } from "../../api/queries";
+import {
+  inboxThreadsQuery,
+  myRepliesCountQuery,
+  myRepliesKey,
+  userAgentStateQuery,
+} from "../../api/queries";
 import type {
   InboxReadRequest,
   InboxReadResponse,
@@ -83,9 +87,33 @@ export function applyMarkAll(
   };
 }
 
-/** What the press rolls back to: the read it wrote, as it stood before it. */
+/** What the press rolls back to: the two reads it wrote, as they stood before it. */
 interface MarkAllRollback {
+  readonly count: number | undefined;
   readonly threads: MyRepliesResponse | undefined;
+}
+
+/** The threads of `threads` one press marks, by row id. */
+function markedRows(threads: MyRepliesResponse, body: InboxReadRequest): Set<string> {
+  return new Set(
+    (threads.rows ?? [])
+      .filter((thread) => marksThread(thread, body))
+      .map((thread) => rowId({ kind: "thread", thread }))
+  );
+}
+
+/**
+ * The unread count as a press that took `taken` unread threads out of it leaves it: at most what
+ * the count stood at when the reader pressed, less those threads. A count holds no rows, so an
+ * answer landing while the press is out cannot say whether it already counts the press; the
+ * bound gives the same number whichever it is - a count that does is at or under the bound and
+ * is shown as Dispatch answered it, one that does not is held at the bound - so the count drops
+ * once at the press and never twice. A thread that arrives while the press is out is held under
+ * the bound until the press's own read of the count, once the answer lands, sets it.
+ */
+export function countAfterPress(pressedCount: number, taken: number): (count: number) => number {
+  const bound = Math.max(0, pressedCount - taken);
+  return (count) => Math.min(count, bound);
 }
 
 export interface MarkAllRead {
@@ -101,13 +129,12 @@ export interface MarkAllRead {
  * The Inbox's **Mark all read**, for one list: its own filters, its own read mark, its own
  * optimistic apply and its own rollback. The drawer mounts its own Inbox, so it gets its own.
  *
- * The press draws the Inbox's own list at once: every row it marks is drawn as read before the
- * server answers. It shows nothing on the unread count every badge shares: a count holds no rows,
- * so a count Dispatch answers while the press is out cannot say whether it already counts the
- * mark, and lowering it there would lower it twice. The press's own read of the count, once the
- * answer lands, sets the sidebar's Inbox count and the compact header's Inbox link, and the
- * Agents page's **New replies** badge, the server's own count of unread agent replies, drops
- * when the viewer's agent state is read again then.
+ * The press writes two reads at once - the Inbox's own list and the unread count every badge
+ * shares - so the rows are drawn as read and the Type filter's counts, the sidebar's Inbox count
+ * and the compact header's Inbox link are all down before the server answers
+ * (`countAfterPress`). The Agents page's **New replies** badge is the server's own count of
+ * unread agent replies, so it drops when the answer lands and the viewer's agent state is read
+ * again.
  *
  * The Dismissed view has no press of its own: it holds what the reader has already dealt with, so
  * the Inbox passes no read mark there and nothing is offered (`asOf`).
@@ -129,6 +156,7 @@ export function useMarkAllRead({
   const queryClient = useQueryClient();
   const [refused, setRefused] = useState(false);
   const threadsKey = inboxThreadsQuery().queryKey;
+  const countKey = myRepliesCountQuery().queryKey;
   const body = asOf === undefined ? undefined : markAllReadBody(filters, asOf);
   // The button is offered only while the list holds an unread Reply or Agent row, which is what
   // the spec asks for: a list showing none has nothing for one press to mark.
@@ -143,11 +171,15 @@ export function useMarkAllRead({
       setRefused(true);
       if (rollback === undefined) return;
       queryClient.setQueryData(threadsKey, rollback.threads);
+      queryClient.setQueryData(countKey, rollback.count);
     },
     onMutate: () => {
       setRefused(false);
       // What a refusal puts back, read before the press shows its mark.
-      return { threads: queryClient.getQueryData<MyRepliesResponse>(threadsKey) };
+      return {
+        count: queryClient.getQueryData<number>(countKey),
+        threads: queryClient.getQueryData<MyRepliesResponse>(threadsKey),
+      };
     },
     onSuccess: () => {
       // What the server marked is read again from the server: the list, its counts, and the
@@ -156,24 +188,26 @@ export function useMarkAllRead({
       void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
     },
     request: (input) => markInboxReadRequest(input),
-    /** The mark this press shows: every row of the list it marks drawn as read. The rows are read
-     *  off the cache as it stands, so an answer this is shown over again marks the rows that
-     *  answer carries, and one that already holds them read is left as it is. It shows nothing
-     *  on the count every badge shares, which the press's own read sets. */
-    shows: (input) => (shown) => {
-      const through = input.read_through;
-      if (through === undefined || through === null) return;
-      shown.on<MyRepliesResponse>(threadsKey, (threads) =>
-        applyMarkAll(
-          threads,
-          new Set(
-            (threads.rows ?? [])
-              .filter((thread) => marksThread(thread, input))
-              .map((thread) => rowId({ kind: "thread", thread }))
-          ),
-          through
-        )
-      );
+    /** The mark this press shows: every row of the list it marks drawn as read, and the count
+     *  every badge shares held at what it stood at when the reader pressed, less the rows the
+     *  press marked (`countAfterPress`). The rows are read off the cache as it stands, so an
+     *  answer this is shown over again marks the rows that answer carries, and one that already
+     *  holds them read is left as it is. */
+    shows: (input) => {
+      const pressed = queryClient.getQueryData<MyRepliesResponse>(threadsKey);
+      const pressedCount = queryClient.getQueryData<number>(countKey);
+      const count =
+        pressed === undefined || pressedCount === undefined
+          ? undefined
+          : countAfterPress(pressedCount, markedRows(pressed, input).size);
+      return (shown) => {
+        const through = input.read_through;
+        if (through === undefined || through === null) return;
+        shown.on<MyRepliesResponse>(threadsKey, (threads) =>
+          applyMarkAll(threads, markedRows(threads, input), through)
+        );
+        if (count !== undefined) shown.on<number>(countKey, count);
+      };
     },
     target: () => "inbox:read",
   });

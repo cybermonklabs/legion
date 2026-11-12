@@ -147,8 +147,8 @@ test("the row's Dismiss sends the row's own id and drawn version and takes it ou
   const control = document.querySelector<HTMLElement>('[data-inbox-dismiss="reply:c1"]');
   await user.click(control as HTMLElement);
 
-  // At once, with the request still out: the row is gone. The shared unread count is the
-  // server's, which the press's own read sets once it lands.
+  // At once, with the request still out: the row is gone and the shared unread count has dropped
+  // by the one unread row it took.
   await waitFor(() => expect(rowIds()).toEqual(["reply:c9"]));
   expect(dismissed.mock.calls[0]?.[0]).toEqual({
     seen_replies: { "reply:c1": SEEN },
@@ -158,11 +158,12 @@ test("the row's Dismiss sends the row's own id and drawn version and takes it ou
   await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
 });
 
-// R7. A read of the count can land while the press is out and already count the dismiss: Dispatch
-// made it, and the press's own answer is still on its way. A count holds no rows a change could
-// find the dismiss in, so the press shows nothing on it, and that answer is the count - the row
-// is never taken off it a second time.
-test("a count answer that already counts the dismiss, landing while the press is out, is the count", async () => {
+// R7. A read of the count can land while the press is out, and a count holds no rows a change
+// could find the dismiss in: one answer may already count it (Dispatch made it and the press's
+// own answer is still on its way), another may not (a read that left before Dispatch made it).
+// The press holds the count at what it stood at when the reader pressed less the unread rows it
+// took, so each answer gives the same count - lowered once, never twice.
+test("a count answer landing while the press is out is lowered once, whether or not it already counts the dismiss", async () => {
   const user = userEvent.setup();
   const dismissed = answerInboxDismisses();
   const settle = Promise.withResolvers<{ dismissed: number }>();
@@ -172,16 +173,24 @@ test("a count answer that already counts the dismiss, landing while the press is
   // Five unread threads, the two in the list among them.
   client.setQueryData(countKey, 5);
   renderInbox(client);
+  const readCount = (total: number) => {
+    (api.listMyReplies as Mock<typeof api.listMyReplies>).mockResolvedValueOnce({
+      ...threadsRead([replyRow("c9")]),
+      total,
+    });
+    return act(() => client.fetchQuery({ ...myRepliesCountQuery(), staleTime: 0 }));
+  };
 
   await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
   await user.click(document.querySelector('[data-inbox-dismiss="reply:c1"]') as HTMLElement);
   await waitFor(() => expect(rowIds()).toEqual(["reply:c9"]));
+  await waitFor(() => expect(client.getQueryData<number>(countKey)).toBe(4));
 
-  (api.listMyReplies as Mock<typeof api.listMyReplies>).mockResolvedValueOnce({
-    ...threadsRead([replyRow("c9")]),
-    total: 4,
-  });
-  await act(() => client.fetchQuery({ ...myRepliesCountQuery(), staleTime: 0 }));
+  // An answer read before Dispatch made the dismiss: the count is still five there.
+  await readCount(5);
+  expect(client.getQueryData<number>(countKey)).toBe(4);
+  // An answer that already counts the dismiss: four, which is not lowered again.
+  await readCount(4);
   expect(client.getQueryData<number>(countKey)).toBe(4);
 
   settle.resolve({ dismissed: 1 });
