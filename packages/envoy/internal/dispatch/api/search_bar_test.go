@@ -27,6 +27,18 @@ func searchComment(t *testing.T, handler http.Handler, issueKey, login, body str
 	return decodeBody[model.Comment](t, response).ID
 }
 
+// searchIssueMessage writes one issue message as login and answers its id: a message carries an
+// author and an issue of its own as a comment does, and, since this change, an edit of its own.
+func searchIssueMessage(t *testing.T, handler http.Handler, issueKey, login, body string) string {
+	t.Helper()
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/messages",
+		map[string]any{"body": body}, login)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create %s's message: status=%d body=%s", login, response.Code, response.Body.String())
+	}
+	return decodeBody[model.Message](t, response).ID
+}
+
 // A person writes an issue key the way they remember it, and every one of those ways must put
 // that issue first: the key, the key in any case, the key with a space where the hyphen is, and
 // the number alone. Only the first two match the issue's own search vector, which holds the key
@@ -498,6 +510,65 @@ func TestSearchNarrowsEveryLegByStatusAuthorAndDate(t *testing.T) {
 			}
 		}
 	})
+}
+
+// updated_since reads when the item's text was last written, not when it was first written: an
+// edit rewrites the row's search vector, so the search finds the new text, and dropping the row
+// for the date the text it replaced was written would hide every corrected post from a narrowed
+// search. Both posts an author corrects - a comment (PATCH /api/v1/comments/{id}) and an issue
+// message (PATCH /api/v1/messages/{id}) - are written before the watermark and edited after it,
+// beside one of each written before it and never edited, which the filter must still drop.
+func TestSearchKeepsAPostEditedAfterTheDateItNarrowsBy(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "SRCH", "Instrument survey", "")
+	editedComment := searchComment(t, handler, issue.Key, "alice", "A quadrant, to be reworded.")
+	keptComment := searchComment(t, handler, issue.Key, "alice", "An astrolabe nobody rewords.")
+	editedMessage := searchIssueMessage(t, handler, issue.Key, "alice", "A sextant, to be reworded.")
+	keptMessage := searchIssueMessage(t, handler, issue.Key, "alice", "An astrolabe message nobody rewords.")
+
+	// The watermark is the database's own clock, the clock every row's time is written by.
+	var cut time.Time
+	if err := database.Pool.QueryRow(ctx, "select now()").Scan(&cut); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	requireEdit(t, "reword the comment", editCommentAs(t, handler, editedComment,
+		"The astrolabe of the comment, reworded.", nil, nil))
+	requireEdit(t, "reword the message", dispatchRequest(t, handler, http.MethodPatch,
+		"/api/v1/messages/"+editedMessage,
+		map[string]any{"body": "The astrolabe of the message, reworded."}, "alice"))
+
+	// The control: the two edits put the word in the two edited posts, so all four match.
+	unfiltered := searchResponse(t, handler, "q=astrolabe")
+	for _, want := range []struct{ kind, id string }{
+		{"comment", editedComment}, {"comment", keptComment},
+		{"message", editedMessage}, {"message", keptMessage},
+	} {
+		if searchResultOf(unfiltered, want.kind, want.id) == nil {
+			t.Fatalf("unfiltered results = %#v, want the %s %s, or the filter below decides nothing",
+				unfiltered.Results, want.kind, want.id)
+		}
+	}
+
+	body := searchResponse(t, handler, url.Values{
+		"q": {"astrolabe"}, "updated_since": {cut.Format(time.RFC3339Nano)},
+	}.Encode())
+	for _, want := range []struct{ kind, id string }{
+		{"comment", editedComment}, {"message", editedMessage},
+	} {
+		if searchResultOf(body, want.kind, want.id) == nil {
+			t.Fatalf("results = %#v, want the %s %s, whose text was written by an edit after the watermark",
+				body.Results, want.kind, want.id)
+		}
+	}
+	for _, gone := range []struct{ kind, id string }{
+		{"comment", keptComment}, {"message", keptMessage},
+	} {
+		if searchResultOf(body, gone.kind, gone.id) != nil {
+			t.Fatalf("results = %#v, want nothing of the %s %s, written before the watermark and never edited",
+				body.Results, gone.kind, gone.id)
+		}
+	}
 }
 
 // A filter narrows every leg of the search, not the page it is cut to: bob's comment is the

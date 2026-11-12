@@ -535,7 +535,8 @@ func clearItemWindowsOwed(tables itemTables, itemID string) blockState {
 // itemState is an item's state row as indexItemBlocks found it: whether a block-aware build
 // indexed it before (a revision above 0 where the kind counts revisions, a message's body_sha256
 // set), its revision and next block number (a message's are 0 and 1), the sum of the text it was
-// last indexed from, and whether the item was edited (edited_at set, which a message has not).
+// last indexed from, and whether the item was edited (edited_at set, which only the state read of
+// a kind that counts revisions reads: a message carries edited_at too, and this read leaves it).
 type itemState struct {
 	indexed    bool
 	revision   int

@@ -185,7 +185,7 @@ func searchKeywordLegs(rank func(searchColumn string) string) string {
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
    where c.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
-		searchRowFilters("i.status", "c.author", "c.created_at") + `
+		searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
   union all
   select 'ask' as kind, 'keyword', k.issue_key, case when k.issue_key is null then coalesce(k.artifact_id, k.block_artifact_id) else null::uuid end,
          coalesce(k.artifact_id, k.block_artifact_id, ` + store.CastableUUID(`k.anchor->>'artifact_id'`) + `), k.id::text, ` + askBlockNodeSQL + `,
@@ -197,7 +197,7 @@ func searchKeywordLegs(rank func(searchColumn string) string) string {
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
    where k.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
-		searchRowFilters("i.status", "k.author", "k.created_at") + `
+		searchRowFilters("i.status", "k.author", "coalesce(k.edited_at, k.created_at)") + `
   union all
   select 'message' as kind, 'keyword', m.issue_key, null::uuid, null::uuid, m.id::text, null::text,
          null::text, null::text[],
@@ -205,7 +205,7 @@ func searchKeywordLegs(rank func(searchColumn string) string) string {
          false, ` + rank("m.search") + `
     from messages m join issues i on i.key = m.issue_key, q
    where m.search @@ q.tsq and ($2 = '' or i.project_key = $2)` +
-		searchRowFilters("i.status", "m.author", "m.created_at")
+		searchRowFilters("i.status", "m.author", "coalesce(m.edited_at, m.created_at)")
 }
 
 // searchRowFilters is the status, author and date filter every leg of every search narrows by,
@@ -217,9 +217,14 @@ func searchKeywordLegs(rank func(searchColumn string) string) string {
 // the rows of the issues in that status and such a row belongs to none. author is the jsonb
 // actor that wrote the item the row names, matched on its id, which is a person's login or a
 // session's id; every kind has one, an issue and a document their creator. written is when the
-// item itself was last written, which the date filter reads in place of the recency the row is
-// ordered by: an issue's updated_at moves whenever anything on it moves, and a comment written
-// last year on an issue touched today is not a comment from today.
+// item's text was last written: a comment, an ask and a message each record an edit of their own
+// (comments.edited_at, asks.edited_at, messages.edited_at), and an edit rewrites the row's search
+// vector, so each of those arms passes coalesce(edited_at, created_at) and a search that finds an
+// edit's text does not drop the row for the date the text it replaced was written. The arms whose
+// table records no edit pass the one time they have: an issue's updated_at, and a document
+// version's created_at, the moment that version's text was written. The date filter reads that in
+// place of the recency the row is ordered by: an issue's updated_at moves whenever anything on it
+// moves, and a comment written last year on an issue touched today is not a comment from today.
 func searchRowFilters(status, author, written string) string {
 	return `
      and (q.status_filter = '' or ` + status + ` = q.status_filter)
@@ -798,7 +803,7 @@ meaning_ask_candidates as (
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $11` + scope.candidateProject("coalesce(i.project_key, p.key)") +
-		searchRowFilters("i.status", "k.author", "k.created_at") + `
+		searchRowFilters("i.status", "k.author", "coalesce(k.edited_at, k.created_at)") + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -818,7 +823,7 @@ meaning_message_candidates as (
     join messages m on m.id = ` + windowItemUUID + `
     join issues i on i.key = m.issue_key, q
    where e.kind = 'message_block' and e.embedding is not null and e.model = $11` + scope.candidateProject("i.project_key") +
-		searchRowFilters("i.status", "m.author", "m.created_at") + `
+		searchRowFilters("i.status", "m.author", "coalesce(m.edited_at, m.created_at)") + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -948,7 +953,7 @@ meaning_comment as (
     left join issues i on i.key = c.issue_key
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
-   where meaning_comment_candidates.r >= $10` + searchRowFilters("i.status", "c.author", "c.created_at") + `
+   where meaning_comment_candidates.r >= $10` + searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
    order by c.id, meaning_comment_candidates.r desc, meaning_comment_candidates.window_id
 )`
 }
@@ -1006,7 +1011,7 @@ var searchMeaningCommentArmJoined = `meaning_comment_candidates as (
     left join projects p on p.key = a.project_key, q
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11` +
 	meaningOneProjectJoined.candidateProject(searchMeaningCommentProject) +
-	searchRowFilters("i.status", "c.author", "c.created_at") + `
+	searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),

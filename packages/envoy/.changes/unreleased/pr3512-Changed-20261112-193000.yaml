@@ -1,0 +1,5 @@
+kind: Changed
+body: 'A search narrowed by updated_since keeps a comment, an ask or an issue message whose text an edit wrote after that time: each leg now reads the row''s coalesce(edited_at, created_at) where its table records an edit, where it read the moment the post was written. The edit already rewrote the row''s search vector, so such a post matched the words and was then dropped by the date.'
+time: 2026-11-12T19:30:00.000000000Z
+custom:
+    Issue: pr3512
