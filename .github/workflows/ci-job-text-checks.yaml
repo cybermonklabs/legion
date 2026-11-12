@@ -8,15 +8,17 @@ name: CI job text-checks
 # these steps selects this job alone, where a change to ci.yaml selects every job.
 #
 # What runs here is the tests whose subject is text: a guide's wording against the code it
-# pins, a file copied from one tree to another, the imports a package may have, and the
-# Dispatch API's eight static source checks - its seven source guards and
-# one_expression_guard_test.go - which read the module's own source. None of them starts a
-# server, a container or a database, so none of them belongs in a Postgres-backed product
-# suite, where it waited behind that suite's fixtures and ran again on every change to the
-# module. Each module keeps its own package of them, internal/textcheck, and this job runs
-# those three packages and those checks' fifteen tests; the three product lanes leave exactly
-# those out of their own runs (.github/scripts/ci_job_reads.py's TEXT_CHECK_PACKAGE and
-# TEXT_CHECK_TESTS build both sides), so each of these tests runs once per run of the router.
+# pins, a file copied from one tree to another, the imports a package may have, the Dispatch
+# API's eight static source checks - its seven source guards and one_expression_guard_test.go -
+# which read the module's own source, and the two pure pins of the daemon's supervise table,
+# which read that package's own source the same way. None of them starts a server, a container
+# or a database, so none of them belongs in a Postgres-backed product suite, where it waited
+# behind that suite's fixtures and ran again on every change to the module. Each module keeps
+# its own package of them, internal/textcheck, and this job runs those three packages, those
+# checks' fifteen tests and those two pins; the three product lanes leave exactly those out of
+# their own runs (.github/scripts/ci_job_reads.py's TEXT_CHECK_PACKAGE, TEXT_CHECK_TESTS and
+# SUPERVISE_TABLE_TESTS build both sides), so each of these tests runs once per run of the
+# router.
 #
 # packages/envoy/infra is a module of its own, with a go.work of its own binding it and
 # packages/envoy, so its text checks run from inside that directory rather than through the
@@ -28,10 +30,14 @@ name: CI job text-checks
 #
 # The job restores no Actions cache. The six Go cache families ci.yaml's header lists are each
 # filled for a job that builds a whole module's binaries or test binaries, and this job builds
-# four packages: measured here, its four calls take 4 minutes 4 seconds with an empty build
-# cache and 34 seconds with a warm one, which is less than the download and extraction of any
-# of those families would cost it. setup-go caches nothing either (`cache: false`), as in every
-# job of ci.yaml.
+# five packages: measured here, the four calls this job ran before the supervise pins joined it
+# take 4 minutes 4 seconds with an empty build cache and 34 seconds with a warm one, which is
+# less than the download and extraction of any of those families would cost it. The fifth call
+# is the slowest of them: on the pod where those four take 6 minutes 23 seconds cold the five
+# take 8 minutes 3 seconds, a quarter more, and 86 s of that is the run itself, where
+# TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState type-checks internal/supervise and
+# the standard library from source. The timeout below still leaves the job about three times
+# its cold run. setup-go caches nothing either (`cache: false`), as in every job of ci.yaml.
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
@@ -58,8 +64,9 @@ env:
 jobs:
   text-checks:
     runs-on: ubuntu-24.04
-    # Three times the cold measurement in the header, which is what a runner that restores no
-    # build cache does on every run.
+    # About three times the cold measurement in the header, which is what a runner that restores
+    # no build cache does on every run - the supervise pins' call, a quarter more cold time on
+    # the pod that measured the five against the four, left that nearly as it was.
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -91,6 +98,19 @@ jobs:
       - name: Test the Dispatch API's source guards (no database)
         run: go test -count=1 -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryReviewReadOrdersByReviewOrder|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestNoForUpdateOnOwnerTables|TestOneExpressionDecidesWhoWaitsInOneSpelling|TestOnlyTheBrokerInsertsEvents|TestOnlyWriteReviewWritesReviews|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards|TestTheReviewOrderGuardReadsBothOrders|TestTheReviewWriterPatternsReadEveryNameOfTheTable|TestTheReviewWriterScanFindsAnIdentifierNamingTheTable)$' ./internal/dispatch/api
         working-directory: packages/envoy
+      # The two pure pins of packages/daemon's supervise table: they hold the table to the
+      # package's own source — a row or a named ignore for every event in every state, and one
+      # event type per kind — which sealed() reads by parsing every non-test .go file of the
+      # package (internal/supervise/table_test.go:27-58). They open no database and start no
+      # process, so they belong here rather than in the daemon's Postgres-backed Go suite; they
+      # sit in a package of machine-driving tests, so this step selects them by name, and the
+      # daemon-go plain step skips exactly these two by name. The list is generated in
+      # .github/scripts/ci_job_reads.py from SUPERVISE_TABLE_TESTS, which builds both steps'
+      # texts, so a pin added or renamed reaches both or fails the ci-filters job naming this
+      # step. The file's three other tests drive a machine and stay in that plain step.
+      - name: Test the supervise table's two pure pins (no database)
+        run: go test -count=1 -run '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$' ./internal/supervise/
+        working-directory: packages/daemon
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

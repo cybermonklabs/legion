@@ -5,11 +5,13 @@ name: CI job daemon-go
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
 # What runs here is the Go daemon's own tests — the plain step over every package of
-# packages/daemon but the three concurrent ones and the text checks, the race step over those
-# three, and the Stage 1 live proof, which builds ./cmd/legion and boots it against this job's
-# Postgres. They left ci.yaml's `test` job, which runs thirty-two shell-script harnesses and a
-# handful of Bun suites behind one filter: that filter had to cover everything the daemon's Go
-# closure reads, so a change to a shell script or to packages/claude-envoy ran
+# packages/daemon but the three concurrent ones and the text checks, less the two pure table
+# pins of internal/supervise, which the text-check job runs by name and this step skips by name,
+# the race step over those three packages, and the Stage 1 live proof, which builds ./cmd/legion
+# and boots it against this job's Postgres. They left ci.yaml's `test` job, which runs
+# thirty-two shell-script harnesses and a handful of Bun suites behind one filter: that filter
+# had to cover everything the daemon's Go closure reads, so a change to a shell script or to
+# packages/claude-envoy ran
 # 1,083 s (median) of Go tests that could not see it, and 28 of the 66 commits that touched
 # .github/scripts since 2026-10-01 changed no Go file at all (dispatch://INFRA-1413). With the
 # two suites in jobs of their own each runs on its own inputs: this job's filter is the daemon's
@@ -179,10 +181,20 @@ jobs:
       # that matches every package, fail the step rather than pass it with nothing tested. The
       # pattern is built in .github/scripts/ci_job_reads.py from the race step's own package
       # list and that one package name, so the two steps cannot name different sets.
+      #
+      # The -skip is the text-check job's two tests of internal/supervise, the pure table pins
+      # ci_job_reads.py's SUPERVISE_TABLE_TESTS names: they read that package's own source and
+      # no database, so they run in .github/workflows/ci-job-text-checks.yaml beside the other
+      # tests whose subject is text, where they wait behind no fixture, and a test run twice is
+      # a test whose second run tells nobody anything. The three other tests of
+      # internal/supervise/table_test.go drive a machine and run here. The names are written in
+      # .github/scripts/ci_job_reads.py (SUPERVISE_TABLE_TESTS), which builds this step's text
+      # and the other job's from the one list and holds each step to it, so the skip and the run
+      # cannot come to name different tests.
       - name: Test the Go daemon
         run: |
           set -o pipefail
-          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/textcheck)$' | xargs go test -count=1 -timeout 15m
+          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/textcheck)$' | xargs go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
         working-directory: packages/daemon
 
       # The outbox's lane registry, lease renewal and held clock are the daemon's first goroutines

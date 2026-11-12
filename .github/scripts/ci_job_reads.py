@@ -832,9 +832,6 @@ DAEMON_RACE_STEP = "Test the concurrent packages under the race detector"
 DAEMON_RACE_PKGS = [f"./{p}/" for p in DAEMON_RACE_PACKAGES]
 DAEMON_PLAIN_STEP = "Test the Go daemon"
 DAEMON_PLAIN_PATTERN = "/(" + "|".join(DAEMON_RACE_PACKAGES + [TEXT_CHECK_PACKAGE]) + ")$"
-DAEMON_PLAIN_SCRIPT = f"""\
-set -o pipefail
-go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs go test -count=1 -timeout 15m"""
 
 # The three tests of this module the plugin-pack job runs: the plugin pack test and the two tests
 # of agentmodels_omp_test.go (a fourth that loads a plugin on the real Oh My Pi,
@@ -957,6 +954,88 @@ def hold_plugin_pack_tests():
 
 
 hold_plugin_pack_tests()
+
+
+# ---------------------------------------------------------------- the supervise table's pure pins
+# The two tests of internal/supervise/table_test.go whose subject is the table itself rather than a
+# claim in motion: TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState, which holds every
+# event of the sealed set to a row or a named ignore in every state, and TestNoTwoEventTypesShareAKind.
+# Each reads the package's own source and nothing else - sealed() (table_test.go:27-58) parses every
+# non-test .go file of the directory - and neither starts a database, a container, tmux or jj, so
+# they are text-check work: they run in the text-checks job, where they wait behind no fixture, and
+# the daemon-go plain step, which runs their package, skips them by name, so each runs once per run
+# of the router (dispatch://INFRA-1413, R3).
+# The other three tests of that file drive a machine and stay in the plain step. Nothing of the file
+# moves package - all five read unexported identifiers of internal/supervise - which is why these
+# two are run by name rather than moved into a package of text checks.
+# Both step texts are built from this one list, and check-ci-filters.sh pins each step's whole
+# script, so the -skip and the -run cannot come to name different tests.
+SUPERVISE_TABLE_TESTS = ["TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState",
+                         "TestNoTwoEventTypesShareAKind"]
+SUPERVISE_TABLE_PACKAGE = "internal/supervise"
+SUPERVISE_TABLE_SOURCE = f"{DAEMON}/{SUPERVISE_TABLE_PACKAGE}"
+SUPERVISE_TABLE_STEP = "Test the supervise table's two pure pins (no database)"
+SUPERVISE_TABLE_PATTERN = f"'^({'|'.join(sorted(SUPERVISE_TABLE_TESTS))})$'"
+SUPERVISE_TABLE_SCRIPT = f"go test -count=1 -run {SUPERVISE_TABLE_PATTERN} ./{SUPERVISE_TABLE_PACKAGE}/"
+# The skip belongs to the step that would otherwise run these tests, so the two lists are held
+# together here rather than by a reader noticing: the plain step runs every package of the module but
+# the race step's three and the text checks, and this package moved into one of those while these
+# tests stayed here would run them in that step too.
+if SUPERVISE_TABLE_PACKAGE in DAEMON_RACE_PACKAGES + [TEXT_CHECK_PACKAGE]:
+    raise ValueError(f"the table pins are in {SUPERVISE_TABLE_PACKAGE}, which the plain step leaves out, so "
+                     f"nothing skips them there; name that package's step here, or move the -skip to the step "
+                     f"that runs them")
+DAEMON_PLAIN_SCRIPT = f"""\
+set -o pipefail
+go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs go test -count=1 -timeout 15m -skip {SUPERVISE_TABLE_PATTERN}"""
+
+
+def hold_supervise_table_tests():
+    """Refuse a SUPERVISE_TABLE_TESTS that is no longer the truth about internal/supervise's tests:
+    a name this list holds that no untagged file of the package declares as a test `go test` runs.
+    Held to nothing, a rename passes every other check green - a -run that matches nothing is a
+    pass, and the -skip then skips nothing - so the text-checks step would go on saying it runs
+    these pins while it ran no test at all, and the gate's pinned texts would agree with each other
+    about a name neither step could reach. A test is what hold_plugin_pack_tests() reads one as:
+    every top-level Test, Fuzz or Example of GO_TEST_FUNC, TestMain apart, and only in a file
+    carrying no //go:build line (GO_BUILD_LINE), since neither step passes -tags and a name behind a
+    constraint is one the -run cannot reach and the -skip need not skip.
+    hold_plugin_pack_tests()'s second rule - that its list name every test of the one file that job
+    took whole - is not ported here, because this list is part of a file's tests rather than all of
+    them. That rule holds a gate whose reads are keyed on test names: the plugin-pack gate declares
+    the lockfile, skills/ and the prepack because those three tests read them, so a test of that file
+    left out of the list would run in the daemon-go race step, whose filter names none of them. These
+    two pins read the package's own source alone, which both jobs' filters already carry - text_checks
+    through packages/daemon/**/*.go and daemon_go_tests through the module's own closure - so no read
+    moves with a name here, and a test of table_test.go this list does not name runs in the plain
+    step, which is where every test of this module runs unless something takes it out. Demanding the
+    whole file would refuse exactly the arrangement this list exists to make.
+    What this guard does not see is a test of one of these names declared by another package of the
+    module: the plain step's -skip is the module's, while this job's -run names ./internal/supervise/
+    alone, so such a test would be skipped in the one step and not run in the other.
+    go-test-step-expansion.py's unrun verdict is what finds that, as it finds every hole a -skip
+    leaves. The package's own files are what is scanned, and of those only the ones that write one of
+    these names, because the module's test files are 14 MB and go_code_only walks a file character by
+    character."""
+    declared = set()
+    for path in sorted(Path(SUPERVISE_TABLE_SOURCE).glob("*_test.go")):
+        text = path.read_text()
+        if not any(name in text for name in SUPERVISE_TABLE_TESTS) or GO_BUILD_LINE.search(text):
+            continue
+        declared.update(m.group(1) for m in GO_TEST_FUNC.finditer(go_code_only(text)) if m.group(1) != "TestMain")
+    gone = ", ".join(name for name in sorted(SUPERVISE_TABLE_TESTS) if name not in declared)
+    if gone:
+        raise ValueError(f"SUPERVISE_TABLE_TESTS names {gone}, which no untagged file of {SUPERVISE_TABLE_SOURCE} "
+                         f"declares as a test `go test` runs (a top-level `func Test…`, `func Fuzz…` or "
+                         f"`func Example…`, TestMain apart): the text-checks step's -run matches nothing of that "
+                         f"name and passes green, and the daemon-go plain step's -skip skips nothing, so the two "
+                         f"steps say between them that a test runs in a job where it does not. Neither step passes "
+                         f"-tags, so a declaration behind a //go:build line is no declaration here. Follow the "
+                         f"rename, take the constraint off the file the test is in, or take the name out and leave "
+                         f"the test to the plain step")
+
+
+hold_supervise_table_tests()
 
 
 # ---------------------------------------------------------------- the envoy race lane
@@ -1604,19 +1683,27 @@ GATES = [
     # below: with them goes the Bun install, which no other test of this module needs, and with
     # that the lockfile and the workspace manifests, and with them skills/ and the prepack script
     # that stages each plugin's partition of it, which no other test of this module reads.
+    # The plain step leaves two tests out as well, internal/supervise's table pins
+    # (SUPERVISE_TABLE_TESTS), which the text-check job runs by name: they read the package's own
+    # source and nothing else, so no read leaves this job with them.
     gate("daemon_go_tests", "daemon-go", runs=[
         script_run("scripts/e2e/stage1-skeleton.sh", 'go build -o "$work/legion" ./cmd/legion',
                    at("daemon-go", "Stage 1 live proof"), DAEMON, ["./cmd/legion"], mode="build"),
     ], exact=[
         # check-ci-filters.sh reduces only a one-line go test, so the step's whole script is
-        # pinned, as the envoy-go unit step's is. The Run names the module's packages but the
-        # text checks (packages_but), rather than the superset ./...: the race step's Run above
-        # claims the three packages this step also leaves out, which are this job's own, while
-        # the text checks are the text-check job's, and a Run saying ./... would keep what only
-        # their tests read - docs/kubernetes.md - on this job's filter.
+        # pinned, as the envoy-go unit step's is - and it carries a -skip besides, which is no
+        # form that check reduces either. What it compiles is every test file of every package
+        # it lists, the two skipped table pins' included: -skip leaves a test out of the run,
+        # never out of the build, so the closure here is the step's whole closure. The Run names
+        # the module's packages but the text checks (packages_but), rather than the superset
+        # ./...: the race step's Run above claims the three packages this step also leaves out,
+        # which are this job's own, while the text checks are the text-check job's, and a Run
+        # saying ./... would keep what only their tests read - docs/kubernetes.md - on this
+        # job's filter.
         pinned_step("daemon-go", DAEMON_PLAIN_STEP, DAEMON, DAEMON_PLAIN_SCRIPT, [
             (DAEMON, packages_but(DAEMON, TEXT_CHECK_PACKAGE),
-             "go list ./... piped into go test, counted as go test over the module but the text checks", {}),
+             "go list ./... piped into go test, counted as go test over the module but the text checks, the "
+             "supervise table's two pure pins skipped by name", {}),
         ]),
         # The race step carries a -skip, which is no form check-ci-filters.sh reduces either, so
         # its script is pinned too. What it compiles is every test file of the three packages,
@@ -2161,10 +2248,11 @@ GATES = [
     ) + setup_go("envoy-infra-go", f"{INFRA}/go.mod")),
 
     # The text-check job: one `go test` of each module's text checks, in that module's own
-    # directory, and the Dispatch API's source guards by name. Two workspaces meet here - the
-    # root go.work binds packages/daemon and packages/envoy, packages/envoy/infra's own binds
-    # itself and packages/envoy - so each Run's workspace names the module files it reads. No
-    # Bun and no database: nothing here starts either.
+    # directory, the Dispatch API's source guards by name, and the supervise table's two pure
+    # pins by name. Two workspaces meet here - the root go.work binds packages/daemon and
+    # packages/envoy, packages/envoy/infra's own binds itself and packages/envoy - so each Run's
+    # workspace names the module files it reads. No Bun and no database: nothing here starts
+    # either.
     gate("text_checks", TEXT_CHECK_JOB, runs=[
         *[step_run(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[module], TEXT_CHECK_TEXT, module, [TEXT_CHECK_PKG])
           for module in TEXT_CHECK_MODULES],
@@ -2175,6 +2263,14 @@ GATES = [
         # reads everything the API's tests read.
         pinned_step(TEXT_CHECK_JOB, GUARD_STEP, ENVOY, GUARD_SCRIPT, [
             (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's fifteen source-check tests in {GUARD_PACKAGE}", {}),
+        ]),
+        # The supervise table's two pure pins by name (SUPERVISE_TABLE_TESTS), which the
+        # daemon-go plain step skips: pinned whole for the same reason, and its Run is the plain
+        # go test of the package, since the step compiles every test file of internal/supervise
+        # whichever two the -run then selects.
+        pinned_step(TEXT_CHECK_JOB, SUPERVISE_TABLE_STEP, DAEMON, SUPERVISE_TABLE_SCRIPT, [
+            (DAEMON, [f"./{SUPERVISE_TABLE_PACKAGE}/"],
+             f"go test -run of the table's two pure pins in {SUPERVISE_TABLE_PACKAGE}", {}),
         ]),
     ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod")),
 
