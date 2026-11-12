@@ -56,7 +56,7 @@ const startRefusalCap = 256
 // (FirstServed): a launch the daemon could not answer is a launch it must not charge (Refused).
 // It reads that memory for supervision too, as the ending of a launch that did not survive and
 // the bound on how many of one claim's generations in a row it excuses (LaunchEnded,
-// LaunchWaived, Registered).
+// LaunchWaived), which only a ready this daemon answers ends (Readied).
 type Answering struct {
 	listener net.Listener
 	server   *http.Server
@@ -79,7 +79,7 @@ type Answering struct {
 	firstServed time.Time
 	// waivers is one entry per claim whose launch failures this process has waived, which is what
 	// bounds the waiver: it lives here, beside the refusals it is counted from, and goes with the
-	// daemon (LaunchEnded, LaunchWaived, Registered). No claim record carries it.
+	// daemon (LaunchEnded, LaunchWaived, Readied). No claim record carries it.
 	waivers map[claim.Token]waiverStreak
 }
 
@@ -97,7 +97,8 @@ type refusedLaunch struct {
 
 // waiverStreak is how many of one claim's generations this process has waived in a row, and the
 // generation the last of them was: a generation is counted once however many times its launch is
-// decided, and a registration this daemon accepts for the claim ends the run (Registered).
+// decided, and a ready this daemon accepts for the claim ends the run (Readied). A registration
+// it accepts does not (Registered).
 type waiverStreak struct {
 	generation uint64
 	count      int
@@ -206,12 +207,6 @@ func (a *Answering) Refused(token claim.Token, generation uint64, bootTokenHash 
 func (a *Answering) Ended(token claim.Token, generation uint64, bootTokenHash []byte) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.ended(token, generation, bootTokenHash)
-}
-
-// ended is Ended with mu held, for a caller that forgets more than one launch under it
-// (Registered).
-func (a *Answering) ended(token claim.Token, generation uint64, bootTokenHash []byte) {
 	if len(bootTokenHash) > 0 {
 		a.forget(refusedLaunch{hash: hex.EncodeToString(bootTokenHash)})
 	}
@@ -284,16 +279,38 @@ func (a *Answering) LaunchWaived(c supervise.Claim) {
 }
 
 // Registered is one registration of token this daemon answered and the claim's machine accepted
-// (server.register): the launch got what every waived launch was refused, so this process holds
-// nothing against the claim any more. It forgets what it refused of that launch and of every
-// earlier one (Ended, Superseded) and ends the run of waived generations, so a claim that reaches
-// a registration between two slow boots never walks into the waiver's bound. All three go under
-// one hold of mu, so no reader sees the claim half-forgiven.
+// (server.register): that launch got the answer its registration was refused, so this process
+// forgets the registration it refused of that launch, and everything it refused of every earlier
+// generation of the claim (Superseded). Both go under one hold of mu, so no reader sees the claim
+// half-forgiven.
+//
+// It ends nothing else. The ready this daemon refused of the same generation stays remembered: a
+// registration accepted and a ready then refused is a launch this daemon still has not answered.
+// And the run of waived generations goes on: a registration proves nothing about the next
+// launch — the launch budget is reset at the agent's ready, not at its registration (supervise's
+// ready) — so a daemon that accepts every registration and refuses every ready would otherwise
+// waive the claim's generations for ever, which R6's bound exists to stop. Only an accepted ready
+// ends the run (Readied).
 func (a *Answering) Registered(token claim.Token, generation uint64, bootTokenHash []byte) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.ended(token, generation, bootTokenHash)
+	if len(bootTokenHash) > 0 {
+		a.forget(refusedLaunch{hash: hex.EncodeToString(bootTokenHash)})
+	}
 	a.superseded(token, generation)
+}
+
+// Readied is one ready of token this daemon answered and the claim's machine accepted
+// (server.ready): the agent of that generation came up, which is the moment the launch budget
+// counts a launch as one that worked (supervise's ready resets the claim's launch failures). It
+// ends the run of waived generations, so the next waived ending is the first of a new run, and it
+// forgets the ready this daemon refused of that generation, if it refused one: the generation got
+// its answer, and a later death of it is an ordinary ending, charged like any other. Both go under
+// one hold of mu.
+func (a *Answering) Readied(token claim.Token, generation uint64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.forget(refusedLaunch{token: token, generation: generation})
 	delete(a.waivers, token)
 }
 

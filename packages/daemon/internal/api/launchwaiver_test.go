@@ -214,11 +214,11 @@ func TestTheChargeStandsAgainAfterTheWaiverLimit(t *testing.T) {
 	})
 }
 
-// A registration this daemon answers and the claim's machine accepts ends the run of waived
-// generations and clears what the daemon refused of that claim: the launch got what every waived
-// launch was refused, so a claim that reaches a registration between two slow boots never walks
-// into the waiver's bound.
-func TestAnAcceptedRegistrationClearsTheClaimsRefusalsAndItsWaivers(t *testing.T) {
+// A registration this daemon answers and the claim's machine accepts clears what the daemon
+// refused of that launch's registration, and a ready it answers and the machine accepts ends the
+// run of waived generations: the agent came up, which is what every waived launch was refused, so
+// a claim whose agent comes up between two slow boots never walks into the waiver's bound.
+func TestAnAcceptedReadyEndsTheRunOfWaivedGenerations(t *testing.T) {
 	h := servingHarness(t)
 	limit := h.supervisor.deps.Limits.LaunchFailures
 	token, boot := h.launch("LEGION-2883", claim.RoleImplementer)
@@ -227,11 +227,13 @@ func TestAnAcceptedRegistrationClearsTheClaimsRefusalsAndItsWaivers(t *testing.T
 		boot = h.relaunch(token)
 	}
 
-	h.registered(boot, "ses_implementer")
-
-	if h.refusals.Refused(token, h.stored(token).Generation, supervise.HashBootToken(boot)) {
+	registered := h.registered(boot, "ses_implementer")
+	generation := h.stored(token).Generation
+	if h.refusals.Refused(token, generation, supervise.HashBootToken(boot)) {
 		t.Fatal("the accepted launch is still remembered as refused, want the memory cleared")
 	}
+	h.readyWith(token, "ses_implementer", registered.Secret, generation)
+
 	// The run is over, so the next launch this daemon refuses is waived again rather than
 	// charged against a budget the earlier slowness had spent.
 	boot = h.relaunch(token)
@@ -239,6 +241,53 @@ func TestAnAcceptedRegistrationClearsTheClaimsRefusalsAndItsWaivers(t *testing.T
 	h.relaunch(token)
 
 	h.wantLaunchBudget(token, 1, "only the generation no refusal ended is charged")
+}
+
+// An accepted registration does not answer the ready this daemon refused of the same generation:
+// a launch whose ready was refused and whose agent then registered again has still had no ready
+// answered, so the generation's ending is waived for that refusal.
+func TestAnAcceptedRegistrationKeepsTheReadyItsGenerationWasRefused(t *testing.T) {
+	h := servingHarness(t)
+	token, boot := h.launch("LEGION-2883", claim.RoleImplementer)
+	h.registered(boot, "ses_implementer")
+	h.refusals.RefusedReady(token, 1)
+
+	h.registered(boot, "ses_implementer")
+
+	if !h.refusals.Refused(token, 1, nil) {
+		t.Fatal("the generation's refused ready is forgotten at its registration, want it remembered until a ready is answered")
+	}
+	h.relaunch(token)
+	h.wantLaunchBudget(token, 0, "this daemon refused the generation's ready and answered none")
+}
+
+// A ready this daemon refused and then answered, on a later try of the same generation, is a ready
+// that generation got: the refusal goes with the answer, so a later death of that working
+// generation is charged like any other rather than waived for a refusal its agent outlived.
+func TestAnAnsweredReadyForgetsTheReadyItsGenerationWasRefused(t *testing.T) {
+	h := servingHarness(t)
+	token, boot := h.launch("LEGION-2883", claim.RoleImplementer)
+	registered := h.registered(boot, "ses_implementer")
+	h.refusals.RefusedReady(token, 1)
+
+	h.readyWith(token, "ses_implementer", registered.Secret, 1)
+
+	if h.refusals.Refused(token, 1, nil) {
+		t.Fatal("the generation's refused ready is still remembered after a ready of it was answered")
+	}
+	h.relaunch(token)
+	h.wantLaunchBudget(token, 1, "the generation's ready was answered, so its death is an ordinary one")
+}
+
+// readyWith posts the ready of session on token's launch at generation, with the secret its
+// registration was issued, and holds the route to the 204 an accepted ready answers.
+func (h *harness) readyWith(token claim.Token, session, secret string, generation uint64) {
+	h.t.Helper()
+	if recorder := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
+		ClaimToken: token, SessionID: session, Secret: secret, Generation: generation,
+	}, nil); recorder.Code != http.StatusNoContent {
+		h.t.Fatalf("ready %s at generation %d = %d, want 204; body %s", token, generation, recorder.Code, recorder.Body)
+	}
 }
 
 // The waiver's bound holds for a refused ready too. A daemon that accepts each registration of a

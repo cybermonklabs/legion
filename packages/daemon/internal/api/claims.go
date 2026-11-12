@@ -195,14 +195,27 @@ func boundSpent(ctx context.Context, err error) bool {
 }
 
 // registrationAccepted is what a registration this daemon answered and the claim's machine
-// accepted owes this process's memory: nothing of what it refused of this claim is left to
-// waive, and the run of generations it has waived ends here (Answering.Registered,
-// dispatch://INFRA-2883 R6). A deployment that keeps no such memory has nothing to forget.
+// accepted owes this process's memory: the registration it refused of that launch, and whatever
+// it refused of the claim's earlier generations, are no longer waivers to give
+// (Answering.Registered, dispatch://INFRA-2883 R6). The run of waived generations goes on to the
+// ready (readyAccepted). A deployment that keeps no such memory has nothing to forget.
 func (s *server) registrationAccepted(launch BootToken, bootToken string) {
 	if s.refusals == nil {
 		return
 	}
 	s.refusals.Registered(launch.Claim, launch.Generation, supervise.HashBootToken(bootToken))
+}
+
+// readyAccepted is what a ready this daemon answered and the claim's machine accepted owes this
+// process's memory: the generation came up, so the ready it refused of that generation is no
+// longer a waiver to give, and the run of generations it has waived ends here
+// (Answering.Readied, dispatch://INFRA-2883 R6). A deployment that keeps no such memory has
+// nothing to forget.
+func (s *server) readyAccepted(token claim.Token, generation uint64) {
+	if s.refusals == nil {
+		return
+	}
+	s.refusals.Readied(token, generation)
 }
 
 // postStaleRelaunch posts to the claim's machine the relaunch its stale registration raised,
@@ -237,7 +250,8 @@ func (s *server) promptAgentsList() []string {
 // It answers within the registration's own bound (Options.WorkerRPCTimeout, register), since its
 // refusal is the same answer: an agent whose ready never returns is an agent that cannot be
 // prompted, and one told to retry asks again. A ready whose machine is busy for the whole bound
-// takes nothing and is remembered as a launch this process did not answer.
+// takes nothing and is remembered as a launch this process did not answer; one the machine
+// accepts ends the claim's run of waived generations (readyAccepted).
 func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := s.bound(w, r)
 	defer cancel()
@@ -272,6 +286,7 @@ func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 		s.claimFailure(w, "ready", req.ClaimToken, err)
 		return
 	}
+	s.readyAccepted(req.ClaimToken, req.Generation)
 	c := published(m)
 	if req.Capabilities != nil {
 		report := s.capabilityReport(c, req)
