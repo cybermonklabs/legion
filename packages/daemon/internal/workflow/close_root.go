@@ -41,7 +41,7 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 		return intake.Result{}, err
 	}
 	if len(open) > 0 {
-		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not closed while these issues beneath it are still in the workflow: %s. Closing it would linger the tree and stop them mid-turn; take each one to done, or out of the workflow with park_child, and close the tree again",
+		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not closed while these issues beneath it are still in the workflow: %s. Closing it would linger the tree and stop them mid-turn; run each one to done, and close the tree again. Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. Ask the person what to do with every other child, and hold the close until they answer",
 			root.Key, strings.Join(open, ", "))), nil
 	}
 	if err := e.enqueue(ctx, tx, root.Key, record.StatusWrite{Status: "done", ObservedStatus: root.Status, Reason: fact.Message()}); err != nil {

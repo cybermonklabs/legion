@@ -138,8 +138,6 @@ instructions name for Legion's reports, else the project's `Legion daily report`
 closes, its close withdraws its open asks (a reopen brings them back), and Dispatch refuses their
 answers (`409 ISSUE_CLOSED`). The question names the issue the finding came from by its
 `dispatch://` reference.
-The report issue holds no work, so that `icebox` is not a park of work (`skill://dispatch`,
-"Choosing what to work on").
 
 When the project has no report issue yet, or a person closed it (`dispatch read` shows `Status:
 done`, and Dispatch refuses the ask with `409 ISSUE_CLOSED`), do not create or reopen one yourself

@@ -1,5 +1,5 @@
 kind: Changed
-body: 'The Dispatch and Legion skills this plugin ships state one rule for taking an issue off the queue: move it to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Each limit the texts state now carries the action that replaces the move, which writes no status, changes no priority and moves nothing on the board.'
+body: 'The Dispatch skill this plugin ships no longer sends a waiting issue, or every issue past the third, to `backlog`. It states one rule instead: move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. It also states what a session does when it stops work: release the claim, say why in a comment, record the wait as a `blocked_by` link or a `dispatch ask`, and leave the status, the priority and the board rank as it found them.'
 time: 2026-11-12T09:18:43.581792635Z
 custom:
     Issue: pr3785

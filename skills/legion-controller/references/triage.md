@@ -64,7 +64,7 @@ Read this on a `triage` wake, at every start, and when a person hands you an iss
    the request asks for a longer deferral, instead of leaving it in `triage`; the label stays.
    Park a root only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
    Never park a root for lack of a free slot, because in `todo` the daemon's waiting line already
-   holds it until a slot frees: leave the root in `todo` and report the capacity to the person in
+   holds it until a slot frees: admit it as step 3 says, and report the capacity to the person in
    the day's report.
 5. For a root you admitted or parked, comment on the issue (`dispatch comment`) what you decided
    and why. For a root you parked, cite in that comment the person's request behind the park: the

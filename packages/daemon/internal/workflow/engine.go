@@ -901,7 +901,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 		return intake.Result{}, err
 	}
 	if len(open) > 0 {
-		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. A parent's head proves its children's merged work, so it is accepted after them: take each one to done, or out of the workflow with park_child, and sign off again",
+		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. A parent's head proves its children's merged work, so it is accepted after them: run each one to done, and sign off again. Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. Ask the person what to do with every other child, and hold the acceptance until they answer",
 			issue.Key, strings.Join(open, ", "))), nil
 	}
 	review, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)

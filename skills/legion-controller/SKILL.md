@@ -72,7 +72,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |
 | `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation |
-| `worker-died on <KEY>` (`role: "architect"`) | Re-admit once its cause is gone; otherwise record the cause and ask the person |
+| `worker-died on <KEY>` (`role: "architect"`) | Re-admit once its cause is gone; otherwise record the cause and ask the person with a `dispatch ask` |
 | `worker-stalled on <KEY>` (`role: "architect"`) | Nothing, unless the notice says the claim failed: its turn was ended, its task is still owed, and the notice says what became of its process |
 | `update-stalled on <KEY>` | `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled` |
 | `provider-errors on <KEY>` | Name the run and its model in the day's report; send it to the issue's architect; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
@@ -134,7 +134,6 @@ A free slot is no reason to take an issue: a labelled root in `todo` takes the n
 `admission.waiting` without you, and a parked issue (status `backlog` or `icebox`) means "do not
 run now". Move an issue out of `backlog` or `icebox` only on a request or a plan directive that names
 it, and cite that request. A free slot is no reason to park an issue, and a full cap is no reason either.
-Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
 Report the free slots, or the full cap, to the person in the day's report, and move nothing for them.
 A slot is one issue the daemon has started, a root or a child, not one
 tree: a tree of four started issues holds four slots. An issue takes its slot when the daemon

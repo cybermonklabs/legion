@@ -8,8 +8,7 @@ answer a finding ask: the report issue holds them all.
 Use the issue the deployment instructions name for Legion's reports. With none named, use the
 project's `Legion daily report` issue:
 `dispatch search --query '"Legion daily report"' --project <PROJECT>`. When it does not exist,
-create it once (the one issue you file unasked) and park it in `icebox`, so nobody takes it as
-work.
+create it once (the one issue you file unasked) and park it in `icebox`.
 The report issue holds no work, which is why it stays in `icebox`, and it is the one issue you
 park with no person's request behind it:
 you move every other issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
@@ -72,6 +71,9 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own
   merge) or its link is taken off (by a person or the tree's architect), and a children-first wait
   ends when the last open child leaves the workflow, so take nothing for them.
+- **Waiting on a person.** Each tree whose next step waits on a person's answer, with that ask's
+  `dispatch://` reference, until they answer. Each row of the weekly plan that moved nothing,
+  because no person's request stands behind it.
 - **Free slots.** Counted as the skill's "Free slots" says, in issues rather than trees; each
   stays free until an issue in the line takes it.
 - **Open capabilities.** Each row of `read_state`'s `capabilities` whose `status` is `open`: its

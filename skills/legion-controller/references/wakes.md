@@ -98,12 +98,13 @@ with no `holdReason` while its tree lingers (the time after its root closes when
 it) or is closed waits for the tree's re-admission and needs nothing from you.
 
 When an escalated hold's cause is not gone, do not park the tree. The tree stays admitted and
-keeps its slot. Post one comment on the root (`dispatch comment --issue <root> --body-file -`)
-that records what the held phase waits on (the payload's `phase` and `role`, and the held issue's
-`dispatch read`), and ask the person in it whether to park the tree. Name the tree in the day's
-report until they answer.
+keeps its slot. Open a `dispatch ask` on the report issue that asks the person whether to park
+the tree, with the options `Park it` and `Leave it admitted`. Post one comment on the root
+(`dispatch comment --issue <root> --body-file -`) that records what the held phase waits on (the
+payload's `phase` and `role`, and the held issue's `dispatch read`) and that ask's `dispatch://`
+reference. Name the tree in the day's report until they answer.
 Park the tree only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
-Cite that answer in the comment you post with the park, and make that comment's first line `Parked by
+Cite the ask's answer in the comment you post with the park, and make that comment's first line `Parked by
 Legion while it waits on: <the hold's cause>`, because that mark is what makes the park Legion's
 own hold (`skill://legion-controller/references/parked-decisions.md#deciding`, step 2). Set the
 root back to `todo` only when you checked that the hold's cause is gone, a person asks, or a
@@ -123,10 +124,11 @@ architect's last message on the root issue. When you find none, or it is gone, r
 architect starts with fresh budgets). That pair is a restart and not a park: the daemon re-admits
 only a root whose tree lingers or is done, so the `backlog` write is how a restart reaches `todo`.
 When the cause stays, the tree stays admitted and keeps its slot, because a relaunch would fail
-the same way. Record the cause in a comment on the root, and ask the person in it whether to park
-the tree.
+the same way. Open a `dispatch ask` on the report issue that asks the person whether to park the
+tree, with the options `Park it` and `Leave it admitted`. Record the cause and that ask's
+`dispatch://` reference in a comment on the root.
 Park the tree only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
-Cite that answer in the park's comment.
+Cite the ask's answer in the park's comment.
 
 ## `worker-stalled on <KEY>` (`{kind: "worker-stalled", role: "architect", reason}`)
 

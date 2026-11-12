@@ -98,11 +98,13 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // `triage`: the two sentences it deleted sent a waiting issue and every issue past the third to
 // `backlog`, and the rule that replaces them holds such a move to one a person asked for, or to
 // work that is done, folded into another issue or no longer needed, cited in a comment on the
-// issue. The new section costs 131 words against the 76 it replaced, and the payments inside the
-// three skills give 10 back: 8 from the deleted line saying that `unresponsive` holders keep
-// their claims 20 minutes, whose rule is `skill://envoy`'s, which every role reads, and 2 from
-// tightening that same skill's claim sentence. The measured total after it is 2,418, and every
-// further cut would delete a rule a reader needs.
+// issue. The ledger, measured as this test counts words: the three bullets the section deleted
+// were 50 words, and the six that replace them are 181, so the section costs 131. Two payments
+// in the three skills give 10 back: 8 from the deleted line saying that `unresponsive` holders
+// keep their claims 20 minutes, whose rule is `skill://envoy`'s, which every role reads, and 2
+// from tightening that same skill's claim sentence. The base total was 2,297, so
+// 2,297 + 131 - 10 = 2,418, the measured total, and every further cut would delete a rule a
+// reader needs.
 test("the three Dispatch skills total fewer than 2,420 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
