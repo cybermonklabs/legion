@@ -266,7 +266,11 @@ func liveAttrs(node *Node) Attrs {
 			continue
 		}
 		if attrs == nil {
-			attrs = make(Attrs, len(node.Attrs)+1)
+			// The size of a map's make is a hint that nothing reads, so it names the
+			// attributes copied below rather than them and the live null set after: a sum
+			// of a length is what the overflow check refuses, and the map holds the same
+			// entries either way.
+			attrs = make(Attrs, len(node.Attrs))
 			for key, current := range node.Attrs {
 				attrs[key] = current
 			}
