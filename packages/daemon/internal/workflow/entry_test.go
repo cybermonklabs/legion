@@ -351,9 +351,11 @@ func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 
 // seedEntryRow records role's phases row as a transition of the run before the fact under test
 // left it: on the seeded entry, carrying that entry's work, the moment it was raised and the
-// reading that the start which raised it moved the issue back. That last is seeded true so that
-// a start which wrote the value would be seen writing it: every start of these fixtures hands
-// the role no new work, and false is what a write would leave behind.
+// reading that the start which raised it moved the issue back. That last is seeded true because
+// no start of these fixtures writes true: one that hands the role no new work writes nothing
+// here at all, and the row is read back as it stood (assertEntryUntouched), while the forward
+// move of TestTheEntryCarriesWhetherTheMoveThatRaisedItMovedBack raises the entry and writes
+// false over it. So true is the reading that stands only where no start wrote one.
 func seedEntryRow(t *testing.T, pool *pgxpool.Pool, role claim.Role, held claim.Token) {
 	t.Helper()
 	seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: role, Claim: held, Entry: seededEntry,

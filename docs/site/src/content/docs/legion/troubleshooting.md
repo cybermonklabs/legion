@@ -1013,19 +1013,21 @@ These arrive as messages on the Dispatch issue:
   is recorded.
   The refusal names the issue, the role and the phase, the entry the completion is of and the entry
   the role's phases row is on.
-  It then names what decided it, and that reading is one of three.
+  It then names what decided it, and that reading is one of four.
   The completion is at another commit than the head the record holds, or the record holds no pull
   request for the issue.
   After a red the new testing entry is for the head the fix pushed, and the verdict on the head
   before it answers for nothing there.
   The completion names no commit at all, so it says nothing about any head.
+  The phase ends with no handoff record this role writes — retro's, and the merger's `READY` — so
+  nothing the completion names says which entry's work it is, and no head it reports on answers
+  for it.
   The move that handed the phase out again moved the issue back, which asks for this phase's work
   to be done again whatever head the completion names.
   A completion at the head the record holds is taken rather than refused, where the phase ends with
-  a handoff record this role writes: the phase was handed out again at that same head, so the work
-  the new entry's task asks for is the work that turn did.
-  Retro and the merger's `READY` write no handoff record, so a completion of theirs behind its
-  entry is refused whatever head it names.
+  a handoff record this role writes and no move back raised the entry it is behind: the phase was
+  handed out again at that same head, so the work the new entry's task asks for is the work that
+  turn did.
   The refused worker ends that turn without completing, and reports that commit and that verdict no
   further.
   The task of the entry the role is on now — which arrives as the session's next prompt — is work

@@ -4340,7 +4340,7 @@ every claim is launched by the package's fake runtime, which provisions its own 
 The issue, its pull request, its slot and the implementer's claim are seeded through the store, as every daemon test seeds its fixture;
 no `phases` row is, so every entry the fence reads is raised live, by the starts the completions and the move back make.
 The configuration, the store and its migrations, the HTTP API, the claim supervision and its worker stream, `openWorkflow`, the JetStream consumers and the outbox lanes are the real ones.
-The store is read for one thing no route shows, and that thing is the fence's own input: whether the entry the tester's phases row stands on was raised by a move back.
+The store is read for the tester's own `phases` row, which no route shows whole: the fence's input, whether the entry that row stands on was raised by a move back, and, after the refusal, the verdict and the handoff commit a refused completion must leave unwritten there.
 `BACKWARD_MOVE_FENCE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log and the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`.
 
 ## phase-entry-converge.sh

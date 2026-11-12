@@ -287,7 +287,8 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 		head := recordedHead(position.pullRequest)
 		if position.entryMovedBack || !behindAtRecordedHead(recordBacked, req.Commit, head) {
 			writeFailure(w, http.StatusConflict, "HANDOFF_STALE_ASSIGNMENT",
-				staleEntry(grant.Issue, grant.Role, issue.Phase, position.entry, entry, c.Pending, req.Commit, head, position.entryMovedBack))
+				staleEntry(grant.Issue, grant.Role, issue.Phase, position.entry, entry, c.Pending,
+					entryHeadClause(recordBacked, req.Commit, head, position.entryMovedBack)))
 			return
 		}
 	}
@@ -532,7 +533,9 @@ func recordedHead(pr *record.PullRequest) string {
 }
 
 // behindAtRecordedHead is whether a completion of a phase entry the issue has moved past is a
-// verdict on head, the head the record holds, which is the one case the entry fence lets through
+// verdict on head, the head the record holds, which is the reading under which the entry fence
+// takes such a completion rather than refusing it — and it takes it only where the entry the
+// phase stands on was raised by no move back, the second reading that fence makes
 // (handoffComplete). A verdict is a fact about a head rather than about an entry: when the phase
 // was entered again at that same head, the work the current entry's task asks for is the work this
 // completion reports, and refusing it would send the worker over the same commit for the same
@@ -553,19 +556,30 @@ func behindAtRecordedHead(recordBacked bool, commit, head string) bool {
 	return recordBacked && commit != "" && commit == head
 }
 
-// entryHeadClause is the clause staleEntry carries of what decided the refusal: the commit the
-// completion gave, or that it gave none, and the head the record holds for the issue, or that it
-// holds no pull request at all; and, where movedBack, that the entry the phase stands on was
-// raised by a move back, which is what refuses this completion whatever those two heads read.
-func entryHeadClause(commit, head string, movedBack bool) string {
+// entryHeadClause is the clause staleEntry carries of what decided the refusal, and the one place
+// that wording lives. Where the phase ends with no handoff record this role writes (recordBacked
+// false: retro and the merger's READY), it says that and names no head, because nothing such a
+// completion carries says which entry's work it is and so no head it reported on could have
+// taken it — a clause naming the two heads would answer a worker refused at the very head the
+// record holds with the one reading under which a completion is taken. The move that raised the
+// entry is left unsaid there too: the missing record refuses that completion whatever the move
+// was. Otherwise the clause is the commit the completion gave, or that it gave none, against the
+// head the record holds for the issue, or that it holds no pull request at all; and, where
+// movedBack, that the entry the phase stands on was raised by a move back, which is what refuses
+// this completion whatever those two heads read.
+func entryHeadClause(recordBacked bool, commit, head string, movedBack bool) string {
+	if !recordBacked {
+		return "this phase ends with no handoff record this role writes, so nothing this completion names says which entry's work it is"
+	}
 	gave := "this completion names no commit"
 	if commit != "" {
 		gave = "this completion is at commit " + commit
 	}
-	clause := gave + " while the record holds no pull request for the issue"
+	holds := "the record holds no pull request for the issue"
 	if head != "" {
-		clause = gave + " while the pull request the record holds is at head " + head
+		holds = "the pull request the record holds is at head " + head
 	}
+	clause := gave + " while " + holds
 	if movedBack {
 		clause += ", and the move that handed the phase out again moved the issue back, which asks for this phase's work to be done again, so no verdict on either head answers for it"
 	}
@@ -589,15 +603,16 @@ func entryHeadClause(commit, head string, movedBack bool) string {
 // head before it would become that head's. The worker does the new task's work and writes a
 // handoff of its own for it.
 //
-// Which is why it names the two heads (entryHeadClause): a behind completion already at the head
-// the record holds is taken rather than refused (behindAtRecordedHead), so the commit this one
-// gave — or that it gave none — and that head are what decided this refusal, and the worker reads
-// which of the two it was. movedBack is the one reading that outranks them both: the entry the
-// phase stands on was raised by a move back, so the clause says that instead of leaving a worker
-// to read a refusal at the very head it reported on with nothing to explain it.
-func staleEntry(issue string, role claim.Role, p phase.Phase, current, serving int64, pending *supervise.Delivery, commit, head string, movedBack bool) string {
+// Which is why it carries the clause of what decided it (entryHeadClause), as one parameter: a
+// behind completion is taken rather than refused where the phase ends with a handoff record this
+// role writes and the commit it names is the head the record holds (behindAtRecordedHead), and
+// where no move back raised the entry it is behind. So the clause says which of those readings
+// refused this completion — the commit it gave against the head the record holds, that the phase
+// ends with no such record at all, or that the entry the phase stands on was raised by a move
+// back, which outranks both heads — and the wording of all of them lives in that one function.
+func staleEntry(issue string, role claim.Role, p phase.Phase, current, serving int64, pending *supervise.Delivery, clause string) string {
 	stale := fmt.Sprintf("%s handed the %s phase %s again: this completion is of entry %d, which is %d behind the entry %d the phase is on, and %s; nothing was recorded",
-		issue, role, p, serving, current-serving, current, entryHeadClause(commit, head, movedBack))
+		issue, role, p, serving, current-serving, current, clause)
 	if pending != nil && pending.Entry == current {
 		return fmt.Sprintf("%s: your turn began before the daemon's task for entry %d (%s) reached this session. End this turn without completing; that task arrives as your next prompt, and it is work of its own — do what it asks at the head it names and complete it with a handoff of its own, never this completion's record, commit or verdict",
 			stale, current, pending.ID)
@@ -914,8 +929,9 @@ func (s *server) readyRecord(ctx context.Context, issue string) (*record.PullReq
 // testing, and reviewing pass from the last — the handoff record the implementer last named for a
 // file-backed phase (record.PhaseRow.LastHandoff), the phase entry the completing role's current
 // phase is on (record.PhaseRow.Entry, 0 on a row no start has stamped) and whether the start
-// that raised it moved the issue back (record.PhaseRow.EntryMovedBack), its pull request record,
-// nil while none is recorded, and its production check, nil while none was ever opened.
+// that raised it moved the issue back (record.PhaseRow.EntryMovedBack), its pull request record
+// where this route has a reader for it (handoffPosition), nil where it has none and while none
+// is recorded, and its production check, nil while none was ever opened.
 type completionPosition struct {
 	issue          *record.Issue
 	treeGeneration uint64
@@ -957,15 +973,21 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	implementer := record.PhaseRowOf(rows, claim.RoleImplementer)
 	completing := record.PhaseRowOf(rows, role)
 	round, lastHandoff := implementer.Rounds, implementer.LastHandoff
-	// The pull request is read whatever phase the issue is in, because two readers of this
-	// position need it and only one of them is implementing's: the implementer's completion holds
-	// its move to testing to an open pull request (implementationPullRequest), and the entry fence
-	// asks whether a completion behind its entry is a verdict on the head the record holds
-	// (behindAtRecordedHead), which it must answer for every phase that ends with a handoff
-	// record, the tester's and the reviewer's as much as the implementer's.
-	pr, err := s.records.PullRequest(ctx, tx, key)
-	if err != nil {
-		return completionPosition{}, err
+	// The pull request has two readers in this route and is read for whichever of them this
+	// completion can reach, never for one neither can: the check-report branch, which every
+	// production check's report takes, reads no head at all. The implementer's completion holds
+	// its move to testing to an open pull request (implementationPullRequest), in implementing
+	// and in no other phase. The entry fence asks whether a completion behind its entry is a
+	// verdict on the head the record holds (behindAtRecordedHead), in every phase that ends with
+	// a handoff record, the tester's and the reviewer's as much as the implementer's — and only
+	// a row at entry 2 or above can have a completion behind it: entries start at 1 and rise by
+	// one, so a row at 1 has no earlier entry a completion could be of, and a row at 0 is one
+	// that fence does not compare at all (handoffComplete).
+	var pr *record.PullRequest
+	if issue.Phase == phase.Implementing || completing.Entry > 1 {
+		if pr, err = s.records.PullRequest(ctx, tx, key); err != nil {
+			return completionPosition{}, err
+		}
 	}
 	check, err := s.records.ProductionCheck(ctx, tx, key)
 	if err != nil {

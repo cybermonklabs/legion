@@ -449,7 +449,9 @@ func TestABehindCompletionAwayFromTheRecordedHeadIsRefused(t *testing.T) {
 // commit and nothing that says which entry's work it is: the record that would have named the
 // phase, and that HANDOFF_RECORD_MISMATCH and HANDOFF_NOT_NEW hold a completion to, was never
 // written. Each is refused behind its entry however its commit reads — here at the very head the
-// record holds, which is what takes a tester's.
+// record holds, which is what takes a tester's — and the refusal says that missing record is what
+// decided it and names no head: at this head, naming the two would answer the worker with the one
+// reading under which a behind completion is taken.
 func TestABehindCompletionOfAPhaseWithNoRecordIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -471,7 +473,7 @@ func TestABehindCompletionOfAPhaseWithNoRecordIsRefused(t *testing.T) {
 				http.StatusConflict, "HANDOFF_STALE_ASSIGNMENT")
 			for _, want := range []string{
 				fmt.Sprintf("LEGION-208 handed the %s phase %s again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on", tc.role, tc.at),
-				"this completion is at commit " + headSHA + " while the pull request the record holds is at head " + headSHA,
+				"this phase ends with no handoff record this role writes, so nothing this completion names says which entry's work it is",
 				"nothing was recorded",
 			} {
 				if !strings.Contains(message, want) {
@@ -644,23 +646,11 @@ func takeTask(t *testing.T, h *harness, token claim.Token, id, task string, entr
 
 // queueTask is takeTask's delivery without the turn that confirms it: the task waits on the claim
 // unacknowledged, as one the outbox sent and the worker has not read, so the claim goes on serving
-// the entry its last confirmed task carried (supervise.Claim.ServingEntry).
+// the entry its last confirmed task carried (supervise.Claim.ServingEntry). It is deliverPhaseTask
+// for a delivery of no phase, which is what every task these tests queue by hand carries.
 func queueTask(t *testing.T, h *harness, token claim.Token, id, task string, entry int64, generation uint64) {
 	t.Helper()
-	ctx := context.Background()
-	machine, ok := h.supervisor.Machine(token)
-	if !ok {
-		t.Fatalf("no machine for %s", token)
-	}
-	if machine.Claim().State == supervise.StateWorking {
-		if err := machine.Handle(ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
-			t.Fatalf("end the turn of %s: %v", token, err)
-		}
-	}
-	if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: task, ID: id,
-		Generation: generation, Entry: entry}); err != nil {
-		t.Fatalf("deliver %s to %s: %v", id, token, err)
-	}
+	deliverPhaseTask(t, h, token, id, task, "", entry, generation)
 }
 
 // recordedCompletions is how many completions of role on LEGION-208 are recorded as processed.
@@ -678,10 +668,15 @@ func recordedCompletions(t *testing.T, h *harness, role claim.Role) int {
 // workflowRuntime.phaseHolds in production: a task carries the phase and the run it was queued
 // for, and one the issue has left is dropped rather than sent. The harness wires none of its own,
 // so every delivery holds until a test asks for this.
+//
+// It must be called before the test creates its first claim: testSupervisor.Create copies deps
+// by value into each machine it makes (supervise.NewMachine), so a machine made before this call
+// carries no hook of it at all and every delivery of that machine's holds (supervise's
+// phaseHolds), which is a test passing with the rule it is about never asked.
 func holdPhases(h *harness) {
 	h.supervisor.deps.PhaseHolds = func(ctx context.Context, key string, queuedFor phase.Phase, generation uint64) (bool, error) {
 		var issue *record.Issue
-		if err := pgx.BeginFunc(ctx, h.store.Pool(), func(tx pgx.Tx) error {
+		if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
 			var err error
 			issue, err = record.NewStore().Issue(ctx, tx, key)
 			return err
@@ -692,8 +687,8 @@ func holdPhases(h *harness) {
 	}
 }
 
-// deliverPhaseTask is queueTask for a start of a phase: the delivery names the phase it was
-// queued for, which is what puts it to the question a workflow task is sent under (holdPhases).
+// deliverPhaseTask is the delivery both helpers make, with the phase a start of a phase carries:
+// naming it is what puts the task to the question a workflow task is sent under (holdPhases).
 // The tasks queueTask hands out name none and are never put to it.
 func deliverPhaseTask(t *testing.T, h *harness, token claim.Token, id, task string, p phase.Phase, entry int64, generation uint64) {
 	t.Helper()

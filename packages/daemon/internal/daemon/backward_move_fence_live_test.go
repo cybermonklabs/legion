@@ -30,9 +30,11 @@
 // settlement that sends the work back; the daemon's own HTTP routes for each role's registration,
 // readiness, grants, completions and the reviewer's backward move; and the daemon's worker stream
 // for each role's turns, which this driver speaks as `legion worker-shim` does (shimwire frames).
-// Every assertion is a read of GET /legion/v1/state or of the operator's claim listing, but one:
-// the fence's own input, whether the entry the tester's phases row stands on was raised by a move
-// back, which no route shows and which the proof reads from the daemon's own store.
+// Almost every assertion is a read of GET /legion/v1/state or of the operator's claim listing.
+// What neither shows is the tester's phases row, which the proof reads from the daemon's own
+// store for two things: the fence's own input, whether the entry the row stands on was raised by
+// a move back, and what a refusal must leave unwritten there, the verdict and the handoff commit
+// of the completion step 5 drives.
 //
 // What the proof stands in for lies outside the rule. The broker is a native nats-server the
 // script starts and names in LEGION_E2E_NATS_URL. GitHub is backwardFenceGitHub, a REST stand-in

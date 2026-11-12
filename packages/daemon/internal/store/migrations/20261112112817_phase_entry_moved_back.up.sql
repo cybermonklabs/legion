@@ -26,13 +26,21 @@
 -- production check's look. The promotion of a mid-phase worker a re-admitted tree brings back
 -- raises an entry and writes false, since a promotion moves no phase back.
 --
--- false is the right default for every row this migration finds, and the upgrade needs no fill.
--- The column says what the start that raised the row's current entry was, which no row written
--- before this release recorded, and there is nothing in the record to derive it from: the counts
--- beside it say how many moves back the issue has made, never which move raised the entry
--- standing now. false is what the route read before this column existed — a behind completion at
--- the recorded head was taken — so every entry raised before the upgrade keeps exactly the
--- answer it would have had, and the first entry this release raises writes the truth.
+-- false is what every row this migration finds reads, and that is a loosening rather than a
+-- preservation. The column says what the start that raised the row's current entry was, which no
+-- row written before this release recorded, and there is nothing in the record to derive it from:
+-- the counts beside it say how many moves back the issue has made, never which move raised the
+-- entry standing now. The release before this one refused every completion of an entry the issue
+-- had moved past, whatever head it named, so nothing was ever taken at the recorded head and no
+-- answer of the old route is kept by writing false. What false does is give this release's new
+-- reading to entries raised before the column existed, and that leaves one window: an entry a
+-- move back raised shortly before the upgrade reads false, so the first behind completion at the
+-- recorded head is taken — the case the column exists to refuse — until the next start raises
+-- that role's entry and writes what its own move was. The window is no longer than the turn that
+-- outlived the phase, and an operator who will not have it closes it in one statement, with the
+-- new daemon migrated and not yet serving: `update phases set entry_moved_back = true;`, which
+-- reads every row the upgrade found as a move back's and refuses a behind completion on all of
+-- them, as the release before this one did, until each row's next entry writes the truth.
 --
 -- Rolling the image back needs nothing: the release before this one neither selects nor writes
 -- this column, and the column is not null with a default, so its own insert into phases still
