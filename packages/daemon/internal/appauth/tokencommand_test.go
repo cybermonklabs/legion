@@ -530,9 +530,9 @@ func TestTokenModeInstalledOnReadsTheInstallationsRepositories(t *testing.T) {
 }
 
 // The command sees the daemon's environment less the NATS seeds, with the two variables the
-// daemon sets replacing any it inherited, and no LEGION_GITHUB_REPOS at all: the daemon names
-// no repository to a command, since no token it asks for is narrowed to one (INFRA-2543). A
-// command cut off by its context is transient.
+// daemon sets replacing any it inherited. The daemon names an owner to the command and no
+// repository at all, since the owner's installation is the whole of a token's reach
+// (INFRA-2543). A command cut off by its context is transient.
 func TestTokenModeCommandEnvironmentAndDeadline(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
@@ -549,9 +549,6 @@ func TestTokenModeCommandEnvironmentAndDeadline(t *testing.T) {
 	if strings.Contains(string(env), "seed-value") || !strings.Contains(string(env), "\nLEGION_GITHUB_OWNER=acme\n") ||
 		!strings.Contains(string(env), "\nLEGION_GITHUB_READ_ONLY=\n") || strings.Contains(string(env), "inherited") {
 		t.Fatalf("the command's environment:\n%s", env)
-	}
-	if strings.Contains(string(env), "LEGION_GITHUB_REPOS") {
-		t.Fatalf("the command's environment names repositories:\n%s", env)
 	}
 
 	slow := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: "sleep 30"}}, Options{})

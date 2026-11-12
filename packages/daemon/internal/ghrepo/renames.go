@@ -49,10 +49,10 @@ type Renames struct {
 // owner's directory would carry a token minted for whichever pair the map happened to keep, and
 // the other pair's repository would be unreachable from it with nothing said. Which repository a
 // recorded name resolves to no longer turns on that map — `Serving` reads the pair itself and the
-// repositories the project serves — so this refusal guards the alias map alone. Several pairs out
-// of one owner to that one owner are a transfer of several repositories, which is configured as
-// it is, and several owners moving to one owner key one alias each, so only this shape is
-// refused.
+// repositories Dispatch maps to the project — so this refusal guards the alias map alone.
+// Several pairs out of one owner to that one owner are a transfer of several repositories, which
+// is configured as it is, and several owners moving to one owner key one alias each, so only
+// this shape is refused.
 func NewRenames(pairs []Rename) (Renames, error) {
 	for index, pair := range pairs {
 		switch {
@@ -212,12 +212,12 @@ func (r Renames) OwnerAliases(served func(Repository) bool) map[string]string {
 // cannot do without, and its name, which keeps a write off a redirect and names the repository
 // GitHub holds in whatever the caller writes down.
 //
-// The rule reads the repositories the project serves, one at a time, and never the set of owners
-// those repositories have. The owner is the wrong question to ask: a project that serves one more
-// repository of the old owner serves no more of the moved one, yet an owner test reads that as
-// the old owner being the project's own and stops resolving the pair. That is the production
-// failure this rule replaces — one repository added to a project's mapping turned a live pair off
-// and left 47 trees unable to push for 42 minutes.
+// The rule reads the repositories Dispatch maps to the project, one at a time, and never the set
+// of owners those repositories have. The owner is the wrong question to ask: a project that
+// serves one more repository of the old owner serves no more of the moved one, yet an owner test
+// reads that as the old owner being the project's own and stops resolving the pair. That is the
+// production failure this rule replaces — one repository added to a project's mapping turned a
+// live pair off and left 47 trees unable to push for 42 minutes.
 //
 // The rule is directional, and each of its clauses earns its keep. A record naming the pair's
 // `to` is never answered with the `from`: the `to` is the name GitHub has, so that record needs

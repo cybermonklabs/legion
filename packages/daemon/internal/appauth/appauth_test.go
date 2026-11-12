@@ -662,7 +662,7 @@ func TestGrantedReadSetLeavesOutActionsAndSaysSoOncePerOwner(t *testing.T) {
 	tokens := keyModeManager(t, github, &now, &stderr)
 
 	// Each owner's read token is asked for on its own, which is what a controller's bundle does
-	// for it (ControllerCredential): one mint per owner, over the repositories that owner serves.
+	// for it (ControllerCredential): one mint per owner, on that owner's own installation.
 	for _, owner := range []string{"acme", "sjawhar"} {
 		lease, err := tokens.ReadToken(context.Background(), Review, owner)
 		if err != nil || lease.Token == "" {

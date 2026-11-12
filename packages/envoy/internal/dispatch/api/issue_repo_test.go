@@ -33,8 +33,8 @@ func lastIssueEventPayload(t *testing.T, database *store.Store, key string) map[
 
 // An issue's repository: its own when set, else its nearest ancestor's, else the project's default,
 // else none; every list row, the detail and every issue event carry both the own field and the
-// resolved one. Its own is any `owner/name`, mapped to its project or not; only a value that is
-// not `owner/name` is refused.
+// resolved one. Its own is any `owner/name`, whether or not a mapping of its project names it.
+// Only a value that is not `owner/name` is refused.
 func TestIssueRepoResolvesThroughParentsThenTheProjectDefault(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")

@@ -294,9 +294,9 @@ func (i *Installed) shared(roles []AppRole) ([]string, bool) {
 // every pod, so a call to GitHub here would be one per pod per sweep — which is what the
 // Installed record is for: a bundle reads the installations itself, and this answers from what
 // the last bundle of those Apps read. Beside that it reads the same inputs a bundle does, the
-// configured renames and the repositories the project serves, through the same one description
-// (bundleDirs), so the set a pod is compared against and the set a pod would be handed cannot
-// drift apart.
+// configured renames and the repositories Dispatch maps to the project, through the same one
+// description (bundleDirs), so the set a pod is compared against and the set a pod would be
+// handed cannot drift apart.
 //
 // Two answers are no set at all, and leave every pod where it is: an App no bundle has read the
 // installations of yet (Installed.shared), and a bundle no launch could write — an owner
@@ -382,9 +382,9 @@ type bundleLayout struct {
 // installed on, which decides the directories: a lease reaches every repository its
 // installation holds and names no repository at all (INFRA-2543), so the installation is the
 // whole of a role's reach and there is nothing smaller for a directory to stand for. repos is
-// the repositories the project serves, which the rename rule reads and nothing else does: a
-// pair resolves on whether the project serves each of its two repositories, never on where an
-// App is installed, which is the production failure the header below records.
+// the repositories Dispatch maps to the project, which the rename rule reads and nothing else
+// does: a pair resolves on whether the project serves each of its two repositories, never on
+// where an App is installed, which is the production failure the header below records.
 //
 // The directories are one per installed owner, every owner a configured rename moved a
 // repository away from (ghrepo.Renames.OwnerAliases) beside them, and repo's own recorded
@@ -397,10 +397,10 @@ type bundleLayout struct {
 // cybermonklabs/legion. Where the App is installed on that account, the owner is one in its own
 // right and its directory holds its own lease, since the pair moved one repository and not the
 // account, and the repository the pair moved is reached through the write lease the recorded
-// owner's directory holds. repo is read as the project serves it now (ghrepo.Renames.Serving
-// over the repositories the project serves, the rule repositories.serving reads), so the write
-// lease is minted on the installation that holds the repository rather than the one the record
-// names.
+// owner's directory holds. repo is read through the rename rule (ghrepo.Renames.Serving over the
+// repositories Dispatch maps to the project, the rule repositories.serving reads), so the write
+// lease is minted on the installation that holds the repository now rather than the one the
+// record names.
 //
 // Both reads of the rename rule ask one question of the served set — does the project serve
 // this repository (ghrepo.Serves) — and never whether it serves any repository of a pair's

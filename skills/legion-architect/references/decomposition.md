@@ -110,8 +110,8 @@ merges, because the child's work must build on the merged change. Name the merge
 task (`gh api repos/<owner>/<repo>/pulls/<n> --jq .merge_commit_sha`); for a repository that pins the
 other one by commit (a lock file or dependency pin), the pin is that commit. Do not hold such a
 child with `--blocked-by` instead, because Legion would start it at the blocker's close, before you
-name the merged commit. Read the other repositories with your gh's read-only access
-(`-R owner/repo`).
+name the merged commit. Read another repository with your gh, which reaches every repository your
+role's App is installed on (`-R owner/repo`).
 
 ## A root with no code of its own
 
