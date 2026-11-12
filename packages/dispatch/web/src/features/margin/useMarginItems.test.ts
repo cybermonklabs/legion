@@ -18,7 +18,7 @@ import type {
   DispatchEvent,
   IssueDecisions,
 } from "../../api/types";
-import { plainWrite, writesOf } from "../writes/write-store";
+import { plainWrite, type Writes, writesOf } from "../writes/write-store";
 import {
   anchoredThreadComments,
   fetchPinnedEvents,
@@ -674,6 +674,72 @@ test("a sign-out ends the wait of an action behind another, and nothing of it is
     acceptComment.mockRestore();
     listComments.mockRestore();
   }
+});
+
+/** Accept A out, Accept B waiting behind it, under alice's sign-in; `hold` holds her writes and
+ *  `release` ends the hold. While held, A's answer lands and B goes back in its line unsent; once
+ *  the hold ends, B is sent. */
+async function heldBehindAnother(
+  hold: (writes: Writes) => void,
+  release: (writes: Writes) => void
+): Promise<void> {
+  const user = userEvent.setup();
+  const saves: PendingSave[] = [];
+  const acceptComment = answerCommentActions("accept").mockImplementation(() => {
+    const save = Promise.withResolvers<AcceptSuggestionResponse>();
+    saves.push(save);
+    return save.promise;
+  });
+  const { listComments, queryClient, unmount } = renderActionButtons();
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const writes = writesOf(queryClient);
+  const statuses = () => writes.rows().map((row) => `${row.target} ${row.status}`);
+  try {
+    await user.click(screen.getByRole("button", { name: "Accept A" }));
+    await user.click(screen.getByRole("button", { name: "Accept B" }));
+    await waitFor(() => expect(actionState().pending).toEqual(["A", "B"]));
+    expect(acceptComment).toHaveBeenCalledTimes(1);
+
+    await act(async () => hold(writes));
+    // B waited inside its attempt, which the hold stops: it is back in its line, unsent.
+    expect(statuses()).toEqual(["comment:A sending", "comment:B queued"]);
+    await act(async () => {
+      saves[0]?.resolve({ ...comment("A", "m-a", "2026-09-09T00:00:00Z"), lost: false });
+      await saves[0]?.promise;
+    });
+    await act(async () => {});
+    expect(acceptComment).toHaveBeenCalledTimes(1);
+    expect(statuses()).toEqual(["comment:B queued"]);
+
+    // The hold ends, and B waits for nothing: it goes.
+    await act(async () => release(writes));
+    await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(2));
+    expect(acceptComment).toHaveBeenLastCalledWith("B", {}, keyedAttempt);
+  } finally {
+    unmount();
+    acceptComment.mockRestore();
+    listComments.mockRestore();
+  }
+}
+
+// A sign-out of the person in another tab holds their writes here rather than letting them go
+// (`Writes.holdFor`): the action waiting behind another is not sent when the one before it lands,
+// and goes once that tab says the person is still signed in.
+test("another tab's sign-out holds an action behind another, unsent, until it is released", async () => {
+  await heldBehindAnother(
+    (writes) => writes.holdFor("alice"),
+    (writes) => writes.release("alice")
+  );
+});
+
+// A lapsed session holds every write until the next sign-in (`Writes.signedIn(undefined)`): the
+// action waiting behind another is not sent when the one before it lands, and goes once the same
+// person signs in again.
+test("a lapsed session holds an action behind another, unsent, until the person signs in again", async () => {
+  await heldBehindAnother(
+    (writes) => writes.signedIn(undefined),
+    (writes) => writes.signedIn("alice")
+  );
 });
 
 test("a chained action that fails refetches the comments its predecessor's success could not", async () => {

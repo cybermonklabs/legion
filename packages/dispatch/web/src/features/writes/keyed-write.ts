@@ -280,11 +280,12 @@ function pause(
  *  this loop cannot (`Writes`), and is required so that every caller says which it means:
  *  `null` is the answer that the key has carried nothing, not one reached by leaving it out.
  *  `planned` is the request the write was kept as before any attempt of it went out, which
- *  every attempt must make; `signal` stops the trying; `sent` is told each attempt's request as
- *  it goes out; `uploading` is told how much of an upload's body each attempt has sent;
- *  `failed` is told each attempt that ended without Dispatch's verdict; `unauthorized` is told
- *  each attempt Dispatch answers `401`, and answers whether the page's sign-in check, read
- *  again, still names the person who pressed it. */
+ *  every attempt must make; `signal` stops the trying, and each attempt is handed it
+ *  (`WriteBounds.signal`); `sent` is told each attempt's request as it goes out; `uploading` is
+ *  told how much of an upload's body each attempt has sent; `failed` is told each attempt that
+ *  ended without Dispatch's verdict; `unauthorized` is told each attempt Dispatch answers `401`,
+ *  and answers whether the page's sign-in check, read again, still names the person who pressed
+ *  it. */
 export interface KeyedWriteOptions {
   readonly carried: WriteMethod | null;
   readonly failed?: () => void;
@@ -390,6 +391,7 @@ export async function writeUnderKey<T>(
           login,
           progress: uploading,
           sent: told,
+          signal,
         });
       } catch (error) {
         if (isKeyCommitted(error) || error instanceof AnswerNotKeptError) return null;

@@ -91,10 +91,17 @@ function pageClient(): QueryClient {
 
 /** One surface that writes CORE-1's priority, showing the value it reads from the cache: the
  *  issue page's header, a list row and a board card are each one of these. */
-function Surface({ name }: { name: string }): ReactNode {
+function Surface({
+  name,
+  read = () => Promise.reject(new Error("the test seeds this query")),
+}: {
+  name: string;
+  /** What a read of the issue answers; left out, the cache is the test's to seed. */
+  read?: () => Promise<IssueDetails>;
+}): ReactNode {
   const cached = useQuery<IssueDetails>({
     queryKey: detailKey,
-    queryFn: () => Promise.reject(new Error("the test seeds this query")),
+    queryFn: read,
     staleTime: Number.POSITIVE_INFINITY,
   });
   if (cached.data === undefined) {
@@ -222,6 +229,50 @@ test("two surfaces that write one field of one issue send the newer pick last", 
     });
     await act(settle);
     expect(sentPriorities(patchIssue)).toEqual([0, 2]);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// R10. A pick waiting behind another surface's save is the reader's to discard in Pending
+// changes. Its press is refused with no failure to show, so the store reads the issue again, and
+// what is shown is Dispatch's answer with the save still out shown over it: the picker reads the
+// pick that is out, not the one nothing will send.
+test("a waiting pick discarded in Pending changes leaves the screen on the pick that is out", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const patchIssue = answerSaves(first.promise);
+  const user = userEvent.setup();
+  const client = pageClient();
+  const writes = writesOf(client);
+  const read = () => Promise.resolve(details);
+  const view = render(
+    <QueryClientProvider client={client}>
+      <Surface name="Issue page" read={read} />
+      <Surface name="Board card" read={read} />
+    </QueryClientProvider>
+  );
+  try {
+    await user.selectOptions(select("Issue page"), "0");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await user.selectOptions(select("Board card"), "2");
+    const waiting = writes.rows().find((row) => row.status === "queued");
+    if (waiting === undefined) throw new Error("the board card's pick is not waiting its turn");
+
+    await act(async () => {
+      expect(writes.discard(waiting.id)).toBe(true);
+    });
+    await act(settle);
+    expect(writes.rows().map((row) => row.status)).toEqual(["sending"]);
+    expect(client.getQueryData<IssueDetails>(detailKey)?.priority).toBe(0);
+    expect(select("Board card").value).toBe("0");
+
+    await act(async () => {
+      first.resolve(savedWith({ priority: 0 }));
+      await first.promise;
+    });
+    await act(settle);
+    expect(sentPriorities(patchIssue)).toEqual([0]);
   } finally {
     view.unmount();
     patchIssue.mockRestore();

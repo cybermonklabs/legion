@@ -3,7 +3,7 @@ import { ApiError } from "../../api/client";
 import { projectIssuesQueryKey } from "../../api/queries";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
-import { defineWriteKind, useWrites } from "../writes/write-store";
+import { defineWriteKind, useWrites, type WriteOutcome } from "../writes/write-store";
 import { WRITES_IN_FLIGHT } from "./issues-table-model";
 import { readTableAction, type TableAction, writeTableAction } from "./issues-table-storage";
 
@@ -32,6 +32,22 @@ export const tableEpicWrite = defineWriteKind<string>({
     }
   },
 });
+
+/** What the table says once the last of its refused writes leaves Pending changes, by what became
+ *  of it; `ofAction` says whether it was a step of the interrupted action, which Finish
+ *  completes. */
+function outcomeReport(kind: Exclude<WriteOutcome["kind"], "refused">, ofAction: boolean): string {
+  switch (kind) {
+    case "landed":
+      return ofAction
+        ? "The retried changes are saved. Finish the interrupted action to complete its remaining steps."
+        : "All changes saved.";
+    case "discarded":
+      return "The failed change was discarded.";
+    case "taken":
+      return "The failed change was not made.";
+  }
+}
 
 export function useTableRecovery(project: string, report: (text: string) => void) {
   const writes = useWrites();
@@ -87,7 +103,9 @@ export function useTableRecovery(project: string, report: (text: string) => void
             event.write.id,
             owned.current.get(event.write.id)?.issue ?? event.write.label
           );
-      } else if (failed.current.delete(event.write.id)) {
+        return;
+      }
+      if (failed.current.delete(event.write.id)) {
         // Only a write of the interrupted action's own says anything about finishing it: a
         // Move or a Rename retried beside one reports like any other change.
         const ofAction =
@@ -96,17 +114,13 @@ export function useTableRecovery(project: string, report: (text: string) => void
         reportRef.current(
           failed.current.size
             ? `Changes not saved: ${[...failed.current.values()].join(", ")}. Retry them in Pending changes.`
-            : event.kind === "discarded"
-              ? "The failed change was discarded."
-              : ofAction
-                ? "The retried changes are saved. Finish the interrupted action to complete its remaining steps."
-                : "All changes saved."
+            : outcomeReport(event.kind, ofAction)
         );
       }
-      if (event.kind === "discarded") {
-        // A discarded write no longer exists, so the record must not go on claiming it: the
-        // step goes with it, which keeps `settle` from waiting on a row that is gone and lets
-        // the resume work that step out from the server again.
+      if (event.kind !== "landed") {
+        // A write discarded or let go of no longer exists, so the record must not go on
+        // claiming it: the step goes with it, which keeps `settle` from waiting on a row that is
+        // gone and lets the resume work that step out from the server again.
         const owner = owned.current.get(event.write.id);
         const held = current.current;
         if (
@@ -115,11 +129,11 @@ export function useTableRecovery(project: string, report: (text: string) => void
           owner.action === held.id &&
           held.writes[owner.step] !== undefined
         ) {
-          const { [owner.step]: _discarded, ...rest } = held.writes;
+          const { [owner.step]: _gone, ...rest } = held.writes;
           remember({ ...held, writes: rest });
         }
       }
-      if (event.kind !== "refused") owned.current.delete(event.write.id);
+      owned.current.delete(event.write.id);
     });
     return () => {
       alive.current = false;
@@ -156,35 +170,30 @@ export function useTableRecovery(project: string, report: (text: string) => void
     },
     settle: async (record: TableAction) => {
       const rows = writes.rows().filter((row) => Object.values(record.writes).includes(row.key));
-      /** What becomes of `row`: its outcome, or a refusal of its own once the store no longer
-       *  holds it. A write the store lets go of with no outcome - a sign-out landing, a sign-out
-       *  in another tab, another login taking over, a `DISPATCH_LOGIN_CHANGED` refusal
-       *  (`Writes.#take`) - would otherwise leave Finish waiting for an answer that never comes;
-       *  it says the write was not made instead. The store tells its rows before it tells the
-       *  outcome of the same change, so a write gone from the rows is read as let go only once
-       *  that call is over: one that landed, was refused or was discarded has said so by then.
-       *  Its id, not its key, names it: a Retry may move it to a new key. */
+      /** What becomes of `row`, told by the store for every way a write leaves it: a write it
+       *  let go of with nothing made - a sign-out landing, a sign-out in another tab, another
+       *  login taking over, a `DISPATCH_LOGIN_CHANGED` refusal (`taken`) - says it was not made,
+       *  rather than leaving Finish waiting for an answer that never comes. Its id, not its key,
+       *  names it: a Retry may move it to a new key. */
       const outcome = (row: (typeof rows)[number]) => {
         const { promise, resolve, reject } = Promise.withResolvers<void>();
-        const end = () => {
-          stopOutcomes();
-          stopRows();
-        };
-        const stopOutcomes = writes.onOutcome((event) => {
+        const stop = writes.onOutcome((event) => {
           if (event.write.id !== row.id) return;
-          end();
-          if (event.kind === "landed") resolve();
-          else
-            reject(
-              event.kind === "refused" ? event.refusal : new Error(`${row.label} was discarded.`)
-            );
-        });
-        const stopRows = writes.subscribe(() => {
-          if (writes.rows().some((current) => current.id === row.id)) return;
-          queueMicrotask(() => {
-            end();
-            reject(new Error(`${row.label} was not made.`));
-          });
+          stop();
+          switch (event.kind) {
+            case "landed":
+              resolve();
+              return;
+            case "refused":
+              reject(event.refusal);
+              return;
+            case "discarded":
+              reject(new Error(`${row.label} was discarded.`));
+              return;
+            case "taken":
+              reject(new Error(`${row.label} was not made.`));
+              return;
+          }
         });
         return promise;
       };

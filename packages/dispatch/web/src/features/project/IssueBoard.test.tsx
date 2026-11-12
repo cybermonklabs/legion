@@ -1244,11 +1244,15 @@ test("a discarded write shows nothing again: the reader took it back", async () 
     act(() => {
       expect(writes.discard(writes.idOf(key) ?? 0)).toBe(true);
     });
+    // Its press is refused with no failure to show, so the store reads again the lists its
+    // change wrote (R10), and the server's answer stands.
+    await waitFor(() => expect(race.listIssues).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(priorityIn(board, "CORE-1").value).toBe("1"));
 
     race.listIssues.mockResolvedValue(listSinceOtherBrowser);
     await askAgain(race.queryClient, ["issues"]);
 
-    await waitFor(() => expect(race.listIssues).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(race.listIssues).toHaveBeenCalledTimes(3));
     await waitFor(() => expect(priorityIn(board, "CORE-1").value).toBe("1"));
     expect(priorityIn(board, "CORE-2").value).toBe("3");
   } finally {

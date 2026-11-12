@@ -10,7 +10,7 @@ import {
   commentResolveRequest,
 } from "../../api/client";
 import { newSendKey } from "../../lib/send-key";
-import { retriesUnderItsKey } from "../writes/keyed-write";
+import { retriesUnderItsKey, SendStoppedError } from "../writes/keyed-write";
 import { type Shape, shape } from "../writes/write-storage";
 import {
   defineWriteKind,
@@ -121,20 +121,26 @@ class CommentActionClearedError extends Error {
 
 /**
  * Holds one comment action until every action pressed before it has landed, and gives it up
- * (`CommentActionClearedError`) once one of those is refused, or once the store no longer holds
- * the action itself: an action on another comment waits for the one in flight, a failure clears
- * the actions still waiting, and a write the store let go - a sign-out, another login taking
- * over - is never sent. All of it is read from the store - the press order is the order the
- * store joined them in, what became of each is the store's own outcome (`Writes.onOutcome`),
- * which it tells once its rows already say so, and whether it holds this action is its rows,
- * which it tells of however a write leaves (`Writes.subscribe`) - rather than from a map the
- * component holds, so neither dies with the card that pressed them. Two actions on one comment
- * need none of this: the store's own line (`comment:<id>`) orders them.
+ * (`CommentActionClearedError`) once one of those is refused: an action on another comment waits
+ * for the one in flight, and a failure clears the actions still waiting. All of it is read from
+ * the store - the press order is the order the store joined them in, and what became of each is
+ * the store's own outcome (`Writes.onOutcome`), told for every way a write leaves it - rather
+ * than from a map the component holds, so neither dies with the card that pressed them. The wait
+ * is this action's attempt, so it ends as the store stops trying the action (`signal`), with
+ * `SendStoppedError`: a hold - its person's sign-out out here or in another tab, their session
+ * lapsed - puts the action back in its line to wait again once the hold ends, and a write the
+ * store let go - a sign-out, another login taking over - is never sent. Two actions on one
+ * comment need none of this: the store's own line (`comment:<id>`) orders them.
  */
-function afterEarlierActions(writes: Writes, key: string): Promise<void> {
+function afterEarlierActions(
+  writes: Writes,
+  key: string,
+  signal: AbortSignal | undefined
+): Promise<void> {
   /** This action's own row, which the store joined before its turn came. */
   const mine = writes.idOf(key);
   if (mine === undefined) return Promise.reject(new CommentActionClearedError());
+  if (signal?.aborted === true) return Promise.reject(new SendStoppedError());
   const earlier = (): boolean =>
     writes.rows().some((row) => {
       const action = ofKind(row, commentActionWrite);
@@ -142,26 +148,20 @@ function afterEarlierActions(writes: Writes, key: string): Promise<void> {
     });
   if (!earlier()) return Promise.resolve();
   const waited = Promise.withResolvers<void>();
-  const end = (): void => {
-    stopOutcomes();
-    stopRows();
-  };
+  const stopped = (): void => waited.reject(new SendStoppedError());
+  signal?.addEventListener("abort", stopped, { once: true });
   const stopOutcomes = writes.onOutcome((outcome) => {
     const action = ofKind(outcome.write, commentActionWrite);
     if (action !== undefined && outcome.kind === "refused" && action.id < mine) {
-      end();
       waited.reject(new CommentActionClearedError());
     } else if (!earlier()) {
-      end();
       waited.resolve();
     }
   });
-  const stopRows = writes.subscribe(() => {
-    if (writes.idOf(key) === mine) return;
-    end();
-    waited.reject(new CommentActionClearedError());
+  return waited.promise.finally(() => {
+    stopOutcomes();
+    signal?.removeEventListener("abort", stopped);
   });
-  return waited.promise;
 }
 
 /**
@@ -209,15 +209,17 @@ export function useCommentActionQueue<TContext = undefined>({
         target: `comment:${input.id}`,
         write: async (bounds) => {
           if (!begun) {
-            await afterEarlierActions(writes, key);
+            await afterEarlierActions(writes, key, bounds.signal);
             // What the card shows while the action is out is written as it goes out, so an
             // action cleared behind a failure never showed anything to put back. From there the
             // change is the store's: it shows it again over each answer that lands on a cache it
             // wrote until this action settles (R7 of dispatch://INFRA-299). An action the store
-            // let go while `onMutate` ran is sent no more than one let go while it waited.
+            // let go or held while `onMutate` ran is sent no more than one let go or held while
+            // it waited.
             context = (await onMutate?.(input)) as TContext | undefined;
             const id = writes.idOf(key);
             if (id === undefined) throw new CommentActionClearedError();
+            if (bounds.signal?.aborted === true) throw new SendStoppedError();
             const change = shows?.(input);
             if (change !== undefined) writes.shows(id, change);
             begun = true;

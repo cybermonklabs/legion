@@ -21,6 +21,7 @@ import {
   useWriteSelection,
   type Write,
   type WriteLine,
+  type WriteOutcome,
   type Writes,
   writesOf,
 } from "../writes/write-store";
@@ -97,10 +98,11 @@ export function stoppable(held: HeldSend | undefined): boolean {
   return held?.status === "late" && !held.stopping;
 }
 
-/** What became of a held send: it landed, the server refused it, or the reader dropped its
- *  refusal. */
+/** What became of a held send: it landed, the server refused it, the reader discarded it, or the
+ *  store let it go before Dispatch answered - a sign-out, another login taking over
+ *  (`WriteOutcome`). */
 export interface HeldSendOutcome {
-  readonly kind: "discarded" | "landed" | "refused";
+  readonly kind: WriteOutcome["kind"];
   readonly send: HeldSend;
 }
 

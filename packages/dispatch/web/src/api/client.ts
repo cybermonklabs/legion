@@ -207,14 +207,20 @@ export interface WriteRequest<T = unknown> {
  *  and a `PATCH`, and never on a `PUT` or a `DELETE`, which are the same however often they are
  *  made - the login of the person who pressed it (`Dispatch-Login`, sent on every write, so
  *  Dispatch refuses it under anyone else's session), the attempt's silence deadline, `sent`, told
- *  the request as it goes out, for a caller that keeps it to make again, and `progress`, told how
- *  much of an upload's body has gone up. Every write method takes these, so a write made outside
- *  the store does not type-check. */
+ *  the request as it goes out, for a caller that keeps it to make again, `progress`, told how
+ *  much of an upload's body has gone up, and `signal`, which aborts once the store stops trying
+ *  the write - the reader stopped it, its person's sign-out holds it, their session lapsed, or
+ *  the store let it go. A request already out is let finish, since it may have reached Dispatch
+ *  and its answer is still the write's, so `send` never reads it; an attempt that waits before
+ *  its request goes out (a comment action behind another) gives up on it, with
+ *  `SendStoppedError`. Every write method takes these, so a write made outside the store does
+ *  not type-check. */
 export interface WriteBounds extends RequestBounds {
   readonly key: string;
   readonly login?: string;
   readonly sent?: (request: WriteRequest) => void;
   readonly progress?: (loaded: number, total: number) => void;
+  readonly signal?: AbortSignal;
 }
 
 /** A write Dispatch had already made, with no answer it can give for it (`code`): the first

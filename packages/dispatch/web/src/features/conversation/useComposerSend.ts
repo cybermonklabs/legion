@@ -55,8 +55,19 @@ export function useComposerSend(
     () =>
       store.onOutcome(({ kind, send }) => {
         if (hashKey(send.mutationKey) !== id) return;
-        if (kind === "landed") outcomes.current.landed(send.request);
-        if (kind === "refused") outcomes.current.refused(send);
+        switch (kind) {
+          case "landed":
+            outcomes.current.landed(send.request);
+            return;
+          case "refused":
+            outcomes.current.refused(send);
+            return;
+          // A discarded send and one the store let go leave nothing for the composer to do: the
+          // draft was the reader's to drop, or went with the person it belonged to.
+          case "discarded":
+          case "taken":
+            return;
+        }
       }),
     [id, store]
   );
