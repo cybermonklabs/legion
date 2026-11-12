@@ -142,10 +142,11 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  a scroll whose event has not arrived yet; in a named box the browser does not cover it,
    *  which is what `contentResized` stands in for.
    *
-   *  A different `scrollTop` means the view moved without this component hearing of it, and a
-   *  different `group` means the row was relocated rather than shifted. On either the top no
-   *  longer says where the reader's place is, and the commit measures the row instead. */
-  private held: { group: string | null; id: string; scrollTop: number; top: number } | null = null;
+   *  A different `offset` - how far down the box stood when the place was saved - means the
+   *  view moved without this component hearing of it, and a different `group` means the row was
+   *  relocated rather than shifted. On either the top no longer says where the reader's place
+   *  is, and the commit measures the row instead. */
+  private held: { group: string | null; id: string; offset: number; top: number } | null = null;
   private contentSize: ResizeObserver | null = null;
   /** Set by a scroll this component made, so the scroll event it raises is not read as the
    *  reader moving the view. Scroll events run before resize observations in a frame, so
@@ -187,7 +188,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     this.held = {
       group: this.groupOf(current.row),
       id: current.id,
-      scrollTop: scroller.scrollTop,
+      offset: scroller.scrollTop,
       top: current.row.getBoundingClientRect().top,
     };
   };
@@ -199,7 +200,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     const held = this.held;
     const scroller = this.scrollerElement();
     if (held === null || scroller === null) return null;
-    const holds = held.id === id && held.group === group && held.scrollTop === scroller.scrollTop;
+    const holds = held.id === id && held.group === group && held.offset === scroller.scrollTop;
     return holds ? held.top : null;
   }
 
@@ -210,9 +211,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     const held = this.held;
     const scroller = this.scrollerElement();
     if (held === null || scroller === null || held.id !== id || held.top !== top) return;
-    // Not a scroll: `held` is this component's own record of where the box stood, restamped so
-    // the next compensation measures against the offset this one left.
-    held.scrollTop = scroller.scrollTop;
+    held.offset = scroller.scrollTop;
   }
 
   /** True when this pointer event is the hand moving rather than the list moving under it. */
@@ -229,7 +228,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  box reads it as such rather than as the reader taking the list over
    *  (`refocus-when-settled.ts`). The flag stays this component's own: it tells the anchor's own
    *  scroll listener, which hears the page's every box. */
-  private scrollBy(delta: number): void {
+  private moveBy(delta: number): void {
     const scroller = this.scrollerElement();
     const before = whereTheReaderIs(scroller);
     moveTheBox(scroller, delta);
@@ -268,8 +267,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     if (top === null) return;
     const delta = element.getBoundingClientRect().top - top;
     if (delta === 0) return;
-    // This component's own `scrollBy` below, which goes through `moveTheBox`.
-    this.scrollBy(delta);
+    this.moveBy(delta);
     this.restampHeld(held.id, top);
   };
 
@@ -418,8 +416,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     if (group !== undefined && element.getAttribute(group) !== snapshot.group) return;
     const delta = element.getBoundingClientRect().top - snapshot.top;
     if (delta === 0) return;
-    // This component's own `scrollBy` above, which goes through `moveTheBox`.
-    this.scrollBy(delta);
+    this.moveBy(delta);
     this.restampHeld(snapshot.id, snapshot.top);
   }
 

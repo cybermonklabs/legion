@@ -825,7 +825,10 @@ test("the no-tracked-work link filters the tree to those components, wherever th
 
 /** Where the opened component's details stand on the page, how tall they are, and how tall the
  *  window is: happy-dom lays nothing out and scrolls nothing, so the rectangle the placement
- *  measures and the page's own scroll are stated here (`features/doc/readers-place.ts`). */
+ *  measures and the page's own scroll are stated here (`features/doc/readers-place.ts`). The
+ *  page's placing port is `documentElement.clientHeight` - the window less a horizontal
+ *  scrollbar, and there is none here - which happy-dom lays out as 0 and the row states with
+ *  the window's height. */
 const DETAILS_TOP = 900;
 const DETAILS_HEIGHT = 200;
 const WINDOW_HEIGHT = 800;
@@ -840,6 +843,11 @@ test("the opened component's details being brought into view is the page's own m
     configurable: true,
     value: WINDOW_HEIGHT,
     writable: true,
+  });
+  const pagePort = Object.getOwnPropertyDescriptor(document.documentElement, "clientHeight");
+  Object.defineProperty(document.documentElement, "clientHeight", {
+    configurable: true,
+    get: () => WINDOW_HEIGHT,
   });
   window.scrollBy = ((_x: number, y: number) => {
     scrolled += y;
@@ -874,6 +882,11 @@ test("the opened component's details being brought into view is the page's own m
     rect.mockRestore();
     window.scrollBy = scrollBy;
     window.innerHeight = innerHeight;
+    if (pagePort === undefined) {
+      Reflect.deleteProperty(document.documentElement, "clientHeight");
+    } else {
+      Object.defineProperty(document.documentElement, "clientHeight", pagePort);
+    }
     if (scrollY === undefined) {
       Reflect.deleteProperty(window, "scrollY");
     } else {

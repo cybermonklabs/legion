@@ -2454,7 +2454,10 @@ test("a Conversation turn links the `#q2` the question map of its message names"
 
 /** Where the card a link names is drawn in the page, how tall it is, and how tall the window
  *  is: happy-dom lays nothing out and scrolls nothing, so the rectangle the landing measures
- *  and the page's own scroll are stated here (`features/doc/readers-place.ts`). */
+ *  and the page's own scroll are stated here (`features/doc/readers-place.ts`). The page's
+ *  placing port is `documentElement.clientHeight` - the window less a horizontal scrollbar,
+ *  and there is none here - which happy-dom lays out as 0 and the row states with the window's
+ *  height. */
 const CARD_TOP = 1_200;
 const CARD_HEIGHT = 100;
 const WINDOW_HEIGHT = 800;
@@ -2470,6 +2473,11 @@ test("landing on the card a link names is the page's own move, and the reader's 
     configurable: true,
     value: WINDOW_HEIGHT,
     writable: true,
+  });
+  const pagePort = Object.getOwnPropertyDescriptor(document.documentElement, "clientHeight");
+  Object.defineProperty(document.documentElement, "clientHeight", {
+    configurable: true,
+    get: () => WINDOW_HEIGHT,
   });
   window.scrollBy = ((_x: number, y: number) => {
     scrolled += y;
@@ -2519,6 +2527,11 @@ test("landing on the card a link names is the page's own move, and the reader's 
     window.scrollBy = scrollBy;
     window.scrollTo = scrollTo;
     window.innerHeight = innerHeight;
+    if (pagePort === undefined) {
+      Reflect.deleteProperty(document.documentElement, "clientHeight");
+    } else {
+      Object.defineProperty(document.documentElement, "clientHeight", pagePort);
+    }
     if (scrollY === undefined) {
       Reflect.deleteProperty(window, "scrollY");
     } else {

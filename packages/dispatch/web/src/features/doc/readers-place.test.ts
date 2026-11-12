@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 
 import {
   keepTheReadersPlace,
+  keepWhatStandsUnder,
   placeInView,
   putTheBoxAt,
   readersBlock,
@@ -11,6 +12,16 @@ import {
   whatScrolls,
   whereTheReaderIs,
 } from "./readers-place";
+
+/** The page's own placing port, which a browser reads as `document.documentElement.clientHeight`
+ *  - the window less a horizontal scrollbar - and happy-dom lays out as 0. The rows that are not
+ *  about that scrollbar read the window's own height, as a page with no horizontal scrollbar
+ *  does. */
+let pagePort = window.innerHeight;
+Object.defineProperty(document.documentElement, "clientHeight", {
+  configurable: true,
+  get: () => pagePort,
+});
 
 // happy-dom lays nothing out and has no ResizeObserver, so the geometry is this harness: a run
 // of blocks `BLOCK_HEIGHT` tall whose first block starts `documentTop` under the top of the
@@ -200,6 +211,7 @@ afterEach(() => {
   restoreObserver = undefined;
   observers.clear();
   scrollListeners = [];
+  pagePort = window.innerHeight;
 });
 
 test("the reader's block is the first one the top of the scrollport is in or above", () => {
@@ -478,6 +490,33 @@ test("a row taller than the box is brought to the top edge rather than its own e
   }
 });
 
+test("a row taller than the box that starts above it is brought to its own end", () => {
+  const { box, row } = listOf(300, 500);
+
+  try {
+    // The other half of that rule, and the browser's own (CSSOM View, "scroll a target into
+    // view": edge A outside and the element taller aligns edge B). The row starts above the
+    // box and ends inside it, so bringing its top down to the box's top would carry the end
+    // the reader is reading out of sight below; its own end comes to the box's end instead.
+    box.scrollTop = 600;
+
+    placeInView(row, { block: "nearest" });
+
+    expect(box.scrollTop).toBe(500);
+    expect(row.getBoundingClientRect().bottom).toBe(LIST_TOP + LIST_HEIGHT);
+
+    // And a row whose both edges are outside the box covers it: the reader is inside the row
+    // already, and neither edge is brought anywhere.
+    box.scrollTop = 450;
+
+    placeInView(row, { block: "nearest" });
+
+    expect(box.scrollTop).toBe(450);
+  } finally {
+    box.remove();
+  }
+});
+
 test("a card asked for the middle of the box lands in the middle of it", () => {
   const { box, row } = listOf(500, 40);
 
@@ -502,6 +541,71 @@ test("a message asked for the start of the box lands on its top edge", () => {
     expect(thePageLeftItThere(box)).toBe(true);
   } finally {
     box.remove();
+  }
+});
+
+/** How thick the next row's scroller draws its top border: the slash list of the agent thread
+ *  and the palette's dialog each carry one (`features/agent-view/AgentThread.tsx`,
+ *  `features/search/SearchPalette.tsx`). */
+const LIST_BORDER = 10;
+
+/** The same list, drawn with a border around it. The border box is what
+ *  `getBoundingClientRect` answers and the padding box is what a scroll lands content in, so
+ *  the two differ by `clientTop` - which happy-dom lays out as 0 and is stated here, as every
+ *  other rectangle in this file is. */
+function borderedListOf(rowTop: number, rowHeight: number): { box: HTMLElement; row: HTMLElement } {
+  const content = 4_000;
+  let scrolled = 0;
+  const box = document.createElement("div");
+  box.style.overflowY = "auto";
+  Object.defineProperty(box, "clientHeight", { configurable: true, get: () => LIST_HEIGHT });
+  Object.defineProperty(box, "clientTop", { configurable: true, get: () => LIST_BORDER });
+  Object.defineProperty(box, "scrollHeight", { configurable: true, get: () => content });
+  Object.defineProperty(box, "scrollTop", {
+    configurable: true,
+    get: () => scrolled,
+    set: (next: number) => {
+      scrolled = Math.max(0, Math.min(next, content - LIST_HEIGHT));
+    },
+  });
+  // The border box: the padding box starts `LIST_BORDER` under its top and is `LIST_HEIGHT`
+  // tall, so the border box stands `2 * LIST_BORDER` taller than the port.
+  box.getBoundingClientRect = () =>
+    ({
+      bottom: LIST_TOP + LIST_BORDER * 2 + LIST_HEIGHT,
+      height: LIST_BORDER * 2 + LIST_HEIGHT,
+      top: LIST_TOP,
+    }) as DOMRect;
+  const row = document.createElement("div");
+  row.getBoundingClientRect = () =>
+    ({
+      bottom: LIST_TOP + LIST_BORDER + rowTop + rowHeight - scrolled,
+      height: rowHeight,
+      top: LIST_TOP + LIST_BORDER + rowTop - scrolled,
+    }) as DOMRect;
+  box.append(row);
+  document.body.append(box);
+  return { box, row };
+}
+
+test("a row is placed in the port a bordered scroller shows, not in its border box", () => {
+  for (const [block, lands] of [
+    ["start", 500],
+    ["end", 500 + 40 - LIST_HEIGHT],
+    ["center", 500 + 20 - LIST_HEIGHT / 2],
+  ] as const) {
+    const { box, row } = borderedListOf(500, 40);
+
+    try {
+      // What the browser aligns is the scrollport - the padding box - and a border read as
+      // part of it places every row one border-width off (`clientTop`, `scrollportTop` reads
+      // the border box's own top).
+      placeInView(row, { block });
+
+      expect({ block, lands: box.scrollTop }).toEqual({ block, lands });
+    } finally {
+      box.remove();
+    }
   }
 });
 
@@ -649,12 +753,127 @@ test("a card the page itself scrolls is placed by moving the page, which says it
 
   try {
     // A comment a link names on an issue page: no column carries it, so the box is the page
-    // itself and `window.innerHeight` is the port.
+    // itself and what the document element shows is the port.
     placeInView(card, { block: "nearest" });
 
-    expect(page.scrollY()).toBe(1_050 - window.innerHeight);
+    expect(page.scrollY()).toBe(1_050 - pagePort);
     expect(thePageLeftItThere(null)).toBe(true);
   } finally {
     card.remove();
+  }
+});
+
+test("the page's port is what its document element shows, not the window a scrollbar crosses", () => {
+  const page = pageOf(1, 0);
+  // A page with a horizontal scrollbar: the bar stands inside the window and under the
+  // document element, so `window.innerHeight` counts it and `documentElement.clientHeight`,
+  // which is what the browser places against, does not.
+  pagePort = window.innerHeight - 15;
+  const card = document.createElement("div");
+  card.getBoundingClientRect = () =>
+    ({ bottom: 1_050 - page.scrollY(), height: 50, top: 1_000 - page.scrollY() }) as DOMRect;
+  document.body.append(card);
+
+  try {
+    placeInView(card, { block: "nearest" });
+
+    // The card's end on the last line the page shows, rather than 15 px under it, behind the
+    // scrollbar.
+    expect(page.scrollY()).toBe(1_050 - (window.innerHeight - 15));
+  } finally {
+    card.remove();
+  }
+});
+
+/** Where the next row's fixed list stands: a box the page's own scroll does not move, holding
+ *  a list that ends on the window's last line - the search palette's shape
+ *  (`fixed inset-x-0 top-12 bottom-0`, `features/search/SearchPalette.tsx`). */
+const FIXED_LIST_TOP = window.innerHeight - LIST_HEIGHT;
+
+/** How much of the page's own bottom a scroll may not land content in, below 1280px
+ *  (`html { scroll-padding-bottom: 5rem }`, `web/src/styles.css`), which holds the fixed review
+ *  sheet's height clear of whatever the page scrolls to. */
+const PAGE_SCROLL_PADDING = 80;
+
+test("a row in a list a fixed box carries is placed without scrolling the page behind it", () => {
+  const page = pageOf(1, 0);
+  document.documentElement.style.scrollPaddingBottom = `${PAGE_SCROLL_PADDING}px`;
+  let scrolled = 0;
+  const fixed = document.createElement("div");
+  fixed.style.position = "fixed";
+  const list = document.createElement("div");
+  list.style.overflowY = "auto";
+  Object.defineProperty(list, "clientHeight", { configurable: true, get: () => LIST_HEIGHT });
+  Object.defineProperty(list, "scrollHeight", { configurable: true, get: () => 4_000 });
+  Object.defineProperty(list, "scrollTop", {
+    configurable: true,
+    get: () => scrolled,
+    set: (next: number) => {
+      scrolled = Math.max(0, Math.min(next, 4_000 - LIST_HEIGHT));
+    },
+  });
+  // A fixed box stands where the window puts it, whatever the page is scrolled to, and so does
+  // everything in it: that is why the page's own scroll cannot place a row of this list.
+  list.getBoundingClientRect = () =>
+    ({
+      bottom: FIXED_LIST_TOP + LIST_HEIGHT,
+      height: LIST_HEIGHT,
+      top: FIXED_LIST_TOP,
+    }) as DOMRect;
+  const row = document.createElement("div");
+  row.getBoundingClientRect = () =>
+    ({
+      bottom: FIXED_LIST_TOP + 500 + 40 - scrolled,
+      height: 40,
+      top: FIXED_LIST_TOP + 500 - scrolled,
+    }) as DOMRect;
+  list.append(row);
+  fixed.append(list);
+  document.body.append(fixed);
+  page.scrollTo(1_000);
+
+  try {
+    // The palette's highlighted row, arrowed down to the foot of its list: the list brings it
+    // to its own bottom edge, which is the window's last line and so inside the page's bottom
+    // `scroll-padding`. The page's own delta for it is not zero - and the page is not a box
+    // that scrolls this row at all, since no scroll of the page moves a fixed box. Scrolling
+    // the page would leave the row exactly where it stands and ask for the same move again,
+    // on every arrow press and every `ResizeObserver` call the palette makes.
+    placeInView(row, { block: "nearest" });
+
+    expect(list.scrollTop).toBe(500 + 40 - LIST_HEIGHT);
+    expect(row.getBoundingClientRect().bottom).toBe(FIXED_LIST_TOP + LIST_HEIGHT);
+    expect(page.scrollY()).toBe(1_000);
+    expect(thePageLeftItThere(null)).toBe(false);
+  } finally {
+    document.documentElement.style.scrollPaddingBottom = "";
+    fixed.remove();
+  }
+});
+
+test("a box kept above a reading column's top is answered, though it stands under the window's", () => {
+  const column = columnOf(40, 0);
+  column.scrollTo(1_250);
+  let height = 120;
+  // The space the Inbox's reading column holds for its chrome, which lands in it taller than
+  // what it replaced (`features/doc/AfterTheFirstBatch.tsx`). It stands above the top of the
+  // column the reader reads in and under the top of the window, which the column's own top is
+  // `COLUMN_TOP` below: read against the window it is on the reader's screen and its growth is
+  // theirs to watch land, and read against the column it is out of sight above them and the
+  // growth moves every word they can see.
+  const held = document.createElement("div");
+  held.getBoundingClientRect = () =>
+    ({ bottom: COLUMN_TOP - 100 + height, height, top: COLUMN_TOP - 100 }) as DOMRect;
+  (column.drawn.parentElement as HTMLElement).append(held);
+  const release = keepWhatStandsUnder(held);
+
+  try {
+    height = 180;
+    column.resized();
+
+    expect(column.scrollTop()).toBe(1_250 + 60);
+  } finally {
+    release();
+    held.remove();
   }
 });

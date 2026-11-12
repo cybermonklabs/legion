@@ -195,14 +195,20 @@ export function putTheBoxAt(scroller: HTMLElement | null, top: number): void {
 }
 
 /** The band of the page's own coordinates `scroller` - the page where null - places an element
- *  in: its own edges less its `scroll-padding`, which is the part of the box a scroll is
+ *  in: the scrollport, less its `scroll-padding`, which is the part of the box a scroll is
  *  allowed to land content in (`html { scroll-padding-bottom: 5rem }` under 1280px,
  *  `styles.css`, which holds the fixed review sheet's height clear of whatever the page
- *  scrolls to). */
+ *  scrolls to).
+ *
+ *  The scrollport is the padding box, which is what the browser aligns and is not what
+ *  `scrollportTop` reads: that one answers the border box's own top, which is the first line of
+ *  the document a reader can see and is a border-width above the first line a scroll may land
+ *  content on. The page's own port is `documentElement.clientHeight` rather than
+ *  `window.innerHeight`, which counts a horizontal scrollbar the page cannot draw into. */
 function placingPort(scroller: HTMLElement | null): { bottom: number; top: number } {
   const style = window.getComputedStyle(scroller ?? document.documentElement);
-  const top = scrollportTop(scroller);
-  const height = scrollportHeight(scroller);
+  const top = scroller === null ? 0 : scroller.getBoundingClientRect().top + scroller.clientTop;
+  const height = scroller === null ? document.documentElement.clientHeight : scroller.clientHeight;
   return {
     bottom: top + height - (Number.parseFloat(style.scrollPaddingBottom) || 0),
     top: top + (Number.parseFloat(style.scrollPaddingTop) || 0),
@@ -231,6 +237,7 @@ function howFarIntoView(
   const box = placingBox(element);
   const above = box.top < port.top;
   const below = box.bottom > port.bottom;
+  const taller = box.bottom - box.top > port.bottom - port.top;
   switch (block) {
     case "start":
       return box.top - port.top;
@@ -240,16 +247,16 @@ function howFarIntoView(
       return (box.top + box.bottom) / 2 - (port.top + port.bottom) / 2;
     default:
       // `nearest`: an element already in the port, and one so tall that it covers the port, are
-      // left where they are; one off the top is aligned to the top and one off the bottom to the
-      // bottom - except that one taller than the port is aligned to the top either way, since
-      // bringing its end up would carry its first line out of sight.
+      // left where they are; otherwise the edge that is outside the port comes to the port's
+      // own - except for an element taller than the port, whose far edge comes instead, since
+      // bringing the near edge of such an element in would carry the end the reader is on out
+      // of sight (CSSOM View, "scroll a target into view": an element whose edge A is outside
+      // edge A is aligned on edge A where it is shorter than the port and on edge B where it is
+      // taller).
       if (above === below) {
         return 0;
       }
-      if (above || box.bottom - box.top > port.bottom - port.top) {
-        return box.top - port.top;
-      }
-      return box.bottom - port.bottom;
+      return above !== taller ? box.top - port.top : box.bottom - port.bottom;
   }
 }
 
@@ -264,13 +271,31 @@ function howFarIntoView(
  * one, and an element drawn past the clip is reachable only by scrolling it - while `clip` is no
  * scrolling box at all. A box showing all of its own content scrolls nothing and is left out, so
  * no box is recorded as moved by a write that could not move it.
+ *
+ * The walk ends at a `fixed` box, and the page is no part of the chain above one: a fixed box
+ * stands where the window puts it whatever the page is scrolled to, so no scroll above it moves
+ * anything in it. The page is left out at that point rather than asked for a delta it cannot
+ * answer - which is what the search palette's list is, in a `fixed` wrapper over a page whose
+ * bottom `scroll-padding` the highlighted row's resting edge falls in: every arrow press would
+ * scroll the page further behind the palette and leave the row exactly where it stood
+ * (`features/search/SearchPalette.tsx`).
  */
 function boxesThatScroll(element: HTMLElement): (HTMLElement | null)[] {
   const boxes: (HTMLElement | null)[] = [];
+  if (window.getComputedStyle(element).position === "fixed") {
+    return boxes;
+  }
   for (let box = element.parentElement; box !== null; box = box.parentElement) {
-    const overflow = window.getComputedStyle(box).overflowY;
-    if (overflow !== "visible" && overflow !== "clip" && box.scrollHeight > box.clientHeight) {
+    const style = window.getComputedStyle(box);
+    if (
+      style.overflowY !== "visible" &&
+      style.overflowY !== "clip" &&
+      box.scrollHeight > box.clientHeight
+    ) {
       boxes.push(box);
+    }
+    if (style.position === "fixed") {
+      return boxes;
     }
   }
   boxes.push(null);
@@ -286,10 +311,11 @@ function boxesThatScroll(element: HTMLElement): (HTMLElement | null)[] {
  *  did it.
  *
  *  It measures by the browser's own rule, `scroll-padding` and `scroll-margin` included, so
- *  `nearest` still moves nothing for an element already in the port and still brings the near
- *  edge to the near edge for one that is not - rather than a delta of this module's own
- *  invention. Each box is measured after the boxes inside it have moved, as the browser
- *  measures, so an outer box is asked only for what the inner ones left to do - which is
+ *  `nearest` still moves nothing for an element already in the port and still brings the edge
+ *  that is outside the port to the port's own - the far edge, where the element is taller than
+ *  the port (`howFarIntoView`) - rather than a delta of this module's own invention. Each box
+ *  is measured after the boxes inside it have moved, as the browser measures, so an outer box
+ *  is asked only for what the inner ones left to do - which is
  *  nothing, for the usual element that one box brings into view. One thing the browser's call
  *  does it does not: it leaves the inline axis alone. Every caller of it names a block
  *  alignment only, of an element drawn in the box the reader is already looking at. A scroll it
@@ -474,7 +500,13 @@ export function keepTheReadersPlace(drawn: HTMLElement): () => void {
 /** Every box `keepWhatStandsUnder` is watching, with how tall each last stood, and where the
  *  last correction left the scroll. One state for all of them, because two boxes that grow in
  *  one frame are one growth to answer: a guard per box would read the first box's own
- *  correction as somebody else's and leave the second box's growth on the reader. */
+ *  correction as somebody else's and leave the second box's growth on the reader.
+ *
+ *  That one state is one scroll, so every box kept at once is assumed to be carried by the box
+ *  that scrolls the first of them: one offset is read, one correction is written, and a box in
+ *  some other scroller would be answered by moving a scroller it does not stand in. Every
+ *  caller is one held box per surface and that surface's own document under it
+ *  (`features/doc/AfterTheFirstBatch.tsx`). */
 const boxesKept = new Map<HTMLElement, number>();
 let keptTheScrollAt: number | undefined;
 
@@ -494,14 +526,18 @@ function keepWhatStandsUnderThem(): void {
     keptTheScrollAt = offset;
     return;
   }
+  // The top of the scrollport every kept box is read against, which is the column's own top in
+  // a reading pane and the window's on a document page: the one scroller they share (above).
+  const edge = scrollportTop(whatScrolls(first));
   let grew = 0;
   for (const box of boxesKept.keys()) {
     const { height, top } = box.getBoundingClientRect();
-    // Only where the box stands above the top of the reader's screen. A reader who can see it
-    // is watching it land, and moving the page under them would take what they are looking at
-    // off it; that is the line `readersBlock` draws for a reader still above the document's
-    // first block.
-    if (top < 0) {
+    // Only where the box stands above the top of the reader's screen - the top of the
+    // scrollport they are reading in, which is the line every reading in this module is taken
+    // from. A reader who can see it is watching it land, and moving the page under them would
+    // take what they are looking at off it; that is the line `readersBlock` draws for a reader
+    // still above the document's first block.
+    if (top < edge) {
       grew += height - (boxesKept.get(box) ?? height);
     }
     boxesKept.set(box, height);
