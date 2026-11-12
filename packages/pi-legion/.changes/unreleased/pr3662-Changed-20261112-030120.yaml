@@ -1,5 +1,5 @@
 kind: Changed
-body: 'Declares daemon API contract 75, and `retry_or_escalate` now takes an optional `reason`, which the daemon writes into the task the restarted role is given and into its own log line for the release. The record `read_record` answers names the phase a held issue was held from and, on a failed claim, why it failed: the one cause word, the sentence beside it, the moment and the four attempt counts.'
+body: 'Declares daemon API contract 75, and `retry_or_escalate` now takes an optional `reason` on either decision: a retry has the daemon write it into the task the restarted role is given and into its own log line for the release, and an escalation sends it to the controller in the held notice, beside the cause that hold already names. The record `read_record` answers names the phase a held issue was held from and, on a failed claim, why it failed: the one cause word, the sentence beside it, the moment and the four attempt counts.'
 time: 2026-11-12T03:01:20.850637774Z
 custom:
     Issue: pr3662

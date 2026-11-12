@@ -109,9 +109,11 @@ type PhaseBackwardRequest struct {
 type PhaseBackwardResponse struct{}
 
 // PhaseRetryRequest records the tree architect's retry-or-escalate choice for a held issue.
-// Reason is why the architect made it, which the retry writes into the task the restarted role
-// is given and into the daemon's own log line for the release; a request naming none leaves the
-// daemon's own words there, so it is optional.
+// Reason is why the architect made it, and both decisions carry it: a retry writes it into the
+// task the restarted role is given and into the daemon's own log line for the release, and an
+// escalation sends it to the controller in the held notice, beside the cause that hold already
+// names (record.Notice.Escalation). A request naming none leaves the daemon's own words in the
+// restarted role's task and the escalation's notice without the field, so it is optional.
 type PhaseRetryRequest struct {
 	GrantID  string                         `json:"grantId"`
 	Issue    string                         `json:"issue"`

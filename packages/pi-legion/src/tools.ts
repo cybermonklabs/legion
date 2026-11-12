@@ -226,7 +226,8 @@ export function createLegionTool(deps: {
         PHASE_OP_SENTENCES.requestBackwardMove +
         "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
         "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
-        "and an optional reason is written into the restarted worker's task and the daemon's own log line for the release. " +
+        "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
+        "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
         "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
         "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
         "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: take each one " +

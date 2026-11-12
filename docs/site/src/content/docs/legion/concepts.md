@@ -530,7 +530,7 @@ architect of the tree reads it on the claim, the controller reads it with the li
 and the notice of the hold carries it as well, so the first reader of a hold already knows what
 ran out. The held issue names the phase the hold took it out of.
 
-Three moves release a held issue. The architect's own retry puts it back in that phase. Setting a
+Four moves release a held issue. The architect's own retry puts it back in that phase. Setting a
 held root to `todo` releases the hold the same way, whether you move it in the Dispatch
 dashboard, the controller sets it, or an operator runs `legion status`: the issue returns to that
 phase and its worker starts again at the same generation, in the same pod and at the same place

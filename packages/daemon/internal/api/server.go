@@ -817,16 +817,17 @@ const claimsToRefreshContract = 73
 
 // recordFieldsContract is the daemon contract that decided every field of the claim record and
 // of the issue record, served or withheld (dispatch://INFRA-3083, ClaimRecordFields and
-// IssueRecordFields). It added nine keys to this route: a claim view's `servingGeneration`,
-// `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` and `pendingCause`, and an
-// issue's `heldFrom`, `lingerUntil` and `ancestry`. A plugin before it is served the state
-// without any of them: one built before sjawhar/legion#2788 reads it with a strict schema and
-// would refuse the whole body for a key it does not name, and one built after strips the key
+// IssueRecordFields). It added to this route a claim view's `servingGeneration`,
+// `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` and `pendingCause`, an issue's
+// `heldFrom`, `lingerUntil` and `ancestry`, and the `contract` mark beside the daemon's block,
+// which is what its row of stateNarrowings names as dropped. A plugin before it is served the
+// state without any of them: one built before sjawhar/legion#2788 reads it with a strict schema
+// and would refuse the whole body for a key it does not name, and one built after strips the key
 // instead.
 //
-// The nine arrive at this one number and leave together, so the route takes one triple for them
-// (carriesRecordFields, withoutRecordFields) rather than nine that would copy the issue map
-// nine times in one request.
+// They arrive at this one number and leave together, so the route takes one triple for them
+// (carriesRecordFields, withoutRecordFields) rather than one for each, which would copy the
+// issue map once for each in one request.
 const recordFieldsContract = 75
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
@@ -930,15 +931,16 @@ func carriesStallRecord(state State) bool {
 // contract would ask of every issue here and which the strip below reads one issue at a time.
 func carriesRecordFields(State) bool { return true }
 
-// issueCarriesRecordFields is whether a claim view of this one issue carries any of the six keys
-// the record added to a claim view. It is what the strip below reads to decide whether to build
-// an issue's views again, so the question and the strip never part company over what carrying
-// means, as issueCarriesBackwardMoves holds that for the counts.
+// issueCarriesRecordFields is whether a claim view of this one issue carries any key the record
+// added to a claim view. It is what the strip below reads to decide whether to build an issue's
+// views again, and it asks that strip itself rather than list its keys a second time: a view the
+// strip would change is a view carrying one of them, so the question and the strip cannot part
+// company over what carrying means — a key added to stripRecordFields is answered here by the
+// same line — as issueCarriesBackwardMoves holds that for the counts. The comparison is the
+// compiler's: every field of ClaimView is a string, a number or a pointer, so the type is
+// comparable and a build that puts a slice or a map on it fails here.
 func issueCarriesRecordFields(issue Issue) bool {
-	carries := func(v ClaimView) bool {
-		return v.ServingGeneration != 0 || v.UpdateReasons != "" || v.ProviderErrorRun != 0 ||
-			v.PendingTask != nil || v.Failure != nil || v.PendingCause != ""
-	}
+	carries := func(v ClaimView) bool { return stripRecordFields(v) != v }
 	if issue.Architect != nil && carries(*issue.Architect) {
 		return true
 	}
@@ -1188,17 +1190,33 @@ func withoutStallRecord(state State) State {
 	return state
 }
 
-// withoutRecordFields is state with no `contract` mark, no claim view carrying
-// `servingGeneration`, `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` or
-// `pendingCause` and no issue carrying `heldFrom`, `lingerUntil` or `ancestry`, the ten keys
-// recordFieldsContract added to this route; nothing else of that contract is on it. The nine of
-// the record are stripped in this one copy of the issue map, because they arrive and leave
-// together and nine passes would copy that map nine times in one request. The maps are copied,
-// so the state the source answered is left as it was, as withoutStallRecord leaves it. An
-// issue's own three are cleared on the copy the map rebuild makes anyway; its architect and its
-// worker map are built again only where a claim view of that issue carries one of the six, as
-// withoutBackwardMoves rebuilds only the worker maps that carry the counts, because this strip
-// runs on every state read of every pod below the contract.
+// stripRecordFields is view with none of the keys recordFieldsContract added to a claim view:
+// `servingGeneration`, `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` and
+// `pendingCause`. It stands on its own because two callers must agree on that list to the key —
+// the narrowing below, which takes them off the views of a caller under the contract, and
+// issueCarriesRecordFields, which asks whether a view carries any of them and asks it by this
+// function — so a key added here is answered by both and cannot be added to one alone.
+func stripRecordFields(view ClaimView) ClaimView {
+	view.ServingGeneration = 0
+	view.UpdateReasons = ""
+	view.ProviderErrorRun = 0
+	view.PendingTask = nil
+	view.Failure = nil
+	view.PendingCause = ""
+	return view
+}
+
+// withoutRecordFields is state with no `contract` mark, no claim view carrying any of the keys
+// stripRecordFields takes off, and no issue carrying `heldFrom`, `lingerUntil` or `ancestry`,
+// which is everything recordFieldsContract added to this route (stateNarrowings' last row names
+// them); nothing else of that contract is on it. The record's keys are stripped in this one copy
+// of the issue map, because they arrive and leave together and a pass for each would copy that
+// map once for each. The maps are copied, so the state the source answered is left as it was, as
+// withoutStallRecord leaves it. An issue's own three are cleared on the copy the map rebuild
+// makes anyway; its architect and its worker map are built again only where a claim view of that
+// issue carries one of the strip's keys, as withoutBackwardMoves rebuilds only the worker maps
+// that carry the counts, because this strip runs on every state read of every pod below the
+// contract.
 //
 // The mark goes with them, and must: it names the two contracts, and a key this caller's plugin
 // does not know refuses the whole body at it, which is the one thing the narrowing is for. What
@@ -1206,15 +1224,6 @@ func withoutStallRecord(state State) State {
 // (stateFor), where no plugin's schema can refuse it.
 func withoutRecordFields(state State) State {
 	state.Contract = nil
-	strip := func(view ClaimView) ClaimView {
-		view.ServingGeneration = 0
-		view.UpdateReasons = ""
-		view.ProviderErrorRun = 0
-		view.PendingTask = nil
-		view.Failure = nil
-		view.PendingCause = ""
-		return view
-	}
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
 		issue.HeldFrom = ""
@@ -1222,13 +1231,13 @@ func withoutRecordFields(state State) State {
 		issue.Ancestry = nil
 		if issueCarriesRecordFields(issue) {
 			if issue.Architect != nil {
-				architect := strip(*issue.Architect)
+				architect := stripRecordFields(*issue.Architect)
 				issue.Architect = &architect
 			}
 			if issue.Workers != nil {
 				workers := make(map[claim.Role]PhaseView, len(issue.Workers))
 				for role, worker := range issue.Workers {
-					worker.Claim = strip(worker.Claim)
+					worker.Claim = stripRecordFields(worker.Claim)
 					workers[role] = worker
 				}
 				issue.Workers = workers

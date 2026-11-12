@@ -172,10 +172,13 @@ const legionStepView = z.object({
   endedAt: timestamp.optional(),
 });
 
-/** The one word the site that failed a claim chose (`supervise.FailureCause`). A claim view
- * carries it twice over: in `failure.cause`, why the claim failed, and in `pendingCause`, what
- * failed the process whose relaunch is in flight. */
-const legionFailureCause = z.enum([
+/** `supervise.FailureCauses` — the closed set of words a claim can fail under, in the order the
+ * daemon declares them. The Go side is the source: its `TestFailureCausesGolden` writes that
+ * list to `fixtures/daemon-api/failure-causes.json`, and `legion-api.test.ts` holds this list
+ * equal to the file, so a word added on either side alone fails a test. It matters because the
+ * enum below is strict: a cause this list does not name refuses the whole state body at every
+ * plugin that reads it. */
+export const LEGION_FAILURE_CAUSES = [
   "launch_refused",
   "died",
   "never_registered",
@@ -183,7 +186,12 @@ const legionFailureCause = z.enum([
   "prompt_retires_exhausted",
   "provider_error",
   "unrecorded",
-]);
+] as const;
+
+/** The one word the site that failed a claim chose (`supervise.FailureCause`). A claim view
+ * carries it twice over: in `failure.cause`, why the claim failed, and in `pendingCause`, what
+ * failed the process whose relaunch is in flight. */
+const legionFailureCause = z.enum(LEGION_FAILURE_CAUSES);
 
 /** `api.ClaimFailureView` — why a claim failed: `cause`, the one word the site that failed it
  * chose (`supervise.FailureCause`), `detail`, the sentence that site wrote beside it, `at`, the
@@ -1285,9 +1293,11 @@ export const LegionPhaseBackwardRequest = z.strictObject({
 });
 
 /** `api.PhaseRetryRequest`, the tree architect's retry-or-escalate decision for a held issue.
- * `reason` says why the decision was made: the daemon writes it into the task the restarted
- * role is given and into its own log line for the release, and a request that names none is
- * unchanged (the restarted role is told the daemon's own words). */
+ * `reason` says why the decision was made, and both decisions carry it: a retry writes it into
+ * the task the restarted role is given and into the daemon's own log line for the release, and
+ * an escalation sends it to the controller in the held notice, beside the cause that hold
+ * already names. A request that names none is unchanged: the restarted role is told the
+ * daemon's own words, and the escalation's notice carries no such field. */
 export const LegionPhaseRetryRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

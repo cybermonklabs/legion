@@ -78,6 +78,24 @@ const (
 	CauseUnrecorded FailureCause = "unrecorded"
 )
 
+// FailureCauses is the closed set the constants above are, in the order they are declared: the
+// roster of the set, which nothing in Go can read off the constants themselves. A cause added
+// here with no word added to the `legion-api.ts` enum of the same set would make every strict
+// plugin refuse the whole state body, so the two are pinned to each other through one file both
+// suites read: `internal/api`'s TestFailureCausesGolden writes this list to
+// `packages/contracts/fixtures/daemon-api/failure-causes.json`, and
+// `packages/contracts/src/legion-api.test.ts` holds that file equal to `LEGION_FAILURE_CAUSES`.
+// A cause added on either side alone fails one of them.
+var FailureCauses = []FailureCause{
+	CauseLaunchRefused,
+	CauseDied,
+	CauseNeverRegistered,
+	CauseStalePlugin,
+	CausePromptRetiresExhausted,
+	CauseProviderError,
+	CauseUnrecorded,
+}
+
 // relaunchAfterFailure charges one launch failure for a process that did not survive, and
 // relaunches the same session after it, once the backoff for the failures charged so far has
 // passed (backOff) and its turn in the wake pacing has come (reserveWake) — or fails the claim

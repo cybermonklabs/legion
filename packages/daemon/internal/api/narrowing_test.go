@@ -82,8 +82,9 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 // no line fail here: a body with the keys gone and nothing anywhere saying so is the state this
 // requirement exists to end, where an absent fact and a withheld fact read alike.
 func TestANarrowedBodySaysSo(t *testing.T) {
-	// A caller one contract below the mark is below that narrowing and above the other nine, so
-	// its request writes exactly one line and the line below names the keys of that one arm.
+	// A caller one contract below the mark is below that narrowing and above every other row of
+	// stateNarrowings, so its request writes exactly one line and the line below names the keys
+	// of that one arm.
 	t.Run("a caller below the contract is told nothing, and the log says what was taken", func(t *testing.T) {
 		const remote = statePodAddr + ":41000"
 		body, narrowings := stateNarrowed(t, populatedState(t), remote, podClaims(recordFieldsContract-1))
@@ -165,10 +166,10 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 
-	// Every narrowing says what it dropped, not only the mark's own: a caller below all ten is
-	// served ten lines, each naming its own keys. One line for the ten, or a line that named the
-	// contract and nothing else, would leave a reader of the log to find out elsewhere what left
-	// the body.
+	// Every narrowing says what it dropped, not only the mark's own: a caller below every
+	// contract in stateNarrowings is served one line per row of it, each naming its own keys.
+	// One line for all of them, or a line that named the contract and nothing else, would leave
+	// a reader of the log to find out elsewhere what left the body.
 	t.Run("each narrowing names its own keys", func(t *testing.T) {
 		_, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(supervise.PodUpdateContract-1))
 

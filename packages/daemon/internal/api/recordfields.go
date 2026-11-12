@@ -2,12 +2,14 @@ package api
 
 // This file is the decision, field by field, about what the daemon's surfaces serve of the two
 // durable records a reader of this wire acts on: `supervise.Claim` and `record.Issue`. It is
-// data and nothing else — no route, no view and no projection reads it at run time — and the one
-// reader is internal/projection's TestEveryRecordFieldIsServedOrExcluded, which reflects over
-// both records and fails naming a field that stands in none of the three columns. A field added
-// to either record later is therefore decided rather than forgotten, and a field moved between
-// the columns is a decision a reviewer sees in the diff, because each entry carries its reason
-// as data (dispatch://INFRA-3083, R3 and R4).
+// data and nothing else — no route, no view and no projection reads it at run time — and its
+// readers are the two tests named TestEveryRecordFieldIsServedOrExcluded, one in
+// internal/projection over the agent surfaces, which reflects over both records and fails naming
+// a field that stands in none of the three columns, and one in this package over `operatorView`,
+// which fails naming a field of the operator column that route serves nowhere. A field added to
+// either record later is therefore decided rather than forgotten, and a field moved between the
+// columns is a decision a reviewer sees in the diff, because each entry carries its reason as
+// data (dispatch://INFRA-3083, R3 and R4).
 //
 // The columns are of the agent surfaces: `api.ClaimView`, which `read_record` and `read_state`
 // carry, and `api.Issue`. ColumnAgents is served there; ColumnOperator is the operator route's
@@ -19,8 +21,11 @@ package api
 type RecordColumn string
 
 const (
-	// ColumnAgents is served to the agent surfaces, and so to the operator's as well wherever
-	// that route carries the same view.
+	// ColumnAgents is served to the agent surfaces, and its keys are those surfaces' own. The
+	// operator route carries most of these fields as well, under the same key or under one of
+	// its own, and carries none of `servingGeneration`, `pendingCause`, `providerErrorRun` and
+	// `updateReasons` (api.OperatorClaim, which internal/api's own half of
+	// TestEveryRecordFieldIsServedOrExcluded holds to this column).
 	ColumnAgents RecordColumn = "agents"
 	// ColumnOperator is the operator route's alone. Two reasons put a field here and no third
 	// has yet: a session-facing schema must not name it, or the store never writes it, so the

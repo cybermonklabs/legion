@@ -88,7 +88,7 @@ the decision's Dispatch `ref`, the person (`actor`), and a spec decision's `vers
 request's `reason`. Decide it as `skill://legion-controller/references/parked-decisions.md#deciding`
 says.
 
-## `held on <KEY>` (`{kind: "held", phase, role?, reason?, failure?}`)
+## `held on <KEY>` (`{kind: "held", phase, role?, reason?, failure?, escalation?}`)
 
 Check that the issue's `phase` is `held`. Without `reason`, a phase worker's launches or prompts
 ran out, and the tree's architect decides whether to retry or escalate: do nothing. With
@@ -109,7 +109,13 @@ before it kept a cause. `detail` is the sentence the daemon wrote beside that wo
 `limit` it ran out at, and the deaths run out at the launch failure limit.
 `issues.<KEY>.heldFrom` names the phase the hold took the issue out of, whatever the tree is
 doing, and the failed claim's own `failure` in `read_state` holds the same record. An escalated
-hold's notice carries no `failure`, so read the claim's record in `read_state` for it.
+hold's notice carries no `failure`, so read the claim's record in `read_state` for it; it carries
+`escalation` instead, the architect's own words for the escalation, which the architect wrote as
+the `reason` of its `retry_or_escalate`. That key is on an escalated hold's notice and on no
+other, and is absent where the architect named no reason. Read it as the architect's account of
+why the issue is yours, beside the cause word the claim's own `failure` gives: it is the one
+thing on this wake that the record does not hold, so quote it when you answer the architect and
+when you say in your summary what you did.
 
 Four moves release a held root, at three prices. The tree's architect's own `retry_or_escalate`
 with `retry` costs nothing. A `todo` on the root costs nothing either, and it is your own lever:
@@ -148,10 +154,10 @@ architect's last message on the root issue. When you find none, or it is gone, r
 fresh budgets). When it stays, park the tree (`set_status` the root to `backlog`) and say why on
 the issue, because a relaunch would fail the same way.
 
-This re-admission is not the hold release of the `held` wake above, and this change leaves it where
-it stood. The `backlog` takes the tree out of the workflow, so the `todo` after it starts a new
-generation whatever phase the root stood in. The release is a `todo` written on a root that still
-stands at `phase: held`, with no park before it.
+This re-admission is not the hold release of the `held` wake above. The `backlog` takes the tree
+out of the workflow, so the `todo` after it starts a new generation whatever phase the root stood
+in. The release is a `todo` written on a root that still stands at `phase: held`, with no park
+before it.
 
 ## `worker-stalled on <KEY>` (`{kind: "worker-stalled", role: "architect", reason}`)
 

@@ -668,11 +668,21 @@ type ClaimFailureView struct {
 }
 
 // FailureViewOf is c's failure record as a claim view shows it, and nil for a claim the daemon
-// holds no cause for, so no such claim carries the key. It is keyed on the cause rather than on
-// the claim's state: the state says where the claim is now, and the cause says what the daemon
+// holds no cause for, so no such claim carries the key. It is keyed on the record rather than on
+// the claim's state: the state says where the claim is now, and the record says what the daemon
 // last recorded about it, which outlives a retirement.
+//
+// Both the cause and the sentence are read, because an image rolled back and forward again can
+// leave the one without the other. The release before this one clears `failure` at every launch
+// and names `failure_cause` and `failed_at` in no statement (its upsert), so a claim it
+// relaunched carries a cause and no sentence, and serving that would say a working claim failed.
+// Keying on both loses nothing correct: every live `fail` writes a sentence, and the migration
+// backfills only the rows that hold one. The one state it cannot tell apart is a claim that
+// failed again under the older daemon, which wrote the new sentence and left the cause and the
+// moment of the failure before it: the record then reads with an earlier failure's cause beside
+// a later failure's sentence, and nothing in the row says so.
 func FailureViewOf(c supervise.Claim) *ClaimFailureView {
-	if c.FailureCause == "" {
+	if c.FailureCause == "" || c.Failure == "" {
 		return nil
 	}
 	return &ClaimFailureView{
@@ -735,9 +745,9 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		// What the daemon last saw this claim's agent do, which the stall backstop and an
 		// operator read alike; nil for a claim whose agent has not stepped (StepViewOf).
 		Step: StepViewOf(c.Step),
-		// Why the claim failed, for as long as the daemon holds a cause for it: a claim an
+		// Why the claim failed, for as long as the daemon holds a record of it: a claim an
 		// operator retired after it failed carries the record still, since nothing but the launch
-		// that runs it again clears it (FailureViewOf). It is keyed on the stored cause rather
+		// that runs it again clears it (FailureViewOf). It is keyed on the stored record rather
 		// than on the claim's state for exactly that reason.
 		Failure:      FailureViewOf(c),
 		PendingCause: c.PendingCause,

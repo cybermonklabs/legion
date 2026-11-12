@@ -46,10 +46,13 @@ you release it. Read the record, then choose the release.
    a child, the same `todo` brings it back at `admitted` with a new generation of its own, since
    the free release reaches a root alone. Where the claim's own session is what the provider keeps
    refusing (`provider_error`, and `prompt_retires_exhausted` for an agent that takes no turn),
-   `compact` the session first and use `fresh_session` only when the claim is still refused after
-   that: the claim starts the held phase again in a new session and loses everything the old one
-   held. Where the cause stands, park the tree as the `held` wake says, and mark the park with its
-   comment.
+   use `fresh_session`, and do not reach for `compact` first: the claim an escalated hold stands
+   over is `failed`, and `compact` refuses a failed claim with `CLAIM_NOT_RUNNING` because it
+   runs no Oh My Pi session to compact — the refusal itself names `fresh_session` as what starts
+   the claim again. The claim starts the held phase again in a new session and loses everything
+   the old one held. (`compact` is for a claim that still runs, which is the stuck claim of the
+   `provider-errors` wake, not this one.) Where the cause stands, park the tree as the `held`
+   wake says, and mark the park with its comment.
 
 ## A child that looks independent
 

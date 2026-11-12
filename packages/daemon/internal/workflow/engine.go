@@ -296,12 +296,12 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 		return intake.Result{}, e.leave(ctx, tx, *issue, fact.Status)
 	}
 	// A todo written on a held root whose tree does not linger releases the hold
-	// (releaseHeldRoot). Its test is the complement of admission's own (admit's readmittable), so
-	// the two can never both fire: a root that lingers or stands done is re-admitted there at a
-	// new generation, and a root held from a phase stands at neither, which keeps the park and
-	// un-park of a lingering root on its new generation. A held child is untouched, and comes
-	// back through ReenterChild below.
-	if fact.Status == "todo" && claim.IsTreeRoot(issue.Key, issue.Tree) && issue.Phase == phase.Held && issue.Hold != nil && !issue.Lingers() {
+	// (releaseHeldRoot). Its test is the complement of admission's own, by construction and not
+	// by a reader's care: both ask record.Issue.Readmittable, so the two can never both fire. A
+	// root that lingers or stands done is re-admitted there at a new generation, and a root held
+	// from a phase stands at neither, which keeps the park and un-park of a lingering root on
+	// its new generation. A held child is untouched, and comes back through ReenterChild below.
+	if fact.Status == "todo" && claim.IsTreeRoot(issue.Key, issue.Tree) && issue.Phase == phase.Held && issue.Hold != nil && !issue.Readmittable() {
 		return intake.Result{}, e.releaseHeldRoot(ctx, tx, *issue, fact)
 	}
 	if fact.Status == "todo" && !claim.IsTreeRoot(issue.Key, issue.Tree) {
@@ -322,25 +322,32 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 // admission — running after this handler — at its sequence fence so it never writes
 // `status: todo` over the release, and the phase the hold came from.
 //
-// Where the release's own path already moved the issue — a standing red that sends it back to
-// implementing, a review round that settles — that move wrote its own status and the release
-// writes no second one. Otherwise the Dispatch status of the phase the issue ends in is queued,
-// as a phase transition queues it, so the board shows the phase the issue works and a later todo
-// on the same issue is a status change again. It is enqueued here rather than through
-// Engine.status, which writes nothing when the record's own status already holds the status
-// asked for: a hold changes no status, so the record still reads in_progress while Dispatch
-// reads todo. correctStatuses bypasses Engine.status for this same trap.
+// The Dispatch status of the phase the issue ends in is queued whatever path it ended on
+// (retryPhase answers that phase), as a phase transition queues it, so the board shows the phase
+// the issue works and a later todo on the same issue is a status change again. It is enqueued
+// here rather than through Engine.status, which writes nothing when the record's own status
+// already holds the status asked for: a hold changes no status, so the record still reads the
+// status of the phase it was held from — in_progress, testing, needs_review — while Dispatch
+// reads todo, and the write the board needs is the one Engine.status would drop.
+// correctStatuses bypasses Engine.status for this same trap.
+//
+// Where the release's own path moved the issue — a standing red that sends it back to
+// implementing, a review round that settles — that move queued a row of its own through
+// Engine.status, and that row is harmless beside this one: it is keyed on the status the record
+// held rather than on the todo Dispatch shows (record.StatusWrite.ObservedStatus), so the
+// executor finishes it without a write (the daemon's outbox status), and where the status it
+// would have written is the one the record already held it was dropped at the queue and there is
+// no row at all. The row this line queues names the todo, so it is the one that writes.
 func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
-	from := issue.Hold.From
 	released, err := e.observedIssue(ctx, tx, issue, fact)
 	if err != nil {
 		return err
 	}
-	moved, err := e.retryPhase(ctx, tx, released, from, releaseReason)
-	if err != nil || moved {
+	ended, err := e.retryPhase(ctx, tx, released, issue.Hold.From, releaseReason)
+	if err != nil {
 		return err
 	}
-	return e.enqueue(ctx, tx, issue.Key, record.StatusWrite{Status: PhaseStatus(from), ObservedStatus: fact.Status})
+	return e.enqueue(ctx, tx, issue.Key, record.StatusWrite{Status: PhaseStatus(ended), ObservedStatus: fact.Status})
 }
 
 // releaseReason is the daemon's own reason for that release, which the restarted role's task and
@@ -848,7 +855,12 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 		if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
 			return intake.Result{}, err
 		}
-		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "held", Phase: issue.Hold.From, Reason: string(record.HoldEscalated)})
+		// The architect's own words where it named any, beside the cause the hold already names:
+		// the controller must act on this hold, and why the architect escalated it is what it
+		// acts on. They travel in a field of their own, since Reason is the word `escalated`
+		// both agents' texts branch on (record.Notice.Escalation).
+		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "held", Phase: issue.Hold.From,
+			Reason: string(record.HoldEscalated), Escalation: fact.Reason})
 	}
 	if fact.Decision != intake.RetryDecision {
 		return intake.Result{}, nil
@@ -915,13 +927,14 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // Its callers have established that the tree does not linger, which is what holds every member
 // where it stood.
 //
-// It answers whether one of those two paths moved the issue, which the caller that must write a
-// status of its own reads: the move wrote the status of the phase it took the issue to, and a
-// second one over it would say the issue works a phase it left (releaseHeldRoot).
-func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase, reason string) (bool, error) {
+// It answers the phase the issue ends in, which the caller that must write a status of its own
+// reads (releaseHeldRoot): from, where nothing moved, and otherwise the phase the move took the
+// issue to, read back from the record because the move's own row chose that target
+// (transition).
+func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase, reason string) (phase.Phase, error) {
 	issue.Phase, issue.Hold = from, nil
 	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
-		return false, err
+		return "", err
 	}
 	// The daemon's own line for the release (R11), written whether or not a worker is started
 	// below: the hold is gone either way, and the reason is the one the restarted role's task
@@ -929,26 +942,46 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	e.logOnCommit(ctx, "workflow: a held phase is released", "issue", issue.Key, "phase", from, "reason", reason)
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	if moved, err := e.standingRed(ctx, tx, issue, pr); err != nil || moved {
-		return moved, err
+	moved, err := e.standingRed(ctx, tx, issue, pr)
+	if err != nil {
+		return "", err
+	}
+	if moved {
+		return e.phaseNow(ctx, tx, issue)
 	}
 	if from == phase.Reviewing {
 		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 		if err != nil {
-			return false, err
+			return "", err
 		}
 		// The retry tells nothing of a stuck round: passed as its own before, it is stuck the same way.
 		r := e.reviewRound(issue, reviewer, pr)
-		if moved, err := e.settleRound(ctx, tx, issue, reviewer, pr, r, ""); err != nil || moved {
-			return moved, err
+		settled, err := e.settleRound(ctx, tx, issue, reviewer, pr, r, "")
+		if err != nil {
+			return "", err
+		}
+		if settled {
+			return e.phaseNow(ctx, tx, issue)
 		}
 		if r.outcome == roundStuck {
 			reason += ": " + r.reason
 		}
 	}
-	return false, e.restart(ctx, tx, issue, RoleFor(from), task(issue, record.PhaseRow{}, pr, reason))
+	return from, e.restart(ctx, tx, issue, RoleFor(from), task(issue, record.PhaseRow{}, pr, reason))
+}
+
+// phaseNow is the phase issue stands in now, read back after a move inside the retry wrote it
+// (retryPhase): the move's own row decides which phase it reaches, so the record is asked rather
+// than the target named here a second time. An issue the move took out of the record stands
+// where the caller last wrote it.
+func (e *Engine) phaseNow(ctx context.Context, tx pgx.Tx, issue record.Issue) (phase.Phase, error) {
+	moved, err := e.store.Issue(ctx, tx, issue.Key)
+	if err != nil || moved == nil {
+		return issue.Phase, err
+	}
+	return moved.Phase, nil
 }
 
 func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMove) (intake.Result, error) {

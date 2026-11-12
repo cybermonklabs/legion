@@ -276,6 +276,17 @@ type Notice struct {
 	// skill://legion-architect/references/wake-routing.md); the failure's own sentence is
 	// Failure.Detail.
 	Failure *NoticeFailure `json:"failure,omitempty"`
+	// Escalation is the architect's own words for the escalation it made, carried by the held
+	// notice of that escalation and by no other kind or reason (validateOutboxPayload): a
+	// controller woken by an escalated hold acts on it, and the words that say why the
+	// architect escalated are what it acts on. It is absent for an escalation whose
+	// retry_or_escalate named no reason, which is every escalation until an architect names one.
+	//
+	// It is a field of its own rather than Reason, which keeps its one value `escalated`
+	// because both agents' texts branch on whether Reason is there at all
+	// (skill://legion-controller/references/wakes.md,
+	// skill://legion-architect/references/wake-routing.md).
+	Escalation string `json:"escalation,omitempty"`
 	// Resends counts the times the notice was queued again after the listener could not forward
 	// it to its architect's session (the daemon's rehold), which stops at a cap.
 	Resends int `json:"resends,omitempty"`
@@ -1284,6 +1295,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
 			return err
 		}
+		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
+			return err
+		}
 	case ControllerNotice:
 		if !controllerOnlyNoticeKind(value.Kind) && !validNoticeKind(value.Kind) {
 			return fmt.Errorf("unknown controller notice kind %q", value.Kind)
@@ -1302,6 +1316,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			return fmt.Errorf("an update-stalled notice requires its round and the claims it waits on")
 		}
 		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
+			return err
+		}
+		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
 			return err
 		}
 	case SuperviseRequest:
@@ -1475,6 +1492,23 @@ func validateNoticeFailure(kind NoticeKind, failure *NoticeFailure) error {
 	}
 	if failure.Cause == "" {
 		return fmt.Errorf("a %s notice naming a claim failure names the cause it failed under", kind)
+	}
+	return nil
+}
+
+// validateNoticeEscalation holds the architect's own words for an escalation to the one notice
+// that carries them: the held notice of that escalation, which names it in reason (workflow's
+// retryOrEscalate). Both arms of the switch above call it, as they call validateNoticeFailure
+// and for the same reason — the controller reads a converted copy of the architect's notice.
+//
+// The rule is positive rather than a list of the kinds that may not carry it: an escalation
+// that named no reason carries none, and every other notice carries none at all.
+func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error {
+	if escalation == "" {
+		return nil
+	}
+	if kind != "held" || reason != string(HoldEscalated) {
+		return fmt.Errorf("a %s notice with reason %q carries the architect's words for an escalation; only a held notice of an escalation does", kind, reason)
 	}
 	return nil
 }

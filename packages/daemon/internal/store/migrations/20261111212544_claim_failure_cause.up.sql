@@ -46,9 +46,23 @@
 -- exactly what that release's own restart read. A launch the runtime refuses over such a claim
 -- fails it under launch_refused, as it would have without this column.
 --
--- Rolling the image back needs no restore: store's claims.go is the only reader and writer of
--- these three columns, and the release before it names them in no statement, so its upserts leave
--- whatever the columns last held and a daemon rolled forward again reads the cause back.
+-- Rolling the image back needs no restore of the schema: store's claims.go is the only reader and
+-- writer of these three columns, and the release before it names them in no statement, so its
+-- upserts leave whatever the columns last held and a daemon rolled forward again reads the cause
+-- back. Two things do not survive the round trip, and an operator rolling back should expect
+-- them. The older daemon clears `failure` at every launch and leaves `failure_cause` and
+-- `failed_at` where they stand, so a claim it relaunched, or failed again under its own
+-- sentence, holds a cause from one failure beside the sentence and the moment of another; the
+-- served record is keyed on the cause and the sentence together (api.FailureViewOf), which drops
+-- the first of those two states and cannot tell the second from an ordinary failure. And an
+-- unfinished `held` or `worker-died` outbox row that carries `failure` is a payload the older
+-- daemon's decoder refuses outright (record.DecodeOutboxPayload, DisallowUnknownFields): its
+-- outbox calls no notice row's failure permanent, so the row is retried on its backoff, logged
+-- `outbox row failed` each time, and the architect and the controller are never told of that
+-- hold for as long as that binary runs. Nothing else is held back — notices run in the board
+-- lane, which orders no rows behind each other — and a daemon rolled forward decodes and
+-- delivers them. So let the outbox drain before rolling back, or expect those notices to sit
+-- until the roll forward.
 --
 -- There is no down file: migrations here are forward-only.
 alter table claims add column failure_cause text not null default '';

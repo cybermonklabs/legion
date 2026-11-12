@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -427,4 +428,26 @@ func TestTheFailureRecordOverTheRoutes(t *testing.T) {
 			t.Errorf("the restarted implementer of %s is told %q, want the phase the hold took it out of", failureStatusRoot, task)
 		}
 	})
+}
+
+// The record is keyed on the cause and the sentence together, for a state a rollback can leave
+// behind: the release before this one clears `failure` at every launch and names
+// `failure_cause` and `failed_at` in no statement, so a claim that release relaunched reads
+// with a cause, a moment and no sentence. Serving that would tell every agent surface that a
+// claim which is working now failed. Nothing correct is lost by the second key, because every
+// site that fails a claim writes a sentence with the cause and the migration backfills only
+// where one stands.
+func TestAClaimWithACauseAndNoSentenceCarriesNoRecord(t *testing.T) {
+	at := time.Date(2026, 9, 22, 8, 47, 3, 0, time.UTC)
+	relaunched := supervise.Claim{Token: "legion-legion-220-implementer", State: supervise.StateWorking,
+		FailureCause: supervise.CauseDied, FailedAt: at, Budgets: supervise.Budgets{Deaths: 1}}
+	if view := FailureViewOf(relaunched); view != nil {
+		t.Errorf("a claim an older daemon relaunched carries %+v, want no record: the sentence its failure wrote is gone", view)
+	}
+	failed := relaunched
+	failed.State, failed.Failure = supervise.StateFailed, "the process died with its task outstanding"
+	view := FailureViewOf(failed)
+	if view == nil || view.Cause != supervise.CauseDied || view.Detail != failed.Failure || view.At == nil || !view.At.Equal(at) {
+		t.Errorf("the same claim with its sentence carries %+v, want the cause, the sentence and the moment it failed at", view)
+	}
 }

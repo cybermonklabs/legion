@@ -1085,19 +1085,34 @@ package api
 // `claims.failed_at`, `claims.pending_cause`) and backfills the cause of every claim the store
 // holds a failure sentence for, whatever state it stands in, from the sentence it already
 // wrote, `unrecorded` where that sentence names no one event and a null `failed_at` throughout,
-// since the release this upgrades from recorded the moment nowhere. An older daemon binary put
-// back on this schema names those columns in no statement and serves no `failure` and no
-// `heldFrom`, so the keys go and every other key of the body stands. (The number is a reading
-// of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request of this
-// repository, not of a file list: GitHub cuts a pull request's file list short, so one that
-// changes more files than the page holds answers without this path. The reading of 2026-11-11
-// gave the base 68, the entry two above this one, and the open heads 69 through 74, so this
-// change took 75, the lowest number no open head declared. It was read again at the forward
-// merge of 2026-11-12 that brought main in at 54ca4973098de32bb76cda2fdfd2d5f75fed3733, which
-// carries the 73 right above: the base declares 73 and the open heads above it declare 74
-// (#3575), 76 (#3718), 77 (#3677), 78 (#3708), 79 (#3712) and 80 (#3730), so 75 is still the
-// lowest free number above the base and this change keeps it. Read the base's own number and
-// every open pull request again at the next merge rather than from this line, as
+// since the release this upgrades from recorded the moment nowhere.
+//
+// An older daemon binary put back on this schema names those columns in no statement and serves
+// no `failure` and no `heldFrom`, so those keys go and every other key of the body stands; what
+// it does not leave alone is the record and the outbox. It clears `failure` at every launch and
+// leaves `failure_cause` and `failed_at` where they are, so a claim it relaunched, or failed
+// again under a sentence of its own, holds a cause from one failure beside the sentence and the
+// moment of another; `api.FailureViewOf` is keyed on the cause and the sentence together, which
+// drops the first of those two states and cannot tell the second from an ordinary failure. And
+// a `held` or `worker-died` outbox row carrying `record.Notice.Failure` is a payload that
+// binary's decoder refuses (`record.DecodeOutboxPayload`, `DisallowUnknownFields`): no notice
+// row's failure is permanent to its outbox, so the row is retried on its backoff, logged
+// `outbox row failed` each time, and the hold it carries reaches neither the architect nor the
+// controller while that binary runs — nothing else is held behind it, the board lane ordering
+// no rows, and a daemon rolled forward decodes and delivers it. An operator rolling back lets
+// the outbox drain first, or expects those notices to wait for the roll forward.
+//
+// (The number is a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open
+// pull request of this repository, not of a file list: GitHub cuts a pull request's file list
+// short, so one that changes more files than the page holds answers without this path. The
+// reading of 2026-11-11 gave the base 68, the entry two above this one, and the open heads 69
+// through 74, so this change took 75, the lowest number no open head declared. It was read
+// again at the forward merge of 2026-11-12 that brought main in at
+// 54ca4973098de32bb76cda2fdfd2d5f75fed3733, which carries the 73 right above: the base declares
+// 73 and the open heads above it declare 74 (#3575), 76 (#3718), 77 (#3677), 78 (#3708), 79
+// (#3712) and 80 (#3730), so 75 is still the lowest free number above the base and this change
+// keeps it. Read the base's own number and every open pull request again at the next merge
+// rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 const DaemonAPIVersion = 75

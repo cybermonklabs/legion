@@ -4,6 +4,7 @@ import path from "node:path";
 import { z } from "zod";
 import * as legionApi from "./legion-api";
 import {
+  LEGION_FAILURE_CAUSES,
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PHASES,
   LEGION_WORKFLOW_PHASES,
@@ -107,6 +108,12 @@ const schemas: Record<string, z.ZodType> = {
       z.number().int().nonnegative()
     ),
   }),
+  // Nor this one: the closed set of words a claim can fail under
+  // (`supervise.FailureCauses`), written by `internal/api`'s TestFailureCausesGolden so that
+  // the Go roster and `LEGION_FAILURE_CAUSES` are held to each other here, by the case "the
+  // cause set is the daemon's, word for word" below. A word the enum does not name fails the
+  // parse of this fixture, which is what the gate above reports.
+  "failure-causes.json": z.strictObject({ causes: z.array(z.enum(LEGION_FAILURE_CAUSES)) }),
 };
 
 function fixture(name: string): unknown {
@@ -903,6 +910,18 @@ test("a failed claim carries its cause", () => {
   expect(LegionOperatorClaimResponse.safeParse(claim).success).toBeFalse();
   claim.failure = undefined;
   expect(LegionOperatorClaimResponse.safeParse(claim).error?.issues ?? []).toEqual([]);
+});
+
+// The set those words come from is closed, and it is written twice: the constants of
+// `supervise.FailureCause` and `LEGION_FAILURE_CAUSES` here. Nothing compares two hand-kept
+// lists, and a Go word with no word here would make this enum refuse the whole state body of
+// every plugin that reads it. So Go writes its own roster into a fixture
+// (`internal/api`'s TestFailureCausesGolden) and this holds the enum to it, word for word and
+// in the daemon's own order: a cause added to one side alone fails here, and a cause renamed
+// on either side does too.
+test("the cause set is the daemon's, word for word", () => {
+  const written = fixture("failure-causes.json") as { causes: string[] };
+  expect(written.causes).toEqual([...LEGION_FAILURE_CAUSES]);
 });
 
 // The rest of contract 75: every field of the claim record and of the issue record is served or
