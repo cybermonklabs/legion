@@ -956,4 +956,42 @@ package api
 // rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 68
+//
+// 70: INFRA-3161 -- the two claim recoveries read the claim's process, and `fresh_session`
+// reaches a claim stored working that no process stands behind. Such a claim was refused
+// `CLAIM_IN_A_TURN` by both recoveries, which left a project controller no recovery at all for a
+// dead architect. Both doors now read that claim's process at the moment of the request
+// (`supervise.Machine.ReadProcess`) rather than the daemon's memory of an old report, which a
+// restart forgets. `fresh_session`, the controller's and the operator's
+// `legion claims retry --fresh-session` alike, reaches such a claim: it is suspended where the
+// request arrives, it leaves the session it recorded behind, and it is started again with the
+// task its dead turn held. The machine lands that suspension where it arrives rather than
+// holding it for a turn that will never end (`supervise`'s holdSuspension). The compaction still
+// refuses the claim, since it has no agent to ask, with `CLAIM_NOT_RUNNING` naming
+// `fresh_session` as the operation that reaches it. `CLAIM_IN_A_TURN` now means a process that
+// is running: a claim whose process the read finds alive, one whose session is being compacted,
+// and one the runtime would not answer for, which is left exactly as the request found it and
+// told that the read was not answered. A claim under a relaunch the wake pacing parks keeps
+// `CLAIM_UNSETTLED`. One answer more changed: a fresh session that stopped the claim and could
+// not start it again answers 200 with that refusal in `phaseNotRestarted`, rather than reporting
+// a failure about a claim it had already stopped, so that member now carries either the
+// workflow's refused phase restart or a start the machine refused after the claim was stopped.
+// No request or response shape the plugin parses changes: `api.ClaimRequest`,
+// `api.FreshSessionResponse` and `api.CompactResponse` keep their fields. What moved is which
+// claims each operation reaches and the code and the sentence each refusal gives, which
+// `packages/contracts/src/legion-claim-recovery.ts` mirrors and which a controller reads in the
+// `legion` tool's own description, so this number is what keeps a plugin stating the old
+// behaviour off a daemon that answers the new one. (main declares 68, the entry right above this
+// one, and a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 148 open
+// pull requests of this repository on 2026-11-12 gives 68 (38 of them), 69 (#2731, #3519 and
+// #3578), 71 (#3577), 72 (#3534), 73 (ten of them), 74 (#3575), 75 (#3662), 76 (#3718), 77
+// (#3677), 78 (#3708), 79 (#3712), 80 (#3730), 81 (#2539 and #3659) and 82 (#3573), so this
+// change takes 70: no open head declares it, and it is the lowest free number above the base's,
+// which is what the gate's refusal names. That reading is of this file at refs/pull/<n>/head for
+// every open pull request, not of a file list: GitHub cuts a pull request's file list short, so
+// one that changes more files than the page holds answers without this path. Read the base's own
+// number and every open pull request again at the next forward merge rather than from this line,
+// as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 70

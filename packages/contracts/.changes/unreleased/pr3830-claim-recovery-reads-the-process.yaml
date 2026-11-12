@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  `LegionClaimRequest` says which claims each of the daemon's two claim recoveries reaches, and
+  which refusal each gives, at daemon API contract 70. `fresh_session` reaches a claim stored
+  working that no process stands behind, which the daemon tells from a claim in a turn by reading
+  that claim's process at the request. `CLAIM_IN_A_TURN` is for a claim whose process that read
+  finds running, one whose session is being compacted, and one the runtime would not answer for.
+  The compaction's `CLAIM_NOT_RUNNING` covers the claim no process stands behind as well as a
+  suspended, failed or retired one. `LegionFreshSessionResponse`'s `phaseNotRestarted` now
+  carries either the workflow's refused phase restart or a start the machine refused after the
+  request stopped the claim, which leaves the claim suspended rather than back. No field of the
+  three shapes changed.

@@ -22,10 +22,15 @@ const nonEmptyString = z.string().min(1);
  *
  * `fresh_session` has that claim leave the session it recorded behind and start again in a new
  * one, the effect `legion claims retry --fresh-session` runs for an operator. It reaches a claim
- * whose agent is registered, ready or idle and one that is suspended, failed or retired, with no
- * suspension held over it, a root architect included: one idle on the provider-error ladder, one
- * whose agent has registered and is not ready yet, a suspended one, a failed one, and one an
- * operator stopped, which retires it.
+ * whose agent is registered, ready or idle, one that is suspended, failed or retired, and one
+ * stored working that no process stands behind, with no suspension held over it, a root
+ * architect included: one idle on the provider-error ladder, one whose agent has registered and
+ * is not ready yet, a suspended one, a failed one, one an operator stopped, which retires it,
+ * and a dead architect its project controller has no other recovery for. That last claim is
+ * suspended where the request arrives, leaves the session it recorded behind, and is started
+ * again with the task its dead turn held. The daemon tells it from a claim in a turn by reading
+ * the claim's process at the request: the record says `working` for both, and what the daemon
+ * last heard of that process is memory a restart forgets.
  *
  * `compact` shortens the session instead, the effect `legion claims compact` runs for one: the
  * claim keeps its session, its workspace and everything it knows of its issue, and whatever task
@@ -35,23 +40,26 @@ const nonEmptyString = z.string().min(1);
  * The daemon refuses each with the code and the sentence the controller reads. Each sentence
  * says what the claim is doing when the refusal is given, which operation reaches each state a
  * caller can read of it in `legion claims list`, and nothing of what the next turn, hold,
- * report or relaunch will make of it. Both give `CLAIM_IN_A_TURN` for a claim the daemon
- * records as working, since cutting a running turn off would lose the turn that may be the one
- * ending the run of provider errors; the claim is not always in a turn, and the sentence says
- * what the daemon's record holds of it — that it is stored working, that a suspension is held
- * over it, or that the process it was left over was found gone by the last report and its
- * relaunch has not run. Both give `CLAIM_UNSETTLED` for a claim with no settled
- * agent to act on: one queued, one with a launch in flight, one a suspension is held over in
- * any state but working, and the one working claim that takes this code rather than the turn's,
- * left working under a relaunch the daemon is pacing. The compaction adds
- * three refusals of its own:
- * `CLAIM_NOT_RUNNING` for a suspended, failed or retired claim, which runs no session at all and
- * which `fresh_session` reaches; `CLAIM_NOT_ON_OMP` for a role running on Claude Code, which has
- * no Oh My Pi session; and `COMPACTION_FAILED` for an ask that did not happen, an end the daemon
- * could not write, a claim that lost its process while its session was being compacted, and an
- * end a suspension held over the claim took, which suspends the claim instead. None of those
- * four gave the claim back, so none sent the task it owes. A registered claim no suspension is
- * held over is the compaction's `CLAIM_UNSETTLED` and no refusal at all for `fresh_session`. */
+ * report or relaunch will make of it. Both give `CLAIM_IN_A_TURN` for a claim that may have a
+ * turn running, since cutting a running turn off would lose the turn that may be the one ending
+ * the run of provider errors. Three claims take it: one stored working whose process the read
+ * at the request finds running, one whose session is being compacted, which is not read at all,
+ * and one the runtime would not answer for, which is left exactly as the request found it and
+ * told that the read was not answered. A claim stored working that a suspension is held over
+ * takes that code too, in the words of the hold. No claim with no process behind it takes it at
+ * either door. Both give `CLAIM_UNSETTLED` for a claim with no settled agent to act on: one
+ * queued, one with a launch in flight, one a suspension is held over in any state but working,
+ * and the one working claim that takes this code rather than the turn's, left working under a
+ * relaunch the daemon is pacing. The compaction adds three refusals of its own:
+ * `CLAIM_NOT_RUNNING` for a suspended, failed or retired claim, and for one stored working that
+ * no process stands behind, which has no agent to ask either; all four run no session at all
+ * and `fresh_session` reaches them. `CLAIM_NOT_ON_OMP` is for a role running on Claude Code,
+ * which has no Oh My Pi session; and `COMPACTION_FAILED` for an ask that did not happen, an end
+ * the daemon could not write, a claim that lost its process while its session was being
+ * compacted, and an end a suspension held over the claim took, which suspends the claim
+ * instead. None of those four gave the claim back, so none sent the task it owes. A registered
+ * claim no suspension is held over is the compaction's `CLAIM_UNSETTLED` and no refusal at all
+ * for `fresh_session`. */
 export const LegionClaimRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
@@ -59,11 +67,14 @@ export const LegionClaimRequest = z.strictObject({
 });
 
 /** `api.FreshSessionResponse`, what became of a fresh session. It is empty wherever the claim
- * came back and its start ran, which is every answer but one: `phaseNotRestarted` is why nothing
- * restarted the claim's phase, present only where the claim came back in a new session owing no
- * task and the workflow refused the restart that would have handed it one. The claim started
- * either way, which is why that refusal rides a success; a reader of the claim cannot tell it,
- * since the state records nowhere that the restart did not run. */
+ * came back and its start ran. `phaseNotRestarted` carries one of two refusals. The first is the
+ * workflow's: the claim came back in a new session owing no task, and the workflow refused the
+ * restart that would have handed it one, so the claim is running and holds no work. The second
+ * is the machine's: this request stopped the claim and dropped the session it recorded, and the
+ * start that would have brought it back was refused, so the claim is suspended rather than back.
+ * A start of that claim spawns a fresh agent, since it records no session now. Both refusals
+ * ride a success answer, because the request changed the claim either way. A reader of the claim
+ * cannot tell the first one, since the state records nowhere that the restart did not run. */
 export const LegionFreshSessionResponse = z.object({
   phaseNotRestarted: nonEmptyString.optional(),
 });
