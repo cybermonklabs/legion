@@ -71,6 +71,78 @@ test("a surface's Retry keeps the key after Stop trying, and takes a new one aft
   }
 });
 
+// A press the reader stopped belongs to the press that made it, not to the values it carried: the
+// hook holds it under the variables object that press was made with, and nothing but that object
+// reaches it. So an action the reader takes later, which builds its values afresh - a form's
+// submit, a chip's Approve - is a press of its own under a key of its own, however alike the two
+// read, and Dispatch decides it rather than answering with what the stopped press did. A press
+// between the two does not come into it: the stopped press is held until it is made again.
+test("a later press built afresh from equal values takes a key of its own", async () => {
+  jest.useFakeTimers();
+  const tab = keptTab();
+  const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(refusal);
+  const { client, hook } = renderAnswerWrite();
+
+  try {
+    act(() => hook.result.current.mutate({ selected: ["Ship"] }));
+    await stopTheLateWrite(client);
+    expect(hook.result.current.error).toBeInstanceOf(SendStoppedError);
+    const stoppedKey = answerAsk.mock.calls[0]?.[2]?.key;
+
+    // Another answer of this surface, which lands.
+    answerAsk.mockResolvedValueOnce({ id: "ask-1" } as never);
+    act(() => hook.result.current.mutate({ selected: ["Hold"] }));
+    await tick(0);
+    expect(hook.result.current.isSuccess).toBe(true);
+
+    // "Ship" again, as the form builds it: the same values, a new press.
+    answerAsk.mockResolvedValueOnce({ id: "ask-1" } as never);
+    act(() => hook.result.current.mutate({ selected: ["Ship"] }));
+    await tick(0);
+    const key = answerAsk.mock.calls.at(-1)?.[2]?.key;
+    expect(key).not.toBe(stoppedKey);
+    expect(key).not.toBe(answerAsk.mock.calls.at(-2)?.[2]?.key);
+  } finally {
+    hook.unmount();
+    answerAsk.mockRestore();
+    tab.close();
+    realClock();
+  }
+});
+
+// The other half of that rule: the retained variables object is the press's own handle. A surface
+// showing a refusal takes the press that refusal is about (`stopped`) and sends it back as it
+// stands, and that press goes out under the key its attempts went out under - Dispatch may have
+// taken it, and answers the key with what it did there.
+test("the press `stopped` returned, sent back as it stands, goes under its own key", async () => {
+  jest.useFakeTimers();
+  const tab = keptTab();
+  const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(refusal);
+  const { client, hook } = renderAnswerWrite();
+
+  try {
+    act(() => hook.result.current.mutate({ selected: ["Ship"] }));
+    await stopTheLateWrite(client);
+    const stoppedKey = answerAsk.mock.calls[0]?.[2]?.key;
+
+    const again = hook.result.current.stopped((press) => press.selected[0] === "Ship");
+    if (again === undefined) {
+      throw new Error("the hook held no stopped press to make again");
+    }
+    answerAsk.mockRejectedValueOnce(verdict);
+    act(() => hook.result.current.mutate(again));
+    await tick(0);
+
+    expect(answerAsk.mock.calls.at(-1)?.[2]?.key).toBe(stoppedKey);
+    expect(hook.result.current.error).toBe(verdict);
+  } finally {
+    hook.unmount();
+    answerAsk.mockRestore();
+    tab.close();
+    realClock();
+  }
+});
+
 // W27. A write that landed with no answer to give - Dispatch answered its key `409 KEY_COMMITTED` -
 // is a success with no data: the surface's `onSuccess` runs with `null`, nothing is rolled back,
 // nothing shows as failed, and `mutateAsync` resolves.

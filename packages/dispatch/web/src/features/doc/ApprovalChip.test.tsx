@@ -1,9 +1,12 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact, ArtifactApproval, ArtifactReview } from "../../api/types";
 import { ApprovalChip } from "./ApprovalChip";
 
@@ -176,6 +179,74 @@ test("clicking Approve posts an approved review and refreshes the issue and inbo
   } finally {
     createArtifactReview.mockRestore();
     view.unmount();
+  }
+});
+
+// The reviewer's case, and why a stopped press is reached only through the object it was made
+// with: Approve goes late and the reader stops it, a change request lands, and the reader
+// approves again. The second Approve is a second action, not the first one made again - a press
+// sent under the stopped press's key would be answered by Dispatch with what that press did, and
+// the approval the person meant now would be recorded nowhere, with the chip saying it was made.
+// So it goes out under a key of its own.
+test("approving again after a stopped approval and a change request goes under its own key", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts/artifact-1/reviews", new TypeError("Failed to fetch"))
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <ApprovalChip
+        artifact={artifact({ latest_version: 3, state: "awaiting" })}
+        variant="header"
+      />
+    </QueryClientProvider>
+  );
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await stopTheLateWrite(queryClient);
+    const stoppedKey = createArtifactReview.mock.calls[0]?.[2]?.key;
+    const stopped = createArtifactReview.mock.calls.length;
+
+    // The change request lands.
+    createArtifactReview.mockResolvedValue({
+      actor: { id: "alice", kind: "user" },
+      artifact_id: "artifact-1",
+      ask_id: null,
+      content_sha256: null,
+      content_sha256_source: null,
+      created_at: "2026-09-11T00:00:00Z",
+      id: "review-2",
+      kind: "person",
+      reason: "Needs another pass",
+      state: "changes_requested",
+      version: 3,
+    });
+    await user.click(screen.getByRole("button", { name: "Request changes" }));
+    const dialog = screen.getByRole("dialog", { name: "Request changes" });
+    await user.click(within(dialog).getByLabelText("Reason"));
+    await user.paste("Needs another pass");
+    await user.click(within(dialog).getByRole("button", { name: "Request changes" }));
+    await tick(1_000);
+    expect(createArtifactReview).toHaveBeenCalledTimes(stopped + 1);
+
+    // Approve again: the same values the stopped press carried, and a press of its own.
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await tick(1_000);
+
+    expect(createArtifactReview).toHaveBeenCalledTimes(stopped + 2);
+    const again = createArtifactReview.mock.calls.at(-1);
+    expect(again?.[1]).toEqual({ state: "approved" });
+    expect(again?.[2].key).not.toBe(stoppedKey);
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+    realClock();
   }
 });
 

@@ -567,15 +567,16 @@ function fileSent(input: Parameters<typeof api.uploadArtifact>[1] | undefined): 
   return input !== undefined && "file" in input ? input.file : undefined;
 }
 
-// A press of another file is a press of its own, however alike the two read: a `File` carries no
-// field `JSON.stringify` writes, so each is `{}` to it and, under one base token, the two
-// presses' variables are the same text. Sent under the stopped press's key, the second file
-// would be answered `422 KEY_REUSED` once the first press reached Dispatch, and nothing of it
-// would be stored.
+// A press of another file is a press of its own, however alike the two read: the hook reaches a
+// stopped press only through the variables object that press was made with, and this press
+// builds its own - the two serialise alike, under one base token, and a `File` carries no field
+// `JSON.stringify` writes, so the text alone would make them one press. Sent under the stopped
+// press's key, the second file would be answered `422 KEY_REUSED` once the first press reached
+// Dispatch, and nothing of it would be stored.
 test("a press of another file after a stopped press goes under a key of its own", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
-  // One token for both reads, so nothing but the file itself tells the two presses apart.
+  // One token for both reads, so nothing of what the two presses carry tells them apart.
   const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
     markdown: "# Notes\n",
     token: "sha256:chosen",
@@ -608,6 +609,64 @@ test("a press of another file after a stopped press goes under a key of its own"
     const second = uploadArtifact.mock.calls.at(-1);
     expect(fileSent(second?.[1])).toBe(other);
     expect(second?.[2].key).not.toBe(first?.[2].key);
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+    realClock();
+  }
+});
+
+// The other side of that rule, and what it creates: a press made again from the form is a new
+// press. Here the first press was stopped and had reached Dispatch, which stored it; the person
+// lets the staged file go, picks the same document again - equal values, a new `File` - and
+// presses Upload. That press goes out under a key of its own rather than being answered with
+// what the first press did. What keeps it from writing the document a second time is the base:
+// it names the token the page read, which the stored press has moved the document past, so
+// Dispatch refuses it `409 PRECONDITION_FAILED` and the row says the document changed. The
+// person is told, rather than their second press being dropped in silence.
+test("a press made again from the form goes out under its own key and is told the document changed", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  // One token for both reads: Dispatch stored the stopped press's upload after the second read,
+  // which is why the press that follows names a base the document has left behind.
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
+    markdown: "# Notes\n",
+    token: "sha256:chosen",
+    version: 1,
+  });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
+  const view = renderHarness();
+
+  try {
+    const file = new File(["content"], "notes.md", { type: "text/markdown" });
+    await user.upload(screen.getByLabelText("Upload artifact"), [file]);
+    await tick(0);
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    await stopTheLateWrite(view.queryClient);
+    const stopped = uploadArtifact.mock.calls.length;
+
+    // The staged file is let go and the same document picked afresh, as a person does who takes
+    // the stopped press for nothing uploaded.
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    uploadArtifact.mockRejectedValue(
+      new ApiError(409, { code: "PRECONDITION_FAILED", error: "document changed" })
+    );
+    const afresh = new File(["content"], "notes.md", { type: "text/markdown" });
+    await user.upload(screen.getByLabelText("Upload artifact"), [afresh]);
+    await tick(0);
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    await tick(1_000);
+
+    expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
+    const first = uploadArtifact.mock.calls[0];
+    const second = uploadArtifact.mock.calls.at(-1);
+    expect(fileSent(second?.[1])).toBe(afresh);
+    expect(second?.[2].key).not.toBe(first?.[2].key);
+    expect(screen.getByRole("alert").textContent).toBe(
+      "This document changed while you were uploading it. Open it to see what it says now, " +
+        "then upload again."
+    );
   } finally {
     view.unmount();
     uploadArtifact.mockRestore();
@@ -719,8 +778,9 @@ test("a draft's Retry with two presses stopped sends the file whose refusal it s
 // paste of two files is two presses at once, the reader stopped notes.md and Dispatch refused
 // chart.png, so the hook holds a stopped press while the refusal on screen is another file's.
 // Taken for this refusal, that stopped press would send notes.md again and leave chart.png - the
-// file whose refusal is on screen - unsent; and it stays notes.md's afterwards, so a press of
-// that file again is still answered under its key rather than storing the file a second time.
+// file whose refusal is on screen - unsent. Nor does the Retry hand notes.md's key on: that key
+// belongs to the press the reader stopped, which nothing but that press, sent back as it stands,
+// reaches, so the same file pasted afresh goes out under a key of its own.
 test("a draft's Retry after Dispatch's refusal sends that file and leaves the stopped press alone", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
@@ -767,15 +827,17 @@ test("a draft's Retry after Dispatch's refusal sends that file and leaves the st
     expect(again?.[2].key).not.toBe(chartKey);
     expect(again?.[2].key).not.toBe(notesKey);
 
-    // notes.md's stopped press is still notes.md's: a press of that file again, naming the
-    // version its base read, goes out under the key the stopped press went out under.
+    // The stopped press keeps its key to itself: pasting notes.md again is a later action of the
+    // reader's, which builds its own upload, so it is a press of its own under a key of its own
+    // rather than the stopped press made again behind their back.
     fireEvent.paste(screen.getByTestId("draft"), { clipboardData: { files: [notes] } });
     await tick(1_000);
 
     expect(uploadArtifact).toHaveBeenCalledTimes(sent + 2);
     const notesAgain = uploadArtifact.mock.calls.at(-1);
     expect(fileSent(notesAgain?.[1])).toBe(notes);
-    expect(notesAgain?.[2].key).toBe(notesKey);
+    expect(notesAgain?.[2].key).not.toBe(notesKey);
+    expect(notesAgain?.[2].key).not.toBe(again?.[2].key);
   } finally {
     view.unmount();
     uploadArtifact.mockRestore();

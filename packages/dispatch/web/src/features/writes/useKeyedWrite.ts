@@ -51,36 +51,6 @@ export type KeyedWriteMade<TData, TVariables> =
       readonly request: (variables: TVariables) => WriteRequest<TData>;
     };
 
-/** `JSON.stringify`'s replacer for a comparison of variables: every value by what it holds, but
- *  a `File` as one mark whichever file it is, kept in `found` for the files to be compared by
- *  identity afterwards. `JSON.stringify` writes a `File` as `{}` - a file has no fields of its
- *  own to write - so two files a person picked one after the other serialise alike however
- *  little they have in common, and nothing but the file itself tells them apart. */
-function byFileIdentity(found: File[]): (key: string, value: unknown) => unknown {
-  return (_key, value) => {
-    if (!(value instanceof File)) return value;
-    found.push(value);
-    return "a file";
-  };
-}
-
-/** Whether `a` and `b` are the same variables: one value, or two that serialise alike (a form
- *  built afresh at each submit) and hold the same files in the same places, a `File` being only
- *  itself (`byFileIdentity`); variables that do not serialise are only themselves. */
-function sameVariables(a: unknown, b: unknown): boolean {
-  if (Object.is(a, b)) return true;
-  const inA: File[] = [];
-  const inB: File[] = [];
-  try {
-    if (JSON.stringify(a, byFileIdentity(inA)) !== JSON.stringify(b, byFileIdentity(inB))) {
-      return false;
-    }
-  } catch {
-    return false;
-  }
-  return inA.length === inB.length && inA.every((file, at) => Object.is(file, inB[at]));
-}
-
 /** A press Dispatch made and had no answer to give for: its variables, and when it landed. */
 export interface UnansweredLanding<TVariables> {
   readonly variables: TVariables;
@@ -88,7 +58,8 @@ export interface UnansweredLanding<TVariables> {
 }
 
 /** A press the reader stopped: the key its attempts went out under, and the variables it was
- *  made with, which a `mutate` of the same variables is made again under (`sameVariables`). */
+ *  made with, which are that press's own handle - `mutate` of this very object is the press made
+ *  again, under this key (`Object.is`), and nothing else reaches it. */
 interface StoppedPress<TVariables> {
   readonly key: string;
   readonly variables: TVariables;
@@ -107,12 +78,14 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
   readonly forgetUnanswered: () => void;
   /** The press the reader stopped that `wanted` picks out, or `undefined` where no stopped press
    *  of this hook is that one. The hook holds every press that ended stopped, newest first, each
-   *  under the key its attempts went out under, and a `mutate` of such a press's variables is
-   *  that press made again under that key. More than one press of a hook can be out at once - a
-   *  paste of several files is several presses - so the surface says which press it means: the
-   *  refusal it shows follows its newest press, which is not always the press that ended stopped
-   *  last. So a surface takes the press its refusal is about, under `retriesUnderItsKey` of that
-   *  refusal, and sends it as it stands rather than working out for itself what the key covers. */
+   *  under the key its attempts went out under, and the variables object it hands back is that
+   *  press's handle: a `mutate` of that very object is the press made again under its key, and
+   *  nothing else reaches it. More than one press of a hook can be out at once - a paste of
+   *  several files is several presses - so the surface says which press it means: the refusal it
+   *  shows follows its newest press, which is not always the press that ended stopped last. So a
+   *  surface takes the press its refusal is about, under `retriesUnderItsKey` of that refusal,
+   *  and sends it back as it stands rather than building variables of its own, which would be a
+   *  press of its own. */
   readonly stopped: (wanted: (variables: TVariables) => boolean) => TVariables | undefined;
 };
 
@@ -122,12 +95,18 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
  * pending-writes indicator while it is out and, refused, with Retry and Discard (`Writes.run`).
  * The mutation settles with Dispatch's answer - `null` for a landing without one - its refusal, or
  * `SendStoppedError` once the reader stops it, so the surface keeps its optimistic state until
- * then and rolls it back on anything but a landing. A `mutate` of the same variables a press the
- * reader stopped was made with is that press made again, under its key - Dispatch may have taken
- * it, and answers the key with what it did - while one after Dispatch's own refusal is a new
- * press, since Dispatch would answer the old key with that refusal. Every stopped press is held,
- * each under its own key, and the surface reads the one it means (`stopped`), so a surface making
- * a press again makes that press rather than judging for itself which press the key covers. It
+ * then and rolls it back on anything but a landing. A `mutate` of the very variables object a
+ * press the reader stopped was made with - the object `stopped` hands back - is that press made
+ * again, under its key: Dispatch may have taken it, and answers the key with what it did. A
+ * press after Dispatch's own refusal is a press of its own, since Dispatch would answer the old
+ * key with that refusal. Every stopped press is held, each under its own key, and a surface
+ * reaches one only by passing that press back (`stopped`), so a key belongs to the press that
+ * made it rather than to the values that press carried. A press made again from a form, with
+ * equal values but a new object, is therefore a new press under a new key, and may write a
+ * second time where the first had landed; on the upload surfaces here the document token
+ * answers that, since the second upload names the base its page read, and Dispatch refuses it
+ * `409 PRECONDITION_FAILED` with the token and version the document is at now, which the row
+ * says - so the person is told rather than their press being dropped in silence. It
  * runs whether or not the browser says it is online (`networkMode: "always"`): the write's own
  * tries wait out a network that is down, and a mutation TanStack paused offline would make none,
  * never go late and never offer Stop trying. A press that lands with no answer is kept as
@@ -159,7 +138,9 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   const mutation = useMutation({
     ...options,
     mutationFn: (variables: TVariables) => {
-      const again = stopped.current.find((press) => sameVariables(press.variables, variables));
+      // Only the very object the stopped press was made with reaches it (`stopped`): a press
+      // built afresh is a press of its own, whatever its values read like.
+      const again = stopped.current.find((press) => Object.is(press.variables, variables));
       if (again !== undefined) {
         stopped.current = stopped.current.filter((press) => press !== again);
       }

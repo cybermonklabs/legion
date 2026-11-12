@@ -418,9 +418,9 @@ export interface ArtifactUpload {
   cancel(): void;
   /** Uploads the staged file, under the base read when it was chosen. A press that follows a
    *  press Dispatch decided reads the base again: the person has read what the document says
-   *  now, so their next press names what it says now. A press that follows one the reader
-   *  stopped, of that same file, sends that press's base again, so Dispatch answers the second
-   *  under the first's key rather than writing a second version of the document. */
+   *  now, so their next press names what it says now. A press of the file a press the reader
+   *  stopped carried is that press made again, as it stands, so Dispatch answers it under the
+   *  first's key rather than writing a second version of the document. */
   confirm(): void;
   dropTarget: ArtifactDropTarget;
   error: unknown;
@@ -526,13 +526,19 @@ export function useArtifactUpload(
         // what it did there - but only while the two send the same bytes, since the key covers
         // the whole body, the `precondition` field included (`bodyDigest` in the server's
         // `api/request_keys.go`). So a press of the staged file asks the hook for the press that
-        // sent that very file and sends its base again, while a press of another file finds none
-        // and is one of its own: it takes the base read when that file was chosen, or reads the
-        // token the document is at now.
-        const stopped = upload.stopped((press) => press.file === file);
-        const base = stopped?.base ?? chosenBase.current ?? captureUploadBase(owner, file, name);
+        // sent that very file and sends that press back as it stands: the hook reaches a stopped
+        // press through the object it was made with, and variables built here afresh, base and
+        // all, would be a press of its own. A press of another file finds no such press and is
+        // one of its own: it takes the base read when that file was chosen, or reads the token
+        // the document is at now.
+        const again = upload.stopped((press) => press.file === file);
+        const chosen = chosenBase.current;
         chosenBase.current = undefined;
-        void send(file, base);
+        if (again !== undefined) {
+          upload.mutate(again);
+          return;
+        }
+        void send(file, chosen ?? captureUploadBase(owner, file, name));
       });
     },
     dropTarget: {
