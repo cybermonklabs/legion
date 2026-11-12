@@ -2451,15 +2451,27 @@ function withoutFinalLineFeed(text: string): string {
  * U+2029, U+202F, U+205F and U+3000 (`IsSpace` in Go's `unicode/graphic.go`, reading the
  * `_White_Space` table of its `unicode/tables.go`).
  *
- * The set is written out because it is Go's and not JavaScript's: `String.prototype.trim`
- * removes another one, the same split this repository records of `\s` in
- * `packages/envoy/internal/dispatch/text/refs.go` ("The whitespace is spelled out rather than
- * written `\s`, which means another set in each language: JavaScript's also matches a vertical
- * tab and U+FEFF"). Walked over every Unicode scalar, `trim` and `TrimSpace` differ on exactly
- * two characters: `trim` removes U+FEFF, which Go keeps, and Go removes U+0085, which `trim`
- * keeps.
+ * The set is written out because it is Go's and not JavaScript's: walked over every Unicode
+ * scalar, `String.prototype.trim` and `strings.TrimSpace` differ on exactly two characters.
+ * `trim` removes U+FEFF, which Go keeps, so `trim` calls U+FEFF blank where the server reads
+ * content; Go removes U+0085, which `trim` keeps, so `trim` calls U+0085 content where the
+ * server reads blank. This is the one place that pair is written out, and the lines that turn
+ * on it cite this comment rather than repeating it.
+ *
+ * `packages/envoy/internal/dispatch/text/refs.go` records a split of the same class in another
+ * pair of sets ("The whitespace is spelled out rather than written `\s`, which means another
+ * set in each language: JavaScript's also matches a vertical tab and U+FEFF"). That pair is the
+ * two languages' `\s`, and it differs in a vertical tab and U+FEFF, not in the two characters
+ * above.
+ *
+ * `packages/contracts/fixtures/go-unicode-isspace.json` holds the 25 scalars `unicode.IsSpace`
+ * reports. This pattern is held to that list over every scalar by `goBlankPattern` > `calls
+ * blank exactly the scalars the committed list holds`, and Go's own predicate by
+ * TestUnicodeIsSpaceReportsTheCommittedScalars in
+ * `packages/envoy/internal/dispatch/text/whitespace_fixture_test.go`: a character either side
+ * gains or loses reddens its test, and the list and this pattern are corrected together.
  */
-const goBlankPattern =
+export const goBlankPattern =
   /^[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]*$/u;
 
 /** The Components line of an issue read: the effective set with where it came from. */
@@ -5915,9 +5927,9 @@ export async function executeDispatchTool(
       // The server's own `blank`: a body carrying no content, or content Go's
       // `strings.TrimSpace` empties - the `blank :=` line of jsonArtifactUpload in
       // packages/envoy/internal/dispatch/api/artifacts.go, whose set is goBlankPattern's.
-      // JavaScript's `trim` is another set, so it is not read here: it calls U+FEFF blank where
-      // the server reads content, and calls U+0085 content where the server reads blank. Both
-      // checks below read this one predicate.
+      // JavaScript's `trim` is another set, so it is not read here: goBlankPattern's own comment
+      // says which two characters the two sets differ on. Both checks below read this one
+      // predicate.
       const blank = content === undefined || goBlankPattern.test(content);
       // An upload under a name the owner already holds writes that document's next version, over
       // the text it holds, so the command reads what the owner holds and refuses it. --force is
@@ -5958,8 +5970,8 @@ export async function executeDispatchTool(
       // blank, since storedMarkdown returns "" for whatever `strings.TrimSpace` empties before
       // it parses anything (that package's markdown_round_trip.go), and the empty document is
       // what such a create asks for. That short answer is not what the store writes for each of
-      // them: the parse and render a seed runs keep a no-break or an ideographic space, which
-      // renders to itself.
+      // them: the parse and render a seed runs keep every character of this set but a tab, a
+      // line feed, a carriage return and a space, each of the rest rendering to itself.
       if (!blank) {
         let stored: string | undefined;
         try {
