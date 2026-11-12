@@ -311,7 +311,8 @@ type Notice struct {
 //
 // Reasons is one string, never a list: a single reason carries ", " inside it already — a moved
 // address reads `<where> <held>, now <handed>`, a pod-shape drift `image <was>, now <now>`, and a
-// plugin round's reason names both contracts — so a list built by splitting what the claim
+// plugin round's reason, which only an earlier daemon's round carries, names both contracts — so
+// a list built by splitting what the claim
 // records (supervise.Claim.UpdateReasons, one string) would cut each reason into pieces that read
 // as reasons of their own. It is the drift exactly as the round's task states it to the worker.
 type UpdateStalled struct {

@@ -149,7 +149,7 @@ const legionCapabilityReportView = z.object({
 });
 
 /** `api.StepView` — what the daemon last saw a claim's agent do, built from the tool frames of
- * its worker stream (contract 83): `at`, when the daemon received that step; `turnStartedAt`,
+ * its worker stream (contract 57): `at`, when the daemon received that step; `turnStartedAt`,
  * when the turn it belongs to began; `tool` and `callId`, the call the agent is in, which the
  * start and end frames pair by; `argsBytes` and `argsHash`, the length of that call's arguments
  * and an eight-byte fingerprint of them; and `startedAt` and `endedAt`, when the daemon received
@@ -207,7 +207,7 @@ const legionClaimView = z.object({
   lastReady: timestamp.optional(),
   /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
    * begun a turn nor made a call the daemon saw. A caller in a pod whose plugin declares a
-   * contract below 83 is served the state with no such key at all (the daemon's
+   * contract below 57 is served the state with no such key at all (the daemon's
    * `withoutStallRecord`), so every reader takes it as optional. */
   step: legionStepView.optional(),
 });
@@ -500,8 +500,8 @@ const legionIssue = z.object({
    * beside it, the `spec` step's row, which a reader that asks one question of one gate takes. */
   gatedSteps: z.array(legionGatedStepView).optional(),
   slot: legionSlotView.optional(),
-  /** Where the issue stands in `admission.waiting` (contract 83): present only for an issue that
-   * list names, so every issue the line does not carry has none, and a daemon before contract 83
+  /** Where the issue stands in `admission.waiting` (contract 58): present only for an issue that
+   * list names, so every issue the line does not carry has none, and a daemon before contract 58
    * writes none at all, which is why a reader takes it as optional. */
   waitingLine: legionWaitingLineView.optional(),
   waitingOn: legionWaitingOn.optional(),

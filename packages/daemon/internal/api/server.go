@@ -750,25 +750,21 @@ const retiredStrandedContract = 56
 // without the key: one built before sjawhar/legion#2788 reads it with a strict schema and would
 // refuse the whole body for a key it does not name, and one built after strips the key instead.
 //
-// It is 83 because that is the number DaemonAPIVersion took at the bump this record forced: main
-// landed the record itself at 57, its own waiting line at 58, the end of fix-attempt counting at
-// 59, the counts of the moves back at 62, the launch spend attributes at 64 and the count of the
-// claims the stale-plugin lane has left at 73, and this branch's
-// shape changes ride the free number above every number main declares and every number an open
-// branch has claimed (version.go), so the record reaches a deployment as 83. It is this daemon's
-// own contract, so every pod at it is served the record and only a pod still running an older
-// plugin is not.
-const stallRecordContract = 83
+// It is 57 because that is the number DaemonAPIVersion took at the bump this record forced: main
+// held 56, INFRA-1480's retired stranded state, which carries no step record, so that branch took
+// the first number above it, and the release that carries the record declares that number. This
+// daemon's own contract is never below it — DaemonAPIVersion (version.go) declares what this
+// binary serves, and that number only rises — so a pod at either is served the record and only a
+// pod still running an older plugin is not.
+const stallRecordContract = 57
 
 // waitingLineContract is the daemon contract that added each waiting issue's place in the line
-// to the state (version.go's 83: main declared it 58 and this branch, landing second above main's
-// own 73, carries both releases' shapes at 83). A plugin before it is served the state without
-// the field:
+// to the state (version.go's 58). A plugin before it is served the state without the field:
 // one built before sjawhar/legion#2788 reads it with a strict schema and would refuse the
 // whole body for a key it does not name, and one built after strips the key instead, so the
 // strip is what keeps the field from a caller that did not ask for it rather than what keeps
 // such a caller reading at all.
-const waitingLineContract = 83
+const waitingLineContract = 58
 
 // backwardMovesContract is the daemon contract that added each worker's counts of the moves back
 // its issue has made to the state (version.go's 62). A plugin before it is served the state
@@ -783,9 +779,9 @@ const backwardMovesContract = 62
 // plugin before it is served the state without the key: one built before sjawhar/legion#2788
 // reads it with a strict schema and would refuse the whole body for a key it does not name, and
 // one built after strips the key instead, so the strip is what keeps the count from a caller
-// that did not ask for it rather than what keeps such a caller reading at all. It is the band
-// below this branch's own, which carries the step record and the places in the admission line,
-// so a caller from a pod at it is served the count and neither of those two.
+// that did not ask for it rather than what keeps such a caller reading at all. It is the highest
+// band below this branch's own contract, which adds no key the route strips, so a caller from a
+// pod at 73 or above is served the count and no older pod is.
 const claimsToRefreshContract = 73
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.

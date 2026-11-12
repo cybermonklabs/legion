@@ -122,10 +122,12 @@ test("no skill or prompt sends an agent to the workspace recovery marker, which 
 // through its own reference, so a reference that still tells it a round may be
 // `plugin:<daemon contract>` teaches it to read a round the daemon cannot open — which is what
 // that reference did until this change, with nothing to see it. The rule is read off the
-// daemon's own source rather than off the sentence: the day something builds a plugin round id
-// again, this row stops refusing such a sentence, and the Go census beside it
-// (prompts/roles_test.go's TestNoPartPromisesAnUpdateRoundNoDaemonCanOpen) is the one that asks
-// for the sentence back; a row quoting the deleted prose would have passed the day the lane went.
+// daemon's own source rather than off the sentence, and it reads both ways: while nothing builds
+// a plugin round id, no skill or prompt may promise one; the day something builds one again, the
+// controller's own reference — the file that tells it how to read a stalled round — must name
+// that round again, and this row fails until it does. The Go census beside it
+// (prompts/roles_test.go's TestNoPartPromisesAnUpdateRoundNoDaemonCanOpen) asks the same of the
+// embedded prompts; a row quoting the deleted prose would have passed the day the lane went.
 test("no skill or prompt promises an update round no daemon can open", () => {
   const supervise = files(path.join(REPO_ROOT, "packages/daemon/internal/supervise"))
     .filter((file) => file.endsWith(".go") && !file.endsWith("_test.go"))
@@ -149,6 +151,11 @@ test("no skill or prompt promises an update round no daemon can open", () => {
         : path.relative(REPO_ROOT, file)
     );
   expect(opensAPluginRound ? [] : promising).toEqual([]);
+  if (opensAPluginRound) {
+    const escalation = path.join(staged, "legion-controller", "references", "escalation.md");
+    const names = /plugin:<daemon contract>/.test(readFileSync(escalation, "utf8"));
+    expect(names ? [] : ["skills/legion-controller/references/escalation.md"]).toEqual([]);
+  }
 });
 
 // The controller's `gh` acts as the review App (LEGION-668): the skill must say how it checks a

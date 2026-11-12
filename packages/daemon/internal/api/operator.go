@@ -100,8 +100,9 @@ type OperatorClaim struct {
 	// recorded, always emitted.
 	PluginContract int `json:"pluginContract"`
 	// UpdateRound is the update round the claim is in, absent when none is open: the pod's drift
-	// round (`pod:<pod uid>`), shared by every claim of that pod, or this claim's own plugin
-	// round (`plugin:<daemon contract>`). Once its worker has answered, the process is waiting to
+	// round (`pod:<pod uid>`), shared by every claim of that pod, which is the one round this
+	// daemon opens. This claim's own plugin round (`plugin:<daemon contract>`) is an earlier
+	// daemon's, which a boot ends (internal/daemon's endPluginRounds). Once its worker has answered, the process is waiting to
 	// be replaced and the daemon holds the claim's next task. UpdateHead is the commit the worker
 	// reported as its issue branch's head at origin when it answered, absent until it answers and
 	// for a worker that reported none; it is the worker's word, which nothing verifies.
