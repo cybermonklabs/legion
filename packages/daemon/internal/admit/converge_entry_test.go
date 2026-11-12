@@ -131,10 +131,10 @@ func convergeRows() []convergeRow {
 			why: "this row changes the READY the member holds alone: a merger waiting on a person's approval of a closed design gate has no work to be sent (record.AtWork)",
 		},
 		{
-			name: "an architect's role", root: "LEGION-944", key: "LEGION-945", stands: phase.Accepting,
+			name: "a child's own sub-architect", root: "LEGION-944", key: "LEGION-945", stands: phase.Accepting,
 			flipRoot: "LEGION-946", flipKey: "LEGION-947", flip: func(r *convergeRow) { r.stands, r.started = phase.Testing, true },
 			claimed: true, state: supervise.StateWorking, given: seededEntry - 1,
-			why: "this row changes the phase alone, to the one an architect works: the convergence sends phase workers their work, and an architect is started by its tree's own admission",
+			why: "this row changes the phase alone, to one a phase worker works: the member is no tree root, so its own sub-architect claim is the one claim the architect's reach leaves out (workflow.ArchitectAtWork), since no daemon start creates one",
 		},
 		{
 			name: "an issue at work holding no slot", root: "LEGION-950", key: "LEGION-951", stands: phase.Testing,
@@ -364,10 +364,11 @@ func applySweep(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID 
 //
 // What is left alone is each of the shapes a start may not reach: a claim an operator stopped or
 // suspended, a released pod holding its own entry's work, a member of a tree that has left the
-// workflow, an issue no worker of which has work where it stands, the architect's role, and an
-// issue holding none of the cap's slots. Each of those rows is seeded twice — once as it is, and
-// once with the one field it names changed — so none of them is quiet for a reason the row never
-// claimed.
+// workflow, an issue no worker of which has work where it stands, a child's own sub-architect,
+// and an issue holding none of the cap's slots. Each of those rows is seeded twice — once as it
+// is, and once with the one field it names changed — so none of them is quiet for a reason the
+// row never claimed. What the rule does reach of a root's own architect is a table of its own
+// (architect_sweep_test.go).
 //
 // The second pass is the pass that must write nothing: the given entry only moves when the outbox
 // queues the delivery, and an admission pass runs on every fact of the project, so a pass that
