@@ -527,8 +527,9 @@ function renderActionButtons() {
   return { listComments, queryClient, unmount: view.unmount };
 }
 
-/** One held `acceptComment` call: the test settles it when it chooses. The accept route answers
- *  the comment and whether the suggestion it carried was lost (`AcceptSuggestionResponse`). */
+/** One held accept (`commentAcceptRequest`): the test settles it when it chooses. The accept
+ *  route answers the comment and whether the suggestion it carried was lost
+ *  (`AcceptSuggestionResponse`). */
 interface PendingSave {
   promise: Promise<AcceptSuggestionResponse>;
   reject: (reason: unknown) => void;

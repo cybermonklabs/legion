@@ -41,8 +41,7 @@ export const whoAmIQuery = () =>
 export const inboxQuery = () =>
   queryOptions({
     queryKey: ["inbox"],
-    queryFn: async (context) => {
-      const { client } = context;
+    queryFn: async ({ client }) => {
       const fetch = beginInboxFetch(client);
       let asks: InboxRow[] | undefined;
       try {

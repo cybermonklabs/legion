@@ -1,11 +1,12 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keptTab } from "../../__tests__/kept-sends-harness";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { answerAskAnswers } from "../../__tests__/send-answers";
+import { ApiError, askAnswerRequest, NetworkError } from "../../api/client";
 import { SEND_DEADLINE_MS, SendStoppedError } from "./keyed-write";
 import { useKeyedWrite } from "./useKeyedWrite";
 import { writesOf } from "./write-store";
@@ -25,9 +26,9 @@ function renderAnswerWrite() {
       useKeyedWrite({
         inline: true,
         label: () => "Answer to “Ship?”",
-        unlined: "a test write that names no row",
-        write: (input: { selected: string[] }, bounds) =>
-          api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
+        request: (input: { selected: string[] }) =>
+          askAnswerRequest("ask-1", { expected_edited_at: null, ...input }),
+        target: () => "ask:ask-1",
       }),
     { wrapper }
   );
@@ -41,7 +42,7 @@ function renderAnswerWrite() {
 test("a surface's Retry keeps the key after Stop trying, and takes a new one after Dispatch refused", async () => {
   jest.useFakeTimers();
   const tab = keptTab();
-  const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(refusal);
+  const answerAsk = answerAskAnswers().mockRejectedValue(refusal);
   const { client, hook } = renderAnswerWrite();
   const input = { selected: ["Ship"] };
 
@@ -71,7 +72,6 @@ test("a surface's Retry keeps the key after Stop trying, and takes a new one aft
     expect(answerAsk.mock.calls.at(-1)?.[2]?.key).not.toBe(stoppedKey);
   } finally {
     hook.unmount();
-    answerAsk.mockRestore();
     tab.close();
     realClock();
   }
@@ -82,7 +82,7 @@ test("a surface's Retry keeps the key after Stop trying, and takes a new one aft
 // nothing shows as failed, and `mutateAsync` resolves.
 test("a write answered KEY_COMMITTED succeeds with null: no error and no rollback", async () => {
   const tab = keptTab();
-  const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(
+  const answerAsk = answerAskAnswers().mockRejectedValue(
     new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
   );
   let rolledBack = 0;
@@ -101,9 +101,9 @@ test("a write answered KEY_COMMITTED succeeds with null: no error and no rollbac
           rolledBack += 1;
         },
         onSuccess: (data) => succeeded.push(data),
-        unlined: "a test write that names no row",
-        write: (input: { selected: string[] }, bounds) =>
-          api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
+        request: (input: { selected: string[] }) =>
+          askAnswerRequest("ask-1", { expected_edited_at: null, ...input }),
+        target: () => "ask:ask-1",
       }),
     { wrapper }
   );
@@ -122,7 +122,6 @@ test("a write answered KEY_COMMITTED succeeds with null: no error and no rollbac
     expect(writesOf(client).rows()).toEqual([]);
   } finally {
     hook.unmount();
-    answerAsk.mockRestore();
     tab.close();
   }
 });
@@ -133,7 +132,7 @@ test("a write answered KEY_COMMITTED succeeds with null: no error and no rollbac
 test("a write pressed offline is attempted and goes late", async () => {
   jest.useFakeTimers();
   const online = onlineManager.isOnline();
-  const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(
+  const answerAsk = answerAskAnswers().mockRejectedValue(
     new NetworkError("/api/v1/asks/ask-1/answer", new TypeError("Failed to fetch"))
   );
   const { client, hook } = renderAnswerWrite();
@@ -147,7 +146,6 @@ test("a write pressed offline is attempted and goes late", async () => {
   } finally {
     onlineManager.setOnline(online);
     hook.unmount();
-    answerAsk.mockRestore();
     realClock();
   }
 });

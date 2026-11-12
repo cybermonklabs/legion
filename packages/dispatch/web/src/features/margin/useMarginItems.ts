@@ -1,4 +1,4 @@
-import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 
@@ -337,17 +337,15 @@ export function useMarginItems(
     [asks.data, owner]
   );
   const comments = useQuery({
-    ...queryOptions({
-      queryKey: commentsKey,
-      queryFn: () => {
-        if (owner === undefined) {
-          throw new Error("Margin comments require an owner.");
-        }
-        return owner.kind === "document"
-          ? api.listArtifactComments(owner.artifactId)
-          : api.listComments(owner.key);
-      },
-    }),
+    queryKey: commentsKey,
+    queryFn: () => {
+      if (owner === undefined) {
+        throw new Error("Margin comments require an owner.");
+      }
+      return owner.kind === "document"
+        ? api.listArtifactComments(owner.artifactId)
+        : api.listComments(owner.key);
+    },
     enabled: owner !== undefined,
   });
   const userState = useQuery({ ...userStateQuery(), enabled: owner?.kind === "issue" });

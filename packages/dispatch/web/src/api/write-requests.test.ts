@@ -32,9 +32,9 @@ import {
 
 /**
  * Every write that waits its turn on a line is made from its request alone (`WriteSpec.request`),
- * so each has a builder beside its client method (dispatch://INFRA-299/spec#b-r6). These rows are
- * what each builder makes: the method and path the route table holds it under, and the body the
- * client's own method sends through it.
+ * so each has a builder of its own (dispatch://INFRA-299/spec#b-r6). These rows are what each
+ * builder makes: the method and path the route table holds it under, and the body the route
+ * takes.
  */
 
 /** One builder, and the request it makes. */
@@ -146,9 +146,9 @@ test("only the POSTs and PATCHes among the lined writes go under a key", () => {
   expect(keyed).toContain("the issue create");
 });
 
-// The body is the one the client method sent, so a write made from its request alone writes what
-// the method wrote.
-test("each builder carries the body its client method sent", () => {
+// The body is the one the route takes, so a write made from its request alone writes what the
+// route reads.
+test("each builder carries the body its route takes", () => {
   expect(issueStateRequest("CORE-1", { pinned: true }).body).toEqual({ pinned: true });
   expect(askHandOnRequest("ask-1", "sami@theorem.dev").body).toEqual({
     asked_of: "sami@theorem.dev",
@@ -158,17 +158,20 @@ test("each builder carries the body its client method sent", () => {
   });
   expect(agentTokenScopesRequest("token-1", ["person"]).body).toEqual({ scopes: ["person"] });
   expect(commentResolveRequest("comment-1").body).toEqual({});
-  // The reopen route takes no body at all (`reopenComment`).
+  // The reopen route takes no body at all.
   expect(commentReopenRequest("comment-1").body).toBeUndefined();
 });
 
-// A repository is `owner/repo` and nothing else: a builder refuses anything else rather than
-// sending a path with a hole in it (`repoParams`).
+// A repository is `owner/repo` and nothing else: a builder refuses anything else as it is built,
+// before any write exists to send, rather than sending a path with a hole in it (`repoParams`).
 test("a repository that is not owner/repo is refused by the builder", () => {
   expect(() => repoProjectRequest("widgets", { project: "CORE" })).toThrow(
     "/api/v1/settings/repo-projects/{owner}/{repo} has no value for {repo}"
   );
-  expect(() => architectureSourceSyncRequest("CORE", "")).toThrow(
-    "repository must be formatted as owner/repo"
-  );
+  const notOwnerRepo = "repository must be formatted as owner/repo";
+  expect(() => repoProjectRequest("", { project: "CORE" })).toThrow(notOwnerRepo);
+  expect(() => repoProjectDeleteRequest("")).toThrow(notOwnerRepo);
+  expect(() => architectureSourceRequest("CORE", "", { branch: "main" })).toThrow(notOwnerRepo);
+  expect(() => architectureSourceSyncRequest("CORE", "")).toThrow(notOwnerRepo);
+  expect(() => architectureSourceDeleteRequest("CORE", "")).toThrow(notOwnerRepo);
 });

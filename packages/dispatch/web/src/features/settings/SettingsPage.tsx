@@ -115,7 +115,7 @@ export function SettingsPage(): ReactNode {
             variables.default ??
             (existing?.project === variables.project ? existing.default : false),
           project: variables.project,
-          // This page's write names no rename, so the stored one stands (`putRepoProject`).
+          // This page's write names no rename, so the stored one stands (`repoProjectRequest`).
           renamed_to: existing?.renamed_to ?? null,
           repo: variables.repo,
         });

@@ -1,12 +1,12 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { answerInboxReads } from "../../__tests__/send-answers";
-import { ApiError } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import { inboxThreadsQuery, myRepliesCountQuery, whoAmIQuery } from "../../api/queries";
 import type { MyRepliesResponse, MyReplyRow } from "../../api/types";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
@@ -143,34 +143,75 @@ test("the button shows only while the list holds an unread Reply or Agent row", 
   expect(screen.getByRole("button", { name: "Mark all read" })).toBeTruthy();
 });
 
-test("one press zeroes the count and draws the rows read, without taking one out of the list", async () => {
+test("one press draws the rows read at once and its own read sets the count, without taking one out of the list", async () => {
   const user = userEvent.setup();
   const marked = answerInboxReads();
   const settle = Promise.withResolvers<{ marked: number }>();
   marked.mockReturnValue(settle.promise);
-  renderBar([replyRow("c1", { priority: 1 }), replyRow("c2", { priority: 1 })], 2, {
-    priority: ["P1"],
+  const rows = [replyRow("c1", { priority: 1 }), replyRow("c2", { priority: 1 })];
+  renderBar(rows, 2, { priority: ["P1"] });
+  // The reads the landed press makes again: both rows read, and nothing unread.
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+    ...threadsRead(rows.map((row) => ({ ...row, unread: false }))),
+    total: 0,
   });
 
-  expect(inboxCount()).toBe("2");
-  await user.click(screen.getByRole("button", { name: "Mark all read" }));
+  try {
+    expect(inboxCount()).toBe("2");
+    await user.click(screen.getByRole("button", { name: "Mark all read" }));
 
-  // At once, with the request still out: every badge reading the shared count is at zero and no
-  // row is unread any more - and both rows are still in the list, where a thread stays until it
-  // is dismissed.
-  await waitFor(() => expect(unread()).toBe("0"));
-  expect(listed()).toBe("2");
-  expect(inboxCount()).toBe("0");
-  expect(screen.queryByRole("button", { name: "Mark all read" })).not.toBeInTheDocument();
-  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    // At once, with the request still out: no row is unread any more - and both rows are still
+    // in the list, where a thread stays until it is dismissed. The shared count is the server's
+    // until the press's own read of it.
+    await waitFor(() => expect(unread()).toBe("0"));
+    expect(listed()).toBe("2");
+    expect(inboxCount()).toBe("2");
+    expect(screen.queryByRole("button", { name: "Mark all read" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
-  expect(marked.mock.calls[0]?.[0]).toEqual({
-    kind: ["reply", "agent"],
-    priority: ["P1"],
-    read_through: AS_OF,
+    expect(marked.mock.calls[0]?.[0]).toEqual({
+      kind: ["reply", "agent"],
+      priority: ["P1"],
+      read_through: AS_OF,
+    });
+    settle.resolve({ marked: 2 });
+    // Landed: the press reads the count again, and every badge reading it is at zero.
+    await waitFor(() => expect(inboxCount()).toBe("0"));
+    expect(marked).toHaveBeenCalledTimes(1);
+  } finally {
+    listMyReplies.mockRestore();
+  }
+});
+
+// R7. A read of the count can land while the press is out and already count the mark: Dispatch
+// made it, and the press's own answer is still on its way. A count holds no rows a change could
+// find the mark in, so the press shows nothing on it, and that answer is the count - the mark is
+// never taken off it a second time.
+test("a count answer that already counts the mark, landing while the press is out, is the count", async () => {
+  const user = userEvent.setup();
+  const marked = answerInboxReads();
+  const settle = Promise.withResolvers<{ marked: number }>();
+  marked.mockReturnValue(settle.promise);
+  // Five unread threads, the two in the list among them.
+  const client = renderBar([replyRow("c1"), replyRow("c2")], 5);
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+    ...threadsRead([]),
+    total: 3,
   });
-  settle.resolve({ marked: 2 });
-  await waitFor(() => expect(marked).toHaveBeenCalledTimes(1));
+  try {
+    await user.click(screen.getByRole("button", { name: "Mark all read" }));
+    await waitFor(() => expect(unread()).toBe("0"));
+
+    await act(() =>
+      client.refetchQueries({ exact: true, queryKey: myRepliesCountQuery().queryKey })
+    );
+    expect(inboxCount()).toBe("3");
+
+    settle.resolve({ marked: 2 });
+    await waitFor(() => expect(marked).toHaveBeenCalledTimes(1));
+  } finally {
+    listMyReplies.mockRestore();
+  }
 });
 
 test("a refused press brings the rows and the counts back and says nothing was marked", async () => {

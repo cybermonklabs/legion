@@ -20,6 +20,9 @@ import { writesOf } from "./write-store";
  * not compile. Where a type cannot hold that door, this file does: it reads every `writes.run`
  * and `useKeyedWrite` call of `web/src` that the app ships and names any that carries neither,
  * and it reads the lines those calls name and holds them to the grammar `<row type>:<row id>`.
+ * A call may spread its line in rather than write it out, as `...(<value> satisfies WriteLine)`:
+ * the compiler holds that value to `WriteLine` at the call itself, so that call is one a type
+ * reaches, and it is read as a call that names its line.
  */
 
 /** One write a module makes: where it is written, and the object its press names. */
@@ -80,6 +83,13 @@ function lineOf(target: string): string | undefined {
   return (literal[1] ?? literal[2] ?? "").replaceAll(/\$\{[^}]*\}/gu, "<id>");
 }
 
+/** The value a spec spreads its line in from, where it spreads one as `...(<value> satisfies
+ *  WriteLine)`. A spread written any other way names no line here, since nothing holds it to
+ *  one. */
+function spreadLine(spec: string): string | undefined {
+  return /\.\.\.\(\s*([^()]+?)\s+satisfies\s+WriteLine\s*\)/u.exec(spec)?.[1];
+}
+
 /** The sends that name no row, which R6 does not reach: they keep the names they have. */
 const NAMES_NO_ROW = ["broadcast"];
 
@@ -96,12 +106,16 @@ const calls = shippedSources().flatMap((path) =>
 
 // R6. A write that names a row carries its line; one that names none says so in its own value.
 // The types hold every write to that, and this row holds the calls a type cannot reach - a write
-// whose spec is built from a spread, or made through a helper of its own.
+// whose spec is built from a spread, or made through a helper of its own. A spread of a value
+// the compiler holds to `WriteLine` at the call (`spreadLine`) is a call a type reaches.
 test("every write of web/src names its row or says why it names none", () => {
   expect(calls.length).toBeGreaterThan(30);
   const silent = calls
     .filter(
-      ({ spec }) => field(spec, "target") === undefined && field(spec, "unlined") === undefined
+      ({ spec }) =>
+        field(spec, "target") === undefined &&
+        field(spec, "unlined") === undefined &&
+        spreadLine(spec) === undefined
     )
     .map(({ at }) => at);
   expect(silent).toEqual([]);
@@ -115,7 +129,11 @@ test("the lines web/src names are the rows of the grammar", () => {
   const built: string[] = [];
   for (const { at, spec } of calls) {
     const target = field(spec, "target");
-    if (target === undefined) continue;
+    // A line spread in is built rather than written out, whichever of the two it holds.
+    if (target === undefined) {
+      if (spreadLine(spec) !== undefined) built.push(at);
+      continue;
+    }
     const line = lineOf(target);
     if (line === undefined) built.push(at);
     else lines.add(line);
@@ -146,9 +164,10 @@ test("the lines web/src names are the rows of the grammar", () => {
     "settings:delivery",
   ]);
   // The lines no call writes out: one the hook's caller hands in (`useSendMarkOnce`, whose
-  // callers' marks are in the table above), one a helper builds for every write of its row, and
-  // one the row's own kind picks between - `ThreadRowCard`'s **Mark read**, which marks an Agent
-  // row on `read:agent:<id>` and every other row on `read:thread:<id>`, both of them in the
+  // callers' marks are in the table above), one a helper builds for every write of its row, one
+  // spread in as a `WriteLine` its maker built (`held-sends.ts`, `offer.ts`, `useKeyedWrite.ts`),
+  // and one the row's own kind picks between - `ThreadRowCard`'s **Mark read**, which marks an
+  // Agent row on `read:agent:<id>` and every other row on `read:thread:<id>`, both of them in the
   // table above. Named by their file and not by their line, so an edit anywhere above them does
   // not rewrite this row; what it holds is which call sites build a line rather than write it
   // out.

@@ -4,7 +4,7 @@
  * (INFRA-450).
  */
 
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -147,13 +147,43 @@ test("the row's Dismiss sends the row's own id and drawn version and takes it ou
   const control = document.querySelector<HTMLElement>('[data-inbox-dismiss="reply:c1"]');
   await user.click(control as HTMLElement);
 
-  // At once, with the request still out: the row is gone and the shared unread count has dropped
-  // by the one unread row it took.
+  // At once, with the request still out: the row is gone. The shared unread count is the
+  // server's, which the press's own read sets once it lands.
   await waitFor(() => expect(rowIds()).toEqual(["reply:c9"]));
   expect(dismissed.mock.calls[0]?.[0]).toEqual({
     seen_replies: { "reply:c1": SEEN },
     threads: ["reply:c1"],
   });
+  settle.resolve({ dismissed: 1 });
+  await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
+});
+
+// R7. A read of the count can land while the press is out and already count the dismiss: Dispatch
+// made it, and the press's own answer is still on its way. A count holds no rows a change could
+// find the dismiss in, so the press shows nothing on it, and that answer is the count - the row
+// is never taken off it a second time.
+test("a count answer that already counts the dismiss, landing while the press is out, is the count", async () => {
+  const user = userEvent.setup();
+  const dismissed = answerInboxDismisses();
+  const settle = Promise.withResolvers<{ dismissed: number }>();
+  dismissed.mockReturnValue(settle.promise);
+  const client = seeded([replyRow("c1"), replyRow("c9")]);
+  const countKey = myRepliesCountQuery().queryKey;
+  // Five unread threads, the two in the list among them.
+  client.setQueryData(countKey, 5);
+  renderInbox(client);
+
+  await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
+  await user.click(document.querySelector('[data-inbox-dismiss="reply:c1"]') as HTMLElement);
+  await waitFor(() => expect(rowIds()).toEqual(["reply:c9"]));
+
+  (api.listMyReplies as Mock<typeof api.listMyReplies>).mockResolvedValueOnce({
+    ...threadsRead([replyRow("c9")]),
+    total: 4,
+  });
+  await act(() => client.fetchQuery({ ...myRepliesCountQuery(), staleTime: 0 }));
+  expect(client.getQueryData<number>(countKey)).toBe(4);
+
   settle.resolve({ dismissed: 1 });
   await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
 });

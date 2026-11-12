@@ -20,6 +20,7 @@ import {
   ofKind,
   useWriteSelection,
   type Write,
+  type WriteLine,
   type Writes,
   writesOf,
 } from "../writes/write-store";
@@ -437,22 +438,13 @@ export class HeldSends {
       presentation: "composer",
       write: sendAttempt(request),
     } as const;
-    const line =
+    const line: WriteLine =
       edit !== undefined
-        ? `comment:${edit.id}`
+        ? { target: `comment:${edit.id}` }
         : owner.kind === "session"
-          ? `session:${owner.sessionId}`
-          : undefined;
-    if (line === undefined) {
-      this.#writes
-        .run({
-          ...press,
-          unlined: "a new comment, ask or message names no row until Dispatch makes it",
-        })
-        .catch(() => {});
-    } else {
-      this.#writes.run({ ...press, target: line }).catch(() => {});
-    }
+          ? { target: `session:${owner.sessionId}` }
+          : { unlined: "a new comment, ask or message names no row until Dispatch makes it" };
+    this.#writes.run({ ...press, ...(line satisfies WriteLine) }).catch(() => {});
     return true;
   }
 

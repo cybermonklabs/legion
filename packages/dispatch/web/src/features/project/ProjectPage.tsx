@@ -1,4 +1,4 @@
-import { queryOptions, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
@@ -61,10 +61,8 @@ export function ProjectPage(): ReactNode {
   const route = parseProjectPath(location.pathname, location.search);
   const projectKey = route?.project;
   const inbox = useQuery({
-    ...queryOptions({
-      queryKey: ["inbox", projectKey],
-      queryFn: () => api.getInbox(projectKey),
-    }),
+    queryKey: ["inbox", projectKey],
+    queryFn: () => api.getInbox(projectKey),
     enabled: projectKey !== undefined,
   });
   // Whose questions the pill counts, read as every other surface that counts work waiting on

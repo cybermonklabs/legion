@@ -3,13 +3,13 @@ import { expect, test } from "bun:test";
 import { createApiClient, type DispatchApiClient } from "./client";
 
 // An argument the client itself refuses - a path parameter the route pattern has no value for
-// (`routeUrl`), a repository that is not `owner/repo` (`repoParams`) - reaches the caller as a
-// rejected promise, never as a synchronous throw, and no request is sent. A caller holds a
-// refusal on the promise the call answers with: the write store catches a refused write on the
-// promise the press returns, so a refusal thrown before any promise exists is caught nowhere and
-// the press hangs. Every method below reaches one of the two refusals in its own frame, by
-// building its URL there or by reading one of its arguments there, so each is held to that
-// contract by name.
+// (`routeUrl`) - reaches the caller as a rejected promise, never as a synchronous throw, and no
+// request is sent. A caller holds a refusal on the promise the call answers with: the write store
+// catches a refused write on the promise the press returns, so a refusal thrown before any
+// promise exists is caught nowhere and the press hangs. Every method below reaches the refusal in
+// its own frame, by building its URL there, so each is held to that contract by name. A write
+// made from its request alone (`api.send`) has its URL built by the request's builder at the
+// press, which refuses the argument there (`write-requests.test.ts`).
 
 /** One call of one method with an argument the client refuses, and the message the refusal
  *  carries. The call is held as a thunk so a method that refuses synchronously throws inside the
@@ -22,7 +22,6 @@ interface Refusal {
 
 const bounds = { key: "press-1" };
 const timestamp = "2026-11-09T00:00:00.000Z";
-const notOwnerRepo = "repository must be formatted as owner/repo";
 
 const refusals: readonly Refusal[] = [
   {
@@ -74,31 +73,6 @@ const refusals: readonly Refusal[] = [
     call: (api) => api.putAgentState("", { cleared_before: timestamp }, bounds),
     message: "/api/v1/me/agents/{session_id}/state has no value for {session_id}",
     method: "putAgentState",
-  },
-  {
-    call: (api) => api.putRepoProject("", { project: "ACME" }, bounds),
-    message: notOwnerRepo,
-    method: "putRepoProject",
-  },
-  {
-    call: (api) => api.deleteRepoProject("", bounds),
-    message: notOwnerRepo,
-    method: "deleteRepoProject",
-  },
-  {
-    call: (api) => api.putArchitectureSource("ACME", "", { branch: "main" }, bounds),
-    message: notOwnerRepo,
-    method: "putArchitectureSource",
-  },
-  {
-    call: (api) => api.syncArchitectureSource("ACME", "", bounds),
-    message: notOwnerRepo,
-    method: "syncArchitectureSource",
-  },
-  {
-    call: (api) => api.deleteArchitectureSource("ACME", "", bounds),
-    message: notOwnerRepo,
-    method: "deleteArchitectureSource",
   },
 ];
 

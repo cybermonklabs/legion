@@ -8,7 +8,7 @@ import { useCallback, useRef, useState } from "react";
 
 import type { WriteBounds, WriteRequest } from "../../api/client";
 import { pressKey, type StoppedPress, stoppedPress } from "./keyed-write";
-import { plainWrite, useWrites, type WriteChange } from "./write-store";
+import { plainWrite, useWrites, type WriteChange, type WriteLine } from "./write-store";
 
 /** A write a surface makes for the reader: `useMutation`'s options, but for `mutationFn`, which
  *  the write path makes from `write` or `request` and `label`. Its data is Dispatch's answer, or
@@ -50,20 +50,16 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
  *  `target` and `unlined` is always named, so a write written later cannot leave its line out in
  *  silence. */
 export type KeyedWriteMade<TData, TVariables> =
-  | {
+  | (Extract<WriteLine, { readonly unlined: string }> & {
       readonly write: (variables: TVariables, bounds: WriteBounds) => Promise<TData>;
-      readonly target?: undefined;
       readonly request?: undefined;
-      /** Why this write is on no line, in the words of whoever wrote it (`WriteSpec.unlined`). */
-      readonly unlined: string;
-    }
-  | {
+    })
+  | (Omit<Extract<WriteLine, { readonly target: string }>, "target"> & {
       readonly write?: undefined;
-      /** The row this write writes, as `<row type>:<row id>` (`WriteSpec.target`). */
+      /** The row each press writes (`WriteLine`'s `target`), named from its variables. */
       readonly target: (variables: TVariables) => string;
       readonly request: (variables: TVariables) => WriteRequest<TData>;
-      readonly unlined?: undefined;
-    };
+    });
 
 /** A press Dispatch made and had no answer to give for: its variables, and when it landed. */
 export interface UnansweredLanding<TVariables> {
@@ -138,11 +134,11 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
         presentation: "indicator",
         shows: shows === undefined ? undefined : shows(variables),
       } as const;
-      return (
+      const line =
         write === undefined
-          ? writes.run({ ...press, request: request(variables), target: target(variables) })
-          : writes.run({ ...press, unlined, write: (bounds) => write(variables, bounds) })
-      ).then(
+          ? { request: request(variables), target: target(variables) }
+          : { unlined, write: (bounds: WriteBounds) => write(variables, bounds) };
+      return writes.run({ ...press, ...(line satisfies WriteLine) }).then(
         (answer) => {
           if (answer === null) setUnanswered({ at: Date.now(), variables });
           return answer;

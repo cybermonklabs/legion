@@ -12,8 +12,10 @@
  * list the reader has whole, a **Select all** of the unpaged Inbox read included - or, where the
  * list pages at the server and the ids are not all loaded, the narrowing it is under with
  * `dismiss_through`, that list read's own `as_of`, where the server draws the rows itself. The
- * press is applied here first, because the reader pressed it: the rows leave the view
- * they were in and the unread count every badge shares drops by the unread ones among them. A
+ * press is applied here first, because the reader pressed it: the rows leave the view they were
+ * in. The unread count every badge shares is the server's, which the press's own read sets once
+ * the answer lands: a count holds no rows, so a count answered while the press is out cannot say
+ * whether it already counts the dismiss, and lowering it there would lower it twice. A
  * refused press puts each row back where it stood and the page says so (`dismissRefusalText`),
  * which an old server with no such route is one way of causing. A row somebody wrote in since
  * the page drew it is no refusal: the server leaves that one row where it is, and the read the
@@ -28,7 +30,6 @@ import { inboxDismissRequest } from "../../api/client";
 import {
   dismissedThreadsQuery,
   inboxThreadsQuery,
-  myRepliesCountQuery,
   myRepliesKey,
   userAgentStateQuery,
 } from "../../api/queries";
@@ -183,11 +184,10 @@ function withRows(answer: MyRepliesResponse, dropped: readonly DroppedRow[]): My
   return back === 0 ? answer : { ...answer, rows, total: answer.total + back };
 }
 
-/** What a press rolls back to: the unread count as it stood, and the rows it took out of the view
- *  it was made in, with the place each held. Only one of the two views is written: a dismiss is
- *  made in the Inbox, a restore in the Dismissed view. */
+/** What a press rolls back to: the rows it took out of the view it was made in, with the place
+ *  each held. Only one of the two views is written: a dismiss is made in the Inbox, a restore in
+ *  the Dismissed view. */
 interface DismissRollback {
-  readonly count: number | undefined;
   /** What left the Inbox's own read. */
   readonly inbox: readonly DroppedRow[];
   /** What left each page of the Dismissed read, by page. */
@@ -238,7 +238,6 @@ export function useInboxDismiss({
   const [refusal, setRefusal] = useState<string | undefined>(undefined);
   const inboxKey = inboxThreadsQuery().queryKey;
   const dismissedKey = dismissedThreadsQuery().queryKey;
-  const countKey = myRepliesCountQuery().queryKey;
 
   const live = (rows: readonly string[], out: boolean) => {
     setPending((current) => {
@@ -274,7 +273,6 @@ export function useInboxDismiss({
               ),
             }
       );
-      if (rollback.count !== undefined) queryClient.setQueryData(countKey, rollback.count);
     },
     onMutate: async (input) => {
       setRefusal(undefined);
@@ -282,9 +280,7 @@ export function useInboxDismiss({
       // on the page, where the refusal below would then draw each of them twice. Cancel the
       // reads this press writes first, as every optimistic write here does.
       await Promise.all(
-        [inboxKey, dismissedKey, countKey].map((queryKey) =>
-          queryClient.cancelQueries({ queryKey })
-        )
+        [inboxKey, dismissedKey].map((queryKey) => queryClient.cancelQueries({ queryKey }))
       );
       const body = inboxDismissBody(input);
       // What a refusal puts back, and where each row stood, read before the press shows its
@@ -299,15 +295,7 @@ export function useInboxDismiss({
           ? pages.pages.map((page) => withoutRows(page, body).dropped)
           : [];
       const inbox = !restoring && answer !== undefined ? withoutRows(answer, body).dropped : [];
-      // The count every badge shares drops by the unread rows this press takes out, clamped at
-      // zero. A restored thread was marked read by the dismiss that took it out, so putting it
-      // back counts for nothing.
-      const unread = inbox.filter(({ row }) => row.unread).length;
-      return {
-        count: unread > 0 ? queryClient.getQueryData<number>(countKey) : undefined,
-        dismissed,
-        inbox,
-      };
+      return { dismissed, inbox };
     },
     onSuccess: () => {
       // What the server changed is read again from the server: both views, the counts, and the
@@ -328,21 +316,14 @@ export function useInboxDismiss({
       onSettled?.(droppedRows(context).map(({ row }) => rowId({ kind: "thread", thread: row })));
     },
     request: (input) => inboxDismissRequest(inboxDismissBody(input)),
-    /** The change this press shows: the rows it names out of the view it was made in, and the
-     *  count every badge shares less the unread ones among them. Each row is taken out of the
-     *  cache as it stands, by its id, so an answer this is shown over again loses the same rows
-     *  it names; the count holds no rows of its own, so it is lowered by what the press took,
-     *  which is the press's own fact. */
+    /** The change this press shows: the rows it names out of the view it was made in. Each row is
+     *  taken out of the cache as it stands, by its id, so an answer this is shown over again
+     *  loses the same rows it names, and one that no longer holds them is left as it is. It
+     *  shows nothing on the count every badge shares, which the press's own read sets. */
     shows: (input) => {
       const body = inboxDismissBody(input);
-      const restoring = input.restore === true;
-      const answer = queryClient.getQueryData<MyRepliesResponse>(inboxKey);
-      const unread =
-        restoring || answer === undefined
-          ? 0
-          : withoutRows(answer, body).dropped.filter(({ row }) => row.unread).length;
       return (shown) => {
-        if (restoring) {
+        if (input.restore === true) {
           shown.on<DismissedPages>(dismissedKey, (pages) => ({
             ...pages,
             pages: pages.pages.map((page) => withoutRows(page, body).answer),
@@ -350,7 +331,6 @@ export function useInboxDismiss({
         } else {
           shown.on<MyRepliesResponse>(inboxKey, (current) => withoutRows(current, body).answer);
         }
-        if (unread > 0) shown.on<number>(countKey, (count) => Math.max(0, count - unread));
       };
     },
     target: () => "inbox:dismiss",

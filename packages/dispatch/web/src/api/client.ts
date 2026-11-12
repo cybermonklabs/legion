@@ -436,9 +436,10 @@ function readUrl<P extends PathsOf<"get">>(pattern: P, params: PathParams<Op<P, 
 }
 
 // The requests of the writes that wait their turn on a line (`WriteSpec.request`), each the exact
-// request its client method sends, answered as that method is: a surface names it at the press,
-// and the write is made from it alone (`api.send`), so a write waiting behind another is kept as
-// the very request that goes out, and nothing of it runs before its turn.
+// request a write sends to Dispatch: a surface names it at the press, and the write is made from
+// it alone (`api.send`), so a write waiting behind another is kept as the very request that goes
+// out, and nothing of it runs before its turn. A builder that names a client method in brackets
+// is the request that method sends too.
 
 /** `PATCH /api/v1/issues/{key}`: one change of an issue's fields (`patchIssue`). */
 export function issuePatchRequest(key: string, input: Body<"/api/v1/issues/{key}", "patch">) {
@@ -522,12 +523,13 @@ export function agentStateRequest(
   );
 }
 
-/** `POST /api/v1/issues`: a new issue (`createIssue`). */
+/** `POST /api/v1/issues`: a new issue. */
 export function issueCreateRequest(input: Body<"/api/v1/issues", "post">) {
   return writeRequest("post", "/api/v1/issues", {}, input);
 }
 
-/** `DELETE /api/v1/issues/{key}/claim`: the claim on an issue, released (`releaseIssueClaim`). */
+/** `DELETE /api/v1/issues/{key}/claim`: the claim on an issue, released. A human may release any
+ *  claim; the issue's status does not move. */
 export function issueClaimReleaseRequest(key: string) {
   return writeRequest("delete", "/api/v1/issues/{key}/claim", { key });
 }
@@ -559,49 +561,57 @@ export function artifactCommentRequest(
   return writeRequest("post", "/api/v1/artifacts/{id}/comments", { id }, input);
 }
 
-/** `POST /api/v1/comments/{id}/resolve` (`resolveComment`). */
+/** `POST /api/v1/comments/{id}/resolve`. */
 export function commentResolveRequest(id: string) {
   return writeRequest("post", "/api/v1/comments/{id}/resolve", { id }, {});
 }
 
-/** `POST /api/v1/comments/{id}/reopen`. The route takes no body at all (`reopenComment`). */
+/** `POST /api/v1/comments/{id}/reopen`. The route takes no body at all. */
 export function commentReopenRequest(id: string) {
   return writeRequest("post", "/api/v1/comments/{id}/reopen", { id });
 }
 
 /** `POST /api/v1/comments/{id}/accept`: the suggestion a comment carries, written into its
- *  document (`acceptComment`). */
+ *  document. */
 export function commentAcceptRequest(id: string) {
   return writeRequest("post", "/api/v1/comments/{id}/accept", { id }, {});
 }
 
-/** `POST /api/v1/comments/{id}/reject` (`rejectComment`). */
+/** `POST /api/v1/comments/{id}/reject`. */
 export function commentRejectRequest(id: string) {
   return writeRequest("post", "/api/v1/comments/{id}/reject", { id }, {});
 }
 
-/** `DELETE /api/v1/me/asks/{id}/snooze`: the row brought back now (`unsnoozeAsk`). */
+/** `DELETE /api/v1/me/asks/{id}/snooze`: the row brought back now. A row that is not snoozed
+ *  answers the same 204. */
 export function askUnsnoozeRequest(id: string) {
   return writeRequest("delete", "/api/v1/me/asks/{id}/snooze", { id });
 }
 
-/** `POST /api/v1/asks/{id}/answer`: the person's answer to an ask (`answerAsk`). */
+/** `POST /api/v1/asks/{id}/answer`: the person's answer to an ask. */
 export function askAnswerRequest(id: string, input: Body<"/api/v1/asks/{id}/answer", "post">) {
   return writeRequest("post", "/api/v1/asks/{id}/answer", { id }, input);
 }
 
-/** `POST /api/v1/asks/{id}/decline`: the person's decline of an ask (`declineAsk`). */
+/** `POST /api/v1/asks/{id}/decline`: an open question closed with no answer, keeping the person's
+ *  note. Needs the `person` scope, as the answer route does; an approval request is refused
+ *  `409 ASK_NOT_DECLINABLE`. */
 export function askDeclineRequest(id: string, input: DeclineAskInput) {
   return writeRequest("post", "/api/v1/asks/{id}/decline", { id }, input);
 }
 
-/** `PUT /api/v1/asks/{id}/asked-of`: the ask handed to someone else (`handAskTo`). */
+/** `PUT /api/v1/asks/{id}/asked-of`: an open ask handed to `askedOf`, the email of somebody who
+ *  has signed in, so the ask waits on them wherever its issue goes and their Inbox lists it.
+ *  Naming the assignee of the ask's own issue empties the stored field, which hands the ask back
+ *  to whoever holds that issue. Needs the `person` scope: handing a question on is one person
+ *  asking another. */
 export function askHandOnRequest(id: string, askedOf: string) {
   return writeRequest("put", "/api/v1/asks/{id}/asked-of", { id }, { asked_of: askedOf });
 }
 
 /** `POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`: the reader agrees with the decision that
- *  block opens, as the text they read (`keepDecision`). */
+ *  heading block opens, as the text they read: `textSha256` is the decision's own `text_sha256`,
+ *  and a decision that changed since is `409 DECISION_CHANGED`. */
 export function decisionKeepRequest(id: string, blockID: string, textSha256: string) {
   return writeRequest(
     "post",
@@ -611,12 +621,14 @@ export function decisionKeepRequest(id: string, blockID: string, textSha256: str
   );
 }
 
-/** `POST /api/v1/me/agent-tokens`: one new agent token (`createAgentToken`). */
+/** `POST /api/v1/me/agent-tokens`: one new agent token. */
 export function agentTokenCreateRequest(input: Body<"/api/v1/me/agent-tokens", "post">) {
   return writeRequest("post", "/api/v1/me/agent-tokens", {}, input);
 }
 
-/** `PATCH /api/v1/me/agent-tokens/{id}`: what an agent token may do (`setAgentTokenScopes`). */
+/** `PATCH /api/v1/me/agent-tokens/{id}`: the whole set of scopes the token is to hold, which
+ *  replaces the set it holds now, answering the updated token. A scope the caller does not hold
+ *  itself is refused, as it is at the mint. */
 export function agentTokenScopesRequest(
   id: string,
   scopes: NonNullable<Body<"/api/v1/me/agent-tokens/{id}", "patch">>["scopes"]
@@ -624,13 +636,12 @@ export function agentTokenScopesRequest(
   return writeRequest("patch", "/api/v1/me/agent-tokens/{id}", { id }, { scopes });
 }
 
-/** `DELETE /api/v1/me/agent-tokens/{id}` (`revokeAgentToken`). */
+/** `DELETE /api/v1/me/agent-tokens/{id}`. */
 export function agentTokenRevokeRequest(id: string) {
   return writeRequest("delete", "/api/v1/me/agent-tokens/{id}", { id });
 }
 
-/** `PUT /api/v1/settings/repo-projects/{owner}/{repo}`: the project a repository maps to
- *  (`putRepoProject`). */
+/** `PUT /api/v1/settings/repo-projects/{owner}/{repo}`: the project a repository maps to. */
 export function repoProjectRequest(
   repo: string,
   input: Body<"/api/v1/settings/repo-projects/{owner}/{repo}", "put">
@@ -643,13 +654,13 @@ export function repoProjectRequest(
   );
 }
 
-/** `DELETE /api/v1/settings/repo-projects/{owner}/{repo}` (`deleteRepoProject`). */
+/** `DELETE /api/v1/settings/repo-projects/{owner}/{repo}`. */
 export function repoProjectDeleteRequest(repo: string) {
   return writeRequest("delete", "/api/v1/settings/repo-projects/{owner}/{repo}", repoParams(repo));
 }
 
-/** `PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}`: one source of a project's
- *  architecture (`putArchitectureSource`). */
+/** `PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}`: `repo` (`owner/name`) added
+ *  as a source of the project's architecture, or the branch of the source it already is changed. */
 export function architectureSourceRequest(
   project: string,
   repo: string,
@@ -664,7 +675,7 @@ export function architectureSourceRequest(
 }
 
 /** `POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync`: that source's model,
- *  imported now (`syncArchitectureSource`). */
+ *  imported now; the row's `last_error` says whether the import failed. */
 export function architectureSourceSyncRequest(project: string, repo: string) {
   return writeRequest("post", "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync", {
     key: project,
@@ -672,8 +683,7 @@ export function architectureSourceSyncRequest(project: string, repo: string) {
   });
 }
 
-/** `DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}`
- *  (`deleteArchitectureSource`). */
+/** `DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}`. */
 export function architectureSourceDeleteRequest(project: string, repo: string) {
   return writeRequest("delete", "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}", {
     key: project,
@@ -681,7 +691,9 @@ export function architectureSourceDeleteRequest(project: string, repo: string) {
   });
 }
 
-/** `PUT /api/v1/settings/delivery`: the instance's delivery settings (`putDeliverySettings`). */
+/** `PUT /api/v1/settings/delivery`: the delivery timeline's configuration, replaced (human
+ *  callers only). The server first proves the GitHub App can read `deploy_repo`, answering
+ *  `409 DELIVERY_SETTINGS_ACCESS` when not. */
 export function deliverySettingsRequest(input: Body<"/api/v1/settings/delivery", "put">) {
   return writeRequest("put", "/api/v1/settings/delivery", {}, input);
 }
@@ -1079,18 +1091,6 @@ export class DispatchApiClient {
     return this.read("/api/v1/settings/repo-projects", {});
   }
 
-  async putRepoProject(
-    repo: string,
-    input: Body<"/api/v1/settings/repo-projects/{owner}/{repo}", "put">,
-    bounds: WriteBounds
-  ) {
-    return this.send(repoProjectRequest(repo, input), bounds);
-  }
-
-  async deleteRepoProject(repo: string, bounds: WriteBounds): Promise<void> {
-    await this.send(repoProjectDeleteRequest(repo), bounds);
-  }
-
   /** Only the projects that name a default; a project left out names nobody. Needs the
    *  `person` scope. */
   listProjectDefaultAssignees() {
@@ -1119,30 +1119,6 @@ export class DispatchApiClient {
     return this.read("/api/v1/projects/{key}/architecture-sources", { key: project });
   }
 
-  /** Adds `repo` (`owner/name`) as a source of the project, or changes the branch of the source
-   *  it already is. */
-  async putArchitectureSource(
-    project: string,
-    repo: string,
-    input: Body<"/api/v1/projects/{key}/architecture-sources/{owner}/{repo}", "put">,
-    bounds: WriteBounds
-  ) {
-    return this.send(architectureSourceRequest(project, repo, input), bounds);
-  }
-
-  /** Imports one source's model now; the row's `last_error` says whether the import failed. */
-  async syncArchitectureSource(project: string, repo: string, bounds: WriteBounds) {
-    return this.send(architectureSourceSyncRequest(project, repo), bounds);
-  }
-
-  async deleteArchitectureSource(
-    project: string,
-    repo: string,
-    bounds: WriteBounds
-  ): Promise<void> {
-    await this.send(architectureSourceDeleteRequest(project, repo), bounds);
-  }
-
   /** The project's component tree with the work attached; 404 SOURCE_NOT_FOUND without a source. */
   getArchitecture(project: string) {
     return this.read("/api/v1/projects/{key}/architecture", { key: project });
@@ -1150,25 +1126,6 @@ export class DispatchApiClient {
 
   listAgentTokens() {
     return this.read("/api/v1/me/agent-tokens", {});
-  }
-
-  createAgentToken(input: Body<"/api/v1/me/agent-tokens", "post">, bounds: WriteBounds) {
-    return this.send(agentTokenCreateRequest(input), bounds);
-  }
-
-  /** `PATCH /api/v1/me/agent-tokens/{id}`: the whole set of scopes the token is to hold, which
-   *  replaces the set it holds now, answering the updated token. A scope the caller does not hold
-   *  itself is refused, as it is at the mint. */
-  setAgentTokenScopes(
-    id: string,
-    scopes: NonNullable<Body<"/api/v1/me/agent-tokens/{id}", "patch">>["scopes"],
-    bounds: WriteBounds
-  ) {
-    return this.send(agentTokenScopesRequest(id, scopes), bounds);
-  }
-
-  async revokeAgentToken(id: string, bounds: WriteBounds): Promise<void> {
-    await this.send(agentTokenRevokeRequest(id), bounds);
   }
 
   /** Everyone who has signed in, sorted by email: the assignee picker's options. Dispatch
@@ -1226,10 +1183,6 @@ export class DispatchApiClient {
     );
   }
 
-  createIssue(input: Body<"/api/v1/issues", "post">, bounds: WriteBounds) {
-    return this.send(issueCreateRequest(input), bounds);
-  }
-
   getIssue(key: string) {
     return this.read("/api/v1/issues/{key}", { key });
   }
@@ -1242,12 +1195,6 @@ export class DispatchApiClient {
 
   async patchIssue(key: string, input: Body<"/api/v1/issues/{key}", "patch">, bounds: WriteBounds) {
     return this.send(issuePatchRequest(key, input), bounds);
-  }
-
-  /** `DELETE /api/v1/issues/{key}/claim`: release the claim. A human may release any claim;
-   *  the issue's status does not move. */
-  releaseIssueClaim(key: string, bounds: WriteBounds) {
-    return this.send(issueClaimReleaseRequest(key), bounds);
   }
 
   /** `GET /api/v1/issues/{key}/events`: a page of the issue's event log. The document types every
@@ -1286,21 +1233,6 @@ export class DispatchApiClient {
     return this.send(askSnoozeRequest(id, snoozedUntil), bounds);
   }
 
-  /** `DELETE /api/v1/me/asks/{id}/snooze`: bring the row back now. A row that is not snoozed
-   *  answers the same 204. */
-  async unsnoozeAsk(id: string, bounds: WriteBounds): Promise<void> {
-    await this.send(askUnsnoozeRequest(id), bounds);
-  }
-
-  /** `PUT /api/v1/asks/{id}/asked-of`: hand an open ask to `askedOf`, the email of somebody who
-   *  has signed in, so the ask waits on them wherever its issue goes and their Inbox lists it.
-   *  Naming the assignee of the ask's own issue empties the stored field, which hands the ask
-   *  back to whoever holds that issue. Needs the `person` scope: handing a question on is one
-   *  person asking another. */
-  handAskTo(id: string, askedOf: string, bounds: WriteBounds) {
-    return this.send(askHandOnRequest(id, askedOf), bounds);
-  }
-
   listAgents() {
     return this.read("/api/v1/agents", {});
   }
@@ -1326,17 +1258,6 @@ export class DispatchApiClient {
     return this.json<IssueAskThreadRow[]>(
       routeUrl("/api/v1/issues/{key}/asks", { key }, { state, thread: "1" })
     );
-  }
-
-  answerAsk(id: string, input: Body<"/api/v1/asks/{id}/answer", "post">, bounds: WriteBounds) {
-    return this.send(askAnswerRequest(id, input), bounds);
-  }
-
-  /** `POST /api/v1/asks/{id}/decline`: close an open question with no answer, keeping the
-   *  person's note. Needs the `person` scope, as the answer route does; an approval request is
-   *  refused `409 ASK_NOT_DECLINABLE`. */
-  declineAsk(id: string, input: DeclineAskInput, bounds: WriteBounds) {
-    return this.send(askDeclineRequest(id, input), bounds);
   }
 
   getAsk(id: string) {
@@ -1401,14 +1322,6 @@ export class DispatchApiClient {
     return this.read("/api/v1/comments/{id}", { id });
   }
 
-  resolveComment(id: string, bounds: WriteBounds) {
-    return this.send(commentResolveRequest(id), bounds);
-  }
-
-  reopenComment(id: string, bounds: WriteBounds) {
-    return this.send(commentReopenRequest(id), bounds);
-  }
-
   editComment(id: string, input: Body<"/api/v1/comments/{id}", "patch">, bounds: WriteBounds) {
     return this.patch("/api/v1/comments/{id}", { id }, input, bounds);
   }
@@ -1417,14 +1330,6 @@ export class DispatchApiClient {
    *  the editor carries block ids from (`editComment`'s `blocks` and `base_revision`). */
   commentBlocks(id: string) {
     return this.read("/api/v1/comments/{id}/blocks", { id });
-  }
-
-  acceptComment(id: string, bounds: WriteBounds) {
-    return this.send(commentAcceptRequest(id), bounds);
-  }
-
-  rejectComment(id: string, bounds: WriteBounds) {
-    return this.send(commentRejectRequest(id), bounds);
   }
 
   createCommentDelivery(
@@ -1569,13 +1474,6 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}/decisions", { key });
   }
 
-  /** Record that the caller agrees with the decision that heading block opens, as the text they
-   *  read: `textSha256` is the decision's own `text_sha256`, and a decision that changed since
-   *  is `409 DECISION_CHANGED`. */
-  keepDecision(id: string, blockId: string, textSha256: string, bounds: WriteBounds) {
-    return this.send(decisionKeepRequest(id, blockId, textSha256), bounds);
-  }
-
   /** The caller's last read version of a document; its version is null when they have read none. */
   getDocumentRead(id: string) {
     return this.read("/api/v1/me/documents/{id}/read", { id });
@@ -1692,12 +1590,6 @@ export class DispatchApiClient {
   /** The delivery timeline's configuration record, or `null` until someone sets it. */
   getDeliverySettings() {
     return this.read("/api/v1/settings/delivery", {});
-  }
-
-  /** Replaces the delivery timeline's configuration (human callers only). The server first proves
-   *  the GitHub App can read `deploy_repo`, answering `409 DELIVERY_SETTINGS_ACCESS` when not. */
-  putDeliverySettings(input: Body<"/api/v1/settings/delivery", "put">, bounds: WriteBounds) {
-    return this.send(deliverySettingsRequest(input), bounds);
   }
 
   /** Creates a Delivery session group: its sessions' pull requests take it as their Parent agent.
