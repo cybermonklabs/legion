@@ -1432,9 +1432,11 @@ type Store interface {
 	// request, the planned mark of a still-open one (the next generation runs on the same
 	// branch and pull request), its design gate, each role's handoff, review rounds, verdict and
 	// summary, and a READY the gate refused. Each role keeps its claim and its last handoff, so a
-	// commit an earlier generation reported is never new again.
-	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string) error
-	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string) error
+	// commit an earlier generation reported is never new again. An issue whose gate rows it
+	// deletes has the empty set of design-gate documents queued for it, due at now, since the set
+	// Dispatch holds for that issue is the one those rows recorded.
+	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error
+	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error
 	// GatesOf is every design gate issue holds, by step: one entry for each step the issue's
 	// architect has registered. An issue with no gate at all gives an empty map, and a step with
 	// no row has no entry.
@@ -1443,6 +1445,11 @@ type Store interface {
 	// gates one look over many trees judges from (ReadLineFacts), rather than a read per tree
 	// under the fact lock. An issue with no gate has no entry.
 	Gates(ctx context.Context, tx pgx.Tx, issues []string) (map[string]map[DesignStep]DesignGate, error)
+	// GatedIssues is the key of each issue of project that holds at least one design gate and that
+	// Dispatch does not show as done, in key order: the issues a pass over every recorded gate
+	// publishes (the daemon's boot publication), read in one query rather than one per record. An
+	// issue with no gate, and one Dispatch shows done, is left out.
+	GatedIssues(ctx context.Context, tx pgx.Tx, project string) ([]string, error)
 	// GatesForArtifact is every gate registered on artifactID, in issue order: the document owner's
 	// gate and each copy a hand-over carried to a child of its tree. Each row carries its own step.
 	GatesForArtifact(ctx context.Context, tx pgx.Tx, artifactID string) ([]DesignGate, error)
@@ -1565,6 +1572,14 @@ type Store interface {
 	// (20261106041346_gated_steps_publish), so a restart queues no second row, and a row that
 	// already says this boot's list is left as it is.
 	EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publish GatedStepsPublish, nextAt time.Time) error
+	// EnqueueDesignGates writes the one design_gates_publish row of publish's issue, due at
+	// nextAt, with the issue key as its issue. The row the outbox holds is replaced rather than
+	// left standing: every change to a gate of that issue writes the whole set again, and a
+	// pending row carries the set of the change before this one, which is the set Dispatch would
+	// be shown. The table holds one such row per issue (20261110235320_design_gates_publish), so
+	// a run of changes queues no second row, a row that already says this set is left as it is,
+	// and a replacement takes the row from a lane holding it, whose send carries the older set.
+	EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish DesignGatesPublish, nextAt time.Time) error
 	Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// EnqueueID enqueues row as Enqueue does and returns its id, for a row that claims what it names
 	// (ClaimKeptDecisions). It refuses a ready_merge row, whose insert may update another.

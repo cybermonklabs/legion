@@ -3571,7 +3571,7 @@ note "image probe: $(jq -c '{image, model, sandbox}' <<<"$probe")"
 # codegraph included (a pod's agent loads the profile's plugins, as repository-tools holds). The
 # live rows render from the live sessions' reports (LEGION-663):
 # packages/daemon/internal/capabilities/deployment.go renders each unchecked, its detail "no session
-# has reported yet (<ruling>): <summary>", until a session reports, and boot starts its own empty
+# has reported yet (<citation>): <summary>", until a session reports, and boot starts its own empty
 # Postgres, so no session has reported here; the first report comes with the first admitted root's
 # architect (deployment-pod-block, or admitted-issue-cap), and full-agent reads the rows it renders.
 # The open rows are secrets, and pool-capacity when the pool scaled for the probe: the proof's

@@ -1,5 +1,5 @@
 kind: Changed
-body: 'Declares daemon API contract 70, which adds `treeMovedAt` and `quietHours` to every issue of a live tree: when that tree last moved and how long it has been still, which `read_record` and the controller''s `read_state` hand on. The controller''s skill gains the `tree-stalled` wake, and the architect''s and the controller''s skills say that an issue holds an admission slot until its work is past its review.'
+body: 'Declares daemon API contract 82, which adds `treeMovedAt` and `quietHours` to every issue of a live tree: when that tree last moved and how long it has been still, which `read_record` and the controller''s `read_state` hand on. The controller''s skill gains the `tree-stalled` wake, and the architect''s and the controller''s skills say that an issue holds an admission slot until its work is past its review.'
 time: 2026-11-11T07:50:21.000000000Z
 custom:
     Issue: pr3573

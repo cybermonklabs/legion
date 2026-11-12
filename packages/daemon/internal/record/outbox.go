@@ -43,6 +43,10 @@ const (
 	// holds the bare project key (GatedStepsPublish).
 	OutboxKindGatedStepsPublish OutboxKind = "gated_steps_publish"
 	OutboxKindClaimRelease      OutboxKind = "claim_release"
+	// OutboxKindDesignGatesPublish publishes one issue's design-gate documents onto its Dispatch
+	// row (DesignGatesPublish). Unlike the gated_steps_publish above it, this row's issue column
+	// is an issue key like every other kind's.
+	OutboxKindDesignGatesPublish OutboxKind = "design_gates_publish"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on four lanes side by
@@ -82,7 +86,7 @@ const (
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindAutoMergeDisable, OutboxKindReadyMerge, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
-	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindMergeQueuePublish, OutboxKindGatedStepsPublish},
+	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindMergeQueuePublish, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt},
 	LaneClaim:       {OutboxKindClaimRelease},
 }
@@ -775,6 +779,28 @@ type GatedStepsPublish struct {
 
 func (GatedStepsPublish) OutboxKind() OutboxKind { return OutboxKindGatedStepsPublish }
 
+// DesignGatesPublish is the document each of an issue's design-gate steps records, written onto
+// the issue's Dispatch row (PUT /api/v1/issues/{key}/design-gates) so Dispatch's write advice and
+// its CLI can name the document a step holds without reading the daemon's record. Issue is the
+// issue key, and Gates the steps it records a document for, empty for an issue whose gates record
+// none, which is the set that clears what Dispatch holds.
+//
+// The row belongs to its issue, unlike the gated_steps_publish beside it, so it waits on that
+// issue's board lane among the issue's other Dispatch writes. The write replaces the issue's
+// whole set and tells nobody, so a set Dispatch already holds costs an issue nothing.
+type DesignGatesPublish struct {
+	Issue string               `json:"issue"`
+	Gates []DesignGateDocument `json:"gates"`
+}
+
+// DesignGateDocument is one step of a publication and the document that step's gate recorded.
+type DesignGateDocument struct {
+	Step       DesignStep `json:"step"`
+	ArtifactID string     `json:"artifactId"`
+}
+
+func (DesignGatesPublish) OutboxKind() OutboxKind { return OutboxKindDesignGatesPublish }
+
 // IssueBranch creates the row's issue's branch, legion/<KEY>, on GitHub at the repository's default
 // branch, where GitHub does not have it yet, before any role of the issue starts: GitHub can refuse
 // the push that creates a branch of a large repository, where it takes a push that moves one. A
@@ -1108,6 +1134,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindDesignGatesPublish:
+		value := DesignGatesPublish{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindIssueBranch:
 		value := IssueBranch{}
 		if err := decoder.Decode(&value); err != nil {
@@ -1295,6 +1327,26 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			if !step.Valid() {
 				return fmt.Errorf("a gated-steps publish names %q, which is no design-gate step", step)
 			}
+		}
+	// Dispatch refuses each of these as 400 INVALID_ISSUE, which the executor's rule retries
+	// rather than ends, so a row carrying one would be sent for as long as the issue lives:
+	// the enqueue is where such a set stops.
+	case DesignGatesPublish:
+		if value.Issue == "" {
+			return fmt.Errorf("a design-gates publish requires the issue whose gates it writes")
+		}
+		named := make(map[DesignStep]bool, len(value.Gates))
+		for _, gate := range value.Gates {
+			if !gate.Step.Valid() {
+				return fmt.Errorf("a design-gates publish names %q, which is no design-gate step", gate.Step)
+			}
+			if gate.ArtifactID == "" {
+				return fmt.Errorf("a design-gates publish names no document for the %s step", gate.Step)
+			}
+			if named[gate.Step] {
+				return fmt.Errorf("a design-gates publish names the %s step twice", gate.Step)
+			}
+			named[gate.Step] = true
 		}
 	case AutoMergeDisable:
 		if value.Number <= 0 {
