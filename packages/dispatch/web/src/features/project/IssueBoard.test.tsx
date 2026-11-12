@@ -600,9 +600,9 @@ test("a board refetch already on the wire when a card moves is dropped: the card
 
 // R7. No reader is held: a refetch asked for while a move is unanswered goes out at once and
 // its answer is read. That the moved card keeps its placement over such an answer is the move
-// write's own to show again (`features/project/board-moves.ts`, which still stores the list it
-// computed rather than a change to the list as it stands); this row reads the reader's side of
-// it - the fetch, and the board once the server has applied the move.
+// write's own to show again (`features/project/board-moves.ts`, whose write shows the drop as a
+// change to the list as it stands); this row reads the reader's side of it - the fetch, and the
+// board once the server has applied the move.
 test("a board refetch asked for while a move is unanswered goes out at once, and the answer is read", async () => {
   const user = userEvent.setup();
   const answer = Promise.withResolvers<Issue>();

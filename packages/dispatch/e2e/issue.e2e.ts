@@ -2125,10 +2125,10 @@ function countProjectListReads(page: Page, project: string): () => number {
 //  - A list answer puts an old value back on screen. Each of the three issue field controls
 //    writes through `web/src/features/issue/useIssueFieldWrite.ts`: it shows the pick in the
 //    issue detail, every project issue list and every Inbox row, and the pick itself joins the
-//    write store on the issue's line (`issue:<KEY>`). Every read of those rows is built by
-//    `web/src/api/row-query.ts`, which holds a fetch while the store holds a write of a line
-//    its key covers, so no list read goes out - and no answer carrying the priority the server
-//    still holds lands - while the PATCH is unanswered.
+//    write store on the issue's line (`issue:<KEY>`). No read of those rows is held: a list
+//    answer carrying the priority the server still holds lands whole while the PATCH is
+//    unanswered, and the live write shows the pick again over it (`WriteSpec.shows` in
+//    `web/src/features/writes/write-store.ts`), so every other row of that answer arrives.
 //  - An older pick is stored last. A pick made while a save is out is a write of its own on the
 //    issue's line, kept with the request it will send, and the store sends one write of a line
 //    at a time in press order; a pick that replaces one of the same control's that has not gone
