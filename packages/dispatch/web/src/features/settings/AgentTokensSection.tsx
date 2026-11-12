@@ -8,6 +8,7 @@ import {
   agentTokenScopesRequest,
   api,
 } from "../../api/client";
+import { rowQuery } from "../../api/row-query";
 import type { AgentToken, CreatedAgentToken, DispatchScope } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
@@ -40,7 +41,16 @@ import {
   settingsTableWrapper,
 } from "./classes";
 
-const agentTokensQueryKey = ["agent-tokens"] as const;
+/** The viewer's agent tokens. Its fetch waits for the writes of a token's own row and of the
+ *  list a mint adds to (`agent-token:<id>`, `agent-tokens:me`), so a list read while a mint,
+ *  a scope change or a revoke is unanswered does not put the older list back on screen. */
+const agentTokensQuery = () =>
+  rowQuery({
+    queryKey: ["agent-tokens"],
+    queryFn: () => api.listAgentTokens(),
+  });
+
+const agentTokensQueryKey = agentTokensQuery().queryKey;
 
 /** A mint Dispatch made and lost the answer to: the label it was pressed with, the tokens already
  *  listed under any label when it was pressed (`before`), and whether the token list has been read
@@ -167,7 +177,7 @@ export function AgentTokensSection(): ReactNode {
   /** When the token list was last read again after a mint whose answer was lost. */
   const [rereadAt, setRereadAt] = useState<number | undefined>(undefined);
   const { copy, reset: resetCopyStatus, status: copyStatus } = useCopyFeedback();
-  const tokens = useQuery({ queryKey: agentTokensQueryKey, queryFn: () => api.listAgentTokens() });
+  const tokens = useQuery(agentTokensQuery());
   // The form shows a refused mint beside the name it was refused over. A mint names no token
   // until Dispatch answers it, so it stands in the line of the list it adds a row to
   // (`agent-tokens:me`), where a change to what a token may do and a revoke stand in that

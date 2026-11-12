@@ -2,13 +2,8 @@ import { canonicalRepo } from "@legion/contracts/repo";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
-import {
-  api,
-  apiErrorMessage,
-  repoProjectDeleteRequest,
-  repoProjectRequest,
-} from "../../api/client";
-import { projectsQuery } from "../../api/queries";
+import { apiErrorMessage, repoProjectDeleteRequest, repoProjectRequest } from "../../api/client";
+import { projectsQuery, repoProjectsQuery } from "../../api/queries";
 import type { RepoProject } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -76,7 +71,7 @@ export function SettingsPage(): ReactNode {
   const [repository, setRepository] = useState("");
   const [project, setProject] = useState("");
   const [failedAction, setFailedAction] = useState<FailedAction>();
-  const mappings = useQuery({ queryKey: ["repo-projects"], queryFn: () => api.listRepoProjects() });
+  const mappings = useQuery(repoProjectsQuery());
   const projects = useQuery(projectsQuery());
   // `null` is a Dispatch with no secrets broker, where Live grants has nothing to list.
   const credentialsAvailable = useQuery(credentialPendingQuery());

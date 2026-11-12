@@ -13,6 +13,7 @@ import {
 import { ApiError, api, artifactVersionPath } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
 import { issueQuery } from "../../api/queries";
+import { rowQuery } from "../../api/row-query";
 import type {
   Artifact,
   ArtifactText,
@@ -125,16 +126,17 @@ export const artifactTextQuery = (id: string | undefined, version: number | unde
         : api.getArtifactVersion(id ?? "", version),
   });
 
-/** One ask with its thread, followers, and edits. */
+/** One ask with its thread, followers, and edits, waiting for that ask's own writes
+ *  (`ask:<id>`: its answer, decline, hand-on, clarification and snooze). */
 export const askQuery = (id: string | undefined) =>
-  queryOptions({
+  rowQuery({
     queryKey: ["ask", id],
     queryFn: () => api.getAsk(id ?? ""),
   });
 
-/** One comment with its replies. */
+/** One comment with its replies, waiting for that comment's own writes (`comment:<id>`). */
 export const commentQuery = (id: string | undefined) =>
-  queryOptions({
+  rowQuery({
     queryKey: ["comment", id],
     queryFn: () => api.getComment(id ?? ""),
   });

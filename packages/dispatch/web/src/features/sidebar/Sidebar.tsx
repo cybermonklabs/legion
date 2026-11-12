@@ -4,6 +4,7 @@ import { Link, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { inboxQuery, projectsQuery, userAgentStateQuery } from "../../api/queries";
+import { rowQuery } from "../../api/row-query";
 import type { AuthenticatedUser } from "../../api/types";
 import {
   railAccentText,
@@ -84,10 +85,12 @@ export function Sidebar({
 }): ReactNode {
   const location = useLocation();
   const inbox = useQuery(inboxQuery());
-  const pinned = useQuery({
-    queryKey: ["issues", "pinned"],
-    queryFn: () => api.listIssues({ pinned: true }),
-  });
+  const pinned = useQuery(
+    rowQuery({
+      queryKey: ["issues", "pinned"],
+      queryFn: () => api.listIssues({ pinned: true }),
+    })
+  );
   const projects = useQuery(projectsQuery());
   // One number on Inbox, composed in one place (`useInboxCount.ts`): the work waiting on
   // the reader plus the threads they have not read, which the Inbox lists beside those asks now.

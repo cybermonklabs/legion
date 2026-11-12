@@ -3,6 +3,7 @@ import { type KeyboardEvent, type ReactNode, useState } from "react";
 
 import { api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
+import { rowQuery } from "../../api/row-query";
 import {
   backdrop40,
   card,
@@ -32,9 +33,11 @@ export function ReferencePicker({ issueKey, onClose, onSelect }: ReferencePicker
   const dialog = useDialog<HTMLDivElement>({ onClose, open: true });
   const currentIssue = useQuery(issueQuery(issueKey));
   const issues = useQuery({
+    ...rowQuery({
+      queryKey: ["issues", currentIssue.data?.project],
+      queryFn: () => api.listIssues({ project: currentIssue.data?.project }),
+    }),
     enabled: currentIssue.data !== undefined,
-    queryKey: ["issues", currentIssue.data?.project],
-    queryFn: () => api.listIssues({ project: currentIssue.data?.project }),
   });
   const needle = filter.trim().toLowerCase();
   const filtered = (issues.data ?? []).filter(

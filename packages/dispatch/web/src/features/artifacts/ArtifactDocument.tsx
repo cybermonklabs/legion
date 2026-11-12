@@ -4,6 +4,7 @@ import { Navigate, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
+import { type RowQueryKey, rowQuery } from "../../api/row-query";
 import type { Artifact, IDCandidate } from "../../api/types";
 import type { Highlight } from "../doc/highlight";
 import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
@@ -109,26 +110,31 @@ export function ArtifactDocument({
   // The ask is read under its whole id alone: a prefix is no key anything is cached under. The
   // comment list is the document's own, the same read whichever comment the address names.
   const askRead = selected?.kind === "ask" ? landing.id : undefined;
+  const commentsKey: RowQueryKey =
+    owner.kind === "issue"
+      ? ["comments", owner.key, artifact.id]
+      : ["artifact", owner.artifactId, "comments"];
   const comments = useQuery({
+    ...rowQuery({
+      queryKey: commentsKey,
+      queryFn: () =>
+        owner.kind === "issue"
+          ? api.listComments(owner.key, artifact.id)
+          : api.listArtifactComments(owner.artifactId),
+    }),
     enabled: commentId !== undefined,
-    queryKey:
-      owner.kind === "issue"
-        ? ["comments", owner.key, artifact.id]
-        : ["artifact", owner.artifactId, "comments"],
-    queryFn: () =>
-      owner.kind === "issue"
-        ? api.listComments(owner.key, artifact.id)
-        : api.listArtifactComments(owner.artifactId),
   });
   const ask = useQuery({
+    ...rowQuery({
+      queryKey: ["ask", askRead],
+      queryFn: () => {
+        if (askRead === undefined) {
+          throw new Error("Selected ask query requires an ask id.");
+        }
+        return api.getAsk(askRead);
+      },
+    }),
     enabled: askRead !== undefined,
-    queryKey: ["ask", askRead],
-    queryFn: () => {
-      if (askRead === undefined) {
-        throw new Error("Selected ask query requires an ask id.");
-      }
-      return api.getAsk(askRead);
-    },
   });
   const selectedItem =
     selected === undefined

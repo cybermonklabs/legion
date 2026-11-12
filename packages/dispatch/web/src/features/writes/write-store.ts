@@ -409,36 +409,45 @@ export class Writes {
     return () => this.#outcomes.delete(listener);
   };
 
+  /** Whether the store holds a write that may still land on a line starting with one of `lines`:
+   *  what `settled` below waits out, read on its own so a reader whose wait holds nothing fetches
+   *  in the very task that started it (`api/row-query.ts`), as a reader that names no wait does. */
+  holding(lines: readonly string[]): boolean {
+    return this.#rows.some(
+      (write) =>
+        write.target !== undefined &&
+        lines.some((line) => write.target?.startsWith(line) === true) &&
+        write.status !== "refused" &&
+        write.status !== "made"
+    );
+  }
+
   /**
-   * Resolves once the store holds no write that may still land on a line whose target starts with
-   * `prefix`, and rejects with the signal's reason once the read is cancelled: the one wait every
+   * Resolves once the store holds no write that may still land on a line starting with one of
+   * `lines`, and rejects with the signal's reason once the read is cancelled: the one wait every
    * reader of a cache an optimistic write touches holds its fetch with, so an answer composed
-   * before the write cannot put the older value back on screen (`projectIssuesQuery` waits on
-   * `issue:<PROJECT>-`, `inboxQuery` on `issue:`). It lives in the store rather than in
-   * `api/queries.ts` because the store owns the lines: a reader holds its fetch by the very line
-   * the write is ordered on, with no parallel line of its own - no TanStack mutation key to mint,
-   * register and carry at each press.
+   * before the write cannot put the older value back on screen. No reader names its own lines:
+   * `api/row-query.ts` derives them from the key's own head and is the one factory every such
+   * read is built by (R7 of dispatch://INFRA-299). The wait lives in the store rather than in
+   * `api/row-query.ts` because the store owns the lines: a reader holds its fetch by the very
+   * line the write is ordered on, with no parallel line of its own - no TanStack mutation key to
+   * mint, register and carry at each press.
    *
    * A write holds the fetch while its target is one of those lines and its status is neither
    * `refused` nor `made`: `queued`, `sending` and `late` hold it, and `late` with `stopping` holds
    * it too, because the attempt already out may still land. So a write that is late holds its
    * project's list fetch, and one late write of any issue holds the Inbox's fetch, until it
    * settles - the price of never putting the server's older value over the reader's pick, which
-   * dispatch://INFRA-299 weighed.
+   * dispatch://INFRA-299 weighed. A key that covers no line - a read whose row id is not there -
+   * waits for nothing.
    *
    * The signal is read only where the wait holds: once a fetch reads its signal, query-core
    * cancels it when the last observer unmounts, which a fetch that is not waiting has no reason to
    * invite. The wait must end on that cancel rather than resolve alone - the write engine cancels
    * the reads in flight at every press, so a cancelled fetch would otherwise hang here.
    */
-  settled(prefix: string, context: { readonly signal: AbortSignal }): Promise<void> {
-    const holding = () =>
-      this.#rows.some(
-        (write) =>
-          write.target?.startsWith(prefix) === true &&
-          write.status !== "refused" &&
-          write.status !== "made"
-      );
+  settled(lines: readonly string[], context: { readonly signal: AbortSignal }): Promise<void> {
+    const holding = () => this.holding(lines);
     if (!holding()) return Promise.resolve();
     const { signal } = context;
     const waited = Promise.withResolvers<void>();

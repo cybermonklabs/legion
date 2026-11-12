@@ -5,6 +5,7 @@ import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { projectArchitectureSourcesQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
+import { rowQuery } from "../../api/row-query";
 import { QueryError } from "../../components/QueryError";
 import { type TabDefinition, Tabs } from "../../components/Tabs";
 import {
@@ -61,8 +62,10 @@ export function ProjectPage(): ReactNode {
   const route = parseProjectPath(location.pathname, location.search);
   const projectKey = route?.project;
   const inbox = useQuery({
-    queryKey: ["inbox", projectKey],
-    queryFn: () => api.getInbox(projectKey),
+    ...rowQuery({
+      queryKey: ["inbox", projectKey],
+      queryFn: () => api.getInbox(projectKey),
+    }),
     enabled: projectKey !== undefined,
   });
   // Whose questions the pill counts, read as every other surface that counts work waiting on

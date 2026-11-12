@@ -211,7 +211,9 @@ test("human users manage repository project mappings from the settings route", a
 
 // A mapping write's response describes one row, not the project's mappings as they stand when it
 // arrives: the page reads them again once the write settles, so a response that arrives after the
-// page already read a newer default does not put the older one back.
+// page already read a newer default does not put the older one back. The read itself waits for
+// the write (R7 of dispatch://INFRA-299): while the pick is unanswered, the list the server would
+// answer with carries the older default, and it would stand over what this reader chose.
 test("a delayed mapping response does not undo a newer default the page has read", async () => {
   const user = userEvent.setup();
   const restoreMatchMedia = stubMatchMedia();
@@ -270,12 +272,19 @@ test("a delayed mapping response does not undo a newer default the page has read
     await screen.findByRole("radio", { name: "Default repository of CORE: owner/repo" });
     await user.click(radio("owner/repo"));
     await waitFor(() => expect(putRepoProject).toHaveBeenCalledTimes(1));
-    // Another browser makes owner/other the default again, and this page reads it (as a mapping
-    // event would have it do) while its own write's answer is still on the way.
+    // Another browser makes owner/other the default again, and this page asks for the mappings
+    // (as a mapping event would have it do) while its own write's answer is still on the way.
+    // That read waits for the write: until the server has taken the pick, its list would put the
+    // older default back over the one this reader chose.
     server.put("owner/other", { default: true, project: "CORE" });
-    await act(() => queryClient.invalidateQueries({ queryKey: ["repo-projects"] }));
-    await waitFor(() => expect(radio("owner/other").checked).toBe(true));
     const reads = listRepoProjects.mock.calls.length;
+    await act(async () => {
+      // Not awaited: the read is held until the write lands, which this row does below.
+      void queryClient.invalidateQueries({ queryKey: ["repo-projects"] });
+      await Promise.resolve();
+    });
+    expect(listRepoProjects.mock.calls.length).toBe(reads);
+    // The write lands, the held read goes out, and the newer default is what the page shows.
     act(() => answer?.());
     await waitFor(() => expect(listRepoProjects.mock.calls.length).toBeGreaterThan(reads));
     await waitFor(() => expect(radio("owner/other").checked).toBe(true));

@@ -4,6 +4,7 @@ import { useLocation } from "react-router-dom";
 
 import { api, type WriteBounds } from "../../api/client";
 import { inboxQuery, userStateQuery } from "../../api/queries";
+import { type RowQueryKey, rowQuery } from "../../api/row-query";
 import type {
   Actor,
   Anchor,
@@ -319,7 +320,7 @@ export function useMarginItems(
 ) {
   const queryClient = useQueryClient();
   const issueKey = owner?.kind === "issue" ? owner.key : undefined;
-  const commentsQueryKey =
+  const commentsQueryKey: RowQueryKey =
     owner?.kind === "issue"
       ? ["comments", owner.key]
       : owner?.kind === "document"
@@ -340,16 +341,18 @@ export function useMarginItems(
     [asks.data, owner]
   );
   const comments = useQuery({
+    ...rowQuery({
+      queryKey: commentsQueryKey,
+      queryFn: () => {
+        if (owner === undefined) {
+          throw new Error("Margin comments require an owner.");
+        }
+        return owner.kind === "document"
+          ? api.listArtifactComments(owner.artifactId)
+          : api.listComments(owner.key);
+      },
+    }),
     enabled: owner !== undefined,
-    queryKey: commentsQueryKey,
-    queryFn: () => {
-      if (owner === undefined) {
-        throw new Error("Margin comments require an owner.");
-      }
-      return owner.kind === "document"
-        ? api.listArtifactComments(owner.artifactId)
-        : api.listComments(owner.key);
-    },
   });
   const userState = useQuery({ ...userStateQuery(), enabled: owner?.kind === "issue" });
   const dismissed =

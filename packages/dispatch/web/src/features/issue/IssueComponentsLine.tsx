@@ -2,8 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { api } from "../../api/client";
-import { projectArchitectureSourcesQuery } from "../../api/queries";
+import { architectureTreeQuery, projectArchitectureSourcesQuery } from "../../api/queries";
 import type { Issue } from "../../api/types";
 import {
   badgeHigh,
@@ -39,11 +38,7 @@ export function IssueComponentsLine({
   const { components } = issue;
   const sources = useQuery(projectArchitectureSourcesQuery(issue.project));
   const [pickerOpen, setPickerOpen] = useState(false);
-  const tree = useQuery({
-    queryKey: ["architecture", issue.project],
-    queryFn: () => api.getArchitecture(issue.project),
-    enabled: pickerOpen,
-  });
+  const tree = useQuery({ ...architectureTreeQuery(issue.project), enabled: pickerOpen });
   const write = useIssueComponents(issue);
   const inheritedFrom =
     components.inherited_from === null ? null : (

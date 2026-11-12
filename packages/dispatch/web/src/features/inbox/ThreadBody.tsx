@@ -22,6 +22,7 @@ import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { agentMessagesQuery, askThreadQuery, issueQuery, myRepliesKey } from "../../api/queries";
+import { type RowQueryKey, rowQuery } from "../../api/row-query";
 import type {
   Actor,
   Comment,
@@ -291,17 +292,19 @@ function CommentThreadBody({
   const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
   // The reads the issue's Conversation and the document's margin already hold, under their own
   // keys: the same request, shared rather than made a second time.
-  const commentsKey =
+  const commentsKey: RowQueryKey =
     owner.kind === "issue"
       ? ["comments", owner.issueKey]
       : ["artifact", owner.artifactId, "comments"];
-  const comments = useQuery({
-    queryKey: commentsKey,
-    queryFn: () =>
-      owner.kind === "issue"
-        ? api.listComments(owner.issueKey)
-        : api.listArtifactComments(owner.artifactId),
-  });
+  const comments = useQuery(
+    rowQuery({
+      queryKey: commentsKey,
+      queryFn: () =>
+        owner.kind === "issue"
+          ? api.listComments(owner.issueKey)
+          : api.listArtifactComments(owner.artifactId),
+    })
+  );
   if (comments.isPending) return <LoadingSkeleton label="Opening the thread" />;
   if (comments.isError) {
     return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this thread.</p>;

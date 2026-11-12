@@ -9,6 +9,7 @@ import {
   issueCommentRequest,
 } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
+import { rowQuery } from "../../api/row-query";
 import type { AnswerAskInput, Ask, AskAnswer, AskRead } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
@@ -132,11 +133,13 @@ export function useAskAnswerForm({
   // and so does every thread on an issue whose claim or route moved while it was in flight.
   const refreshInitialThread =
     initialThread !== undefined && hasPendingAskThreadInvalidation(queryClient, ask);
-  const threadQuery = useQuery<AskRead, Error>({
+  const threadQuery = useQuery({
+    ...rowQuery<AskRead, Error>({
+      queryKey: ["ask-thread", ask.id],
+      queryFn: () => getAskThread(ask.id),
+    }),
     initialData: refreshInitialThread ? undefined : initialThread,
     initialDataUpdatedAt: refreshInitialThread ? undefined : initialThreadUpdatedAt,
-    queryKey: ["ask-thread", ask.id],
-    queryFn: () => getAskThread(ask.id),
     staleTime: Number.POSITIVE_INFINITY,
   });
   useEffect(() => {

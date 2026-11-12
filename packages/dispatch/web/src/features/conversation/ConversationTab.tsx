@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 
 import { api, issueStateRequest, type WriteBounds } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
+import { rowQuery } from "../../api/row-query";
 import type {
   Agent,
   Artifact,
@@ -673,13 +674,16 @@ function CommentTurn({
   const agentText = useAgentText();
   const [editingCommentId, setEditingCommentId] = useState<string>();
   const [savingCommentEditId, setSavingCommentEditId] = useState<string>();
-  /** One attempt of a comment edit's save, under the composer's key (`sendRequest`). */
+  /** One attempt of a comment edit's save, under the composer's key (`sendRequest`). What it
+   *  saved is read again once it lands, and that read is not awaited here: the comments list
+   *  holds its fetch for every unanswered write of a comment (R7 of dispatch://INFRA-299), so an
+   *  attempt that waited for its own refetch would wait for itself. */
   const editComment = useCallback(
     async (id: string, body: string, carried: CarriedBlockIds | undefined, bounds: WriteBounds) => {
       setSavingCommentEditId(id);
       try {
         const comment = await api.editComment(id, { body, ...carried }, bounds);
-        await queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
+        void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] });
         return comment;
       } finally {
         setSavingCommentEditId(undefined);
@@ -924,10 +928,12 @@ export function ConversationTab({
     queryKey: ["asks", issueKey, "thread"],
     queryFn: () => api.listIssueAskThreads(issueKey, "all"),
   });
-  const comments = useQuery({
-    queryKey: ["comments", issueKey],
-    queryFn: () => api.listComments(issueKey),
-  });
+  const comments = useQuery(
+    rowQuery({
+      queryKey: ["comments", issueKey],
+      queryFn: () => api.listComments(issueKey),
+    })
+  );
   const messages = useQuery({
     queryKey: ["issue-messages", issueKey],
     queryFn: () => api.listIssueMessages(issueKey),
