@@ -112,6 +112,18 @@ func (h *deliveryHub) seedEvents(g *hubGeneration) {
 			if err == nil {
 				select {
 				case g.feeds <- hubEventFeed{feed: feed, p0: p0}:
+					// The send and the end can both be ready - g.feeds holds one feed, so the
+					// send never blocks - and a select picks between two ready cases at random,
+					// so this one can win after the intake has already returned on the same
+					// end. Nobody would then cancel the subscription, and the relay would keep
+					// its generation, and its wait, for a feed no goroutine will ever take.
+					// The intake returns only once g has ended, so an ended g here means the
+					// feed may be unowned; cancel is sync.OnceFunc, so cancelling one the
+					// intake did take costs nothing but the end it is already taking
+					// (dispatch://INFRA-1075).
+					if g.ctx.Err() != nil {
+						feed.cancel()
+					}
 				case <-g.ctx.Done():
 					feed.cancel()
 				}

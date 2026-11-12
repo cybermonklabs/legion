@@ -89,7 +89,7 @@ func TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt(t *testing.T) {
 	publisher := &countingPublisher{fail: unreachable}
 	outbox := outboxOn(t, database, publisher, broker)
 	atRest := restingOutbox(t, outbox)
-	stop := started(t, outbox, time.Second)
+	stop := started(t, outbox)
 	defer stop()
 
 	waitFor(t, eventWait, "the first event's three destinations tried", func() bool { return len(publisher.attempted()) >= 3 })

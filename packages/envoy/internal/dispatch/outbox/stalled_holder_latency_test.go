@@ -52,7 +52,7 @@ func TestAHolderThatNeverAnswersDoesNotDelayAnotherIssuesEvents(t *testing.T) {
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener
 	deps.receiptWait = silentHolderWait
-	stop := runDeps(t, deps, 15*time.Second)
+	stop := runDeps(t, deps)
 	defer stop()
 
 	held := rig.routedEvent(t, "T-1", silentRole, model.Actor{Kind: "user", ID: "alice"})

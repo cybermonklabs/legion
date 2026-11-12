@@ -1878,21 +1878,34 @@ func outboxOn(t *testing.T, database *store.Store, publisher Publisher, broker *
 // run runs an outbox on database, publishing through publisher, until the returned func stops it.
 func run(t *testing.T, database *store.Store, publisher Publisher, broker *events.Broker) func() {
 	t.Helper()
-	return started(t, outboxOn(t, database, publisher, broker), time.Second)
+	return started(t, outboxOn(t, database, publisher, broker))
 }
 
-// runDeps runs New(deps) until the returned func stops it, which fails t unless Run returns within
-// stopWithin. A test that needs more of Deps than run's store, publisher and broker - a metrics
-// counter among them - builds it itself and calls this.
-func runDeps(t *testing.T, deps Deps, stopWithin time.Duration) func() {
+// runDeps runs New(deps) until the returned func stops it, which fails t unless Run returns. A
+// test that needs more of Deps than run's store, publisher and broker - a metrics counter among
+// them - builds it itself and calls this.
+func runDeps(t *testing.T, deps Deps) func() {
 	t.Helper()
-	return started(t, New(deps), stopWithin)
+	return started(t, New(deps))
 }
 
-// started runs outbox until the returned func stops it, which fails t unless Run returns within
-// stopWithin. A test that must arm the outbox's hooks, which are read as Run starts, builds the
-// outbox itself, arms them - restingOutbox does - and calls this.
-func started(t *testing.T, outbox *Outbox, stopWithin time.Duration) func() {
+// started runs outbox until the returned func stops it, which fails t unless Run returns. A test
+// that must arm the outbox's hooks, which are read as Run starts, builds the outbox itself, arms
+// them - restingOutbox does - and calls this.
+//
+// The stop takes eventWait, which is where this package gives up on an event and not a span any
+// row here measures: the stop is work the outbox does. On ctx's end Run settles the sends in
+// flight, releases the publisher hold - a statement on the Postgres instance every other test is
+// also writing to - and returns only once its LISTEN connection, its broker subscription and its
+// NATS watcher have stopped too (lease.go, Run). Closing that connection alone is allowed
+// pglisten.DefaultPingTimeout, five seconds, on a context the stop does not cancel
+// (pglisten.Listener.close), so the one second every caller used to pass was below what the
+// product's own code allows, and a loaded runner spent longer than it on a healthy stop (run
+// 43138709383, dispatch://INFRA-1075). What bounds this stop in production is the process's
+// budget, cmd/dispatch's outboxStopBudget, which no row here stands in for; lease_test.go and
+// throughput_test.go already wait eventWait on an outbox stopping. A stop that never comes still
+// fails the row.
+func started(t *testing.T, outbox *Outbox) func() {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -1901,7 +1914,7 @@ func started(t *testing.T, outbox *Outbox, stopWithin time.Duration) func() {
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(stopWithin):
+		case <-time.After(eventWait):
 			t.Fatal("outbox did not stop")
 		}
 	}

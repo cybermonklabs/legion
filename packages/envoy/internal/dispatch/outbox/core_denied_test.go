@@ -331,7 +331,7 @@ func TestRunRetriesAnIssueTopicNATSDenies(t *testing.T) {
 		Store: database, Publisher: client, Broker: broker, Listen: database.Pool.Listener,
 		PublishFailures: registry.NewCounter("envoy_dispatch_outbox_publish_failures_total",
 			"Destinations of an outbox publish attempt that did not reach NATS"),
-	}, 10*time.Second)
+	})
 	defer stop()
 
 	// A denial the outbox counts settles the wait through attempt_count; one it reads as an
@@ -589,7 +589,7 @@ func TestRunCountsADeniedSubjectOncePerRefusedMessage(t *testing.T) {
 		Store: database, Publisher: client, Broker: broker, Listen: database.Pool.Listener,
 		PublishFailures: registry.NewCounter("envoy_dispatch_outbox_publish_failures_total",
 			"Destinations of an outbox publish attempt that did not reach NATS"),
-	}, 10*time.Second)
+	})
 	defer stop()
 
 	// An outage line settles the wait as a counted attempt does, so the assertions below name it
