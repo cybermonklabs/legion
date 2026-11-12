@@ -1431,7 +1431,8 @@ Here:
 
 1. **`begin bridge`**, right after `begin snapshot` (so a leaked bridge object shows up in `namespace-clean`'s before/after diff even if its own teardown fails) and before `begin session-db`:
    the operator context creates one pod and one ClusterIP Service, both named `bridge-<project>` and labelled `legion.dev/project=<project>`, running `mirror.gcr.io/jpillora/chisel` (pinned by digest) as a reverse-tunnel server
-   — non-root, read-only root filesystem, every capability dropped, tolerating the `legion` pool's taint without requiring it, and carrying the same eviction-protection annotation pair every Legion issue pod does (`cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, `karpenter.sh/do-not-disrupt: "true"`)
+   — non-root, read-only root filesystem, every capability dropped, tolerating the `legion` pool's taint without requiring it, and carrying the same eviction-protection annotation pair a `Guaranteed` Legion issue pod does (`cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, `karpenter.sh/do-not-disrupt: "true"`;
+   an issue pod carries the first only while its cpu and memory requests each equal their limit, as the rig's own issue reservation does)
    — without them the bridge pod, alone on its own node, is fair game for GKE's node consolidation mid-run.
    Only the chisel server's *data* ports, the ones the caller names, are on the Service, each a Service port named `p<port>` (here the worker stream's and the session database's);
    its control port is never exposed by the Service or the cluster network, reachable only through `kubectl port-forward` under the operator context.
@@ -1998,9 +1999,9 @@ What the run had to learn about GKE (`LEGION_E2E_RUNTIME_IDENTITY_KIND=kubernete
   With every role in one `roles` container, that cap is the issue pod's one reservation itself:
   `runtime.kubernetes.resources.issue.ephemeral_storage` and its request, at most 10Gi on GKE Autopilot, shared by all six roles.
 
-- **GKE Autopilot adds its own NodeAffinity to every issue pod.**
-  Any pod carrying `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` (every issue pod's annotation;
-  the image probe omits it) is given a `cloud.google.com/extended-duration-pods` NodeAffinity on admission, protecting it from disruption for up to seven days.
+- **GKE Autopilot adds its own NodeAffinity to every `Guaranteed` issue pod.**
+  Any pod carrying `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` (an issue pod's annotation while its reservation is `Guaranteed`, as the rig's `liveIssueOverride` is;
+  a `Burstable` issue pod omits it, and so does the image probe) is given a `cloud.google.com/extended-duration-pods` NodeAffinity on admission, protecting it from disruption for up to seven days.
   It is GKE's own addition, not a pod or anti-affinity the pod spec asks for, and still admits the pod to any node whose pool carries that label
   — the reservation rule tolerates exactly this one shape, never any other affinity (`isGKEExtendedDurationAffinity`).
 
@@ -2039,11 +2040,11 @@ What the run had to learn about GKE (`LEGION_E2E_RUNTIME_IDENTITY_KIND=kubernete
   killing the process mid-run let it recover and the run continue), only failing the run if a restart can't land within 60s, or the chisel client's own bounded reconnect (`--max-retry-count 30 --max-retry-interval 2s`, not chisel's default of forever) gives up first.
 
 - **A lone pod on its own node is fair game for node consolidation.**
-  A bridge pod without the eviction-protection annotations every issue pod carries ran fine for ten minutes, then vanished outright mid-run (not a graceful shutdown:
+  A bridge pod without the eviction-protection annotations a `Guaranteed` issue pod carries ran fine for ten minutes, then vanished outright mid-run (not a graceful shutdown:
   its chisel client's log shows the connection refused, not closed)
   — consistent with GKE reclaiming the underutilized Node-Auto-Provisioned node it was alone on.
   The watchdog's port-forward recovery is the right answer to a dropped connection, never to the pod itself being gone (every restart attempt correctly failed `NotFound` once it was);
-  the actual fix is the same `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` and `karpenter.sh/do-not-disrupt: "true"` pair every issue pod already carries, now on the bridge pod too.
+  the actual fix is the same `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` and `karpenter.sh/do-not-disrupt: "true"` pair a `Guaranteed` issue pod already carries, now on the bridge pod too.
 
 - **This cluster's `autopilot-default-resources-mutator` admission webhook adjusts the bridge pod's cpu on create**, and bringing up the fresh Node-Auto-Provisioned node it needs can take close to the original 120s `Ready` wait budget; raised to 240s.
 
