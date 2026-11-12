@@ -13,12 +13,14 @@ import type { ReactNode } from "react";
 import { Link, MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { displayTree } from "../../__tests__/display-trees";
 import { fixture } from "../../__tests__/pmdoc-fixtures";
 import { ApiError, api } from "../../api/client";
 import type {
   BroadcastSummary,
   Comment,
   CommentRead,
+  DisplayTree,
   IssueReferenceSummary,
   SearchResult,
 } from "../../api/types";
@@ -32,9 +34,23 @@ import type { Thread } from "../margin/useMarginItems";
 import { SearchPalette } from "../search/SearchPalette";
 import { searchAnswer } from "../search/search-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import fixtures from "./__fixtures__/display-trees.json";
+import { warmMarkdownRenderer } from "./markdown-engine";
 import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
 import { REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import { Unfurl } from "./Unfurl";
+
+/** One marked snippet of the display-tree fixture, by name: the reading the server made of
+ *  that text as a search hit, with the words it matched marked. */
+function storedSnippet(name: string): { markdown: string; snippet: DisplayTree } {
+  const found = (fixtures as { name: string; markdown: string; snippet?: DisplayTree }[]).find(
+    (fixture) => fixture.name === name
+  );
+  if (found?.snippet === undefined) {
+    throw new Error(`no marked snippet named ${name} in the display-tree fixture`);
+  }
+  return { markdown: found.markdown, snippet: found.snippet };
+}
 
 /**
  * Every surface that shows text a person or an agent wrote, with one Markdown fixture, and
@@ -399,10 +415,11 @@ test("the reference hover card renders a comment's body and an ask's question fo
 });
 
 test("the unfurl card under a bare reference renders the target's text formatted and its title without syntax", async () => {
+  await warmMarkdownRenderer();
   // Long enough that the title has to cut it, so the card shows the whole text under the title.
   const long = `${FIXTURE}\n- and a third item, which runs the title past its cut`;
   const getComment = spyOn(api, "getComment").mockResolvedValue({
-    comment: { ...comment, body: long },
+    comment: { ...comment, body: long, body_tree: displayTree(long) },
     replies: [],
   });
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
@@ -535,16 +552,17 @@ test("the margin's collapsed thread preview renders the root formatted on one li
 test("a search hit's snippet renders formatted with the matched words still highlighted", async () => {
   const user = userEvent.setup();
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
+  // The server reads the hit's snippet and marks what it matched; this is its reading of this
+  // very body, from the fixture `pmdoc`'s `TestWebDisplayFixture` writes.
+  const marked = storedSnippet("surfaces-fixture-marked");
   const hit: SearchResult = {
     href: "/issues/CORE-1/comments/comment-1",
     id: "comment-1",
     kind: "comment",
     owner: { key: "CORE-1", kind: "issue", status: "in_progress", title: "Design decision" },
     rank: 1,
-    snippet: FIXTURE.replace("**Bold**", "**<mark>Bold</mark>**").replace(
-      "second",
-      "<mark>second</mark>"
-    ),
+    snippet: marked.markdown,
+    snippet_tree: marked.snippet,
   };
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([hit]));
   const view = render(
@@ -822,11 +840,12 @@ describe("a Dispatch picture on every surface", () => {
   });
 
   test("the unfurl card shows it in the target's text as a thumbnail beside its caption", async () => {
+    await warmMarkdownRenderer();
     // Long enough that the title has to cut it, so the card shows the whole text under the title.
     const prose = "After the deploy every column on the board was drawn twice.";
     const long = `${prose} ${PICTURE}`;
     const getComment = spyOn(api, "getComment").mockResolvedValue({
-      comment: { ...comment, body: long },
+      comment: { ...comment, body: long, body_tree: displayTree(long) },
       replies: [],
     });
     const view = render(
@@ -908,6 +927,7 @@ describe("a Dispatch picture on every surface", () => {
   });
 
   test("a search hit's snippet shows it as a thumbnail beside its caption, the matched word still highlighted", async () => {
+    const marked = storedSnippet("surfaces-picture-marked");
     const user = userEvent.setup();
     const hit: SearchResult = {
       href: "/issues/CORE-1/comments/comment-1",
@@ -915,7 +935,8 @@ describe("a Dispatch picture on every surface", () => {
       kind: "comment",
       owner: { key: "CORE-1", kind: "issue", status: "in_progress", title: "Design decision" },
       rank: 1,
-      snippet: PICTURE.replace("layout", "<mark>layout</mark>"),
+      snippet: marked.markdown,
+      snippet_tree: marked.snippet,
     };
     const search = spyOn(api, "search").mockResolvedValue(searchAnswer([hit]));
     // The bar lists a project row for every project whose key or name holds the words
