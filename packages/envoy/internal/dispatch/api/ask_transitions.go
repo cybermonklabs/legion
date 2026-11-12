@@ -449,7 +449,8 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 			// The kind is refused here, inside Apply, for the reason answerAsk states for its
 			// own kind-dependent refusal: an ask's kind is known only once its row is read, and
 			// a read before the transaction would decide on a row another writer could still
-			// move. Under the row lock the kind refused is the kind this write would close.
+			// move. Under the ask's owner lock, which transitionAskTx takes before it reads the
+			// row (requireOpenOwner), the kind refused is the kind this write would close.
 			if ask.Kind == "approval" {
 				return model.Ask{}, errorf(http.StatusConflict, "ASK_NOT_DECLINABLE",
 					"an approval request is answered with %s or %s; it is not declined",

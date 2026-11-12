@@ -392,24 +392,23 @@ func (s *Service) windowOwners() []windowOwner {
 // windowDrift gives windows to at most blockIndexWindowBatch owners whose windows do not stand
 // for their blocks. For a comment, a message and an ask that is every one whose text was
 // written since this arm last windowed it: an item's write records its blocks and leaves their
-// windows here (refs.recordItemIndexed, INFRA-988), so this arm writes every window an item
+// windows here (refs.queueRecordIndexed, INFRA-988), so this arm writes every window an item
 // holds, a tick behind the write. A document is the same since its version write stopped
-// windowing its own blocks (refs.IndexBlocks): every document whose version write moved its
-// blocks is listed here, beside one written before meaning search moved to windows, one whose
-// write wrote its blocks and failed before its windows, and one a build without this change
-// re-indexed while the deploy rolled, which left the windows of its old text behind
-// (refs.DocumentsOwedWindows, refs.ItemsOwedWindows). It counts them in
-// tick.Windows, leaves each kind's cursor in tick.Cursor.Windows and reports whether a batch
-// was full.
+// windowing its own blocks (refs.BlockIndexing.Queue): every document whose version write
+// moved its blocks is listed here, beside one written before meaning search moved to windows,
+// one whose write wrote its blocks and failed before its windows, and one a build without this
+// change re-indexed while the deploy rolled, which left the windows of its old text behind
+// (refs.DocumentsOwedWindows, refs.ItemsOwedWindows). It counts them in tick.Windows, leaves
+// each kind's cursor in tick.Cursor.Windows and reports whether a batch was full.
 //
 // Each owner is windowed from the text its blocks were split from, and nothing else is
-// written: a document is read as the server serves it and windowed under its owner row
-// (windowDocument), an item is read as the blocks routes read it and windowed under its own
-// row (windowItem). Either way the write stamps the state the owner's blocks are in and clears
-// the marker this arm reads in the same statement - an item's in comment_block_state,
-// message_block_state or ask_block_state, a document's in document_block_versions
-// (refs.WriteItemWindows, refs.WriteDocumentWindows) - so an owner this arm has served is no
-// longer listed.
+// written: a document is read as the server serves it and windowed under its owner's advisory
+// lock (windowDocument, lockArtifactOwner), an item is read as the blocks routes read it and
+// windowed under its own owner's (windowItem, store.LockOwner). Either way the write stamps
+// the state the owner's blocks are in and clears the marker this arm reads in the same
+// statement - an item's in comment_block_state, message_block_state or ask_block_state, a
+// document's in document_block_versions (refs.WriteItemWindows, refs.WriteDocumentWindows) -
+// so an owner this arm has served is no longer listed.
 //
 // An owner the index holds at no block is served here too, and its windows are none: a
 // document whose markdown is empty, as the spec.md of an issue created with no spec is, a
@@ -456,11 +455,12 @@ func (s *Service) windowDrift(ctx context.Context, cursors map[string]string, ti
 
 // windowItem writes the windows of one comment, message or ask whose windows do not stand for
 // its blocks, which is every item written since this arm last windowed it, in a transaction of
-// its own: it takes the item row, reads the text its blocks were split from and writes the
-// windows of those blocks (refs.WriteItemWindows). It writes no
-// block row and no reference: the index of this item's blocks stands, and only its windows are
-// missing. An item whose stored text no longer splits into the blocks the index holds is marked
-// owed a block index instead, which the transaction commits for the owed arm to act on.
+// its own: it takes the item's owner lock, the advisory lock every writer of the item takes,
+// reads the text its blocks were split from under it and writes the windows of those blocks
+// (refs.WriteItemWindows, store.LockOwner). It writes no block row and no reference: the index
+// of this item's blocks stands, and only its windows are missing. An item whose stored text no
+// longer splits into the blocks the index holds is marked owed a block index instead, which
+// the transaction commits for the owed arm to act on.
 func (s *Service) windowItem(ctx context.Context, kind refs.ItemKind, id string) (bool, error) {
 	tx, err := s.store.Pool.Begin(ctx)
 	if err != nil {
@@ -476,12 +476,12 @@ func (s *Service) windowItem(ctx context.Context, kind refs.ItemKind, id string)
 
 // windowDocument writes the windows of one document whose windows do not stand for its blocks,
 // in a transaction of its own: it reads the document the server serves (TextWithBlocks) with no
-// transaction held, then, under the document's owner row, which every version write holds
-// first, writes the windows of the stored latest version's blocks
-// (refs.WriteDocumentWindows). It writes no block row and no reference: the index of this
-// document's blocks stands, and only its windows are missing. Since a version write records
-// its blocks and leaves their windows here (refs.IndexBlocks, INFRA-988), this is where every
-// window a document holds is written, a tick behind the write.
+// transaction held, then, under the document owner's advisory lock, which every version write
+// takes first, writes the windows of the stored latest version's blocks (lockArtifactOwner,
+// refs.WriteDocumentWindows). It writes no block row and no reference: the index of this
+// document's blocks stands, and only its windows are missing. Since a version write records its
+// blocks and leaves their windows here (refs.BlockIndexing.Queue, INFRA-988), this is where
+// every window a document holds is written, a tick behind the write.
 //
 // What is windowed is the text the version write indexed: the stored markdown of the latest
 // version, whatever the document's settlement state. Where the live text is that markdown

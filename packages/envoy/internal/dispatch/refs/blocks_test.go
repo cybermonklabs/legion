@@ -149,9 +149,9 @@ func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
 	if _, err := IndexItem(ctx, tx, ItemComment, comment, "The first paragraph.\n\nThe second paragraph.", time.Now(), nil, nil); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
-	// An item's index writes no window: the block-index tick's window arm writes them in a
-	// transaction of its own (indexItemBlocks, WriteItemWindows). This is that arm's write,
-	// run here in the fixture's transaction, and what it writes is read below.
+	// An item's index writes no window (IndexItem): the block-index tick's window arm writes
+	// them in a transaction of its own (docs.windowItem, WriteItemWindows). This is that arm's
+	// write, run here in the fixture's transaction, and what it writes is read below.
 	if written, err := WriteItemWindows(ctx, tx, ItemComment, comment); err != nil || !written {
 		t.Fatalf("window the comment = %v, %v; want the window arm to write them", written, err)
 	}

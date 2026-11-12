@@ -348,8 +348,8 @@ func (s *server) createStoredMessage(
 	// An issue message's blocks, the mentions each holds and its own references are indexed as
 	// one write (planPendingItem); a direct message, which writes no mention, has its blocks
 	// indexed alone and moves nothing. The message's insert is queued below, so the issue the
-	// row will name is handed over: it gives the context its blocks' windows embed them under
-	// and the document its `#id`s resolve against, its issue's spec.
+	// row will name is handed over: it gives the document its `#id`s resolve against, its
+	// issue's spec, which no read of the row can answer yet.
 	referenceChanges, indexWrite, err := s.planPendingItem(
 		ctx, tx, refs.ItemMessage, messageID, input.Body, refs.PendingSource{IssueKey: issueKey}, createdAt, issueKey != nil,
 	)

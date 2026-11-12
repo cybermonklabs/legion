@@ -15,7 +15,7 @@ import (
 
 // An approval request opens an ask, and meaning search ranks that ask by the windows of its
 // parts. The request writes the parts and leaves their windows to the block-index tick's
-// window arm, as every write of an item's blocks does (refs.recordItemIndexed, INFRA-988): it
+// window arm, as every write of an item's blocks does (refs.queueRecordIndexed, INFRA-988): it
 // answers with the ask listed as owed its windows and no window row to embed, one pass of the
 // reconciliation writes them, stamped with the state the parts are in, and once the embed
 // queue has run each of those windows holds a vector of the text it stands at. Until that

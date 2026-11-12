@@ -856,9 +856,8 @@ type messageReplyPlan struct {
 // The reply row is not inserted yet, so the document its `#id`s resolve against is handed over,
 // named by the fields that row will hold (planPendingItem, refs.PendingSource), as
 // createStoredMessage hands it over for a row it has only queued. The named block is addressed
-// here for the same reason: the read that gives a
-// stored reply its block would find no row yet. A direct message writes no mention, so its
-// blocks hold none and it moves nothing.
+// here for the same reason: the read that gives a stored reply its block would find no row yet.
+// A direct message writes no mention, so its blocks hold none and it moves nothing.
 func (s *server) planMessageReply(
 	ctx context.Context, tx pgx.Tx, message model.Message, body string, inReplyToBlock *string,
 ) (messageReplyPlan, error) {

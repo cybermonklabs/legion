@@ -1168,7 +1168,7 @@ func markItemBlocksOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, tables it
 //   - the one statement that writes an item's windows clears it, beside the stamp of the
 //     state those windows were written from (writeWindows, clearItemWindowsOwed), so the clear
 //     and the windows cannot come apart. An index of the item's blocks writes no window and
-//     clears nothing of this arm's (recordItemIndexed), so every item an index records is
+//     clears nothing of this arm's (queueRecordIndexed), so every item an index records is
 //     left here for this arm, which windows it one tick behind. That statement's own
 //     `dropped` is the only delete of a window row in the server; a route that removes one
 //     otherwise marks its owner here, or this read will not see it.

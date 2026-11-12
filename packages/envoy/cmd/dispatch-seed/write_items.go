@@ -166,7 +166,7 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
 			}
 			// The index records the parts and leaves their windows to the block-index tick's
-			// window arm (refs.recordItemIndexed), so the seed writes them here as that arm
+			// window arm (refs.queueRecordIndexed), so the seed writes them here as that arm
 			// would: a seeded database a server has to window is one it would rewrite.
 			if _, err := refs.WriteItemWindows(ctx, tx, refs.ItemAsk, stored.ID); err != nil {
 				return fmt.Errorf("write the windows of ask %s: %w", ask.ID, err)

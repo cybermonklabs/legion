@@ -2143,7 +2143,7 @@ func TestAnItemWrittenBeforeThisChangeGetsWindowsFromOnePass(t *testing.T) {
 // the stored markdown of the latest version whatever the settlement state, and gives its
 // blocks the ids the index holds for them (windowDocument, closedVersionBlocks).
 //
-// This is what lets a version write leave its windows to the tick (refs.IndexBlocks,
+// This is what lets a version write leave its windows to the tick (refs.BlockIndexing.Queue,
 // INFRA-988). Before it the arm refused such a document - `case pending && markdown !=
 // stored: return false, nil` - which was safe only because the version write had written its
 // windows itself; with the write no longer writing them, that refusal would leave a document
@@ -2805,12 +2805,13 @@ func requireOwnersReadTheWindowIndex(t *testing.T, database *store.Store, owner 
 // later pass of the window arm pays for and that nothing ever removes - the cost the marker was
 // added to take away, growing with the deployment.
 //
-// A document that holds no block at a version of its own is the case that keeps it. IndexBlocks
-// writes its document_block_versions row with the marker set, and then no arm lists it: the
-// block arm does not, since the document is indexed at its version, and
-// refs.DocumentsOwedWindows does not, since its semi-join asks for a row of document_blocks,
-// which such a document has none of. WriteDocumentWindows is the only statement that clears the
-// marker and it runs only for a document the arm listed, so the row stays marked.
+// A document that holds no block at a version of its own is the case that keeps it. A version
+// write (refs.BlockIndexing.Queue) writes its document_block_versions row with the marker set,
+// and then no arm lists it: the block arm does not, since the document is indexed at its
+// version, and refs.DocumentsOwedWindows does not, since its semi-join asks for a row of
+// document_blocks, which such a document has none of. WriteDocumentWindows is the only
+// statement that clears the marker and it runs only for a document the arm listed, so the row
+// stays marked.
 //
 // A document with no block is ordinary rather than contrived: an issue created with no spec
 // gets a spec.md whose markdown is empty. Driven against a Dispatch built from this head, two
@@ -2819,7 +2820,8 @@ func requireOwnersReadTheWindowIndex(t *testing.T, database *store.Store, owner 
 //
 // The property this holds the index to is the one a marker must have, whichever way it is kept:
 // after the arm has run, no owner is left marked that the arm will not list. Either such a
-// document is listed and windowed (its windows being none), or IndexBlocks leaves it unmarked.
+// document is listed and windowed (its windows being none), or the version write leaves it
+// unmarked.
 func TestNoDocumentKeepsItsWindowMarkerForEver(t *testing.T) {
 	database, service := blockIndexService(t)
 	ctx := context.Background()

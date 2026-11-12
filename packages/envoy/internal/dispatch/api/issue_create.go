@@ -37,11 +37,6 @@ func parseIssuePriority(raw json.RawMessage) (priority *int, provided bool, err 
 	return &value, true, nil
 }
 
-// specArtifactName is the name every new issue's spec document is created with, which the
-// windows of its blocks embed (refs.DocumentAddress.Name). The row's insert runs after the
-// document work that indexes those blocks, so the name is a constant both can read.
-const specArtifactName = "spec.md"
-
 // issueDuplicateError is the 409 POSSIBLE_DUPLICATE body POST /api/v1/issues answers an
 // unforced create whose title overlaps an existing issue's.
 type issueDuplicateError struct {
@@ -474,8 +469,8 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := tx.Exec(r.Context(), `
 		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ($1, $2, $3, 'spec', $5, 'doc', true, $4)
-	`, artifactID, key, input.Project, actorJSON, specArtifactName); err != nil {
+		values ($1, $2, $3, 'spec', 'spec.md', 'doc', true, $4)
+	`, artifactID, key, input.Project, actorJSON); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

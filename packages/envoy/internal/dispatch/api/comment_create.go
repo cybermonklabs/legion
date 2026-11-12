@@ -971,8 +971,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		}
 	}
 	// The comment's row is queued above, so the fields that row will hold are handed over: they
-	// name the document its `#id`s resolve against and the issue its blocks' windows embed them
-	// under, neither of which a read of the row can answer yet.
+	// name the document its `#id`s resolve against, which no read of the row can answer yet.
 	pending := refs.PendingSource{IssueKey: owner.IssueKey, ArtifactID: owner.ArtifactID, ReplyTo: input.ReplyTo, AskID: input.AskID}
 	if anchor != nil {
 		pending.AnchorArtifactID = &anchor.ArtifactID

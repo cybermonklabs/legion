@@ -22,7 +22,7 @@ import (
 
 // A comment's write records its blocks and writes no embedding window: the windows of those
 // blocks are the block-index tick's window arm's to write, in a transaction of its own
-// (refs.recordItemIndexed, docs.windowItem, INFRA-988). So the write answers with the comment
+// (refs.queueRecordIndexed, docs.windowItem, INFRA-988). So the write answers with the comment
 // holding no window and listed as owed them (refs.ItemsOwedWindows), one pass of the
 // reconciliation writes them, and once the embed queue has run every block of the comment is
 // embedded - the comment is found by meaning search one tick after it is written rather than

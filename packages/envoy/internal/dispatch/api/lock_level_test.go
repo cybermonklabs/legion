@@ -52,16 +52,18 @@ var (
 // advisory lock (store.LockOwner), which assigns no transaction id; a row lock does, so one taken
 // in a transaction's read phase would hold that id across everything the read phase does, and an
 // owner row locked by a writer that skips the advisory lock no longer excludes the read phase of
-// one that takes it. A missed owner-row lock, or a new one, reds here. Weaker levels on asks are
-// outside the second rule: `for no key update` on the ask rows a settlement reconciles
-// (docs/ask_blocks.go), whose writers do not all hold the owner's lock.
+// one that takes it. A missed owner-row lock, or a new one, reds here. Asks are outside the
+// second rule, which names issues, artifacts and projects alone, so a weaker level on an ask
+// row would pass this check; none is taken now, since the ask rows a settlement reconciles are
+// read plainly under the document owner's lock (docs/ask_blocks.go's loadAskBlocks).
 //
 // Its reach is the statement as this scan can assemble it: a lock clause spelled in a string
 // literal, or in a chain of literals and package-level constants, `var`s included, resolved to
 // a fixpoint so a constant written from another constant carries the inner text too. That is
-// how every owner-table lock in this module is written - lockEventOwner's three plain
-// `select ... for no key update`, and the ask reads with a row shape welded in from constants,
-// docs/ask_blocks.go's `select `+AskColumns+` ... for no key update`.
+// how the owner-table locks left in this module are written - lockEventOwner's three plain
+// `select ... for no key update` - and the chain is what would reach a lock welded into a
+// statement from a row shape of its own, as docs/ask_blocks.go's `select `+AskColumns+` ...`
+// is assembled.
 //
 // An operand the scan cannot resolve - a call, a runtime value - contributes its own string
 // literals instead, joined by a space and padded at both ends. A clause those literals spell is

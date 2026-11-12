@@ -53,7 +53,7 @@ var markedItems = []markedItem{{
 // What an index of the item's blocks leaves is read here too, since it is the whole of this
 // change: the index writes the blocks, clears the block arm's owed_at and leaves this marker
 // standing with no window written, so the item it indexed is the window arm's to window a
-// tick later (recordItemIndexed, INFRA-988). Before it, the index wrote the windows in its
+// tick later (queueRecordIndexed, INFRA-988). Before it, the index wrote the windows in its
 // own transaction and cleared the marker in the same statement, and the two steps below that
 // read an indexed item as owed and unwindowed read it as windowed and owing nothing.
 func TestTheTriggerOwesAnItemItsWindowsAndWritingThemClearsIt(t *testing.T) {
@@ -266,7 +266,7 @@ func markWindowsOwed(t *testing.T, database *store.Store, kind ItemKind, id stri
 
 // indexOwedItem runs the block-index tick's owed arm over the item, which must find it owed and
 // index it: its blocks alone, in a transaction of its own, which leaves the windows those
-// blocks stand in to the window arm (recordItemIndexed).
+// blocks stand in to the window arm (queueRecordIndexed).
 func indexOwedItem(t *testing.T, database *store.Store, kind ItemKind, id, what string) {
 	t.Helper()
 	indexed, err := IndexOwedItemBlocks(context.Background(), database.Pool, OwedItemBlock{Kind: kind, ID: id}, askPartServer)
