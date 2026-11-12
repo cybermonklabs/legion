@@ -36,8 +36,10 @@ import (
 )
 
 // TestABurstableIssuePodRendersLive launches an issue pod from each case's configuration
-// and holds it to the case's reservation and QoS class, as the API server recorded them. It writes
-// `<case> <namespace>/<pod> <legion.yaml>` per case to LEGION_E2E_RESULT for the script.
+// and holds it to the case's reservation, QoS class and stop-eviction annotations, as the API
+// server recorded them: the Burstable case's pod carries Karpenter's do-not-disrupt and no
+// safe-to-evict, and the Guaranteed case's carries both (checkBurstableLiveStopEviction). It
+// writes `<case> <namespace>/<pod> <legion.yaml>` per case to LEGION_E2E_RESULT for the script.
 func TestABurstableIssuePodRendersLive(t *testing.T) {
 	fixtureenv.Live(t)
 	env := map[string]string{}
@@ -71,11 +73,14 @@ func TestABurstableIssuePodRendersLive(t *testing.T) {
 		roles := liveContainer(t, pod, runtime.IssuePodContainer)
 		fmt.Printf("   pod %s/%s: qosClass %s, runtimeClassName %s, node %s, PodScheduled %s\n", pod.Namespace, pod.Name,
 			pod.Status.QOSClass, liveString(pod.Spec.RuntimeClassName), pod.Spec.NodeName, liveCondition(pod, corev1.PodScheduled))
+		fmt.Printf("   stop-eviction annotations: %s=%q, %s=%q\n", liveDoNotDisruptAnnotation, pod.Annotations[liveDoNotDisruptAnnotation],
+			liveSafeToEvictAnnotation, pod.Annotations[liveSafeToEvictAnnotation])
 		fmt.Printf("   roles container: requests cpu %s memory %s; limits cpu %s memory %s\n",
 			roles.Resources.Requests.Cpu(), roles.Resources.Requests.Memory(), roles.Resources.Limits.Cpu(), roles.Resources.Limits.Memory())
 		if pod.Status.QOSClass != tc.qos {
 			t.Errorf("%s: pod %s is %q, want %s", tc.name, pod.Name, pod.Status.QOSClass, tc.qos)
 		}
+		checkBurstableLiveStopEviction(t, tc.name, pod, tc.extendedRunTime)
 		for _, kind := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory, corev1.ResourceEphemeralStorage} {
 			if got, want := roles.Resources.Requests[kind], tc.issue.Requests[kind]; got.Cmp(want) != 0 {
 				t.Errorf("%s: the roles container requests %s %s, want %s", tc.name, kind, got.String(), want.String())

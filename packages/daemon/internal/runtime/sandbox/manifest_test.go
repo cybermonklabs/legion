@@ -329,15 +329,18 @@ func checkGolden(t *testing.T, name string, manifest any) {
 	}
 }
 
-// Every issue pod and the project controller's pod carry the two stop-eviction annotations
-// unconditionally (the image probe carries only Karpenter's,
-// TestTheProbePodCarriesNoGKEExtendedDurationAnnotation): Karpenter's own, which protects a pod on
-// an AWS cluster, and the Cluster Autoscaler's, which GKE Autopilot honours; GKE ignores
-// Karpenter's, so a pod on Autopilot without the second can be evicted mid-turn by consolidation or
-// a node upgrade. Each carries, beside them and as the only other annotation of its template, the
-// configuration it was built from, its own kind's (podShapeAnnotation): the one record an update
-// round reads a pod's drift from (podShapeDrift), written here and nowhere else.
-func TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction(t *testing.T) {
+// Every issue pod and the project controller's pod carry Karpenter's stop-eviction annotation,
+// which protects a pod on an AWS cluster and which GKE ignores (the image probe carries that one
+// alone, TestTheProbePodCarriesNoGKEExtendedDurationAnnotation). The Cluster Autoscaler's, which
+// GKE Autopilot reads as a request for extended run time and answers with a node of the pod's own,
+// is the controller's pod's whatever its reservation and an issue pod's only while that pod's cpu
+// and memory requests each equal their limit (podKind.asksExtendedRunTime). At the daemon's
+// defaults every reservation is Guaranteed, so every launch kind here carries both; a lower
+// request is where one goes (TestABurstableIssuePodCarriesNoSafeToEvictAnnotation). Each carries,
+// beside them and as the only other annotation of its template, the configuration it was built
+// from, its own kind's (podShapeAnnotation): the one record an update round reads a pod's drift
+// from (podShapeDrift), written here and nowhere else.
+func TestEveryGuaranteedIssueAndControllerPodCarriesBothStopEvictionAnnotations(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -349,16 +352,111 @@ func TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := map[string]string{
-				doNotDisruptAnnotation: "true",
-				safeToEvictAnnotation:  "false",
-				podShapeAnnotation:     podShape(r, l.kind),
-			}
+			want := stopEvictionAnnotations(r, l.kind, true)
 			if got := r.podTemplate(l).Metadata.Annotations; !maps.Equal(got, want) {
 				t.Errorf("pod annotations = %v, want exactly %v", got, want)
 			}
 		})
 	}
+}
+
+// An issue pod whose cpu request, or whose memory request, is below its limit carries Karpenter's
+// annotation and no safe-to-evict: it asks GKE Autopilot for no extended run time, so Autopilot
+// stops giving it a node of its own and the pod shares a node and bursts. The comparison reads cpu
+// and memory alone and compares quantities, so an issue pod whose ephemeral-storage request alone
+// is below its limit — which every reservation of this deployment has, the defaults' included —
+// keeps both, and so does one whose equal request and limit are spelled apart (3000m against 3,
+// 19456Mi against 19Gi). The controller's pod of each of these deployments keeps both throughout:
+// its own reservation is the Guaranteed default here, and its kind would keep them anyway
+// (TestABurstableControllerPodKeepsBothStopEvictionAnnotations).
+func TestABurstableIssuePodCarriesNoSafeToEvictAnnotation(t *testing.T) {
+	for name, tc := range map[string]struct {
+		issue    config.Reservation
+		extended bool
+	}{
+		"a memory request below its limit": {config.Reservation{
+			CPU: "3", CPURequest: "3", Memory: "32Gi", MemoryRequest: "8Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi",
+		}, false},
+		"a cpu request below its limit": {config.Reservation{
+			CPU: "3", CPURequest: "500m", Memory: "19Gi", MemoryRequest: "19Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi",
+		}, false},
+		"its ephemeral-storage request alone below its limit": {config.Reservation{
+			CPU: "3", CPURequest: "3", Memory: "19Gi", MemoryRequest: "19Gi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi",
+		}, true},
+		"an equal request and limit spelled apart": {config.Reservation{
+			CPU: "3", CPURequest: "3000m", Memory: "19Gi", MemoryRequest: "19456Mi", EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi",
+		}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := goldenOptions()
+			opts.Resources.Issue = requirementsOf(tc.issue)
+			r, err := configure(opts)
+			if err != nil {
+				t.Fatalf("configure with the issue pod reserving %+v: %v", tc.issue, err)
+			}
+			want := stopEvictionAnnotations(r, issuePod{}, tc.extended)
+			for role, spec := range map[string]runtime.SpawnSpec{"root": rootSpec(t), "implementer": childSpec(t)} {
+				if got := podAnnotations(t, r, spec); !maps.Equal(got, want) {
+					t.Errorf("the issue pod of the %s's launch carries %v, want exactly %v", role, got, want)
+				}
+			}
+			controller := stopEvictionAnnotations(r, controllerPod{}, true)
+			if got := podAnnotations(t, r, controllerSpec(t)); !maps.Equal(got, controller) {
+				t.Errorf("the controller's pod carries %v, want exactly %v", got, controller)
+			}
+		})
+	}
+}
+
+// The controller's pod carries both stop-eviction annotations whatever its reservation: one pod
+// runs the project's controller, nothing else takes over the turn it is in, and no copy of its
+// work is kept outside it, so a deployment that gives it a request below its limit gets a pod that
+// bursts and keeps its protection from a repacking autoscaler. The issue pod of the same
+// deployment, at the Guaranteed defaults, keeps both too: a controller's reservation decides the
+// controller's pod alone.
+func TestABurstableControllerPodKeepsBothStopEvictionAnnotations(t *testing.T) {
+	for name, controller := range map[string]config.Reservation{
+		"a cpu request below its limit": {
+			CPU: "2", CPURequest: "500m", Memory: "4Gi", MemoryRequest: "4Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "1Gi",
+		},
+		"a memory request below its limit": {
+			CPU: "1", CPURequest: "1", Memory: "8Gi", MemoryRequest: "2Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "1Gi",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := goldenOptions()
+			opts.Resources.Controller = requirementsOf(controller)
+			r, err := configure(opts)
+			if err != nil {
+				t.Fatalf("configure with the controller's pod reserving %+v: %v", controller, err)
+			}
+			want := stopEvictionAnnotations(r, controllerPod{}, true)
+			if got := podAnnotations(t, r, controllerSpec(t)); !maps.Equal(got, want) {
+				t.Errorf("the controller's pod carries %v, want exactly %v", got, want)
+			}
+			issue := stopEvictionAnnotations(r, issuePod{}, true)
+			if got := podAnnotations(t, r, rootSpec(t)); !maps.Equal(got, issue) {
+				t.Errorf("the issue pod carries %v, want exactly %v", got, issue)
+			}
+		})
+	}
+}
+
+// stopEvictionAnnotations is the whole annotation map a kind's pod template carries under r:
+// Karpenter's, which every pod carries, the configuration the pod is built from, and the Cluster
+// Autoscaler's where that pod asks GKE for extended run time.
+func stopEvictionAnnotations(r *Runtime, kind podKind, extended bool) map[string]string {
+	want := map[string]string{doNotDisruptAnnotation: "true", podShapeAnnotation: podShape(r, kind)}
+	if extended {
+		want[safeToEvictAnnotation] = "false"
+	}
+	return want
+}
+
+// podAnnotations are the annotations of the pod template a launch of spec renders.
+func podAnnotations(t *testing.T, r *Runtime, spec runtime.SpawnSpec) map[string]string {
+	t.Helper()
+	return r.podTemplate(launchOf(t, r, spec)).Metadata.Annotations
 }
 
 // Every field of every manifest, podTemplate.spec included, is one the v1.0.3 CRD declares with

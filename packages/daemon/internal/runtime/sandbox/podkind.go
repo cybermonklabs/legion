@@ -47,6 +47,13 @@ type podKind interface {
 	// resources are the reservation every container of the pod carries, its init containers'
 	// included (Options.Resources).
 	resources(r *Runtime) corev1.ResourceRequirements
+	// asksExtendedRunTime is whether a pod of this kind, under the deployment's reservations, asks
+	// GKE Autopilot for extended run time, which is the one thing that decides whether its
+	// template carries safeToEvictAnnotation (podTemplate). The controller's pod asks always; an
+	// issue pod only while its reservation is Guaranteed, so that an operator who gives an issue
+	// pod room to burst gets a pod that shares a node (issuePod.asksExtendedRunTime). Karpenter's
+	// doNotDisruptAnnotation is no kind's to decide: every pod carries it.
+	asksExtendedRunTime(r *Runtime) bool
 	// initContainers are the pod's init containers, and initVolumes the volumes only they mount,
 	// besides the pod's own volume and config home.
 	initContainers(r *Runtime, l launch) []corev1.Container
@@ -99,6 +106,45 @@ func (issuePod) skillsRepository(r *Runtime) ghrepo.Repository { return r.skills
 
 // resources is the one issue-pod reservation.
 func (issuePod) resources(r *Runtime) corev1.ResourceRequirements { return r.resources.Issue }
+
+// asksExtendedRunTime is whether this deployment's issue pod asks GKE Autopilot for extended run
+// time: only while its reservation is Guaranteed (guaranteedReservation). A deployment that gives
+// an issue pod a cpu or memory request below its limit has asked for a pod that bursts, and
+// Autopilot gives a pod carrying safeToEvictAnnotation a node of its own, which is the opposite of
+// that: the pod would hold a whole node at its limits and burst into nothing. So the request
+// decides, and no legion.yaml key does — a deployment that had set one could not go back to an
+// earlier daemon release without editing its file first, which is the one action it takes when
+// this change goes wrong. What a Burstable issue pod gives up is the seven-day protection: the
+// cluster may end it to repack a node, and the daemon continues each of its roles from the
+// workspace copy it keeps outside the pod, in a session of its own with no death charged.
+func (k issuePod) asksExtendedRunTime(r *Runtime) bool {
+	return guaranteedReservation(k.resources(r))
+}
+
+// guaranteedReservation reports whether resources is the Guaranteed reservation the kubelet reads:
+// its cpu request equal to its cpu limit and its memory request equal to its memory limit. It
+// compares quantities (resource.Quantity.Cmp), so a request of 1 under a limit of 1000m is equal,
+// as config.Reservation.Burstable compares the same two pairs of the configuration's strings.
+// Ephemeral storage is not read, and never should be: every pod of this deployment requests less
+// of the node's disk than its limit allows it to write (defaultResources), so reading it would
+// make every pod Burstable here while the kubelet, which reads cpu and memory alone, calls them
+// Guaranteed.
+//
+// A resource with a request and no limit, with a limit and no request, or with neither, reads as
+// not Guaranteed: an absent quantity is zero, so a missing limit is no pair to be equal to, and a
+// pod with no cpu or memory limit at all is the kubelet's BestEffort, never its Guaranteed. No
+// configuration reaches this: New refuses a reservation whose cpu or memory request or limit is
+// missing or not positive (checkRequirements), and config.Reservation.Burstable, which reads the
+// same configuration, panics on a quantity that is not there rather than reading it as Guaranteed.
+func guaranteedReservation(resources corev1.ResourceRequirements) bool {
+	for _, name := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
+		request, limit := resources.Requests[name], resources.Limits[name]
+		if limit.Sign() <= 0 || request.Cmp(limit) != 0 {
+			return false
+		}
+	}
+	return true
+}
 
 func (issuePod) claimToken(project, issue string, role claim.Role) (claim.Token, error) {
 	return claim.NewToken(project, issue, role)
@@ -447,6 +493,15 @@ func (controllerPod) skillsRepository(*Runtime) ghrepo.Repository { return ghrep
 
 // resources is the controller's pod's reservation.
 func (controllerPod) resources(r *Runtime) corev1.ResourceRequirements { return r.resources.Controller }
+
+// asksExtendedRunTime is always: the controller's pod asks for extended run time whatever its
+// reservation. One pod runs the project's controller, every tree's work passes through it, and
+// nothing else can take over the turn it is in, so a deployment that gives the controller room to
+// burst must not thereby lose the controller's protection from a repacking autoscaler. What an
+// issue pod gives up in exchange for bursting — being ended and continued elsewhere — is an issue
+// pod's alone: the daemon copies an issue workspace out of its pod, and the controller holds no
+// such workspace.
+func (controllerPod) asksExtendedRunTime(*Runtime) bool { return true }
 
 func (controllerPod) claimToken(project, _ string, _ claim.Role) (claim.Token, error) {
 	return claim.ControllerToken(project), nil

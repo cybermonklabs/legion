@@ -42,16 +42,29 @@ var burstableLiveRepository = ghrepo.MustParse("octocat/Hello-World")
 // kubectl to read and nothing dials a model, Dispatch or NATS.
 var burstableLiveStub = []string{"/bin/sh", "-c", "exec sleep infinity", "burstable-stub"}
 
+// The two stop-eviction annotation keys the proof reads off the pod the API server holds. They are
+// spelled out here, as an operator reading a live pod spells them, because the renderer's own
+// constants (internal/runtime/sandbox/manifest.go) are unexported: a rename there that did not
+// reach the cluster would show as a proof that reads no annotation.
+const (
+	liveDoNotDisruptAnnotation = "karpenter.sh/do-not-disrupt"
+	liveSafeToEvictAnnotation  = "cluster-autoscaler.kubernetes.io/safe-to-evict"
+)
+
 // burstableLiveCases are the two deployments the proof launches: the issue pod requesting 8Gi of
-// memory under a 32Gi limit, which must be Burstable, and a file with no `resources` block, whose
-// issue pod must stay Guaranteed at the daemon's defaults.
+// memory under a 32Gi limit, which must be Burstable and must ask for no extended run time, and a
+// file with no `resources` block, whose issue pod must stay Guaranteed at the daemon's defaults
+// and ask for it. extendedRunTime is whether that pod carries the Cluster Autoscaler's
+// safe-to-evict annotation, which GKE Autopilot answers with a node of the pod's own; Karpenter's
+// do-not-disrupt is on both pods, since it is the AWS scheduler's and this rule is Autopilot's.
 var burstableLiveCases = []struct {
 	name, project, resources string
 	qos                      corev1.PodQOSClass
+	extendedRunTime          bool
 	issue                    corev1.ResourceRequirements
 }{
 	{
-		name: "burstable", project: "BURST", qos: corev1.PodQOSBurstable,
+		name: "burstable", project: "BURST", qos: corev1.PodQOSBurstable, extendedRunTime: false,
 		resources: "    resources:\n      issue: {memory: 32Gi, memory_request: 8Gi}\n",
 		issue: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("8Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("6Gi")},
@@ -59,12 +72,36 @@ var burstableLiveCases = []struct {
 		},
 	},
 	{
-		name: "guaranteed", project: "GUARD", qos: corev1.PodQOSGuaranteed,
+		name: "guaranteed", project: "GUARD", qos: corev1.PodQOSGuaranteed, extendedRunTime: true,
 		issue: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("19Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("6Gi")},
 			Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("19Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("80Gi")},
 		},
 	},
+}
+
+// checkBurstableLiveStopEviction holds the pod the API server returned to the case's stop-eviction
+// annotations: Karpenter's on every pod, and the Cluster Autoscaler's only where the case's
+// reservation asks GKE Autopilot for extended run time. A Burstable issue pod carrying
+// safe-to-evict would be a pod Autopilot still gives a node of its own, which is what lowering a
+// request is meant to stop. It lives in this untagged file with the case table it reads, so `go
+// vet ./internal/daemon/...` and `go build` hold it to the API types on every run, as the proof's
+// configurations are held.
+func checkBurstableLiveStopEviction(t *testing.T, name string, pod *corev1.Pod, extendedRunTime bool) {
+	t.Helper()
+	if got := pod.Annotations[liveDoNotDisruptAnnotation]; got != "true" {
+		t.Errorf("%s: pod %s carries %s=%q, want \"true\": every Legion pod carries Karpenter's annotation, whatever it requests",
+			name, pod.Name, liveDoNotDisruptAnnotation, got)
+	}
+	got, carried := pod.Annotations[liveSafeToEvictAnnotation]
+	switch {
+	case extendedRunTime && got != "false":
+		t.Errorf("%s: pod %s carries %s=%q (present %v), want \"false\": a Guaranteed issue pod asks GKE Autopilot for extended run time",
+			name, pod.Name, liveSafeToEvictAnnotation, got, carried)
+	case !extendedRunTime && carried:
+		t.Errorf("%s: pod %s carries %s=%q, want no such annotation: an issue pod requesting less than its limit asks for no extended run time, so Autopilot may share its node",
+			name, pod.Name, liveSafeToEvictAnnotation, got)
+	}
 }
 
 // writeBurstableLiveConfig writes the case's legion.yaml, and the token files it names, under

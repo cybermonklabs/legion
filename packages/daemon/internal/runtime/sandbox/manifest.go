@@ -86,10 +86,16 @@ const (
 	gvisor    = "gvisor"
 )
 
-// doNotDisruptAnnotation and safeToEvictAnnotation are the autoscaler stop-eviction annotation
-// keys podTemplate sets unconditionally (probeManifest sets only the first): Karpenter's own
-// (AWS), and the Cluster Autoscaler's, which GKE Autopilot honours as a request for
-// extended-duration protection.
+// doNotDisruptAnnotation and safeToEvictAnnotation are the two autoscaler stop-eviction annotation
+// keys a pod template can carry: Karpenter's own (AWS), which every pod carries, the image probe's
+// included (podTemplate, probeManifest), and the Cluster Autoscaler's, which GKE Autopilot honours
+// as a request for extended-duration protection and which only a pod asking for that run time
+// carries (podKind.asksExtendedRunTime) — the controller's pod always, an issue pod only while its
+// reservation is Guaranteed. An issue pod whose cpu or memory request is below its limit carries
+// the second not at all, so Autopilot stops giving it a node of its own and it shares a node and
+// bursts; what a pod the cluster ends was doing is not lost, since the daemon keeps a copy of each
+// issue workspace outside the pod and continues every role of that pod in a session of its own,
+// with no death charged.
 const (
 	doNotDisruptAnnotation = "karpenter.sh/do-not-disrupt"
 	safeToEvictAnnotation  = "cluster-autoscaler.kubernetes.io/safe-to-evict"
@@ -670,10 +676,16 @@ func (r *Runtime) sandboxManifest(l launch) sandbox {
 // (podKind). Beyond the Legion pool's selector and tolerations it asks nothing of its placement:
 // every pod owns a disk of its own and shares nothing with another pod, so the scheduler puts it
 // wherever the pool has room. The controller applies a template only to the next pod it creates,
-// so the template is rebuilt for every relaunch. Its metadata carries, beside the two
-// stop-eviction annotations, the configuration the pod is built from (podShapeAnnotation,
-// podShape): the one write of it, so that a later sweep can read what a pod was built from
-// without rebuilding the launch that built it (drift.go).
+// so the template is rebuilt for every relaunch. Its metadata carries Karpenter's stop-eviction
+// annotation, which every pod of every kind carries; the Cluster Autoscaler's, only where the
+// pod's kind and its reservation ask GKE for extended run time (podKind.asksExtendedRunTime); and
+// the configuration the pod is built from (podShapeAnnotation, podShape): the one write of it, so
+// that a later sweep can read what a pod was built from without rebuilding the launch that built
+// it (drift.go). Neither stop-eviction annotation is in that shape, and the conditional one is
+// not either: the only thing that moves it is a request, which the shape already holds, so a pod
+// whose annotation would move is drifted by its reservation alone, while putting the annotation
+// in the shape would change the shape string of every pod of every deployment at this release and
+// open a fleet-wide update round for a value that did not change.
 func (r *Runtime) podTemplate(l launch) podTemplate {
 	_, providersMounts := r.providers()
 	spec := corev1.PodSpec{
@@ -702,15 +714,13 @@ func (r *Runtime) podTemplate(l launch) podTemplate {
 	for i := range spec.Containers {
 		kubeletLiteral(&spec.Containers[i])
 	}
+	annotations := map[string]string{doNotDisruptAnnotation: "true", podShapeAnnotation: r.podShapes[l.kind]}
+	if l.kind.asksExtendedRunTime(r) {
+		annotations[safeToEvictAnnotation] = "false"
+	}
 	return podTemplate{
-		Metadata: podMetadata{
-			Labels: r.labels(l),
-			Annotations: map[string]string{
-				doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false",
-				podShapeAnnotation: r.podShapes[l.kind],
-			},
-		},
-		Spec: spec,
+		Metadata: podMetadata{Labels: r.labels(l), Annotations: annotations},
+		Spec:     spec,
 	}
 }
 
