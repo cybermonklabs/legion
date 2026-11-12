@@ -236,6 +236,7 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 			Boot: time.Minute, RegistrationIntervals: 3, RPC: 5 * time.Second, Probe: 30 * time.Second, Stop: 10 * time.Second, LaunchBackoff: time.Millisecond,
 		},
 		PluginContract: api.DaemonAPIVersion,
+		RefreshGate:    supervise.NewRefreshGate(0),
 	}
 	handler := api.NewServer(api.Options{
 		Steps:      config.DesignGateRootIssues.Steps(),

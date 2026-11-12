@@ -229,6 +229,88 @@ func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled
 	}
 }
 
+// workingUnderAParkedRefresh is the other wake a machine parks over a live process: the
+// relaunch the stale-plugin refresh lane raises, which carries a kind of its own so that a
+// reader of the daemon's state can tell a fleet's refresh from the work it holds up
+// (supervise.WakePluginRefresh, dispatch://INFRA-2712 R4). Everything else about it is a
+// launch, and the window it leaves is the one above: a claim stored working with a launch in
+// flight over the process it still records.
+//
+// The claim is seeded stale as the API's own stale-caller fixture seeds one — written at an
+// earlier contract and its machine rebuilt from the store (harness.makeStale) — but with the
+// capability it registered with left as it is, since nothing here calls as the claim. The sweep
+// then finds it, the pacing parks its relaunch over the process it still runs
+// (supervise.refreshPlugin), and the live process takes a turn of its own, which is what leaves
+// the claim stored working under the park (TestATurnTheReplacedProcessConfirmedIsTakenBackAt
+// TheLaunchsTurn in supervise).
+func workingUnderAParkedRefresh(t *testing.T, h *harness) claim.Token {
+	t.Helper()
+	var park atomic.Bool
+	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
+		if park.Load() {
+			return now.Add(time.Hour)
+		}
+		return now
+	}}
+	token := idleOnTheLadder(t, h)
+
+	park.Store(true)
+	m, _ := h.supervisor.Machine(token)
+	stale := m.Claim()
+	stale.PluginContract = DaemonAPIVersion - 1
+	if err := h.store.PutClaim(h.ctx, stale); err != nil {
+		t.Fatalf("seed %s at an earlier plugin contract: %v", token, err)
+	}
+	m = h.supervisor.restart(t, token)
+	if err := m.Handle(h.ctx, supervise.StalePlugin{Claim: token, Trigger: "sweep"}); err != nil {
+		t.Fatalf("the sweep's post of %s's stale plugin: %v", token, err)
+	}
+	m.Wait()
+	if err := m.Handle(h.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
+		t.Fatalf("the turn %s's live process takes under the park: %v", token, err)
+	}
+	settled(h, token)
+
+	view := m.View()
+	if view.State != supervise.StateWorking {
+		t.Fatalf("the claim is %s, want the working claim the park kept over the process it records", view.State)
+	}
+	if view.WakeWaiting == nil || view.WakeWaiting.Kind != supervise.WakePluginRefresh {
+		t.Fatalf("the claim's waiting wake is %+v, want the refresh lane's relaunch the pacing holds", view.WakeWaiting)
+	}
+	return token
+}
+
+// Both recoveries answer that window exactly as they answer a parked launch: a relaunch is in
+// flight, which is what the refresh's relaunch is. The kind tells a reader of the state body
+// which lane holds the pacing and nothing else, so a door that read it as anything but a launch
+// would answer "in a turn" and send a controller back to wait out a turn the launch is about to
+// cut (api's relaunchWaits, supervise.StartsProcess).
+func TestARecoveryRefusedWhileTheStalePluginRefreshWaitsItsTurnNamesTheLaunchInFlight(t *testing.T) {
+	for _, door := range compactDoors() {
+		t.Run("the compaction: "+door.name, func(t *testing.T) {
+			h := compactHarness(t, nil)
+			token := workingUnderAParkedRefresh(t, h)
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+				parkedRelaunchRefusal(token, wantCompactionReaches))
+		})
+	}
+	for _, door := range freshSessionDoors() {
+		t.Run("the fresh session: "+door.name, func(t *testing.T) {
+			h := compactHarness(t, nil)
+			token := workingUnderAParkedRefresh(t, h)
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+				parkedRelaunchRefusal(token, wantFreshSessionReaches))
+		})
+	}
+}
+
 // refusingCheckLaunchStore is the supervise store with the lifecycle recheck every launch
 // makes before it starts anything (supervise.Store.CheckLaunch) failing while refusing is set,
 // with a failure that is not the tree's — the store did not answer. That is the refusal which

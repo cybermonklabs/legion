@@ -60,6 +60,43 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // the report that raised the relaunch made it, and the next report of the same process, the
 // one that raises the relaunch again, is what changes it.
 //
+// The credit of the refresh gate a machine may hold goes back at the end of the decision this
+// refusal belongs to, which is where every credit of this lane goes back (endRefreshLane,
+// dispatch://INFRA-2712 R1). This is the refusal of every launch there is, so a refused launch
+// of the stale-plugin lane loses its credit wherever the refusal came from — the launch path's
+// own pre-check, the recheck the wake's turn makes and the relaunch a failure raises
+// (launchAfter, runWake, relaunchAfterFailure) — and the one shape the reader has to hold is
+// that a refused launch raises no wake, so nothing of that refresh waits in the pacing past
+// this line.
+//
+// No refresh wake can be waiting on the machine when this runs, and the refusal parks none, so
+// the credit of a refused launch of this lane is one nothing is left waiting for: a credit is
+// taken over a claim that holds no wake at all (refreshPlugin's own guard), the turn of a parked
+// wake takes it off the machine before anything is rechecked (wakeNow, runParkedLaunchNow), and
+// no decision of this package raises a launch over one still waiting (parkWake lists them).
+//
+// Why the retry such a refusal may arm carries the intent, and what it costs the gate, is where
+// retryHolding and the gate state it (retryHolding, RefreshGate, Correct): the launch that retry
+// makes then waits under the lane that raised it rather than under the launch kind every other
+// launch takes (reserveWake, dispatch://INFRA-2712 R4). A retry armed here with the bare
+// relaunch would park under `launch`, where the reader this kind exists for counts no refresh of
+// a claim the lane is still working through, and where the correction the sweep makes from the
+// lane's own parked wakes never counts it at all (api.State.ClaimsToRefresh,
+// refreshStalePlugins in internal/daemon).
+//
+// Two roads reach this line with an intent on the machine, and each is a retry of this lane
+// refused a second time: the retry a failed write of StateLaunching armed (launchNow), and the
+// retry the refused turn of this lane's own parked wake armed (runWake). Both put the intent
+// back as they run and raise the same launch anew from the top, whose own lifecycle check is
+// refused here (launchAfter, retryHolding).
+//
+// The other two callers hold no intent where they refuse, so the wrapping is inert for them.
+// The wake's turn took the intent off the wake it was parked with and puts it back only past
+// both steps, which is past this refusal, so that caller wraps the intent its own wake carried
+// (runWake, holdPluginRelaunch). A relaunch after a launch failure is no relaunch of this lane
+// at all: the charged road a stale registration takes raises none, and nothing else of that
+// path does either (relaunchAfterFailure, staleRegistration).
+//
 // What one refused relaunch leaves behind is put right by the caller that left it, never here.
 // The one such thing is the watch a park took off the process the relaunch was to replace, and
 // it belongs to the launch the wake pacing held: that turn is where it is armed again (runWake,
@@ -90,7 +127,7 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon))
 	}
 	m.log.Warn("supervise: the lifecycle check of the retired process's relaunch failed; trying it again at the probe interval", "error", err)
-	m.relaunchLater(relaunch)
+	m.relaunchLater(m.retryHolding(m.pluginRelaunch, relaunch))
 	return errors.Join(err, m.persist(ctx))
 }
 

@@ -423,10 +423,12 @@ const legionHeldOutboxRow = z.object({
  * (`worker_wakes_per_minute`, `worker_wake_burst`, contract 53): the claim it will wake, that
  * claim's issue and role, what kind of wake it is, and `dueAt`, the moment the pacing gave it,
  * which is when it runs. The kinds are the daemon's three paced lanes: `launch`, a role process it
- * is about to start, and `plugin-task`, the update task a stale-plugin round queues to a session
- * already running, both held in the claim's machine and lost with a restart, which raises the wave
+ * is about to start, and `plugin-refresh`, the relaunch of a process whose plugin speaks an
+ * earlier contract than the daemon's, which the stale-plugin lane's own gate admits (contract
+ * 73), both held in the claim's machine and lost with a restart, which raises the wave
  * again through its own paths; and `catch-up`, the notice a start writes to an architect already
- * running in place of a launch, which waits on its own outbox row. */
+ * running in place of a launch, which waits on its own outbox row. `kind` is an unconstrained
+ * string, so a lane a later daemon names is read rather than refused. */
 const legionWakeWaiting = z.object({
   claim: nonEmptyString,
   issue: issueKey,
@@ -660,14 +662,22 @@ const legionConsumerLag = z.object({
  * the keys it does not name, where the shapes around it drop theirs; `consumers` is the lag
  * of the daemon's durable consumers, never null, empty for a daemon with no workflow (contract 43);
  * `wakesWaiting` is every wake the daemon's pacing is holding until its turn, in claim order, never
- * null, empty at every moment outside a restart or a plugin wave (contract 53). It is optional
+ * null, empty at every moment outside a restart or a refresh wave (contract 53). It is optional
  * here only because a daemon at this contract leaves it off one body: a reader before 53 refuses
  * the key outright, empty as surely as naming a wake, so the route strips it for a caller in a pod
- * whose claims record a contract below 53, and for a caller in a pod whose claims it cannot read
- * at all, which may be a pod at this contract (`api.stateFor`, `withoutWakesWaiting`). A reader
- * that finds it absent has been served that stripped body and learns nothing about which wakes
- * wait; it is never a daemon older than this plugin, whom the boot gate and `legion probe-image`
- * refuse. */
+ * whose claims record a contract below 53, and for that caller alone (`api.stateFor`,
+ * `withoutWakesWaiting`). A reader that finds it absent has been served that stripped body and
+ * learns nothing about which wakes wait; it is never a daemon older than this plugin, whom the
+ * boot gate and `legion probe-image` refuse. `claimsToRefresh` is how many claims the stale-plugin
+ * lane still has to relaunch onto the daemon's plugin, a number and never null, 0 when the lane has
+ * nothing left (contract 73). It is what `wakesWaiting` cannot say: that lane holds at most one
+ * minute of the pacing at a time, so its waiting wakes are what it has admitted and this is what it
+ * has left. It is optional for the same reason `wakesWaiting` is and no other: the route strips it
+ * for a caller in a pod below 73, and for that caller alone, since a reader before 73 refuses the
+ * key when it is 0 as surely as when it names a number (`api.stateFor`, `withoutClaimsToRefresh`).
+ * A caller in a pod whose claims record no contract at all is served the count, as is a caller the
+ * daemon can place in no pod. The two strips compose on one body: a caller below 53 is below 73 too
+ * and is served neither key. */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo,
   admission: legionAdmission,
@@ -676,6 +686,7 @@ export const LegionStateResponse = z.object({
   heldOutboxRows: z.array(legionHeldOutboxRow),
   strandedClaims: z.array(legionStrandedClaim),
   wakesWaiting: z.array(legionWakeWaiting).optional(),
+  claimsToRefresh: z.number().int().nonnegative().optional(),
   controllerLocator: legionControllerLocator.optional(),
   agentSecretsLogin: legionAgentSecretsLoginView.optional(),
   capabilities: z.array(legionCapabilityState),
