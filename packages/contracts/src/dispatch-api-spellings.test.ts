@@ -259,6 +259,20 @@ const DIFFERENCES = SPELLED_TWICE.map(({ name, declaredName, schema }) =>
  * that is seen rather than here. A failing count prints the set it measured, so the red names
  * the fields it found.
  *
+ * Two things this file compares nothing of, which belong beside the limits above.
+ *
+ * `comparedFields` drops every field matching `/_tree$/` from both sides, so the family of
+ * fields that carries a stored text's display tree is outside the guard entirely: neither half
+ * reads one, and a `_tree` field added to one spelling alone, or typed differently on the two,
+ * is invisible here. That is deliberate - the bus reads the markdown and never the tree - but it
+ * means the guard says nothing about the one family of fields a reader of trees cares about.
+ *
+ * A union is reached by neither half rather than by the optionality half alone: `fieldsOf`
+ * merges a union's members into one set of names, so a field moving from one member of
+ * `ActorSchema` to another leaves that merged set unchanged and the field comparison sees
+ * nothing, while the optionality half passes the shape over for the reason below. `ActorSchema`
+ * is the one union today.
+ *
  * One shape is not reached by this comparison at all: `ActorSchema` is a union, so each member
  * carries its own optionality and there is no one field to compare: the count passes it over.
  */
@@ -310,5 +324,102 @@ describe("a shape spelled twice agrees about which fields may be absent", () => 
     expect(refused.length, `the fields measured: ${refused.join(", ")}`).toBe(
       REQUIRED_OF_AN_OPTIONAL
     );
+  });
+});
+
+/** The two names of the split that are neither the document's alias nor `z.output` of a schema:
+ *  the route row written out by hand, with the bus's tolerance taken off it. */
+const HAND_COMPOSITIONS = [
+  { name: "Ask", declaredName: "AskWithTrees", schema: contract.AskSchema },
+  { name: "Message", declaredName: "MessageWithTrees", schema: contract.MessageSchema },
+];
+
+/** Whether a zod field reads a closed set of strings where the document declares a plain string:
+ *  the enum, the literal and the union of literals a schema writes for a value this release
+ *  knows the spellings of. */
+function readsAClosedSet(field: unknown, seen = new Set<unknown>()): boolean {
+  if (field === null || typeof field !== "object" || seen.has(field)) return false;
+  seen.add(field);
+  const held = "_def" in field ? field._def : "def" in field ? field.def : undefined;
+  if (held === null || typeof held !== "object") return false;
+  const def: Record<string, unknown> = { ...held };
+  const type = def.type ?? def.typeName;
+  if (type === "enum" || type === "ZodEnum" || type === "literal" || type === "ZodLiteral") {
+    return true;
+  }
+  if (type === "union" || type === "ZodUnion") {
+    const options = Array.isArray(def.options) ? def.options : [];
+    return options.length > 0 && options.every((option) => readsAClosedSet(option, seen));
+  }
+  for (const key of ["innerType", "in", "out", "element", "schema"]) {
+    if (def[key] !== undefined && readsAClosedSet(def[key], seen)) return true;
+  }
+  return false;
+}
+
+/** The fields of one hand composition the bus reads differently from the document, each named by
+ *  the mechanism that makes it differ. */
+function handCompositionDifferences(name: string, declaredName: string, schema: unknown): string[] {
+  const object = objectOf(schema) ?? {};
+  const declared = DECLARED[declaredName];
+  const properties: Record<string, unknown> =
+    declared !== undefined &&
+    typeof declared.properties === "object" &&
+    declared.properties !== null
+      ? (declared.properties as Record<string, unknown>)
+      : {};
+  const required = new Set<string>(Array.isArray(declared?.required) ? declared.required : []);
+  const differences: string[] = [];
+  for (const [field, written] of Object.entries(object)) {
+    if (takesNothing(written) && required.has(field)) {
+      differences.push(`${name}.${field} (the bus tolerates its absence)`);
+      continue;
+    }
+    const property = properties[field];
+    const declaresAnySpelling =
+      property !== null &&
+      typeof property === "object" &&
+      (property as Record<string, unknown>).type === "string" &&
+      (property as Record<string, unknown>).enum === undefined;
+    if (declaresAnySpelling && readsAClosedSet(written)) {
+      differences.push(`${name}.${field} (the bus reads a closed set)`);
+    }
+  }
+  return differences.sort();
+}
+
+const HAND_COMPOSITION_DIFFERENCES = HAND_COMPOSITIONS.flatMap(({ name, declaredName, schema }) =>
+  handCompositionDifferences(name, declaredName, schema)
+);
+
+/**
+ * How many fields of `Ask` and `Message` the bus reads differently from the shape the document
+ * declares. Those two are the only names of this split written out by hand - `Omit<XWithTrees,
+ * …> & {…}` beside an exact `XSchema` - and nothing else here watches them, since `Ask` is the
+ * pair the counted rules carry and has no per-shape row.
+ *
+ * They are not a careless second spelling. Each is the route row with the bus's tolerance taken
+ * off it, and the fields below are that tolerance: a field the bus reads as absent where the
+ * document requires it, and a field whose spellings the bus closes to the ones this release
+ * knows where the document says a plain string. Deriving either type from its schema would push
+ * both into the type the routes answer with, so a consumer would handle an absence no route
+ * sends and a value narrowed to today's literals, which is what the generated contract exists to
+ * refuse. Measured with `tsc` over both directions, field by field: `z.output` of the schema is
+ * not assignable to `Ask` in four fields and `Ask` not assignable to it in twelve, and `Message`
+ * differs in two each way. The count below is of the fields themselves rather than of those two
+ * directions, so it is nine where the type comparison reads four and twelve.
+ *
+ * The number is today's count rather than a budget, and a failing count prints the set it
+ * measured with the mechanism beside each name, so a field joining or leaving that set is read
+ * in a diff by a person rather than asserted here.
+ */
+const HAND_COMPOSITION_FIELDS = 9;
+
+describe("a row written out by hand carries the tolerance it was written for", () => {
+  test(`${HAND_COMPOSITION_FIELDS} fields of Ask and Message are read differently by the bus`, () => {
+    expect(
+      HAND_COMPOSITION_DIFFERENCES.length,
+      `the fields measured: ${HAND_COMPOSITION_DIFFERENCES.join(", ")}`
+    ).toBe(HAND_COMPOSITION_FIELDS);
   });
 });
