@@ -1,5 +1,5 @@
 ---
-title: "An oracle exception a ruling grants is keyed to the injected fault, capped, and proved by making it unconditional"
+title: "An oracle exception a decision grants is keyed to the injected fault, capped, and proved by making it unconditional"
 category: testing
 tags:
   - property-test
@@ -12,14 +12,14 @@ related_issues:
   - "sjawhar/legion#2163"
 ---
 
-# An oracle exception a ruling grants is keyed to the injected fault, capped, and proved by making it unconditional
+# An oracle exception a decision grants is keyed to the injected fault, capped, and proved by making it unconditional
 
-- When a ruling accepts a behaviour a property test's oracle flags, do not loosen the invariant.
+- When a decision accepts a behaviour a property test's oracle flags, do not loosen the invariant.
   Have the fault injector record which event it failed (an outbox row, a request id), and excuse a repeat only when the earlier event it repeats is one of those.
 
 - Cap the exception: one repeat per recorded fault, and none on top of another exception.
 
-- Cite the ruling beside the check.
+- Cite the decision beside the check.
 
 - Prove the exception is not a hole: make it unconditional in a scratch copy and show a case that must fail now passes;
   then show the cases outside it (a third repeat, a repeat with no fault) still fail.
