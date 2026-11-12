@@ -95,11 +95,7 @@ func meaningPlanOf(
 
 // planTreeOf is the plan Postgres builds for statement bound to arguments, under settings. It
 // runs in a transaction of its own, rolled back when the test ends, and answers the plan's root
-// node and the EXPLAIN output itself, which a failing test prints. Two statements of different
-// parameters are read through it - the meaning statements of search, whose seventeen
-// meaningPlanOf binds, and the cross-project statement, whose own five its case binds
-// (TestTheCrossProjectQuestionStatementReadsTheHNSWIndex) - so one walk decodes a plan for
-// both.
+// node and the EXPLAIN output itself, which a failing test prints.
 func planTreeOf(
 	t *testing.T, database *store.Store, statement string, arguments []any, settings ...string,
 ) (planNode, []byte) {
@@ -135,18 +131,23 @@ func planTreeOf(
 // the ask_part windows of the other projects, ordered by the cosine distance to the check's own
 // vector and cut to searchWindowCandidates. Every test of its filters (`e.model`, `k.kind`,
 // `k.state`, `k.answer` and the project) names a joined table or a column the HNSW index does
-// not hold, so what keeps the index is the shape alone: the windows are taken from embeddings by
-// that order, and the joins stand above the limit the scan feeds.
+// not hold. The joins and those filters stand inside the ordered, limited candidate select,
+// between the index scan and the limit, as they do in search's own ask arm
+// (meaning_ask_candidates), so what keeps the index is the order alone: the windows are taken
+// from embeddings by the cosine distance, which embeddings_cosine serves.
 //
-// Nothing else in the suite would say that the shape was lost. The failure is silent by the
-// leg's design: a plan that reads embeddings whole takes far longer than the 300 ms grace of
-// every check (crossProjectGrace), the stage then answers with no cross-project item and records
-// no reason, since the leg is offered beside the check's own result and never decides it
+// Nothing else in the suite would say that this order was lost. The failure is silent by the
+// leg's design: a plan that reads embeddings whole takes far longer than the 300 ms grace of a
+// question's check (crossProjectGrace), the stage then answers with no cross-project item and
+// records no reason, since the leg is offered beside the check's own result and never decides it
 // (TestCrossProjectRelatedQueryFailingKeepsTheOneProjectAnswer). Production offers nothing of
 // another project, other_project_offers reads 0, and 0 is also what "no other project qualified"
-// reads. The comment arm of this same shape - a join on windowItemUUID inside the ordered,
-// limited select - lost its index on the load-test corpus and read 5,166 ms of a 5,351 ms
-// statement (INFRA-988, searchMeaningCommentArm in search.go).
+// reads. This case catches a statement whose order the index cannot serve. It does not catch a
+// planner that chooses to join first and order after, as the comment arm's did on the load-test
+// corpus, where it read 5,166 ms of a 5,351 ms statement (INFRA-988, searchMeaningCommentArm in
+// search.go): the three assertions below do not look for a join between the index scan and its
+// limit. TestSearchMeaningCommentArmTakesItsWindowsBeforeItsJoins walks the plan for that, for
+// the comment arm alone.
 //
 // enable_seqscan and enable_sort are off for this EXPLAIN only, for the reason the test at the
 // top of this file gives: a fixture's handful of rows is read whole and sorted however the
@@ -189,7 +190,7 @@ func TestTheCrossProjectQuestionStatementReadsTheHNSWIndex(t *testing.T) {
 		t.Errorf("the cross-project statement's scan of embeddings_cosine carries no condition on embeddings.model, so it reads the vectors of every embedder:\n%s",
 			planString(t, planJSON))
 	}
-	t.Logf("measured: with %d embedded ask window(s) of XPLOT, the cross-project statement plans %q on embeddings_cosine under %q, and no Seq Scan anywhere",
+	t.Logf("measured: with %d embedded ask window(s) of XPLOT, the cross-project statement plans %q on embeddings_cosine under %q",
 		windows, cosine.NodeType, cosine.Filter+cosine.IndexCond)
 }
 
