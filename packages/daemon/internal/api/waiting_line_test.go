@@ -268,3 +268,5 @@ func TestTheShippedTextsNameTheWaitingLinesOwnContract(t *testing.T) {
 		t.Fatalf("no shipped text names a contract beside %s; this test proves nothing", WaitingLineField)
 	}
 }
+
+// INFRA-1413 selection probe, never merged.
