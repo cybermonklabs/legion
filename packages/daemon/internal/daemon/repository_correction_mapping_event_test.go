@@ -6,12 +6,16 @@ package daemon
 // them. On a running daemon the event has the refresher read the mapping again and then read
 // Dispatch's listing, whose summaries carry each issue's resolved_repo, and correct each recorded
 // issue through the single-issue path every other pass takes (followMapping,
-// workflow.(*Engine).ApplyRepositoryChange). These tests publish the event on a real NATS, run
-// the daemon's own Dispatch consumer and refresher over a real PostgreSQL, and read the records.
+// workflow.(*Engine).ApplyRepositoryChange). A read of the mapping that newly serves a repository
+// asks for the same follow (refreshMapping's answer, refreshOnMappingChange), with no event: GitHub answering a
+// failed installation read again, or an App installed and the mapping read again. These tests
+// publish the event on a real NATS, run the daemon's own Dispatch consumer and refresher over a
+// real PostgreSQL, and read the records.
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -86,8 +90,13 @@ type mappingEventRig struct {
 	read    []time.Time
 }
 
-func newMappingEventRig(t *testing.T, installs *installations) *mappingEventRig {
+// newMappingEventRig opens the rig with the project mapping boot at its boot, acme/widgets alone,
+// as its default, when boot names none.
+func newMappingEventRig(t *testing.T, installs *installations, boot ...dispatch.RepoProject) *mappingEventRig {
 	t.Helper()
+	if len(boot) == 0 {
+		boot = []dispatch.RepoProject{{Repo: "acme/widgets", Project: "LEGION", Default: true}}
+	}
 	r := &mappingEventRig{t: t, github: newCountedGitHub(t, map[string]string{
 		"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@release/v7.1", "orbit/gadgets": "orbit/gadgets@main",
 	})}
@@ -100,7 +109,7 @@ func newMappingEventRig(t *testing.T, installs *installations) *mappingEventRig 
 		return at
 	}
 	r.w, r.client, _, _, r.js = mappingRigJS(t, installs, func(w *workflowRuntime) {
-		w.dispatch.(*mappingDispatch).set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
+		w.dispatch.(*mappingDispatch).set(boot...)
 		w.defaultBranches = newDefaultBranches(roleTokens{}, nil, r.github.url, defaultBranchTTL, time.Now)
 		engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, NoteUnread: w.noteUnread,
 			Steps: config.DesignGateOff.Steps(), Clock: clock}, quietLogger())
@@ -323,5 +332,96 @@ func TestRepositoryCorrectionReadsGitHubOncePerRepositoryOnAMappingChange(t *tes
 	r.awaitOn("zeta/tools", keys...)
 	if reads := r.github.readsOf("zeta/tools"); reads != 1 {
 		t.Fatalf("GitHub was read %d times for zeta/tools while %d issues moved onto it, want once", reads, len(keys))
+	}
+}
+
+// uncorrected fails unless key's record is still on acme/widgets at main, with no correction.
+func (r *mappingEventRig) uncorrected(key string) record.Issue {
+	r.t.Helper()
+	got := r.issue(key)
+	if got.Repo != "acme/widgets" || got.DefaultBranch != "main" || got.RepoBefore != "" || got.RepoCorrectedAt != nil {
+		r.t.Fatalf("%s is on %s at %s, having left %q at %v; want it on acme/widgets at main, uncorrected",
+			key, got.Repo, got.DefaultBranch, got.RepoBefore, got.RepoCorrectedAt)
+	}
+	return got
+}
+
+// correctedOnto fails unless key's record is on repo at branch, having left acme/widgets, with
+// nothing waiting.
+func (r *mappingEventRig) correctedOnto(key, repo, branch string) {
+	r.t.Helper()
+	got := r.issue(key)
+	if got.Repo != repo || got.DefaultBranch != branch || got.GitHubRepo != repo || got.RepoBefore != "acme/widgets" || got.RepoCorrectedAt == nil {
+		r.t.Fatalf("%s is on %s at %s, spelled %s, having left %q at %v; want %s at %s, having left acme/widgets",
+			key, got.Repo, got.DefaultBranch, got.GitHubRepo, got.RepoBefore, got.RepoCorrectedAt, repo, branch)
+	}
+	if got.RepoChangePending != "" || got.RepoChangeReason != "" {
+		r.t.Fatalf("%s still waits on %q because %q, want nothing waiting", key, got.RepoChangePending, got.RepoChangeReason)
+	}
+	// The issue's own event, delivered before the correction, may move its phase (the rig opens no
+	// tree for it); the correction takes no new generation.
+	if got.Generation != correctionGeneration {
+		r.t.Fatalf("%s is at generation %d, want %d: a correction takes no new generation", key, got.Generation, correctionGeneration)
+	}
+}
+
+// A recorded issue Dispatch resolves to a mapped repository whose installation read fails keeps
+// its record's repository, and its event writes nothing (workflow.Resolution.Unread); the recovery
+// of the repository, once GitHub answers, takes no recorded issue (recoveredOn). The read that
+// serves the repository again asks for the follow a mapping change asks for, so the issue is
+// corrected onto it with no settings.repo_project.updated and no event of its own.
+func TestRepositoryCorrectionFollowsARepositoryServedAgainOnceItsInstallationReadRecovers(t *testing.T) {
+	quickInstallReads(t)
+	installs := &installations{}
+	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	r := newMappingEventRig(t, installs,
+		dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true}, dispatch.RepoProject{Repo: "zeta/tools", Project: "LEGION"})
+	if _, _, _, unread := r.w.repositories.lookup("zeta/tools"); !unread {
+		t.Fatal("zeta/tools is not left out for its failed installation read at boot")
+	}
+	const key = "LEGION-660"
+	r.record(key, "acme/widgets")
+
+	// A person sets the issue's repository to zeta/tools while its installation read fails.
+	deliver(t, r.w, r.client, issue(key, "zeta/tools", "in_progress", true, "", 2))
+	if got := r.uncorrected(key); got.LastDispatchSeq != 2 {
+		t.Fatalf("%s's record is at Dispatch sequence %d, want the event's 2 applied", key, got.LastDispatchSeq)
+	}
+
+	installs.setFailing(nil, "implement zeta/tools")
+	r.awaitOn("zeta/tools", key)
+	r.correctedOnto(key, "zeta/tools", "release/v7.1")
+	if r.events != 0 {
+		t.Fatalf("the test published %d mapping changes, want none", r.events)
+	}
+}
+
+// A recorded issue whose change waits on a mapped repository Legion serves no installation of
+// (its review App missing) is corrected onto it by the first read of the mapping that finds the
+// App installed and serves it, with no settings.repo_project.updated and no event of its own. The
+// read here is the one an admission event of another issue on that repository asks for
+// (awaitMappingRead), which is what reads the mapping again once an App is installed.
+func TestRepositoryCorrectionFollowsARepositoryANewlyInstalledAppServes(t *testing.T) {
+	installs := &installations{missing: map[string]bool{"review orbit/gadgets": true}}
+	r := newMappingEventRig(t, installs,
+		dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true}, dispatch.RepoProject{Repo: "orbit/gadgets", Project: "LEGION"})
+	const waiting, admitted = "LEGION-670", "LEGION-671"
+	r.record(waiting, "acme/widgets")
+	deliver(t, r.w, r.client, issue(waiting, "orbit/gadgets", "in_progress", true, "", 2))
+	if got := r.uncorrected(waiting); got.RepoChangePending != "orbit/gadgets" {
+		t.Fatalf("%s waits on %q, want orbit/gadgets before its review App is installed", waiting, got.RepoChangePending)
+	}
+
+	installs.mu.Lock()
+	installs.missing["review orbit/gadgets"] = false
+	installs.mu.Unlock()
+	deliver(t, r.w, r.client, issue(admitted, "orbit/gadgets", "todo", true, "", 1))
+	if got := recordedIssue(t, r.w, admitted); got == nil || got.Repo != "orbit/gadgets" {
+		t.Fatalf("%s recorded as %+v, want it admitted on orbit/gadgets once the mapping serves it", admitted, got)
+	}
+	r.awaitOn("orbit/gadgets", waiting)
+	r.correctedOnto(waiting, "orbit/gadgets", "main")
+	if r.events != 0 {
+		t.Fatalf("the test published %d mapping changes, want none", r.events)
 	}
 }

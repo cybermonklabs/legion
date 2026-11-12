@@ -602,7 +602,7 @@ func TestARepositoryWithoutTheWebhookAppIsServedAndNamed(t *testing.T) {
 	}
 
 	standIn.install("acme/widgets")
-	if err := w.refreshMapping(context.Background()); err != nil {
+	if _, err := w.refreshMapping(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got := w.repositories.view(nil).WithoutWebhookApp; len(got) != 0 {

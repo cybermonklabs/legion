@@ -189,7 +189,7 @@ func TestAFailedRefreshServesNothingUntilARetrySubscribesIt(t *testing.T) {
 			w.records = &faultyStore{Store: w.records, failIssues: tc.fail}
 			fact := intake.DispatchIssue{Key: "LEGION-301", Seq: 1, Status: "todo", Title: "new", Rank: "A", HandedOver: true, ResolvedRepo: "zeta/tools"}
 			if tc.fail {
-				if err := w.refreshMapping(ctx); err == nil {
+				if _, err := w.refreshMapping(ctx); err == nil {
 					t.Fatal("the failed snapshot did not fail the read")
 				}
 				if _, _, leftOut, _ := w.repositories.lookup("zeta/tools"); !leftOut {
@@ -255,7 +255,7 @@ func TestARefreshThatUnmapsARepositoryKeepsHearingAnIssueAdmittedOnIt(t *testing
 	}
 	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
 	refreshed := make(chan error, 1)
-	go func() { refreshed <- w.refreshMapping(ctx) }()
+	go func() { _, err := w.refreshMapping(ctx); refreshed <- err }()
 	// Without the serialization the refresh finishes here, while the admission waits.
 	select {
 	case err := <-refreshed:
@@ -291,7 +291,7 @@ func TestAClosedTreesRepositoryStaysHeardAfterItIsUnmapped(t *testing.T) {
 		t.Fatal(err)
 	}
 	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
-	if err := w.refreshMapping(ctx); err != nil {
+	if _, err := w.refreshMapping(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if filters := githubFilterSubjects(t, stream); !slices.Contains(filters, "notifications.github.zeta.tools.>") {
@@ -434,7 +434,7 @@ func TestAnIssueOnARepositoryMappedJustBeforeIsAdmittedOnIt(t *testing.T) {
 			ctx := context.Background()
 			w, client, _, stream := mappingRig(t, map[string]bool{})
 			client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
-			if err := w.refreshMapping(ctx); err != nil {
+			if _, err := w.refreshMapping(ctx); err != nil {
 				t.Fatal(err)
 			}
 			client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true}, dispatch.RepoProject{Repo: "zeta/tools", Project: "LEGION"})
@@ -491,7 +491,7 @@ func TestAnAdmissionWhosePreparationFailedIsPreparedAsDispatchNowShowsIt(t *test
 			if tc.heldFirst {
 				repo = "zeta/tools"
 				client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
-				if err := w.refreshMapping(ctx); err != nil {
+				if _, err := w.refreshMapping(ctx); err != nil {
 					t.Fatal(err)
 				}
 				client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true}, dispatch.RepoProject{Repo: "zeta/tools", Project: "LEGION"})
@@ -638,7 +638,7 @@ func TestAHeldEventKeepsItsDeliveredSequenceAndAWithdrawalEndsItsHold(t *testing
 	ctx := context.Background()
 	w, client, _, _ := mappingRig(t, map[string]bool{})
 	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
-	if err := w.refreshMapping(ctx); err != nil {
+	if _, err := w.refreshMapping(ctx); err != nil {
 		t.Fatal(err)
 	}
 	// Every read of the mapping fails from here, so the hold's read never covers it.

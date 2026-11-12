@@ -5141,13 +5141,16 @@ each issue's pod (every role of it alike) and the image probe's.
   the mapping is read again, 30 s doubling to 10 min, until GitHub answers, then the repository is served with no restart (a served repository whose read fails stays served on its last answer, with the name and default branch GitHub last gave it and no further read of GitHub, and is read again the same way);
   a project with no repository mapped does not boot, one whose every repository lacks an App boots serving none, admitting nothing until an App is installed, and one whose every repository's installation read fails boots serving none and logs so at ERROR (the boot's own reads of the Apps, their logins and their tokens, still refuse it when they fail).
   Every role's gh bundle holds a directory for each served repository's owner, one for each owner a configured rename moved a repository away from while the project serves the name it moved to, and an `<owner>/<repo>` directory for each other repository served by the issue's recorded owner and by the owner whose installation serves the issue's repository ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
-  An issue is recorded on the repository Dispatch resolves for it, with that repository's default branch as GitHub names it, and the record follows that resolution from then on.
-  A later change of it moves the record onto the new repository and its default branch, in the pass that reads the change: a live Dispatch event, or the boot and recovery listing.
+  **Upgrade order:** Dispatch first (it resolves each issue's repository), then map the project's repositories there with the old `projects.<KEY>.repo` as the project's default, then delete the key and start this daemon;
+  its first boot fills every record written before the record carried its repository from Dispatch's resolution, and refuses to boot, naming each record, while Dispatch resolves none, or resolves one other than the repository of the issue's pull request.
+
+- **An issue's repository** is the one Dispatch resolves for it, recorded with that repository's default branch as GitHub names it, and the record follows that resolution from then on.
+  A later change of it moves the record onto the new repository and its default branch, in the pass that reads the change: a live Dispatch event, the boot and recovery listing, or the listing the daemon reads after a `settings.repo_project.updated` or a read of the mapping that newly serves a repository.
+  That event, and any read of the mapping that newly serves a repository (an App installed on it, GitHub answering its installation read again, or the repository newly mapped), move every recorded issue whose resolution changed:
+  the daemon reads Dispatch's project listing once and makes the single-issue correction for each recorded issue in it, as a live event of that issue would.
   A repository Legion serves no installation of is not written onto the record, which keeps what it has and carries the waiting change until the pass that finds that repository served applies it.
   Under this runtime the daemon then replaces the issue's pod, since the pod holds the clone, the gh directories and the token of the repository the issue has left, and the update round carries that replacement as it carries any other ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
   A claim on an issue the workflow does not record, such as an operator's tree, works the project's default repository as it is at each launch, and its launch is refused while the project serves no default.
-  **Upgrade order:** Dispatch first (it resolves each issue's repository), then map the project's repositories there with the old `projects.<KEY>.repo` as the project's default, then delete the key and start this daemon;
-  its first boot fills every record written before the record carried its repository from Dispatch's resolution, and refuses to boot, naming each record, while Dispatch resolves none, or resolves one other than the repository of the issue's pull request.
 
 - **`runtime.kubernetes.pod`** has four keys.
   `env` is variables set in the agent's container.
