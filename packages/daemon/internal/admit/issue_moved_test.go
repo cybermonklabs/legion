@@ -178,6 +178,39 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	}
 	assertMoved("a claim's session activity report", at(6))
 
+	// The same two exclusions, read again with the pass's own clock ahead of every fact instead
+	// of behind them, which is where production runs it: the daemon's clock is the wall clock
+	// and the facts it applies are older than that. The two readings above cannot fail for the
+	// regression they describe — admission keeps this package's fixedNow, every time asserted
+	// here is the record's own stamp plus minutes, and MarkIssueMoved keeps the later of the
+	// two — so a mark written by the listing's own path (admit's recordObservation) would be
+	// dropped as older and the assertion would pass anyway. Measured: with that path marking at
+	// its own clock, or at the wall clock, the check this test serves stays green, and only a
+	// mark more than four days ahead reddens it. With the pass's clock ahead, a mark of either
+	// kind is newer than the record's time and the assertion sees it.
+	ahead := at(30)
+	admission.now = func() time.Time { return ahead }
+	now = at(24)
+	reconcile(t, pool, admission, []dispatch.IssueSummary{{Key: movedIssue, Title: "renamed in the listing again",
+		Status: "testing", Rank: "U", HandedOver: true, ResolvedRepo: "acme/widgets", LastSeq: 2}})
+	if got := issue(t, pool, movedIssue).Title; got != "renamed in the listing again" {
+		t.Fatalf("the boot listing left %s titled %q, want the listing's own title: the read must be one that records something", movedIssue, got)
+	}
+	assertMoved("the boot's read of the Dispatch listing, with the pass's clock ahead of the facts", at(6))
+
+	// The activity report again, carrying a time of its own that stands ahead of the record's.
+	// A report is the session saying it is up, so the time it carries is what a reading that
+	// took it for a movement would write, and that is the shape this pins; a mark written from
+	// the wall clock instead is older than every time this test asserts and is hidden by the
+	// same monotone rule, which no fixture whose stamps run ahead of real time can show.
+	if known, err := records.PutClaimActivity(ctx, awaitingArchitect(t, movedIssue),
+		claim.SessionActivity{At: ahead, BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"subagent"}}}); err != nil || !known {
+		t.Fatalf("report the activity of the architect claim of %s = %t, %v", movedIssue, known, err)
+	}
+	assertMoved("a claim's session activity report carrying a time ahead of the record's", at(6))
+
+	admission.now = func() time.Time { return fixedNow }
+
 	// A Dispatch event of the issue carrying the status the record already holds: a person renames
 	// the running issue and re-ranks it while its status stands still. It is new to the record all
 	// the same — the record takes the title, the rank and the event's own sequence — so it is a
