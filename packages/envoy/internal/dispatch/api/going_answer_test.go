@@ -10,43 +10,38 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/goingtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-// goingModelBearer is the bearer the chat client presents to the fake model. The client under
-// test is the production one, so it signs each call; a static source is the whole credential this
-// test needs, and no deployment's own is read.
+// goingModelBearer is the bearer the model's endpoint presents to the fake model. The model loop
+// under test is the production one, so it signs each call; a static token is the whole
+// credential this test needs, and no deployment's own is read.
 const goingModelBearer = "going-test-bearer"
-
-type goingModelTokens struct{}
-
-func (goingModelTokens) Token(context.Context) (string, error) { return goingModelBearer, nil }
 
 // goingFramePause is how long goingtest's model waits between the frames of one reply. It is what
 // makes a reply take a measurable time to write, so a reader can be shown the answer's first
 // words while the rest of it is still being written.
 const goingFramePause = 120 * time.Millisecond
 
-// newGoingModelAnswerer is the answerer a deployment runs - going.NewAnswerer over
-// going.NewHTTPClient - pointed at goingtest's chat-completions model over httptest. The model is
-// the one thing faked: the search, the bodies, the filter, the client's route, its sign-in and its
-// reading of the stream are production's, and nothing here calls a service or names a real model
-// endpoint.
+// newGoingModelAnswerer is the answerer a deployment runs - going.NewAnswerer over agentloop's
+// openai-chat model - pointed at goingtest's chat-completions model over httptest. The model is
+// the one thing faked: the search, the bodies, the filter, the model loop's route, its sign-in
+// and its reading of the stream are production's, and nothing here calls a service or names a
+// real model endpoint.
 func newGoingModelAnswerer(t *testing.T, replies ...goingtest.Reply) (*going.Answerer, *goingtest.Model) {
 	t.Helper()
 	model := goingtest.NewModel(t, replies...)
-	client, err := going.NewHTTPClient(going.HTTPConfig{
-		Place:    "test",
-		Endpoint: model.URL + "/openai/v1",
-		Model:    "going-test-deployment",
-		Tokens:   goingModelTokens{},
-	})
-	if err != nil {
-		t.Fatalf("build the chat client: %v", err)
-	}
-	answerer, err := going.NewAnswerer(going.AnswererConfig{Model: client})
+	answerer, err := going.NewAnswerer(going.AnswererConfig{Model: agentloop.Model{
+		Endpoint: agentloop.Endpoint{
+			Kind:    agentloop.OpenAIChat,
+			BaseURL: model.URL + "/openai/v1",
+			Token:   func(context.Context) (string, error) { return goingModelBearer, nil },
+		},
+		ID: "going-test-deployment",
+	}})
 	if err != nil {
 		t.Fatalf("build the answerer: %v", err)
 	}
@@ -169,7 +164,7 @@ func goingFrameNames(frames []liveGoingFrame) []string {
 //
 // The reader here is a real connection, because what it proves is a matter of time and not of
 // bytes: the model pauses goingFramePause between the frames of its reply, so the reply takes
-// about three seconds to write, and the first words of it are readable long before the last. A
+// about four seconds to write, and the first words of it are readable long before the last. A
 // recorder would buffer the whole response and say nothing about when anything arrived.
 func TestGoingAnswersFromWhatDispatchHoldsWhileTheModelIsStillWriting(t *testing.T) {
 	const project = "GOA"
@@ -181,10 +176,14 @@ func TestGoingAnswersFromWhatDispatchHoldsWhileTheModelIsStillWriting(t *testing
 	const linkText = "The pelican migration"
 	link := "[" + linkText + "](" + href + ")"
 	answerer, model := newGoingModelAnswerer(t, goingtest.Reply{
-		Text: "The pelicans arrive in spring, and the note Dispatch holds says so: " + link + ".",
-		// Four runes a frame over that reply is twenty-seven frames, each a stored text frame of
-		// the run's own, so the answer is written over about 27 * goingFramePause.
-		Chunk: 4,
+		Final: &goingtest.Final{
+			Answer:    "The pelicans arrive in spring, and the note Dispatch holds says so: " + link + ".",
+			Arguments: "{}",
+		},
+		// Six runes a frame over the Final object that answer is written in, about 180 runes, is
+		// some thirty frames, so the reply is written over about 30 * goingFramePause, and the
+		// answer, its first property, over the first two thirds of it.
+		Chunk: 6,
 		Pause: goingFramePause,
 	})
 	rig := newGoingRoutesRig(t, answerer)
@@ -272,13 +271,14 @@ func TestGoingAnswersFromWhatDispatchHoldsWhileTheModelIsStillWriting(t *testing
 	}
 
 	// When it arrived, and not only what: the first text frame is readable while the model still
-	// has frames to come. The reply is written over about 3.3 s - twenty-seven frames at
+	// has frames to come. The reply is written over about 3.7 s - some thirty frames at
 	// goingFramePause, which are the model's own sleeps, so nothing makes it faster - and the
 	// stream polls the record every goingStreamPoll (200 ms), so the first words are readable
-	// within a fraction of a second: measured here, the first text frame arrives 56-250 ms in and
-	// the stream ends at 3.49 s, a lead of 3.24-3.45 s. The margins asserted are the run lasting
-	// at least 2 s and at least 1.5 s of it after the first words, better than twice the slack:
-	// failing the second needs the first text frame to be held back past 2 s, ten polls.
+	// within a second: measured here, the first text frame arrives 0.71-0.86 s in, once the
+	// object's opening and the answer's first words are written, and the stream ends at
+	// 4.14-4.48 s, a lead of 3.3-3.7 s. The margins asserted are the run lasting at least 2 s and
+	// at least 1.5 s of it after the first words, better than twice the slack: failing the second
+	// needs the first text frame to be held back past 2.6 s, thirteen polls.
 	first := firstGoingFrame(t, frames, contracts.GoingEventText)
 	if whole := ended.at.Sub(opened); whole < 2*time.Second {
 		t.Fatalf("the stream was over in %v, want the model's paced reply to take at least 2s: nothing was proved about streaming", whole)

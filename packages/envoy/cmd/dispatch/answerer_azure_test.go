@@ -59,9 +59,13 @@ func (s *signInRecorder) exchange(t *testing.T, i int) url.Values {
 	return s.forms[i]
 }
 
-// localHosts sends each named host's calls to the local server standing in for it, and refuses
-// every other host, so a test that reached a service would fail rather than call one.
-type localHosts struct{ byHost map[string]*url.URL }
+// localHosts sends each named host's calls to the local server standing in for it, over the
+// transport it replaced, and refuses every other host, so a test that reached a service would
+// fail rather than call one.
+type localHosts struct {
+	byHost map[string]*url.URL
+	base   http.RoundTripper
+}
 
 func (h localHosts) RoundTrip(request *http.Request) (*http.Response, error) {
 	local, served := h.byHost[request.URL.Host]
@@ -70,16 +74,18 @@ func (h localHosts) RoundTrip(request *http.Request) (*http.Response, error) {
 	}
 	routed := request.Clone(request.Context())
 	routed.URL.Scheme, routed.URL.Host = local.Scheme, local.Host
-	return http.DefaultTransport.RoundTrip(routed)
+	return h.base.RoundTrip(routed)
 }
 
-// serveHostsLocally points http.DefaultClient at the local servers standing in for byHost's hosts
-// for the rest of the test, and puts its transport back afterwards.
+// serveHostsLocally points http.DefaultTransport at the local servers standing in for byHost's
+// hosts for the rest of the test, and puts it back afterwards.
 //
-// It is the one client because it is the one newAnswerer's chat client and its token source take:
-// neither going.NewHTTPClient nor embed.NewEntraTokenSource is handed a client there, and both
-// fall back to http.DefaultClient, so this is how the sign-in a deployment's settings describe is
-// driven without a test-only seam in the boot path. No test in this package runs in parallel.
+// It is the one transport because it is the one newAnswerer's model calls and its token source
+// both reach: agentloop builds the transport of every model call over http.DefaultTransport, and
+// embed.NewEntraTokenSource, handed no client there, falls back to http.DefaultClient, which
+// sends over it too. So this is how the sign-in a deployment's settings describe, and the call it
+// signs, are driven without a test-only seam in the boot path. No test in this package runs in
+// parallel.
 func serveHostsLocally(t *testing.T, byHost map[string]string) {
 	t.Helper()
 	routes := make(map[string]*url.URL, len(byHost))
@@ -90,9 +96,9 @@ func serveHostsLocally(t *testing.T, byHost map[string]string) {
 		}
 		routes[host] = parsed
 	}
-	previous := http.DefaultClient.Transport
-	http.DefaultClient.Transport = localHosts{byHost: routes}
-	t.Cleanup(func() { http.DefaultClient.Transport = previous })
+	previous := http.DefaultTransport
+	http.DefaultTransport = localHosts{byHost: routes, base: previous}
+	t.Cleanup(func() { http.DefaultTransport = previous })
 }
 
 // A deployment that embeds on Bedrock and answers on Azure is one deployment: the two places are
@@ -126,7 +132,7 @@ func TestNewAnswererOnAzureBesideABedrockEmbedderSignsInAtTheConfiguredScope(t *
 			authority := &signInRecorder{}
 			signIn := httptest.NewServer(authority)
 			t.Cleanup(signIn.Close)
-			model := goingtest.NewModel(t, goingtest.Reply{Text: "Dispatch holds nothing on that."})
+			model := goingtest.NewModel(t, goingtest.Reply{Final: &goingtest.Final{Answer: "Dispatch holds nothing on that.", Arguments: "{}"}})
 			serveHostsLocally(t, map[string]string{
 				entraAuthorityHost:    signIn.URL,
 				azureChatEndpointHost: model.URL,

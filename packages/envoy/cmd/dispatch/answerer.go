@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 )
@@ -167,11 +168,19 @@ func newAnswerer(cfg answererConfig) (*going.Answerer, error) {
 		slog.Warn("dispatch: no text model configured, so this server cannot answer questions", "setting", "DISPATCH_ANSWERER")
 		return nil, nil
 	}
-	chat := going.HTTPConfig{
-		Place:      cfg.Place,
-		Endpoint:   cfg.Endpoint,
-		APIVersion: cfg.APIVersion,
-		Model:      cfg.Model,
+	parsed, err := url.Parse(cfg.Endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("the chat endpoint: %w", err)
+	}
+	// Both places speak the Chat Completions shape: agentloop's openai-chat provider appends
+	// /chat/completions to the endpoint, and its transport adds the endpoint's query to every
+	// call and puts the token on every attempt.
+	model := agentloop.Model{
+		Endpoint: agentloop.Endpoint{Kind: agentloop.OpenAIChat, BaseURL: cfg.Endpoint},
+		ID:       cfg.Model,
+	}
+	if cfg.APIVersion != "" {
+		model.Endpoint.Query = url.Values{"api-version": {cfg.APIVersion}}
 	}
 	switch cfg.Place {
 	case placeAnswererAzure:
@@ -187,23 +196,21 @@ func newAnswerer(cfg answererConfig) (*going.Answerer, error) {
 		if err != nil {
 			return nil, err
 		}
-		chat.Tokens = tokens
+		model.Endpoint.Token = tokens.Token
 	case placeAnswererEndpoint:
 		// The endpoint form's bearer is whatever DISPATCH_CHAT_TOKEN_FILE holds at the moment
 		// of the call: the source reads it then, so a token rewritten under this process is
 		// the one the next call presents.
-		chat.Tokens = going.FileTokenSource{Path: cfg.TokenFile}
+		model.Endpoint.Token = going.FileTokenSource{Path: cfg.TokenFile}.Token
 	}
-	client, err := going.NewHTTPClient(chat)
+	answerer, err := going.NewAnswerer(going.AnswererConfig{Model: model, TokensPerMinute: cfg.TokensPerMinute})
 	if err != nil {
 		return nil, err
 	}
-	answerer, err := going.NewAnswerer(going.AnswererConfig{Model: client, TokensPerMinute: cfg.TokensPerMinute})
-	if err != nil {
-		return nil, err
-	}
-	// The identity is read from the client just built, which is the thing that knows it: the
-	// pacing an answerer wraps a client in says nothing about which model answers.
-	slog.Info("dispatch: answers questions with a configured text model", "place", cfg.Place, "identity", client.Identity())
+	// The identity is "<place>:<endpoint host>/<model>", as embed.AzureClient's is: the place
+	// belongs in it, so the line says which service of which resource answers questions here.
+	// It carries no credential.
+	identity := cfg.Place + ":" + strings.ToLower(parsed.Host) + "/" + cfg.Model
+	slog.Info("dispatch: answers questions with a configured text model", "place", cfg.Place, "identity", identity)
 	return answerer, nil
 }

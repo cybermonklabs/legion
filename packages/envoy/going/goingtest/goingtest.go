@@ -1,18 +1,18 @@
 // Package goingtest holds the fake text model shared by this module's own tests and its callers'
 // tests, kept out of the going package proper so no test-only type ships in the production
-// binary. It serves the chat-completions shape over httptest, so a test drives the real HTTP
-// client - its route, its sign-in and its reading of the stream - rather than a stub of it.
+// binary. It serves the chat-completions shape over httptest, so a test drives the real model
+// loop - agentloop's openai-chat provider, its route, its sign-in, its reading of the stream and
+// its reading of a structured reply - rather than a stub of it.
 package goingtest
 
 import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/envoy/going"
 )
 
 // defaultChunk is how many runes a frame carries when a Reply names no size: small enough that
@@ -21,10 +21,20 @@ const defaultChunk = 8
 
 // Reply is what the model answers one call with.
 type Reply struct {
-	// Text is streamed as the turn's content.
+	// Text is streamed as the turn's content whatever the call asked for, as a model that
+	// ignores a response format writes: a call that asked for a structured reply and is
+	// answered Text reads a reply that does not fit the schema.
 	Text string
+	// Final is the turn's answer in the form the call asks for it: the object going's Final
+	// schema describes, written answer first, when the call carries a response_format, and
+	// its Answer alone as prose when it does not.
+	Final *Final
+	// RefuseFormat answers a call that carries a response_format with a 400, as a service
+	// that does not serve structured outputs does, and serves the reply to any call that
+	// carries none.
+	RefuseFormat bool
 	// ToolCalls is a turn that ends in tool calls instead of an answer.
-	ToolCalls []going.ToolCall
+	ToolCalls []ToolCall
 	// Chunk is how many runes each frame carries; zero picks a small default.
 	Chunk int
 	// Pause is how long the model waits between frames, so a test can assert the first byte
@@ -36,21 +46,67 @@ type Reply struct {
 	Status int
 }
 
+// Final is a structured answer: the answer's text, the block drawn beside it and the arguments
+// of the offered actions, as going's Final schema names them.
+type Final struct {
+	Answer    string
+	Block     Block
+	Arguments string
+}
+
+// Block is a structured answer's block. An empty Kind is written as none.
+type Block struct {
+	Kind  string
+	Title string
+	Spec  string
+}
+
+// ToolCall is one call the model makes, with its arguments as the JSON text it writes.
+type ToolCall struct {
+	ID        string
+	Name      string
+	Arguments string
+}
+
+// Message is one message of a call's conversation as the model received it. A tool call's
+// result is a message whose Role is tool and whose ToolCallID names the call it answers.
+type Message struct {
+	Role       string
+	Content    string
+	ToolCalls  []ToolCall
+	ToolCallID string
+}
+
+// Tool is one tool a call offered the model, with its arguments' JSON Schema as Parameters.
+type Tool struct {
+	Name        string
+	Description string
+	Parameters  map[string]any
+}
+
 // ReceivedRequest is one call as the model received it, decoded.
 type ReceivedRequest struct {
-	Model         string
-	Messages      []going.Message
-	Tools         []going.Tool
+	Model    string
+	Messages []Message
+	Tools    []Tool
+	// ResponseFormat is the call's response_format as it was sent, and nil for a call that
+	// carried none.
+	ResponseFormat json.RawMessage
+	// MaxTokens is the call's max_tokens, the output bound it was sent with.
+	MaxTokens     int
 	Authorization string
 	Path          string
 	RawQuery      string
 }
 
-// Model is a chat-completions service a test configures a client against: it answers each call
+// Structured reports whether the call asked for a structured reply.
+func (r ReceivedRequest) Structured() bool { return len(r.ResponseFormat) > 0 }
+
+// Model is a chat-completions service a test configures a model against: it answers each call
 // with the reply the test named, streams it frame by frame as a real completion does, and counts
 // what it served. It calls nothing and holds no credential.
 type Model struct {
-	// URL is the base URL to configure a client's endpoint with; the client appends the route.
+	// URL is the base URL to configure an endpoint with; the provider appends the route.
 	URL string
 
 	replies []Reply
@@ -90,12 +146,14 @@ func (m *Model) serve(w http.ResponseWriter, r *http.Request) {
 	var body wireRequest
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	received := ReceivedRequest{
-		Model:         body.Model,
-		Messages:      body.messages(),
-		Tools:         body.tools(),
-		Authorization: r.Header.Get("Authorization"),
-		Path:          r.URL.Path,
-		RawQuery:      r.URL.RawQuery,
+		Model:          body.Model,
+		Messages:       body.messages(),
+		Tools:          body.tools(),
+		ResponseFormat: body.ResponseFormat,
+		MaxTokens:      body.MaxTokens,
+		Authorization:  r.Header.Get("Authorization"),
+		Path:           r.URL.Path,
+		RawQuery:       r.URL.RawQuery,
 	}
 	m.mu.Lock()
 	m.requests = append(m.requests, received)
@@ -108,19 +166,64 @@ func (m *Model) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case reply.Status != 0:
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(reply.Status)
-		_, _ = w.Write([]byte(`{"error":{"code":"simulated_failure","message":"the model service refused this call"}}`))
+		refuse(w, reply.Status, "the model service refused this call")
+	case reply.RefuseFormat && received.Structured():
+		refuse(w, http.StatusBadRequest, "response_format is not supported by this model")
 	case reply.Silent:
 		<-r.Context().Done()
 	default:
-		stream(w, reply)
+		stream(w, reply, reply.content(received.Structured()))
 	}
+}
+
+// refuse answers a call with an error status and the service's error body.
+func refuse(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	body, _ := json.Marshal(map[string]any{"error": map[string]any{
+		"code": "simulated_failure", "type": "invalid_request_error", "message": message,
+	}})
+	_, _ = w.Write(body)
+}
+
+// content is the text the turn writes: the Final object or its answer, as the call asked for
+// it, or Text where the reply names no Final.
+func (r Reply) content(structured bool) string {
+	if r.Final == nil {
+		return r.Text
+	}
+	if !structured {
+		return r.Final.Answer
+	}
+	kind := r.Final.Block.Kind
+	if kind == "" {
+		kind = "none"
+	}
+	// Written field by field, so the answer is the object's first property as the schema
+	// orders it and streams first, as a model honouring the schema writes it.
+	var out strings.Builder
+	out.WriteString(`{"answer":`)
+	out.WriteString(quote(r.Final.Answer))
+	out.WriteString(`,"block":{"kind":`)
+	out.WriteString(quote(kind))
+	out.WriteString(`,"title":`)
+	out.WriteString(quote(r.Final.Block.Title))
+	out.WriteString(`,"spec":`)
+	out.WriteString(quote(r.Final.Block.Spec))
+	out.WriteString(`},"arguments":`)
+	out.WriteString(quote(r.Final.Arguments))
+	out.WriteString(`}`)
+	return out.String()
+}
+
+func quote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 // stream writes the reply as a real completion does: the content in frames of Chunk runes, then
 // each tool call, its arguments spread over frames too, then the turn's finish_reason and [DONE].
-func stream(w http.ResponseWriter, reply Reply) {
+func stream(w http.ResponseWriter, reply Reply, content string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	control := http.NewResponseController(w)
@@ -130,17 +233,21 @@ func stream(w http.ResponseWriter, reply Reply) {
 		chunk = defaultChunk
 	}
 	wrote := false
-	write := func(delta wireDelta) {
+	write := func(choice wireChoice) {
 		if wrote && reply.Pause > 0 {
 			time.Sleep(reply.Pause)
 		}
 		wrote = true
-		frame, _ := json.Marshal(wireFrame{Choices: []wireChoice{{Delta: delta}}})
+		frame, _ := json.Marshal(wireFrame{
+			ID: "chatcmpl-goingtest", Object: "chat.completion.chunk", Created: 1, Model: "goingtest",
+			Choices: []wireChoice{choice},
+		})
 		_, _ = w.Write([]byte("data: " + string(frame) + "\n\n"))
 		_ = control.Flush()
 	}
-	for _, piece := range pieces(reply.Text, chunk) {
-		write(wireDelta{Content: piece})
+	write(wireChoice{Delta: wireDelta{Role: "assistant"}})
+	for _, piece := range pieces(content, chunk) {
+		write(wireChoice{Delta: wireDelta{Content: piece}})
 	}
 	for index, call := range reply.ToolCalls {
 		arguments := pieces(call.Arguments, chunk)
@@ -149,22 +256,19 @@ func stream(w http.ResponseWriter, reply Reply) {
 		if len(arguments) > 0 {
 			head.Function.Arguments = arguments[0]
 		}
-		write(wireDelta{ToolCalls: []wireToolCallDelta{head}})
+		write(wireChoice{Delta: wireDelta{ToolCalls: []wireToolCallDelta{head}}})
 		for _, piece := range arguments[min(1, len(arguments)):] {
 			tail := wireToolCallDelta{Index: index}
 			tail.Function.Arguments = piece
-			write(wireDelta{ToolCalls: []wireToolCallDelta{tail}})
+			write(wireChoice{Delta: wireDelta{ToolCalls: []wireToolCallDelta{tail}}})
 		}
 	}
 	finish := "stop"
 	if len(reply.ToolCalls) > 0 {
 		finish = "tool_calls"
 	}
-	if wrote && reply.Pause > 0 {
-		time.Sleep(reply.Pause)
-	}
-	final, _ := json.Marshal(wireFrame{Choices: []wireChoice{{FinishReason: finish}}})
-	_, _ = w.Write([]byte("data: " + string(final) + "\n\ndata: [DONE]\n\n"))
+	write(wireChoice{FinishReason: &finish})
+	_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	_ = control.Flush()
 }
 
@@ -179,20 +283,43 @@ func pieces(text string, size int) []string {
 }
 
 // The chat-completions shapes the model speaks. They are declared here rather than taken from
-// going, which keeps its own unexported, because a fake that speaks the protocol is what proves
-// the client speaks it too.
+// the provider, which keeps its own unexported, because a fake that speaks the protocol is what
+// proves the provider speaks it too.
 type wireRequest struct {
-	Model    string        `json:"model"`
-	Stream   bool          `json:"stream"`
-	Messages []wireMessage `json:"messages"`
-	Tools    []wireTool    `json:"tools"`
+	Model          string          `json:"model"`
+	Stream         bool            `json:"stream"`
+	Messages       []wireMessage   `json:"messages"`
+	Tools          []wireTool      `json:"tools"`
+	ResponseFormat json.RawMessage `json:"response_format"`
+	MaxTokens      int             `json:"max_tokens"`
 }
 
 type wireMessage struct {
-	Role       string         `json:"role"`
-	Content    string         `json:"content"`
-	ToolCalls  []wireToolCall `json:"tool_calls"`
-	ToolCallID string         `json:"tool_call_id"`
+	Role string `json:"role"`
+	// Content is a string, or an array of parts of which the text parts are read.
+	Content    json.RawMessage `json:"content"`
+	ToolCalls  []wireToolCall  `json:"tool_calls"`
+	ToolCallID string          `json:"tool_call_id"`
+}
+
+// text is a message's content as one string: the string itself, or its text parts joined.
+func (m wireMessage) text() string {
+	var whole string
+	if json.Unmarshal(m.Content, &whole) == nil {
+		return whole
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	_ = json.Unmarshal(m.Content, &parts)
+	var out strings.Builder
+	for _, part := range parts {
+		if part.Type == "text" {
+			out.WriteString(part.Text)
+		}
+	}
+	return out.String()
 }
 
 type wireToolCall struct {
@@ -211,13 +338,13 @@ type wireTool struct {
 	} `json:"function"`
 }
 
-// messages is the request's conversation as a caller of going states it.
-func (r wireRequest) messages() []going.Message {
-	var messages []going.Message
+// messages is the request's conversation, decoded.
+func (r wireRequest) messages() []Message {
+	var messages []Message
 	for _, message := range r.Messages {
-		converted := going.Message{Role: message.Role, Content: message.Content, ToolCallID: message.ToolCallID}
+		converted := Message{Role: message.Role, Content: message.text(), ToolCallID: message.ToolCallID}
 		for _, call := range message.ToolCalls {
-			converted.ToolCalls = append(converted.ToolCalls, going.ToolCall{
+			converted.ToolCalls = append(converted.ToolCalls, ToolCall{
 				ID:        call.ID,
 				Name:      call.Function.Name,
 				Arguments: call.Function.Arguments,
@@ -228,11 +355,11 @@ func (r wireRequest) messages() []going.Message {
 	return messages
 }
 
-// tools is the request's tools as a caller of going declares them.
-func (r wireRequest) tools() []going.Tool {
-	var tools []going.Tool
+// tools is the request's tools, decoded.
+func (r wireRequest) tools() []Tool {
+	var tools []Tool
 	for _, tool := range r.Tools {
-		tools = append(tools, going.Tool{
+		tools = append(tools, Tool{
 			Name:        tool.Function.Name,
 			Description: tool.Function.Description,
 			Parameters:  tool.Function.Parameters,
@@ -242,16 +369,21 @@ func (r wireRequest) tools() []going.Tool {
 }
 
 type wireFrame struct {
+	ID      string       `json:"id"`
+	Object  string       `json:"object"`
+	Created int64        `json:"created"`
+	Model   string       `json:"model"`
 	Choices []wireChoice `json:"choices"`
 }
 
 type wireChoice struct {
 	Index        int       `json:"index"`
 	Delta        wireDelta `json:"delta"`
-	FinishReason string    `json:"finish_reason,omitempty"`
+	FinishReason *string   `json:"finish_reason"`
 }
 
 type wireDelta struct {
+	Role      string              `json:"role,omitempty"`
 	Content   string              `json:"content,omitempty"`
 	ToolCalls []wireToolCallDelta `json:"tool_calls,omitempty"`
 }

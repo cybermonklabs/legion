@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"os"
@@ -639,6 +640,50 @@ func TestAServerErrorIsRetriedOnceAndARequestErrorIsNot(t *testing.T) {
 	}
 	if n := len(bad.requests()); n != 1 {
 		t.Errorf("a 400 took %d requests, want 1: a request error is not retried", n)
+	}
+}
+
+// A provider error carries the status the provider refused the call with, so a caller can tell a
+// request the provider will not serve (a 400, such as a response format it refuses) from one it
+// could not serve now; a 500 the retry cleared is no error and carries none, and a call that drew
+// no response at all - its token could not be read - carries none either.
+func TestAProviderErrorCarriesTheStatusItWasRefusedWith(t *testing.T) {
+	t.Parallel()
+	refused := reply{status: http.StatusBadRequest, body: []byte(`{"error":{"message":"response_format is not supported","type":"invalid_request_error"}}`)}
+	overloaded := reply{
+		status: http.StatusInternalServerError, headers: map[string]string{"Retry-After": "0"},
+		body: []byte(`{"error":{"message":"overloaded","type":"server_error"}}`),
+	}
+	answered := chatStream("stop", chatUsage{Prompt: 1, Completion: 1}, "The note says plum.")
+	for _, c := range []struct {
+		name    string
+		kind    Kind
+		replies []reply
+		token   bool
+		fault   Fault
+		status  int
+	}{
+		{name: "a Chat Completions 400", kind: OpenAIChat, replies: []reply{refused}, fault: FaultProviderError, status: http.StatusBadRequest},
+		{name: "a Messages 400", kind: AnthropicMessages, replies: []reply{{status: http.StatusBadRequest, body: []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}`)}}, fault: FaultProviderError, status: http.StatusBadRequest},
+		{name: "a 500 the retry did not clear", kind: OpenAIChat, replies: []reply{overloaded, overloaded}, fault: FaultProviderError, status: http.StatusInternalServerError},
+		{name: "a 500 the retry cleared", kind: OpenAIChat, replies: []reply{overloaded, answered}},
+		{name: "a token that cannot be read", kind: OpenAIChat, replies: []reply{answered}, token: true, fault: FaultProviderError},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStandIn(t, c.replies...)
+			f := newFixture(t, s, c.kind, 1)
+			if c.token {
+				f.req.Model.Endpoint.Token = func(context.Context) (string, error) { return "", errors.New("the token file is gone") }
+			}
+			result, err := Run(context.Background(), f.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Fault != c.fault || result.Status != c.status {
+				t.Errorf("fault %q with status %d, want %q with status %d: %s", result.Fault, result.Status, c.fault, c.status, result.Detail)
+			}
+		})
 	}
 }
 
