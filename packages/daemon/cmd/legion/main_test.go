@@ -926,10 +926,10 @@ func TestStartCheckConfigNamesTheBrokenKey(t *testing.T) {
 // all the same, since nothing reads it and a refusal here would stop a deployment over a word in
 // a file. --check-config exits 0, prints the warning after Config OK and before the project's
 // production-check line and the capability gaps, and the warning says what the refusal would
-// have said: the key, that nothing counts fix attempts, that a red CI verdict always sends the
-// work back to the implementer, that the architect decides when to stop, and review_round_cap,
-// the one cap left that blocks a pull
-// request. The refused keys of TestStartCheckConfigNamesTheBrokenKey (worker_cap,
+// have said: the key, that nothing counts fix attempts, that no CI verdict sends work back on its
+// own — what a settlement names is told to the roles that work the issue
+// (dispatch://INFRA-714/spec R1) — that the architect decides when to stop, and review_round_cap,
+// the one cap left that blocks a pull request. The refused keys of TestStartCheckConfigNamesTheBrokenKey (worker_cap,
 // resync_interval_seconds) are the control that the two kinds stay apart.
 func TestStartCheckConfigWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	legionState(t)
@@ -938,7 +938,7 @@ func TestStartCheckConfigWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
 
-	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, a red CI verdict always sends the work back to the implementer however many came before, and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)\n"
+	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)\n"
 	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProductionCheck + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
@@ -1852,10 +1852,20 @@ func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 }
 
 // The operator's guide prints the waiting-line block as its sample, so the block is built here
-// from the state the guide describes and read back out of the guide: the header with the count,
+// from the state the guide describes and read back out of waiting_line_block_extract.txt, the
+// copy of the guide's two passages committed beside this package: the header with the count,
 // one member of each part with its key, its place, its part and the daemon's sentence, and the
 // two lines the block takes instead — nothing waiting, and a daemon that served this caller no
 // sentence at all. A reader of the guide meets all four.
+//
+// They are read there and never in the guide itself: a test that reads the guide puts the guide
+// in this job's filter — a declared read applies to every compiled source file of a run — and a
+// documentation edit would then start the whole daemon Go lane. What holds the copy to the
+// guide is internal/textcheck's TestTheWaitingLineBlockExtractIsTheGuidesWaitingLineBlock, in
+// the job whose subject is a file's words (INFRA-1413). That copy is its own file rather than
+// more lines of awaiting_summary_extract.txt, which quotes the same sample, because the guide
+// keeps these two passages thirty lines apart and one quotation of one contiguous passage
+// cannot hold both; its header says the rest.
 //
 // The sentences are written here rather than read from the render, which is another package's
 // and unexported (projection's waitingLineReason, held to R5's words by that package's own
@@ -1875,18 +1885,24 @@ func TestTheShippedWordsNameTheWaitingLineBlock(t *testing.T) {
 		"WIDGETS-14": waitingMember("WIDGETS-14", 1, len(waiting), "returned", returned),
 		"WIDGETS-15": waitingMember("WIDGETS-15", 2, len(waiting), "starting", starting),
 	}
-	guide := filepath.Join("..", "..", "..", "..", "docs", "site", "src", "content", "docs", "legion", "running-legion.md")
-	body, err := os.ReadFile(guide)
+	const extract = "waiting_line_block_extract.txt"
+	body, err := os.ReadFile(extract)
 	if err != nil {
-		t.Fatalf("read %s: %v", guide, err)
+		t.Fatalf("read %s: %v", extract, err)
+	}
+	// The header is the run of `#` lines the copy opens with; what stands under it is the
+	// guide's own bytes, each passage under the `# <path>` line that names it.
+	quoted := string(body)
+	for strings.HasPrefix(quoted, "#") {
+		_, quoted, _ = strings.Cut(quoted, "\n")
 	}
 	// A member of `waiting` whose issue carries no view at all, which is the body a daemon below
 	// the contract that added the sentence serves: the block says so on one line.
 	noReasons := waitingLineLines(waiting[:1], map[string]api.Issue{})
 	printed := append(waitingLineLines(waiting, issues), append(waitingLineLines(nil, nil), noReasons...)...)
 	for _, line := range printed {
-		if !strings.Contains(string(body), line) {
-			t.Errorf("running-legion.md does not carry %q", line)
+		if !strings.Contains(quoted, line) {
+			t.Errorf("%s does not carry %q, a line the guide's waiting-line block prints", extract, line)
 		}
 	}
 }
@@ -2111,7 +2127,7 @@ func TestPlainStateNamesTheWakesThePacingHolds(t *testing.T) {
 func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
-	missing := "Dispatch's GitHub App is not installed on acme/widgets: GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes"
+	missing := "Dispatch's GitHub App is not installed on acme/widgets: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
 	for _, tc := range []struct {
 		name, gaps, want string
 	}{

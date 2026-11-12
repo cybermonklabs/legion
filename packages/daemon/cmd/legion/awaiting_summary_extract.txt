@@ -13,6 +13,10 @@
 # itself. Neither half alone is the guarantee: a sample corrected in the guide alone fails the
 # text-check half, and a renderer that stopped printing this line fails the product half.
 #
+# waiting_line_block_extract.txt beside this file quotes the `waiting line` block of this same
+# sample, which its own test is held to, so an edit of the sample is repasted into both copies
+# in the commit that makes it; that file's header says why the two are not one.
+#
 # The format: the lines that open with `#` are this header, and everything under the blank line
 # below is the guide's own bytes, indentation included.
 

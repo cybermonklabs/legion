@@ -184,8 +184,11 @@ func replayFixture(function string, input json.RawMessage) ([]byte, error) {
 	case "reduceDispatchEvent":
 		return replayDispatchDecision(input)
 	case "reduceGithubEvent":
-		// The shipped GitHub reducer's recorded answer is its fix-attempt count, and nothing counts
-		// one since dispatch://INFRA-956 R4, so there is nothing of it left to replay.
+		// The shipped GitHub reducer's recorded answer is its fix-attempt count, and no daemon
+		// counts one since a CI result stopped moving an issue (dispatch://INFRA-714/spec R1), so
+		// there is nothing of it left to replay. The records stay for the TypeScript reducer they
+		// were taken from, held to the directory contract
+		// (TestFixtureRecordsFollowTheDirectoryContract).
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("unknown fixture function %q", function)
@@ -212,9 +215,9 @@ func replayDispatchDecision(input json.RawMessage) ([]byte, error) {
 
 // keptFixtureOutput is the part of a record's output the Go classifier answers for: the shipped
 // Dispatch reducer's gate, and of an effective outcome its failing checks, since the Go classifier
-// keeps no settlement verdict of its own (the base branch's required checks decide, HeadVerdict).
-// The GitHub reducer's own answer was its fix-attempt count, which nothing counts since
-// dispatch://INFRA-956 R4, so its fixtures are replayed no longer.
+// keeps no settlement verdict of its own. A GitHub event's recorded decision was its fix-attempt
+// count alone, which nothing counts any more, so those records are replayed no longer
+// (replayFixture) and none of them reaches here.
 func keptFixtureOutput(function string, raw json.RawMessage) ([]byte, error) {
 	keys := map[string][]string{
 		"reduceDispatchEvent": {"gate"},
@@ -293,7 +296,6 @@ type fixturePullRequest struct {
 	Generation     *int64                 `json:"ciSettlementGeneration"`
 	Snapshot       *string                `json:"ciSnapshot"`
 	PendingPush    *record.ClassifiedPush `json:"pendingPush"`
-	PlannedRed     bool                   `json:"plannedRed"`
 }
 
 func (fixture fixturePullRequest) record() record.PullRequest {
@@ -323,17 +325,14 @@ func (fixture fixturePullRequest) record() record.PullRequest {
 		pushes = []record.ClassifiedPush{pending}
 	}
 	// The shipped state's verdict is always its head's (a new head cleared it), and a state that
-	// records one has settled, so its head is the checked head. The shipped daemon judged every
-	// check its settlement named, so the replay's base branch requires each check the state names
-	// failing: a red state is then red under the required set (HeadVerdict) too.
+	// records one has settled, so its head is the checked head.
 	checkedHead := ""
 	if fixture.Verdict != "" {
 		checkedHead = fixture.HeadSHA
 	}
 	return record.PullRequest{Issue: fixture.Key, Repo: fixture.Repo, Number: fixture.Number, Branch: fixture.Branch, HeadSHA: fixture.HeadSHA, CheckedHead: checkedHead,
 		HeadUpdatedAt: timestampJSON(fixture.HeadUpdatedAt), Failing: append([]string{}, fixture.Failing...),
-		CheckRuns: checkRuns, Generation: generation, Snapshot: snapshot,
-		Pushes: pushes, PlannedRed: fixture.PlannedRed, Required: append([]string{}, fixture.Failing...)}
+		CheckRuns: checkRuns, Generation: generation, Snapshot: snapshot, Pushes: pushes}
 }
 
 type fixtureGate struct {

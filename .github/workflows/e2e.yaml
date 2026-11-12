@@ -36,7 +36,7 @@ on:
   workflow_dispatch:
     inputs:
       script:
-        description: The scripts/e2e proof to run, with or without its .sh (merged-root-waits, say)
+        description: The scripts/e2e proof to run, with or without its .sh (child-adoption, say)
         type: string
         required: true
   pull_request:
@@ -86,8 +86,8 @@ jobs:
         run: .github/scripts/select-e2e-proofs.sh
 
   # One job per proof. Its limit is the script's own row, measured from that script's header with
-  # headroom: no-required-checks waits for three reads of what each base requires, so a run takes
-  # about seven minutes, and every proof builds its driver first.
+  # headroom: child-adoption drives eleven steps of a whole booted daemon through its envelopes
+  # and routes, and every proof builds its driver first.
   proof:
     needs: select
     name: ${{ matrix.proof }}
@@ -102,7 +102,7 @@ jobs:
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml): the
-        # image and the shape ci.yaml's test job declares.
+        # image and the shape ci.yaml's daemon-go job declares.
         image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
         env:
           POSTGRES_PASSWORD: ci
@@ -115,7 +115,7 @@ jobs:
     env:
       # One service for every proof here. Each script names the PostgreSQL it migrates with a
       # variable of its own, and reads no other, so the three names below are one service, as
-      # ci.yaml's test job sets its three. Each job takes a runner and a service of its own, so
+      # ci.yaml's daemon-go job sets its three. Each job takes a runner and a service of its own, so
       # two proofs never share a database. dispatch-claimant-delivery.sh resets the `public`
       # schema of the database DATABASE_URL names, which is why it insists on a loopback host.
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable

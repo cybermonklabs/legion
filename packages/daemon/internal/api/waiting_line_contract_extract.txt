@@ -11,7 +11,10 @@
 # job's filter - a declared read applies to every compiled source file of a run - and an edit of
 # a guide page or a changelog fragment would then start the whole daemon Go lane. The product
 # half scans the files of packages/daemon that name the contract and this one beside them, and
-# holds every number it finds to waitingLineContract; packages/daemon/internal/textcheck's
+# holds each number it finds to the constant the sentence it stands in states: waitingLineContract
+# for a window of the field itself, and whyAndLineFieldsContract for one naming `partPlace`, which
+# is the boundary the line's own members arrived at (internal/api/waiting_line_test.go:256-259);
+# packages/daemon/internal/textcheck's
 # TestTheWaitingLineContractExtractIsEveryWindowOfTheShippedTexts recomputes these windows from
 # the seven files themselves and fails when a text and this copy have drifted apart, printing
 # what it computed. Neither half alone is the guarantee: together they are the one the single
@@ -23,31 +26,33 @@
 #
 # The format: a line `# <path>` opens one window of that file, and every line under it, to the
 # next such line, is that window's own bytes. A file the rule yields no window for has no
-# section, and docs/site/src/content/docs/legion/troubleshooting.md is that file today - it
-# names the field, and the word contract only of a plugin speaking another one, never a number
-# beside the field. A window it ever gains is one this file must gain with it.
+# section, and that is a state a file moves in and out of as its own words change:
+# docs/site/src/content/docs/legion/troubleshooting.md had no section when this copy was written
+# and has one now. A window a file gains is one this copy must gain with it.
+
 # packages/contracts/src/legion-api.ts
 pec` step's row, which a reader that asks one question of one gate takes. */
   gatedSteps: z.array(legionGatedStepView).optional(),
   slot: legionSlotView.optional(),
   /** Where the issue stands in `admission.waiting` (contract 58): present only for an issue that
-   * list names, so every issue the line does not carry has none, and a
-   * daemon before contract 58 writes none at all, which is why a reader takes it as optional. */
+   * list names, so every issue the line does not carry has none, and a daemon before contract 58
+   * writes none at all, which is why a reader takes it as optional. */
   waitingLine: l
 
 # packages/contracts/src/legion-api.ts
-ot: legionSlotView.optional(),
+
+  slot: legionSlotView.optional(),
   /** Where the issue stands in `admission.waiting` (contract 58): present only for an issue that
-   * list names, so every issue the line does not carry has none, and a
-   * daemon before contract 58 writes none at all, which is why a reader takes it as optional. */
+   * list names, so every issue the line does not carry has none, and a daemon before contract 58
+   * writes none at all, which is why a reader takes it as optional. */
   waitingLine: legionWaitingLineView.optional(),
   /** The one rendered answer an issue that is not working now carries: which fact holds it, and
-   * t
+ 
 
 # packages/pi-legion/AGENTS.md
-it of the one plugin into this package and `@sjawhar/pi-envoy`
-(LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 85's `why` and the
+oses `awaiting_merge`, a pull request carries `mergeState` in place of
+`checksVerdict`, a phase carries `pass`, every claim view carries `lastTurnStart` and
+`lastTurnEnd`, and `handoff_complete` takes no `ready`), after contract 85's `why` and the
 `waitingLine` fields beside it
 (INFRA-2554: each member of the line carries `part`, `kind`, `partPlace`, `partLength`,
 `holdsSlot`, `since` for a member whose work came back, `rootRank`, `ownRank` and `r

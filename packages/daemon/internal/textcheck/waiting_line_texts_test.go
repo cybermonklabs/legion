@@ -9,26 +9,29 @@ import (
 	"testing"
 )
 
-// The waiting line ships in three kinds of text outside packages/daemon: the contract a caller
+// The waiting line ships in four kinds of text outside packages/daemon: the contract a caller
 // is told the place arrives at, the fragment that states where the line puts an issue whose
-// work came back, and the `legion state` sample an operator reads the count in. Three tests of
-// the daemon hold those texts to the daemon's own constants, and none of them reads a text any
+// work came back, the `legion state` sample an operator reads the count in, and the guide's
+// words for the waiting-line block that sample prints. Four tests of the daemon hold those
+// texts to the daemon's own constants, and none of them reads a text any
 // more: each reads a copy committed beside it - internal/api/waiting_line_contract_extract.txt,
-// internal/workflow/waiting_line_words_extract.txt and cmd/legion/awaiting_summary_extract.txt -
+// internal/workflow/waiting_line_words_extract.txt, cmd/legion/awaiting_summary_extract.txt and
+// cmd/legion/waiting_line_block_extract.txt -
 // because a test that reads a shipped text puts that text in its job's filter, a declared read
 // applying to every compiled source file of a run, and an edit of AGENTS.md or a guide page
 // would then start the whole 20-minute daemon Go lane. This file is the other half, in the job
 // whose subject is a file's words, where a documentation edit is the run that should start: it
 // holds each copy to the text it was taken from, and carries the one check no copy can carry.
-// Neither half alone is the guarantee: together they are the one the three tests used to give.
+// Neither half alone is the guarantee: together they are the one the four tests used to give.
 // (INFRA-1413.)
 //
-// What these four tests prove: that the api package's copy is every window of the seven texts
+// What these tests prove: that the api package's copy is every window of the seven texts
 // that names the field's contract, in their own bytes; that every quotation of the workflow
 // package's copy is still in the file it names, in the one-line form that copy quotes it in,
 // and that no file of its list has lost its section; that the guide still carries the sample
-// line cmd/legion renders; and that no shipped text of that list claims a position in the line,
-// which is a whole-file negative that no excerpt can prove and so could not stay with the three
+// line cmd/legion renders and both passages its waiting-line block is held to; and that no
+// shipped text of that list claims a position in the line,
+// which is a whole-file negative that no excerpt can prove and so could not stay with the
 // product tests.
 //
 // What they do not prove: that a sentence around a quoted name is true, which stays a reader's
@@ -45,6 +48,7 @@ const (
 	waitingLineContractExtract = "../api/waiting_line_contract_extract.txt"
 	waitingLineWordsExtract    = "../workflow/waiting_line_words_extract.txt"
 	awaitingSummaryExtract     = "../../cmd/legion/awaiting_summary_extract.txt"
+	waitingLineBlockExtract    = "../../cmd/legion/waiting_line_block_extract.txt"
 	runningLegionGuide         = "docs/site/src/content/docs/legion/running-legion.md"
 	// The window internal/api/waiting_line_test.go takes around a number it finds, and the
 	// pattern it finds one by. The two rules are one rule in two files: a change to either alone
@@ -74,8 +78,10 @@ const (
 
 // The seven shipped texts outside packages/daemon that internal/api's contract test used to read
 // itself, in its own order: every window of these is what the committed copy must hold. A text
-// that yields no window has no section in the copy, and troubleshooting.md is that text today,
-// which is why it stays on this list - a window it ever gains is one the copy must gain with it.
+// that yields no window has no section in the copy, and whether a text is in that state is this
+// check's to answer on every run rather than the list's to record: troubleshooting.md yielded
+// none when this list was written and has a section today, which is why a text stays on the
+// list either way - a window it gains is one the copy must gain with it.
 var waitingLineContractTexts = []string{
 	"packages/contracts/src/legion-api.ts",
 	"packages/pi-legion/AGENTS.md",
@@ -265,6 +271,28 @@ func TestTheAwaitingSummaryExtractIsTheGuidesWaitingLineSample(t *testing.T) {
 		t.Errorf("%s is no longer in %s, which cmd/legion's TestTheShippedWordsNameTheWaitingLineCount "+
 			"reads it for:\n%s\nquote the guide's sample as it prints now, in the same commit as the "+
 			"edit that changed it", awaitingSummaryExtract, runningLegionGuide, sample)
+	}
+}
+
+// The guide still carries both passages cmd/legion's waiting-line block is held to: the block of
+// its `legion state` sample, and the sentence naming the two lines the block takes instead.
+// cmd/legion's TestTheShippedWordsNameTheWaitingLineBlock renders those four lines and finds
+// them in the committed copy; what keeps the copy the guide's is this. The copy quotes two
+// passages the guide keeps thirty lines apart, so it carries a section per passage and each is
+// held to the guide on its own.
+func TestTheWaitingLineBlockExtractIsTheGuidesWaitingLineBlock(t *testing.T) {
+	guide := shippedText(t, runningLegionGuide)
+	for _, passage := range quotedSections(t, waitingLineBlockExtract, func(marker string) (quotedText, bool) {
+		if marker != runningLegionGuide {
+			return quotedText{}, false
+		}
+		return quotedText{path: marker}, true
+	}) {
+		if !strings.Contains(guide, passage.body) {
+			t.Errorf("%s is no longer in %s, which cmd/legion's TestTheShippedWordsNameTheWaitingLineBlock "+
+				"reads it for:\n%s\nquote the guide's passage as it reads now, in the same commit as the "+
+				"edit that changed it", waitingLineBlockExtract, runningLegionGuide, passage.body)
+		}
 	}
 }
 

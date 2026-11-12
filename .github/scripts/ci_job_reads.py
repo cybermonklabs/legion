@@ -361,8 +361,7 @@ RULES = {
     f"{DAEMON}/internal/config/stalldefaults_test.go": reads(
         (f"{FIX}/daemon-api/*", "internal/config/stalldefaults_test.go:72 (the :67 write is under -update, which CI never passes)")),
     f"{DAEMON}/internal/daemon/capability_reports_test.go": reads((f"{FIX}/capability-redaction.json", "internal/daemon/capability_reports_test.go:315")),
-    f"{DAEMON}/internal/daemon/check_settlement_test.go": reads((f"{FIX}/checks-settlement/*", "internal/daemon/check_settlement_test.go:57")),
-    f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1324")),
+    f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1331")),
     # The harness main's #2780 added under the e2e tag for the two agent proofs it brought
     # (claim_compaction_live_test.go and provider_error_retry_live_test.go): it builds the
     # `legion` their panes run and packs both Oh My Pi plugins into the run's own profile. No job
@@ -414,56 +413,59 @@ RULES = {
         (f"{DAEMON}/internal/runtime/sandbox/reclaim_doc_extract.txt",
          "internal/textcheck/reclaim_doc_test.go:123 reads the committed copy it holds the guide's paragraph to (reclaimExtractLists)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
-        # The three copies of the shipped texts, each committed beside the package whose own
+        # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.
         (f"{DAEMON}/internal/api/waiting_line_contract_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:352 reads it as ../api/waiting_line_contract_extract.txt"),
+         "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../api/waiting_line_contract_extract.txt"),
         (f"{DAEMON}/internal/workflow/waiting_line_words_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:352 reads it as ../workflow/waiting_line_words_extract.txt"),
+         "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../workflow/waiting_line_words_extract.txt"),
         (f"{DAEMON}/cmd/legion/awaiting_summary_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:352 reads it as ../../cmd/legion/awaiting_summary_extract.txt"),
+         "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../../cmd/legion/awaiting_summary_extract.txt"),
+        (f"{DAEMON}/cmd/legion/waiting_line_block_extract.txt",
+         "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../../cmd/legion/waiting_line_block_extract.txt"),
         # The texts those copies are held to, each read under ../../../.. by shippedText: the
         # seven the contract windows are recomputed from, the eight the band list names, and
         # those eight again read whole for the ban.
-        ("AGENTS.md", "internal/textcheck/waiting_line_texts_test.go:362 reads it under ../../../.."),
+        ("AGENTS.md", "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.."),
         ("docs/site/src/content/docs/legion/concepts.md",
-         "internal/textcheck/waiting_line_texts_test.go:362 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.."),
         ("docs/site/src/content/docs/legion/running-legion.md",
-         "internal/textcheck/waiting_line_texts_test.go:362 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.."),
         ("docs/site/src/content/docs/legion/troubleshooting.md",
-         "internal/textcheck/waiting_line_texts_test.go:362 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.."),
         ("packages/contracts/src/legion-api.ts",
-         "internal/textcheck/waiting_line_texts_test.go:362 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.."),
         ("packages/pi-legion/AGENTS.md",
-         "internal/textcheck/waiting_line_texts_test.go:362 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.."),
         ("packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml",
-         "internal/textcheck/waiting_line_texts_test.go:362 reads that one fragment under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:390 reads that one fragment under ../../../.."),
         ("packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml",
-         "internal/textcheck/waiting_line_texts_test.go:362 reads that one fragment under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:390 reads that one fragment under ../../../.."),
         ("packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml",
-         "internal/textcheck/waiting_line_texts_test.go:362 reads that one fragment under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:390 reads that one fragment under ../../../.."),
         ("skills/legion-architect/references/acceptance.md",
-         "internal/textcheck/waiting_line_texts_test.go:362 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.."),
         ("skills/legion-controller/references/admission.md",
-         "internal/textcheck/waiting_line_texts_test.go:362 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.."),
         ("skills/legion-controller/references/wakes.md",
-         "internal/textcheck/waiting_line_texts_test.go:362 reads it under ../../../..")),
-    # The three checks main's #2989 put under packages/daemon read no text outside it any more:
-    # each is held to a copy committed beside its own package, and the row above is what holds
-    # those copies to the texts, in the text-check job, where a documentation edit is the run
-    # that should start (dispatch://INFRA-1413). cmd/legion/main_test.go is left with no row at
-    # all - awaiting_summary_extract.txt stands in its own directory - and what is left of these
-    # two is what each reads of packages/daemon outside its own package, which daemon_go_tests
-    # covers with the module itself.
+         "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../..")),
+    # The three checks main's #2989 put under packages/daemon, and the waiting-line block check
+    # main's #3718 brought, read no text outside it any more: each is held to a copy committed
+    # beside its own package, and the row above is what holds those copies to the texts, in the
+    # text-check job, where a documentation edit is the run that should start
+    # (dispatch://INFRA-1413). cmd/legion/main_test.go is left with no row at all -
+    # awaiting_summary_extract.txt and waiting_line_block_extract.txt stand in its own directory
+    # - and what is left of the two rows below is what each reads of packages/daemon outside its
+    # own package, which daemon_go_tests covers with the module itself.
     f"{DAEMON}/internal/api/waiting_line_test.go": reads(
         (f"{DAEMON}/cmd/legion/main.go",
-         "internal/api/waiting_line_test.go:201 reads every name of its list under ../../../.."),
+         "internal/api/waiting_line_test.go:240 reads every name of its list under the root it joins at :226"),
         (f"{DAEMON}/cmd/legion/main_test.go",
-         "internal/api/waiting_line_test.go:201 reads every name of its list under ../../../.."),
+         "internal/api/waiting_line_test.go:240 reads every name of its list under the root it joins at :226"),
         (f"{DAEMON}/internal/projection/project.go",
-         "internal/api/waiting_line_test.go:201 reads every name of its list under ../../../.."),
+         "internal/api/waiting_line_test.go:240 reads every name of its list under the root it joins at :226"),
         (f"{DAEMON}/internal/projection/project_test.go",
-         "internal/api/waiting_line_test.go:201 reads every name of its list under ../../../..")),
+         "internal/api/waiting_line_test.go:240 reads every name of its list under the root it joins at :226")),
     f"{DAEMON}/internal/workflow/waiting_line_band_test.go": reads(
         (f"{DAEMON}/cmd/legion/main.go",
          "internal/workflow/waiting_line_band_test.go:62 reads every file of its list under ../../../.."),
