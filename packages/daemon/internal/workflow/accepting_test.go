@@ -30,7 +30,7 @@ func seedAccepting(t *testing.T, pool *pgxpool.Pool) {
 }
 
 // R2: the reviewer's approval moves the issue into accepting and starts nobody, though accepting
-// is a phase RoleFor answers the architect for. The board already reads needs_review, so no
+// is a phase phase.RoleFor answers the architect for. The board already reads needs_review, so no
 // status is written; the tree's architect is already live, so no worker is started, no architect
 // phase row is written and no assignment is minted (a start row is what mints one); the
 // reviewer's phase-finished is the architect's cue to accept.
@@ -118,7 +118,7 @@ func TestSignOffInAcceptingStartsRetro(t *testing.T) {
 }
 
 // The architect accepts with sign_off: its handoff_complete in accepting is refused and records
-// nothing, before the phase gate that RoleFor(accepting) would let it through.
+// nothing, before the phase gate that phase.RoleFor(accepting) would let it through.
 func TestTheArchitectsCompletionInAcceptingIsRefused(t *testing.T) {
 	pool := migratedPool(t)
 	seedAccepting(t, pool)
@@ -220,7 +220,7 @@ func TestABackwardMoveOntoAcceptingWritesNeedsReview(t *testing.T) {
 	for _, from := range []phase.Phase{phase.Retro, phase.Merging} {
 		t.Run(string(from), func(t *testing.T) {
 			pool := migratedPool(t)
-			role := RoleFor(from)
+			role := phase.RoleFor(from)
 			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: from, Generation: 1, Status: "retro", Rank: "U"})
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: role, Claim: claim.Token(string(role) + "-claim")})
 			applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil),

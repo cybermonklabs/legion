@@ -1,8 +1,11 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // A tree's architect is who every notice of its tree reaches, so its own claim failing — its
@@ -133,6 +137,123 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 	}
 }
 
+// A phase worker's claim failing holds the issue, and the two notices that say so — the hold the
+// architect and the controller read, and the worker-died beside it — are all an agent has to
+// decide between retrying the phase and escalating it. So each names the failure the fact
+// carries: the one word for what failed the claim, the sentence written beside that word, and
+// each of the four counts the failure left against the limit it ran out at, deaths against the
+// launch failure limit, which is the limit the supervisor measures them by (record.NoticeFailure).
+// The hold carries no `reason`: that field keeps its one value, `escalated`, which both agents'
+// texts read as the architect having already escalated this hold.
+//
+// The other three shapes of worker-died are here beside it, because the evidence each carries is
+// a decision of its own: the worker-died of a role that does not work the issue's phase names the
+// failure too, since that role's architect decides whether to start it again on the same
+// evidence; the tree architect's own names none, as R5 has it, and neither does the one that ends
+// a closed issue's production-check look, whose reason already names the cause.
+func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
+	const sentence = "the planner's process died with its task outstanding, and its relaunches ran out"
+	failed := func(issue string, role claim.Role) intake.ClaimFailed {
+		return intake.ClaimFailed{Issue: issue, Role: role, Reason: sentence, Cause: supervise.CauseDied,
+			Budgets: supervise.Budgets{LaunchFailures: 3, Deaths: 2, PromptFailures: 1, PromptRetires: 2},
+			Limits:  supervise.Limits{LaunchFailures: 3, PromptFailures: 5, PromptRetires: 2}}
+	}
+	// Every count against its own limit, and no two pairs alike, so a notice that paired a count
+	// with another's limit reads differently here.
+	named := &record.NoticeFailure{Cause: string(supervise.CauseDied), Detail: sentence,
+		LaunchFailures: record.FailureBudget{Count: 3, Limit: 3},
+		Deaths:         record.FailureBudget{Count: 2, Limit: 3},
+		PromptFailures: record.FailureBudget{Count: 1, Limit: 5},
+		PromptRetires:  record.FailureBudget{Count: 2, Limit: 2}}
+	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"}
+
+	t.Run("the hold, its controller copy and the worker-died", func(t *testing.T) {
+		pool := migratedPool(t)
+		ctx := context.Background()
+		seedIssue(t, pool, root)
+
+		if _, err := intake.ApplyFact(ctx, pool, "supervise", "planner-failed", failed(root.Key, claim.RolePlanner), testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+			t.Fatalf("ApplyFact the planner's failed claim: %v", err)
+		}
+		var gotPhase phase.Phase
+		var heldFrom *string
+		if err := pool.QueryRow(ctx, "select phase, held_from from issues where key = $1", root.Key).Scan(&gotPhase, &heldFrom); err != nil {
+			t.Fatalf("read the root: %v", err)
+		}
+		if gotPhase != phase.Held || heldFrom == nil || *heldFrom != string(phase.Planning) {
+			t.Fatalf("root phase = %s held from %v, want held from planning", gotPhase, heldFrom)
+		}
+		held := record.Notice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Failure: named}
+		died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Planning, Failure: named}
+		got := noticeRows(t, pool)
+		if want := []record.OutboxPayload{held, record.ControllerNotice(held), died}; !sameNotices(got, want) {
+			t.Fatalf("notice rows = %+v, want %+v: the hold, its controller copy and the worker-died, each naming the failure", got, want)
+		}
+		// Decoded from the stored rows, so each field above crossed the wire; the hold's `reason`
+		// is read off the row's own keys, since a notice that carried one as "" decodes the same.
+		for _, payload := range got {
+			if _, err := record.NewOutboxRow(root.Key, payload, time.Now()); err != nil {
+				t.Fatalf("the %T the failure wrote is no valid outbox payload: %v", payload, err)
+			}
+		}
+		var keys []string
+		if err := pool.QueryRow(ctx, `select array(select jsonb_object_keys(payload))
+			from outbox where kind = $1 and payload->>'kind' = 'held'`, string(record.OutboxKindNotice)).Scan(&keys); err != nil {
+			t.Fatalf("read the held notice's keys: %v", err)
+		}
+		if slices.Contains(keys, "reason") || !slices.Contains(keys, "failure") {
+			t.Fatalf("the held notice's keys = %v, want the failure and no reason: the reason is the escalation's word alone", keys)
+		}
+	})
+
+	t.Run("a tree architect's claim names none", func(t *testing.T) {
+		pool := migratedPool(t)
+		seedIssue(t, pool, root)
+
+		if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "architect-failed", failed(root.Key, claim.RoleArchitect), testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+			t.Fatalf("ApplyFact the architect's failed claim: %v", err)
+		}
+		died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning}
+		if got, want := noticeRows(t, pool), []record.OutboxPayload{died, record.ControllerNotice(died)}; !sameNotices(got, want) {
+			t.Fatalf("notice rows = %+v, want %+v, naming no failure", got, want)
+		}
+	})
+
+	t.Run("a role that does not work the phase names it beside its own reason", func(t *testing.T) {
+		pool := migratedPool(t)
+		working := root
+		working.Phase = phase.Implementing
+		child := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root.Key, Parent: &root.Key, Project: "LEGION", Title: "child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"}
+		seedIssue(t, pool, working)
+		seedIssue(t, pool, child)
+
+		if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "planner-failed", failed(child.Key, claim.RolePlanner), testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+			t.Fatalf("ApplyFact the finished planner's failed claim: %v", err)
+		}
+		died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Implementing, Failure: named,
+			Reason: "the planner does not work LEGION-209's phase implementing; nothing is held"}
+		if got, want := noticeRows(t, pool), []record.OutboxPayload{died}; !sameNotices(got, want) {
+			t.Fatalf("notice rows = %+v, want %+v: the sentence it had, and the failure beside it", got, want)
+		}
+	})
+
+	t.Run("a production check look names none", func(t *testing.T) {
+		rig := childCheckRig(t)
+		rig.apply("tester-failed", failed("LEGION-209", claim.RoleTester))
+		var died []record.Notice
+		for _, payload := range noticeRows(t, rig.pool) {
+			if notice, ok := payload.(record.Notice); ok && notice.Kind == "worker-died" {
+				died = append(died, notice)
+			}
+		}
+		want := record.Notice{Kind: "worker-died", Role: claim.RoleTester,
+			Reason: "production check look 1 lost its tester: " + sentence}
+		if len(died) != 1 || !reflect.DeepEqual(died[0], want) {
+			t.Fatalf("worker-died notices of the ended look = %+v, want %+v once: its reason names the failure already", died, want)
+		}
+	})
+}
+
 // An escalation is recorded on the held issue as well as noticed to the architect that owns the
 // issue and to the controller, so a controller that starts after it finds it in the state it reads at boot
 // (issues.<KEY>.holdReason); the retry that ends the hold clears it.
@@ -155,6 +276,46 @@ func TestAnEscalationIsRecordedOnTheHoldForAControllerThatStartsLater(t *testing
 	}
 	if got, reason := projectedHold(t, pool, "LEGION-208"); got != phase.Planning || reason != "" {
 		t.Fatalf("after the retry the state reads phase %s hold reason %q, want planning and none", got, reason)
+	}
+}
+
+// An escalation carries the architect's own words where its retry_or_escalate named any: the
+// controller must act on the hold, and why the architect escalated it is what it acts on. They
+// ride a field of their own, since `reason` keeps its one value `escalated`, which both agents'
+// texts read as the hold having been escalated at all. An escalation that named no reason
+// carries no such key.
+func TestAnEscalationCarriesTheArchitectsReason(t *testing.T) {
+	const said = "the tester has failed twice on the same flake; a person should look at the runner"
+	for _, tc := range []struct {
+		name   string
+		reason string
+	}{
+		{name: "the architect names a reason", reason: said},
+		{name: "the architect names none"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
+				Project: "LEGION", Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Testing}, Generation: 1, Status: "testing", Rank: "U"})
+			if _, err := intake.ApplyFact(context.Background(), pool, "architect", "escalate",
+				intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.EscalateDecision, Reason: tc.reason},
+				testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+				t.Fatalf("escalate: %v", err)
+			}
+			escalated := record.Notice{Kind: "held", Phase: phase.Testing, Reason: "escalated", Escalation: tc.reason}
+			if got, want := noticeRows(t, pool), []record.OutboxPayload{escalated, record.ControllerNotice(escalated)}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("notice rows = %+v, want %+v: the architect's words beside the escalation, to the issue and to the controller", got, want)
+			}
+			// Read off the stored row's own keys, since a notice carrying "" decodes the same.
+			var keys []string
+			if err := pool.QueryRow(t.Context(), `select array(select jsonb_object_keys(payload))
+				from outbox where kind = $1 and payload->>'kind' = 'held'`, string(record.OutboxKindNotice)).Scan(&keys); err != nil {
+				t.Fatalf("read the held notice's keys: %v", err)
+			}
+			if slices.Contains(keys, "escalation") != (tc.reason != "") {
+				t.Fatalf("the held notice's keys = %v, want the escalation key only where the architect named a reason", keys)
+			}
+		})
 	}
 }
 
@@ -330,17 +491,235 @@ func TestARetrysTaskNamesThePullRequest(t *testing.T) {
 	if _, err := intake.ApplyFact(ctx, pool, "architect", "retry", intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
-	task := startTask(t, pool, RoleFor(phase.Implementing))
+	task := startTask(t, pool, phase.RoleFor(phase.Implementing))
 	if !strings.Contains(task, "Pull request: #42.") {
 		t.Fatalf("task = %q, want it to name pull request #42", task)
 	}
 }
 
+// A todo written on a held root whose tree does not linger releases the hold, which is the
+// effect of its architect's retry_or_escalate with retry (R7): the issue returns to the phase
+// the hold came from, the hold is cleared, and that phase's role is started with its task,
+// carrying the daemon's own reason, which names the status write that made the release — no
+// caller of the status route names one. The release writes the Dispatch status of the phase the
+// issue ends in, as a phase transition writes it, so the board shows the phase the issue works
+// and a later todo on the same issue is a status change again. Nothing else moves: the
+// generation, the rounds, the conflict rounds, the backward moves, the cap count and the
+// admission slot all stand as they were.
+//
+// A person's move in the Dispatch dashboard and the daemon's own write — which the controller's
+// set_status and an operator's `legion status` both reach the record as — are the same event
+// here, so each is a row. Each row then fails the worker again, which holds the issue a second
+// time, and writes todo again: the second release runs as the first did, because the first
+// recorded the event it took with the recorded status kept rather than leaving the record to
+// say the issue is todo.
+//
+// The last two rows are releases whose own path moves the issue — a hold from testing whose
+// head is red, and a hold from reviewing whose round is decided — where the phase the issue
+// ends in is not the phase the hold came from. The status written is that phase's either way,
+// which is the whole of R7: the move's own write reaches Dispatch at a status it does not show,
+// or is never queued at all, and the release's is the write the board stands on.
+func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
+	const root = "LEGION-208"
+	const reason = "Reason: the issue was set to todo while its phase was held."
+	for _, tc := range []struct {
+		name string
+		own  bool
+	}{
+		{name: "a person's move in the Dispatch dashboard"},
+		{name: "the daemon's own write", own: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			var logged bytes.Buffer
+			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logged, nil))))
+			seedIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION",
+				Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing}, Generation: 3, Status: "in_progress", DispatchStatus: "in_progress",
+				Rank: "U", HandedOver: true, LastDispatchSeq: 4})
+			seedSlot(t, pool, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)})
+			counted := record.PhaseRow{Issue: root, Role: claim.RoleImplementer, Rounds: 3, ConflictRounds: 1,
+				BackwardMoves: map[string]int{"testing-implementing": 2}, CapTold: 3}
+			seedPhase(t, pool, counted)
+			todo := func(seq int64, own bool) intake.DispatchIssue {
+				return intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: seq, Type: "issue.updated", Status: "todo",
+					Title: "root", Rank: "U", HandedOver: true, DaemonActor: own, StatusMove: own}
+			}
+
+			apply("todo", todo(5, tc.own))
+
+			released := storedIssue(t, pool, root)
+			if released.Phase != phase.Implementing || released.Hold != nil || released.Generation != 3 {
+				t.Fatalf("the root after the todo = %#v, want it back in implementing, its hold cleared and its generation 3", released)
+			}
+			// The record keeps the status of the phase it works while Dispatch shows the todo,
+			// which is what the queued write sets back.
+			if released.Status != "in_progress" || released.DispatchStatus != "todo" || released.LastDispatchSeq != 5 {
+				t.Fatalf("the root after the todo = %#v, want in_progress kept, Dispatch shown at todo and the event's sequence 5 recorded", released)
+			}
+			want := record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}
+			if got := statusWrites(t, pool, root); len(got) != 1 || got[0] != want {
+				t.Fatalf("status writes = %+v, want the one %+v: the status of the phase the issue ends in", got, want)
+			}
+			starts := superviseRowsOf(t, pool, root, "start")
+			if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Phase != phase.Implementing || !strings.Contains(starts[0].Task, reason) {
+				t.Fatalf("start rows = %+v, want one implementer start of implementing whose task carries %q", starts, reason)
+			}
+			if got := phaseCounts(t, pool, root, claim.RoleImplementer); !reflect.DeepEqual(got, counted) {
+				t.Fatalf("the implementer's counts after the release = %+v, want the %+v the hold left", got, counted)
+			}
+			if got := slotCount(t, pool, root); got != 1 {
+				t.Fatalf("%s holds %d slots, want the one it held while it was held", root, got)
+			}
+			if line := logged.String(); !strings.Contains(line, "workflow: a held phase is released") ||
+				!strings.Contains(line, "the issue was set to todo while its phase was held") {
+				t.Fatalf("the log of the release = %q, want the released line naming the daemon's own reason", line)
+			}
+
+			// The same issue held again and written to todo again: the second release runs as the
+			// first did. The second todo is the daemon's own write whichever way the first
+			// arrived, because the in_progress the first release queued has not echoed back from
+			// Dispatch — the record still shows Dispatch at todo — and a route's own write is a
+			// status move whatever the record last saw Dispatch show.
+			apply("worker-failed-again", intake.ClaimFailed{Issue: root, Role: claim.RoleImplementer})
+			if held := storedIssue(t, pool, root); held.Phase != phase.Held || held.Hold == nil || held.Hold.From != phase.Implementing {
+				t.Fatalf("the root after its worker failed again = %#v, want it held from implementing", held)
+			}
+
+			apply("todo-again", todo(6, true))
+
+			again := storedIssue(t, pool, root)
+			if again.Phase != phase.Implementing || again.Hold != nil || again.Generation != 3 || again.LastDispatchSeq != 6 {
+				t.Fatalf("the root after the second todo = %#v, want it back in implementing at generation 3, its hold cleared, the second event recorded", again)
+			}
+			if got := statusWrites(t, pool, root); len(got) != 2 || got[1] != want {
+				t.Fatalf("status writes after the second release = %+v, want a second %+v", got, want)
+			}
+			if got := startTask(t, pool, claim.RoleImplementer); !strings.Contains(got, reason) {
+				t.Fatalf("the implementer the second release started is told %q, want the daemon's own reason %q", got, reason)
+			}
+			if got := phaseCounts(t, pool, root, claim.RoleImplementer); !reflect.DeepEqual(got, counted) {
+				t.Fatalf("the implementer's counts after the second release = %+v, want the %+v the hold left", got, counted)
+			}
+		})
+	}
+
+	// The release's own path can move the issue, and then the status it writes is of the phase
+	// the issue ends in rather than of the phase the hold came from: that is what R7 asks for,
+	// and the board would otherwise stand at the todo the release answered until the hourly
+	// status repair. Each of these two rows is such a release.
+	t.Run("a hold from testing whose head is red", func(t *testing.T) {
+		pool := migratedPool(t)
+		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+		seedIssue(t, pool, record.Issue{Key: root, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: root, Project: "LEGION",
+			Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Testing}, Generation: 3, Status: "testing", DispatchStatus: "testing",
+			Rank: "U", HandedOver: true, LastDispatchSeq: 4})
+		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root, Repo: "sjawhar/legion",
+			Number: 42, Branch: "legion/" + root, HeadSHA: "c0ffee", Required: []string{"lint"}})
+		seedPhase(t, pool, record.PhaseRow{Issue: root, Role: claim.RoleImplementer, Claim: "implement-claim"})
+		seedPhase(t, pool, record.PhaseRow{Issue: root, Role: claim.RoleTester, Claim: "test-claim"})
+		// Held, the issue has no checks_red row, so the red moves nothing until the release.
+		apply("red", intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: "c0ffee", CheckRuns: []record.AttemptRun{{Name: "lint", ID: 1}},
+			Generation: 1, Snapshot: "red-c0ffee", Failing: []string{"lint"}})
+		if held := storedIssue(t, pool, root); held.Phase != phase.Held {
+			t.Fatalf("the root after the red = %#v, want it still held: a held issue has no checks_red row", held)
+		}
+
+		apply("todo", intake.DispatchIssue{Key: root, ResolvedRepo: "sjawhar/legion", Seq: 5, Type: "issue.updated", Status: "todo",
+			Title: "root", Rank: "U", HandedOver: true})
+
+		released := storedIssue(t, pool, root)
+		if released.Phase != phase.Implementing || released.Hold != nil || released.DispatchStatus != "todo" {
+			t.Fatalf("the root after the todo = %#v, want the red to have sent it back to implementing, its hold cleared and the todo recorded", released)
+		}
+		// Two rows, of which the release's is the one that writes: the move's own names the
+		// status the record held, which Dispatch does not show, so the executor finishes it
+		// without a write.
+		want := []record.StatusWrite{{Status: "in_progress", ObservedStatus: "testing"}, {Status: "in_progress", ObservedStatus: "todo"}}
+		if got := statusWrites(t, pool, root); !reflect.DeepEqual(got, want) {
+			t.Fatalf("status writes = %+v, want %+v: the move's own row, then the status of the phase the issue ends in", got, want)
+		}
+		starts := superviseRowsOf(t, pool, root, "start")
+		if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Phase != phase.Implementing {
+			t.Fatalf("start rows = %+v, want the one implementer start the red's move made: the restored phase's worker is not started", starts)
+		}
+	})
+
+	t.Run("a hold from reviewing whose round is decided", func(t *testing.T) {
+		pool := migratedPool(t)
+		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+		// The reviewer completed, its claim then failed, and its approval landed while the issue
+		// was held: the release finds both halves of the round in and ends it in accepting.
+		seedReview(t, pool, "green")
+		apply("reviewer-completed", intake.HandoffComplete{Generation: 1, Issue: root, Role: claim.RoleReviewer, Claim: "review-claim",
+			Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
+		apply("reviewer-failed", intake.ClaimFailed{Issue: root, Role: claim.RoleReviewer})
+		apply("approved", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: "approved", CommitID: "head", Author: testReviewApp, Body: "the review"})
+		if held := storedIssue(t, pool, root); held.Phase != phase.Held || held.Hold == nil || held.Hold.From != phase.Reviewing {
+			t.Fatalf("the root after the review = %#v, want it still held from reviewing: a held round decides nothing", held)
+		}
+
+		apply("todo", intake.DispatchIssue{Key: root, ResolvedRepo: "sjawhar/legion", Seq: 5, Type: "issue.updated", Status: "todo",
+			Title: "root", Rank: "U", HandedOver: true})
+
+		released := storedIssue(t, pool, root)
+		if released.Phase != phase.Accepting || released.Hold != nil || released.DispatchStatus != "todo" {
+			t.Fatalf("the root after the todo = %#v, want the round to have settled it into accepting, its hold cleared and the todo recorded", released)
+		}
+		// The move itself wrote nothing: reviewing and accepting show the same status, and
+		// Engine.status drops a write of the status the record already holds. This row is the
+		// only one, and without it the board would stand at todo.
+		want := []record.StatusWrite{{Status: "needs_review", ObservedStatus: "todo"}}
+		if got := statusWrites(t, pool, root); !reflect.DeepEqual(got, want) {
+			t.Fatalf("status writes = %+v, want the one %+v: the status of the phase the issue ends in", got, want)
+		}
+	})
+}
+
+// storedIssue is the record of key.
+func storedIssue(t *testing.T, pool *pgxpool.Pool, key string) record.Issue {
+	t.Helper()
+	var got *record.Issue
+	if err := pgx.BeginFunc(t.Context(), pool, func(tx pgx.Tx) error {
+		var err error
+		got, err = record.NewStore().Issue(t.Context(), tx, key)
+		return err
+	}); err != nil {
+		t.Fatalf("read %s: %v", key, err)
+	}
+	if got == nil {
+		t.Fatalf("%s is not recorded", key)
+	}
+	return *got
+}
+
+// phaseCounts is role's phases row of issue with the counts alone: what a release must leave
+// where it found them.
+func phaseCounts(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) record.PhaseRow {
+	t.Helper()
+	got := record.PhaseRow{Issue: issue, Role: role}
+	if err := pool.QueryRow(t.Context(), "select rounds, conflict_rounds, backward_moves, cap_told from phases where issue = $1 and role = $2",
+		issue, string(role)).Scan(&got.Rounds, &got.ConflictRounds, &got.BackwardMoves, &got.CapTold); err != nil {
+		t.Fatalf("read the %s's phases row of %s: %v", role, issue, err)
+	}
+	return got
+}
+
+// slotCount is how many admission slots issue holds.
+func slotCount(t *testing.T, pool *pgxpool.Pool, issue string) int {
+	t.Helper()
+	var got int
+	if err := pool.QueryRow(t.Context(), "select count(*) from slots where issue = $1", issue).Scan(&got); err != nil {
+		t.Fatalf("count the slots of %s: %v", issue, err)
+	}
+	return got
+}
+
 // R2: an architect's claim failing holds nothing and writes no held notice, at admitted as at
-// accepting. Both phases are the architect's own (RoleFor), and claimFailed answers an architect
-// before it asks which role works the phase: a tree's own architect is told in a worker-died, and
-// a sub-architect below the root works no phase at all, so its failure is told to nobody. Nothing
-// here reaches HeldNotice, which is why no hold is ever recorded from either phase.
+// accepting. Both phases are the architect's own (phase.RoleFor), and claimFailed answers an
+// architect before it asks which role works the phase: a tree's own architect is told in a
+// worker-died, and a sub-architect below the root works no phase at all, so its failure is told
+// to nobody. Nothing here reaches HeldNotice, which is why no hold is ever recorded from either
+// phase.
 func TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice(t *testing.T) {
 	const root = "LEGION-208"
 	for _, tc := range []struct {

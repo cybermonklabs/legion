@@ -73,6 +73,16 @@
       "jj": true
     },
     {
+      "script": "phase-entry-converge.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": false,
+      "evidence_variable": "PHASE_ENTRY_CONVERGE_EVIDENCE_DIR",
+      "timeout_minutes": 20,
+      "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/phase-entry-converge.sh; the proof needs a real PostgreSQL, which CI's service is, and a real nats-server, which it installs with go install, and it starts no container; a measured run took 88 seconds, most of it building the driver",
+      "jj": true
+    },
+    {
       "script": "stage1-skeleton.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": ["tmux"],
@@ -100,7 +110,7 @@
     },
     {
       "script": "claim-compaction.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, awk, tar and bun with this repository's node_modules, and about eight minutes of wall clock for its four panes and the compaction it holds"
+      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, awk, tar, python3 and bun with this repository's node_modules, and about eight minutes of wall clock for its four panes and the compaction it holds"
     },
     {
       "script": "claude-backend-sandbox.sh",
@@ -168,12 +178,16 @@
     },
     {
       "script": "provider-error-retry.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, awk, tar and bun with this repository's node_modules"
+      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, awk, tar, python3 and bun with this repository's node_modules"
     },
     {
       "script": "refusal-fallback-omp.sh",
       "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), bun with this repository's node_modules, and about fifteen minutes of wall clock, which is longer than any job of ci.yaml holds",
       "timeout_minutes": 25
+    },
+    {
+      "script": "role-prompt-rule.sh",
+      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, awk, tar, python3 and bun with this repository's node_modules"
     },
     {
       "script": "share-volumes-kind.sh",

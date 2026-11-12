@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -26,8 +27,10 @@ import (
 // root's view answers its own state of; the empty list gates none. reports is each claim's latest
 // capability report, by claim (LEGION-663): a claim with one shows it whatever its incarnation —
 // the view carries the reporting process's, for a reader to compare with the locator's — and a
-// claim with none shows no capabilities. Nil is no reports. now is the instant the held rows are
-// read at (record.Store.HeldRows) and their waits are measured from.
+// claim with none shows no capabilities. Nil is no reports. The role whose phase entry and given
+// entry each issue's view carries is the role that works its current phase (phase.RoleFor). now
+// is the instant the held rows are read at (record.Store.HeldRows) and their waits are measured
+// from.
 func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, claims []supervise.Claim, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
 	issues, err := s.Issues(ctx, tx)
 	if err != nil {
@@ -73,6 +76,17 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		checks[check.Issue] = check
 	}
 
+	// The entry each claim was last queued a task of, by the issue and role the claim holds
+	// (supervise.Claim.GivenEntry): the number an issue's view shows beside the entry its phases
+	// row names. It is keyed by issue and role rather than by claim token because the token on
+	// the phases row can be empty, for a role no claim was ever created for, or stale, from a
+	// claim an earlier run retired, where the claim of this issue and this role is the one the
+	// admission pass weighs (admit's resumeSlottedWorkers).
+	givenEntries := make(map[issueRole]int64, len(claims))
+	for _, current := range claims {
+		givenEntries[issueRole{issue: current.Issue, role: current.Role}] = current.GivenEntry
+	}
+
 	claimViews := make(map[claim.Token]api.ClaimView, len(claims))
 	for _, current := range claims {
 		if current.Locator != nil {
@@ -80,17 +94,9 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 				return api.State{}, fmt.Errorf("project claim %s: %w", current.Token, err)
 			}
 		}
-		view := api.ClaimView{
-			Session:        current.Session,
-			State:          string(current.State),
-			Locator:        current.Locator,
-			PluginContract: current.PluginContract,
-			UpdateRound:    current.UpdateRound,
-			UpdateHead:     current.UpdateHead,
-			// What the daemon last saw this claim's agent do, which the stall backstop and an
-			// operator read alike; nil for a claim whose agent has not stepped (api.StepViewOf).
-			Step: api.StepViewOf(current.Step),
-		}
+		// Every field of the claim record is served or withheld by a decision, and the view that
+		// serves it is built in one place (api.ClaimViewOf, api.ClaimRecordFields).
+		view := api.ClaimViewOf(current)
 		if report, reported := reports[current.Token]; reported {
 			view.Capabilities = api.CapabilityReportViewOf(report)
 		}
@@ -117,7 +123,14 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			Tree:          issue.Tree,
 			Repo:          issue.Repo,
 			DefaultBranch: issue.DefaultBranch,
-			Workers:       map[claim.Role]api.PhaseView{},
+			// When this root's linger runs out, nil for every issue that is not a lingering
+			// root: it is what a reader of a held issue served no reason reads the suppression
+			// of that reason by (api.Issue.LingerUntil).
+			LingerUntil: issue.LingerUntil,
+			// The parent chain a labelled root is held under, empty for every other record: the
+			// hold on it is the ancestry hold, and nothing else on this wire names the chain.
+			Ancestry: issue.Ancestry,
+			Workers:  map[claim.Role]api.PhaseView{},
 		}
 		// The tree's memory draw, which every issue of the tree is shown, a done one included: it
 		// is what the issue's roles ran with, and nothing redraws it.
@@ -127,8 +140,16 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		// An escalation waits on the controller only while its tree runs. A held issue of a tree
 		// that lingers or closed keeps the reason on its record, and shows it again once the tree is
 		// re-admitted, which leaves the issue held.
-		if issue.Hold != nil && !lingering[issue.Tree] {
-			view.HoldReason = string(issue.Hold.Reason)
+		//
+		// The phase the hold took the issue out of is shown whatever the tree is doing, which is
+		// the deliberate difference: the reason is a decision to act on and a lingering tree has
+		// none, while the phase is a fact of the record, so every issue the body shows at
+		// `phase: held` names the phase that stopped.
+		if issue.Hold != nil {
+			view.HeldFrom = string(issue.Hold.From)
+			if !lingering[issue.Tree] {
+				view.HoldReason = string(issue.Hold.Reason)
+			}
 		}
 		if slot, ok := slotViews[issue.Key]; ok {
 			view.Slot = &slot
@@ -167,6 +188,22 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 				worker.HandoffRecord = &api.HandoffRecordView{ID: item.HandoffRecord, Version: item.HandoffVersion}
 			}
 			view.Workers[item.Role] = worker
+		}
+		// The entry the role of this issue's current phase stands on, and the entry that role was
+		// given: the pair a reader tells a role holding the work its row names from one the daemon
+		// has still to send that work to (api.Issue.PhaseEntry). A phase that names no phase worker
+		// role carries neither number — a root at admitted whose design gate has never opened is at
+		// work (record.AtWork) and phase.RoleFor names no role for that phase, so the admission
+		// pass passes it over and a difference written for it would stand for ever — and no row of
+		// a role the issue has moved past is read, since that role keeps its entry and is sent
+		// nothing.
+		// The entry is 0 where the rows hold none of that role (record.PhaseRowOf), a role no
+		// transition has ever handed work on, and it is read with the same call admit's
+		// owedEntryRoles reads for the same role from the same rows, so the state shows what the
+		// admission pass weighs a claim against.
+		if role := phase.RoleFor(issue.Phase); role != "" {
+			view.PhaseEntry = record.PhaseRowOf(phases, role).Entry
+			view.GivenEntry = givenEntries[issueRole{issue: issue.Key, role: role}]
 		}
 
 		pr, err := s.PullRequest(ctx, tx, issue.Key)
@@ -331,6 +368,13 @@ type memoryDraw struct {
 	group string
 	mode  string
 	at    *time.Time
+}
+
+// issueRole is one issue and one of its roles, the pair a claim is held under (supervise.Claim's
+// Issue and Role): the key of the lookup that answers what each role was last given.
+type issueRole struct {
+	issue string
+	role  claim.Role
 }
 
 // checkView is an open production check as the state shows it (api.CheckView): the role the check
