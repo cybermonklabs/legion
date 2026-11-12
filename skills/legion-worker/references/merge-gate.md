@@ -77,6 +77,9 @@ other change to the head voids it.
   A result is current at that head while the head is the head of an open pull request, or the final head of a merged one, attributed to the check's own issue. A child's pull request never makes a root check's result current, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, and that result is current at the child's head. A root's own checks are proven at the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged into or on the repository's default branch, in the root's last round.
   On a docs-only PR the `Thermo` line still records the simplify pass and the defects it
   reported, and each of its two pair rows reads `not run (docs-only)`.
+  The two halves of the pair decide one review between them: a `CHANGES` from either
+  `thermonuclear-deep-review` or `thermonuclear-code-quality` is a `REQUEST_CHANGES`, and an
+  `APPROVE` needs both halves at the reviewed head.
   Submit **one review per round** —
   `REQUEST_CHANGES` when any correctness finding stands, otherwise `APPROVE` of the head you
   reviewed — always named by SHA — carrying every inline comment in that single
