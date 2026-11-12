@@ -161,11 +161,17 @@ func TestErrRecognizesAnOrdinaryExitAndErrWaitDelayButNothingElse(t *testing.T) 
 const (
 	// childLives keeps a child running until a signal ends it.
 	childLives = `while :; do sleep 0.05; done`
+	// helperTrapped is what a forked helper writes into the file $2 names once its own trap is
+	// installed, and the piece every helper script below carries: a helper is a shell of its own,
+	// which reaches its trap line some time after the fork that made it returned, so a stop sent
+	// before this marker appears would find the helper under the default disposition rather than
+	// under the one its script asks for.
+	helperTrapped = `: >"$2"; `
 	// ignoresSIGTERM is a child SIGKILL alone can end. Its $1 is a path of the test's own
 	// temporary directory, which it never reads and which names it in /proc (runningUnder).
-	ignoresSIGTERM = `trap '' TERM; ` + childLives
+	ignoresSIGTERM = `trap '' TERM; ` + helperTrapped + childLives
 	// handlesSIGTERM is a child that records its SIGTERM in the file $1 names and leaves.
-	handlesSIGTERM = `trap 'echo term >"$1"; exit 0' TERM; ` + childLives
+	handlesSIGTERM = `trap 'echo term >"$1"; exit 0' TERM; ` + helperTrapped + childLives
 )
 
 // loadSlack is what a row allows a loaded machine beyond the span it measures. It is scheduling
@@ -369,18 +375,25 @@ func TestAChildThatIgnoresSIGTERMIsKilledAfterTheGrace(t *testing.T) {
 // pipes open forever.
 func TestAForkedHelperOfAStoppedCommandIsStoppedToo(t *testing.T) {
 	requireProc(t)
-	// $1 is the ready file, $2 the helper's own script, $3 the path the helper carries, and $4 the
-	// file the leader writes the helper's pid into. The helper is forked before the leader ignores
-	// SIGTERM, because a shell cannot trap a signal that was already ignored when it started: the
+	// $1 is the ready file, $2 the helper's own script, $3 the path the helper carries, $4 the file
+	// the leader writes the helper's pid into, and $5 the marker the helper writes once its own
+	// trap is installed (helperTrapped). The helper is forked before the leader ignores SIGTERM,
+	// because a shell cannot trap a signal that was already ignored when it started: the
 	// disposition is inherited across fork and exec, so a helper forked after that line could only
-	// ignore SIGTERM too, whatever its own script says. The stop lands after the ready file, which
-	// the leader writes once both are in place.
-	leader := `sh -c "$2" sh "$3" & echo $! >"$4"; trap '' TERM; : >"$1"; ` + childLives
+	// ignore SIGTERM too, whatever its own script says. The fork returns as soon as the helper
+	// exists, which is before that helper's own shell has run its trap line, so the leader waits
+	// for the helper's marker before it writes the ready file: the stop lands after the ready file,
+	// which the leader writes once all three dispositions are in place. A stop that raced the
+	// helper's trap would say nothing about the stop under test — the handling helper would die of
+	// the group's SIGTERM with no record of it, and the ignoring helper would be ended by that same
+	// SIGTERM rather than outliving it, which is the opposite error and just as silent.
+	leader := `sh -c "$2" sh "$3" "$5" & echo $! >"$4"; trap '' TERM; until [ -e "$5" ]; do sleep 0.01; done; : >"$1"; ` + childLives
 
 	t.Run("a helper that ignores SIGTERM is killed with the group", func(t *testing.T) {
 		dir := t.TempDir()
-		ready, marker, pidFile := filepath.Join(dir, "ready"), filepath.Join(dir, "deaf-helper"), filepath.Join(dir, "helper.pid")
-		child := startChild(t, leader, ready, ignoresSIGTERM, marker, pidFile)
+		ready, marker := filepath.Join(dir, "ready"), filepath.Join(dir, "deaf-helper")
+		pidFile, trapped := filepath.Join(dir, "helper.pid"), filepath.Join(dir, "helper-trapped")
+		child := startChild(t, leader, ready, ignoresSIGTERM, marker, pidFile, trapped)
 		helper := pidOf(t, pidFile)
 
 		child.stop()
@@ -393,8 +406,9 @@ func TestAForkedHelperOfAStoppedCommandIsStoppedToo(t *testing.T) {
 
 	t.Run("a helper that handles SIGTERM gets it", func(t *testing.T) {
 		dir := t.TempDir()
-		ready, marker, pidFile := filepath.Join(dir, "ready"), filepath.Join(dir, "helper-caught"), filepath.Join(dir, "helper.pid")
-		child := startChild(t, leader, ready, handlesSIGTERM, marker, pidFile)
+		ready, marker := filepath.Join(dir, "ready"), filepath.Join(dir, "helper-caught")
+		pidFile, trapped := filepath.Join(dir, "helper.pid"), filepath.Join(dir, "helper-trapped")
+		child := startChild(t, leader, ready, handlesSIGTERM, marker, pidFile, trapped)
 		helper := pidOf(t, pidFile)
 
 		child.stop()
