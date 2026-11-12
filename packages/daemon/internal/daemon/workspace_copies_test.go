@@ -625,3 +625,47 @@ func TestTheWorkspaceCopyTickDoesNothingWithoutABundlerOrAStore(t *testing.T) {
 		})
 	}
 }
+
+// A turn that ends while the cadence's copy of its issue is still being built is copied again
+// once that copy ends. The copy in flight was read before the turn's last work was written, and
+// the cadence takes no copy of an issue between turns, so without a copy after it the newest
+// copy of a pod whose roles are all idle is not the one its last turn ended with, which is what
+// the daemon holds itself to (dispatch://INFRA-1117/spec#b-r1): an eviction of that idle pod
+// then loses the end of the turn. One copy of an issue is still in flight at a time; the turn's
+// end is owed, not dropped.
+func TestATurnThatEndsWhileACopyIsInFlightIsCopiedAgainOnceThatCopyEnds(t *testing.T) {
+	rig := newCopyRig(t)
+	rig.sup.OnDurableState(rig.w.claimDurableState)
+	ctx := context.Background()
+	midTurn := copyRigBundle
+	midTurn.At = time.Now().UTC()
+	ended := copyRigBundle
+	ended.Bundle, ended.Head, ended.Tips = []byte("PACK the work the turn ended with, written after the copy in flight read the workspace"), "beef", []string{"beef"}
+	release := make(chan struct{})
+	rig.bundler.holds(func(ctx context.Context) (runtime.WorkspaceBundle, error) {
+		select {
+		case <-release:
+			// The workspace from now on holds the work the turn ended with.
+			later := ended
+			later.At = time.Now().UTC()
+			rig.bundler.answers(later, nil)
+			return midTurn, nil
+		case <-ctx.Done():
+			return runtime.WorkspaceBundle{}, ctx.Err()
+		}
+	})
+	rig.turnStart(t)
+
+	// The cadence's copy inside the turn starts, and is still being built when the turn ends.
+	rig.w.copyWorkingWorkspaces(ctx)
+	rig.awaitAsks(t, 1)
+	rig.turnEnd(t)
+
+	close(release)
+	// The issue is between turns now, so no pass of the cadence would copy it again: the copy
+	// the turn's end owed is the only one that can hold that work.
+	rig.awaitCopy(t, len(ended.Bundle))
+	if asked := rig.bundler.reads(); len(asked) != 2 {
+		t.Fatalf("the bundler was asked %v, want the copy in flight and the one the turn's end owed after it", asked)
+	}
+}
