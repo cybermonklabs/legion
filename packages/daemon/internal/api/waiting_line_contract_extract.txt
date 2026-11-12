@@ -26,7 +26,6 @@
 # section, and docs/site/src/content/docs/legion/troubleshooting.md is that file today - it
 # names the field, and the word contract only of a plugin speaking another one, never a number
 # beside the field. A window it ever gains is one this file must gain with it.
-
 # packages/contracts/src/legion-api.ts
 pec` step's row, which a reader that asks one question of one gate takes. */
   gatedSteps: z.array(legionGatedStepView).optional(),
@@ -42,9 +41,16 @@ ot: legionSlotView.optional(),
    * list names, so every issue the line does not carry has none, and a
    * daemon before contract 58 writes none at all, which is why a reader takes it as optional. */
   waitingLine: legionWaitingLineView.optional(),
-  waitingOn: legionWaitingOn.optional(),
-  check: legionCheckView.optional(),
-  /** The memory group of
+  /** The one rendered answer an issue that is not working now carries: which fact holds it, and
+   * t
+
+# packages/pi-legion/AGENTS.md
+it of the one plugin into this package and `@sjawhar/pi-envoy`
+(LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
+number is the one `DaemonAPIVersion` declares, last bumped by contract 85's `why` and the
+`waitingLine` fields beside it
+(INFRA-2554: each member of the line carries `part`, `kind`, `partPlace`, `partLength`,
+`holdsSlot`, `since` for a member whose work came back, `rootRank`, `ownRank` and `r
 
 # packages/pi-legion/AGENTS.md
  order of the two ever runs; the
@@ -75,11 +81,29 @@ ished line still names — each standing
 ce`; and
   `answeredAt` with `answeredBy` once it was answered), for an issue `admission.waiting` names
   `waitingLine` (`place`, 1 being first in the line, and `length`, the line's length at this
-  read; a daemon below contract 58 serves none) and, for a closed
+  read; a daemon below contract 58 serves none), beside which the line's own members say where
+  that place came from and what it means for the slot the issue waits for:
+  `part`, `returned` for an issue whose work came back or `starting` for one that ha
+
+# docs/site/src/content/docs/legion/running-legion.md
+held` and a root whose ask a person has not answered yet, which `waitingOn`
+  answers for, read nothing. Neither does an issue the record does not hold in the workflow. A caller from a pod whose claims record a contract below 85 is
+  served every issue without `why`, and the `waitingLine` of each member of the line with its
+  `place` and its `length` alone, and no `partPlace`. Then, for a closed
   issue whose
-  production check is open, `check` (`repo`, `pullRequest`, `mergeCommit`, `openedAt`, `role` —
-  the role the check recorded as the one that works it — `looks`,
-  `lookO
+  production check is open, `check`
+
+# docs/site/src/content/docs/legion/troubleshooting.md
+ a person has not answered yet, which `waitingOn` answers for, read nothing. Neither
+does an issue the record does not hold in the workflow (`done`, `backlog`, `icebox`,
+`triage`). The daemon serves
+`why` to a caller at contract 85 and above, which is where `waitingLine` gains `partPlace` and
+the rest of the line's own members; from an older daemon, or an older pod, read the list that
+follows.
+
+Check, in order:
+
+1. **The label.** The issue must ca
 
 # packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml
 kind: Added
