@@ -5,6 +5,7 @@
 // this module runs nothing on import but the constants below.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
+import type { LegionState } from "@legion/contracts/legion-api";
 import {
   type Block,
   type Cleanup,
@@ -219,9 +220,9 @@ const MOVED_ON = {
     withoutWebhookApp: [],
     caches: [],
   },
-  settings: { max_fix_attempts: 3, worker_boot_timeout_seconds: 120 },
+  settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
   consumers: [],
-};
+} satisfies LegionState;
 
 /**
  * The one-handler extension the last step's cases load beside the plugin. `abort` is not an own
