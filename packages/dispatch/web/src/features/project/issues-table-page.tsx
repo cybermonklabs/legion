@@ -1,9 +1,9 @@
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import type { Table } from "@tanstack/react-table";
 import { type ReactNode, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
 import { ColumnsMenu } from "../../components/ColumnsMenu";
+import { useAddressUpdate } from "../../lib/page-address";
 import {
   borderDefault,
   card,
@@ -124,7 +124,7 @@ export function IssueTableToolbar({
   unclaimedUnchecked: "refilling" | "unreachable" | undefined;
 }): ReactNode {
   const flags = useIssueFilters();
-  const [, setParams] = useSearchParams();
+  const update = useAddressUpdate();
   const { globalFilter: search, columnFilters: filters, grouping } = table.getState();
   const setSearch = table.setGlobalFilter;
   const setGrouping = table.setGrouping;
@@ -170,21 +170,18 @@ export function IssueTableToolbar({
           <button
             className={`rounded-lg border px-2 py-1.5 text-sm ${borderDefault} ${surfaceMutedHoverBg}`}
             onClick={() =>
-              setParams(
-                (current) => {
-                  const next = writeUrl(current, {
-                    ...readUrl(current),
-                    // Back to the view the table opens with, not to no filter at all: an empty
-                    // status pick asks the server for every closed issue in the project.
-                    filters: defaultView.filters,
-                    search: "",
-                    page: 0,
-                  });
-                  for (const flag of ["needs-you", "unread"]) next.delete(flag);
-                  return next;
-                },
-                { replace: true }
-              )
+              update((current) => {
+                const next = writeUrl(current, {
+                  ...readUrl(current),
+                  // Back to the view the table opens with, not to no filter at all: an empty
+                  // status pick asks the server for every closed issue in the project.
+                  filters: defaultView.filters,
+                  search: "",
+                  page: 0,
+                });
+                for (const flag of ["needs-you", "unread"]) next.delete(flag);
+                return next;
+              })
             }
             type="button"
           >

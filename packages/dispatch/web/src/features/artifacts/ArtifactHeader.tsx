@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 
 import type { Artifact, Version } from "../../api/types";
+import { useAddressNavigate } from "../../lib/page-address";
 import {
   borderDefault,
   card,
@@ -80,7 +81,7 @@ export function ArtifactHeader({
   version: number | undefined;
 }): ReactNode {
   const [highlighted, setHighlighted] = useState(highlight);
-  const navigate = useNavigate();
+  const goToVersion = useAddressNavigate();
   const versions = versionsNewestFirst(toolbar?.versions ?? artifact.versions);
   // An artifact of an agent's conversation (a picture sent in a direct message) belongs to no
   // issue or project; its page is under the agent's session.
@@ -156,7 +157,9 @@ export function ArtifactHeader({
                     // Both path builders read `version: undefined` as the unversioned route.
                     const picked =
                       event.target.value === "" ? undefined : Number(event.target.value);
-                    navigate(
+                    // Pushed rather than replaced, as picking a version always has been: Back
+                    // returns the reader to the version they came from.
+                    goToVersion(
                       agentSession !== undefined
                         ? buildReferencePath(documentRoute(artifact, picked))
                         : artifact.issue_key === null
@@ -171,7 +174,8 @@ export function ArtifactHeader({
                               kind: "artifact",
                               slug: artifact.slug,
                               version: picked,
-                            })
+                            }),
+                      { replace: false }
                     );
                   }}
                   value={version ?? ""}

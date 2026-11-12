@@ -21,7 +21,7 @@
 // renders as "today", and a failure's age is measured from it. The page never writes it.
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useRef } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link } from "react-router-dom";
 
 import { isDeliveryNotConfigured } from "../../api/client";
 import { deliveryPipelineQuery } from "../../api/queries";
@@ -41,6 +41,7 @@ import {
   TableRow,
   TableShell,
 } from "../../components/TableShell";
+import { useAddressParams } from "../../lib/page-address";
 import {
   borderDefault,
   dangerText,
@@ -67,7 +68,7 @@ const CARD = `flex min-w-0 flex-col gap-1.5 rounded border px-3 py-2 ${surfaceBg
  *  often each ends in success, over the last seven UTC days. */
 export function PipelinePage(): ReactNode {
   useDocumentTitle("Pipeline · Dispatch");
-  const [params] = useSearchParams();
+  const params = useAddressParams();
   const at = params.get("at");
   const query = useQuery(
     deliveryPipelineQuery(at === null ? { kind: "pipeline" } : { kind: "pipeline", at })

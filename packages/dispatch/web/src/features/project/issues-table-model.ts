@@ -1,8 +1,8 @@
 import { rankItem, rankings } from "@tanstack/match-sorter-utils";
-import type { ColumnFiltersState, GroupingState, SortingState } from "@tanstack/react-table";
+import type { ColumnFiltersState } from "@tanstack/react-table";
 import type { Actor, IssueSummary, UpdateIssueInput } from "../../api/types";
 import type { LayoutColumns } from "../../components/table-layout";
-import { capSearchQuery } from "../../lib/query-param";
+import { capSearchQuery, copyAddress, type TableAddressView } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
 import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "./board-model";
 
@@ -287,14 +287,9 @@ export const ISSUE_TABLE_COLUMNS: LayoutColumns = {
   },
 };
 
-export interface View {
-  sorting: SortingState;
-  grouping: GroupingState;
-  filters: ColumnFiltersState;
-  search: string;
-  page: number;
-  pageSize: number;
-}
+/** What this table holds in the address, in the shape every table holds it
+ *  (`lib/page-address.ts`); `readUrl` and `writeUrl` below are this table's own spelling of it. */
+export type View = TableAddressView;
 export const defaultView: View = {
   sorting: [{ id: "queue", desc: false }],
   grouping: [],
@@ -553,7 +548,7 @@ function isDefaultStatus(value: unknown): boolean {
   return picked.length === fallback.length && fallback.every((status) => picked.includes(status));
 }
 export function writeUrl(params: URLSearchParams, state: View): URLSearchParams {
-  const next = new URLSearchParams(params);
+  const next = copyAddress(params);
   for (const key of [...next.keys()])
     if (
       key.startsWith("f.") ||

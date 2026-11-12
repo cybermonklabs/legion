@@ -1,13 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 
 import { isDeliveryNotConfigured } from "../../api/client";
+import { queryString } from "../../api/paths";
 import { deliveryMeasuresQuery, deliveryTimelineQuery } from "../../api/queries";
 import type { DeliverySessionGroup } from "../../api/types";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
-import { useRepeatableSearchParams, useSearchParamsUpdate } from "../../lib/url-array-params";
+import {
+  useAddressParams,
+  useAddressUpdate,
+  useRepeatableAddressParams,
+} from "../../lib/page-address";
 import {
   borderStrong,
   dragHandleBg,
@@ -99,14 +103,14 @@ interface DeliveryUrlState {
   brush: BrushWindow | null;
 }
 
-/** The delivery page's full state, read from and written to the URL — the same pattern
+/** The delivery page's full state, read from and written to the address — the same pattern
  *  `features/project/issue-filters.ts`'s `useIssueFilters` uses: repeatable facet params through
- *  the shared `useRepeatableSearchParams`, one `update` (`useSearchParamsUpdate`) funnelling every
- *  write through `setSearchParams(..., {replace: true})`. `window` and `filters` are memoized on the
- *  URL's own identity, so a render with an unchanged URL builds the same live view. */
+ *  the shared `useRepeatableAddressParams`, one `update` (`useAddressUpdate`) funnelling every
+ *  write through one `replace`d write of the address. `window` and `filters` are memoized on the
+ *  address's own identity, so a render with an unchanged address builds the same live view. */
 function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => void] {
-  const [searchParams] = useSearchParams();
-  const update = useSearchParamsUpdate();
+  const searchParams = useAddressParams();
+  const update = useAddressUpdate();
   const malformedWindow = hasMalformedWindowParams(searchParams);
   const windowChoice = useMemo(() => readWindow(searchParams), [searchParams]);
   useEffect(() => {
@@ -117,6 +121,7 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
       params.delete("window");
       params.delete("ws");
       params.delete("we");
+      return params;
     });
   }, [malformedWindow, update]);
   const search = searchParams.get("q") ?? "";
@@ -124,7 +129,7 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
   const colorBy = COLOR_FACETS.find((facet) => facet === colorByParam) ?? DEFAULT_COLOR_BY;
   const lanes = searchParams.get("lanes") === "1";
   const mode: Mode = searchParams.get("mode") === "list" ? "list" : "timeline";
-  const { agents: agentParams } = useRepeatableSearchParams(AGENTS_PARAM);
+  const { agents: agentParams } = useRepeatableAddressParams(AGENTS_PARAM);
   const agents = useMemo(() => [...new Set(agentParams)], [agentParams]);
   const view = useMemo(() => ({ colorBy, lanes, mode, agents }), [colorBy, lanes, mode, agents]);
   const ws = searchParams.get("ws");
@@ -133,7 +138,7 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
     () => (ws === null || we === null ? null : { start: ws, end: we }),
     [ws, we]
   );
-  const arrayParams = useRepeatableSearchParams(FACET_KEYS);
+  const arrayParams = useRepeatableAddressParams(FACET_KEYS);
   const filters: Filters = useMemo(
     () => ({
       ...arrayParams,
@@ -178,6 +183,7 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
           params.set("ws", next.brush.start);
           params.set("we", next.brush.end);
         }
+        return params;
       });
     },
     [update]
@@ -300,12 +306,10 @@ export function DeliveryPage(): ReactNode {
   // Every active facet and the search, as the query string the GET route would take without its
   // window: Dispatch applies them, so `query.data.prs` is already the filtered list.
   const liveQuery = useMemo(() => {
-    const params = new URLSearchParams();
-    if (search !== "") params.set("q", search);
-    for (const key of FACET_KEYS) {
-      for (const value of state.filters[key]) params.append(FACET_PARAMS[key], value);
-    }
-    return params.toString();
+    const values: Record<string, string | string[]> = {};
+    if (search !== "") values.q = search;
+    for (const key of FACET_KEYS) values[FACET_PARAMS[key]] = [...state.filters[key]];
+    return queryString(values);
   }, [state.filters, search]);
   const query = useQuery(
     deliveryTimelineQuery({ kind: "timeline", window: liveWindow(state.window), query: liveQuery })

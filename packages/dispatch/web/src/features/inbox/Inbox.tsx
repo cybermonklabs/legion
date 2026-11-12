@@ -11,14 +11,19 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { InboxRow, MyReplyRow } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
-import { capSearchQuery } from "../../lib/query-param";
+import {
+  buildInboxPath,
+  capSearchQuery,
+  type InboxRoute,
+  useInboxRoute,
+} from "../../lib/page-address";
 import {
   borderDefault,
   checkboxAccent,
@@ -38,13 +43,7 @@ import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { COPY_REF_SELECTOR, CopyRefButton } from "../refs/CopyRefButton";
-import {
-  buildInboxPath,
-  INBOX_FILTER_FIELDS,
-  type InboxRoute,
-  type InboxShow,
-  parseInboxSearch,
-} from "../refs/routes";
+import { INBOX_FILTER_FIELDS, type InboxShow } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
@@ -646,9 +645,8 @@ export function Inbox({
   pane = true,
   scroller,
 }: InboxProps = {}): ReactNode {
-  const { search } = useLocation();
-  const navigate = useNavigate();
-  const filter = filterOverride ?? parseInboxSearch(search);
+  const [addressRoute, goToRoute] = useInboxRoute();
+  const filter = filterOverride ?? addressRoute;
   // The reading column shows from 1280 px, and only where the host allows one: below that, and
   // in the drawer, the Inbox is the list of cards it has always been.
   const wideEnoughForPane = useMediaQuery(READING_PANE_QUERY);
@@ -699,10 +697,10 @@ export function Inbox({
     if (onFilterChange) {
       onFilterChange(next);
     } else {
-      // Replace rather than push: a reader trying filters out would otherwise have to walk Back
-      // through every pick, the rule every URL-backed filter here holds to
-      // (`lib/url-array-params.ts`).
-      navigate(buildInboxPath(next), { replace: true });
+      // To the address, which `useInboxRoute` writes with `replace` rather than pushing: a
+      // reader trying filters out would otherwise have to walk Back through every pick, the
+      // rule every address-backed filter here holds to (`lib/page-address.ts`).
+      goToRoute(next);
     }
   };
   /** The search box, so `f` can land the reader's focus in it from anywhere on the page. */

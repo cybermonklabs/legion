@@ -22,10 +22,10 @@ import type {
   Issue,
   IssueDetails,
 } from "../../api/types";
+import type { InboxRoute } from "../../lib/page-address";
 import { QUIET_MS } from "../doc/refocus-when-settled";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
-import type { InboxRoute } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, DIALOG_SCOPE } from "../shell/keymap";
 import { READING_PANE_QUERY } from "../shell/useDialog";

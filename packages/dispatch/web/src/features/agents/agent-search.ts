@@ -1,7 +1,5 @@
-import { useCallback, useMemo } from "react";
-
 import type { Agent, InboxRow } from "../../api/types";
-import { useCappedSearchParam } from "../../lib/query-param";
+import { commaListParam, useAddressParam, useCappedAddressParam } from "../../lib/page-address";
 import { AGENTS_MACHINE_PARAM } from "../refs/routes";
 import type { AgentGroup } from "./agent-groups";
 
@@ -23,12 +21,15 @@ export interface AgentFilters {
  *  parameters live here rather than in the page, so the control around them can be rebuilt
  *  without moving them. */
 export function useAgentSearch(): readonly [string, (next: string) => void] {
-  return useCappedSearchParam("q");
+  return useCappedAddressParam("q");
 }
 
 /** One frozen empty list, so an address naming no machine gives the page the same value every
  *  render rather than new filter state. */
 const NO_MACHINES: readonly string[] = [];
+
+/** The machines the address names, as one comma-separated parameter. */
+const MACHINES_PARAM = commaListParam();
 
 /**
  * The machine filter, which is the address's own `?machine=` rather than part of `?q=`: the
@@ -45,16 +46,8 @@ export function useAgentMachines(): readonly [
   readonly string[],
   (next: readonly string[]) => void,
 ] {
-  const [value, setValue] = useCappedSearchParam(AGENTS_MACHINE_PARAM);
-  const machines = useMemo(() => {
-    const picked = value.split(",").filter((machine) => machine !== "");
-    return picked.length === 0 ? NO_MACHINES : picked;
-  }, [value]);
-  const setMachines = useCallback(
-    (next: readonly string[]) => setValue(next.join(",")),
-    [setValue]
-  );
-  return [machines, setMachines] as const;
+  const [picked, setMachines] = useAddressParam(AGENTS_MACHINE_PARAM, MACHINES_PARAM);
+  return [picked.length === 0 ? NO_MACHINES : picked, setMachines] as const;
 }
 
 /** Every word `search` names, lowercased; an empty query has none. The page splits this once per

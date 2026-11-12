@@ -38,6 +38,7 @@ import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSending } from "../../hooks/useSending";
+import { buildInboxPath } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   borderDefault,
@@ -73,7 +74,7 @@ import {
   useAgentText,
 } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { buildInboxPath, buildIssuePath, buildMachinePath } from "../refs/routes";
+import { buildIssuePath, buildMachinePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { closestMatching, focusOnDocument } from "../shell/roving";
 import { MD_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
