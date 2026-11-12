@@ -86,12 +86,16 @@ export interface ProbeOpenLine {
   readonly resume: string | null;
 }
 
-/** A connection closing, by Dispatch or by the probe replacing a silent socket. */
+/** A connection closing, by Dispatch or by the probe replacing a silent socket. `wait_ms` is the
+ *  wait the probe computed before it reopens, null on a close it answers with no timer: the
+ *  rotation it reopens at once after, a silent socket's replacement, and the refused first
+ *  connection, which ends the watch. */
 export interface ProbeCloseLine {
   readonly at: string;
   readonly type: "close";
   readonly code: number;
   readonly reason: string;
+  readonly wait_ms: number | null;
 }
 
 /** The ids a GET answer holds that the probe's body lacks (`missing`), and the reverse (`extra`). */
@@ -537,12 +541,18 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
 
   const lost = (code: number, reason: string) => {
     socket = null;
-    write({ at: now(), code, reason, type: "close" });
+    // The close line carries the wait the probe will hold before it opens again, so a reader sees
+    // what `--reconnect-spread-ms` and the backoff came to; a close answered with no timer
+    // reports none.
+    const closed = (waitMs: number | null) =>
+      write({ at: now(), code, reason, type: "close", wait_ms: waitMs });
     if (!opened) {
+      closed(null);
       fail(`Dispatch refused the connection to ${liveUrl.href}: ${reason || `close ${code}`}`);
       return;
     }
     if (code === LIVE_SOCKET_MAX_AGE_CLOSE) {
+      closed(null);
       open();
       return;
     }
@@ -550,6 +560,7 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
     // waits within the first attempt's spread, which `--reconnect-spread-ms` sets.
     if (code === SERVICE_RESTART) attempt = 0;
     const delayMs = reconnectWaitMs(attempt, options.reconnectSpreadMs);
+    closed(delayMs);
     const handle = setTimeout(open, delayMs);
     attempt += 1;
     cancelReconnect = () => clearTimeout(handle);
@@ -561,7 +572,7 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
     const silent = socket;
     socket = null;
     const reason = `no frame for ${LIVE_SOCKET_SILENT_MS / 1000} s`;
-    write({ at: now(), code: REPLACED, reason, type: "close" });
+    write({ at: now(), code: REPLACED, reason, type: "close", wait_ms: null });
     silent.close(REPLACED, reason);
     open();
   }, 1_000);

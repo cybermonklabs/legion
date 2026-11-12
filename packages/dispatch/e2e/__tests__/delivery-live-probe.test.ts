@@ -23,6 +23,7 @@ import type {
   LiveClientFrame,
 } from "../../web/src/api/types";
 import {
+  type ProbeCloseLine,
   type ProbeCompareLine,
   type ProbeHeld,
   type ProbeLine,
@@ -204,6 +205,8 @@ const names = (record: Readonly<Record<string, object>>) =>
 const ids = (items: readonly { readonly id: string | number }[]) => items.map((item) => item.id);
 const comparisons = (lines: readonly ProbeLine[]) =>
   lines.filter((line): line is ProbeCompareLine => line.type === "compare");
+const closes = (lines: readonly ProbeLine[]) =>
+  lines.filter((line): line is ProbeCloseLine => line.type === "close");
 const nothing = {
   changed_at: null,
   counts: null,
@@ -483,6 +486,36 @@ test(
         return line.type;
       })
     ).toEqual(["open null", "snapshot", "delta", "close 1012", `open ${change.seq}`]);
+  },
+  PROCESS_TEST_MS
+);
+
+// The two steps that decide a reconnect's wait, neither of which a row above observes: the
+// `--reconnect-spread-ms` the probe parsed reaching `reconnectWaitMs`, and a restart close setting
+// the attempt counter back to 0. A spread of 0 makes the first attempt's wait exactly 0 ms, so a
+// close line here reports 0 only while both hold. A probe that handed `reconnectWaitMs` the page's
+// own `RECONNECT_SPREAD_MS` instead draws from [0, 2 s) - the draw the rotation row's day-long
+// spread counts on - and a probe that left the counter alone waits the attempt-1 backoff, at least
+// a second; neither draws 0, which is why 0 is the value that tells the three apart. It takes two
+// closes: the first lands on attempt 0 whatever the restart does with the counter, so the second
+// is the counter's own, and the server sends no frame, since a frame resets that counter too.
+test(
+  "each close line reports the wait, which --reconnect-spread-ms 0 makes zero after a restart",
+  async () => {
+    const dispatch = probeDispatch({
+      onSubscribe(socket, _sub, count) {
+        if (count <= 2) socket.close(1012, "service restart");
+      },
+    });
+    const run = runProbe([...args(dispatch), "--reconnect-spread-ms", "0"]);
+    await run.until(() => closes(run.lines).length === 2);
+    run.kill("SIGINT");
+    expect(await run.exited()).toBe(0);
+
+    expect(closes(run.lines).map((line) => ({ code: line.code, wait_ms: line.wait_ms }))).toEqual([
+      { code: 1012, wait_ms: 0 },
+      { code: 1012, wait_ms: 0 },
+    ]);
   },
   PROCESS_TEST_MS
 );
