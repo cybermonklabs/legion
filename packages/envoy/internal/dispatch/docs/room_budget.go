@@ -441,9 +441,10 @@ func (b *roomBudget) opened(room string) bool {
 
 // load charges room's newly loaded instance at stateBytes, the bytes of the stored state the
 // load decoded, and structs, the structs the room's document holds, at both copies
-// (roomWeight): the room's two documents hold that state and those structs, and what
-// the room commits after it the room's update observer adds as it drains
-// (renderedReplica.chargeAdded). A room the budget's opening named is the server's own work's -
+// (roomWeight): the room's two documents hold that state and those structs, and what the room
+// commits after it its applies' reports and its drains add to its tracked state, from which the
+// room's update observer weighs it again as it drains (renderedReplica.chargeAdded). A room the
+// budget's opening named is the server's own work's -
 // an API write's publish (publishLiveWrite), settlement's repair and warm-up, the mark sweep, a
 // mark's verification, a snapshot read, a live tree's read, settlement resumed at boot: every
 // opener of Server.Apply (openServerRoom) - and where its charge leaves the budget over its

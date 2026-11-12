@@ -3,6 +3,8 @@ package docs
 import (
 	"context"
 	"log/slog"
+
+	"github.com/reearth/ygo/crdt"
 )
 
 // This file holds the service's side of the room budget: the charge a room's load takes on
@@ -12,10 +14,12 @@ import (
 // chargeLoadedRoom charges room's newly loaded instance, whose replica has just published its
 // load's rendering (keepReplica), at stateBytes, the bytes of the stored state that load
 // decoded, and at the structs the room's stored state holds, and hands the replica the charge
-// its drains raise from then on (renderedReplica.chargeAdded). Both figures are in hand: the
+// its drains weigh from then on (renderedReplica.chargeAdded). Both figures are in hand: the
 // load read the state, decoded it into the room and decoded it again into the replica, and the
 // struct figure is read from the room itself (anchorStructs), so the budget charges the room
-// what its two copies were built from without encoding either (roomWeight).
+// what its two copies were built from without encoding either (roomWeight). stateBytes is where
+// the room's tracked state starts, which each apply's report raises from here
+// (roomApplies.loaded, roomApplies.noteApply).
 //
 // It is one of the two paths with no report to read, and so one of the two anchors on the
 // reports: the load's own decode of the stored state runs before the room's document is given
@@ -25,40 +29,60 @@ import (
 // copies and in the state the next load decodes.
 func (s *Service) chargeLoadedRoom(room string, replica *renderedReplica, stateBytes int64) *roomCharge {
 	charge := s.budget.load(room, stateBytes, int64(anchorStructs(room, replica.applies(), replica.live)))
-	replica.state.Store(stateBytes)
+	replica.applies().loaded(replica.live, stateBytes)
 	replica.charge.Store(charge)
 	return charge
 }
 
 // rebaseRoomState re-bases room's tracked state on stateBytes, what a compaction that folded the
 // room's whole stored history into one row wrote (compactResult), and charges the room again
-// from it. It is the one thing that lowers a room's tracked state while the room stands: each
-// drain adds its update's bytes, which carry what that transaction deleted beside what it added,
-// so a room typed into for hours is tracked above the state it holds until a compaction reads
-// the state itself. A room this server does not hold, or one no load listed, is left alone.
+// from it; mark is what the compaction read of the room before it read the history
+// (markRebase). A room this server does not hold, or one no load listed, is left alone.
 //
-// A drain landing between the compaction's fold and this one is lost to the re-base, which
-// under-states the room by that one update until its next drain adds more. That is accounting
-// and not a refusal, the window is one update long, and the room's next load re-bases it exactly.
+// The tracked state is the library's own count of what each commit added (roomApplies.state),
+// which follows the direct form of the encoded state, each struct where the store or the
+// pending queue holds it. The reading replaces it only where the reading is exact: where the
+// room holds nothing pending, which an encode reaches the direct form of, and nothing the store
+// had not taken. That settles whatever the figure was owed and any margin it carried - the
+// bytes a server's delete is counted at above what it took out (countCommit). Any other reading
+// is a lower bound, and the figure keeps the larger of the two (roomApplies.take). A room whose
+// pending queue or pending deletes hold anything encodes through a merge that can be shorter
+// than the direct form, and taking that as the truth would put the figure below what the room
+// holds once its gaps fill.
+//
+// The reading is of the store and not of the room, so it also falls short wherever the room
+// holds a commit the store has not taken: one still in the room's persistence, or one the room
+// made after the compaction read its rows. Taking such a reading as the truth dropped that
+// commit's bytes from the figure until the room's next load. So the reading is taken as the
+// truth only where mark covers it (rebaseMark.covers): the room held nothing the store lacked
+// when the compaction began, and has committed nothing since.
 //
 // It is the second anchor on the reports (anchorStructs): a compaction is no apply and reports
 // nothing, so the structs it charges the room at are read from the document, held against what
 // the room's applies have reported, and taken as the truth.
-func (s *Service) rebaseRoomState(room string, stateBytes int64) {
+func (s *Service) rebaseRoomState(room string, stateBytes int64, mark rebaseMark) {
 	live := s.srv.GetDoc(room)
 	if live == nil {
 		return
 	}
+	s.rebaseResident(room, live, stateBytes, mark)
+}
+
+// rebaseResident is rebaseRoomState for live, the document room holds.
+func (s *Service) rebaseResident(room string, live *crdt.Doc, stateBytes int64, mark rebaseMark) {
 	weighing := s.roomWeighingOf(live)
 	if weighing == nil {
 		return
 	}
-	// The bytes' half of the anchor: what the room's tally accumulated from its committed updates
-	// against what this re-base read. The accumulation runs at or above the merged state, since
-	// updates overlap, so a difference above zero is the margin the tally keeps; one below zero is
-	// a path that added to the room without reporting through the tally, which is the defect the
-	// anchor exists to show (dispatch://INFRA-179, the architect's accumulator condition).
-	if tracked := weighing.state.Load(); tracked != stateBytes {
+	applies := weighing.applies()
+	tracked := applies.rebase(stateBytes, func() bool { return mark.covers(live, applies) })
+	// The bytes' half of the anchor: what the room's applies reported against what this re-base
+	// read. The reports follow the direct form of the state, which an encode reaches or falls
+	// short of, so a difference above zero is what the merged encode left out, what the store
+	// had still to take or what a server write's floor carried; one below zero is a path that
+	// added to the room without counting through the tally, which is the defect the anchor
+	// exists to show (dispatch://INFRA-179, the architect's accumulator condition).
+	if tracked != stateBytes {
 		level := slog.LevelDebug
 		if tracked < stateBytes {
 			level = slog.LevelWarn
@@ -66,8 +90,58 @@ func (s *Service) rebaseRoomState(room string, stateBytes int64) {
 		slog.Log(context.Background(), level, "dispatch: a room's tracked state differs from what its re-base read",
 			"room", room, "tracked", tracked, "read", stateBytes, "difference", tracked-stateBytes)
 	}
-	weighing.state.Store(stateBytes)
-	weighing.roomCharge().weigh(stateBytes, int64(anchorStructs(room, weighing.applies(), live)))
+	weighing.roomCharge().weigh(applies.stateBytes(), int64(anchorStructs(room, applies, live)))
+}
+
+// rebaseMark is what a compaction reads of a resident room before it reads the room's stored
+// history (markRebase): live, the room's document, commits, the commits the room's tracked
+// state had taken (roomApplies.commits), and stored, whether the store then held everything the
+// room did - no commit the room's replica had still to drain from its log, none of its instance's
+// listed as unstored, and nothing pending.
+type rebaseMark struct {
+	live    *crdt.Doc
+	commits uint64
+	stored  bool
+}
+
+// markRebase is the mark a compaction of room takes before it reads the room's rows
+// (tryCompaction), and no mark - one that covers nothing - for a room this server does not hold.
+func (s *Service) markRebase(room string) rebaseMark {
+	live := s.srv.GetDoc(room)
+	if live == nil {
+		return rebaseMark{}
+	}
+	return s.markResident(live)
+}
+
+// markResident is markRebase for live, the document a room holds. It is read holding the
+// replica's lock, so no drain is between taking a commit from the log and listing it unstored
+// (Service.classifyDrained): every commit the room has made is in the log still, listed on the
+// instance until its append returns, or stored. A commit stored by the transaction that wrote it
+// - a published live write, a catch-up's rows - is in the store before the room takes it, and a
+// repair is appended under the document's advisory lock, which the compaction's write takes
+// too (lockRoom), so a repair the room holds is a row above the fold point by the time the
+// compaction checks there is none, and no re-base follows. A room whose load kept no instance
+// lists nothing the mark can read, and is never marked stored.
+func (s *Service) markResident(live *crdt.Doc) rebaseMark {
+	replica := s.replicaOf(live)
+	instance := s.instanceOf(live)
+	if replica == nil || instance == nil {
+		return rebaseMark{live: live}
+	}
+	replica.lockForUpdate()
+	defer replica.mu.Unlock()
+	mark := rebaseMark{live: live, commits: replica.applies().commits.Load()}
+	mark.stored = (replica.log == nil || replica.log.Pending() == 0) && !instance.holdsUnstored() && !holdsPending(live)
+	return mark
+}
+
+// covers is whether a reading of the store taken after the mark holds everything live holds:
+// the mark is of live, the store then held all of it, and the room's tally has taken no commit
+// since. A commit after that adds to the figure as it lands, which a re-base taking the reading
+// keeps on top of it.
+func (m rebaseMark) covers(live *crdt.Doc, applies *roomApplies) bool {
+	return m.live == live && m.stored && applies.commits.Load() == m.commits
 }
 
 // sweepRooms is the budget's sweep (roomBudget.sweep): while the budget is over its limit

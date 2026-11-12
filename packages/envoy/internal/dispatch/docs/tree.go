@@ -479,9 +479,10 @@ type roomWeighing struct {
 	// the roots a browser's update may name refuse any change to them (peerAllowedRoots). Nil
 	// for a room never rebuilt.
 	retired map[crdt.ClientID]uint64
-	// budgets is the allowance of each of the hook's applies in flight and the roots they may
-	// name (roomApplies); scans is the room's scan total and the budget of each remote apply's
-	// scans (roomScans). Both are made by the room's load (keepReplica).
+	// budgets is the allowance of each of the hook's applies in flight, the roots they may
+	// name and what the room's applies reported - the structs it holds and the bytes of encoded
+	// state it is tracked at (roomApplies); scans is the room's scan total and the budget of
+	// each remote apply's scans (roomScans). Both are made by the room's load (keepReplica).
 	budgets *roomApplies
 	scans   *roomScans
 	// bytes is the size of the replica's latest published rendering, published beside it, for
@@ -492,13 +493,6 @@ type roomWeighing struct {
 	// sizeUnmeasured while the room has no rendering to measure, which is a document outside the
 	// schema.
 	bytes atomic.Int64
-	// state is the bytes of encoded state the room is tracked at: what the stored state its load
-	// decoded came to, plus the bytes of each update its observer has drained since, re-based by
-	// a compaction that folds the room's whole stored history into one row (roomWeight,
-	// renderedReplica.chargeAdded, Service.rebaseRoomState). The budget charges the room by it,
-	// and the hook bounds what each apply may add by what is left of maxRoomStateBytes above it,
-	// both without ever encoding the document.
-	state atomic.Int64
 	// charge is the room's charge in the room budget, which the room's load stores once it has
 	// made it (chargeLoadedRoom) and nothing replaces; nil until then, and for a room no load
 	// charged, a test's.
@@ -540,15 +534,12 @@ func (w *roomWeighing) roomScans() *roomScans {
 	return w.scans
 }
 
-// roomStateBytes is the bytes of encoded state the room is tracked at (state), and zero for a
-// document no room's load listed, which is tracked at nothing: the hook then bounds its applies
-// by the whole of maxRoomStateBytes, as it weighs such a room against the byte bound on the
-// update's own bytes alone.
+// roomStateBytes is the bytes of encoded state the room is tracked at (roomApplies.state), and
+// zero for a document no room's load listed, which is tracked at nothing: the hook then bounds
+// its applies by the whole of maxRoomStateBytes, as it weighs such a room against the byte bound
+// on the update's own bytes alone.
 func (w *roomWeighing) roomStateBytes() int64 {
-	if w == nil {
-		return 0
-	}
-	return w.state.Load()
+	return w.applies().stateBytes()
 }
 
 // size is the room's last published measurement - the bytes of its rendering - and whether it has

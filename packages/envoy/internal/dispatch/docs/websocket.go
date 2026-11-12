@@ -764,10 +764,11 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	replica.scans.rescanned(loaded.scans)
 	// The room's charge in the room budget is the bytes of the stored state this load decoded,
 	// at both copies (roomCopies, roomWeight): the room's own document and the replica's copy
-	// were both built from them. From here every committed update's bytes are added to the
-	// room's tracked state as the replica drains the room's update log
-	// (renderedReplica.chargeAdded), and a compaction that folds the room's whole stored history
-	// re-bases it (rebaseRoomState).
+	// were both built from them. From here each commit's addition to the encoded state is added
+	// to the room's tracked state - a remote apply's by its report, any other by the drain that
+	// hands it over (roomApplies.noteApply, renderedReplica.countCommit) - each drain weighs the
+	// room again from it (renderedReplica.chargeAdded), and a compaction that folds the room's
+	// whole stored history re-bases it (rebaseRoomState).
 	s.chargeLoadedRoom(room, replica, stateBytes)
 	instance := s.keepInstance(room, doc, counted)
 	replica.classify = func(logged crdt.LoggedUpdate, seq uint64, contentChanged bool, asks func() map[string]struct{}) (bool, bool, bool) {
@@ -1034,8 +1035,9 @@ func (s *Service) classifyDrained(room string, instance *roomInstance, logged cr
 		// no durable writer of the room stores it again, and it is no work the room's state
 		// waits on. It is queued all the same, so the room's persistence, which ygo hands it as
 		// any other update, finds it stored when it falls outside its suppression slot
-		// (consumeSuppressedPersistence). What it added is charged to the room budget as every
-		// transaction's content is, by the drain that handed it over (chargeAdded).
+		// (consumeSuppressedPersistence). What it added is counted into the room's tracked state
+		// by the drain that handed it over, as every commit no report covers is, at what the
+		// replica's apply of it reported (renderedReplica.countCommit).
 		s.queueUpdateClass(room, logged.Update, class, true)
 		return false, false, false
 	}

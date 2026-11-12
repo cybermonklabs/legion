@@ -89,7 +89,7 @@ func BenchmarkLiveDocumentRead(b *testing.B) {
 // v1.55.1-sami.1, provider/websocket/peer_update.go:112-127, provider/websocket/peer.go:292-302),
 // and the observer's whole turn with the replica (renderedReplica.observe), which ygo fires
 // inside that apply once its transaction commits (crdt/doc.go:984-989): the drain of the room's
-// update log, the content each drained update added charged to the room budget (chargeAdded), the
+// update log, the room charged again from its tracked state (chargeAdded), the
 // update applied to the replica, and the render (renderDocumentForUpdate), which skips
 // pmdoc.Read's copy since the tree it renders never outlives the call. 120 keystrokes 20 ms apart
 // on a 524 KiB document; each run reports the latencies' percentiles in milliseconds.

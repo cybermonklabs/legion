@@ -62,13 +62,15 @@ const roomCopies = 2
 //
 // Two terms and not one because the two measures come apart in both directions, and a budget
 // that bounds what the open rooms hold must follow whichever is the larger. The state bytes are
-// tracked, never re-read (renderedReplica.chargeAdded): the bytes of the stored state the room's
-// load decoded, plus the bytes of each update the room's own update observer drains, re-based at
+// tracked, never re-read (roomApplies.state): the bytes of the stored state the room's load
+// decoded, plus what each commit since added to the encoded state as the library counts it -
+// each remote apply's own report (crdt.ApplyReport.StateBytes), and for a commit no report
+// covers, the replica's report of the same update (renderedReplica.countCommit) - re-based at
 // each load and at each compaction that folds the room's whole stored history into one row
-// (Service.rebaseRoomState). Between re-bases that figure usually runs above the state itself,
-// since an update's bytes carry what its transaction deleted beside what it added and ygo merges
-// a run of typed characters into one item as it commits, which is the safe side for a budget.
-// But one update can take a room far past it: a delete of every other character of a run splits
+// (Service.rebaseRoomState). That figure reads at or above the state itself, which is the safe
+// side for a budget, the splits a delete makes included, since the report counts each split
+// where it is made. But one update can take a room far past what its state bytes charge it:
+// a delete of every other character of a run splits
 // one item into a struct for each character, and the splits a delete makes are not the update's
 // own, so one 2.2 MB frame took a room from 4 structs to 1,100,002, its charge by 61.4 MB and its
 // two copies by 336.6 MB (dispatch://INFRA-179, review 5891480448). The decode cap refuses that

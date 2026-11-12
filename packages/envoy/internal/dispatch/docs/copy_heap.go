@@ -392,9 +392,10 @@ func holdFreeLoad(bytes int64) func() {
 // copyOfRoom is what one whole copy of the room holding live costs the pod's load concurrency: a
 // live write's fork of it, cloned or decoded (warmFork), and the decode-cap count's copy
 // (structsAfter). It is the room's tracked state bytes and the structs the room holds at
-// copyWeight - the bytes of the stored state the room's load decoded plus the updates its
-// observer has drained (roomStateBytes), and the structs the room's last committed apply
-// reported it holding (roomApplies.structsHeld, crdt.ApplyReport.Structs), which a split-dense
+// copyWeight - the bytes of the stored state the room's load decoded plus what each commit since
+// added as the library reports it (roomStateBytes, roomApplies.state), and the structs the room's
+// last committed apply reported it holding (roomApplies.structsHeld, crdt.ApplyReport.Structs),
+// which a split-dense
 // copy is as heavy in the pool by as it is in the budget. Both are read off the room's own
 // listing without a lock, an encode or a walk of the document. The report counts what the room
 // has parked with what its store holds: a copy carries the room's pending queue with its

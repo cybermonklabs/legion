@@ -1459,11 +1459,11 @@ func TestAnUpdateThatWouldTakeTheRoomPastTheDecodeCapIsRefused(t *testing.T) {
 // bound therefore never sees. Measured on 2026-10-26, eighty such updates were all admitted and
 // took a room's whole-state frame from 264 bytes to 80,001,457, past the message floor every
 // browser of the document then reconnects against. Each is now admitted while the room's tracked
-// state, which its drain raises by every update's own bytes (renderedReplica.chargeAdded), has
-// room for it under maxRoomStateBytes; the first that would pass it is refused with
-// DOC_NEEDS_REBUILD - the editor offers the rebuild that would take the edit - and leaves the room
-// as it was, and so is every one after it. A delete, which integrates nothing, is admitted at the
-// cap, so a document that has reached it can still be trimmed.
+// state, which each apply's report raises by what that apply added to the room's encoded state
+// (roomApplies.noteApply), has room for it under maxRoomStateBytes; the first that would pass it
+// is refused with DOC_NEEDS_REBUILD - the editor offers the rebuild that would take the edit - and
+// leaves the room as it was, and so is every one after it. A delete, which integrates nothing, is
+// admitted at the cap, so a document that has reached it can still be trimmed.
 func TestBrowserUpdatesOfMarginBytesStopAtTheRoomsStateCap(t *testing.T) {
 	const updates, size = 20, 1_000_000
 	service, room, replica, _ := drainedPeerUpdateRoom(t, "# Title\n\nOne paragraph of ordinary prose.\n")
@@ -1604,8 +1604,9 @@ func gcRunOverHeldClocks(room *crdt.Doc) []byte {
 // drainedPeerUpdateRoom is peerUpdateRoom's room with its update log open and an observer moving
 // the replica through every commit, as a room's load leaves it (keepReplica, onLoadDocument), and
 // charged in a budget of roomBudgetBytes at the bytes of the state it loaded with: so each update
-// the hook admits is drained, added to the room's tracked state and charged where a loaded room's
-// is (renderedReplica.chargeAdded). Its replica takes the load's rendering as a load makes it
+// the hook admits is counted into the room's tracked state by its report, drained and charged
+// where a loaded room's is (roomApplies.noteApply, renderedReplica.chargeAdded). Its replica
+// takes the load's rendering as a load makes it
 // (liveRendering, documentRenderingWithLayout): the markdown and the layout of one render of the
 // state the replica starts from, which is what each admitted update is measured and spliced
 // against (renderedReplica.spliceTouched).

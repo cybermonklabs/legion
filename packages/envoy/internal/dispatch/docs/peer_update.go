@@ -430,9 +430,10 @@ var peerRefusedContent = []crdt.ContentKind{crdt.ContentKindEmbed, crdt.ContentK
 // nothing holds across a call into the document.
 //
 // It is also where the room keeps what the library answers back: as each apply commits, ygo
-// reports what the document then holds, and that figure is the room's from then on - its
-// charge, the copies it is weighed for and the next update's allowance all read it rather than
-// the document (crdt.WithApplyReport, structs, structsHeld).
+// reports what the document then holds and the bytes the apply added to its encoded state, and
+// those figures are the room's from then on - its charge, the copies it is weighed for and the
+// next update's allowance all read them rather than the document (crdt.WithApplyReport,
+// structs, structsHeld, state).
 //
 // An apply of any other origin is the server's own - an API write's publish, an injected update,
 // settlement's repair - and is bounded by nothing here, allowed every root and refused no kind of
@@ -468,13 +469,41 @@ type roomApplies struct {
 	// before the flag, and every value either carries is a total the document stood at.
 	structs  atomic.Int64
 	reported atomic.Bool
+	// state is the bytes of encoded state the room is tracked at (stateBytes): what the room's
+	// load or a re-base read (loaded, rebase), plus what every commit since added. A remote
+	// apply's is its own report (crdt.ApplyReport.StateBytes), added as it commits
+	// (noteApply); a commit no report covers - the server's own writes and ygo's format
+	// cleanup - is added by the drain that hands it over, from the replica's report of the
+	// same update (renderedReplica.countCommit). The hook bounds what each browser's apply may
+	// add by what is left of maxRoomStateBytes above it, and the budget charges the room by it,
+	// neither encoding the document. It is written under the document's lock and outside it,
+	// so it is an atomic. commits counts the commits it has taken - every report, and every
+	// commit a drain counted that no report covered - so a reading of the room can tell whether
+	// the room committed anything while it was taken (reread, rebaseMark).
+	//
+	// owed says the figure may stand below the room's encoded state: a drain handed over a
+	// commit that neither a report nor the replica measured, or the room was loaded while it
+	// held something pending, which makes the load's reading a lower bound. The next re-read or
+	// re-base whose reading is exact clears it (take, reread).
+	state   atomic.Int64
+	commits atomic.Uint64
+	owed    atomic.Bool
+	// unpaired is the origins of the reports no drained commit has been paired with yet, in
+	// commit order, guarded by mu; paired is whether the room keeps them, which a room whose
+	// commits a replica drains does (newRoomApplies). ygo logs a commit and then reports it
+	// under the same hold of the document's lock, so a drain that takes the reports made
+	// before it takes the log finds the report of every remote apply it hands over
+	// (reportsMade, reportPairing).
+	unpaired []any
+	paired   bool
 }
 
 // newRoomApplies sets live, a room's document, to apply every browser's update under the
 // allowance the hook reserved for it, to refuse one naming any root but the fragment and the
 // margin, to refuse one carrying a kind of content the editor never sends, and to report what
 // each apply that commits leaves it holding, as newRoomScans sets its scan budget. From here
-// live applies every remote update whole or not at all.
+// live applies every remote update whole or not at all. paired is whether a replica drains the
+// room's commits from its update log, and so pairs each one with its report (unpaired).
 //
 // The report is what makes the library and not this package the authority on what a room holds
 // (crdt.WithApplyReport, dispatch://INFRA-179): ygo reads the two counters that answer it - the
@@ -484,8 +513,8 @@ type roomApplies struct {
 // replaces: one reading an apply, against one a drain plus one an update weighed plus one a
 // copy taken (the fork's measurement is 13.4 µs for the pair of counters,
 // crdt/doc.go:446-448).
-func newRoomApplies(live *crdt.Doc) *roomApplies {
-	applies := &roomApplies{}
+func newRoomApplies(live *crdt.Doc, paired bool) *roomApplies {
+	applies := &roomApplies{paired: paired}
 	live.SetApplyBudget(applies.budget)
 	live.SetAllowedRoots(applies.roots)
 	live.SetRefusedContent(applies.refusedContent)
@@ -493,20 +522,219 @@ func newRoomApplies(live *crdt.Doc) *roomApplies {
 	return applies
 }
 
-// noteApply keeps what an apply that has just committed in this room reported the document now
-// holds. ygo calls it with the apply's origin, which nothing here reads - what the room holds
-// is the room's, whoever wrote the update - under the document's lock and inside the
-// transaction that applied it, so it takes no lock of this package's and calls nothing back
-// into the document (crdt.WithApplyReport).
+// noteApply keeps what an apply that has just committed in this room reported: the structs the
+// document now holds, the bytes the apply added to its encoded state, and the apply's origin,
+// which the drain that hands the commit over pairs it with (reportPairing). ygo calls it under
+// the document's lock and inside the transaction that applied the update, so it takes nothing
+// but mu and calls nothing back into the document (crdt.WithApplyReport).
 //
 // A refused or rolled-back apply reports nothing, so what is kept here is always a total the
 // document stood at. An apply of a local transaction reports nothing either - the report is of
-// remote applies - so a server write made in the room's own transaction leaves this figure
-// behind the document until the next remote apply reports again or the anchor reads the
-// document itself (anchorStructs, which logs the difference).
-func (a *roomApplies) noteApply(_ any, report crdt.ApplyReport) {
+// remote applies - so a server write made in the room's own transaction leaves the struct
+// figure behind the document until the next remote apply reports again or the anchor reads the
+// document itself (anchorStructs, which logs the difference), and leaves the byte figure to the
+// drain (renderedReplica.countCommit).
+//
+// The bytes are the library's count of the direct form of the encoded state: each struct and
+// skip where the store or the pending queue holds it. A room whose pending queue or pending
+// deletes hold anything encodes through a merge instead, up to 4 bytes shorter for each value
+// the queue touches, so one apply's figure can fall short of what the encode grew by and the
+// running total still never does: measured in the library, a park reported 5 while the state
+// grew 1, the fill that followed reported 6 while it grew 10, and an overwrite collecting ten
+// such values reported -76 while the state moved -36. That is why a reading of a room holding
+// something pending is a lower bound and never replaces the total (take).
+func (a *roomApplies) noteApply(origin any, report crdt.ApplyReport) {
 	a.structs.Store(int64(report.Structs))
 	a.reported.Store(true)
+	a.state.Add(int64(report.StateBytes))
+	a.commits.Add(1)
+	if a.paired {
+		a.mu.Lock()
+		a.unpaired = append(a.unpaired, origin)
+		a.mu.Unlock()
+	}
+}
+
+// stateBytes is the bytes of encoded state the room is tracked at (state), and zero for a
+// document no room's load listed.
+func (a *roomApplies) stateBytes() int64 {
+	if a == nil {
+		return 0
+	}
+	return a.state.Load()
+}
+
+// loaded sets the room's tracked state to stateBytes, what the stored state its load decoded
+// came to (chargeLoadedRoom). A load that left live holding something pending read a lower
+// bound (noteApply), so the figure is owed a re-read from the room itself.
+func (a *roomApplies) loaded(live *crdt.Doc, stateBytes int64) {
+	if a == nil {
+		return
+	}
+	a.state.Store(stateBytes)
+	if live != nil && holdsPending(live) {
+		a.owed.Store(true)
+	}
+}
+
+// added raises the room's tracked state by bytes, the figure of a commit no report covered
+// (renderedReplica.countCommit), and counts the commit.
+func (a *roomApplies) added(bytes int64) {
+	if a != nil {
+		a.state.Add(bytes)
+		a.commits.Add(1)
+	}
+}
+
+// owe counts a commit nothing measured, which the drain that handed it over charges nothing
+// for, and marks the room's tracked state as possibly below its encoded state (owed), which
+// the drain re-reads the room for in its place (reread).
+func (a *roomApplies) owe() {
+	if a != nil {
+		a.commits.Add(1)
+		a.owed.Store(true)
+	}
+}
+
+// take sets the room's tracked state to read, a reading of the room's whole encoded state,
+// where it still stands at tracked, and reports whether it did. An exact reading - one of a
+// room holding nothing pending, and nothing the reading leaves out - replaces the figure and
+// settles what was owed; any other reading is a lower bound, so the figure keeps the larger of
+// the two and stays owed if it was. Taking a lower bound as the truth would put the figure
+// below the state, and the room would then be admitted past maxRoomStateBytes by the
+// difference.
+func (a *roomApplies) take(tracked, read int64, exact bool) bool {
+	want := read
+	if !exact {
+		want = max(tracked, read)
+	}
+	if !a.state.CompareAndSwap(tracked, want) {
+		return false
+	}
+	if exact {
+		a.owed.Store(false)
+	}
+	return true
+}
+
+// rebase takes read, what a compaction that folded the room's whole stored history wrote, as
+// the room's tracked state (take), exact where exact says the reading covers everything the
+// room holds, and returns the figure it replaced. A report or a drain that moves the figure
+// while it is weighed makes it weigh it again.
+func (a *roomApplies) rebase(read int64, exact func() bool) (tracked int64) {
+	for {
+		tracked = a.state.Load()
+		if a.take(tracked, read, exact()) {
+			return tracked
+		}
+	}
+}
+
+// rereadTries is how many encodes of a room one re-read takes before it leaves the figure owed
+// to the next: each is thrown away when a report lands while it is taken.
+const rereadTries = 3
+
+// reread re-bases a room whose tracked state is owed (owe, loaded) on an encode of live itself,
+// once live holds nothing pending, where an encode is exact, and reports whether it did; while
+// live holds something it waits, since that reading is a lower bound. The caller holds the
+// replica's lock, so no drain adds to the figure meanwhile, and the commit count is read on both
+// sides of the encode, so a reading is kept only where no report landed while it was taken: it
+// then holds every report the figure holds and no other. A commit after the encode is added to
+// the figure as it lands, and one the encode holds whose drain is still to come is added again by
+// that drain, which is the safe side. The encode costs what a read of the room costs (53.0 ms on
+// 494,309 structs), and the first drain to find the room owed and holding nothing pending pays
+// it, a keystroke's as well: once for each time a room is owed one, which only a recover, an
+// unmeasured commit or a load of a room holding something pending makes it. Until then each
+// drain reads the room's pending counts (holdsPending).
+func (a *roomApplies) reread(live *crdt.Doc) bool {
+	if a == nil || live == nil || !a.owed.Load() || holdsPending(live) {
+		return false
+	}
+	for range rereadTries {
+		seen := a.commits.Load()
+		tracked := a.state.Load()
+		read := int64(len(crdt.EncodeStateAsUpdateV1(live, nil)))
+		exact := !holdsPending(live)
+		if a.commits.Load() != seen {
+			continue
+		}
+		if a.take(tracked, read, exact) {
+			if read != tracked {
+				slog.Info("dispatch: a room's tracked state was re-read from the room itself",
+					"tracked", tracked, "read", read, "difference", tracked-read)
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// holdsPending is whether live's pending queue or pending deletes hold anything, which makes an
+// encode of it a lower bound on the state the room's reports track (noteApply).
+func holdsPending(live *crdt.Doc) bool {
+	pending := live.PendingStats()
+	return pending.Items > 0 || pending.DeleteRanges > 0
+}
+
+// reportsMade is the origins of the reports made in the room that no drained commit has been
+// paired with yet, in commit order: what a drain about to take the room's log pairs its commits
+// against (reportPairing). The slice is capped at its length, so the reports made after it are
+// appended past what it holds, and only the drain that holds it drops what it holds
+// (settleReports). Nil for a room that keeps no reports.
+func (a *roomApplies) reportsMade() []any {
+	if a == nil || !a.paired {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.unpaired[:len(a.unpaired):len(a.unpaired)]
+}
+
+// settleReports drops the first n of the room's unpaired reports, the ones a drain took before
+// it took the log (reportsMade). Each was either paired with a commit the drain handed over or
+// made by an apply that logged nothing - one that changed the room in no way - so none is
+// wanted by a later drain.
+func (a *roomApplies) settleReports(n int) {
+	if a == nil || n == 0 {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	kept := copy(a.unpaired, a.unpaired[n:])
+	clear(a.unpaired[kept:])
+	a.unpaired = a.unpaired[:kept]
+}
+
+// reportPairing walks one drain's commits, in commit order, against reports, the reports made
+// before the drain took the log (roomApplies.reportsMade), and next, the first of them no commit
+// has been paired with.
+type reportPairing struct {
+	reports []any
+	next    int
+}
+
+// covers reports whether a report covers the commit the drain has reached, which origin wrote,
+// and pairs the two. ygo logs a commit and reports it under one hold of the document's lock, so
+// a remote apply's report is among those the drain took and after every report of a commit
+// before it: the first one from next with the commit's origin is its own, or one an apply with
+// that origin made without logging anything, which leaves the count the same.
+//
+// A commit no report covers is a local transaction - a server write, or ygo's format cleanup,
+// whose origin is nil - since no origin a local transaction is made with is one a remote apply
+// is made with: a browser's apply has its peer, a publish its liveWriteOrigin, a catch-up its
+// remoteUpdateOrigin, and the server's own writes take an origin of their own each. A remote
+// apply whose report is made after a concurrent drain has already taken its commit is taken
+// for one as well, and counted again from the replica on top of its report, which is the safe
+// side (renderedReplica.countCommit). Every origin here went through the apply budget's map
+// (roomApplies.budget), so each compares.
+func (p *reportPairing) covers(origin any) bool {
+	for at := p.next; at < len(p.reports); at++ {
+		if p.reports[at] == origin {
+			p.next = at + 1
+			return true
+		}
+	}
+	return false
 }
 
 // reportedStructs is the structs the last apply that committed in the room reported it holding,
@@ -732,9 +960,10 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 // connected where a refusal before the apply closes it
 // (provider/websocket/peer_update.go:139-154).
 //
-// A successful apply charges nothing here: the room's update observer drains the update inside
-// the apply that committed it, adds its bytes to the room's tracked state and weighs the room
-// again from the sum (renderedReplica.chargeAdded, roomCharge).
+// A successful apply charges nothing here: its report has already added what it added to the
+// room's encoded state to the room's tracked state as it committed (roomApplies.noteApply), and
+// the room's update observer, draining the update inside the apply that committed it, weighs
+// the room again from that figure (renderedReplica.chargeAdded, roomCharge).
 func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() error) error {
 	weighing := s.roomWeighingOf(info.Doc)
 	if refusal := s.refusedBeforeApply(info, weighing); refusal != nil {

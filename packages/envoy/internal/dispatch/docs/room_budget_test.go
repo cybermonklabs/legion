@@ -26,12 +26,14 @@ import (
 
 // A room is charged one weight: the larger of its tracked state at bytesOfHeapAStateByte and
 // its structs at bytesOfHeapAStruct, in each of the two copies a room keeps (roomWeight). Its
-// load sets that state from the stored state it decoded (chargeLoadedRoom); each update the
-// room's observer drains adds the update's own bytes to it (renderedReplica.chargeAdded, here
-// driven through roomCharge.weigh, which is all that drain does); a compaction that folds the
-// room's whole stored history into one row re-bases it (Service.rebaseRoomState); and the
-// room's retirement drops the whole charge. The budget's arithmetic after that is one sum: what
-// the charges come to, against the limit.
+// load sets that state from the stored state it decoded (chargeLoadedRoom); each commit raises
+// it by what the library reported the commit added to the encoded state, a remote apply by its
+// own report and any other by the drain that hands it over (roomApplies.noteApply,
+// renderedReplica.countCommit); each drain weighs the room again from it
+// (renderedReplica.chargeAdded, here driven through roomCharge.weigh, which is all that weighing
+// does); a compaction that folds the room's whole stored history into one row re-bases it
+// (Service.rebaseRoomState); and the room's retirement drops the whole charge. The budget's
+// arithmetic after that is one sum: what the charges come to, against the limit.
 //
 // The rooms here are the budget's own records and hold no document at all, so every charge
 // below passes no struct count, which leaves the state term to decide: this weighs the
@@ -43,12 +45,12 @@ func TestTheRoomBudgetChargesARoomItsTrackedStateAtBothCopies(t *testing.T) {
 	requireCharged(t, budget, charge, roomWeight(loaded, 0), "a room that has taken no update is charged its stored state at both copies")
 
 	charge.weigh(loaded+typed, 0)
-	requireCharged(t, budget, charge, roomWeight(loaded+typed, 0), "an update's own bytes are added to the room's tracked state")
+	requireCharged(t, budget, charge, roomWeight(loaded+typed, 0), "what a commit added is added to the room's tracked state")
 	charge.weigh(loaded+2*typed, 0)
-	requireCharged(t, budget, charge, roomWeight(loaded+2*typed, 0), "a later update adds its own bytes too")
-	// A compaction's re-base is the one thing that lowers a room's tracked state while it stands:
-	// the state a fold wrote, which merges a run of typed characters into one item and drops what
-	// the updates carried of what they deleted.
+	requireCharged(t, budget, charge, roomWeight(loaded+2*typed, 0), "a later commit adds what it added too")
+	// A compaction's re-base lowers a room's tracked state while it stands, as a commit that
+	// leaves the state smaller does: the state a fold wrote, which drops the margin the figure
+	// carried above the room - a server delete counted at its update's bytes, say.
 	charge.weigh(loaded, 0)
 	requireCharged(t, budget, charge, roomWeight(loaded, 0), "a compaction's re-base lowers the room to the state its fold wrote")
 
@@ -577,11 +579,12 @@ func TestTheRoomBudgetAdmissionWaitsForItsSweepAndIsAdmittedIntoTheRoomItMakes(t
 	}
 }
 
-// Every transaction the peer hook did not apply is charged to its room as a browser's admitted
-// update is - by the room's own update observer, from the bytes of the update that observer
-// drains (renderedReplica.chargeAdded) - and none is refused for it: here the server's own
-// writes, into a room one browser holds, with the budget far past its limit and full raised. A
-// browser's update the hook admits is charged the same way, once, by that same drain.
+// Every transaction the peer hook did not apply is counted into its room's tracked state and
+// charged to the room - by the room's own update observer, at what the replica's apply of the
+// update it drains reported adding (renderedReplica.countCommit, chargeAdded) - and none is
+// refused for it: here the server's own writes, into a room one browser holds, with the budget
+// far past its limit and full raised. A browser's update the hook admits is counted once too, by
+// its own apply's report, and charged by that same drain.
 func TestTheRoomBudgetChargesEveryServerWriteAndRefusesNone(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -636,7 +639,7 @@ func TestTheRoomBudgetChargesEveryServerWriteAndRefusesNone(t *testing.T) {
 		t.Fatal("three characters the server typed grew the room's tracked state by nothing")
 	}
 	if grew := write("delete one character", inText(func(text *crdt.YXmlText, txn *crdt.Transaction) { text.Delete(txn, 8, 1) })); grew == 0 {
-		t.Fatal("a character the server deleted grew the room's tracked state by nothing: a delete's own update is still bytes the room holds")
+		t.Fatal("a character the server deleted grew the room's tracked state by nothing: a delete inside a run adds the headers of the halves it cuts and a delete-set entry to the room")
 	}
 	before = tracked()
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}

@@ -24,11 +24,12 @@ import (
 //
 //   - a split-dense room: a run of a million characters, which ygo merges into one item, with
 //     every other character of it deleted in one update, which splits that item into a million.
-//     The room's state carries each of those splits, but the room's tracked state does not: what
-//     the budget adds for that update is the update's own bytes, so one update takes the room
-//     from a handful of structs to a million while its charge moves by the delete frame alone
-//     (renderedReplica.chargeAdded). This is the shape the reviewer measured at 5.5 times its
-//     charge (dispatch://INFRA-179, review 5891480448).
+//     The room's state carries each of those splits, and so does its tracked state, the report
+//     counting each split's header where the delete makes it (crdt.ApplyReport.StateBytes); but
+//     a split is about ten bytes of state and a whole struct of heap, so one update takes the
+//     room from a handful of structs to a million while its state term moves by those few bytes
+//     a split. This is the shape the reviewer measured at 5.5 times its charge
+//     (dispatch://INFRA-179, review 5891480448).
 //   - a room of empty elements, which hold a struct each and almost no content.
 //   - a room of elements outside the Proof schema, which render nothing at all and so publish no
 //     measurement the byte bound could weigh.
@@ -204,10 +205,11 @@ func splitEveryOtherCharacter(client crdt.ClientID, run int) []byte {
 // every other character of it, which splits that item into a struct for each character and
 // takes the room from a handful of structs to half a million on one delete. The splits are not
 // the update's own and the room stays inside the decode cap, so the hook admits the update,
-// which is the point: the room is charged for what it took, not refused for it. What
-// the drain adds to the room's tracked state is the delete frame's own bytes
-// (renderedReplica.chargeAdded), so the state term alone charges the room a fraction of what
-// its two copies then hold, and the struct term is what answers it.
+// which is the point: the room is charged for what it took, not refused for it. What the room's
+// tracked state takes for the delete is what the library reported it added to the encoded
+// state, each split's header included (crdt.ApplyReport.StateBytes), about ten bytes a struct,
+// so the state term alone charges the room a fraction of what its two copies then hold, and the
+// struct term is what answers it.
 //
 // What it is weighed against is the structs' own measured heap, bytesOfHeapAStruct in each of
 // the room's two copies (TestAResidentRoomsHeapPerStructItHolds measured that price on this

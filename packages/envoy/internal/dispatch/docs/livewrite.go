@@ -997,11 +997,13 @@ func (w *liveWrite) releaseFork() {
 }
 
 // roomStateBytes is the bytes of encoded state live, a resident room's document, is tracked at
-// (roomWeighing.roomStateBytes): what the stored state its load decoded came to, plus the bytes
-// of each update its observer has drained since, re-based by a compaction that folds its whole
-// stored history into one row. It is read without encoding anything - an encode is what the
-// clone exists to avoid (Service.forkPoint) - and between re-bases it runs at or above the
-// state's own length, which is the safe side for a caller sizing what a copy will hold.
+// (roomWeighing.roomStateBytes): what the stored state its load decoded came to, plus what each
+// commit since added as the library counts it - a remote apply's own report, and for a commit no
+// report covers the replica's report of the same update (roomApplies.state) - re-based by a
+// compaction that folds its whole stored history into one row. It is read without encoding
+// anything - an encode is what the clone exists to avoid (Service.forkPoint) - and it reads at
+// or above the state's own length, which is the safe side for a caller sizing what a copy will
+// hold.
 //
 // A room no load listed is tracked at nothing, a test's room and nothing in production
 // (keepReplica runs in every load), and reads zero.

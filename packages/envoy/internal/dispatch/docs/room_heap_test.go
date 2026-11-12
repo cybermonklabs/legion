@@ -165,19 +165,17 @@ const typedRoomHeapMeasurement = "DISPATCH_MEASURE_TYPED_ROOM_HEAP"
 
 // A room typed into is charged no less than the heap it holds, and no more than the factor the
 // shapes' own measurements allow. The budget charges a room the larger of its tracked state at
-// bytesOfHeapAStateByte and its structs at bytesOfHeapAStruct (roomWeight). Its drain raises
-// that tracked state by the bytes of every update the room commits
-// (renderedReplica.chargeAdded), and an update's bytes carry what its transaction deleted
-// beside what it added, where the state itself merges a run of typed characters into one item:
-// so a room typed into is tracked above the state it holds, which is the safe side for a budget
-// and is what this weighs.
+// bytesOfHeapAStateByte and its structs at bytesOfHeapAStruct (roomWeight). Each commit raises
+// that tracked state by what the library reported it added to the room's encoded state
+// (roomApplies.noteApply, renderedReplica.countCommit), so a room typed into is tracked at or
+// above the state it holds, which is the safe side for a budget and is what this weighs.
 //
 // The factor is what the two prices leave a room of prose. A mebibyte of prose holds 10.48
 // bytes of heap a state byte of the 17 the state term charges, and 409.76 a struct of the 630
 // the struct term charges, 0.616 and 0.650 of each price
 // (TestAResidentRoomsHeapPerStructItHolds); the larger term decides the charge, so such a room
-// may be charged up to 1/0.616 times its heap, and typing, which tracks a room above the state
-// it holds, a little more. leastHeldOfCharge is set under both.
+// may be charged up to 1/0.616 times its heap, and a tracked state above the state it holds a
+// little more. leastHeldOfCharge is set under both.
 //
 // The room is a mebibyte of prose (residentRoomState), loaded as a room's load leaves it - the
 // live document, and the load's own decode of the stored state as the replica, its update log
@@ -282,9 +280,10 @@ type typedResidentRoom struct {
 // live document decoded from state, the load's own decode of it as the replica, the room's update
 // log opened, the replica kept and its scan total set from that decode, the room charged at the
 // bytes of the state it loaded in a budget of roomBudgetBytes, and an update observer on live
-// that moves the replica through each commit, adding each committed update's bytes to the room's
-// tracked state (renderedReplica.chargeAdded). It then hands each of updates to the peer hook as
-// one browser's, applied as the room applies a peer's update.
+// that moves the replica through each commit, counting into the room's tracked state each commit
+// no report covers and charging the room again (renderedReplica.countCommit, chargeAdded) - a
+// remote apply's own report has counted it as it committed. It then hands each of updates to the
+// peer hook as one browser's, applied as the room applies a peer's update.
 // The room's update log is left open, as a room's load leaves it (onLoadDocument): it goes with
 // the replica that drains it, which the room holds, so nothing outside the room holds the log and
 // a room dropped is collected whole, which the heap reading's cross-check rests on.

@@ -269,8 +269,9 @@ func requireRoomAsItWas(t *testing.T, before, after roomPicture) {
 // and the room's document, the budget's used bytes and the room's charge are as they were, while
 // its scan total holds the items the refused apply's scans passed, exactly its allowance. An
 // update the room's own apply refuses for anything else - here a delete its apply answers an
-// error of its own for - is answered with that error, and charges nothing: the room's observer
-// charges what a commit drains, and a refused apply commits nothing (renderedReplica.chargeAdded).
+// error of its own for - is answered with that error, and charges nothing: a refused apply
+// reports nothing and commits nothing for the room's observer to drain (roomApplies.noteApply,
+// renderedReplica.chargeAdded).
 func TestAnIntegrateScanRefusalLeavesTheRoomsChargeAndTotalAsTheyWere(t *testing.T) {
 	const typed = 2_000
 	service, room, replica, charge := tangledRoom(t, typed)

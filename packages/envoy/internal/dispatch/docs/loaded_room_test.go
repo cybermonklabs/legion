@@ -28,8 +28,10 @@ import (
 // decoded - at both copies (chargeLoadedRoom, roomWeight). The replica then moves only through
 // the room's commits as the update log hands them over (keepReplica, doc.OpenUpdateLog): once
 // the browser's edit is in, the replica holds the room as of that commit with nothing left in
-// the log, its rendering is the measurement, and every logged update's own bytes have been added
-// to the room's tracked state once (renderedReplica.chargeAdded).
+// the log, its rendering is the measurement, the room's tracked state has grown by exactly what
+// an encode of the room grew by - each commit counted once, at what the library reported it
+// added (roomApplies.noteApply, renderedReplica.countCommit) - and the budget charges the room
+// that tracked state (renderedReplica.chargeAdded).
 func TestAFreshlyLoadedRoomIsMeasuredAndChargedWithItsUpdateLog(t *testing.T) {
 	database := storetest.Open(t)
 	service := newRoomBudgetService(t, database, NewPgVersioned(database))
@@ -57,6 +59,7 @@ func TestAFreshlyLoadedRoomIsMeasuredAndChargedWithItsUpdateLog(t *testing.T) {
 		t.Fatal("the loaded room's replica holds no charge in the room budget")
 	}
 	tracked := replica.roomStateBytes()
+	encodedAtLoad := int64(len(crdt.EncodeStateAsUpdateV1(live, nil)))
 	if tracked == 0 {
 		t.Fatal("the loaded room is tracked at no state, want the bytes of the stored state its load decoded")
 	}
@@ -83,28 +86,28 @@ func TestAFreshlyLoadedRoomIsMeasuredAndChargedWithItsUpdateLog(t *testing.T) {
 		t.Fatalf("after the browser's edit the room measures %d bytes (measured %t), want its rendering's %d", bytes, measured, len(want))
 	}
 	_, logged := log.Drain()
-	var added int64
-	for _, update := range logged {
-		added += int64(len(update.Update))
-	}
-	if added == 0 {
+	if len(logged) == 0 {
 		t.Fatal("the browser's edit committed no update, so nothing here is charged")
 	}
-	if after := replica.roomStateBytes(); after-tracked != added {
-		t.Fatalf("the room's tracked state took %d bytes for the updates it committed, want the %d those updates hold", after-tracked, added)
+	grew := int64(len(crdt.EncodeStateAsUpdateV1(live, nil))) - encodedAtLoad
+	after := replica.roomStateBytes()
+	if after-tracked != grew {
+		t.Fatalf("the room's tracked state took %d bytes for the %d updates it committed, want the %d an encode of the room grew by",
+			after-tracked, len(logged), grew)
 	}
-	if want, used := roomWeight(tracked+added, int64(live.StructCount())), budgetUsed(service); used != want {
+	if want, used := roomWeight(after, int64(live.StructCount())), budgetUsed(service); used != want {
 		t.Fatalf("the budget holds %d bytes once the edit is in, want the %d its tracked state and its %d structs come to", used, want, live.StructCount())
 	}
 }
 
-// A transaction's update is charged to its room once, by whichever update observer drains it from
-// the room's update log, before that observer renders it. Bob's edit is held at its own observer
-// (beforeObserveUpdate) while Carol's edit commits and its observer drains both: Bob's update is
-// charged then, already, and his own observer, once released, finds nothing left to charge.
-// Charging each observer's own update in that observer, as the room did before the log, would
-// charge Bob's update after the rendering that holds it had been published, or twice beside the
-// drain's charge.
+// A transaction's update is counted into its room once, and the room charged for it by whichever
+// update observer drains it from the room's update log, before that observer renders it. Bob's
+// edit is held at its own observer (beforeObserveUpdate) while Carol's edit commits and its
+// observer drains both: the room's tracked state then holds both edits, each at what an encode
+// of the room grew by, and the budget charges the room that state, already, and Bob's own
+// observer, once released, finds nothing left to count or charge. Counting each observer's own
+// update in that observer, as the room did before the log, would charge Bob's update after the
+// rendering that holds it had been published, or twice beside the drain's charge.
 func TestATransactionsUpdateIsChargedOnceWhenAnotherObserverRendersItFirst(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -121,6 +124,7 @@ func TestATransactionsUpdateIsChargedOnceWhenAnotherObserverRendersItFirst(t *te
 	log := live.OpenUpdateLog()
 	t.Cleanup(log.Close)
 	before := replica.roomStateBytes()
+	encodedBefore := int64(len(crdt.EncodeStateAsUpdateV1(live, nil)))
 
 	release := holdPeerEdit(t, service, artifactID, &service.beforeObserveUpdate, appendBlocks(t, "Bob's paragraph.\n"))
 	editAsPeer(t, service, artifactID, appendBlocks(t, "Carol's paragraph.\n"))
@@ -128,23 +132,30 @@ func TestATransactionsUpdateIsChargedOnceWhenAnotherObserverRendersItFirst(t *te
 	if len(logged) != 2 {
 		t.Fatalf("the room committed %d updates, want Bob's and Carol's", len(logged))
 	}
-	var added int64
 	for _, update := range logged {
 		if len(update.Update) == 0 {
 			t.Fatal("an edit committed no update, so nothing here is charged")
 		}
-		added += int64(len(update.Update))
 	}
-	if after := replica.roomStateBytes(); after-before != added {
-		t.Fatalf("with Bob's observer held, the room's tracked state took %d bytes, want the %d both edits hold, charged by Carol's observer's drain", after-before, added)
+	grew := int64(len(crdt.EncodeStateAsUpdateV1(live, nil))) - encodedBefore
+	after := replica.roomStateBytes()
+	if after-before != grew {
+		t.Fatalf("with Bob's observer held, the room's tracked state took %d bytes, want the %d an encode of the room grew by for both edits", after-before, grew)
+	}
+	charged := budgetUsed(service)
+	if want := roomWeight(after, int64(live.StructCount())); charged != want {
+		t.Fatalf("with Bob's observer held, the budget holds %d bytes, want the %d both edits' tracked state comes to, charged by Carol's observer's drain", charged, want)
 	}
 
 	release()
 	if pending := log.Pending(); pending != 0 {
 		t.Fatalf("releasing Bob's observer committed %d more updates, want none", pending)
 	}
-	if after := replica.roomStateBytes(); after-before != added {
-		t.Fatalf("once Bob's observer ran, the room's tracked state holds %d bytes more, want the %d both edits hold, each charged once", after-before, added)
+	if now := replica.roomStateBytes(); now != after {
+		t.Fatalf("once Bob's observer ran, the room's tracked state is %d bytes, want the %d it held with both edits counted once", now, after)
+	}
+	if used := budgetUsed(service); used != charged {
+		t.Fatalf("once Bob's observer ran, the budget holds %d bytes, want the %d Carol's observer's drain charged", used, charged)
 	}
 }
 

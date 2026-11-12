@@ -89,15 +89,17 @@ func TestTheAnchorFindsNoDifferenceFromWhatTheRoomsAppliesReported(t *testing.T)
 			if structs := applies.structsHeld(room.live); structs != reported {
 				t.Fatalf("the room is weighed at %d structs, want the %d its last apply reported", structs, reported)
 			}
-			// The bytes are the other half of the anchor, and they are an accumulation rather than
-			// a total: each committed update's own logged bytes, its parked ones included, are
-			// added to the room's tracked state (renderedReplica.chargeAdded), because a total
-			// needs a whole-state encode and that costs 53 ms on a room of 494,309 structs against
-			// a keystroke answered in 128 ms. An accumulation of overlapping updates runs at or
-			// above the merged state, never below it, and the load and the compaction re-base it
-			// to what they read (chargeLoadedRoom, rebaseRoomState). So the anchor's difference
-			// for bytes is held to never under-charge: a tracked state below the encode would be a
-			// path that adds to the room without reporting through the one tally.
+			// The bytes are the other half of the anchor, and they are a running total rather than
+			// a reading: the room's load or a re-base sets it, and each commit raises it by what the
+			// library reported the commit added to the encoded state (crdt.ApplyReport.StateBytes,
+			// roomApplies.noteApply, renderedReplica.countCommit), because a reading needs a
+			// whole-state encode and that costs 53 ms on a room of 494,309 structs against a
+			// keystroke answered in 128 ms. The library counts the direct form of the state, which
+			// an encode reaches with nothing pending and falls short of by up to 4 bytes a value
+			// while something is, so the total runs at or above the encode and never below it. So
+			// the anchor's difference for bytes is held to never under-charge: a tracked state below
+			// the encode would be a path that adds to the room without counting through the one
+			// tally.
 			tracked := room.service.roomStateBytes(room.live)
 			encoded := len(crdt.EncodeStateAsUpdateV1(room.live, nil))
 			t.Logf("the room's tracked state is %d bytes and an encode of it holds %d, %d over", tracked, encoded, tracked-encoded)
