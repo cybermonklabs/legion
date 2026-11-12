@@ -106,55 +106,53 @@ The daemon keeps this order from its fixed table; you start none of its steps:
 2. The reviewer's approval of the head by SHA moves the issue to `accepting`; your `sign_off` moves
    it to `retro`.
 3. Retro records what the work taught as a `dispatch comment` on the issue and brings the PR body
-   up to date. It commits nothing, so the approved head is the head READY names. No merge carries
-   a handoff onto the default branch, since no commit carries one.
-4. The merger quotes what sits above the approved head
-   (`jj diff --from <approved-sha> --to <tip-sha> --summary`) in READY and sends the READY packet
-   with its completion. The daemon refuses a head carrying anything above the approved head but a
-   commit that changes only `docs/solutions/` and a change whose every path is under `.legion/`,
-   which nothing writes or reads now, so nobody reviews one
-   (`READY_UNREVIEWED_CHANGE`). It
-   posts `READY #<n> at <current sha> (approved at <approved sha>) for <KEY> (<pr url>)` on the
-   Dispatch issue, publishes it to the project's merge queue role when one is set, and submits the
-   merge of that head itself, as the implement App with GitHub's expected-head check. The
-   repository's required reviews and checks decide when it lands; Legion neither reads nor writes
-   those rules, and a review only a person can give is waited for, never bypassed. A READY the
-   design gate refused is submitted by the daemon once that spec version is approved.
-5. The merge lands under the repository's rules and closes the issue; a root's close waits until
-   the rest of its tree has left the workflow.
+   up to date. It commits nothing, so the approved head is the head the merger merges. No merge
+   carries a handoff onto the default branch, since every handoff is a record on the Dispatch
+   issue and no commit carries one.
+4. The merger reads the pull request and merges that head itself, as the implement App and with the
+   head it read as the head GitHub must match
+   (`gh pr merge <n> --squash --match-head-commit <head> --subject '<pull request title> (#<n>)' --body ''`,
+   whose explicit message keeps GitHub's default squash message from joining the branch's commit
+   messages onto the base; or `expectedHeadOid` on a
+   merge-queue base, where it enqueues the pull request); it never turns auto-merge on, and the
+   daemon submits no merge and changes no merge setting. The repository's required reviews and
+   checks decide when it lands; Legion neither reads nor writes those rules, and a review only a
+   person can give is waited for, never bypassed. Nothing compares that head with the approved one:
+   a repository that wants a later push reviewed says so in its own rulesets. The merger's
+   completion records its phase row and moves nothing, and the daemon posts no packet.
+5. The merge lands under the repository's rules, the daemon reads it and closes the issue; a
+   root's close waits until the rest of its tree has left the workflow.
 
 A person's request after your sign-off is a requirement of this issue, filed nowhere else: in
-`retro` or `merging` the role holding the phase makes the `request_backward_move`; in
-`awaiting_merge` the implementer pushes, which withdraws the READY.
-A refused or failed READY arrives while the merger holds `merging`, so the merger makes the move
-and you tell it which; from `accepting` you send an issue back only to `implementing` or
+`retro` or `merging` the role holding the phase makes the `request_backward_move`.
+A merge the merger cannot make arrives while the merger holds `merging`, so the merger makes the
+move and you tell it which; from `accepting` you send an issue back only to `implementing` or
 `testing`.
 
 - A failed verification the merger reports: handle it as the `pr-blocked` row of
   `skill://legion-architect/references/wake-routing.md` says, telling the merger to move the
   issue back with `request_backward_move`, naming what failed; never bypass.
-- `READY_UNREVIEWED_CHANGE`, or a merger task with no approved head (`READY_NOT_APPROVED`): the
-  merger moves it back to `reviewing`, the reason naming the code and what it found, so the
-  reviewer runs a new round.
+- A merge GitHub refuses for a repository setting or an App permission — a merge-queue base whose
+  `squash_merge_commit_message` joins the branch's commit messages among them: the merger tells
+  you, and only a person can change it. Ask one with `dispatch ask`, naming the pull request, the
+  head and GitHub's refusal; never bypass a rule.
 
 ## A conflicting head
 
-What returns the tree to review is a changed diff: a commit above the approved head that touches
-anything outside `docs/solutions/`, other than a change whose every path is under `.legion/`, or
-a conflict-resolution merge whose fingerprint (the unchanged-diff check,
+What returns the tree to review is a changed diff: a conflict-resolution merge whose
+fingerprint (the unchanged-diff check,
 `skill://legion-worker/references/conflicts-and-rewrites.md`) differs from the approved head's.
-A conflict merge whose fingerprint is unchanged does not.
+A conflict merge whose fingerprint is unchanged does not, and no Legion check compares the head
+that merges with the approved one: a repository that wants a later push reviewed says so in its
+own rulesets.
 
 Make a conflict-resolution merge only when GitHub reports `CONFLICTING`
-(`gh pr view <n> --json mergeable,mergeStateStatus`). Outside `awaiting_merge` the daemon records
-a conflict and moves nothing, so the moment you see it:
-
-- In a phase a worker holds, tell that worker (`envoy_publish` to its role topic) to move the issue
-  back to `implementing` with `request_backward_move`.
-- In `accepting`, make the move yourself (`request_backward_move` with `issue`).
-- In `awaiting_merge`, do nothing: the daemon withdraws the READY and sends the issue back to
-  `implementing` itself, telling you with a `checks-red` whose reason reads
-  `the head conflicts with <base>`.
+(`gh pr view <n> --json mergeable,mergeStateStatus`). From `testing`, `reviewing`, `accepting`,
+`retro` and `merging` alike the daemon acts on it itself: it moves the issue back to
+`implementing`, starts the implementer, and tells you with a `checks-red` notice naming the phase
+the issue was taken out of and whose reason reads
+`the head conflicts with <base>: GitHub runs no checks on it; merge <base> forward`. You start
+nothing for it.
 
 The daemon then runs the phases from `implementing`: the implementer merges the bookmark forward
 with the destination and pushes it (the procedure in
@@ -162,7 +160,7 @@ with the destination and pushes it (the procedure in
 fingerprints; the tester re-runs the bare gates only and the class search of every earlier
 round's findings at the new head; the reviewer approves the new head by SHA, or continues its
 round if it had not approved; the daemon carries the issue through your acceptance and retro to
-the merger's new READY.
+the merger's merge.
 
 ## A review thread GitHub will not resolve
 
@@ -171,17 +169,18 @@ thread with plain `gh`: the ones it answers and the bot threads the reviewer acc
 it. The reviewer resolves none. If the implementer reports that GitHub refused its
 `resolveReviewThread`, open a `dispatch ask` naming the thread's id or URL and GitHub's message, for
 a human to resolve it by hand, with options for resolved / could not. The merger does not complete
-while that ask is open; READY itself checks no thread state
+while that ask is open; the merge itself checks no thread state
 (`skill://legion-worker/references/merge-gate.md`).
 
 ## The close
 
-The merge closes the issue: when GitHub reports the pull request merged while the issue is in
-`awaiting_merge` (a merge before that closes it the moment it gets there), the daemon writes `done`.
+The merge closes the issue: the daemon reads the merged pull request — from GitHub's webhook or
+from its own read of the issue — and writes `done`. An issue that reaches `merging` on a pull
+request GitHub has already merged closes at once.
 
 - A root whose merge lands while another issue of its tree is still in the workflow stays in
-  `awaiting_merge`, its workers kept and live and no admission slot held, until the last of them
-  is done or parked. One
+  `merging`, its workers kept and live and its admission slot kept with them, until the last of
+  them is done or parked. One
   `pr-merged` notice names what it waits for and none follows as they depart, so read the pull
   request on GitHub.
 - A child's close reaches you as `child-closed`. Where the project's `production_check` names the
@@ -213,9 +212,9 @@ waits in the line for a slot and for any unfinished blocker, and its architect s
 root and registers its own spec. Only a child that finished, was parked or was never released
 stays. The child stays its own tree; reopening the old root does not take it back. Park a child
 with `park_child` before then when its work should stop with the root. A root that is parked
-rather than closed hands over only a child at `awaiting_merge` whose pull request is still open,
-since the daemon re-admits no parked root and only that child's own new READY arms the merge the
-park disarmed; park that child too when its merge should wait with the root.
+rather than closed hands over only a child in `merging` whose pull request is still open,
+since the daemon re-admits no parked root and only that child's own merger, started again under
+its own tree, merges that head; park that child too when its merge should wait with the root.
 
 If you are that child's architect:
 
@@ -223,24 +222,24 @@ If you are that child's architect:
   or ask for approval again.
 - It says `handed_over` alone (no gate to carry): your workers already run their phases, so
   decompose nothing, and read the root's phase from the catch-up (for a root `held`, the phase its
-  `held` notice names). Before `awaiting_merge`, register your spec with `register_gate`: your
-  merger's READY waits for its approval.
+  `held` notice names). Before the merge, register your spec with `register_gate`: the tree's
+  work starts on its approval.
   That registration's approval request waits with the person like any other, but it starts no wait of the root's own: a root your catch-up calls `handed_over` stands at a phase it carried, never `admitted`, and only a root at `admitted` waits on a person.
   The section below is for a root of your own at `admitted`, not for this one.
   When that `design-approved` arrives, release and start
   nothing: the workers are already running. A child carried in `accepting` is yours to accept. In
-  `awaiting_merge` the READY is through, so register none; a red or conflicting head that returns
-  the root to `implementing` makes its next READY read the gate again, so a later `ready-refused`
-  is when you register.
+  `merging` the work is already through every gate, so register none.
 
 ## Your slot while a person has your spec
 
 This is for a root of your own standing at `admitted`, the only phase from which a root waits on a person.
 A registration that leaves the approval request with the person moves your root to `awaiting_person`, and what brings the root back is the answer, not the registration.
-Your root keeps its admission slot throughout: it holds the slot the daemon gave it at its start until it is done, leaves the workflow or waits only for its merge.
+Your root keeps its admission slot throughout: it holds the slot the daemon gave it at its start until it is done or leaves the workflow.
 So your resume takes no slot and comes however full the cap is, whether or not the gate has ever opened in this generation.
 The first phase that resume starts needs no slot of its own either, since the root holds one: it waits in the line among the issues whose work came back, oldest first, placed by the moment your gate opened, so it stands behind every issue of that part whose work came back before it.
-A changes request, or a newer version of the document that hands the request back to you, leaves the gate closed, so your merger's READY waits for a new approval.
-While your answered root stands in the line, your record carries `waitingLine`, your place in the line and its length.
+A changes request, or a newer version of the document that hands the request back to you, leaves the gate closed, so it holds the tree's work until a new approval.
+While your answered root stands in the line, your record carries `waitingLine`: your place in the line and its length, your `part` (`returned`) and `kind` (`answered`), your `partPlace` of `partLength` among the issues whose work came back, `holdsSlot` true because your root has held its slot since its start, `since`, the moment your work came back, and `reason`, the daemon's own sentence for that place.
+An issue that has not started carries `rootRank`, `ownRank` and `rootKey` in place of `since`, the two Dispatch ranks that placed it and the key of its tree root.
+`why` beside it says why any issue of your tree is not working now, in one word and one sentence: `claim_stopped`, a claim nothing will wake; `waiting`, this line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue the record holds in the workflow that no admission list places.
 Nothing is sent to you about that wait, and your resume task says what answered it.
-Act on neither: the daemon starts you again on the pass that reads the answer.
+Act on neither your place nor your wait: the daemon starts you again on the pass that reads the answer.
