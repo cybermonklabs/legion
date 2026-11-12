@@ -258,6 +258,13 @@ func TestTheAgeGuardReadsTheNewestTimeAnywhereInAnEntry(t *testing.T) {
 	old := time.Now().Add(-48 * time.Hour)
 	fresh := time.Now().Add(-time.Minute)
 	dir := t.TempDir()
+	// The guards read a name in a directory the sweep holds open, never a path of their own, so
+	// the case opens the tree it built and asks about the names in it (sweepDir, volumetrim.go).
+	held, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
 
 	tree := filepath.Join(dir, "go-build2026")
 	deep := filepath.Join(tree, "ab", "cd")
@@ -278,7 +285,7 @@ func TestTheAgeGuardReadsTheNewestTimeAnywhereInAnEntry(t *testing.T) {
 	if own.ModTime().After(fresh.Add(-time.Second)) {
 		t.Fatalf("the tree's own time is %s, want the old one this case set: the case would prove nothing", own.ModTime())
 	}
-	newest, err := newestModTime(tree)
+	newest, err := newestModTime(held, "go-build2026")
 	if err != nil {
 		t.Fatalf("newestModTime(%s): %v", tree, err)
 	}
@@ -290,7 +297,7 @@ func TestTheAgeGuardReadsTheNewestTimeAnywhereInAnEntry(t *testing.T) {
 	// A file is its own time.
 	file := filepath.Join(dir, "lone")
 	writeAged(t, file, fresh)
-	if newest, err := newestModTime(file); err != nil || newest.Sub(fresh).Abs() > time.Second {
+	if newest, err := newestModTime(held, "lone"); err != nil || newest.Sub(fresh).Abs() > time.Second {
 		t.Errorf("newestModTime(%s) = %s, %v, want the file's own time %s", file, newest, err, fresh)
 	}
 
@@ -314,11 +321,11 @@ func TestTheAgeGuardReadsTheNewestTimeAnywhereInAnEntry(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(late, 0o700) })
-		if _, err := newestModTime(stop); err == nil {
+		if _, err := newestModTime(held, "go-build1999"); err == nil {
 			t.Error("a full walk of the tree read the directory this case made unreadable, so the early stop below proves nothing")
 		}
 	}
-	switch newer, err := newerThan(stop, cutoff); {
+	switch newer, err := newerThan(held, "go-build1999", cutoff); {
 	case err != nil:
 		t.Errorf("newerThan(%s) walked past the first fresh file: %v", stop, err)
 	case !newer:
@@ -326,7 +333,7 @@ func TestTheAgeGuardReadsTheNewestTimeAnywhereInAnEntry(t *testing.T) {
 	}
 
 	// Nothing newer than the cutoff is the answer that lets a sweep delete.
-	if newer, err := newerThan(tree, time.Now()); err != nil || newer {
+	if newer, err := newerThan(held, "go-build2026", time.Now()); err != nil || newer {
 		t.Errorf("newerThan(%s, now) = %v, %v, want false: nothing in it was written in this second", tree, newer, err)
 	}
 }
@@ -367,6 +374,13 @@ func TestTheKindGuardReadsEveryEntryWithLstat(t *testing.T) {
 	if err := unix.Mkfifo(entries["a-pipe"], 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The guard reads a name in a directory the sweep holds open (sweepDir, volumetrim.go), so
+	// the case asks it about the names of the tree it built.
+	held, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
 
 	for _, tc := range []struct {
 		entry string
@@ -385,8 +399,7 @@ func TestTheKindGuardReadsEveryEntryWithLstat(t *testing.T) {
 		{"a-file", ImmediateChildren, false, []string{"immediate child", "a directory", "a regular file"}},
 		{"a-link", ImmediateChildren, false, []string{"a symbolic link", "never follows"}},
 	} {
-		path := entries[tc.entry]
-		ok, why, err := entryKindOK(path, tc.rule)
+		ok, why, err := entryKindOK(held, tc.entry, tc.rule)
 		switch {
 		case err != nil:
 			t.Errorf("entryKindOK(%s, %s): %v", tc.entry, tc.rule, err)
@@ -407,7 +420,7 @@ func TestTheKindGuardReadsEveryEntryWithLstat(t *testing.T) {
 		t.Errorf("the workspace the link points into: %v", err)
 	}
 	// An entry that is not there at all is the caller's error to carry, not a reason.
-	if ok, why, err := entryKindOK(filepath.Join(dir, "absent"), ImmediateChildren); err == nil || ok || why != "" {
+	if ok, why, err := entryKindOK(held, "absent", ImmediateChildren); err == nil || ok || why != "" {
 		t.Errorf("entryKindOK over an absent entry = %t, %q, %v, want the read's own error", ok, why, err)
 	}
 }

@@ -223,15 +223,25 @@ func (p *procProcess) refuse(what string, err error) {
 	p.refusal = fmt.Sprintf("process %d: %s: %v", p.pid, what, err)
 }
 
-// newestModTime is the newest modification time anywhere in path: its own for a file, and the
-// newest in its tree for a directory.
+// newestModTime is the newest modification time anywhere in name, which dir holds: name's own
+// for a file, and the newest in its tree for a directory.
 //
 // A directory's own time changes only when its entries are added or removed, so a build writing
 // into a file inside a `go-build` tree leaves the tree's own time as old as the directory
 // creation that made it. Judging such a tree by its own time would delete the cache a live build
 // is writing, which is the one deletion that costs more than the sweep saves.
-func newestModTime(path string) (time.Time, error) {
-	info, err := os.Lstat(path)
+//
+// This and the two guards below read through an open handle on the directory the sweep listed
+// (os.Root) and name the entry inside it, never by a path of their own: a path string is
+// resolved again at every call, and the directories above a cache root are the role's own to
+// rename, so two reads of one string are two chances for a role to put a symbolic link in it
+// and have the second read answer for somewhere else (sweepDir, volumetrim.go). The property
+// this had before survives the change: Root.Lstat does not follow a link at the entry itself,
+// and fs.WalkDir over Root.FS() reads every directory with ReadDir and walks into nothing but
+// what that directory itself calls a directory, so a link inside a tree is read as the link it
+// is and the tree it points into is not walked, exactly as filepath.WalkDir read it.
+func newestModTime(dir *os.Root, name string) (time.Time, error) {
+	info, err := dir.Lstat(name)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -239,7 +249,7 @@ func newestModTime(path string) (time.Time, error) {
 	if !info.IsDir() {
 		return newest, nil
 	}
-	err = filepath.WalkDir(path, func(_ string, entry fs.DirEntry, err error) error {
+	err = fs.WalkDir(dir.FS(), name, func(_ string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -265,10 +275,12 @@ func newestModTime(path string) (time.Time, error) {
 	return newest, nil
 }
 
-// newerThan stops at the first file under path newer than cutoff, which is all the pre-delete
-// re-read needs: a second full walk of a go-build tree would cost as much as the listing.
-func newerThan(path string, cutoff time.Time) (bool, error) {
-	info, err := os.Lstat(path)
+// newerThan stops at the first file under name, which dir holds, newer than cutoff, which is
+// all the pre-delete re-read needs: a second full walk of a go-build tree would cost as much as
+// the listing. It reads through dir's handle and follows no symbolic link, as newestModTime
+// above does and for the reasons given there.
+func newerThan(dir *os.Root, name string, cutoff time.Time) (bool, error) {
+	info, err := dir.Lstat(name)
 	if err != nil {
 		return false, err
 	}
@@ -279,7 +291,7 @@ func newerThan(path string, cutoff time.Time) (bool, error) {
 		return false, nil
 	}
 	newer := false
-	err = filepath.WalkDir(path, func(_ string, entry fs.DirEntry, err error) error {
+	err = fs.WalkDir(dir.FS(), name, func(_ string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -292,7 +304,7 @@ func newerThan(path string, cutoff time.Time) (bool, error) {
 		}
 		if info.ModTime().After(cutoff) {
 			newer = true
-			return filepath.SkipAll
+			return fs.SkipAll
 		}
 		return nil
 	})
@@ -302,19 +314,23 @@ func newerThan(path string, cutoff time.Time) (bool, error) {
 	return newer, nil
 }
 
-// entryKindOK reads path with lstat and reports whether it is the kind of file rule names, with
-// the reason it is not when it is not.
+// entryKindOK reads name, which dir holds, with lstat and reports whether it is the kind of
+// file rule names, with the reason it is not when it is not.
 //
-// Every root and every entry is read this way and no symbolic link is ever followed, so what the
-// trimmer deletes is what it looked at. Two things this passes over are known to appear on a
-// pod's volume: the regular file an interrupted `flock` leaves where a cache directory belongs,
+// Every entry is read this way and no symbolic link is ever followed, so what the trimmer
+// deletes is what it looked at. Two things this passes over are known to appear on a pod's
+// volume: the regular file an interrupted `flock` leaves where a cache directory belongs,
 // which the rendered install scripts themselves work around (`[ -d "$cache" ] || rm -f --
 // "$cache"`, installBlock, internal/runtime/sandbox/plugins.go), and a link a role left in a
 // cache root, which a trimmer that followed links would delete into the workspace through. Both
 // are reported rather than silently skipped: a cache root that fills with them is a pod the
 // trimmer cannot hold under its mark, and the operator must be told why.
-func entryKindOK(path string, rule EntryRule) (ok bool, why string, err error) {
-	info, err := os.Lstat(path)
+//
+// The read goes through dir's handle, as the two guards above do: the lstat is of a name in the
+// directory the sweep opened, so the kind this answers for is the kind of the inode the removal
+// reaches (newestModTime, and remove in volumetrim.go).
+func entryKindOK(dir *os.Root, name string, rule EntryRule) (ok bool, why string, err error) {
+	info, err := dir.Lstat(name)
 	if err != nil {
 		return false, "", err
 	}

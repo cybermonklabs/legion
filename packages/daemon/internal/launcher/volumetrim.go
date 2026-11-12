@@ -858,20 +858,63 @@ type sweepOutcome struct {
 	settingsStop bool
 }
 
+// sweepDir is one directory the listing read entries from, with the handle it opened on it: a
+// reclaimable root, or a shard directory of the Go build cache under one.
+//
+// The handle is what makes the sweep safe. Every check after the listing used to be made of the
+// entry's path string and os.RemoveAll resolved that string once more, so each of them was its
+// own moment for a role to rename a cache root — /legion/scratch is writable by the role uid,
+// `drwx--S--- legion legion`, measured in an issue pod of this deployment at
+// 2026-11-11T08:05Z — and leave a symbolic link in its place. The launcher runs as the roles'
+// own uid in the container's mount namespace, where /var/run/legion/roles holds every role's
+// private, state and agent-secrets directories, so a link left there aims the sweep at another
+// role's files (INFRA-2009, review 6). A handle holds the descriptor the listing opened, which
+// keeps naming that directory whatever the path later names, and os.Root refuses a name that
+// leaves it (`go doc os.Root`: "If the directory is moved, methods on Root reference the
+// original directory in its new location").
+//
+// It is the handle of the directory that holds the entry and not of the root above it, and the
+// entries are named in it by their own name alone, because Root.RemoveAll resolves a name with
+// a separator in it component by component and follows a symbolic link it meets on the way:
+// measured under go1.27.3, a Root on a directory holding `escape -> /elsewhere` deleted
+// /elsewhere/x for RemoveAll("escape/x"), with no error. A name with no separator cannot be
+// resolved through anything but the descriptor itself.
+type sweepDir struct {
+	root  ReclaimableRoot // the row of the table whose entries this directory holds
+	shard string          // its name under that root, "" when the directory is the root itself
+	// handle is open from the moment the listing reads this directory until the sweep ends,
+	// whichever way it ends (closeDirs), and every read and every removal of an entry listed
+	// here goes through it.
+	handle *os.Root
+	// listed is the directory the handle named when the listing opened it, which the removal
+	// asks about again before it deletes anything (sameDirectory).
+	listed os.FileInfo
+}
+
+// pathOf is the absolute path of one name in this directory, which the used-path guard and
+// every line of the log read: /proc names what the pod's processes hold by absolute path, and
+// an operator reading the pod's log needs the path too.
+func (d *sweepDir) pathOf(name string) string {
+	return filepath.Join(d.root.Path, d.shard, name)
+}
+
 // sweepEntry is one eligible entry as the listing read it.
 type sweepEntry struct {
 	path string
-	rule EntryRule
-	// root is the reclaimable root the entry was listed under. After each refresh of the
-	// used-path set the delete loop asks whether this root is held (usedPaths.Holds) as well as
-	// whether the entry is (usedPaths.Covers), because Covers does not count a process holding
-	// an ancestor of the entry: a root nothing held when the listing passed it may be locked by
-	// the time the loop reaches its entries.
-	root string
+	// dir is the directory the listing read the entry from and name is the entry's own name in
+	// it: together they are how every later read and the removal reach it (remove). The rule
+	// the entry is judged by is the dir's root's own (sweepDir).
+	//
+	// After each refresh of the used-path set the delete loop asks whether the root above the
+	// entry is held (usedPaths.Holds) as well as whether the entry is (usedPaths.Covers),
+	// because Covers does not count a process holding an ancestor of the entry: a root nothing
+	// held when the listing passed it may be locked by the time the loop reaches its entries.
+	dir  *sweepDir
+	name string
 	// at is the newest modification time anywhere in the entry when it was listed, which is
 	// both what the entries are ordered by and what the pre-delete re-read compares against.
-	at  time.Time
-	dir bool
+	at    time.Time
+	isDir bool
 }
 
 // sweep deletes the oldest entries of every root, oldest first across the roots, until a fresh
@@ -903,7 +946,11 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 		return out
 	}
 
-	entries, cut, bySettings := t.list(ctx, used, cutoff, deadline)
+	entries, dirs, cut, bySettings := t.list(ctx, used, cutoff, deadline)
+	// The handles the listing opened are closed when the sweep ends, whichever way it ends: the
+	// sweep runs in the launcher process, which is PID 1 of the roles container for the life of
+	// the pod, and a descriptor leaked once an interval is a descriptor leaked for ever.
+	defer closeDirs(dirs)
 	if cut != "" {
 		out.reason = cut
 		out.settingsStop = bySettings
@@ -942,7 +989,7 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 				break
 			}
 		}
-		if used.Holds(entry.root) {
+		if used.Holds(entry.dir.root.Path) {
 			// The root was not held when the listing passed it — one that was is skipped whole
 			// there — so a process has taken it since: the `bun install` taking its flock on
 			// its cache root that the refresh above exists to catch (volumeUsedPathsMaxAge),
@@ -959,42 +1006,16 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 			// asked again at every entry against the latest reading (volumeUsedPathsMaxAge): a
 			// lock released mid-sweep lets the entries after it be deleted, and a second hold
 			// of the same root writes no second line.
-			if !slices.Contains(heldSaid, entry.root) {
-				heldSaid = append(heldSaid, entry.root)
-				t.logf(volumeTrimLog+"the reclaimable root %s was taken open by a process of the pod after the listing and its entries are skipped while it is held", entry.root)
+			if !slices.Contains(heldSaid, entry.dir.root.Path) {
+				heldSaid = append(heldSaid, entry.dir.root.Path)
+				t.logf(volumeTrimLog+"the reclaimable root %s was taken open by a process of the pod after the listing and its entries are skipped while it is held", entry.dir.root.Path)
 			}
 			continue
 		}
 		if used.Covers(entry.path) {
 			continue
 		}
-		switch ok, why, err := entryKindOK(entry.path, entry.rule); {
-		case errors.Is(err, fs.ErrNotExist):
-			continue // a role's own tool deleted it between the listing and now
-		case err != nil:
-			t.logf(volumeTrimLog+"%s could not be read and is passed over: %v", entry.path, err)
-			continue
-		case !ok:
-			t.logf(volumeTrimLog+"%s is passed over: %s", entry.path, why)
-			continue
-		}
-		switch moved, err := t.moved(entry); {
-		case errors.Is(err, fs.ErrNotExist):
-			continue
-		case err != nil:
-			t.logf(volumeTrimLog+"%s could not be read again before the delete and is passed over: %v", entry.path, err)
-			continue
-		case moved:
-			// Something wrote in it between the listing and this moment: a build that started
-			// while the sweep listed, which the age guard would have kept out had it run now.
-			continue
-		}
-		if err := os.RemoveAll(entry.path); err != nil {
-			// A removal that failed part way leaves what it could not remove. It is reported
-			// and passed over, and the part-removed entry a later sweep meets is an ordinary
-			// entry of that root: the removal moved its modification time, so it is eligible
-			// again one minimum age from now.
-			t.logf(volumeTrimLog+"removing %s failed part way and the sweep passed it over: %v", entry.path, err)
+		if !t.remove(entry) {
 			continue
 		}
 		out.deletions++
@@ -1065,22 +1086,25 @@ func (t *trimmer) halted(ctx context.Context, deadline time.Time) (reason string
 }
 
 // list is every eligible entry of every root, in root order, with the newest modification time
-// anywhere in it. cut is the reason the listing was ended early, and bySettings that it was the
+// anywhere in it, and every directory it opened to read them (sweepDir), which the sweep closes
+// when it ends. cut is the reason the listing was ended early, and bySettings that it was the
 // settings that ended it; a cut listing ends the sweep, since the three things that cut it —
 // the budget, a stop and the container's stop — are each a reason to stop deleting as well.
 //
-// A root that is absent or is not a directory is skipped and reported rather than being an
-// error: a pod whose roles have not started yet has no bun cache, and nothing about that should
-// keep the sweep away from the three roots that are there. A root a process holds open is
-// skipped whole (usedPaths.Holds), and every entry listed carries the root it came from, which
-// the delete loop asks that question of again on each refreshed reading.
-func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline time.Time) (entries []sweepEntry, cut string, bySettings bool) {
-	add := func(root ReclaimableRoot, path string, dir bool) bool {
+// A root that is absent, that cannot be opened or that is no longer the directory the handle
+// opened is skipped and reported rather than being an error: a pod whose roles have not started
+// yet has no bun cache, and nothing about that should keep the sweep away from the three roots
+// that are there. A root a process holds open is skipped whole (usedPaths.Holds), and every
+// entry listed carries the directory it came from, which the delete loop asks the held question
+// of again on each refreshed reading.
+func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline time.Time) (entries []sweepEntry, dirs []*sweepDir, cut string, bySettings bool) {
+	add := func(from *sweepDir, name string, isDir bool) bool {
 		if reason, settingsStop := t.halted(ctx, deadline); reason != "" {
 			cut, bySettings = reason, settingsStop
 			return false
 		}
-		switch ok, why, err := entryKindOK(path, root.Entry); {
+		path := from.pathOf(name)
+		switch ok, why, err := entryKindOK(from.handle, name, from.root.Entry); {
 		case errors.Is(err, fs.ErrNotExist):
 			return true
 		case err != nil:
@@ -1090,7 +1114,7 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 			t.logf(volumeTrimLog+"%s is passed over: %s", path, why)
 			return true
 		}
-		at, err := newestModTime(path)
+		at, err := newestModTime(from.handle, name)
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
 				t.logf(volumeTrimLog+"the age of %s could not be read and it is passed over: %v", path, err)
@@ -1106,46 +1130,72 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 		// otherwise disagree about Go's own interval, and a row could be given an hour for a
 		// cache whose tool never marks an entry used.
 		eligible := cutoff
-		if root.Entry == GoCacheEntries {
+		if from.root.Entry == GoCacheEntries {
 			eligible = cutoff.Add(-goCacheMtimeSlack)
 		}
 		if at.After(eligible) {
 			return true // inside the minimum age, or for the Go cache that and Go's hour: too recent
 		}
-		entries = append(entries, sweepEntry{path: path, rule: root.Entry, root: root.Path, at: at, dir: dir})
+		entries = append(entries, sweepEntry{path: path, dir: from, name: name, at: at, isDir: isDir})
 		return true
 	}
 
-	for _, root := range t.roots {
-		switch ok, why, err := entryKindOK(root.Path, ImmediateChildren); {
+	for _, reclaimable := range t.roots {
+		// The handle is opened before the checks that decide whether to list the root, and
+		// every one of them reads through it, so the inode that is checked, the inode that is
+		// listed and the inode that is deleted out of are one and not one path string resolved
+		// three times (sweepDir).
+		handle, err := os.OpenRoot(reclaimable.Path)
+		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			t.logf(volumeTrimLog+"the reclaimable root %s is not there and is skipped", root.Path)
+			t.logf(volumeTrimLog+"the reclaimable root %s is not there and is skipped", reclaimable.Path)
 			continue
 		case err != nil:
-			t.logf(volumeTrimLog+"the reclaimable root %s could not be read and is skipped: %v", root.Path, err)
-			continue
-		case !ok:
-			// ImmediateChildren is the rule asked of the root itself because what it asks of a
-			// path is that it be a directory, which is what a root must be whatever its own
-			// entry rule is.
-			t.logf(volumeTrimLog+"the reclaimable root %s is skipped: %s", root.Path, why)
+			// A root that cannot be opened is skipped and reported, as an absent one is: the
+			// regular file an interrupted `flock` leaves where a cache directory belongs reads
+			// as ENOTDIR here, which is the root that is not a directory.
+			t.logf(volumeTrimLog+"the reclaimable root %s could not be opened and is skipped: %v", reclaimable.Path, err)
 			continue
 		}
-		if used.Holds(root.Path) {
+		root := &sweepDir{root: reclaimable, handle: handle}
+		dirs = append(dirs, root) // closed when the sweep ends, whichever way it ends
+		root.listed, err = handle.Stat(".")
+		if err != nil {
+			t.logf(volumeTrimLog+"the reclaimable root %s could not be read and is skipped: %v", reclaimable.Path, err)
+			continue
+		}
+		// The one thing the handle cannot answer for is the path it was opened through:
+		// os.OpenRoot follows a symbolic link at that path, so a root a role had already
+		// replaced with a link would be opened as whatever the link names. lstat of the path
+		// answers it — a link is not the directory the handle named, and neither is any other
+		// inode swapped in before the open — and it is the one read of a path string the sweep
+		// still makes, which is sound because the path is what it is asking about. A role
+		// swapping the root between the open and this read makes the two disagree and the root
+		// is skipped; one swapping it afterwards changes nothing, since the handle goes on
+		// naming the directory this read agreed to.
+		onPath, err := os.Lstat(reclaimable.Path)
+		if err != nil {
+			t.logf(volumeTrimLog+"the reclaimable root %s could not be read and is skipped: %v", reclaimable.Path, err)
+			continue
+		}
+		if !os.SameFile(root.listed, onPath) {
+			t.logf(volumeTrimLog+"the reclaimable root %s is skipped: the path names %s, not the directory the trimmer opened through it", reclaimable.Path, kindOf(onPath.Mode()))
+			continue
+		}
+		if used.Holds(reclaimable.Path) {
 			// A tool has the root's own inode open, which is the `flock` every rendered install
 			// takes on its cache root for the length of the install: the entries under it are
 			// what that install is filling, and the root is left alone until it lets go.
-			t.logf(volumeTrimLog+"the reclaimable root %s is held open by a process of the pod and is skipped whole", root.Path)
+			t.logf(volumeTrimLog+"the reclaimable root %s is held open by a process of the pod and is skipped whole", reclaimable.Path)
 			continue
 		}
-		children, err := os.ReadDir(root.Path)
+		children, err := fs.ReadDir(handle.FS(), ".")
 		if err != nil {
-			t.logf(volumeTrimLog+"the reclaimable root %s could not be listed and is skipped: %v", root.Path, err)
+			t.logf(volumeTrimLog+"the reclaimable root %s could not be listed and is skipped: %v", reclaimable.Path, err)
 			continue
 		}
 		for _, child := range children {
-			path := filepath.Join(root.Path, child.Name())
-			switch root.Entry {
+			switch reclaimable.Entry {
 			case GoBuildTrees:
 				// Go names these and owns them, and makes one for every `go build` and every
 				// `go test` because the pod sets no GOTMPDIR. Everything else in $TMPDIR is a
@@ -1160,31 +1210,140 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 				if !child.IsDir() {
 					continue
 				}
-				shard, err := os.ReadDir(path)
-				if err != nil {
-					t.logf(volumeTrimLog+"the shard %s could not be listed and is skipped: %v", path, err)
+				listed, shard := t.listShard(root, child.Name())
+				if shard == nil {
 					continue
 				}
-				for _, name := range shard {
+				dirs = append(dirs, shard) // closed when the sweep ends, as the roots are
+				for _, name := range listed {
 					if !strings.HasSuffix(name.Name(), "-a") && !strings.HasSuffix(name.Name(), "-d") {
 						continue
 					}
-					if !add(root, filepath.Join(path, name.Name()), name.IsDir()) {
-						return entries, cut, bySettings
+					if !add(shard, name.Name(), name.IsDir()) {
+						return entries, dirs, cut, bySettings
 					}
 				}
 				continue
 			case ImmediateChildren:
-				if slices.Contains(root.Except, child.Name()) {
+				if slices.Contains(reclaimable.Except, child.Name()) {
 					continue
 				}
 			}
-			if !add(root, path, child.IsDir()) {
-				return entries, cut, bySettings
+			if !add(root, child.Name(), child.IsDir()) {
+				return entries, dirs, cut, bySettings
 			}
 		}
 	}
-	return entries, cut, bySettings
+	return entries, dirs, cut, bySettings
+}
+
+// listShard opens one shard directory of a Go build cache root and reads its names, through the
+// root's own handle: the shard is a directory of the root, so the sweep reaches it as it reaches
+// an entry, by its name in a directory it holds open. The handle it returns is the one every
+// read and the removal of the entries below will go through, and the sweep closes it with the
+// rest; a shard that cannot be opened or read is skipped and reported, and no name comes back.
+//
+// A shard the listing meets is a directory as the root's own listing read it (child.IsDir, which
+// is the directory's own record of the kind and no symbolic link). One a role swapped for a link
+// between that reading and this open is either refused — os.Root refuses a name that leaves it —
+// or a directory still inside the root, and either way the sweep stays inside the root it opened.
+func (t *trimmer) listShard(root *sweepDir, name string) ([]fs.DirEntry, *sweepDir) {
+	path := root.pathOf(name)
+	handle, err := root.handle.OpenRoot(name)
+	if err != nil {
+		t.logf(volumeTrimLog+"the shard %s could not be opened and is skipped: %v", path, err)
+		return nil, nil
+	}
+	shard := &sweepDir{root: root.root, shard: name, handle: handle}
+	shard.listed, err = handle.Stat(".")
+	if err != nil {
+		t.logf(volumeTrimLog+"the shard %s could not be read and is skipped: %v", path, err)
+		return nil, shard
+	}
+	children, err := fs.ReadDir(handle.FS(), ".")
+	if err != nil {
+		t.logf(volumeTrimLog+"the shard %s could not be listed and is skipped: %v", path, err)
+		return nil, shard
+	}
+	return children, shard
+}
+
+// closeDirs closes every handle the listing opened.
+func closeDirs(dirs []*sweepDir) {
+	for _, dir := range dirs {
+		_ = dir.handle.Close()
+	}
+}
+
+// remove is the three reads the sweep makes immediately before it deletes one entry and the
+// unlink itself, and whether the entry was deleted. Each of them goes through the handle on the
+// directory the listing read the entry from, under the entry's own name, so all four reach the
+// inode the listing judged (sweepDir). Every reason not to delete is the sweep's to pass over
+// rather than to stop for, as it was when each of these resolved a path of its own.
+func (t *trimmer) remove(entry sweepEntry) bool {
+	switch same, err := sameDirectory(entry.dir); {
+	case errors.Is(err, fs.ErrNotExist):
+		return false // the directory went with the entries a role's own tool deleted
+	case err != nil:
+		t.logf(volumeTrimLog+"the directory %s was listed from could not be read again and it is passed over: %v", entry.path, err)
+		return false
+	case !same:
+		t.logf(volumeTrimLog+"%s is passed over: the handle the trimmer holds no longer names the directory the listing read it from", entry.path)
+		return false
+	}
+	switch ok, why, err := entryKindOK(entry.dir.handle, entry.name, entry.dir.root.Entry); {
+	case errors.Is(err, fs.ErrNotExist):
+		return false // a role's own tool deleted it between the listing and now
+	case err != nil:
+		t.logf(volumeTrimLog+"%s could not be read and is passed over: %v", entry.path, err)
+		return false
+	case !ok:
+		t.logf(volumeTrimLog+"%s is passed over: %s", entry.path, why)
+		return false
+	}
+	switch moved, err := t.moved(entry); {
+	case errors.Is(err, fs.ErrNotExist):
+		return false
+	case err != nil:
+		t.logf(volumeTrimLog+"%s could not be read again before the delete and is passed over: %v", entry.path, err)
+		return false
+	case moved:
+		// Something wrote in it between the listing and this moment: a build that started
+		// while the sweep listed, which the age guard would have kept out had it run now.
+		return false
+	}
+	if err := entry.dir.handle.RemoveAll(entry.name); err != nil {
+		// A removal that failed part way leaves what it could not remove. It is reported
+		// and passed over, and the part-removed entry a later sweep meets is an ordinary
+		// entry of that root: the removal moved its modification time, so it is eligible
+		// again one minimum age from now.
+		t.logf(volumeTrimLog+"removing %s failed part way and the sweep passed it over: %v", entry.path, err)
+		return false
+	}
+	return true
+}
+
+// sameDirectory is whether the handle still names the directory the listing opened it on, asked
+// once before anything is deleted through it.
+//
+// What it rules out: deleting through a handle that has come to name some other directory than
+// the one the listing checked, listed and judged the ages in. On the platforms where os.Root
+// keeps a directory's name rather than a descriptor — GOOS=plan9 and GOOS=js (`go doc os.Root`)
+// — that is exactly what a role renaming the directory and leaving a symbolic link in its place
+// makes of the handle, and this is the check that stops the removal there.
+//
+// What it does not rule out: a swap in the instant after the answer, which nothing a sweep can
+// ask rules out and which on Unix nothing needs to — the handle holds the descriptor the listing
+// opened, so the removal lands on that inode whatever the path has come to name, and this check
+// can only agree. Nor does it rule out a rename: a directory a role merely renamed is the same
+// inode holding the same entries, so it passes here and the entries the listing read from it are
+// deleted out of it, which is the fix working rather than failing.
+func sameDirectory(dir *sweepDir) (bool, error) {
+	now, err := dir.handle.Stat(".")
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(dir.listed, now), nil
 }
 
 // moved is whether anything in the entry was written since the listing read it, asked again
@@ -1202,10 +1361,10 @@ func (t *trimmer) list(ctx context.Context, used usedPaths, cutoff, deadline tim
 // than an hour old, so Go's markUsed bumps its mtime on the next use rather than leaving it
 // where it was, and a use between the listing and this moment is therefore visible here.
 func (t *trimmer) moved(entry sweepEntry) (bool, error) {
-	if entry.dir {
-		return newerThan(entry.path, entry.at)
+	if entry.isDir {
+		return newerThan(entry.dir.handle, entry.name, entry.at)
 	}
-	info, err := os.Lstat(entry.path)
+	info, err := entry.dir.handle.Lstat(entry.name)
 	if err != nil {
 		return false, err
 	}

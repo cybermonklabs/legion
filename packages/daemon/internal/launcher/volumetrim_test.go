@@ -1820,6 +1820,140 @@ func TestAnEntryWhoseTimeMovedBetweenTheScanAndTheDeleteIsSkipped(t *testing.T) 
 	}
 }
 
+// A role owns the directories its caches sit in — /legion/scratch is writable by the role uid
+// (`drwx--S--- legion legion`, measured in an issue pod of this deployment at
+// 2026-11-11T08:05Z) — so between the listing and the delete it can rename a cache root, or a
+// shard of the Go build cache, out of the way and put a symbolic link where it stood. A sweep
+// that asked its questions of the entry's path string would resolve that link on every one of
+// them and unlink what it points at; in this pod the launcher runs as the roles' own uid in the
+// container's mount namespace, where /var/run/legion/roles holds every other role's private,
+// state and agent-secrets directories, so the link can be aimed at another role's files
+// (INFRA-2009, review 6).
+//
+// The case plays the role. It waits for the sweep's first deletion, by which time the listing
+// is over, then renames the cache home and one shard of the Go build cache away and puts links
+// to a bait directory of its own where they stood. The bait is a sibling of this case's volume,
+// so it is outside every reclaimable root, and it holds one directory under every name the
+// swapped entries have, aged as those entries are aged, so that a sweep walking the links finds
+// an entry that passes every guard and deletes a file the role may not reach. What must happen
+// instead is the whole of the fix: the sweep deletes through the handle it opened on each
+// directory while listing it, so the entries it read are the entries that go and the bait is
+// untouched.
+func TestTheSweepDeletesThroughTheDirectoriesItListedAndNotThroughLinksPutInTheirPlace(t *testing.T) {
+	const perRoot = 12
+	f := newTrimFixture(t, perRoot)
+	bait := t.TempDir() // a sibling of the volume root, outside every reclaimable root
+	const baitHeld = "another role's agent-secrets token"
+	home := f.roots[2]  // XDG_CACHE_HOME, the root whose rename the review names
+	cache := f.roots[1] // GOCACHE, whose entries sit one directory deeper, in a shard
+
+	order := f.oldestFirst()
+	first := order[0]
+	// The shard of the newest Go cache entry: the swap is staged after the first deletion, so a
+	// shard whose entries come last is one no deletion has reached when it lands.
+	shard := ""
+	for at := len(order) - 1; at >= 0 && shard == ""; at-- {
+		if strings.HasPrefix(order[at].path, cache.Path+"/") {
+			shard = filepath.Dir(order[at].path)
+		}
+	}
+	if shard == "" {
+		t.Fatal("the fixture holds no entry of the Go build cache, so the shard swap would stage nothing")
+	}
+
+	// Every entry the two swaps hide, with the name a sweep resolving path strings again would
+	// reach in the bait and the name the handle reaches in the directory the listing opened.
+	var baited, listed []string
+	for _, entry := range f.entries {
+		var moved string
+		switch {
+		case entry == first:
+			continue // deleted before the swap: it stages the case rather than being read by it
+		case filepath.Dir(entry.path) == home.Path:
+			moved = home.Path + ".real"
+		case filepath.Dir(entry.path) == shard:
+			moved = shard + ".real"
+		default:
+			continue
+		}
+		name := filepath.Base(entry.path)
+		token := filepath.Join(bait, name, "TOKEN")
+		mkdirFixture(t, filepath.Dir(token))
+		if err := os.WriteFile(token, []byte(baitHeld), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// Aged as the entry it stands in for: a bait written in this second would be newer than
+		// the time the listing recorded, and the pre-delete re-read would pass it over for that
+		// and not for the link.
+		for _, aged := range []string{token, filepath.Dir(token)} {
+			if err := os.Chtimes(aged, entry.at, entry.at); err != nil {
+				t.Fatal(err)
+			}
+		}
+		baited = append(baited, token)
+		listed = append(listed, filepath.Join(moved, name))
+	}
+	if len(baited) == 0 {
+		t.Fatal("the case staged no bait, so a sweep that deleted nothing at all would pass it")
+	}
+	if len(listed) == 0 {
+		t.Fatal("the case staged no entry under the swapped directories, so it could not tell the two apart")
+	}
+
+	swapped := false
+	f.clock.setHook(func(_ *fakeClock) {
+		if swapped || f.exists(first.path) {
+			return
+		}
+		swapped = true
+		for _, place := range []string{home.Path, shard} {
+			if err := os.Rename(place, place+".real"); err != nil {
+				t.Error(err)
+				return
+			}
+			if err := os.Symlink(bait, place); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	})
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+
+	tr := f.trimmer()
+	out := tr.sweep(context.Background(), *trimSettings(), steady(90)(0))
+	if !swapped {
+		t.Fatal("the case never reached the moment it stages: the sweep deleted nothing at all")
+	}
+
+	for _, token := range baited {
+		switch content, err := os.ReadFile(token); {
+		case err != nil:
+			t.Errorf("the bait %s: %v; the sweep deleted outside every reclaimable root, through a link a role put where a directory it had listed stood", token, err)
+		case string(content) != baitHeld:
+			t.Errorf("the bait %s holds %q, want %q", token, content, baitHeld)
+		}
+	}
+	for _, entry := range listed {
+		if f.exists(entry) {
+			t.Errorf("%s is still there: the sweep must delete the entries it listed, through the handle it opened on the directory it read them from", entry)
+		}
+	}
+	// The two children of the cache home that are never entries went with the root the role
+	// renamed, and are still there: nothing of the swap makes the sweep reach them either.
+	for _, kept := range []string{playwrightRegistryDir, claudeCodeCacheDir} {
+		if !f.exists(filepath.Join(home.Path+".real", kept)) {
+			t.Errorf("%s of the renamed cache home is gone, want a root's exceptions left alone whatever a role did to the root's name", kept)
+		}
+	}
+	// Every entry of the fixture is eligible and nothing holds any of them, so a sweep that
+	// deleted the entries it listed deleted all of them: a lower count is a sweep that walked
+	// into the bait for some of its entries and found nothing of the name it was looking for.
+	if out.deletions != len(f.entries) {
+		t.Errorf("the sweep deleted %d entries, want the %d it listed: %s", out.deletions, len(f.entries), out.reason)
+	}
+}
+
 // A /proc read the kernel refused on the first read of a sweep deletes nothing; one refused
 // later ends the sweep at the next entry boundary and keeps what it deleted. Either names the
 // process and is carried into the report, because a refused process is one whose open files are
