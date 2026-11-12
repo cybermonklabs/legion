@@ -90,30 +90,36 @@
  * each read from the file's imports as `rowLimit` is, or calls a function of the file's own that
  * waits: a function declaration, or a variable bound to an arrow or a function expression, at any
  * scope, whose body calls one of those two or another such function. It waits as well when its
- * body refers to a name the file binds, at any scope, to such a call: the
+ * body refers to a name the file binds or assigns, at any scope, to such a call: the
  * `const lane = retained(listing(...))` a listing file starts at module load and awaits in a row,
- * referred to in an `await lane`, a `lane.then(...)`, an argument or a destructuring alike; and a
- * function whose body refers to such a name waits too. A name the body declares itself is its own
- * and not that one. Such a row states a limit: its own, or the file's through `setDefaultTimeout`
- * or `jest.setTimeout`, which Bun applies to every row and hook of the file. A row that states
- * none runs under the lane's `--timeout 60000`, which ties with the `short` bound and falls below
- * every other one, so the row's clock fires first and the failure names no child. The limit it
- * states is a call of `rowLimit` naming the children it waits for, never a number under a
- * reason, because the reason is the way out for a row that drives a process and this row waits
- * for one; a file's own limit counts for its rows only where it is such a call.
+ * or the `lane = retained(listing(...))` a hook assigns to a `let lane` of the file's, referred to
+ * in an `await lane`, a `lane.then(...)`, an argument or a destructuring alike; and a function
+ * whose body refers to such a name waits too. A name the body declares itself is its own and not
+ * that one. The name an assignment writes to is written there rather than read, so the hook that
+ * assigns `lane` waits for the `listing` it calls and not for `lane`. Such a row states a limit:
+ * its own, or the file's through `setDefaultTimeout` or `jest.setTimeout`, which Bun applies to
+ * every row and hook of the file. A row that states none runs under the lane's
+ * `--timeout 60000`, which ties with the `short` bound and falls below every other one, so the
+ * row's clock fires first and the failure names no child. The limit it states is a call of
+ * `rowLimit` naming the children it waits for, never a number under a reason, because the
+ * reason is the way out for a row that drives a process and this row waits for one; a file's own
+ * limit counts for its rows only where it is such a call.
  *
  * What that reading leaves out is said here, because a row it leaves out is a row no refusal
- * names. It reads a name BOUND TO a call that waits, and references to that name, and nothing
- * broader: a name bound to such a name - `const rows = lane.then(rowsOf)` - is not read, though a
- * row that refers to `lane` itself is. A name bound to an awaited call -
- * `const options = await helpOptions()` - holds what the call answered, so a reference to it
- * waits for nothing and is not read either; the binding's own `await` is the wait. A bounded
- * function passed as a value - `.map(runBounded)`, `.map(listing)`, a waiting function of the
- * file's own handed to another call - is no call the scan sees, so a row that waits that way is
- * read as waiting for nothing and still states `rowLimit` because its writer knows it waits. A
- * bare reference to `runBounded` or `listing` themselves is read as no wait at all, since
- * `e2e/__tests__/row-limits.test.ts` and `e2e/__tests__/bounded-subprocess.test.ts` write those
- * names in rows that start nothing.
+ * names. It reads a name BOUND OR ASSIGNED TO a call that waits, and references to that name,
+ * and nothing broader: a name bound to such a name - `const rows = lane.then(rowsOf)` - is not
+ * read, though a row that refers to `lane` itself is. Only an identifier is read as assigned, by
+ * `=`, `??=`, `||=` or `&&=`: a property assigned - `state.lane = listing(...)` - and a
+ * destructuring assignment - `[lane] = [listing(...)]`, `({ lane } = ...)` - bind no name the
+ * scan reads, so a row that awaits `state.lane` or that `lane` is read as waiting for nothing. A
+ * name bound or assigned to an awaited call - `const options = await helpOptions()` - holds what
+ * the call answered, so a reference to it waits for nothing and is not read either; the binding's
+ * own `await` is the wait. A bounded function passed as a value - `.map(runBounded)`,
+ * `.map(listing)`, a waiting function of the file's own handed to another call - is no call the
+ * scan sees, so a row that waits that way is read as waiting for nothing and still states
+ * `rowLimit` because its writer knows it waits. A bare reference to `runBounded` or `listing`
+ * themselves is read as no wait at all, since `e2e/__tests__/row-limits.test.ts` and
+ * `e2e/__tests__/bounded-subprocess.test.ts` write those names in rows that start nothing.
  *
  * WHAT A ROWLIMIT COVERS. A `rowLimit` call is checked against the bounds of what its row waits
  * for wherever the scan reads them: a `listing` call is the `listing` bound, a `runBounded` call
@@ -138,15 +144,19 @@
  * literal - `check-slow-rows.test.ts` holds two files' worth of them - is a string and no call
  * at all, and a row of `e2e/__tests__/row-limits.test.ts` holds that over those two files.
  *
- * WHAT IS READ. Every `*.test.ts` under `e2e/__tests__`, at any depth, which is what the lane's
- * `bun test e2e/__tests__` collects there: a test file one directory down runs on that lane
- * like any other. Every directory below it is read, `fixtures/` included. `bun test` collects a
- * `*.test.ts` wherever it stands below the lane's directory, so a test file under `fixtures/`
- * runs like any other and is read here like any other. The walk keeps `*.test.ts` alone, and
- * that is what leaves the controls beside them out: they are `*.fixture.ts` and its kin. The
- * walk begins at `e2e/__tests__` itself, so nothing beside that directory is read: no file of
- * those is a test file of this rule's. `suiteFiles` of `e2e/fixed-waits.ts` cannot serve,
- * because it skips `__tests__` by name and walks the whole browser suite below it.
+ * WHAT IS READ. Every file under `e2e/__tests__`, at any depth, that the lane's
+ * `bun test e2e/__tests__` collects there, and no other: `collectedTestFile` and
+ * `collectedDirectory` below say which names those are and how that was measured. That is more
+ * than `*.test.ts`: a `*.spec.ts`, a `*_test.ts`, a `*_spec.ts` and a `*.test.tsx` run on the
+ * lane like any other test file, so each is read like one, and each is parsed as what its
+ * extension says - JSX in a `.tsx` or a `.jsx`, JavaScript in a `.js` - which
+ * `ts.createSourceFile` reads off the file's name. Every directory below is read but the ones
+ * `bun test` skips itself, `fixtures/` included: a test file planted there runs like any other.
+ * The controls of `fixtures/` are left out because their names carry no `test` or `spec` token:
+ * they are `*.fixture.ts` and its kin. The walk begins at `e2e/__tests__` itself, so nothing
+ * beside that directory is read: no file of those is a test file of this rule's. `suiteFiles` of
+ * `e2e/fixed-waits.ts` cannot serve, because it skips `__tests__` by name and walks the whole
+ * browser suite below it.
  *
  * A call is read as a row by the NAME its callee is reached from, unlike `e2e/no-browser-rows.ts`,
  * which asks TypeScript what a callee's type is. The question there is which calls declare a row
@@ -234,18 +244,37 @@ export type RefusedLimit = {
 /** The directory this rule is about, under the `e2e` directory every path here is read against. */
 const testsDirectory = "__tests__";
 
-/** Every `*.test.ts` under `e2e/__tests__`, at any depth, relative to `directory` and sorted:
- *  what the lane's `bun test e2e/__tests__` collects there. Every directory below it is walked,
- *  `fixtures/` included, because `bun test` collects a `*.test.ts` wherever it stands below the
- *  lane's directory: a file planted there runs like any other. The filter keeps `*.test.ts`
- *  alone, and that is what leaves the controls of `fixtures/` out: they are `*.fixture.ts` and
- *  its kin. The walk begins at that one directory, so a `*.test.ts` beside the browser suite,
- *  were one ever written, is read nowhere, and the paths it answers begin `__tests__/` as the
- *  rest of this module reads them. */
+/** The names `bun test <directory>` collects as test files: a name that ends `.test`, `_test`,
+ *  `.spec` or `_spec` and then one of the extensions `ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `mts`
+ *  and `cts`, in any case.
+ *
+ *  Measured with bun 1.4.4 on 2026-11-12: a scratch directory held one trivial row per name, and
+ *  `bun test <directory> --reporter=junit` listed the files that ran. All 32 of those four
+ *  endings crossed with those eight extensions ran; so did `m.TEST.ts`, `m.Test.ts`,
+ *  `m.SPEC.ts`, `m_TEST.ts`, `m.Spec.Ts` and `m.test.TS`, and `.test.ts` and `_test.ts`, whose
+ *  name is the token alone. None of `m.fixture.ts`, `test.ts`, `spec.ts`, `xtest.ts`,
+ *  `m20test.ts`, `m.tests.ts`, `m.specs.ts`, `m-test.ts`, `m.testx.ts`, `test.m.ts`,
+ *  `spec_m.ts`, `m.test.foo.ts`, `m.test.d.ts`, `m.test.ts.bak`, `m.test`, `m.test.json` or
+ *  `m.test.mtsx` ran. */
+const collectedTestFile = /[._](?:test|spec)\.(?:ts|tsx|js|jsx|mjs|cjs|mts|cts)$/i;
+
+/** Whether `bun test <directory>` goes down a directory of this name. The measurement of
+ *  `collectedTestFile` ran a `*.test.ts` in `fixtures/`, `sub/deeper/`, `dist/`, `build/` and
+ *  `__snapshots__/`, and none in `node_modules/`, `.git/` or `.hidden/`. */
+function collectedDirectory(name: string): boolean {
+  return name !== "node_modules" && !name.startsWith(".");
+}
+
+/** Every file under `e2e/__tests__` that `bun test` collects, at any depth, relative to
+ *  `directory` and sorted: what the lane's `bun test e2e/__tests__` runs there. Every directory
+ *  below it that `bun test` goes down is walked, `fixtures/` included, because a test file
+ *  planted there runs like any other. The walk begins at that one directory, so a test file
+ *  beside the browser suite, were one ever written, is read nowhere, and the paths it answers
+ *  begin `__tests__/` as the rest of this module reads them. */
 export function testFiles(directory: string): string[] {
   return sourceFiles(join(directory, testsDirectory), {
-    directory: () => true,
-    file: (name) => name.endsWith(".test.ts"),
+    directory: collectedDirectory,
+    file: (name) => collectedTestFile.test(name),
   }).map((file) => `${testsDirectory}/${file}`);
 }
 
@@ -618,10 +647,11 @@ type WaitingNames = {
   readonly functions: ReadonlyMap<string, readonly ts.Node[]>;
   /** The file's own functions that wait, each with what it reaches. */
   readonly helpers: ReadonlyMap<string, Reach>;
-  /** The names the file binds, at any scope, to an expression that holds a call that waits -
-   *  `const lane = retained(listing(...))` - each with what that call reaches. A name bound to
-   *  an awaited expression is left out: it holds what the call answered, the binding itself
-   *  waited, and a reference to it waits for nothing. */
+  /** The names the file binds or assigns, at any scope, to an expression that holds a call that
+   *  waits - `const lane = retained(listing(...))`, `lane = retained(listing(...))` - each with
+   *  what that call reaches. A name bound or assigned to an awaited expression is left out: it
+   *  holds what the call answered, the binding itself waited, and a reference to it waits for
+   *  nothing. */
   readonly values: ReadonlyMap<string, Reach>;
 };
 
@@ -640,12 +670,17 @@ function reachOf(call: ts.CallExpression, waiting: WaitingNames): Reach | undefi
 type Wait = { readonly node: ts.CallExpression | ts.Identifier; readonly reach: Reach };
 
 /** Whether `name` is read as a value where it stands, rather than standing as a property's name,
- *  a key or the name a declaration binds. `{ lane }` is a reference to `lane`. */
+ *  a key, the name a declaration binds or the name an assignment writes to. `{ lane }` is a
+ *  reference to `lane`; the `lane` of `lane = listing(...)` is not. */
 function isReference(name: ts.Identifier): boolean {
   const parent = name.parent;
   if (ts.isShorthandPropertyAssignment(parent)) return true;
   if (ts.isPropertyAccessExpression(parent)) return parent.expression === name;
   if (ts.isBindingElement(parent) && parent.propertyName === name) return false;
+  if (ts.isBinaryExpression(parent) && parent.left === name) {
+    const operator = parent.operatorToken.kind;
+    return operator < ts.SyntaxKind.FirstAssignment || operator > ts.SyntaxKind.LastAssignment;
+  }
   return !("name" in parent && parent.name === name);
 }
 
@@ -705,11 +740,22 @@ function reachOfAll(waits: readonly Wait[]): Reach | undefined {
   return { reached: first.reach.reached, bound };
 }
 
+/** The operators an assignment that binds a waiting name is written with: `lane = ...`, and
+ *  `lane ??= ...`, `lane ||= ...` and `lane &&= ...`, each of which may leave the call's promise
+ *  in the name. */
+const assignments: ReadonlySet<ts.SyntaxKind> = new Set([
+  ts.SyntaxKind.EqualsToken,
+  ts.SyntaxKind.QuestionQuestionEqualsToken,
+  ts.SyntaxKind.BarBarEqualsToken,
+  ts.SyntaxKind.AmpersandAmpersandEqualsToken,
+]);
+
 /** What `sourceFile` waits for bounded children by. `directory` is the `e2e` directory the
- *  modules are read against. The functions that wait and the names bound to a waiting call are
- *  read together to a fixpoint, so a function that calls a function that calls `listing` waits,
- *  a name bound to a call of such a function is a waiting name, and a function that awaits such
- *  a name waits too. A name bound to a waiting name is not read: WHAT A ROW WAITS FOR. */
+ *  modules are read against. The functions that wait and the names bound or assigned to a
+ *  waiting call are read together to a fixpoint, so a function that calls a function that calls
+ *  `listing` waits, a name bound to a call of such a function is a waiting name, and a function
+ *  that awaits such a name waits too. A name bound to a waiting name is not read: WHAT A ROW
+ *  WAITS FOR. */
 function waitingNames(sourceFile: ts.SourceFile, directory: string): WaitingNames {
   const imports = boundedCalls.map((call) => ({
     ...call,
@@ -720,6 +766,19 @@ function waitingNames(sourceFile: ts.SourceFile, directory: string): WaitingName
     functions.set(name, [...(functions.get(name) ?? []), body]);
   };
   const bindings: { name: string; initializer: ts.Expression }[] = [];
+  // A name is read the same way whether a declaration binds it or an assignment writes it.
+  const bind = (name: string, initializer: ts.Expression): void => {
+    const value = unwrapped(initializer);
+    let outer = initializer;
+    while (ts.isParenthesizedExpression(outer) || ts.isAsExpression(outer)) {
+      outer = outer.expression;
+    }
+    if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) {
+      declare(name, value);
+    } else if (!ts.isAwaitExpression(outer)) {
+      bindings.push({ name, initializer });
+    }
+  };
   const collect = (node: ts.Node): void => {
     if (ts.isFunctionDeclaration(node) && node.name !== undefined && node.body !== undefined) {
       declare(node.name.text, node);
@@ -729,16 +788,14 @@ function waitingNames(sourceFile: ts.SourceFile, directory: string): WaitingName
       ts.isIdentifier(node.name) &&
       node.initializer !== undefined
     ) {
-      const value = unwrapped(node.initializer);
-      let outer = node.initializer;
-      while (ts.isParenthesizedExpression(outer) || ts.isAsExpression(outer)) {
-        outer = outer.expression;
-      }
-      if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) {
-        declare(node.name.text, value);
-      } else if (!ts.isAwaitExpression(outer)) {
-        bindings.push({ name: node.name.text, initializer: node.initializer });
-      }
+      bind(node.name.text, node.initializer);
+    }
+    if (
+      ts.isBinaryExpression(node) &&
+      ts.isIdentifier(node.left) &&
+      assignments.has(node.operatorToken.kind)
+    ) {
+      bind(node.left.text, node.right);
     }
     ts.forEachChild(node, collect);
   };
@@ -940,6 +997,10 @@ export function limitsOfFiles(directory: string, files: readonly string[]): Wall
   const limits: WallClockLimit[] = [];
   for (const file of files) {
     const path = join(directory, file);
+    // No script kind is passed, so TypeScript reads it off the path's extension in any case: TSX
+    // for `.tsx`, JSX for `.jsx`, JS for `.js`, `.mjs` and `.cjs`, and TS for `.ts`, `.mts` and
+    // `.cts` (`ensureScriptKind` of typescript 5.9.3), so a JSX element in a `*.test.tsx` row
+    // parses as one.
     const sourceFile = ts.createSourceFile(
       path,
       readFileSync(path, "utf8"),

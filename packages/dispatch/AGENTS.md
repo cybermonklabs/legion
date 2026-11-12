@@ -2050,8 +2050,11 @@ long on the line directly above it: the four driven rows of
 `e2e/__tests__/delivery-live-probe.test.ts`, the interrupted-runner row of
 `e2e/__tests__/bounded-subprocess.test.ts` and the two hooks of
 `e2e/__tests__/psql-session.test.ts`. `e2e/row-limits.ts`, which
-`e2e/__tests__/row-limits.test.ts` runs over every `*.test.ts` under that
-directory at any depth, which is what the lane collects there,
+`e2e/__tests__/row-limits.test.ts` runs over every file under that directory, at
+any depth, that the lane's `bun test` collects there - measured with bun 1.4.4
+as a name ending `.test`, `_test`, `.spec` or `_spec` and then `ts`, `tsx`,
+`js`, `jsx`, `mjs`, `cjs`, `mts` or `cts`, in any case, in every directory but
+`node_modules` and one whose name begins with a dot -
 refuses every other limit: a limit is a call of that shared
 `rowLimit`, or it carries a reason of at least eight words on the line directly
 above it. It reads a limit in every spelling Bun honours: a row's second or
@@ -2059,8 +2062,9 @@ third argument, a hook's second (`onTestFinished` included), `setDefaultTimeout`
 and `jest.setTimeout`, under any name a file imports, binds or destructures
 them to. It also refuses a row or hook that waits for `runBounded` or `listing`,
 itself, through a function of its own file, or by referring to a name the file
-binds to such a call (`const lane = retained(listing(...))` at module load,
-then `await lane` in the row), unless it states its limit as a `rowLimit`
+binds or assigns to such a call (`const lane = retained(listing(...))` at module
+load, or `lane = retained(listing(...))` in a hook, then `await lane` in the
+row), unless it states its limit as a `rowLimit`
 call, its own or the file's `setDefaultTimeout`: without one the lane's
 `--timeout 60000` stops it, which ties with the `short` bound. It reads those
 two exports from an import declaration or from a name bound to an `import()`
@@ -2070,7 +2074,8 @@ bound to either), it refuses a `rowLimit` whose total, computed from its
 arguments as written, falls below `rowLimit` of the largest such bound; a bound
 or a total it cannot read (a computed `bound:`, a spread argument) is not
 checked. A bounded function passed as a value (`.map(runBounded)`) is not read
-as a wait.
+as a wait, and neither is a name a property or a destructuring assignment
+writes (`state.lane = listing(...)`, `[lane] = [listing(...)]`).
 `e2e/__tests__/fixtures/row-limits.fixture.ts` and
 `e2e/__tests__/fixtures/row-limits-spellings.fixture.ts` are its planted
 controls, one limit of every shape the rule answers.

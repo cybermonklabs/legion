@@ -3,10 +3,10 @@
  *  Without them a check that finds nothing in the directory would read the same whether it
  *  looked or not.
  *
- * Its name ends `.fixture.ts` because `bun test` collects `*.test.ts` and its kin: this file runs
- * nowhere, and the rows and hooks below are source for the scan to parse rather than work for a
- * runner to do. The name keeps it out of `testFiles` too, which walks this directory and keeps
- * `*.test.ts` alone: every limit below but four is written to be refused.
+ * Its name ends `.fixture.ts` because `bun test` collects `*.test.ts`, `*.spec.ts` and their kin:
+ * this file runs nowhere, and the rows and hooks below are source for the scan to parse rather
+ * than work for a runner to do. The name keeps it out of `testFiles` too, which keeps what the
+ * lane collects and nothing else: every limit below but six is written to be refused.
  *
  * The shared `rowLimit` is imported under a name no test file uses, because the rule reads the
  * IMPORT and not the word: a call of `boundedBy` below is a limit read from the bounds, and this
@@ -138,3 +138,32 @@ test(
 // A row that names `runBounded` as a value and calls nothing waits for nothing and states no
 // limit, so nothing of it is recorded.
 test("a row that names runBounded as a value and calls nothing", () => void runBounded);
+
+/** A listing a hook starts and assigns to a name of this file's, the way a file that starts its
+ *  listing in `beforeAll` rather than at module load holds it. The hook calls `listing` itself,
+ *  so it waits for that child and states `boundedBy("listing")`. */
+let assigned: Promise<unknown> | undefined;
+
+beforeAll(() => {
+  assigned = retained(listing(import.meta.url, "e2e/playwright.config.ts", {}));
+}, boundedBy("listing"));
+
+test("a row that awaits an assigned listing and states no limit", async () => {
+  await assigned;
+});
+
+test(
+  "a row that awaits an assigned listing under rowLimit",
+  async () => {
+    await assigned;
+  },
+  boundedBy("listing")
+);
+
+test(
+  "a row that awaits an assigned listing under the short bound",
+  async () => {
+    await assigned;
+  },
+  boundedBy("short")
+);

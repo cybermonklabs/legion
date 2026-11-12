@@ -19,7 +19,7 @@ const realLimits = limitsOfFiles(e2eDirectory, scannedFiles);
 const realRefused = refusedLimits(realLimits);
 
 /** The planted controls, read by name rather than by pointing `testFiles` at their directory:
- *  they are no test of this directory, and all but four of them are written to be refused. */
+ *  they are no test of this directory, and all but six of them are written to be refused. */
 const fixture = "__tests__/fixtures/row-limits.fixture.ts";
 const fixtureLimits = limitsOfFiles(e2eDirectory, [fixture]);
 
@@ -51,17 +51,37 @@ test("the scan reads files and limits of the real directory", () => {
   );
 });
 
-/** Every `*.test.ts` under `relative`, at any depth, every directory below it walked. Paths are
- *  relative to the `e2e` directory, as the scan names them. The walk is written out here, with
- *  `node:fs` alone, so this row reads the directory itself and borrows no code from the rule it
- *  checks. */
-function collectedFiles(relative: string): string[] {
+/** The extensions `bun test` 1.4.4 collects a test file under, in any case, measured on
+ *  2026-11-12 as `collectedTestFile` of `e2e/row-limits.ts` records. */
+const collectedExtensions = new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"]);
+
+/** The endings of a name, before its extension, that make it a test file under that measure. */
+const collectedEndings = [".test", "_test", ".spec", "_spec"];
+
+/** Whether `bun test` collects a file of this name, read by splitting the name at its last dot
+ *  rather than by the pattern `e2e/row-limits.ts` matches, so this row checks that pattern
+ *  against a second reading of the same measurement. */
+function isCollected(name: string): boolean {
+  const lower = name.toLowerCase();
+  const dot = lower.lastIndexOf(".");
+  if (dot === -1 || !collectedExtensions.has(lower.slice(dot + 1))) return false;
+  const stem = lower.slice(0, dot);
+  return collectedEndings.some((ending) => stem.endsWith(ending));
+}
+
+/** Every file under `relative` that `bun test` collects, at any depth, in every directory below
+ *  it but `node_modules` and one whose name begins with a dot, which bun 1.4.4 skips. Paths are
+ *  relative to `root`, as the scan names them. The walk is written out here, with `node:fs`
+ *  alone, so this row reads the directory itself and borrows no code from the rule it checks. */
+function collectedFiles(root: string, relative: string): string[] {
   const files: string[] = [];
-  for (const entry of readdirSync(join(e2eDirectory, relative), { withFileTypes: true })) {
+  for (const entry of readdirSync(join(root, relative), { withFileTypes: true })) {
     const path = `${relative}/${entry.name}`;
     if (entry.isDirectory()) {
-      files.push(...collectedFiles(path));
-    } else if (entry.isFile() && entry.name.endsWith(".test.ts")) {
+      if (entry.name !== "node_modules" && !entry.name.startsWith(".")) {
+        files.push(...collectedFiles(root, path));
+      }
+    } else if (entry.isFile() && isCollected(entry.name)) {
       files.push(path);
     }
   }
@@ -71,12 +91,88 @@ function collectedFiles(relative: string): string[] {
 // The walk is `e2e/source-files.ts`'s, which `e2e/fixed-waits.ts` and `e2e/no-browser-rows.ts`
 // walk with too, and the filters `testFiles` hands it are this rule's own, so what it covers is
 // asserted rather than assumed: every file `bun test` collects in this directory, at any depth
-// below it, `fixtures/` included, and no file beside them, because the controls there are
-// `*.fixture.ts` and its kin. The set this row expects is walked above, not asked of the rule.
+// below it, `fixtures/` included, and no file beside them. The set this row expects is walked
+// above, not asked of the rule.
 test("the scan reads every test file of the directory, wherever it stands", () => {
-  const collected = collectedFiles("__tests__").sort();
+  const collected = collectedFiles(e2eDirectory, "__tests__").sort();
   expect(scannedFiles).toEqual(collected);
   expect(scannedFiles).toContain("__tests__/fake-envoy.test.ts");
+});
+
+// The controls of `fixtures/` are left out because no name there carries a `test` or `spec`
+// token, and each is read from the directory's own listing, so a control added there is held to
+// that too: one whose name `bun test` would collect runs on the lane as a test file of its own.
+test("the scan leaves out every control of fixtures/", () => {
+  const controls = readdirSync(join(e2eDirectory, "__tests__/fixtures"));
+  expect(controls).toContain("row-limits.fixture.ts");
+  expect(controls.filter(isCollected)).toEqual([]);
+  expect(scannedFiles.filter((file) => file.startsWith("__tests__/fixtures/"))).toEqual([]);
+});
+
+// `bun test <directory>` collects more than `*.test.ts`: a `.spec` or `_spec` ending and a
+// `_test` one, under any of eight extensions and in any case, run on the lane like any other test
+// file. This row plants a bare `90_000` under one name of each such spelling, and the same row
+// under names `bun test` does not collect and in the directories it does not go down, and proves
+// the rule reads and refuses exactly the first set. The `.tsx` and `.jsx` rows stand below a JSX
+// element whose text holds one backtick: read as TypeScript, that backtick opens a template
+// literal that swallows the row, so a refusal on line 3 is a file parsed as what it is.
+test("the scan reads every spelling of a test file the lane collects", () => {
+  const root = mkdtempSync(join(tmpdir(), "row-limits-spellings-"));
+  try {
+    const esm = 'import { test } from "bun:test";\ntest("planted", () => {}, 90_000);\n';
+    const cjs = 'const { test } = require("bun:test");\ntest("planted", () => {}, 90_000);\n';
+    const jsx =
+      'import { test } from "bun:test";\n' +
+      "const element = <p>one ` tick</p>;\n" +
+      'test("planted", () => element, 90_000);\n';
+    const plants: [string, string][] = [
+      ["__tests__/zz.spec.ts", esm],
+      ["__tests__/zz_test.ts", esm],
+      ["__tests__/zz_spec.ts", esm],
+      ["__tests__/zz.test.tsx", jsx],
+      ["__tests__/zz.spec.jsx", jsx],
+      ["__tests__/zz.test.js", esm],
+      ["__tests__/zz.spec.cjs", cjs],
+      ["__tests__/zz_test.mts", esm],
+      ["__tests__/zz.TEST.ts", esm],
+      ["__tests__/zz.fixture.ts", esm],
+      ["__tests__/test.ts", esm],
+      ["__tests__/zz.tests.ts", esm],
+      ["__tests__/zz-test.ts", esm],
+      ["__tests__/zz.test.d.ts", esm],
+      ["__tests__/node_modules/zz.test.ts", esm],
+      ["__tests__/.hidden/zz.test.ts", esm],
+    ];
+    for (const [file, source] of plants) {
+      mkdirSync(join(root, file, ".."), { recursive: true });
+      writeFileSync(join(root, file), source);
+    }
+    const read = [
+      "__tests__/zz.TEST.ts",
+      "__tests__/zz.spec.cjs",
+      "__tests__/zz.spec.jsx",
+      "__tests__/zz.spec.ts",
+      "__tests__/zz.test.js",
+      "__tests__/zz.test.tsx",
+      "__tests__/zz_spec.ts",
+      "__tests__/zz_test.mts",
+      "__tests__/zz_test.ts",
+    ];
+    expect(testFiles(root)).toEqual(read);
+    expect(collectedFiles(root, "__tests__").sort()).toEqual(read);
+
+    const refused = refusedLimits(limitsOfFiles(root, testFiles(root)));
+    const jsxFiles = new Set(["__tests__/zz.spec.jsx", "__tests__/zz.test.tsx"]);
+    expect(refused.map((refusal) => `${refusal.limit.file}:${refusal.limit.line}`)).toEqual(
+      read.map((file) => `${file}:${jsxFiles.has(file) ? 3 : 2}`)
+    );
+    for (const refusal of refused) {
+      expect(refusal.why).toStartWith(`${refusal.limit.file}:${refusal.limit.line} the row `);
+      expect(refusal.why).toContain("stops at 90_000, which is no call of `rowLimit`");
+    }
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
 });
 
 // The lane is `bun test --parallel --timeout 60000 e2e/__tests__`, and `bun test <directory>`
@@ -343,6 +439,36 @@ test("a row that awaits a name bound to a listing waits for that listing", () =>
     `${fixture}:115 the row "a row that awaits a module-load listing under a reason" stops at ` +
       "90_000, which is no call of `rowLimit`, and waits for `startedListing` (which waits for " +
       "`listing`)"
+  );
+});
+
+// The same shape with the listing started by a hook: `let assigned;` and
+// `beforeAll(() => { assigned = retained(listing(...)); }, rowLimit("listing"))`. The hook calls
+// `listing` itself, so it waits for that listing and states `rowLimit("listing")`, and the name
+// it writes to is no wait of its. A row that awaits the assigned name waits for the listing as a
+// row that awaits a bound one does: under no limit it is refused, under `rowLimit("listing")` it
+// passes, and under `rowLimit("short")` it falls short of the `listing` bound.
+test("a row that awaits a name assigned to a listing waits for that listing", () => {
+  const waits = ["`assigned` (which waits for `listing`)"];
+  expect(planted(149).kind).toBe("hook");
+  expect(planted(149).waitsFor).toEqual(["`listing`"]);
+  expect(planted(149).bound).toBe("listing");
+  expect(planted(151).stated).toBeUndefined();
+  expect(planted(151).waitsFor).toEqual(waits);
+  expect(planted(160).waitsFor).toEqual(waits);
+  expect(planted(160).bound).toBe("listing");
+  expect(planted(168).bound).toBe("listing");
+
+  const refused = refusedLimits([planted(149), planted(151), planted(160), planted(168)]);
+  expect(refused.map((refusal) => refusal.limit.line)).toEqual([151, 168]);
+  expect(refused[0].why).toStartWith(
+    `${fixture}:151 the row "a row that awaits an assigned listing and states no limit" waits ` +
+      "for `assigned` (which waits for `listing`) and states no limit"
+  );
+  expect(refused[1].why).toStartWith(
+    `${fixture}:168 the row "a row that awaits an assigned listing under the short bound" stops ` +
+      'at boundedBy("short"), 90000 ms, and waits for `assigned` (which waits for `listing`), ' +
+      'under the `listing` bound of 300000 ms: the row needs `rowLimit("listing")`'
   );
 });
 
