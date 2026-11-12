@@ -17,7 +17,7 @@ import {
   DELIVERY_CAPABILITIES,
   type MessageDeliveryMode,
 } from "@legion/contracts/dispatch-constants";
-import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { ErrorBoundary } from "../../components/ErrorBoundary";
@@ -51,6 +51,7 @@ import { placeInView } from "../doc/readers-place";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { readDispatchMarks, turnKey } from "./dispatch-marks";
+import type { LivePlace } from "./live-views";
 import { useLiveFollow } from "./use-live-follow";
 import { useFrameCoalesced } from "./useFrameCoalesced";
 
@@ -236,18 +237,42 @@ function AssistantMessage(): ReactNode {
  *  hundreds, and the person narrows them by typing. */
 const SHOWN_COMMANDS = 50;
 
-/** Where the typed `/name` ends: at the first space after the slash, else at the end of the
- *  message. The span `atMessageStart` matches, and the span a mode pick drops. */
-function commandNameEnd(text: string, trigger: string): number {
-  const nameEnd = text.slice(trigger.length).search(/\s/u);
-  return nameEnd === -1 ? text.length : trigger.length + nameEnd;
+/** Where the `/name` token that starts at `offset` ends: at the first space after the slash,
+ *  else at the end of the message. The span a mode pick drops. */
+function commandNameEnd(text: string, offset: number, trigger: string): number {
+  const nameEnd = text.slice(offset + trigger.length).search(/\s/u);
+  return nameEnd === -1 ? text.length : offset + trigger.length + nameEnd;
+}
+
+/** How the session's publisher names a skill: `skill:<name>` (`AgentStreamCommand` in
+ *  `packages/contracts/src/agent-stream.ts`; the plugin passes its host's picker names through).
+ *  Anchored, so only the prefix goes and a name holding `skill:` later keeps it. */
+const SKILL_PREFIX = /^skill:/u;
+
+/**
+ * The rows the list holds for `query`, in the order it shows them: the delivery modes lead the
+ * session's own commands, since there are at most three of them and a session with every skill
+ * installed lists hundreds. It is read in two places - the matcher below, which opens no empty
+ * list, and the popover's adapter - so neither can offer what the other refuses, and it is
+ * answered from `query` alone, which is the key the popover caches a search under.
+ */
+function slashListRows(
+  commands: readonly AgentStreamCommand[],
+  modes: readonly MessageDeliveryMode[],
+  query: string
+): Unstable_TriggerItem[] {
+  return [...matchingModes(modes, query), ...matchingCommands(commands, query)];
 }
 
 /**
- * Where a slash command is being typed: only a `/` that starts the message, since the session runs
- * the text as a command only from the start of its input, as its terminal does, and only while the
- * caret is still in the command's name. The replaced span is the whole name, so a pick made with
- * the caret inside a name replaces all of it.
+ * Where a slash command is being typed: the `/` token the caret sits in, whose `/` starts the
+ * message or follows a space or a line break. A `/` inside a word - a path, a date - belongs to
+ * that word and opens nothing. The replaced span is the whole token, so a pick made with the
+ * caret inside a name replaces all of it.
+ *
+ * It also records where that `/` is, which is what the formatter below needs and the library
+ * never hands it: `serialize(item)` takes the item alone. The matcher runs on every keystroke
+ * and on every move of the caret, so the offset it leaves is the open popover's own.
  *
  * And only while the list has a row for what was typed. The popover is mounted whatever the
  * session advertises, so without this a session with no commands - or a query no mode and no
@@ -256,36 +281,43 @@ function commandNameEnd(text: string, trigger: string): number {
  */
 function theSlashListMatcher(
   commands: readonly AgentStreamCommand[],
-  modes: readonly MessageDeliveryMode[]
+  modes: readonly MessageDeliveryMode[],
+  triggerOffset: RefObject<number>
 ): Unstable_TriggerMatcher {
   return (text, trigger, cursor) => {
-    if (!text.startsWith(trigger)) return null;
-    const query = text.slice(trigger.length, cursor);
-    if (/\s/u.test(query)) return null;
-    if (
-      matchingModes(modes, query).length === 0 &&
-      matchingCommands(commands, query).length === 0
-    ) {
-      return null;
-    }
+    // The token the caret sits in: back to the space or line break before it, or to the start.
+    const offset = text.slice(0, cursor).search(/\S*$/u);
+    if (!text.startsWith(trigger, offset)) return null;
+    const query = text.slice(offset + trigger.length, cursor);
+    if (slashListRows(commands, modes, query).length === 0) return null;
+    const tokenEnd = text.slice(cursor).search(/\s/u);
+    triggerOffset.current = offset;
     return {
-      endOffset: commandNameEnd(text, trigger),
-      offset: 0,
+      endOffset: tokenEnd === -1 ? text.length : cursor + tokenEnd,
+      offset,
       query,
     };
   };
 }
 
 /**
- * A picked command goes into the message as the person would type it at the session's terminal:
- * `/name`, and the popover adds the space after it. assistant-ui's own formatter writes a
- * `:type[label]` directive, which the session would receive as that markup rather than as its
- * command. `parse` serves only a rich-text input, which this composer is not.
+ * What a picked command puts in the message. A pick that starts the message is a command line:
+ * the session runs it as the person would have typed it at its terminal, `/skill:asd-ste100`,
+ * and the popover adds the space after it. A pick inside a sentence is the person naming the
+ * skill to the session - nothing there is run - so it writes the bare name, `asd-ste100`,
+ * without the slash and without the publisher's `skill:` prefix.
+ *
+ * assistant-ui's own formatter writes a `:type[label]` directive, which the session would
+ * receive as that markup rather than as its command. `parse` serves only a rich-text input,
+ * which this composer is not.
  */
-const slashFormatter: Unstable_DirectiveFormatter = {
-  parse: (text) => [{ kind: "text", text }],
-  serialize: (item) => `/${item.id}`,
-};
+function slashFormatter(triggerOffset: RefObject<number>): Unstable_DirectiveFormatter {
+  return {
+    parse: (text) => [{ kind: "text", text }],
+    serialize: (item) =>
+      triggerOffset.current === 0 ? `/${item.id}` : item.id.replace(SKILL_PREFIX, ""),
+  };
+}
 
 /** The prefix a mode row's id carries, so a session with a command of its own named `aside`
  *  still has a row the popover can tell from the mode's. */
@@ -383,25 +415,29 @@ function CommandItem({ index, item }: { index: number; item: Unstable_TriggerIte
         ) : null}
       </span>
       {item.description === undefined ? null : (
-        <TruncatedText
-          className={`self-stretch text-xs ${textOptionDescription}`}
-          title={item.description}
-        >
-          {item.description}
-        </TruncatedText>
+        // Whole, on as many lines as it takes (INFRA-812, R5): a row of this list is read to
+        // learn what the command does, and an ellipsis there hides the half that says it.
+        <span className={`self-stretch text-xs ${textOptionDescription}`}>{item.description}</span>
       )}
     </ComposerPrimitive.Unstable_TriggerPopoverItem>
   );
 }
 
 /**
- * A mode pick writes nothing into the message: it is the header's "Send as" pick made from the
- * list. The popover takes one behaviour child, and that is the directive the session's own
- * commands need, so the mode rows take a selection override instead - which drops the `/name`
- * the person typed, exactly as an action's `removeOnExecute` would, and leaves whatever they had
- * written after it.
+ * A mode pick writes nothing into the message: it is the "Send as" pick made from the list. The
+ * popover takes one behaviour child, and that is the directive the session's own commands need,
+ * so the mode rows take a selection override instead - which drops the `/name` the person
+ * typed, exactly as an action's `removeOnExecute` would, and leaves whatever they had written
+ * around it. The span it drops is the open popover's own `/` token, wherever in the message
+ * that sits (`triggerOffset`, written by the matcher).
  */
-function ModePicks({ onPick }: { onPick: (mode: MessageDeliveryMode) => void }): ReactNode {
+function ModePicks({
+  onPick,
+  triggerOffset,
+}: {
+  onPick: (mode: MessageDeliveryMode) => void;
+  triggerOffset: RefObject<number>;
+}): ReactNode {
   const { registerSelectItemOverride, setCursorPosition } =
     unstable_useTriggerPopoverScopeContext();
   const aui = useAui();
@@ -411,20 +447,24 @@ function ModePicks({ onPick }: { onPick: (mode: MessageDeliveryMode) => void }):
         const mode = itemMode(item);
         if (mode === undefined) return false;
         const text = aui.composer.getState().text;
-        const rest = text.slice(commandNameEnd(text, "/"));
-        aui.composer.setText(rest.startsWith(" ") ? rest.slice(1) : rest);
-        setCursorPosition(0);
+        const offset = triggerOffset.current;
+        const rest = text.slice(commandNameEnd(text, offset, "/"));
+        aui.composer.setText(
+          `${text.slice(0, offset)}${rest.startsWith(" ") ? rest.slice(1) : rest}`
+        );
+        setCursorPosition(offset);
         onPick(mode);
         return true;
       }),
-    [aui, onPick, registerSelectItemOverride, setCursorPosition]
+    [aui, onPick, registerSelectItemOverride, setCursorPosition, triggerOffset]
   );
   return null;
 }
 
-/** The delivery modes the session takes and its own slash commands, offered while the message
- *  starts with `/`. A mode pick sets "Send as" and writes nothing; a command pick writes
- *  `/name ` into the message, and sending it is the composer's ordinary Send. */
+/** The delivery modes the session takes and its own slash commands, offered for the `/` token
+ *  the caret sits in. A mode pick sets "Send as" and writes nothing; a command pick writes the
+ *  command at the start of a message and the bare name inside a sentence (`slashFormatter`),
+ *  and sending it is the composer's ordinary Send. */
 function SlashCommands({
   commands,
   modes,
@@ -434,18 +474,22 @@ function SlashCommands({
   modes: readonly MessageDeliveryMode[];
   onPickMode: (mode: MessageDeliveryMode) => void;
 }): ReactNode {
+  // Where the open popover's `/` sits, written by the matcher and read by the formatter and the
+  // list, which the library gives nothing else to tell a command line from a mention by.
+  const triggerOffset = useRef(0);
+  const formatter = useMemo(() => slashFormatter(triggerOffset), []);
   const adapter = useMemo(
     () => ({
       categories: () => [],
       categoryItems: () => [],
-      search: (query: string) => [
-        ...matchingModes(modes, query),
-        ...matchingCommands(commands, query),
-      ],
+      search: (query: string) => slashListRows(commands, modes, query),
     }),
     [commands, modes]
   );
-  const matcher = useMemo(() => theSlashListMatcher(commands, modes), [commands, modes]);
+  const matcher = useMemo(
+    () => theSlashListMatcher(commands, modes, triggerOffset),
+    [commands, modes]
+  );
   return (
     <ComposerPrimitive.Unstable_TriggerPopover
       adapter={adapter}
@@ -454,8 +498,8 @@ function SlashCommands({
       className={`absolute right-0 bottom-full left-0 z-10 mb-2 flex max-h-72 flex-col gap-1 overflow-y-auto rounded-lg border p-1 shadow-lg ${card}`}
       matcher={matcher}
     >
-      <ComposerPrimitive.Unstable_TriggerPopover.Directive formatter={slashFormatter} />
-      <ModePicks onPick={onPickMode} />
+      <ComposerPrimitive.Unstable_TriggerPopover.Directive formatter={formatter} />
+      <ModePicks onPick={onPickMode} triggerOffset={triggerOffset} />
       <ComposerPrimitive.Unstable_TriggerPopoverItems className="contents">
         {(items) =>
           items.map((item, index) => <CommandItem index={index} item={item} key={item.id} />)
@@ -478,9 +522,12 @@ export function AgentThread({
   commands,
   contentIds,
   empty,
+  front,
   held,
+  initialPlace,
   modes,
   onPickMode,
+  onPlace,
   ownSendCount,
   placeholder,
   replayCount,
@@ -495,14 +542,23 @@ export function AgentThread({
    *  `data-message-id`: what the follow hook counts as new and finds the reader's place in. */
   contentIds: readonly string[];
   empty: string;
+  /** Whether this is the view the person is looking at. A view the shell keeps mounted behind
+   *  the one in front is laid out over the page rather than in it, so its own geometry is the
+   *  shell's doing and never the reader moving (`useLiveFollow`). */
+  front: boolean;
   /** Whether a model or thinking switch is pending on this session: Send is disabled, still
    *  reading "Send", until it ends, and `placeholder` is what says why. */
   held: boolean;
-  /** The delivery modes this session takes, in the order the header's "Send as" select has
+  /** Where this session's reader was when its view last reported, which the view's entry in
+   *  `live-views.ts` holds while the view sleeps, or `null` for one that was following. */
+  initialPlace: LivePlace | null;
+  /** The delivery modes this session takes, in the order the row under the message box has
    *  them: the `/` list offers each of them. */
   modes: readonly MessageDeliveryMode[];
-  /** Picks the mode the next message goes in, as the header's select does. */
+  /** Picks the mode the next message goes in, as that row's own picker does. */
   onPickMode: (mode: MessageDeliveryMode) => void;
+  /** Reports the place the transcript holds, for that entry to keep. */
+  onPlace: (place: LivePlace | null) => void;
   /** Bumped once per message this viewer sent that the session accepted. */
   ownSendCount: number;
   placeholder: string;
@@ -512,7 +568,7 @@ export function AgentThread({
   /** Every message to the session Dispatch has not yet made, in press order, each a turn of its
    *  own at the transcript's end, and what acts on them. */
   sends: SessionSends;
-  /** The session being read: moving to another one lands at its live end. */
+  /** The session being read: what an upload from this composer belongs to. */
   sessionId: string;
 }): ReactNode {
   // The element itself, not a ref held once: this viewport is inside the boundary below, which
@@ -525,9 +581,11 @@ export function AgentThread({
       () => [...contentIds, ...pending.map((send) => `pending:${send.id}`)],
       [contentIds, pending]
     ),
+    front,
+    initialPlace,
+    onPlace,
     ownSendCount,
     replayCount,
-    sessionId,
     viewport,
   });
   // An empty box is the one thing that refuses Send (INFRA-442): a message still out, late or
@@ -536,6 +594,14 @@ export function AgentThread({
   // decides what a message does mid-turn by its delivery mode, as at its terminal.
   const boxEmpty = useAuiState((state) => state.composer.isEmpty);
   const refusal = boxEmpty && !held ? "Type a message first." : null;
+  // The line under the box reads nothing until a person presses Send and the press is refused
+  // (INFRA-812, R6): an empty box is where this view rests, and a reason printed there before
+  // anybody tries is rule text on the page, which the question mark under the box now holds.
+  // The reason reaches a screen reader all the same, on the button's own hidden line and its
+  // title, and the next thing typed clears the press.
+  const [refusedPress, setRefusedPress] = useState(false);
+  const shownRefusal = refusedPress ? refusal : null;
+  if (refusal === null && refusedPress) setRefusedPress(false);
   const hintId = useId();
   // A file pasted or dropped into the composer is the session's own artifact, as one pasted into
   // a direct message on the Agents page is, and its line joins the draft rather than replacing
@@ -653,8 +719,9 @@ export function AgentThread({
               busy={held ? "Send" : uploading ? "Uploading file…" : undefined}
               className="min-h-11"
               describedBy={held ? hintId : undefined}
+              onRefusedPress={() => setRefusedPress(true)}
               refusal={refusal}
-              refusalShownBy={hintId}
+              refusalShownBy={shownRefusal === null ? undefined : hintId}
               type="submit"
             >
               Send
@@ -663,11 +730,17 @@ export function AgentThread({
           {/* An upload still out, and the reason one was refused with its Retry, under the box
               the file was dropped into. */}
           <DraftUploadStatus upload={upload} />
-          {/* While a switch is pending this line says what the box's placeholder says, which the
-              text typed may hide; with nothing typed it says why Send refuses; otherwise it says
-              how to send. */}
-          <p className={`text-xs ${textMutedOnCanvas}`} id={hintId}>
-            {held ? placeholder : (refusal ?? "Enter to send · Shift+Enter for a new line")}
+          {/* The Send control's own words, and nothing else: while a switch is pending this line
+              says what the box's placeholder says, which the text typed may hide, and once a
+              person has pressed Send with nothing typed it says why that press was refused. At
+              rest it reads nothing - how to send is a rule of the page, which the question mark
+              under the box now holds (INFRA-812, R6), not a word about this press. */}
+          <p
+            className={`text-xs ${textMutedOnCanvas}`}
+            data-testid="agent-composer-hint"
+            id={hintId}
+          >
+            {held ? placeholder : shownRefusal}
           </p>
         </ComposerPrimitive.Root>
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>

@@ -26,8 +26,9 @@ const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
 // (e2e/playwright.config.ts's project lists, e2e/harness-signin.ts:20-40). The fourth names the
 // five wall-clock projects (`clockProjectNames`, e2e/configurations.ts): they carry
 // `default: false` since dispatch://INFRA-1280, so a listing that names no project holds no row
-// of theirs, and every row of this head's wall-clock listing - 55 of them, the 50 of
-// `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts` and the five wall-clock rows of
+// of theirs, and every row of this head's wall-clock listing - 59 of them, the 50 of
+// `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`, the four of
+// `agent-workspace-timing.e2e.ts` and the five wall-clock rows of
 // `large-documents-measured.e2e.ts` - reaches the union below from it alone.
 //
 // Each listing names its own DISPATCH_E2E_PROCESSES and DISPATCH_E2E_SIGNIN and never the
@@ -60,9 +61,9 @@ const realStale = staleExemptions(realRows, exemptions);
 
 // The four listings run at once, over two cores they share with the two source scans below, and
 // the whole file cost 13.72, 17.11 and 23.22 seconds in three runs of it at this head. Each
-// listing on its own is a few seconds: the default one 3.59 seconds and the wall-clock one
-// 1.25, read at this head with `time bunx playwright test --config e2e/playwright.config.ts
-// --list --reporter=json` and the same line naming the four wall-clock projects. This file
+// listing on its own is a few seconds: the default one 5.66 seconds and the wall-clock one
+// 2.17, read at this head with `time bunx playwright test --config e2e/playwright.config.ts
+// --list --reporter=json` and the same line naming the five wall-clock projects. This file
 // allows three minutes, which is far above every one of those readings: the ceiling is the
 // point at which something is wrong rather than slow, not a budget for a listing.
 const listingTimeout = 180_000;

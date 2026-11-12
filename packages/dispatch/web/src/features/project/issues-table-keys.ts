@@ -2,21 +2,20 @@ import type { Row } from "@tanstack/react-table";
 import { type RefObject, useLayoutEffect, useRef } from "react";
 import { useKeymap } from "../shell/keymap";
 import { closestMatching } from "../shell/roving";
-import type { Item } from "./issues-table-model";
 
 /**
  * The keys a reader walks the table's rows with, the same ids and palette rows the list they
  * replace had: `j` and `k` move between rows, `o` and Enter open the row in hand, `x` selects
  * it. A row the virtualizer has not drawn yet is scrolled to first and focused when it lands.
  */
-export function useRowKeymap({
+export function useRowKeymap<TData>({
   displayRows,
   rowsById,
   scrollRef,
   scrollToIndex,
 }: {
-  displayRows: readonly { row: Row<Item> }[];
-  rowsById: Record<string, Row<Item>>;
+  displayRows: readonly { row: Row<TData> }[];
+  rowsById: Record<string, Row<TData>>;
   scrollRef: RefObject<HTMLDivElement | null>;
   scrollToIndex: (index: number) => void;
 }): void {

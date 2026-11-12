@@ -667,72 +667,122 @@ test.skipIf(skipped)(
   180_000
 );
 
+// The wait each reading measures is the deadline the extension gives Dispatch
+// (`SESSION_ANSWERS_DEADLINE_MS`, 800 ms) as the machine schedules it: on this pod, with no job
+// of the tester's running, two runs of the one-reading row read 853, 841, 848 ms and 855, 839,
+// 858 ms, about 50 ms over the deadline against a 1,000 ms bound. A reading can also fall under
+// the deadline, since the deadline starts before the request reaches the stand-in that measures
+// the gap: a re-run read 682 ms.
+//
+// A median of three readings per label rather than one, because one reading judges the pod's
+// scheduling rather than the route. At c772c9881dd2, whose copy of this file is byte for byte the
+// one this change starts from, the single reading for `turn 1 with no cache` failed the bound at
+// 1012.5 ms in the package suite, and a re-run of this file alone passed. The route hangs the
+// same either way: that reading sat 212 ms over the deadline where a reading on this pod sits
+// about 50 ms over it, so what crossed is the pod's scheduling, not the route. The median of
+// three is the second of three, so no one slow reading can carry it: two of the three have to
+// cross before the row fails.
+//
+// Each reading is a session of its own, ended before the next one starts, so no reading is taken
+// beside the stand-in and the binary of an earlier one. All three are printed with the median
+// beside them, whether or not the row passes.
+//
+// Nine sessions run here, three readings for each of the three labels, and the budget below is
+// read from what one of them costs: two runs of the row read 209 s and 191 s on this pod, about
+// 22 s a session. Nine sessions at 40 s each is 360 s, which is the timeout below - over half
+// again the longer of those two runs - so a pod that schedules each session slower fails this
+// row on the route it measures rather than on the clock.
 test.skipIf(skipped)(
-  "(f) an answers route that never answers holds no request for a second: turn 1, turn 2 after a good read, and a subagent's first request",
+  "(f) an answers route that never answers holds no request for a second, by the median of three readings: turn 1, turn 2 after a good read, and a subagent's first request",
   async () => {
     const deadline = `Dispatch did not answer within ${SESSION_ANSWERS_DEADLINE_MS} ms`;
-    const waited = (session: { readonly seen: Seen[] }, request: Seen, label: string): void => {
-      const ms = request.at - answersBefore(session.seen, request).at;
+    /** One reading: the gap between the answers request a Messages request waited on and the
+     *  request itself. */
+    const waitOf = (session: { readonly seen: Seen[] }, request: Seen): number =>
+      request.at - answersBefore(session.seen, request).at;
+    /** Three fresh readings of one case and their median against the bound, with every reading
+     *  printed and the median beside them. */
+    const median = async (label: string, reading: () => Promise<number>): Promise<void> => {
+      const readings: number[] = [];
+      for (let run = 0; run < 3; run += 1) {
+        // This reading's stand-in, binary and scratch root, ended as `afterEach` ends them, so
+        // the next reading starts on a machine holding none of them.
+        const from = cleanup.length;
+        try {
+          readings.push(await reading());
+        } finally {
+          for (const step of cleanup.splice(from).reverse()) await step();
+        }
+      }
+      const middle = [...readings].sort((first, second) => first - second)[1] as number;
+      const taken = readings.map((ms) => ms.toFixed(0)).join(", ");
       console.log(
-        `(f) ${label}: the Messages request came ${ms.toFixed(0)} ms after the answers request`
+        `(f) ${label}: the Messages request came ${taken} ms after the answers request over ` +
+          `three fresh sessions, a median of ${middle.toFixed(0)} ms`
       );
-      expect(ms).toBeLessThan(1_000);
+      expect(middle).toBeLessThan(1_000);
     };
 
     // Turn 1, with no list ever read: the failure line.
-    const cold = await runSession(
-      binary(),
-      [{ route: { kind: "hang" } }, { prompt: "First question." }],
-      { warm: true }
-    );
-    const [coldFirst] = cold.turns;
-    if (coldFirst === undefined) throw new Error("no turn 1");
-    waited(cold, coldFirst, "turn 1 with no cache");
-    expect(listOf(coldFirst)).toBe(sessionAnswersFailureLine(deadline));
+    await median("turn 1 with no cache", async () => {
+      const cold = await runSession(
+        binary(),
+        [{ route: { kind: "hang" } }, { prompt: "First question." }],
+        { warm: true }
+      );
+      const [coldFirst] = cold.turns;
+      if (coldFirst === undefined) throw new Error("no turn 1");
+      expect(listOf(coldFirst)).toBe(sessionAnswersFailureLine(deadline));
+      return waitOf(cold, coldFirst);
+    });
 
     // Turn 2 after a good read: the list read in turn 1, with its read time.
     const item = answer("ask_f", "Read before Dispatch hung.", 1);
-    const cached = await runSession(
-      binary(),
-      [
-        { route: { kind: "list", items: [item] } },
-        { prompt: "First question." },
-        { route: { kind: "hang" } },
-        { prompt: "Second question." },
-      ],
-      { warm: true }
-    );
-    const [cachedFirst, cachedSecond] = cached.turns;
-    if (cachedFirst === undefined || cachedSecond === undefined) throw new Error("no turn 2");
-    expect(listOf(cachedFirst)).toBe(renderSessionAnswers([item], { now: Date.now() }));
-    waited(cached, cachedSecond, "turn 2 after a good read");
-    const earlier = listOf(cachedSecond);
-    const earlierCache = cachedOf(earlier);
-    expect(earlierCache.reason).toBe(deadline);
-    expect(earlier).toBe(renderSessionAnswers([item], { now: Date.now(), cached: earlierCache }));
+    await median("turn 2 after a good read", async () => {
+      const cached = await runSession(
+        binary(),
+        [
+          { route: { kind: "list", items: [item] } },
+          { prompt: "First question." },
+          { route: { kind: "hang" } },
+          { prompt: "Second question." },
+        ],
+        { warm: true }
+      );
+      const [cachedFirst, cachedSecond] = cached.turns;
+      if (cachedFirst === undefined || cachedSecond === undefined) throw new Error("no turn 2");
+      expect(listOf(cachedFirst)).toBe(renderSessionAnswers([item], { now: Date.now() }));
+      const earlier = listOf(cachedSecond);
+      const earlierCache = cachedOf(earlier);
+      expect(earlierCache.reason).toBe(deadline);
+      expect(earlier).toBe(renderSessionAnswers([item], { now: Date.now(), cached: earlierCache }));
+      return waitOf(cached, cachedSecond);
+    });
 
     // The subagent's first request: Dispatch hangs from the parent's delegating turn on, so the
     // subagent's read is the first to hang. `task` runs in the foreground here, so no read of the
     // parent's is in flight when the subagent's starts.
-    const { reply, subagent } = delegating("Delegate it.", (setRoute) =>
-      setRoute({ kind: "hang" })
-    );
-    const sub = await runSession(
-      binary(),
-      [{ route: { kind: "list", items: [item] } }, { prompt: "Delegate it." }],
-      { reply, until: subagent, config: ["async:", "  enabled: false"], warm: true }
-    );
-    const subFirst = sub.turns.find(isSubagentTurn);
-    if (subFirst === undefined) throw new Error("the subagent sent no Messages request");
-    expect(sub.answers.length).toBeGreaterThanOrEqual(2);
-    expect(answersBefore(sub.seen, subFirst)).toBe(sub.answers[1] as Seen);
-    waited(sub, subFirst, "the subagent's first request");
-    const carried = listOf(subFirst);
-    const carriedCache = cachedOf(carried);
-    expect(carriedCache.reason).toBe(deadline);
-    expect(carried).toBe(renderSessionAnswers([item], { now: Date.now(), cached: carriedCache }));
+    await median("the subagent's first request", async () => {
+      const { reply, subagent } = delegating("Delegate it.", (setRoute) =>
+        setRoute({ kind: "hang" })
+      );
+      const sub = await runSession(
+        binary(),
+        [{ route: { kind: "list", items: [item] } }, { prompt: "Delegate it." }],
+        { reply, until: subagent, config: ["async:", "  enabled: false"], warm: true }
+      );
+      const subFirst = sub.turns.find(isSubagentTurn);
+      if (subFirst === undefined) throw new Error("the subagent sent no Messages request");
+      expect(sub.answers.length).toBeGreaterThanOrEqual(2);
+      expect(answersBefore(sub.seen, subFirst)).toBe(sub.answers[1] as Seen);
+      const carried = listOf(subFirst);
+      const carriedCache = cachedOf(carried);
+      expect(carriedCache.reason).toBe(deadline);
+      expect(carried).toBe(renderSessionAnswers([item], { now: Date.now(), cached: carriedCache }));
+      return waitOf(sub, subFirst);
+    });
   },
-  300_000
+  360_000
 );
 
 test.skipIf(skipped)(

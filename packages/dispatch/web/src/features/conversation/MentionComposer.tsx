@@ -18,6 +18,7 @@ import {
   apiErrorMessage,
   isAnchorMissing,
   isCapExceeded,
+  isDecisionBlockInBody,
 } from "../../api/client";
 import type { Agent, AskOption, AskUrgency } from "../../api/types";
 import { Chip } from "../../components/Chip";
@@ -264,7 +265,7 @@ function draftRefusal(
  *  this send names - the margin's, when the server refused the send for a mark it cannot see and
  *  the margin could not write that mark again - else the words of a refusal written for the
  *  reader (the server's missing anchor, a send they stopped, a text past a bound Dispatch holds
- *  it to), else the page's wording around what went wrong. */
+ *  it to, a text holding a decision block), else the page's wording around what went wrong. */
 function refusalMessage(
   refusal: Error,
   anchor: ComposerAnchor | undefined,
@@ -274,7 +275,10 @@ function refusalMessage(
   if (anchorMissing && anchorRefusal !== undefined && anchorRefusal.markId === anchor?.mark_id) {
     return anchorRefusal.text;
   }
-  return anchorMissing || refusal instanceof SendStoppedError || isCapExceeded(refusal)
+  return anchorMissing ||
+    refusal instanceof SendStoppedError ||
+    isCapExceeded(refusal) ||
+    isDecisionBlockInBody(refusal)
     ? refusal.message
     : `Couldn't send — ${apiErrorMessage(refusal, "network error")}`;
 }

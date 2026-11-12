@@ -4,13 +4,16 @@ import {
 } from "@legion/contracts/dispatch-constants";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link } from "react-router-dom";
 
 import { agentMessageRequest, apiErrorMessage } from "../../api/client";
 import { agentMessagesQuery, whoAmIQuery } from "../../api/queries";
 import type { Message } from "../../api/types";
+import { ContextRing } from "../../components/ContextRing";
 import { ErrorBoundary } from "../../components/ErrorBoundary";
+import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
+import { TruncatedText } from "../../components/TruncatedText";
 import {
   connectionDotConnecting,
   connectionDotFailed,
@@ -22,6 +25,7 @@ import {
   textMutedOnCanvas,
   textPrimaryOnCanvas,
 } from "../../theme/classes";
+import { useAgentPinWrite, usePinnedAgents } from "../agents/pins";
 import { useMarkRepliesRead } from "../agents/unread";
 import { MODE_LABELS } from "../conversation/delivery";
 import { useAgents } from "../conversation/useAgents";
@@ -32,7 +36,8 @@ import { SendStoppedError } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentRuntimeThread } from "./AgentRuntimeThread";
 import { sessionCommands, sessionSettingsView } from "./conversation";
-import { SessionSettings } from "./SessionSettings";
+import { MessageBoxHelp } from "./MessageBoxHelp";
+import { SessionSettings, SessionSwitchLines } from "./SessionSettings";
 import { type SwitchRequest, switchCommand, useSessionSwitch } from "./use-session-switch";
 import { type AgentStreamStatus, useAgentStream } from "./useAgentStream";
 
@@ -85,14 +90,29 @@ function emptyText(responding: boolean | undefined): string {
   return "Nothing yet. This session's next turn appears here as it happens.";
 }
 
-export function AgentConversationPage(): ReactNode {
-  const { sessionId = "" } = useParams<{ sessionId: string }>();
+export function AgentConversationPage({
+  front,
+  sessionId,
+}: {
+  /** Whether this is the view the person is looking at. The shell keeps the view they left
+   *  mounted for the watch window (`MountedLiveViews`, D6), and a view that is not in front
+   *  reads the session as ever while leaving the page in front its title and its read marks
+   *  (D7). */
+  front: boolean;
+  /** The session this view shows. It comes from the shell, not from the route: the view outlives
+   *  the address that opened it. */
+  sessionId: string;
+}): ReactNode {
   const { agents, current, isPending, refilling } = useAgents(true, true);
   const agent = agents.find((candidate) => candidate.session_id === sessionId);
-  // The page knows the route's session id and the registry, not a stamped title: the agent is
-  // named by its registry title, else its short id.
+  // The page knows the session id and the registry, not a stamped title: the agent is named by
+  // its registry title, else its short id. Only the view in front names the tab.
   const label = useAgentText().sessionText(sessionId, undefined);
-  useDocumentTitle(label);
+  useDocumentTitle(label, front);
+  // The pin is the person's, not this browser's (INFRA-812): pinning here lists the session in
+  // the rail, as pinning its row on the Agents page does, and either place unpins it.
+  const pinned = usePinnedAgents().includes(sessionId);
+  const writePin = useAgentPinWrite();
 
   const { conversation, replays, responding, status } = useAgentStream(sessionId);
   // The model and thinking level the session runs now (INFRA-195), next to its title: what its
@@ -106,6 +126,9 @@ export function AgentConversationPage(): ReactNode {
   // the page, and a pick the session does not advertise would be refused.
   const [picked, setPicked] = useState<MessageDeliveryMode | null>(null);
   const mode = picked !== null && modes.includes(picked) ? picked : (modes[0] ?? "aside");
+  // Which panel of the footer row stands open, since both open upwards over the transcript from
+  // the same corner: one at a time, as a `MultiSelect`'s host holds its list.
+  const [panel, setPanel] = useState<"context" | "help" | null>(null);
   // The slash commands the composer completes (LEGION-394). The session runs typed input only
   // from a Send or an Aside, so a BTW, a side question it answers, offers none; nor does a
   // session that sent no list, whose host cannot run typed input.
@@ -122,9 +145,10 @@ export function AgentConversationPage(): ReactNode {
   // `dispatch message` command, which the stream shows only as a `bash` tool call whose arguments
   // hold that command. Without these the thread would show replies to messages the human cannot
   // see, and no replies at all.
-  // Seeing them here is reading them.
   const stored = useQuery(agentMessagesQuery(sessionId));
-  useMarkRepliesRead(sessionId, stored.data);
+  // Seeing them is reading them, so only the view the person is looking at marks them read, as
+  // the Agents page's collapsed row does.
+  useMarkRepliesRead(sessionId, front ? stored.data : undefined);
   const viewer = useQuery(whoAmIQuery()).data;
   // The header's switch, one at a time; while one waits for the session's answer neither picker
   // nor Send takes another, so this page's next prompt reaches the session after the switch.
@@ -187,7 +211,10 @@ export function AgentConversationPage(): ReactNode {
   // screen and the document never scrolls.
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="agent-conversation">
-      <header className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <header
+        className="flex flex-wrap items-center gap-x-3 gap-y-1"
+        data-testid="agent-view-header"
+      >
         <Link className={`text-sm ${linkText} ${linkHoverText}`} to="/agents">
           ← Agents
         </Link>
@@ -196,12 +223,6 @@ export function AgentConversationPage(): ReactNode {
         <h1 className={`min-w-0 truncate text-lg font-semibold ${textPrimaryOnCanvas}`}>
           <AgentName kind="static" sessionId={sessionId} storedTitle={undefined} />
         </h1>
-        <SessionSettings
-          onPick={onPick}
-          pending={switchPending}
-          status={sessionSwitch.status}
-          view={settings}
-        />
         <span
           className="flex items-center gap-1.5"
           title={`Connection to the session's conversation: ${presence.label}`}
@@ -226,45 +247,23 @@ export function AgentConversationPage(): ReactNode {
             Could not check the live session list — Envoy listener unreachable.
           </span>
         )}
-        {/* Only a current list says the session is gone; one that failed or is refilling keeps
-            the details an earlier read gave and says nothing of what it lacks. A session that
-            has missed its heartbeats is listed and named as such: its transcript has stopped
-            arriving, and this is the difference between waiting for it and giving up on it. */}
-        {agent !== undefined ? (
-          <>
-            <span className={`min-w-0 truncate text-xs ${textMutedOnCanvas}`}>
-              {agent.host} · {agent.dir}
-            </span>
-            <AgentUnresponsiveNote
-              lastSeen={agent.last_seen}
-              state={agent.state === "unresponsive" ? "unresponsive" : "running"}
-            />
-          </>
-        ) : current ? (
-          <span className={`text-xs ${textMutedOnCanvas}`} data-testid="agent-not-listed">
-            Not in the live session list — it may have ended.
-          </span>
-        ) : null}
-        <label className={`ml-auto flex items-center gap-2 text-xs ${textMutedOnCanvas}`}>
-          Send as
-          <select
-            aria-label="Delivery mode"
-            className={`min-h-8 rounded-lg px-2 py-1 text-xs ${inputClasses(false)}`}
-            onChange={(event) => setPicked(event.target.value as MessageDeliveryMode)}
-            value={mode}
-          >
-            {modes.map((candidate) => (
-              <option key={candidate} value={candidate}>
-                {MODE_LABELS[candidate]}
-              </option>
-            ))}
-          </select>
-        </label>
+        {/* The header holds the session's name and its state (R6); where it runs and what it
+            runs on are the row under the message box. A session that has missed its heartbeats
+            is listed and named as such: its transcript has stopped arriving, and this is the
+            difference between waiting for it and giving up on it. */}
+        {agent === undefined ? null : (
+          <AgentUnresponsiveNote
+            lastSeen={agent.last_seen}
+            state={agent.state === "unresponsive" ? "unresponsive" : "running"}
+          />
+        )}
+        <PinButton
+          label={pinned ? `Unpin ${label}` : `Pin ${label}`}
+          onClick={() => writePin(sessionId, !pinned)}
+          pinned={pinned}
+          title={pinned ? "Unpin agent" : "Pin agent"}
+        />
       </header>
-      <p className={`mt-1 text-xs ${textMutedOnCanvas}`}>
-        Live from the session: its turns are relayed while this page is open and are not stored.
-        Messages sent to it through Dispatch, and its Dispatch replies, are kept.
-      </p>
       {stored.isError ? (
         <p className={`mt-2 text-sm ${dangerText}`}>
           Could not load your messages with this session.
@@ -300,6 +299,7 @@ export function AgentConversationPage(): ReactNode {
           commands={commands}
           conversation={conversation}
           empty={emptyText(responding)}
+          front={front}
           modes={modes}
           onPickMode={setPicked}
           onSend={onSend}
@@ -318,6 +318,85 @@ export function AgentConversationPage(): ReactNode {
           viewer={viewer?.kind === "user" ? viewer.login : undefined}
         />
       </ErrorBoundary>
+      {/* The one row under the message box (R6): what a message is delivered as, where the
+          session runs, what it runs on, how full its window is, and the one question mark that
+          holds every rule this page used to print. The facts scroll sideways at a phone width
+          and wrap nowhere from `sm` up, so the row is one line on a laptop; the pickers hold
+          their width (`shrink-0`, `SessionSettings`) and the directory is the one part that
+          shortens. The ring and the question mark sit outside that scroller, so they keep the
+          box's right edge however far the facts scroll, and their panels open upwards from
+          here rather than inside a clipped scroller. */}
+      <div
+        className="mt-2 flex shrink-0 items-center gap-2 text-xs"
+        data-testid="agent-composer-footer"
+      >
+        <div
+          className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-3 gap-y-1 overflow-x-auto sm:flex-wrap sm:overflow-x-visible"
+          data-testid="agent-composer-facts"
+        >
+          <select
+            aria-label="Delivery mode"
+            className={`min-h-8 shrink-0 rounded-lg px-2 py-1 text-xs ${inputClasses(false)}`}
+            data-testid="agent-delivery-picker"
+            onChange={(event) => setPicked(event.target.value as MessageDeliveryMode)}
+            value={mode}
+          >
+            {modes.map((candidate) => (
+              <option key={candidate} value={candidate}>
+                {MODE_LABELS[candidate]}
+              </option>
+            ))}
+          </select>
+          {/* Only a current list says the session is gone; one that failed or is refilling says
+              nothing here, and the header already names why it has no list to read. */}
+          {agent === undefined && current ? (
+            <span
+              className={`shrink-0 whitespace-nowrap ${textMutedOnCanvas}`}
+              data-testid="agent-not-listed"
+            >
+              Not in the live session list — it may have ended.
+            </span>
+          ) : null}
+          {agent === undefined ? null : (
+            <>
+              <span
+                className={`shrink-0 whitespace-nowrap ${textMutedOnCanvas}`}
+                data-testid="agent-footer-machine"
+                title="The machine this session runs on"
+              >
+                {agent.host}
+              </span>
+              {/* The flex item the ellipsis applies to is the span inside, not this one
+                  (`packages/dispatch/AGENTS.md`): a flex container never draws one on its own
+                  text. `min-w-24` keeps a shortened directory readable, so the row scrolls at a
+                  phone width rather than cutting it to nothing. */}
+              <span
+                className={`flex min-w-24 flex-1 items-center truncate ${textMutedOnCanvas}`}
+                data-testid="agent-footer-dir"
+              >
+                <TruncatedText className="min-w-0 flex-1" title={agent.dir}>
+                  {agent.dir}
+                </TruncatedText>
+              </span>
+            </>
+          )}
+          <SessionSettings onPick={onPick} pending={switchPending} view={settings} />
+        </div>
+        <span className="flex shrink-0 items-center gap-1">
+          <ContextRing
+            onOpenChange={(next) => setPanel(next ? "context" : null)}
+            open={panel === "context"}
+            usage={conversation.context}
+          />
+          <MessageBoxHelp
+            onOpenChange={(next) => setPanel(next ? "help" : null)}
+            open={panel === "help"}
+          />
+        </span>
+      </div>
+      {/* Under the row, not in it: a line of prose in the row's sideways scroller shrinks to a
+          sliver beside the pickers (`SessionSwitchLines`). */}
+      <SessionSwitchLines notice={settings.notice} status={sessionSwitch.status} />
     </div>
   );
 }

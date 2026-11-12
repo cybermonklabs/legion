@@ -59,9 +59,12 @@ function Harness({ messages }: { messages: KeyedMessage[] }): ReactNode {
         commands={undefined}
         contentIds={messages.map((message) => turnKey(message.metadata?.custom ?? {}, message.id))}
         empty="Nothing yet."
+        front
         held={false}
+        initialPlace={null}
         modes={["steer"]}
         onPickMode={() => {}}
+        onPlace={() => {}}
         ownSendCount={0}
         placeholder="Message the session…"
         replayCount={0}

@@ -26,9 +26,9 @@ import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
 // No `last_seen`: the fixture answers every read of the session with the current time. A literal
-// computed when this module is imported ages with the whole suite, and a session ten minutes "old"
-// folds under Inactive rather than under the fold this spec opens - which is how long a full run
-// takes to reach here.
+// computed when this module is imported ages with the whole suite, and a session ten minutes
+// "old" falls under `Quiet` rather than under the group this spec reads - which is how long a
+// full run takes to reach here.
 const planner: FakeSession = {
   capabilities: ["aside", "btw", "steer"],
   dir: "/workspaces/planner",
@@ -77,11 +77,9 @@ test("a broadcast lists recipient cards in the non-alphabetical order the sender
     const page = await alice.newPage();
     await page.goto("/agents");
     const agents = page.getByRole("region", { name: "Agents" });
-    // Sessions Dispatch has never heard from sit under the page's collapsed fold; broadcasting
-    // is mostly aimed at exactly those, so the fold is the flow's first step.
-    const quiet = agents.getByRole("button", { name: "No Dispatch activity (4)" });
-    await expect(quiet).toBeVisible();
-    await quiet.click();
+    // Sessions Dispatch has never heard from sit under `Idle`, which is open with every other
+    // group when the page loads (INFRA-812, R7); broadcasting is mostly aimed at exactly those.
+    await expect(agents.getByTestId("agents-group-toggle-idle")).toHaveAccessibleName("Idle (4)");
 
     for (const title of ["Tester", "Observer", "Planner", "Reviewer"]) {
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
@@ -209,8 +207,6 @@ test("a broadcast written as a numbered list renders as a list on the broadcast 
   try {
     const page = await alice.newPage();
     await page.goto("/agents");
-    const agents = page.getByRole("region", { name: "Agents" });
-    await agents.getByRole("button", { name: "No Dispatch activity (2)" }).click();
     for (const title of ["Planner", "Tester"]) {
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
@@ -247,10 +243,11 @@ test("a broadcast written as a numbered list renders as a list on the broadcast 
       .toEqual([body, body]);
 
     // The recipient's copy on the Agents page renders the same way. A broadcast is the viewer's
-    // own send, not a signal from the session, so both recipients still sit under the fold.
+    // own send, not a signal from the session, so both recipients are still Idle.
     await navigateInApp(page, "/agents");
-    const agentsAgain = page.getByRole("region", { name: "Agents" });
-    await agentsAgain.getByRole("button", { name: "No Dispatch activity (2)" }).click();
+    await expect(
+      page.getByRole("region", { name: "Agents" }).getByTestId("agents-group-toggle-idle")
+    ).toHaveAccessibleName("Idle (2)");
     const plannerRow = agentRow(page, "Planner");
     await plannerRow.getByRole("button", { exact: true, name: "Planner" }).click();
     const conversation = plannerRow.getByRole("list", { name: "Conversation with Planner" });
@@ -350,8 +347,6 @@ test("a session that goes away before the send is excluded by the server and nam
   try {
     const page = await alice.newPage();
     await page.goto("/agents");
-    const agents = page.getByRole("region", { name: "Agents" });
-    await agents.getByRole("button", { name: "No Dispatch activity (3)" }).click();
     for (const title of ["Planner", "Tester", "Observer"]) {
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
@@ -407,10 +402,6 @@ test("a broadcast reaches sessions the listener's list has dropped while their r
   try {
     const page = await alice.newPage();
     await page.goto("/agents");
-    await page
-      .getByRole("region", { name: "Agents" })
-      .getByRole("button", { name: "No Dispatch activity (2)" })
-      .click();
     for (const title of ["Planner", "Tester"]) {
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
@@ -456,10 +447,6 @@ test("a second identical send of one composition is answered the original broadc
     const page = await alice.newPage();
     const posted = broadcastSends(page);
     await page.goto("/agents");
-    await page
-      .getByRole("region", { name: "Agents" })
-      .getByRole("button", { name: "No Dispatch activity (2)" })
-      .click();
     for (const title of ["Planner", "Tester"]) {
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
@@ -509,10 +496,6 @@ test("a session that leaves between a refused send and its restore is still in t
     const posted = broadcastSends(page);
     const refusal = await refuseBroadcasts(page);
     await page.goto("/agents");
-    await page
-      .getByRole("region", { name: "Agents" })
-      .getByRole("button", { name: "No Dispatch activity (2)" })
-      .click();
     for (const title of ["Planner", "Observer"]) {
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }

@@ -252,6 +252,10 @@ const ALLOWED: readonly (readonly [string, string])[] = [
   ["packages/envoy/AGENTS.md", "agent replying to a deferred ask hands the turn back without"],
   // A link to a section of a reference file, whose anchor holds the word.
   ["skills/legion-controller/SKILL.md", "finding-asks.md#hand-over-a-clear-defect`"],
+  [
+    "skills/legion-controller/references/consolidation.md",
+    "finding-asks.md#hand-over-a-clear-defect`",
+  ],
   // The web app's own behaviour, written for whoever edits it, never for an agent.
   [
     "packages/dispatch/AGENTS.md",

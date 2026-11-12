@@ -200,6 +200,7 @@ test("a decision block with no ask row shows one header with the fields its attr
       ask={undefined}
       detached
       host={host}
+      inBody={false}
       owner={undefined}
       readOnly
       rowResolution={false}

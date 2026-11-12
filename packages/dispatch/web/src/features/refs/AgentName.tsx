@@ -89,12 +89,26 @@ type AgentSubject =
   | { actor?: never; sessionId: string; storedTitle: string | undefined };
 
 type AgentVariant =
-  /** `link` (default): the name links to the live conversation. `static`: no link, for the
-   *  places a link cannot sit (a tooltip, a listbox option, the live page's own header). */
-  | { kind?: "link" | "static"; control?: never }
+  /** `link` (default): the name links to the live conversation, pushing the address, so Back
+   *   walks the pages the reader came from. `replace` is the rail's pinned rows alone
+   *   (INFRA-812): a move from one pinned agent to another replaces the live view the reader is
+   *   in rather than stacking it. `onNavigate` is told the link was followed, which is how the
+   *   rail's sheet closes behind it. `static`: no link, for the places a link cannot sit (a
+   *   tooltip, a listbox option, the live page's own header). */
+  | {
+      kind?: "link" | "static";
+      control?: never;
+      onNavigate?: () => void;
+      replace?: boolean;
+    }
   /** `control`: the host keeps its own control around the name, and the live link renders
    *  beside it, outside the host control. */
-  | { kind: "control"; control: (name: ReactNode) => ReactNode };
+  | {
+      kind: "control";
+      control: (name: ReactNode) => ReactNode;
+      onNavigate?: never;
+      replace?: never;
+    };
 
 type AgentNameProps = AgentSubject &
   AgentVariant & {
@@ -270,6 +284,8 @@ function SessionAgentName({
     named = (
       <Link
         className={inline ? `${LINK_CLASS} dispatch-inline-link underline` : LINK_CLASS}
+        onClick={variant.onNavigate}
+        replace={variant.replace === true}
         to={to}
       >
         {name}

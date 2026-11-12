@@ -199,6 +199,7 @@ function renderCard({
         <AskBlockCard
           ask={hasIndexedAsk ? indexed : undefined}
           host={host}
+          inBody={false}
           onAnswered={onAnswered}
           owner={owner}
           readOnly={readOnly}

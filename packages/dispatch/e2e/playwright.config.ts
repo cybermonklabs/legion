@@ -398,7 +398,7 @@ const parallelProjects = [
   // Without a `testMatch` the project would see every spec in this directory, so it names the
   // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess or
   // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone. That ignore is
-  // what keeps the two clock-read files to the `-alone` projects at the end of this list and
+  // what keeps the three clock-read files to the `-alone` projects at the end of this list and
   // out of every project above them (sjawhar/legion#2612), here and in the three other projects
   // that name it. Its `grepInvert` is `chromium`'s for the same reason, read of rows rather
   // than of files: a clock row of `large-documents-measured.e2e.ts` given an engine tag later
@@ -537,11 +537,13 @@ const parallelProjects = [
  * worker wide. For the rows that read a hold through `e2e/main-thread-hold.ts`, the row itself
  * is what holds the run to that: `refuseASharedRun` fails a measuring row in a run of more than
  * one worker rather than letting it report a reading of what the other workers were running, so
- * a reading that survives was taken alone whatever project it was taken in. The five rows of
- * `large-documents-measured.e2e.ts` these projects take read their numbers from the page's own
- * clock and through no such instrument, so nothing in them refuses a wider run: what keeps them
- * alone is the command, and every command that measures them names `--workers=1` - `bun run
- * e2e:clock` and the alone job's legs (.github/workflows/dispatch-browser.yaml).
+ * a reading that survives was taken alone whatever project it was taken in. The rows of
+ * `agent-workspace-timing.e2e.ts` and the five rows of `large-documents-measured.e2e.ts` these
+ * projects take read their numbers from a clock of their own and reach that guard nowhere, so
+ * nothing in them refuses a wider run: what keeps them alone is the command, and every command
+ * that measures them names `--workers=1` - the refusal at the top of this file prints it, `bun
+ * run e2e:clock` names it, and so do the alone job's legs
+ * (.github/workflows/dispatch-browser.yaml).
  *
  * Each still caps its own workers at one, which holds a project's own rows to one at a time
  * however wide the run is: the `workers: 1` below is this config's default, which a command
@@ -557,8 +559,11 @@ const parallelProjects = [
  *
  * Each engine keeps the rows it ran. `heavy-bodies.e2e.ts` ran in `chromium`, `firefox` and
  * `webkit`, for the reasons written above those projects, and runs here in all three;
- * `nested-directive.e2e.ts` ran in `chromium` alone and runs in `chromium-alone` alone, and so
- * does the desktop clock row of `large-documents-measured.e2e.ts`.
+ * `nested-directive.e2e.ts` ran in `chromium` alone and runs in `chromium-alone` alone, as do
+ * the desktop clock row of `large-documents-measured.e2e.ts` and `agent-workspace-timing.e2e.ts`,
+ * whose rows time the live view and the Agents page in the one engine the timed halves are
+ * claimed for (INFRA-812's D14; the untimed halves of those checks stay in `chromium` and
+ * `iphone`, in `agent-view-cost.e2e.ts` and `agents-window.e2e.ts`).
  *
  * `firefox-alone` and `webkit-alone` select by `testMatch` alone, where `webkit` and `firefox`
  * select by an engine tag: their axis is the file, not a behaviour. Every row of a clock-read
@@ -577,14 +582,14 @@ const parallelProjects = [
  * should be red. The multiprocess project above sets the same value on a different argument.
  */
 const aloneProjects = [
-  // Both clock-read specs (`clockSpecPattern`, e2e/configurations.ts), and the one row of
+  // All three clock-read specs (`clockSpecPattern`, e2e/configurations.ts), and the one row of
   // `large-documents-measured.e2e.ts` whose number is read at a desktop width
   // (`desktopClockRow` above). That row's file is in the `testMatch` and the `grep` is what
   // keeps the rest of that file in the parallel projects, where it belongs: Playwright matches
   // `grep` against the project's name, the file's path under `testDir`, the titles above the row
   // and the row's own title and tags, joined by spaces (`_grepTitleWithTags`,
   // playwright/lib/common/index.js), so naming `clockSpecPattern` there keeps every row of those
-  // two files whatever its title says, and `desktopClockRow` adds that one row and nothing else.
+  // three files whatever its title says, and `desktopClockRow` adds that one row and nothing else.
   // Playwright reads either array as OR.
   //
   // One project rather than one of its own: this is already Desktop Chrome out of the

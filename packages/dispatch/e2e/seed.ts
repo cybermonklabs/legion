@@ -37,6 +37,10 @@ const tables = [
   "branch_commits",
   "user_issue_state",
   "user_agent_state",
+  // The agents a person pinned (migration 20261106215223), a table of its own that no foreign
+  // key reaches: a pin a row leaves behind would order the next row's Agents list and put its
+  // sessions in the next row's sidebar.
+  "user_agent_pin",
   "user_agent_read",
   "user_agent_reply_read",
   "user_agent_thread_dismissed",
@@ -60,7 +64,9 @@ const tables = [
   "user_sessions",
 ];
 
-function sqlLiteral(value: string): string {
+/** `value` as a SQL string literal, with every quote of its own doubled. psql interpolates no
+ *  variable inside a quoted literal, so text reaches Postgres as written. */
+export function sqlLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 

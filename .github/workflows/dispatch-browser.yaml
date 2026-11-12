@@ -347,26 +347,27 @@ jobs:
     # above the sum of the step budgets, as this file's head says a job budget is.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed
-    # again at this branch's head, the suite holds 1,471 rows in 191 files, which is two
+    # again at this branch's head, the suite holds 1,531 rows in 201 files, which is two
     # listings rather than one: the five `-alone` projects are out of the default selection
-    # since dispatch://INFRA-1280, so a command that names no project lists 1,416 rows in 189
-    # files and one that names those five lists 55 more, in 3 files - two of which are theirs
+    # since dispatch://INFRA-1280, so a command that names no project lists 1,472 rows in 198
+    # files and one that names those five lists 59 more, in 4 files - three of which are theirs
     # alone, while large-documents-measured.e2e.ts is in both listings, since the parallel
     # projects run the rows of it that are not read from the clock. The ten projects this job's
-    # shard command names below hold 1,396 rows in 188 files; the four of those the
-    # pull-request lane names hold 1,295, of which that lane's `@pr` grep selects 282, 147 of
+    # shard command names below hold 1,452 rows in 197 files; the four of those the
+    # pull-request lane names hold 1,351, of which that lane's `@pr` grep selects 282, 147 of
     # them on the real stack. The two `visual` projects hold 20, which the visual job runs one
-    # row at a time, and the 55 wall-clock rows are the alone job's - 20, 14, 17, 2 and 2. The
-    # 20 is `chromium-alone`'s 17 heavy-bodies rows, its two nested-directive rows and the one
-    # desktop row of large-documents-measured.e2e.ts; the 14 and the 17 are heavy-bodies.e2e.ts
+    # row at a time, and the 59 wall-clock rows are the alone job's - 24, 14, 17, 2 and 2. The
+    # 24 is `chromium-alone`'s 17 heavy-bodies rows, its two nested-directive rows, its four
+    # agent-workspace-timing rows and the one desktop row of large-documents-measured.e2e.ts;
+    # the 14 and the 17 are heavy-bodies.e2e.ts
     # on `firefox-alone`, which inverts the three rows that read a reader's place, and whole on
     # `webkit-alone`; the two 2s are the phone rows of large-documents-measured.e2e.ts, the
     # timer row and the decision row on `iphone-alone` and the two measurements on
     # `iphone-measure-alone` (dispatch://INFRA-341).
     #
-    # Those 1,396 cut five ways, each leg listed at this head with the ten projects named below
-    # and this job's own denominator (`--shard=<i>/5 --list`): 280, 279, 279, 279 and 279 rows,
-    # which sum to the 1,396. Equal row counts are all Playwright's cut promises, and the
+    # Those 1,452 cut five ways, each leg listed at this head with the ten projects named below
+    # and this job's own denominator (`--shard=<i>/5 --list`): 291, 291, 290, 290 and 290 rows,
+    # which sum to the 1,452. Equal row counts are all Playwright's cut promises, and the
     # seconds above are where what a leg costs is read instead.
     timeout-minutes: 13
     strategy:
@@ -582,9 +583,12 @@ jobs:
           # pull request is answered by: every stubbed row carries the tag, and so do the
           # real-stack rows of the journeys that must be seen on a pull request. Playwright
           # applies a command-line grep **on top of** a project's own, never in place of it -
-          # measured at this branch's base, where `--grep '@pr'` left `iphone` all 99 of its
-          # `@phone` rows and `webkit` 1 of its 40 - so the two tagged projects keep their own
-          # axis. Every row without the tag runs on the full lane, which `ci.yaml` runs for every
+          # measured at this branch's base, 475d7609, where `iphone` listed 109 rows and 4 of
+          # them under `--grep '@pr'`, and `webkit` 40 rows and 7 of them, and again at this
+          # head, 23f2d137, where `iphone` listed 119 and the same 4, and `webkit` 40 and the
+          # same 7 - so the two tagged projects keep their own axis and the command's grep
+          # selects the rows that carry both tags.
+          # Every row without the tag runs on the full lane, which `ci.yaml` runs for every
           # merge group and the nightly runs daily, so `main` is gated exactly as it was and what
           # a displaced row loses is feedback on the pull request itself
           # (dispatch://INFRA-1407, departure 1). `e2e/__tests__/pull-request-lane.test.ts` holds
@@ -959,9 +963,10 @@ jobs:
         # `env:`, for the reason the job's head gives.
         #
         # No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: no row these
-        # legs run uploads or downloads anything. chromium-alone runs both wall-clock specs
-        # (`clockSpecNames` in e2e/configurations.ts: heavy-bodies and nested-directive, the
-        # list `clockSpecPattern` is built from, which is in that project's `testMatch`) and the
+        # legs run uploads or downloads anything. chromium-alone runs all three wall-clock
+        # specs (`clockSpecNames` in e2e/configurations.ts: agent-workspace-timing,
+        # heavy-bodies and nested-directive, the list `clockSpecPattern` is built from, which
+        # is in that project's `testMatch`) and the
         # one row of large-documents-measured.e2e.ts read at a desktop width, which the same
         # project takes with `clockRowSpecPattern` in that `testMatch` and `desktopClockRow` in
         # its `grep`; firefox-alone and webkit-alone run heavy-bodies alone; iphone-alone runs

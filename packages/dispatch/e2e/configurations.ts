@@ -249,7 +249,7 @@ export function tagged(tag: string): RegExp {
  *
  *  An empty list is a run that names no project, which is every DEFAULT project of its mode:
  *  the five wall-clock projects below carry `default: false` and are outside it, measured at
- *  this head as 1,416 rows in 189 files against the whole suite's 1,471 in 191. Every
+ *  this head as 1,472 rows in 198 files against the whole suite's 1,531 in 201. Every
  *  `--project` of the whole line is read, and the values of every OTHER option are skipped over
  *  (`e2e/playwright-argv.ts`), because a token that reads like a flag of this run may be some
  *  option's value: `--output --project=stub` hands Playwright `--project=stub` as the output
@@ -279,7 +279,8 @@ export function projectsOnCommandLine(argv: readonly string[]): string[] {
 }
 
 /** The projects whose rows are read from the wall clock: that a card's draw holds the main thread
- *  for less than a second, measured through `e2e/main-thread-hold.ts`, and the five rows of
+ *  for less than a second, measured through `e2e/main-thread-hold.ts`, what the agent surfaces
+ *  cost in time, measured by `agent-workspace-timing.e2e.ts` itself, and the five rows of
  *  `large-documents-measured.e2e.ts` that read a build's own cost from the page's clock. They
  *  run one row at a time so that a reading is the page's own work rather than what three other
  *  lanes took. They are named here rather than in the config for the reason `stubProjectNames`
@@ -305,12 +306,17 @@ export const clockProjectNames: readonly string[] = [
   "iphone-measure-alone",
 ];
 
-/** The two specs those projects run, each by the part of its file name that is its own:
- *  `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`. A wall-clock file is spelled once here
- *  and read twice - by the pattern below, which is how the projects select their files, and by
- *  `clockFileOnCommandLine`, which is how a command that names one of those files with no project
- *  is refused - so a third such file is one edit of this list. */
-export const clockSpecNames: readonly string[] = ["heavy-bodies", "nested-directive"];
+/** The three specs those projects run, each by the part of its file name that is its own:
+ *  `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`. A
+ *  wall-clock file is spelled once here and read twice - by the pattern below, which is how the
+ *  projects select their files, and by `clockFileOnCommandLine`, which is how a command that
+ *  names one of those files with no project is refused - so a fourth such file is one edit of
+ *  this list. */
+export const clockSpecNames: readonly string[] = [
+  "agent-workspace-timing",
+  "heavy-bodies",
+  "nested-directive",
+];
 
 /** The files the wall-clock projects select, which is `chromium-alone`'s `testMatch` in
  *  `e2e/playwright.config.ts` and the `testIgnore` of the four parallel projects that would
@@ -409,7 +415,7 @@ export const clockRowSpecPattern = new RegExp(`(${clockRowSpecNames.join("|")})\
  *  took that `--` as its value (`const dashDashIndex = process.argv.indexOf("--")`,
  *  `playwright/lib/program.js:51-53`). With one token after the `--` and one filter, as here,
  *  that keeps no filter. So `--list --output -- e2e/claim.e2e.ts` lists the whole default
- *  selection, 1,416 rows in 189 files, where `--list --output /tmp/o e2e/claim.e2e.ts` lists 1 -
+ *  selection, 1,472 rows in 198 files, where `--list --output /tmp/o e2e/claim.e2e.ts` lists 1 -
  *  the filter is dropped although `--output` swallowed the `--`, which `--list --output --
  *  --not-a-flag` shows it did, that line exiting 1 with `error: unknown option '--not-a-flag'`
  *  rather than the `error: option '--output <dir>' argument missing` of `--list --output`. What
@@ -417,7 +423,7 @@ export const clockRowSpecPattern = new RegExp(`(${clockRowSpecNames.join("|")})\
  *  'e2e/heavy.bodies.e2e.ts'`, written as a regex this reader does not answer for, reached the
  *  runner with no filter and a grep of `--` and exited 1 with `Error: No tests found` above
  *  `Total: 0 tests in 0 files`, and `--list --output -- 'e2e/heavy.bodies.e2e.ts'` lists the
- *  1,416 rows of the default selection. Neither run reaches the wall-clock file the person
+ *  1,472 rows of the default selection. Neither run reaches the wall-clock file the person
  *  named, so the refusal, and the command it prints, is the useful answer to both.
  *
  *  A reader that took any `--ui` of the whole argv for the mode would answer `undefined` for
