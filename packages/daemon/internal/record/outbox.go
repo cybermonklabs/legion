@@ -1381,7 +1381,7 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // it, and a kind added here turns up as a row that test is missing rather than as a kind nobody
 // checked.
 var validNoticeKinds = []NoticeKind{
-	"phase-finished", "worker-died", "worker-stalled", "held",
+	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 	"merge-refused", "merge-stalled", "merge-removed", "merge-waiting",
 	"design-approved", "design-changes-requested", "carried-gate-opened", "ready-refused",
@@ -1399,6 +1399,14 @@ var validNoticeKinds = []NoticeKind{
 // stalled process as well, where the end let it go: that it was stopped, or that the runtime
 // did not confirm the stop and it may be running still (internal/daemon's stallBackstopEnds,
 // stallStopClause).
+//
+// `worker-silent` is the worker that stopped between turns rather than inside one: its process
+// is up, it holds no task, and its agent has not stepped for longer than the bound the
+// deployment sets (`worker_silence_minutes`), so nothing in the daemon and nothing in that
+// process will prompt it (workflow's SilentPhaseWorker, workerSilent). It is that worker's
+// issue's architect's to read, as the two above are, and it says which of two things the daemon
+// did: it sent the phase's task again under the assignment the phase row names, or it sent no
+// task because that row names none (workflow's workerSilentDid).
 func validNoticeKind(kind NoticeKind) bool {
 	return slices.Contains(validNoticeKinds, kind)
 }

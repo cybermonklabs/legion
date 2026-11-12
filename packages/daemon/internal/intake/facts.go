@@ -1075,6 +1075,35 @@ type PodBackstopDue struct {
 
 func (PodBackstopDue) isFact() {}
 
+// WorkerSilent is one phase worker the daemon's one-minute sweep read as silent: a claim whose
+// process is up and between turns, which holds no task, and whose agent's last recorded step is
+// older than the bound the deployment sets (config.Config.WorkerSilence,
+// `worker_silence_minutes`). It is never decoded from an event — the sweep reads the live claims
+// over the supervisor and applies one fact per claim it reads that way.
+//
+// That reading is cheap and decides nothing: it is made over the supervisor's claims and the
+// issues the daemon holds in memory, and the record can have moved since. So the fact carries
+// what the sweep read — the moment of the claim's last step and the bound it judged that moment
+// against — and the handler (workflow's workerSilent) re-reads the record inside the fact's own
+// transaction and decides. The bound rides the fact rather than being read again in the handler
+// so that the decision is made against the number the sweep used, and not against one an
+// operator changed between the reading and the apply.
+//
+// The fact's identity, which the sweep mints, is the claim token and LastStep. So ApplyFact's
+// durable mark makes one silence one fact however many of the minute's sweeps read it, and a
+// worker that takes a step and then goes silent again has a new moment and so a new fact, which
+// is R5 of dispatch://INFRA-3163: a silence that stands for hours tells the issue's architect
+// one time, and a second silence tells it again.
+type WorkerSilent struct {
+	Issue      string
+	Role       claim.Role
+	Generation uint64
+	LastStep   time.Time
+	Bound      time.Duration
+}
+
+func (WorkerSilent) isFact() {}
+
 // Handler changes the workflow record inside the caller-owned transaction.
 type Handler interface {
 	Apply(context.Context, pgx.Tx, Fact) (Result, error)
