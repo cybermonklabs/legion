@@ -527,8 +527,9 @@ whole record.
 image pins, and pushes it to the pod's launcher, which installs it before any role of the pod
 starts ([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)).
 A start whose check could not be installed is not sent, and it is charged as a launch failure, so
-a claim that keeps meeting it fails with `launch failures ran out` and the cause word
-`launch_refused`. The sentence is the reason:
+a claim that keeps meeting it fails with `launch failures ran out: <the refusal>` and the cause
+word `launch_refused`, or `died` where the refused launches were the relaunch of a process that
+died. The sentence is the reason:
 
 ```text
 the shared public leak check could not be installed: <what happened>
@@ -550,14 +551,27 @@ listing alone. What follows the colon says where to look:
 - `GitHub answered the read of theorem-labs/agent-infra at <tag> with HTTP <status>…`, or `the
   tarball of theorem-labs/agent-infra at <tag> …`: check that the tag the worker image pins exists
   in that repository and holds its `leak-check` directory.
-- `the daemon could not read theorem-labs/agent-infra at <tag>: …`, or `the daemon's read of
-  theorem-labs/agent-infra at <tag> did not finish within <bound>`: the daemon's own connection to
-  GitHub. The daemon keeps no failed read, so the next launch reads again.
+- `the daemon could not read theorem-labs/agent-infra at <tag>: …`, `the daemon's read of
+  theorem-labs/agent-infra at <tag> did not finish within <bound>`, `the daemon could not ask
+  GitHub for …` or `the daemon could not slice the check it read at <tag>: …`: the daemon's own
+  connection to GitHub, or what GitHub sent. The daemon keeps no failed read, so the next launch
+  reads again.
+- `the start stopped waiting for the daemon's read of theorem-labs/agent-infra at <tag>: …`: the
+  launch reached its own bound before the daemon's read ended. The read goes on, and the next
+  launch takes what it read.
 - `the pod asked for the tag "<tag>", which is not of the published shape leak-check-v<n>`: the
   worker image's `ARG LEAK_CHECK_TAG` holds another shape of tag.
-- `the pod's launcher did not answer the install of <tag> within <bound>`, and every sentence that
-  begins `the pod's launcher` or `the served check`: read the pod's `roles` container log, behind
-  the role's prefix, as the end of this section shows. The launcher writes its install lines there.
+- `the pod's launcher did not answer the install of <tag> within <bound>`: the launcher's install
+  took longer than the push's bound. The install goes on, and the next launch is answered at once
+  when it is in place. The pod's log then shows `launcher: installed the shared public leak check
+  <tag> at /legion/scratch/leak-check, served by the daemon (sha256 …)`: in the `roles` container
+  of an issue pod, behind the role's prefix, and in the `controller` container of the
+  controller's pod.
+- every other sentence the pod's launcher gives, such as `the pod's launcher could not unpack the
+  check the daemon served: …`, `the served check did not answer: …`, `the staging directory could
+  not be made: …` or `the staged install could not be moved to …`: the launcher could not unpack,
+  verify or move the check into place on the pod's disk. The sentence on the claim is the whole
+  record, because the launcher writes no log line for a refusal.
 
 Once the cause is fixed, `legion claims retry --claim <token>` starts a failed claim again. The
 daemon launches a claim that has not failed yet again on its own, after the backoff below.

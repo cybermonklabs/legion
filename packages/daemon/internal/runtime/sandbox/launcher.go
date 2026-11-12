@@ -343,12 +343,12 @@ func (d *launchers) start(ctx context.Context, token claim.Token, podUID string,
 
 // leakCheckHopBound is how long the push of the shared public leak check to one launcher may take:
 // its slices and the launcher's answer to the last, which it gives once it has unpacked, verified
-// and installed the check. Measured from a pod on 2026-11-09, the whole fetch took 3.3 s and the
-// packed check is two slices of shimwire.LauncherBundlePayloadBytes, so this is a slow
-// connection's room. It runs under the start's own context, as the bundle's hop does, so the
-// launch's own bound needs no term for it. A hop that outruns it refuses the start; the
-// launcher's install goes on under its own bound, and the next start is answered Installed at
-// once.
+// and installed the check. The daemon already holds the check when the hop begins, so the hop is
+// a few slices of shimwire.LauncherBundlePayloadBytes, the launcher's unpack, its one `--help`
+// run and its rename, and this is a slow connection's room. It runs under the start's own
+// context, as the bundle's hop does, so the launch's own bound needs no term for it. A hop that
+// outruns it refuses the start; the launcher's install goes on under its own bound, and the next
+// start is answered Installed at once.
 const leakCheckHopBound = 2 * time.Minute
 
 // serveLeakCheck pushes the shared public leak check to token's launcher in podUID and waits for
@@ -402,6 +402,9 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 		result, ok := answer.(shimwire.LauncherLeakCheckResult)
 		if !ok {
 			return refuse(fmt.Sprintf("the pod's launcher answered slice %d of %s with a %s frame", frame.Index, tag, answer.FrameType()), nil)
+		}
+		if err := result.Validate(); err != nil {
+			return refuse(fmt.Sprintf("the pod's launcher answered slice %d of %s with a malformed result", frame.Index, tag), err)
 		}
 		if !result.OK {
 			return refuse(result.Error, nil)

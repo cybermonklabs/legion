@@ -212,6 +212,12 @@ func TestARefusedLeakCheckStartsNothingAndLeavesTheSavedBundle(t *testing.T) {
 			options: []rigOption{withRefusedLeakCheck("the staging directory could not be made: no space left on device")},
 			want:    leakguard.RefusalPrefix + "the staging directory could not be made: no space left on device",
 		},
+		"the pod's launcher refuses with no cause": {
+			source:  servedLeakCheck(),
+			options: []rigOption{withCauselessLeakCheck()},
+			want: leakguard.Cause("the pod's launcher answered slice 0 of "+testLeakCheckTag+" with a malformed result",
+				shimwire.LauncherLeakCheckResult{ID: "x"}.Validate()),
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			st, saved := leakCheckStore(t)

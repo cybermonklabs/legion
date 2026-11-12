@@ -502,11 +502,13 @@ type rig struct {
 	// leakCheckTag and leakCheckInstalled are what every fake launcher's hello says of the shared
 	// public leak check: its pin, "" for none, and whether it holds that pin installed
 	// (withLeakCheckHello). refuseLeakCheck, when set, is the cause every fake launcher answers
-	// each launcher_leak_check slice with, and silentLeakCheck has it answer none at all.
+	// each launcher_leak_check slice with, silentLeakCheck has it answer none at all, and
+	// causelessLeakCheck has it refuse each slice with no cause.
 	leakCheckTag       string
 	leakCheckInstalled bool
 	refuseLeakCheck    string
 	silentLeakCheck    bool
+	causelessLeakCheck bool
 }
 
 type rigOption func(*rig, *Options)
@@ -544,6 +546,12 @@ func withRefusedLeakCheck(cause string) rigOption {
 // withSilentLeakCheck has every fake launcher take the leak check's slices and answer none, as
 // one whose install is still running when the daemon's hop ends.
 func withSilentLeakCheck() rigOption { return func(g *rig, _ *Options) { g.silentLeakCheck = true } }
+
+// withCauselessLeakCheck has every fake launcher refuse each slice of the leak check with no
+// cause, an answer no launcher of this release gives and the daemon refuses as malformed.
+func withCauselessLeakCheck() rigOption {
+	return func(g *rig, _ *Options) { g.causelessLeakCheck = true }
+}
 
 // testLaunchers is a launchers of its own, outside any rig, with no saved workspace bundles to
 // carry: the tests that build one drive the launcher protocol itself.
@@ -1135,6 +1143,8 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 			case shimwire.LauncherLeakCheck:
 				switch {
 				case g.silentLeakCheck:
+				case g.causelessLeakCheck:
+					_ = writer.WriteFrame(shimwire.LauncherLeakCheckResult{ID: command.ID, Index: command.Index})
 				case g.refuseLeakCheck != "":
 					_ = writer.WriteFrame(shimwire.LauncherLeakCheckResult{ID: command.ID, Index: command.Index, Error: g.refuseLeakCheck})
 				default:

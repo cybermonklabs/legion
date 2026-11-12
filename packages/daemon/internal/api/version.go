@@ -1176,10 +1176,10 @@ package api
 // 87: INFRA-3219 (cybermonklabs/legion) -- a claim whose launch the runtime refused because the
 // shared public leak check could not be installed in the role's pod says so in a field of its
 // own: `leakCheckCause` on `api.ClaimView` (every claim view of `GET /legion/v1/state`, and so
-// `read_state` and `read_record`) and on `api.OperatorClaim` (`GET /legion/v1/claims` and every
-// operator route answering a claim, which is where the controller's claim is read), the one-line
-// sentence the refusal carries, beginning `the shared public leak check could not be installed: `
-// (`leakguard.RefusalPrefix`). It is the outcome of the claim's latest launch try
+// `read_state` and `read_record`) and on `api.OperatorClaim` (`GET /legion/v1/operator/claims`
+// and every operator route answering a claim, which is where the controller's claim is read),
+// the one-line sentence the refusal carries, beginning `the shared public leak check could not be
+// installed: ` (`leakguard.RefusalPrefix`). It is the outcome of the claim's latest launch try
 // (`supervise.Claim.LeakCheckCause`): present from the first try the check refused and across the
 // backoff after it, absent once a try starts its process or fails for another reason, and
 // cleared with the failure record by the retry that revives a failed claim. It sits beside
