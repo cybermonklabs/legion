@@ -60,9 +60,6 @@ other change to the head voids it.
   failed and cancelled jobs, once, then wait — never the whole run, which runs again every job that
   succeeded too. A merge-group run is never re-run: the implementer finishes its round instead,
   and the pull request is tested again when it is queued again.
-  A required check that is red at the head is a different case, which
-  `skill://legion-worker/references/red-at-the-head.md` decides. The reviewer's re-run of a
-  cancelled or absent check neither spends the head's one re-run nor is spent by it.
   Find the run and job at the head: the head's runs
   (`gh api 'repos/<o>/<r>/actions/runs?head_sha=<headRefOid>&per_page=100' --jq '.workflow_runs[] | [.id, .name, .event, .status, .conclusion] | @tsv'`),
   then each candidate run's jobs
@@ -75,6 +72,9 @@ other change to the head voids it.
   still in progress: wait for it. When no
   run at the head holds the job, or nothing will run it (a check only a commit status reports, a
   workflow another repository defines), tell the architect and do not approve.
+  A required check that is red at the head is a different case, which
+  `skill://legion-worker/references/red-at-the-head.md` decides. The reviewer's re-run of a
+  cancelled or absent check neither spends the head's one re-run nor is spent by it.
   Approval is refused while any `before_merge` check of the issue's own Verification document has no passing result that is current at the head being reviewed: `REQUEST_CHANGES` naming each such check by its block id, and `dispatch results --issue <issue>` is the read that decides it.
   An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
   A result is current at that head while the head is the head of an open pull request, or the final head of a merged one, attributed to the check's own issue. A child's pull request never makes a root check's result current, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, and that result is current at the child's head. A root's own checks are proven at the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged into or on the repository's default branch, in the root's last round.

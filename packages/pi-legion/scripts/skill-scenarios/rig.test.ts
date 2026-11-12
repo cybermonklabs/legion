@@ -1536,49 +1536,14 @@ describe("red_fixture", () => {
   // a `gh pr checks` whose status does not follow its rows. The counted set and the commit
   // endpoint answer the same checks in every world but `k`, whose commit endpoint holds the
   // by-hand run as well (runsAre). World `l` reports no red at all until the rig reports it, so
-  // it has rows of its own below rather than a place in these two.
+  // it has rows of its own below rather than a place in this one.
   const settling = RED_WORLDS.filter((world) => world !== "l");
-  test.each([
-    ...settling,
-  ])("world %s: every read of the head answers red, then the world's own settlement", async (world) => {
-    const run = redFixture(world);
-
-    const before = await readHead(run);
-    expect({
-      rollup: before.rollup,
-      graphql: before.graphql,
-      checks: before.checks,
-      runs: before.checkRuns,
-    }).toEqual({
-      rollup: headIs(world, "before"),
-      graphql: headIs(world, "before"),
-      checks: headIs(world, "before"),
-      runs: runsAre(world, "before"),
-    });
-    expect(before.checksExit).toBe(1);
-
-    const rerun = await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
-    expect([rerun.stdout, rerun.exit]).toEqual(["✓ Requested rerun of failed jobs\n", 0]);
-
-    const after = await readHead(run);
-    expect({
-      rollup: after.rollup,
-      graphql: after.graphql,
-      checks: after.checks,
-      runs: after.checkRuns,
-    }).toEqual({
-      rollup: headIs(world, "after"),
-      graphql: headIs(world, "after"),
-      checks: headIs(world, "after"),
-      runs: runsAre(world, "after"),
-    });
-    expect(after.checksExit).toBe(RED_WORLD[world].after === "green" ? 0 : 1);
-  });
-
-  // Catches the defect the first live run of world a measured: the head's second read in a turn
-  // answered the settlement although the role had pressed nothing, so the role read the head as
-  // already re-run and pressed no re-run of its own. The head turns on the act, never on the read
-  // (gh-standin.ts, `follows`), and the re-run the role presses after its reads still turns it.
+  // Each world's head is read twice before the re-run, which is both that every read answers the
+  // world's own red and the defect the first live run of world a measured: the head's second read
+  // in a turn answered the settlement although the role had pressed nothing, so the role read the
+  // head as already re-run and pressed no re-run of its own. The head turns on the act, never on
+  // the read (gh-standin.ts, `follows`), and the re-run the role presses after its reads still
+  // turns it.
   test.each([
     ...settling,
   ])("world %s: reading the head again, with no re-run between, answers red again", async (world) => {
@@ -1602,7 +1567,7 @@ describe("red_fixture", () => {
     }
 
     const rerun = await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
-    expect(rerun.exit).toBe(0);
+    expect([rerun.stdout, rerun.exit]).toEqual(["✓ Requested rerun of failed jobs\n", 0]);
     const after = await readHead(run);
     expect({
       rollup: after.rollup,

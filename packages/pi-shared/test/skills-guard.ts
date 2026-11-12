@@ -273,26 +273,22 @@ export function unresolvedAgentDispatches(
 }
 
 /**
- * `markdown` with every run of whitespace collapsed to one space, beside the offset in `markdown`
- * each character of that collapsed text came from. A rule written over a sentence reads the
- * collapsed text, because these files are wrapped and a sentence of one crosses lines; the offsets
- * give a hit back the line of the file a reader opens.
+ * The offset in `markdown` that each character of its whitespace-collapsed text came from. A rule
+ * written over a sentence reads the collapsed text, because these files are wrapped and a
+ * sentence of one crosses lines; these offsets give a hit back the line of the file a reader
+ * opens.
  */
-function collapsedWithOffsets(markdown: string): { text: string; offsets: number[] } {
-  const parts: string[] = [];
+function collapsedOffsets(markdown: string): number[] {
   const offsets: number[] = [];
   const whitespace = /\s+/g;
   let read = 0;
   for (let run = whitespace.exec(markdown); run !== null; run = whitespace.exec(markdown)) {
     for (let at = read; at < run.index; at += 1) offsets.push(at);
-    parts.push(markdown.slice(read, run.index));
     offsets.push(run.index);
-    parts.push(" ");
     read = run.index + run[0].length;
   }
   for (let at = read; at < markdown.length; at += 1) offsets.push(at);
-  parts.push(markdown.slice(read));
-  return { text: parts.join(""), offsets };
+  return offsets;
 }
 
 /**
@@ -350,24 +346,40 @@ const RERUN_NONE_OF_THEM_YOURSELF =
 const REVIEWER_RERUNS_NOTHING =
   /\b(?:you|the reviewer|your review)\b[^.]{0,40}?\bre-?runs?\s+(?:nothing|none)\b/i;
 
-/** The three prohibitions the re-run rule retired, in the order they are written above. */
+/**
+ * The prohibition INFRA-1303 retired from the Envoy skill (skills/envoy/SKILL.md): "A Legion
+ * implementer waits this way only on a re-run of a red check its task names.", which gave the
+ * wait to one role and to one red. Every phase holder waits that way now, on the red the counted
+ * set carries (`skill://legion-worker/references/red-at-the-head.md`), so the sentence names the
+ * wrong role and the wrong red. The `@sjawhar/pi-envoy` partition stages that file and none of
+ * the three files above, so without this pattern a forward merge could restore the sentence
+ * there and every guard would stay green.
+ *
+ * The subject is the implementer and the limiting word is `only`, so the sentence that replaced
+ * it passes: "The role that holds the issue's phase waits this way on the re-run …".
+ */
+const ONLY_THE_IMPLEMENTER_WAITS = /\ba Legion implementer waits this way only\b/i;
+
+/** The four prohibitions the re-run rule retired, in the order they are written above. */
 const RETIRED_RERUN_PROHIBITIONS = [
   NO_LANE_IS_RERUN,
   RERUN_NONE_OF_THEM_YOURSELF,
   REVIEWER_RERUNS_NOTHING,
+  ONLY_THE_IMPLEMENTER_WAITS,
 ];
 
 /**
  * Every place in the Markdown files under `roots` that still forbids the re-run INFRA-1303 turned
- * on, each as one `<file>:<line>`. The three prohibitions were deleted from six skill files and
+ * on, each as one `<file>:<line>`. The four prohibitions were deleted from seven skill files and
  * two daemon prompt parts at once, and a forward merge keeps both sides of a deletion in silence,
- * so the rule is written over whole partitions rather than over the eight files it cleared: a
- * ninth file that acquires one fails here too.
+ * so the rule is written over whole partitions rather than over the nine files it cleared: a
+ * tenth file that acquires one fails here too.
  *
  * Each prohibition is matched against the whitespace-collapsed text `prosePinFaults` reads, both
  * of them the same collapse, because each prohibition crosses a line in the file it came from.
- * The hit's offset is mapped back through `collapsedWithOffsets`, whose per-character map is
- * built for a file that holds a hit and for no other, to the line a reader opens. One hit per
+ * The hit's offset is mapped back through `collapsedOffsets`, whose per-character map is built
+ * once for a file that holds a hit and not at all for any other, to the line a reader opens. One
+ * hit per
  * prohibition per file: the patterns carry no `g` flag, so a file that says it twice is named
  * once and reads the same after the first is fixed.
  */
@@ -384,10 +396,11 @@ export function retiredRerunProhibitions(roots: readonly string[]): string[] {
         const name = file.startsWith(`${REPO_ROOT}${path.sep}`)
           ? path.relative(REPO_ROOT, file)
           : path.relative(root, file);
+        let offsets: number[] | undefined;
         return RETIRED_RERUN_PROHIBITIONS.flatMap((prohibition) => {
           const found = text.match(prohibition);
           if (found?.index === undefined) return [];
-          const { offsets } = collapsedWithOffsets(markdown);
+          offsets ??= collapsedOffsets(markdown);
           return [`${name}:${markdown.slice(0, offsets[found.index]).split("\n").length}`];
         });
       })
@@ -562,7 +575,7 @@ const SKILL_LINKS_THE_PAGE =
 const MERGE_GATE_POINTS_AT_THE_PAGE =
   "A required check that is red at the head is a different case, which `skill://legion-worker/references/red-at-the-head.md` decides.";
 const NEVER_WAITING_POINTS_AT_THE_PAGE =
-  "`skill://legion-worker/references/red-at-the-head.md` holds the rest of that rule: the test of whether the head's one re-run is already spent, and the record the role writes before it re-runs.";
+  "`skill://legion-worker/references/red-at-the-head.md` holds the rest of that rule: that the counted set must report the check before any re-run, since a task naming a red is not that set; the test of whether the head's one re-run is already spent; and the record the role writes before it re-runs.";
 const TESTER_EVIDENCE_POINTS_AT_THE_PAGE =
   "A red at the head that the change did not make is the tester's to re-run once, and `skill://legion-worker/references/red-at-the-head.md` holds the rule.";
 

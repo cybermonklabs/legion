@@ -934,7 +934,9 @@ function redFacts(entry: unknown, red: z.infer<typeof RedWorld>, failing: string
     repository: text.includes(red.repo),
     "pull request": new RegExp(`\\b${red.pr}\\b`).test(text),
     head: namesOwnCommit(text, [red.head]),
-    check: text.includes(red.check),
+    // As a token, not a substring: world `g`'s check is `ci`, which any `decision`, `specific`
+    // or URL in the entry would otherwise answer for.
+    check: new RegExp(`(^|[^\\w-])${escaped(red.check)}([^\\w-]|$)`).test(text),
     "run id": text.includes(String(red.run_id)),
     attempt: /\battempt\b/i.test(text),
     job: text.includes(red.job),

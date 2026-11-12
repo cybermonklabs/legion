@@ -55,11 +55,14 @@ Under the Go daemon a check or workflow the base branch requires that settles re
 before the completion or after it, sends the work back to `implementing` with the failing checks
 named, however many reds came before it.
 The one CI result an implementer waits for is a re-run: when its task names a red that
-failed on its own in a `pull_request` run, it re-runs the failed jobs once (`gh run rerun <run-id> --failed`) and completes once
+failed on its own in a `pull_request` run, and the head's counted set reports that check
+`completed`, it re-runs the failed jobs once (`gh run rerun <run-id> --failed`) and completes once
 the re-run settles green, woken by the pull request's checks event (`skill://envoy`, *Wait for
 CI or a merge*: subscribe, then end the turn), never by a sleep loop.
-`skill://legion-worker/references/red-at-the-head.md` holds the rest of that rule: the test of
-whether the head's one re-run is already spent, and the record the role writes before it re-runs.
+`skill://legion-worker/references/red-at-the-head.md` holds the rest of that rule: that the
+counted set must report the check before any re-run, since a task naming a red is not that set;
+the test of whether the head's one re-run is already spent; and the record the role writes
+before it re-runs.
 A merge-group run is never re-run: the implementer finishes its round instead, and the pull request is tested again when it is queued again.
 A completion while that red still stands is sent back, at once for a required check and at the daemon's next read of the runs (within two minutes) for a required workflow.
 
@@ -161,7 +164,8 @@ and decides there, the only gate on such an issue.
   would catch the ways it breaks, writing the red test for one that none would, and
   read CI on GitHub at the head you are judging for everything static: lint, types and the unit
   and integration suites are CI's, read there and recorded for no later step. A lane GitHub shows
-  `queued` or `in progress` is read as such, since a required red that settles sends the work back
+  `queued` or `in progress` is read as such, and the tester waits for none of them but the
+  re-run `skill://legion-worker/references/red-at-the-head.md` gives it, since a required red that settles sends the work back
   from `testing` and the reviewer reads the head's checks before it approves. A red at the head
   that the change did not make is the tester's to re-run once, and
   `skill://legion-worker/references/red-at-the-head.md` holds the rule.

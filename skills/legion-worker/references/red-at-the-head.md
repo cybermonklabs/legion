@@ -39,17 +39,17 @@ carry: a log of `677 bytes, none printed` hid an apt failure's own diagnosis for
 until a round printed the body (dispatch://INFRA-1545).
 
 The record is a handoff record of the role's own phase, written with
-`dispatch handoff-write --issue <issue> --phase <test|review> --body-file <file>` before the
+`dispatch handoff-write --issue <issue> --phase <implement|test|review> --body-file <file>` before the
 `gh run rerun` call, never after it. Its body carries the field `redAtTheHead`, a list with one
 entry per red, each entry naming all eight facts above. That record is a version of its own: the
 role writes the phase's full record later, with `redAtTheHead` in it again, and `handoff_complete`
 reports the newest version. A re-run pressed before Dispatch has recorded the first version loses
 the failure, which is what this page exists to keep.
 
-The reviewer's round carries the same record in the body of the one review it submits at the end
-of the round, because a review cannot be written before the re-run. No file under
-`packages/daemon/internal/prompts/roles/` names that field. This page is where the tester and the
-reviewer read it.
+The reviewer writes that handoff record before the re-run as every other role does, and repeats
+it in the body of the one review it submits at the end of the round, since a review cannot be
+written before the re-run. No file under `packages/daemon/internal/prompts/roles/` names that
+field. This page is where the implementer, the tester and the reviewer read it.
 
 ## Which red is the change's
 
@@ -89,11 +89,12 @@ gh pr checks <n> --required
 At a named head, which is what a role holds after a push, the rollup of that commit:
 
 ```bash
-gh api graphql -F oid=<head> -f query='query($oid:GitObjectID!){repository(owner:"<owner>",name:"<repo>"){object(oid:$oid){... on Commit{statusCheckRollup{state contexts(first:100){totalCount pageInfo{hasNextPage} nodes{__typename ... on CheckRun{name databaseId status conclusion checkSuite{app{databaseId} workflowRun{event databaseId}}} ... on StatusContext{context state}}}}}}}}'
+gh api graphql --paginate -F oid=<head> -f query='query($oid:GitObjectID!,$endCursor:String){repository(owner:"<owner>",name:"<repo>"){object(oid:$oid){... on Commit{statusCheckRollup{state contexts(first:100, after:$endCursor){totalCount pageInfo{hasNextPage endCursor} nodes{__typename ... on CheckRun{name databaseId status conclusion checkSuite{app{databaseId} workflowRun{event databaseId}}} ... on StatusContext{context state}}}}}}}}'
 ```
 
-paged on `pageInfo.hasNextPage`, because the context list is capped at 100 a page and a real head
-of this repository carries 65. The read costs 1 point of a limit of 10,000 an hour.
+`--paginate` with the `$endCursor` variable and `endCursor` in the page info is what follows
+`hasNextPage`, because the context list is capped at 100 a page; a real head of this repository
+carries 65. The read costs 1 point of a limit of 10,000 an hour.
 
 **Do not judge a red from `repos/<o>/<r>/commits/<head>/check-runs`.** That endpoint answers
 every check run at the commit, a by-hand `workflow_dispatch` run's among them, which GitHub
@@ -215,9 +216,10 @@ goes to the implementer with the work. The role starts nothing new.
 
 ## What becomes of the record
 
-After the re-run settles and before it completes its phase, the role runs these three commands in
-this order. A red cleared and never written up is a flaky test nobody fixes, which is the cost
-this page is paid to stop.
+After the re-run settles green, and before it completes its phase, the role runs these three
+commands in this order. A red cleared and never written up is a flaky test nobody fixes, which is
+the cost this page is paid to stop. A re-run that comes back red is the round's failure (*Red
+again* above) and owes no occurrence.
 
 1. `dispatch search --query '<the failing test's full name>'`, which finds the issue that tracks
    that test. An issue a record of an earlier red already cites is read again before it is cited
@@ -225,8 +227,8 @@ this page is paid to stop.
    a stale key reads exactly like a tracked defect and becomes the resting place: one was carried
    as the remedy for four rounds after it had stopped being one (dispatch://INFRA-1192).
 2. `dispatch comment --issue <that KEY> --body-file -`, the occurrence on that issue, whatever
-   its status: the test, the job, the head, and both results, the failing run and the green
-   re-run.
+   its status, unless it reads `done`: the test, the job, the head, and both results, the failing
+   run and the green re-run.
 3. The message to the controller, by the route
    `skill://legion-worker/references/findings.md` gives, which is an `envoy_publish` to the
    controller topic the role's `Legion addressing` line names.
@@ -238,8 +240,7 @@ files no issue itself in either case. The controller keeps the census, one issue
 
 ## The merge queue, for the merger
 
-A `failed_checks` ejection at an unchanged head is queued once more. The work goes back only on a
-second such ejection of that head. A merge-group run is never re-run. GitHub does re-run one, but
-the re-run puts nothing back in the queue, and GitHub deletes the entry's branch:
-`GET /git/ref/heads/gh-readonly-queue/main/pr-<n>-<sha>` answers 404, measured on
-cybermonklabs/legion#2811. This rule acts once dispatch://INFRA-714 gives the merger the merge.
+The merger's rule is in `skill://legion-worker/references/merge-gate.md` (*A `failed_checks`
+ejection at an unchanged head is queued once more*): no role re-runs a merge-group run, and no
+re-run of this page's kind belongs to one. Keeping it in one place keeps the two from drifting,
+since the guard pins that page's wording and not this one's.

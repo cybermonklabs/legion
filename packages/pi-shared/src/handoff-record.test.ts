@@ -342,11 +342,20 @@ restoreEnvironment(versionControlNames);
  * `~/.jjconfig.toml`, nor their `~/.gitconfig`, nor the system gitconfig decides a result. It
  * reaches the test process too, because `pathJj` — the code under test — starts jj with the
  * process's own environment.
+ *
+ * `PUBLIC_LEAK_CHECK` rides along where the host sets it, as `PATH` does: a Legion pod's git
+ * refuses every push when it cannot find the leak check that variable names, and this file's jj
+ * pushes to a bare repository of its own.
  */
 function isolatedHome(root: string): Record<string, string> {
   const isolated = versionControlEnvironment(path.join(root, "home"));
   Object.assign(process.env, isolated);
-  return { PATH: process.env.PATH ?? "", ...isolated };
+  const leakCheck = process.env.PUBLIC_LEAK_CHECK;
+  return {
+    PATH: process.env.PATH ?? "",
+    ...(leakCheck === undefined ? {} : { PUBLIC_LEAK_CHECK: leakCheck }),
+    ...isolated,
+  };
 }
 
 /** Runs jj in `cwd` with the test's own environment, failing on a non-zero exit. */

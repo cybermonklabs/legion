@@ -4829,7 +4829,7 @@ redWorldRun(
   redReportedRun("2026-09-30T17:28:05.000Z", redSameSecondTurns, "2026-09-30T17:28:00.000000Z")
 );
 
-// A directory that names no world of the ten, and one whose world is not the world it ran.
+// A directory that names no world of the twelve, and one whose world is not the world it ran.
 redRun("red-at-the-head-z-head-1");
 redWorldRun("red-at-the-head-b-head-4", "a", {});
 

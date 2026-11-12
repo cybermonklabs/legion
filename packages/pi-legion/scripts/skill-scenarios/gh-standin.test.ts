@@ -251,10 +251,10 @@ test("a publish the listener refuses, or that reaches nothing, leaves the call's
   });
 
   // A listener that is gone: the publish fails outright, and the call still exits as its route says.
-  const gone = listener();
-  gone.stop();
   const unreachable = world([{ match: "^gh run rerun", stdout: "", exit: 2, publish: ENVELOPE }]);
-  unreachable.env.ENVOY_URL = gone.url;
+  // The dead address rig.sh's own probe uses: a listener bound and stopped here would be stopped
+  // twice by the afterEach, and its freed port could be taken by another process mid-test.
+  unreachable.env.ENVOY_URL = "http://127.0.0.1:1";
   unreachable.env.ENVOY_TOKEN_FILE = tokenFile(unreachable.run, "rig-listener-bearer");
 
   expect((await unreachable.gh("run", "rerun", "17420", "--failed")).exit).toBe(2);

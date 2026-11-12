@@ -82,7 +82,8 @@ The work goes to whoever already owns that code. You file an issue only when nob
 The role that holds a phase re-runs a red check once at the head of its pull request
 (`skill://legion-worker/references/red-at-the-head.md`). A green re-run means the round goes on,
 and the failure is one occurrence of a test that fails at random. The role posts that occurrence
-as a `dispatch comment` on the issue that tracks the test, whatever that issue's status, and tells
+as a `dispatch comment` on the issue that tracks the test, whatever that issue's status, unless
+it reads `done`, and tells
 you on the controller topic. Its message names the test, the job, the head and both results, the
 failing run and the green re-run. You act on that message when the role found no issue for the
 test, or found one that reads `done`.
