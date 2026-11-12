@@ -612,7 +612,9 @@ before anything reads a row count again. `--requests`, `--body-bytes`, `--artifa
 Proves, on a booted server, that the real `envoy-dispatch` binary answers a question over HTTP and
 streams it. It builds `./cmd/dispatch`, starts the fake chat-completions model it serves itself,
 boots the binary against `DATABASE_URL` with `DISPATCH_ANSWERER=endpoint` pointed at that model,
-reads `GET /api/v1/going/capability` and refuses anything but `{"model_configured":true}`, seeds a
+reads `GET /api/v1/going/capability` and refuses it unless the answering model reads configured
+under the fake's name (`answer.configured` true, `answer.model` `going-smoke-fake`) and the
+decision model, the session and the label, none of which the run configures, read unset, seeds a
 project and an issue whose own text is worth citing through the API as the identity header's
 person, asks a question of that issue over `POST /api/v1/going/requests` and prints the run's id
 and `ends_at`, then prints every frame of `GET /api/v1/going/requests/{id}/stream` as
@@ -649,7 +651,7 @@ Options:
   completion. `--model-status 401` is one negative control: the stream carries
   `error ANSWER_FAILED` and nothing else, and the run exits 1 naming the frames it did not get.
 - `--no-model` — boot the server with `DISPATCH_ANSWERER` unset and no `DISPATCH_CHAT_*` setting.
-  That is the other negative control: the capability route answers `{"model_configured":false}`
+  That is the other negative control: the capability route answers `answer.configured` false,
   and the run exits 1 naming it.
 
 No CI job runs this one, and none should: it builds the binary, boots a server, serves TLS and

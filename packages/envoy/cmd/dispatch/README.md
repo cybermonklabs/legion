@@ -132,6 +132,13 @@ Each item below names a variable, then its purpose.
   The sign-in is the embedder's too, read by whichever of the two is `azure`, so a deployment may embed on Bedrock and answer on Azure; it is refused only where neither is.
   `DISPATCH_AZURE_CHAT_SCOPE` is configuration because one Azure AI Foundry resource serves two inference families: the models inference endpoint (`/models`, an `api-version`, scope `https://cognitiveservices.azure.com/.default`) and the Azure OpenAI endpoint (`/openai/v1`, no `api-version`, scope `https://ai.azure.com/.default`), and which of the two a deployment serves is named by that deployment.
 
+- `DISPATCH_DECISION_MODEL`, `DISPATCH_DECISION_MODEL_ENDPOINT`, `DISPATCH_DECISION_MODEL_TOKEN_FILE`
+
+  The System One model the command bar's one decision call is put to before it answers (which action the words ask for, whether they point at the page's item, chart or prose), the endpoint's base URL, which `/v1/systemone` is appended to and which must be an absolute https URL with a host and no query or fragment, and the file holding the bearer token every call presents.
+  Each defaults to empty; the endpoint and the token file are set together or not at all, and boot refuses one without the other, naming the one missing; the model is optional, since a deployment renders the endpoint and the file before it names a model.
+  The model must be one the committed measurement holds (`packages/envoy/going/decision_models.json`, which the bake-off `cmd/going-bakeoff` writes): the server reads that model's two fitted thresholds from it, and a name it does not hold is no decision model, so the server starts, logs one line saying why and decides nothing, as it does with no model or no endpoint.
+  The token file is read on every call and never at boot, so a rotation needs no restart; a file that is absent or empty at a call fails that call as the decision model that cannot be reached, with no request made, and the capability route reports it unreachable.
+
 - `DISPATCH_MAX_LIVE_ROOMS`, `DISPATCH_MAX_DOC_CONNECTIONS`
 
   Each process's own caps on the document rooms it holds in memory and the browser connections to them, so two processes of one deployment hold up to twice each;
@@ -2532,7 +2539,13 @@ A ranking or latency change is measured on a restored copy of the production cor
 
 ## Answering a question
 
-Where the server generates text is one setting, `DISPATCH_ANSWERER` (Required configuration, above), and `GET /api/v1/going/capability` answers `{"model_configured": <bool>}` and nothing else, so any caller Dispatch admits learns whether a deployment can answer without learning its endpoint, its deployment name or its credential.
+Where the server generates text is one setting, `DISPATCH_ANSWERER`, and the model the command bar decides with is `DISPATCH_DECISION_MODEL` and its endpoint and token file (Required configuration, above).
+`GET /api/v1/going/capability` reports what the bar can do here, each part apart, so a deployment that answers and cannot decide is told from one that does neither:
+`{"answer": {"configured", "model", "blocks"}, "decision": {"configured", "model", "reachable"}, "session": {"configured"}, "label": {"configured"}}`.
+`answer.model` is the model the answerer was configured with (`DISPATCH_AZURE_CHAT_DEPLOYMENT` or `DISPATCH_CHAT_MODEL`), `""` with none; `answer.blocks` is `true` once this process's model accepted a structured reply, `false` once its service refused a structured request with a 400 (after which no run asks for one until a restart), and `"unknown"` while neither has happened or with no answerer.
+`decision.configured` is a measured decision model, a name the record does not hold reading `false` with `model` `""`; `decision.reachable` is whether its token file reads now, one file read and no call to the model.
+`session` and `label` are the two new-issue settings (`GET /api/v1/settings/new-issue`).
+The route names the models and no endpoint and no credential, so any caller Dispatch admits may read it.
 
 `POST /api/v1/going/requests` takes a question and the project to ask it of, records the run and answers `201` with it; the answer itself arrives on `GET /api/v1/going/requests/{id}/stream` as server-sent events, each frame carrying `id:` its sequence, `event:` its name (`text`, `item`, `cut`, `changed`, `none`, `end`, `error`) and `data:` that frame's own JSON (`packages/contracts/src/going.ts` declares the vocabulary once, for this server and for the page that reads it).
 The two are separate requests because the server wraps every `POST` in its idempotency layer and that layer holds a whole answer rather than streaming it (Keyed writes, below), and because a deployment of more than one pod spreads two requests across pods:

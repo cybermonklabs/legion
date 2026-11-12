@@ -106,6 +106,10 @@ type testServerOptions struct {
 	// routes' own) is the deployment with no model configured, where a run is recorded and its
 	// stream carries the no-model-configured error.
 	answerer Answerer
+	// answerModel is the model the answerer was configured with, as the capability route names
+	// it; decider is the decision model, nil (every test but the capability's own) for none.
+	answerModel string
+	decider     *Decider
 	// files is the uploaded-file store; nil keeps every upload's bytes in Postgres, as a
 	// deployment with no bucket does.
 	files files.Store
@@ -258,6 +262,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		AgentStream:            options.agentStream,
 		Embedder:               options.embedder,
 		Answerer:               options.answerer,
+		AnswerModel:            options.answerModel,
+		Decider:                options.decider,
 		Files:                  options.files,
 		DashboardEntry:         options.dashboardEntry,
 	})

@@ -228,6 +228,10 @@ type bootConfig struct {
 	// or DISPATCH_CHAT_* settings of the place it names), checked whole; an empty Place is no
 	// model configured, which the server says at boot rather than refusing to start.
 	Answerer answererConfig
+	// Decision is the decision model the command bar asks before it answers
+	// (DISPATCH_DECISION_MODEL, _ENDPOINT and _TOKEN_FILE), checked whole; newDecider builds it,
+	// or none, which the server says at boot rather than refusing to start.
+	Decision decisionConfig
 }
 
 func main() {
@@ -485,6 +489,9 @@ func main() {
 		slog.Error("dispatch: build the answerer", "error", err)
 		os.Exit(1)
 	}
+	// decider is nil where the deployment configured no decision model or named one the
+	// measurement does not hold, which newDecider logs: the server boots and decides nothing.
+	decider := newDecider(boot.Decision)
 
 	built := routes.AppContextOptions{
 		SigningKey:     signingKey,
@@ -514,7 +521,9 @@ func main() {
 	// field would read as a model configured, and the capability route would say so.
 	if answerer != nil {
 		built.Answerer = answerer
+		built.AnswerModel = boot.Answerer.Model
 	}
+	built.Decider = decider
 	brokerTokens, err := brokerTokenVerifier(boot, database, serverURL)
 	if err != nil {
 		slog.Error("dispatch: build the broker access-token verifier", "error", err)
@@ -1228,6 +1237,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, err
 	}
 	boot.Answerer, err = resolveAnswerer(env, boot.Embedder.Place)
+	if err != nil {
+		return bootConfig{}, err
+	}
+	boot.Decision, err = resolveDecisionModel(env)
 	if err != nil {
 		return bootConfig{}, err
 	}

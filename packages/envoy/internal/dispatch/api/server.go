@@ -94,10 +94,19 @@ type Deps struct {
 	// Answerer answers one question from what Dispatch holds (INFRA-1279), for the three going
 	// routes; nil means the deployment configured no model, where a run is still recorded and
 	// its stream carries the error frame contracts.GoingErrorNoModelConfigured, and the
-	// capability route says no model is configured.
+	// capability route says no model is configured. Its Blocks is the capability's answer.blocks.
 	Answerer Answerer
-	Envoy    *envoy.Client
-	Events   *events.Broker
+	// AnswerModel is the model the Answerer was configured with, as the capability route names
+	// it (cmd/dispatch: DISPATCH_AZURE_CHAT_DEPLOYMENT or DISPATCH_CHAT_MODEL); empty with no
+	// Answerer.
+	AnswerModel string
+	// Decider is the decision model, a measured one (NewDecider), or nil where the deployment
+	// configured none or named a model the record does not hold (cmd/dispatch:
+	// DISPATCH_DECISION_MODEL and its endpoint and token file), which the capability route
+	// reports unset.
+	Decider *Decider
+	Envoy   *envoy.Client
+	Events  *events.Broker
 	// GitHub calls the GitHub App API for architecture-source access checks and the web app's
 	// GitHub reads; nil is the "no app credentials yet" state and answers ErrNoAppKey.
 	GitHub *githubapp.Client
@@ -202,7 +211,12 @@ type DepsInput struct {
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is
 	// configured. See Deps.Answerer; cmd/dispatch builds it (newAnswerer).
 	Answerer Answerer
-	Events   *events.Broker
+	// AnswerModel is the model the Answerer was configured with; see Deps.AnswerModel.
+	AnswerModel string
+	// Decider is the measured decision model, nil for none; see Deps.Decider. cmd/dispatch
+	// builds it (newDecider).
+	Decider *Decider
+	Events  *events.Broker
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
 	// GitHubAPIBase overrides the GitHub API origin (DISPATCH_GITHUB_API_BASE).
@@ -307,6 +321,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
 		Answerer:               input.Answerer,
+		AnswerModel:            strings.TrimSpace(input.AnswerModel),
+		Decider:                input.Decider,
 		Envoy:                  envoyClient,
 		Events:                 input.Events,
 		GitHub:                 github,

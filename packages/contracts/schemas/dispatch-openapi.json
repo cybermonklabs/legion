@@ -4542,7 +4542,7 @@
     },
     "/api/v1/going/capability": {
       "get": {
-        "description": "Whether this deployment has a text model configured: {model_configured} and nothing else, so no endpoint, deployment name or credential can appear in it. Any caller Dispatch admits reads it, a pod's own agent token included.",
+        "description": "What the command bar can do on this deployment, each part apart: {answer: {configured, model, blocks}, decision: {configured, model, reachable}, session: {configured}, label: {configured}}. answer is the model that answers, named as configured, its blocks true once it accepted a structured reply, false once its service refused one, \"unknown\" before either; decision is the measured decision model, a name the committed record does not hold reading unset, and reachable whether its token file reads now; session and label are the two new-issue settings. It calls no model, and names no endpoint and no credential. Any caller Dispatch admits reads it, a pod's own agent token included.",
         "operationId": "getApiV1GoingCapability",
         "parameters": [
           {
@@ -17783,14 +17783,59 @@
         ],
         "type": "object"
       },
-      "GoingCapability": {
+      "GoingAnswerCapability": {
         "properties": {
-          "model_configured": {
+          "blocks": {
+            "$ref": "#/components/schemas/GoingBlocks"
+          },
+          "configured": {
             "type": "boolean"
+          },
+          "model": {
+            "type": "string"
           }
         },
         "required": [
-          "model_configured"
+          "configured",
+          "model",
+          "blocks"
+        ],
+        "type": "object"
+      },
+      "GoingBlocks": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "enum": [
+              "unknown"
+            ],
+            "type": "string"
+          }
+        ],
+        "description": "true once the model accepted a structured reply, false once its service refused one, \"unknown\" while neither has happened or with no answering model"
+      },
+      "GoingCapability": {
+        "properties": {
+          "answer": {
+            "$ref": "#/components/schemas/GoingAnswerCapability"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/GoingDecisionCapability"
+          },
+          "label": {
+            "$ref": "#/components/schemas/GoingSettingCapability"
+          },
+          "session": {
+            "$ref": "#/components/schemas/GoingSettingCapability"
+          }
+        },
+        "required": [
+          "answer",
+          "decision",
+          "session",
+          "label"
         ],
         "type": "object"
       },
@@ -17835,6 +17880,25 @@
           "project",
           "issue",
           "block"
+        ],
+        "type": "object"
+      },
+      "GoingDecisionCapability": {
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "string"
+          },
+          "reachable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "configured",
+          "model",
+          "reachable"
         ],
         "type": "object"
       },
@@ -18098,6 +18162,17 @@
           "total",
           "limit",
           "offset"
+        ],
+        "type": "object"
+      },
+      "GoingSettingCapability": {
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "configured"
         ],
         "type": "object"
       },

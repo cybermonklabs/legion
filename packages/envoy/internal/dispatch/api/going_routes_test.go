@@ -27,6 +27,8 @@ type fakeAnswerer struct {
 	// searches, when set, is what the run searches for before it emits anything; the hits and
 	// their bodies are kept for the test to read.
 	searches string
+	// blocks and known are what Blocks reports, as a process's model has learned it.
+	blocks, known bool
 
 	mu     sync.Mutex
 	asked  []string
@@ -64,6 +66,10 @@ func (f *fakeAnswerer) read() ([]string, []going.Hit, map[string]string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.asked, f.hits, f.bodies
+}
+
+func (f *fakeAnswerer) Blocks() (blocks, known bool) {
+	return f.blocks, f.known
 }
 
 // goingRoutesRig is the server the route tests drive: the mux, the record behind it (read
@@ -539,29 +545,6 @@ func TestGoingStreamEndsARunWhosePodIsGone(t *testing.T) {
 	}
 }
 
-// The capability route says whether a model is configured and nothing else, to any caller
-// Dispatch admits - a pod holding nothing but an agent token included - so no endpoint,
-// deployment name or credential can be read from it.
-func TestGoingCapabilitySaysWhetherAModelIsConfigured(t *testing.T) {
-	none, _, _, _ := newRegisteredTestServer(t, testServerOptions{})
-	response := sessionRequest(t, none, http.MethodGet, "/api/v1/going/capability", nil)
-	if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != `{"model_configured":false}` {
-		t.Fatalf("with no model: status=%d body=%s, want {\"model_configured\":false}", response.Code, response.Body.String())
-	}
-
-	configured, _, _, _ := newRegisteredTestServer(t, testServerOptions{answerer: &fakeAnswerer{}})
-	answered := sessionRequest(t, configured, http.MethodGet, "/api/v1/going/capability", nil)
-	if answered.Code != http.StatusOK || strings.TrimSpace(answered.Body.String()) != `{"model_configured":true}` {
-		t.Fatalf("with a model: status=%d body=%s, want {\"model_configured\":true}", answered.Code, answered.Body.String())
-	}
-	if body := answered.Body.String(); strings.Contains(body, "fake:model") || strings.Contains(body, "identity") {
-		t.Fatalf("the capability names a configured value: %s", body)
-	}
-	if unauthenticated := dispatchRequest(t, configured, http.MethodGet, "/api/v1/going/capability", nil, ""); unauthenticated.Code != http.StatusUnauthorized {
-		t.Fatalf("with no credential: status=%d body=%s, want 401", unauthenticated.Code, unauthenticated.Body.String())
-	}
-}
-
 // With no model configured the question is recorded all the same and its stream carries the
 // error that says so, which is how a reader learns it: the POST answers exactly as it does with
 // a model, since nothing of this route's own status says what the deployment configured.
@@ -727,6 +710,8 @@ func (c *cursorAnswerer) Run(ctx context.Context, _ going.Request, emit func(goi
 	}
 	return emit(going.Fault(contracts.GoingErrorAnswerFailed))
 }
+
+func (c *cursorAnswerer) Blocks() (blocks, known bool) { return false, false }
 
 // The run the POST detaches reads the store on a connection mark of its own and never on the
 // request's. The request's mark is still in use when the run begins: keyedWrites settles the

@@ -1175,7 +1175,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Whether this deployment has a text model configured: {model_configured} and nothing else, so no endpoint, deployment name or credential can appear in it. Any caller Dispatch admits reads it, a pod's own agent token included. */
+    /** @description What the command bar can do on this deployment, each part apart: {answer: {configured, model, blocks}, decision: {configured, model, reachable}, session: {configured}, label: {configured}}. answer is the model that answers, named as configured, its blocks true once it accepted a structured reply, false once its service refused one, "unknown" before either; decision is the measured decision model, a name the committed record does not hold reading unset, and reachable whether its token file reads now; session and label are the two new-issue settings. It calls no model, and names no endpoint and no credential. Any caller Dispatch admits reads it, a pod's own agent token included. */
     get: operations["getApiV1GoingCapability"];
     put?: never;
     post?: never;
@@ -4255,8 +4255,18 @@ export interface components {
       request: components["schemas"]["ToolField"][] | null;
       routes: components["schemas"]["GoingRoute"][] | null;
     };
+    GoingAnswerCapability: {
+      blocks: components["schemas"]["GoingBlocks"];
+      configured: boolean;
+      model: string;
+    };
+    /** @description true once the model accepted a structured reply, false once its service refused one, "unknown" while neither has happened or with no answering model */
+    GoingBlocks: boolean | "unknown";
     GoingCapability: {
-      model_configured: boolean;
+      answer: components["schemas"]["GoingAnswerCapability"];
+      decision: components["schemas"]["GoingDecisionCapability"];
+      label: components["schemas"]["GoingSettingCapability"];
+      session: components["schemas"]["GoingSettingCapability"];
     };
     GoingCatalogueBody: {
       actions: components["schemas"]["GoingAction"][] | null;
@@ -4267,6 +4277,11 @@ export interface components {
       issue: string;
       path: string;
       project: string;
+    };
+    GoingDecisionCapability: {
+      configured: boolean;
+      model: string;
+      reachable: boolean;
     };
     GoingRequest: {
       author: components["schemas"]["Actor"];
@@ -4330,6 +4345,9 @@ export interface components {
       offset: number;
       rows: components["schemas"]["GoingRun"][] | null;
       total: number;
+    };
+    GoingSettingCapability: {
+      configured: boolean;
     };
     GoingWriteOutcome: {
       code: string;
@@ -12847,9 +12865,12 @@ export type ErrorBody = components["schemas"]["ErrorBody"];
 export type Event = components["schemas"]["Event"];
 export type ExternalLink = components["schemas"]["ExternalLink"];
 export type GoingAction = components["schemas"]["GoingAction"];
+export type GoingAnswerCapability = components["schemas"]["GoingAnswerCapability"];
+export type GoingBlocks = components["schemas"]["GoingBlocks"];
 export type GoingCapability = components["schemas"]["GoingCapability"];
 export type GoingCatalogueBody = components["schemas"]["GoingCatalogueBody"];
 export type GoingContext = components["schemas"]["GoingContext"];
+export type GoingDecisionCapability = components["schemas"]["GoingDecisionCapability"];
 export type GoingRequest = components["schemas"]["GoingRequest"];
 export type GoingRoute = components["schemas"]["GoingRoute"];
 export type GoingRun = components["schemas"]["GoingRun"];
@@ -12857,6 +12878,7 @@ export type GoingRunHit = components["schemas"]["GoingRunHit"];
 export type GoingRunUndo = components["schemas"]["GoingRunUndo"];
 export type GoingRunWrite = components["schemas"]["GoingRunWrite"];
 export type GoingRunsPage = components["schemas"]["GoingRunsPage"];
+export type GoingSettingCapability = components["schemas"]["GoingSettingCapability"];
 export type GoingWriteOutcome = components["schemas"]["GoingWriteOutcome"];
 export type GraphEdge = components["schemas"]["GraphEdge"];
 export type GraphExcerpt = components["schemas"]["GraphExcerpt"];

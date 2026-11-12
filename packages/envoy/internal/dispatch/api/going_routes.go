@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/swaggest/jsonschema-go"
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -56,15 +57,18 @@ const goingStreamPoll = 200 * time.Millisecond
 // which is the time this reader needs to end the run itself.
 const goingStreamGrace = 5 * time.Second
 
-// Answerer generates one answer from what Dispatch holds. It is declared here, with the one
-// method the server calls, rather than taken as *going.Answerer, so a test injects a fake
-// through Deps without an HTTP service behind it; nil is a deployment with no model configured
+// Answerer generates one answer from what Dispatch holds. It is declared here, with the methods
+// the server calls, rather than taken as *going.Answerer, so a test injects a fake through Deps
+// without an HTTP service behind it; nil is a deployment with no model configured
 // (cmd/dispatch: DISPATCH_ANSWERER unset), where a run is still recorded and its stream carries
 // the error frame contracts.GoingErrorNoModelConfigured.
 type Answerer interface {
 	// Run answers the request, handing emit each frame of the stream in order with exactly one
 	// terminal frame last; the error it answers is emit's own.
 	Run(ctx context.Context, request going.Request, emit func(going.Event) error) error
+	// Blocks reports whether this process's model answers with blocks, and whether that is
+	// known yet: the capability route's answer.blocks (going.Answerer.Blocks).
+	Blocks() (blocks, known bool)
 }
 
 // createGoingRequestInput is one question as a caller asks it: the words, and the project they
@@ -74,11 +78,72 @@ type createGoingRequestInput struct {
 	Project string `json:"project"`
 }
 
-// goingCapability is what the capability route answers, and all it answers: whether a model is
-// configured. No endpoint, deployment name or credential has a field here, so none can appear
-// in the answer.
+// goingCapability is what the capability route answers, and all it answers: each of the four
+// things the command bar needs, apart, so the bar can tell a deployment that answers and cannot
+// decide from one that does neither (R8). The models are named, since a name is what an operator
+// and the production check compare with the record; no endpoint and no credential has a field
+// here, so none can appear in the answer.
 type goingCapability struct {
-	ModelConfigured bool `json:"model_configured"`
+	Answer   goingAnswerCapability   `json:"answer"`
+	Decision goingDecisionCapability `json:"decision"`
+	Session  goingSettingCapability  `json:"session"`
+	Label    goingSettingCapability  `json:"label"`
+}
+
+// goingAnswerCapability is the answering model: whether one is configured, the model it was
+// configured with ("" with none), and whether it answers with blocks.
+type goingAnswerCapability struct {
+	Configured bool        `json:"configured"`
+	Model      string      `json:"model"`
+	Blocks     goingBlocks `json:"blocks"`
+}
+
+// goingDecisionCapability is the decision model: whether a measured one is configured (a name
+// the record does not hold is none, R11), its name ("" with none), and whether a call to it could
+// be made now (Decider.Reachable; false with none).
+type goingDecisionCapability struct {
+	Configured bool   `json:"configured"`
+	Model      string `json:"model"`
+	Reachable  bool   `json:"reachable"`
+}
+
+// goingSettingCapability is whether one of the new-issue settings is set, as the bar reads it
+// now (configuredNewIssue); its value is GET /api/v1/settings/new-issue's.
+type goingSettingCapability struct {
+	Configured bool `json:"configured"`
+}
+
+// goingBlocks is answer.blocks: true once a structured reply was accepted, false once the model
+// service refused the structured request, and "unknown" while neither has happened, which is also
+// what a deployment with no answering model reads (going.Answerer.Blocks, decision 20).
+type goingBlocks struct {
+	blocks, known bool
+}
+
+// MarshalJSON writes the three states as the document declares them (JSONSchema).
+func (b goingBlocks) MarshalJSON() ([]byte, error) {
+	switch {
+	case !b.known:
+		return []byte(`"unknown"`), nil
+	case b.blocks:
+		return []byte("true"), nil
+	}
+	return []byte("false"), nil
+}
+
+// JSONSchema is answer.blocks as the OpenAPI document declares it: a boolean or the string
+// "unknown", which no Go field type reflects into on its own.
+func (goingBlocks) JSONSchema() (jsonschema.Schema, error) {
+	known := jsonschema.Schema{}
+	known.AddType(jsonschema.Boolean)
+	unknown := jsonschema.Schema{}
+	unknown.AddType(jsonschema.String)
+	unknown.WithEnum("unknown")
+	schema := jsonschema.Schema{}
+	schema.WithDescription(`true once the model accepted a structured reply, false once its ` +
+		`service refused one, "unknown" while neither has happened or with no answering model`)
+	schema.WithAnyOf(known.ToSchemaOrBool(), unknown.ToSchemaOrBool())
+	return schema, nil
 }
 
 // createGoingRequest records one question and starts its answer: POST /api/v1/going/requests. It
@@ -413,13 +478,25 @@ func writeGoingRequestNotFound(w http.ResponseWriter) {
 	writeError(w, codeGoingRequestNotFound, http.StatusNotFound, "no answer run of that id is yours to read")
 }
 
-// getGoingCapability answers whether this deployment has a model configured, and nothing else:
+// getGoingCapability answers what the command bar can do here, each part apart:
 // GET /api/v1/going/capability. Any caller Dispatch admits may read it, which is why the answer
-// names no endpoint, no deployment and no credential - a reader learns that a question can be
-// asked, never where it is answered.
+// names the models and nothing of where they are served - no endpoint and no credential. It calls
+// no model: answer.blocks is what this process's runs have learned so far, and
+// decision.reachable one read of the decision model's token file.
 func (s *server) getGoingCapability(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	WriteJSON(w, http.StatusOK, goingCapability{ModelConfigured: s.deps.Answerer != nil})
+	var capability goingCapability
+	if s.deps.Answerer != nil {
+		blocks, known := s.deps.Answerer.Blocks()
+		capability.Answer = goingAnswerCapability{Configured: true, Model: s.deps.AnswerModel, Blocks: goingBlocks{blocks: blocks, known: known}}
+	}
+	if decider := s.deps.Decider; decider != nil {
+		capability.Decision = goingDecisionCapability{Configured: true, Model: decider.Model(), Reachable: decider.Reachable(r.Context())}
+	}
+	newIssue := s.configuredNewIssue()
+	capability.Session.Configured = newIssue.Session != ""
+	capability.Label.Configured = newIssue.Label != ""
+	WriteJSON(w, http.StatusOK, capability)
 }
