@@ -4538,7 +4538,7 @@ Its pod comes back at the next start of a claim of that issue, and that start bu
 There are three such starts.
 An operator's `legion claims retry` of a failed claim resumes the role's recorded session from the session database.
 The same retry with `--fresh-session` forgets that session first and starts a new one.
-A start the daemon queues for a phase worker itself does as the first does: a phase start, a backward move, or a retry after the architect's `retry_or_escalate`.
+A start the daemon queues for a phase worker itself does as the first does: a phase start, a backward move, a retry after the architect's `retry_or_escalate`, and that same retry made by a `todo` written on a held root, which releases the hold and starts the held phase's worker.
 Such a release arms no backstop, and it leaves the issue's wake marks and the open backstops of an earlier release as it found them.
 
 What the saved bundle holds is every visible commit the remote does not already hold, on any head, the working copy's own change, and each local bookmark that points at such a commit.
