@@ -1,10 +1,10 @@
 // Package leakguardtest writes the stand-in shared public leak checks the guard's own tests and
 // the tests of everything that drives the guard are run against. The real check is a script no
-// clone of this repository holds — a pod installs it from a private repository — and the guard
-// refuses a write it can run no check for, so every test that reaches the guard carries a
-// stand-in of its own: a shell script under the real check's name, which reads its standard input
-// as the real one does, so nothing is left in a pipe when it exits, and whose exit status is the
-// verdict.
+// clone of this repository holds — the daemon reads it from a private repository and the pod's
+// launcher installs what the daemon served — and the guard refuses a write it can run no check
+// for, so every test that reaches the guard carries a stand-in of its own: a shell script under
+// the real check's name, which reads its standard input as the real one does, so nothing is left
+// in a pipe when it exits, and whose exit status is the verdict.
 //
 // What a caller needs of that stand-in differs, so the shapes are offered rather than flattened
 // into one: Passes, Refuses and CannotFinish are the plain ones, Refusing is a refusal whose
