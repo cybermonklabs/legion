@@ -46,12 +46,16 @@ const filterTrigger = (active: boolean) =>
 export function ColumnFilter<TData>({
   column,
   counts,
+  noun,
   open,
   onOpenChange,
   unloaded,
 }: {
   column: Column<TData, unknown>;
   counts: ReadonlyMap<string, number>;
+  /** What one row of this table is, as `IssueTablePager` takes it: this menu says how many
+   *  rows each value holds, and a table of priorities holds priorities. */
+  noun: { readonly one: string; readonly many: string };
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** The values whose rows are not loaded yet: each says `load` rather than count them as
@@ -106,7 +110,7 @@ export function ColumnFilter<TData>({
       optionDetailLabel={(value) =>
         unloaded.includes(value)
           ? "not loaded"
-          : `${counts.get(value) ?? 0} ${(counts.get(value) ?? 0) === 1 ? "issue" : "issues"}`
+          : `${counts.get(value) ?? 0} ${(counts.get(value) ?? 0) === 1 ? noun.one : noun.many}`
       }
       optionLabel={show}
       options={options}

@@ -31,6 +31,7 @@ export function TableHeaderCell<TData>({
   counts,
   dragColumn,
   header,
+  noun,
   openFilter,
   order,
   setDragColumn,
@@ -43,6 +44,8 @@ export function TableHeaderCell<TData>({
   counts: ReadonlyMap<string, number>;
   dragColumn: string | undefined;
   header: Header<TData, unknown>;
+  /** What one row of this table is, which this cell's filter menu counts in. */
+  noun: { readonly one: string; readonly many: string };
   openFilter: string | undefined;
   /** The columns in the order they are shown, which a drop rewrites. */
   order: readonly string[];
@@ -106,6 +109,7 @@ export function TableHeaderCell<TData>({
           <ColumnFilter
             column={column}
             counts={counts}
+            noun={noun}
             onOpenChange={(open) => setOpenFilter(open ? column.id : undefined)}
             open={openFilter === column.id}
             unloaded={unloaded}

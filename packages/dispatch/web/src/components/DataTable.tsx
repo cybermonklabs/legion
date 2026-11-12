@@ -357,6 +357,7 @@ export function DataTable<Row>({
                       counts={header.column.id === openFilter ? filterCounts : EMPTY_COUNTS}
                       dragColumn={dragColumn}
                       header={header}
+                      noun={noun}
                       key={header.id}
                       openFilter={openFilter}
                       order={columnOrder}
