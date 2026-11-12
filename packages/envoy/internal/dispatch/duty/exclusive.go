@@ -68,7 +68,10 @@ const (
 	// a roll labels the embeddings rows stored before migration 20261109120000 with the project
 	// each belongs to, since a second would walk the same keyset behind the first's commits. It is
 	// the one listed name that is no loop of a cadence, so its connection goes back for good once
-	// the labelling is over (store.LeasePoolSize says why it is counted like any other caller).
+	// the labelling is over. It is counted like any other caller all the same, because the pool is
+	// sized for the names that can be inside Exclusive at once and this pass is inside it for the
+	// whole of a roll's first process: a name left out would take a connection another listed pass
+	// counted on.
 	EmbeddingProjectKeyFillLease = "embeddings-project-key-fill"
 )
 
