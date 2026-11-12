@@ -46,10 +46,11 @@ function predictComponents(input: IssueComponentsInput): IssueComponents | undef
 /**
  * The one way the SPA writes an issue's component attachment (`PATCH /issues/{key}`
  * `components`), from the Architecture pane's Unassigned and Not architectural lists and from
- * the issue header's editor: the new attachment lands optimistically in the issue detail (when
- * that cache exists) and in the project's architecture tree (the issue moves between lists and
- * rows, the counts with it — `predictTree`), rolls back on failure, and both refetch once the
- * server has answered so descendants that inherit the change appear too.
+ * the issue header's editor: the new attachment lands in the issue detail (when that cache
+ * exists) and in the project's architecture tree (the issue moves between lists and rows, the
+ * counts with it — `predictTree`), the store shows it there again over each answer that lands
+ * while the write is live (R7), it rolls back on failure, and both refetch once the server has
+ * answered so descendants that inherit the change appear too.
  */
 export function useIssueComponents(
   issue: ArchitectureTreeIssueRef & { project: string }
@@ -64,27 +65,28 @@ export function useIssueComponents(
     // One write to the issue, in press order with every other (`issue:<KEY>`).
     target: () => `issue:${issue.key}`,
     request: (input: IssueComponentsInput) => issuePatchRequest(issue.key, { components: input }),
-    onMutate: async (input): Promise<Snapshot> => {
+    onMutate: async (): Promise<Snapshot> => {
       await Promise.all([
         queryClient.cancelQueries({ queryKey: detailKey }),
         queryClient.cancelQueries({ queryKey: treeKey }),
       ]);
-      const snapshot: Snapshot = {
+      // What a refusal puts back, read before the press shows its change.
+      return {
         details: queryClient.getQueryData<IssueDetails>(detailKey),
         tree: queryClient.getQueryData<ArchitectureTree>(treeKey),
       };
+    },
+    /** The attachment this press shows: the issue's own `components`, where the server's answer
+     *  can be predicted, and the tree with the issue moved to where it now belongs. Both are
+     *  read off the cache as it stands, so an answer this is shown over again carries the move. */
+    shows: (input) => (shown) => {
       const components = predictComponents(input);
       if (components !== undefined) {
-        queryClient.setQueryData<IssueDetails>(detailKey, (current) =>
-          current === undefined ? undefined : { ...current, components }
-        );
+        shown.on<IssueDetails>(detailKey, (current) => ({ ...current, components }));
       }
-      queryClient.setQueryData<ArchitectureTree>(treeKey, (current) =>
-        current === undefined
-          ? undefined
-          : predictTree(current, issue, input, new Date().toISOString())
+      shown.on<ArchitectureTree>(treeKey, (current) =>
+        predictTree(current, issue, input, new Date().toISOString())
       );
-      return snapshot;
     },
     onError: (_error, _input, snapshot) => {
       if (snapshot?.details !== undefined) {

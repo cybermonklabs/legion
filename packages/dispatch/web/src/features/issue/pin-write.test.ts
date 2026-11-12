@@ -3,7 +3,8 @@ import { QueryClient } from "@tanstack/react-query";
 
 import { settle } from "../../__tests__/fake-clock";
 import { ApiError, api, NetworkError } from "../../api/client";
-import type { UserIssueState } from "../../api/types";
+import { userStateQuery } from "../../api/queries";
+import type { UserIssueState, UserState } from "../../api/types";
 import { writesOf } from "../writes/write-store";
 import { writePin } from "./pin-write";
 import { pinnedItemMarker } from "./pins";
@@ -96,6 +97,43 @@ test("a pin Dispatch refuses as stale is written again over the row it answered 
       { dismissed: [pinnedItemMarker("ask:a")], seq: 1 },
       { dismissed: [pinnedItemMarker("ask:x"), pinnedItemMarker("ask:a")], seq: 8 },
     ]);
+  } finally {
+    writesOf(client).clear();
+    getMyState.mockRestore();
+    put.mockRestore();
+  }
+});
+
+// R7 of dispatch://INFRA-299: while the pin is live it shows its change again over each answer
+// that lands on the viewer's state. The change is a change to that state as it stands - the
+// item's marker in the issue's own `dismissed` list - so the answer's own reading of every other
+// issue, and of every other field of this one, arrives whole.
+test("a pin shows its change again over an answer to the viewer's state", async () => {
+  const client = signedIn("alice");
+  const getMyState = spyOn(api, "getMyState").mockResolvedValue({
+    "CORE-1": fresh,
+    "CORE-2": fresh,
+  });
+  // A pin the server never answers, so it stays live for the read below.
+  const put = spyOn(api, "putIssueState").mockImplementation(
+    () => Promise.withResolvers<UserIssueState>().promise
+  );
+  const dismissedOf = (issueKey: string) =>
+    client.getQueryData<UserState>(["user-state"])?.[issueKey]?.dismissed;
+  try {
+    await client.fetchQuery(userStateQuery());
+    writePin(client, "CORE-1", { id: "ask:a", op: "pin" });
+    await settle();
+    expect(dismissedOf("CORE-1")).toEqual([pinnedItemMarker("ask:a")]);
+
+    // The page reads the state again while the pin is out: the server has not taken it yet, and
+    // another device's read mark on CORE-2 comes with that answer.
+    getMyState.mockResolvedValue({ "CORE-1": fresh, "CORE-2": { ...fresh, last_read_seq: 9 } });
+    await client.refetchQueries({ queryKey: ["user-state"] });
+    await settle();
+
+    expect(dismissedOf("CORE-1")).toEqual([pinnedItemMarker("ask:a")]);
+    expect(client.getQueryData<UserState>(["user-state"])?.["CORE-2"]?.last_read_seq).toBe(9);
   } finally {
     writesOf(client).clear();
     getMyState.mockRestore();

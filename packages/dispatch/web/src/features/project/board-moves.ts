@@ -5,6 +5,7 @@ import { ApiError, issuePatchRequest } from "../../api/client";
 import { projectIssuesQueryKey } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import type { Shown } from "../writes/write-store";
 import { type IssueStatus, moveIssue, moveIssueToLane, type PriorityLane } from "./board-model";
 
 export const staleBoardMessage =
@@ -12,19 +13,51 @@ export const staleBoardMessage =
 
 const everyIssue = () => true;
 
+/** Where a card was dropped: into a column of the plain board, or into one lane's cell of a
+ *  board grouped into swimlanes, at a place counted among the cards the board renders. */
+type Drop =
+  | { readonly kind: "column"; readonly status: IssueStatus; readonly index: number }
+  | {
+      readonly kind: "lane";
+      readonly status: IssueStatus;
+      readonly lane: PriorityLane;
+      readonly index: number;
+    };
+
+/** One move as its write holds it: the card, the drop that placed it - which the write shows
+ *  again over each answer - and the PATCH body naming the neighbours it was dropped between. */
+interface BoardMove {
+  readonly drop: Drop;
+  readonly input: UpdateIssueInput;
+  readonly key: string;
+}
+
+/** `key` placed where `drop` put it among `issues`: the list that placement leaves and the PATCH
+ *  body naming the visible neighbours, or undefined when the card is not there or would not
+ *  move. */
+function placeDrop(
+  issues: readonly IssueSummary[],
+  key: string,
+  drop: Drop,
+  isVisible: (issue: IssueSummary) => boolean
+): { issues: IssueSummary[]; input: UpdateIssueInput } | undefined {
+  return drop.kind === "lane"
+    ? moveIssueToLane(issues, key, drop.status, drop.lane, drop.index, isVisible)
+    : moveIssue(issues, key, drop.status, drop.index, isVisible);
+}
+
 /**
  * The one path every board move takes - pointer, touch and keyboard drops alike. `moveCard`
- * places the card optimistically, sends the PATCH naming the visible neighbours, and refetches
- * the project list once the server has answered. Moves on one board are serialised through a
+ * places the card where it was dropped, sends the PATCH naming the visible neighbours, and
+ * refetches the project list once the server has answered. The placement is the write's own
+ * change (`WriteSpec.shows`): the drop's rule run against the list as it stands, so the store
+ * shows it again over each answer that lands on that list while the move is unanswered (R7 of
+ * dispatch://INFRA-299) - the card keeps the place the person dropped it at and every other
+ * card's move the answer carries arrives with it. Moves on one board are serialised through a
  * single mutation scope, so a second drop computes its neighbours from the first drop's
- * optimistic state and never overtakes it on the wire. A list the server answered before the
- * move never lands over the optimistic placement: a fetch already on the wire is cancelled at the
- * optimistic write, and one that starts while a move is unanswered waits for it, as it does for
- * every other write of an issue: the move is one write of the store on its issue's line
- * (`issue:<KEY>`), and a project's list holds its fetch while any write of one of its issues may
- * still land (`projectIssuesQuery`, `Writes.settled`). Any failure rolls the board back,
- * refetches it, and says so: a stale rank (`RANK_INPUT`, the neighbours moved under the drag)
- * gets `staleBoardMessage`; anything else the server's message.
+ * placement and never overtakes it on the wire. Any failure rolls the board back, refetches it,
+ * and says so: a stale rank (`RANK_INPUT`, the neighbours moved under the drag) gets
+ * `staleBoardMessage`; anything else the server's message.
  *
  * With filters active, `labels` names the query the board actually renders (the same key the
  * List shares), so the optimistic write, rollback and refetch hit the list on screen; a
@@ -50,35 +83,49 @@ export function useBoardMoves(
 } {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string>();
+  const queryKey = projectIssuesQueryKey(project, labels);
   // The board says why a move was refused, over the card it rolled back. A move is one write to
   // its issue, so it goes in press order with every other write to that issue (`issue:<KEY>`) -
   // the header's status, its fields, a components save.
   const patch = useKeyedWrite({
     inline: true,
-    label: ({ key }: { input: UpdateIssueInput; key: string }) => `${key} moved on the board`,
+    label: ({ key }: BoardMove) => `${key} moved on the board`,
     target: ({ key }) => `issue:${key}`,
     request: ({ input, key }) => issuePatchRequest(key, input),
     scope: { id: `board:${project}` },
+    /** The drop itself, as a change to the list as it stands: the placement rule run against
+     *  whatever rows the cache holds, so an answer this is shown over again leaves the card
+     *  where the person dropped it and keeps every other card's move it brought. */
+    shows:
+      ({ drop, key }) =>
+      (shown: Shown) => {
+        shown.on<IssueSummary[]>(
+          queryKey,
+          (current) => placeDrop(current, key, drop, isVisible)?.issues ?? current
+        );
+      },
   });
   const { mutateAsync } = patch;
-  const queryKey = projectIssuesQueryKey(project, labels);
-  /** Commits an already-computed move: optimistic write, PATCH, rollback-and-refetch on
+  /** Commits one drop: the card placed where it was dropped, the PATCH, rollback-and-refetch on
    *  failure, refetch on success - the one tail `moveCard` and `moveCardToLane` share. */
   const commit = useCallback(
-    async (
-      key: string,
-      moved: { issues: IssueSummary[]; input: UpdateIssueInput } | undefined,
-      previous: IssueSummary[]
-    ) => {
+    async (key: string, drop: Drop) => {
+      const previous = queryClient.getQueryData<IssueSummary[]>(queryKey);
+      if (previous === undefined) {
+        return;
+      }
+      const moved = placeDrop(previous, key, drop, isVisible);
       if (moved === undefined) {
         return;
       }
-      // Not awaited: the cancel takes effect synchronously, and the write must land in this
-      // tick so a second move computes from it. The refetch below restores what it drops.
+      // Neither awaited: the cancel takes effect synchronously, and the card must be where it
+      // was dropped in this tick - the board's own scope holds a second drop's write until the
+      // first answers, and the store shows a write's change from its turn on. The refetch below
+      // restores what the cancel drops.
       void queryClient.cancelQueries({ queryKey, exact: true });
       queryClient.setQueryData(queryKey, moved.issues);
       try {
-        await mutateAsync({ input: moved.input, key });
+        await mutateAsync({ drop, input: moved.input, key });
         setError(undefined);
         if (labels.length > 0) {
           await queryClient.invalidateQueries({ queryKey: projectIssuesQueryKey(project, []) });
@@ -96,40 +143,22 @@ export function useBoardMoves(
         await queryClient.invalidateQueries({ queryKey });
       }
     },
-    [labels, mutateAsync, project, queryClient, queryKey]
+    [isVisible, labels, mutateAsync, project, queryClient, queryKey]
   );
   const moveCard = useCallback(
-    async (key: string, targetStatus: IssueStatus, insertionIndex: number) => {
-      const previous = queryClient.getQueryData<IssueSummary[]>(queryKey);
-      if (previous === undefined) {
-        return;
-      }
-      await commit(
-        key,
-        moveIssue(previous, key, targetStatus, insertionIndex, isVisible),
-        previous
-      );
-    },
-    [commit, isVisible, queryClient, queryKey]
+    (key: string, targetStatus: IssueStatus, insertionIndex: number) =>
+      commit(key, { index: insertionIndex, kind: "column", status: targetStatus }),
+    [commit]
   );
   const moveCardToLane = useCallback(
-    async (
-      key: string,
-      targetStatus: IssueStatus,
-      targetLane: PriorityLane,
-      insertionIndex: number
-    ) => {
-      const previous = queryClient.getQueryData<IssueSummary[]>(queryKey);
-      if (previous === undefined) {
-        return;
-      }
-      await commit(
-        key,
-        moveIssueToLane(previous, key, targetStatus, targetLane, insertionIndex, isVisible),
-        previous
-      );
-    },
-    [commit, isVisible, queryClient, queryKey]
+    (key: string, targetStatus: IssueStatus, targetLane: PriorityLane, insertionIndex: number) =>
+      commit(key, {
+        index: insertionIndex,
+        kind: "lane",
+        lane: targetLane,
+        status: targetStatus,
+      }),
+    [commit]
   );
   return { error, moveCard, moveCardToLane };
 }

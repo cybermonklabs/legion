@@ -18,6 +18,7 @@ import {
   useWriteSelection,
   useWrites,
   type Write,
+  type WriteChange,
   type Writes,
 } from "../writes/write-store";
 
@@ -63,7 +64,12 @@ interface Refused {
 
 interface CommentActionQueueOptions<TContext> {
   onError?(error: Error, input: CommentActionInput, context: TContext | undefined): void;
+  /** What a refusal puts back, read as the action goes out. */
   onMutate?(input: CommentActionInput): TContext | Promise<TContext>;
+  /** The change this action shows, named as the action goes out and held with the write
+   *  (`Writes.shows`), so the store shows it again over each answer that lands on a cache it
+   *  wrote until the action settles. */
+  shows?(input: CommentActionInput): WriteChange;
   /** The server took `input`; the next action waiting starts after this. */
   onSuccess?(input: CommentActionInput): void;
 }
@@ -181,6 +187,7 @@ export function useCommentActionQueue<TContext = undefined>({
   onError,
   onMutate,
   onSuccess,
+  shows,
 }: CommentActionQueueOptions<TContext>) {
   const writes = useWrites();
   const [refused, setRefused] = useState<Refused | undefined>(undefined);
@@ -212,8 +219,13 @@ export function useCommentActionQueue<TContext = undefined>({
           if (!begun) {
             await afterEarlierActions(writes, key);
             // What the card shows while the action is out is written as it goes out, so an
-            // action cleared behind a failure never showed anything to put back.
+            // action cleared behind a failure never showed anything to put back. From there the
+            // change is the store's: it shows it again over each answer that lands on a cache it
+            // wrote until this action settles (R7 of dispatch://INFRA-299).
             context = (await onMutate?.(input)) as TContext | undefined;
+            const change = shows?.(input);
+            const id = writes.idOf(key);
+            if (change !== undefined && id !== undefined) writes.shows(id, change);
             begun = true;
           }
           return api.send(request, bounds);

@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 
 import {
@@ -9,7 +9,6 @@ import {
   issueCommentRequest,
 } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
-import { rowQuery } from "../../api/row-query";
 import type { AnswerAskInput, Ask, AskAnswer, AskRead } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
@@ -134,7 +133,7 @@ export function useAskAnswerForm({
   const refreshInitialThread =
     initialThread !== undefined && hasPendingAskThreadInvalidation(queryClient, ask);
   const threadQuery = useQuery({
-    ...rowQuery<AskRead, Error>({
+    ...queryOptions<AskRead, Error>({
       queryKey: ["ask-thread", ask.id],
       queryFn: () => getAskThread(ask.id),
     }),

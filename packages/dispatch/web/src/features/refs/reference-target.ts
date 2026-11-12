@@ -13,7 +13,6 @@ import {
 import { ApiError, api, artifactVersionPath } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
 import { issueQuery } from "../../api/queries";
-import { rowQuery } from "../../api/row-query";
 import type {
   Artifact,
   ArtifactText,
@@ -126,17 +125,19 @@ export const artifactTextQuery = (id: string | undefined, version: number | unde
         : api.getArtifactVersion(id ?? "", version),
   });
 
-/** One ask with its thread, followers, and edits, waiting for that ask's own writes
- *  (`ask:<id>`: its answer, decline, hand-on, clarification and snooze). */
+/** One ask with its thread, followers, and edits. A live write of that ask (`ask:<id>`: its
+ *  answer, decline, hand-on, clarification and snooze) shows its change again over each answer
+ *  of this read. */
 export const askQuery = (id: string | undefined) =>
-  rowQuery({
+  queryOptions({
     queryKey: ["ask", id],
     queryFn: () => api.getAsk(id ?? ""),
   });
 
-/** One comment with its replies, waiting for that comment's own writes (`comment:<id>`). */
+/** One comment with its replies; a live write of that comment (`comment:<id>`) shows its change
+ *  again over each answer of this read. */
 export const commentQuery = (id: string | undefined) =>
-  rowQuery({
+  queryOptions({
     queryKey: ["comment", id],
     queryFn: () => api.getComment(id ?? ""),
   });

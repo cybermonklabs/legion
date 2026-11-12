@@ -149,26 +149,13 @@ export function useMarkAllRead({
       queryClient.setQueryData(threadsKey, rollback.threads);
       queryClient.setQueryData(countKey, rollback.count);
     },
-    onMutate: (input) => {
+    onMutate: () => {
       setRefused(false);
-      const threads = queryClient.getQueryData<MyRepliesResponse>(threadsKey);
-      const count = queryClient.getQueryData<number>(countKey);
-      const marked = new Set(
-        (threads?.rows ?? [])
-          .filter((thread) => marksThread(thread, input))
-          .map((thread) => rowId({ kind: "thread", thread }))
-      );
-      const through = input.read_through;
-      if (threads !== undefined && through !== undefined && through !== null) {
-        queryClient.setQueryData(threadsKey, applyMarkAll(threads, marked, through));
-      }
-      // The count every badge shares drops by what this press marks, clamped at zero: an
-      // unfiltered press marks every unread row and reads zero, and a filtered one takes away
-      // only its own rows rather than counting the rest of the Inbox away.
-      if (count !== undefined) {
-        queryClient.setQueryData(countKey, Math.max(0, count - marked.size));
-      }
-      return { count, threads };
+      // What a refusal puts back, read before the press shows its mark.
+      return {
+        count: queryClient.getQueryData<number>(countKey),
+        threads: queryClient.getQueryData<MyRepliesResponse>(threadsKey),
+      };
     },
     onSuccess: () => {
       // What the server marked is read again from the server: the list, its counts, and the
@@ -177,6 +164,29 @@ export function useMarkAllRead({
       void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
     },
     request: (input) => markInboxReadRequest(input),
+    /** The mark this press shows: every row of the list it marks drawn as read, and the count
+     *  every badge shares dropped by how many rows it marked. The rows are read off the cache as
+     *  it stands, so an answer this is shown over again marks the rows that answer carries; the
+     *  count holds no rows of its own, so it is lowered by what the press marked, which is the
+     *  press's own fact and not a count read before it. */
+    shows: (input) => {
+      const through = input.read_through;
+      const marked = (threads: MyRepliesResponse) =>
+        new Set(
+          (threads.rows ?? [])
+            .filter((thread) => marksThread(thread, input))
+            .map((thread) => rowId({ kind: "thread", thread }))
+        );
+      const pressed = queryClient.getQueryData<MyRepliesResponse>(threadsKey);
+      const marksCount = pressed === undefined ? 0 : marked(pressed).size;
+      return (shown) => {
+        if (through === undefined || through === null) return;
+        shown.on<MyRepliesResponse>(threadsKey, (threads) =>
+          applyMarkAll(threads, marked(threads), through)
+        );
+        shown.on<number>(countKey, (count) => Math.max(0, count - marksCount));
+      };
+    },
     target: () => "inbox:read",
   });
 

@@ -278,7 +278,7 @@ export function useInboxDismiss({
     },
     onMutate: async (input) => {
       setRefusal(undefined);
-      // A read already out can land after this press's own apply and put every row it took back
+      // A read already out can land after this press's own change and put every row it took back
       // on the page, where the refusal below would then draw each of them twice. Cancel the
       // reads this press writes first, as every optimistic write here does.
       await Promise.all(
@@ -287,39 +287,27 @@ export function useInboxDismiss({
         )
       );
       const body = inboxDismissBody(input);
+      // What a refusal puts back, and where each row stood, read before the press shows its
+      // change. A dismiss takes its rows out of the Inbox's own read; a restore takes them out
+      // of the Dismissed read's pages. The other view is read again when the answer lands, so a
+      // press never has to guess what the row looks like on the far side of it.
+      const pages = queryClient.getQueryData<DismissedPages>(dismissedKey);
+      const answer = queryClient.getQueryData<MyRepliesResponse>(inboxKey);
       const restoring = input.restore === true;
-      // A dismiss takes its rows out of the Inbox's own read; a restore takes them out of the
-      // Dismissed read's pages. The other view is read again when the answer lands, so a press
-      // never has to guess what the row looks like on the far side of it.
-      let inbox: readonly DroppedRow[] = [];
-      let dismissed: readonly (readonly DroppedRow[])[] = [];
-      if (restoring) {
-        const pages = queryClient.getQueryData<DismissedPages>(dismissedKey);
-        if (pages !== undefined) {
-          const applied = pages.pages.map((page) => withoutRows(page, body));
-          dismissed = applied.map(({ dropped }) => dropped);
-          queryClient.setQueryData<DismissedPages>(dismissedKey, {
-            ...pages,
-            pages: applied.map(({ answer }) => answer),
-          });
-        }
-      } else {
-        const answer = queryClient.getQueryData<MyRepliesResponse>(inboxKey);
-        if (answer !== undefined) {
-          const applied = withoutRows(answer, body);
-          inbox = applied.dropped;
-          queryClient.setQueryData(inboxKey, applied.answer);
-        }
-      }
+      const dismissed =
+        restoring && pages !== undefined
+          ? pages.pages.map((page) => withoutRows(page, body).dropped)
+          : [];
+      const inbox = !restoring && answer !== undefined ? withoutRows(answer, body).dropped : [];
       // The count every badge shares drops by the unread rows this press takes out, clamped at
       // zero. A restored thread was marked read by the dismiss that took it out, so putting it
       // back counts for nothing.
-      const count = queryClient.getQueryData<number>(countKey);
       const unread = inbox.filter(({ row }) => row.unread).length;
-      if (count !== undefined && unread > 0) {
-        queryClient.setQueryData(countKey, Math.max(0, count - unread));
-      }
-      return { count: unread > 0 ? count : undefined, dismissed, inbox };
+      return {
+        count: unread > 0 ? queryClient.getQueryData<number>(countKey) : undefined,
+        dismissed,
+        inbox,
+      };
     },
     onSuccess: () => {
       // What the server changed is read again from the server: both views, the counts, and the
@@ -336,10 +324,35 @@ export function useInboxDismiss({
         return;
       }
       // A press under the narrowing names no row, so the rows it settles are the ones its own
-      // optimistic apply took out of the view.
+      // change took out of the view.
       onSettled?.(droppedRows(context).map(({ row }) => rowId({ kind: "thread", thread: row })));
     },
     request: (input) => inboxDismissRequest(inboxDismissBody(input)),
+    /** The change this press shows: the rows it names out of the view it was made in, and the
+     *  count every badge shares less the unread ones among them. Each row is taken out of the
+     *  cache as it stands, by its id, so an answer this is shown over again loses the same rows
+     *  it names; the count holds no rows of its own, so it is lowered by what the press took,
+     *  which is the press's own fact. */
+    shows: (input) => {
+      const body = inboxDismissBody(input);
+      const restoring = input.restore === true;
+      const answer = queryClient.getQueryData<MyRepliesResponse>(inboxKey);
+      const unread =
+        restoring || answer === undefined
+          ? 0
+          : withoutRows(answer, body).dropped.filter(({ row }) => row.unread).length;
+      return (shown) => {
+        if (restoring) {
+          shown.on<DismissedPages>(dismissedKey, (pages) => ({
+            ...pages,
+            pages: pages.pages.map((page) => withoutRows(page, body).answer),
+          }));
+        } else {
+          shown.on<MyRepliesResponse>(inboxKey, (current) => withoutRows(current, body).answer);
+        }
+        if (unread > 0) shown.on<number>(countKey, (count) => Math.max(0, count - unread));
+      };
+    },
     target: () => "inbox:dismiss",
   });
 

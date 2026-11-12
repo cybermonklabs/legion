@@ -1,8 +1,10 @@
 import { INBOX_THREAD_KINDS } from "@legion/contracts";
 
 import {
+  infiniteQueryOptions,
   keepPreviousData,
   type QueryFunctionContext,
+  type QueryKey,
   queryOptions,
   replaceEqualDeep,
 } from "@tanstack/react-query";
@@ -12,7 +14,6 @@ import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
 import { api } from "./client";
 import { liveSocketFor } from "./live-socket";
-import { type RowQueryKey, rowInfiniteQuery, rowQuery } from "./row-query";
 import type {
   DeliveryLiveView,
   DeliveryMeasuresResponse,
@@ -34,11 +35,11 @@ export const whoAmIQuery = () =>
   });
 
 /** Every ask the viewer can see, as the Inbox lists them. The Inbox lists every project's
- *  issues, so its fetch waits for any write of an issue or an ask the store still holds
- *  (`api/row-query.ts`, head `inbox`): an answer composed before that write would put the
- *  issue's older fields back on the row. */
+ *  issues, so a write of an issue or an ask that is live shows its change again over each
+ *  answer of this read (R7 of dispatch://INFRA-299, `features/writes/write-store.ts`): the
+ *  answer arrives whole and the person's unsaved change is still on it. */
 export const inboxQuery = () =>
-  rowQuery({
+  queryOptions({
     queryKey: ["inbox"],
     queryFn: async (context) => {
       const { client } = context;
@@ -55,7 +56,7 @@ export const inboxQuery = () =>
 
 /** The viewer's per-issue read/pin/dismiss state, which the pin writes (`pin:<KEY>`). */
 export const userStateQuery = () =>
-  rowQuery({
+  queryOptions({
     queryKey: ["user-state"],
     queryFn: () => api.getMyState(),
   });
@@ -87,7 +88,7 @@ function olderIssue(next: unknown, cached: unknown): boolean {
  * key: a read from any of its views, a PATCH's answer, an optimistic pick and its rollback.
  */
 export const issueQuery = (key: string | undefined) =>
-  rowQuery({
+  queryOptions({
     queryKey: ["issue", key],
     queryFn: (): Promise<IssueDetails> => {
       if (key === undefined) throw new Error("An issue read needs the issue's key.");
@@ -151,7 +152,7 @@ export function commentsQueryKey(
   owner:
     | { readonly issue: string | undefined; readonly document?: string }
     | { readonly artifact: string }
-): RowQueryKey {
+): QueryKey {
   if ("artifact" in owner) return ["artifact", owner.artifact, "comments"];
   const { document, issue } = owner;
   return document === undefined ? ["comments", issue] : ["comments", issue, document];
@@ -177,7 +178,7 @@ export const myRepliesKey = ["me", "replies"] as const;
  *  the reading pane read the one copy under this key. It never goes stale on its own - an event
  *  refresh is what moves it (`api/event-refresh.ts`). */
 export const askThreadQuery = (threadId: string) =>
-  rowQuery({
+  queryOptions({
     queryKey: ["ask-thread", threadId],
     queryFn: () => api.getAsk(threadId),
     staleTime: Number.POSITIVE_INFINITY,
@@ -187,7 +188,7 @@ export const askThreadQuery = (threadId: string) =>
  *  compact header's one Inbox number counts it beside the work waiting on them. One request per
  *  page load, never the unpaged read below. */
 export const myRepliesCountQuery = () =>
-  rowQuery({
+  queryOptions({
     queryKey: [...myRepliesKey, "count"],
     queryFn: async () => (await api.listMyReplies({ kind: INBOX_THREAD_KINDS, limit: 1 })).total,
   });
@@ -203,7 +204,7 @@ export const inboxThreadsKey = [...myRepliesKey, "inbox"] as const;
  *  nothing else does - a surface that wants one owner's unread set reads `myRepliesOwnerQuery`
  *  below. */
 export const inboxThreadsQuery = () =>
-  rowQuery({
+  queryOptions({
     queryKey: [...inboxThreadsKey, "inbox"],
     queryFn: () => api.listMyReplies({ kind: INBOX_THREAD_KINDS, state: "inbox" }),
   });
@@ -212,7 +213,7 @@ export const inboxThreadsQuery = () =>
  *  menu's **Dismissed** draws: `INBOX_DISMISSED_PAGE` rows a page, each next page read from the
  *  last one's `next_cursor` by the list's own **Show more**. */
 export const dismissedThreadsQuery = () =>
-  rowInfiniteQuery({
+  infiniteQueryOptions({
     queryKey: [...inboxThreadsKey, "dismissed"],
     queryFn: ({ pageParam }) =>
       api.listMyReplies({
@@ -229,7 +230,7 @@ export const dismissedThreadsQuery = () =>
 export const myRepliesOwnerQuery = (
   owner: { readonly issue: string } | { readonly artifact: string }
 ) =>
-  rowQuery({
+  queryOptions({
     queryKey: [...myRepliesKey, owner],
     queryFn: () => api.listMyReplies({ ...owner, limit: 200 }),
   });
@@ -271,7 +272,7 @@ export const usersQuery = () =>
 
 /** Every configured architecture source, shared by its settings table and invalidations. */
 export const architectureSourcesQuery = () =>
-  rowQuery({
+  queryOptions({
     queryKey: ["architecture-sources"],
     queryFn: () => api.listArchitectureSources(),
   });
@@ -280,27 +281,27 @@ export const architectureSourcesQuery = () =>
  *  open-on rule and the issue components line, which shares it. Its key sits under
  *  `architectureSourcesQuery`'s, so refreshing that list refreshes every project's too. */
 export const projectArchitectureSourcesQuery = (project: string) =>
-  rowQuery({
+  queryOptions({
     queryKey: ["architecture-sources", project],
     queryFn: () => api.listProjectArchitectureSources(project),
   });
 
 /** One project's architecture tree, read by the project's Architecture tab and by the issue
- *  header's component picker, which share the one key. Its fetch waits for the writes of that
- *  project's sources (`architecture-source:<project>/<owner/repo>`), whose refresh is what moves
- *  the tree. */
+ *  header's component picker, which share the one key. A write of one of that project's sources
+ *  (`architecture-source:<project>/<owner/repo>`) shows its change again over each answer of
+ *  this read while it is live. */
 export const architectureTreeQuery = (project: string) =>
-  rowQuery({
+  queryOptions({
     queryKey: ["architecture", project],
     queryFn: () => api.getArchitecture(project),
     staleTime: 15_000,
   });
 
 /** Every repository mapped to a project, read by the Settings page's table and by the issue
- *  header's repository picker: one key, so a mapping saved in Settings shows in the picker. Its
- *  fetch waits for the mapping writes (`repo-mapping:<owner/repo>`). */
+ *  header's repository picker: one key, so a mapping saved in Settings shows in the picker. A
+ *  live mapping write (`repo-mapping:<owner/repo>`) shows its change again over each answer. */
 export const repoProjectsQuery = () =>
-  rowQuery({
+  queryOptions({
     queryKey: ["repo-projects"],
     queryFn: () => api.listRepoProjects(),
   });
@@ -325,7 +326,7 @@ export const pinnedIssuesKey = ["issues", "pinned"] as const;
  *  when labels are active. List and Board build their keys here, so one set of labels is one
  *  key in both; `projectIssuesQuery` then forks on `open`, so the open-only read of a view that
  *  hides closed issues is a key of its own under the same prefix. */
-export function projectIssuesQueryKey(project: string, labels: readonly string[]): RowQueryKey {
+export function projectIssuesQueryKey(project: string, labels: readonly string[]): QueryKey {
   return labels.length === 0
     ? [...projectListsKey, project]
     : [...projectListsKey, project, "labels", labels];
@@ -334,15 +335,14 @@ export function projectIssuesQueryKey(project: string, labels: readonly string[]
 /**
  * A project's issue list - plain, or server-filtered by labels - shared by the Board, the List,
  * the filter strip and the issue header's label picker. Every observer sets the query's function,
- * so each one takes it from here. A fetch that starts while a write of one of this project's
- * issues is unanswered waits for it (`api/row-query.ts`, head `issues`: `issue:<PROJECT>-`, the
- * line every write of an issue is ordered on - a board move, a header field, a components save -
- * and `project:<PROJECT>`, the line an issue create stands on): until then the server may not
- * have applied the write, and its list would put the issue's older fields - the card's old
- * column among them - back on screen.
+ * so each one takes it from here. An answer landing while a write of one of this project's
+ * issues is live arrives whole, and that write shows its change over it again - a board move, a
+ * header field, a components save, an issue create - so the server's older value never undoes
+ * what the person picked and every other row of the answer is drawn (R7 of
+ * dispatch://INFRA-299).
  */
 export const projectIssuesQuery = (project: string, labels: readonly string[], open = false) =>
-  rowQuery({
+  queryOptions({
     queryKey: [...projectIssuesQueryKey(project, labels), ...(open ? ["open"] : [])],
     queryFn: () =>
       api.listIssues({
@@ -425,7 +425,7 @@ export const deliveryPipelineQuery = (view: DeliveryLiveView & { kind: "pipeline
  *  section's form reads it, while the Delivery page's setup form starts from the `null` the
  *  timeline's `DELIVERY_NOT_CONFIGURED` already implies and reads nothing. */
 export const deliverySettingsQuery = () =>
-  rowQuery({
+  queryOptions({
     queryKey: ["delivery-settings"],
     queryFn: () => api.getDeliverySettings(),
   });

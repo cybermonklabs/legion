@@ -1,10 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { commentsQueryKey, whoAmIQuery } from "../../api/queries";
-import { rowQuery } from "../../api/row-query";
 import type { Artifact, IDCandidate } from "../../api/types";
 import type { Highlight } from "../doc/highlight";
 import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
@@ -116,7 +115,7 @@ export function ArtifactDocument({
       : { artifact: owner.artifactId }
   );
   const comments = useQuery({
-    ...rowQuery({
+    ...queryOptions({
       queryKey: commentsKey,
       queryFn: () =>
         owner.kind === "issue"
@@ -126,7 +125,7 @@ export function ArtifactDocument({
     enabled: commentId !== undefined,
   });
   const ask = useQuery({
-    ...rowQuery({
+    ...queryOptions({
       queryKey: ["ask", askRead],
       queryFn: () => {
         if (askRead === undefined) {

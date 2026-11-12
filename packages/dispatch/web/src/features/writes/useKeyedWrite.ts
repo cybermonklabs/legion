@@ -9,7 +9,7 @@ import { useCallback, useRef, useState } from "react";
 import type { WriteBounds, WriteRequest } from "../../api/client";
 import { newSendKey } from "../../lib/send-key";
 import { retriesUnderItsKey } from "./keyed-write";
-import { plainWrite, useWrites } from "./write-store";
+import { plainWrite, useWrites, type WriteChange } from "./write-store";
 
 /** A write a surface makes for the reader: `useMutation`'s options, but for `mutationFn`, which
  *  the write path makes from `write` or `request` and `label`. Its data is Dispatch's answer, or
@@ -31,6 +31,11 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
   /** Whether the write ends the person's session (a sign-out): a lapse of that session lands it
    *  rather than holding it for the next sign-in (`WriteSpec.endsWithSession`). */
   readonly endsWithSession?: boolean;
+  /** The change this press shows, for a write that shows one: the store shows it as the write
+   *  joins - after `onMutate`, which is where the surface snapshots what a refusal rolls back to
+   *  - and again over each answer that lands on a cache it wrote while the write is live (R7 of
+   *  dispatch://INFRA-299, `WriteSpec.shows`). A write that shows nothing names none. */
+  readonly shows?: (variables: TVariables) => WriteChange;
 } & KeyedWriteMade<TData, TVariables>;
 
 /** How a write is made, and the line it is ordered on: by an attempt of its own (`write`, under
@@ -109,6 +114,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   inline,
   label,
   request,
+  shows,
   target,
   unlined,
   write,
@@ -140,6 +146,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
         kind: plainWrite,
         label: label(variables),
         presentation: "indicator",
+        shows: shows === undefined ? undefined : shows(variables),
       } as const;
       return (
         write === undefined

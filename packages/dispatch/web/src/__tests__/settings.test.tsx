@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { PROJECT_NAME_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the focus sites below reach the picker's people list without a press, which user-event has no form for
@@ -6,14 +6,18 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { ApiError, api } from "../api/client";
+import { ApiError, api, repoProjectRequest } from "../api/client";
 import type { Project, ProjectDefaultAssignee, RepoProject } from "../api/types";
 import { App } from "../app";
 // The Settings page is a lazy route of the app. Its module's first compile is not what a wait is
 // for, so the module is loaded here, with the test file, and no wait measures that load.
 import "../features/settings/SettingsPage";
+import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
+import { plainWrite, writesOf } from "../features/writes/write-store";
+import { realClock, settle, tick } from "./fake-clock";
 import { keyedAttempt } from "./keyed-attempt";
 import { answerRepoProjectRemovals, answerRepoProjects } from "./send-answers";
+import { userOnFakeClock } from "./user";
 
 /** The mapping routes' server state as the Settings page reaches it: a read answers what the writes
  *  have left, and a write follows the server's default rules (the body's default, else the
@@ -209,23 +213,30 @@ test("human users manage repository project mappings from the settings route", a
   }
 });
 
-// A mapping write's response describes one row, not the project's mappings as they stand when it
-// arrives: the page reads them again once the write settles, so a response that arrives after the
-// page already read a newer default does not put the older one back. The read itself waits for
-// the write (R7 of dispatch://INFRA-299): while the pick is unanswered, the list the server would
-// answer with carries the older default, and it would stand over what this reader chose.
-test("a delayed mapping response does not undo a newer default the page has read", async () => {
-  const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia();
-  const row = (repo: string, isDefault: boolean): RepoProject => ({
+/** One of CORE's mapping rows, as the Settings table draws it. */
+function mappingRow(repo: string, isDefault: boolean): RepoProject {
+  return {
     created_at: "2026-09-10T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
     default: isDefault,
     project: "CORE",
     renamed_to: null,
     repo,
-  });
-  const server = mappingServer([row("owner/repo", false), row("owner/other", true)]);
+  };
+}
+
+/** The Default radio of CORE's `repo` row. */
+function defaultRadio(repo: string): HTMLInputElement {
+  return screen.getByRole("radio", {
+    name: `Default repository of CORE: ${repo}`,
+  }) as HTMLInputElement;
+}
+
+/** The Settings page over `server`'s mappings, with every other read the shell makes stubbed.
+ *  The mapping write answers from the server; a row that needs its answer held, or never given,
+ *  says so through `putRepoProject`. `done` takes the page down and restores every spy. */
+function renderMappings(server: ReturnType<typeof mappingServer>) {
+  const restoreMatchMedia = stubMatchMedia();
   const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
     event_head: "0",
     kind: "user",
@@ -249,62 +260,171 @@ test("a delayed mapping response does not undo a newer default the page has read
       gated_steps: [],
     },
   ]);
+  const putRepoProject = answerRepoProjects().mockImplementation(async (owner, repo, input) =>
+    server.put(`${owner}/${repo}`, input)
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <MemoryRouter initialEntries={["/settings"]}>
+      <QueryClientProvider client={queryClient}>
+        <App />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return {
+    listRepoProjects,
+    putRepoProject,
+    queryClient,
+    done() {
+      cleanup();
+      queryClient.clear();
+      for (const spy of [
+        whoAmI,
+        listIssues,
+        getMyState,
+        getInbox,
+        listRepoProjects,
+        listAgentTokens,
+        getCredentialPending,
+        listArchitectureSources,
+        listDefaults,
+        getDeliverySettings,
+        listProjects,
+        putRepoProject,
+      ]) {
+        spy.mockRestore();
+      }
+      restoreMatchMedia();
+    },
+  };
+}
+
+/** Reads CORE's mappings again, as a mapping event has the page do, and lets the answer land. */
+async function readMappingsAgain(
+  queryClient: QueryClient,
+  listRepoProjects: Mock<typeof api.listRepoProjects>
+): Promise<void> {
+  const reads = listRepoProjects.mock.calls.length;
+  await act(async () => {
+    void queryClient.invalidateQueries({ queryKey: ["repo-projects"] });
+    await Promise.resolve();
+  });
+  await waitFor(() => expect(listRepoProjects.mock.calls.length).toBeGreaterThan(reads));
+}
+
+// A mapping write's response describes one row, not the project's mappings as they stand when it
+// arrives: the page reads them again once the write settles, so a response that arrives after the
+// page already read a newer default does not put the older one back. The read is held for
+// nothing (R7 of dispatch://INFRA-299): it goes out at once, and while the pick is live the
+// write shows it again over the answer - the Default is exclusive, so the pick's own rule
+// leaves one default, this reader's, and every other row of that answer arrives. The three rows
+// below are that pick out, waiting its turn, and late: it is live in each, so it is shown again
+// in each.
+test("a mapping answer landing under an unsaved Default pick keeps the pick, and the write's own answer decides", async () => {
+  const user = userEvent.setup();
+  const server = mappingServer([mappingRow("owner/repo", false), mappingRow("owner/other", true)]);
+  const page = renderMappings(server);
   // The server saves the pick at once; its answer reaches the page only when the test says.
   let answer: (() => void) | undefined;
-  const putRepoProject = answerRepoProjects().mockImplementation((owner, repo, input) => {
+  page.putRepoProject.mockImplementation((owner, repo, input) => {
     const saved = server.put(`${owner}/${repo}`, input);
-    return new Promise<RepoProject>((resolve) => {
-      answer = () => resolve(saved);
-    });
+    const held = Promise.withResolvers<RepoProject>();
+    answer = () => held.resolve(saved);
+    return held.promise;
   });
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const radio = (repo: string) =>
-    screen.getByRole("radio", { name: `Default repository of CORE: ${repo}` }) as HTMLInputElement;
-
   try {
-    render(
-      <MemoryRouter initialEntries={["/settings"]}>
-        <QueryClientProvider client={queryClient}>
-          <App />
-        </QueryClientProvider>
-      </MemoryRouter>
-    );
     await screen.findByRole("radio", { name: "Default repository of CORE: owner/repo" });
-    await user.click(radio("owner/repo"));
-    await waitFor(() => expect(putRepoProject).toHaveBeenCalledTimes(1));
+    await user.click(defaultRadio("owner/repo"));
+    await waitFor(() => expect(page.putRepoProject).toHaveBeenCalledTimes(1));
     // Another browser makes owner/other the default again, and this page asks for the mappings
     // (as a mapping event would have it do) while its own write's answer is still on the way.
-    // That read waits for the write: until the server has taken the pick, its list would put the
-    // older default back over the one this reader chose.
+    // The read goes out at once and its answer lands whole; the live write shows its pick over
+    // it, so the reader still sees the default they chose.
     server.put("owner/other", { default: true, project: "CORE" });
-    const reads = listRepoProjects.mock.calls.length;
-    await act(async () => {
-      // Not awaited: the read is held until the write lands, which this row does below.
-      void queryClient.invalidateQueries({ queryKey: ["repo-projects"] });
-      await Promise.resolve();
-    });
-    expect(listRepoProjects.mock.calls.length).toBe(reads);
-    // The write lands, the held read goes out, and the newer default is what the page shows.
+    await readMappingsAgain(page.queryClient, page.listRepoProjects);
+    await waitFor(() => expect(defaultRadio("owner/repo").checked).toBe(true));
+    expect(defaultRadio("owner/other").checked).toBe(false);
+    // The write lands, the page reads the mappings again, and the server's own state - where
+    // the other browser's default came last - is what it shows.
+    const settled = page.listRepoProjects.mock.calls.length;
     act(() => answer?.());
-    await waitFor(() => expect(listRepoProjects.mock.calls.length).toBeGreaterThan(reads));
-    await waitFor(() => expect(radio("owner/other").checked).toBe(true));
-    expect(radio("owner/repo").checked).toBe(false);
+    await waitFor(() => expect(page.listRepoProjects.mock.calls.length).toBeGreaterThan(settled));
+    await waitFor(() => expect(defaultRadio("owner/other").checked).toBe(true));
+    expect(defaultRadio("owner/repo").checked).toBe(false);
   } finally {
-    cleanup();
-    queryClient.clear();
-    whoAmI.mockRestore();
-    listIssues.mockRestore();
-    getMyState.mockRestore();
-    getInbox.mockRestore();
-    listRepoProjects.mockRestore();
-    listAgentTokens.mockRestore();
-    getCredentialPending.mockRestore();
-    listArchitectureSources.mockRestore();
-    listDefaults.mockRestore();
-    getDeliverySettings.mockRestore();
-    listProjects.mockRestore();
-    putRepoProject.mockRestore();
-    restoreMatchMedia();
+    page.done();
+  }
+});
+
+test("a mapping answer landing while a Default pick waits its turn keeps the pick", async () => {
+  const user = userEvent.setup();
+  const server = mappingServer([mappingRow("owner/repo", false), mappingRow("owner/other", true)]);
+  const page = renderMappings(server);
+  // Nothing on owner/repo's line is answered here, so the pick pressed behind the write below
+  // waits its turn, unsent.
+  page.putRepoProject.mockImplementation(() => Promise.withResolvers<RepoProject>().promise);
+  try {
+    await screen.findByRole("radio", { name: "Default repository of CORE: owner/repo" });
+    await act(async () => {
+      void writesOf(page.queryClient)
+        .run({
+          detail: null,
+          kind: plainWrite,
+          label: "owner/repo mapped to CORE",
+          presentation: "indicator",
+          request: repoProjectRequest("owner/repo", { project: "CORE" }),
+          target: "repo-mapping:owner/repo",
+        })
+        .catch(() => undefined);
+      await settle();
+    });
+    await user.click(defaultRadio("owner/repo"));
+    await waitFor(() =>
+      expect(
+        writesOf(page.queryClient)
+          .rows()
+          .map((write) => write.status)
+      ).toEqual(["sending", "queued"])
+    );
+    expect(defaultRadio("owner/repo").checked).toBe(true);
+
+    // The other browser's default arrives while this pick is still waiting its turn.
+    server.put("owner/other", { default: true, project: "CORE" });
+    await readMappingsAgain(page.queryClient, page.listRepoProjects);
+
+    await waitFor(() => expect(defaultRadio("owner/repo").checked).toBe(true));
+    expect(defaultRadio("owner/other").checked).toBe(false);
+  } finally {
+    page.done();
+  }
+});
+
+test("a mapping answer landing while a Default pick is late and still being tried keeps the pick", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const server = mappingServer([mappingRow("owner/repo", false), mappingRow("owner/other", true)]);
+  const page = renderMappings(server);
+  page.putRepoProject.mockImplementation(() => Promise.withResolvers<RepoProject>().promise);
+  try {
+    await screen.findByRole("radio", { name: "Default repository of CORE: owner/repo" });
+    await user.click(defaultRadio("owner/repo"));
+    await waitFor(() => expect(page.putRepoProject).toHaveBeenCalledTimes(1));
+    // Past the send deadline the pick is late: still out, still being tried, and still live.
+    await tick(SEND_DEADLINE_MS + 1_000);
+    expect(
+      writesOf(page.queryClient)
+        .rows()
+        .map((write) => write.status)
+    ).toEqual(["late"]);
+
+    server.put("owner/other", { default: true, project: "CORE" });
+    await readMappingsAgain(page.queryClient, page.listRepoProjects);
+
+    await waitFor(() => expect(defaultRadio("owner/repo").checked).toBe(true));
+    expect(defaultRadio("owner/other").checked).toBe(false);
+  } finally {
+    realClock();
+    page.done();
   }
 });
 

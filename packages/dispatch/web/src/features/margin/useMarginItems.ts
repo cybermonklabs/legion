@@ -1,10 +1,9 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 
 import { api, type WriteBounds } from "../../api/client";
 import { commentsQueryKey, inboxQuery, issueQuery, userStateQuery } from "../../api/queries";
-import { rowQuery } from "../../api/row-query";
 import type {
   Actor,
   Anchor,
@@ -338,7 +337,7 @@ export function useMarginItems(
     [asks.data, owner]
   );
   const comments = useQuery({
-    ...rowQuery({
+    ...queryOptions({
       queryKey: commentsKey,
       queryFn: () => {
         if (owner === undefined) {
@@ -536,31 +535,38 @@ export function useMarginItems(
       queryClient.setQueryData(commentsKey, context?.previous);
       void queryClient.invalidateQueries({ queryKey: commentsKey });
     },
-    onMutate: async ({ id, kind }) => {
+    onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: commentsKey });
-      const previous = queryClient.getQueryData<Comment[]>(commentsKey);
-      queryClient.setQueryData<Comment[]>(commentsKey, (current) =>
-        current?.map((comment) => {
-          if (comment.id !== id) {
-            return comment;
-          }
-          if (kind === "reopen") {
-            return { ...comment, resolved: false, resolved_at: null, resolved_by: null };
-          }
-          if (kind === "resolve") {
-            return { ...comment, resolved: true };
-          }
-          return comment.suggestion === null
-            ? comment
-            : {
-                ...comment,
-                resolved: true,
-                suggestion: { ...comment.suggestion, accepted: kind === "accept" },
-              };
-        })
-      );
-      return { previous };
+      // What a refusal puts back, read before the action shows its change.
+      return { previous: queryClient.getQueryData<Comment[]>(commentsKey) };
     },
+    /** The comment as the action leaves it, written over the list as it stands, so an answer
+     *  this is shown over again carries the resolve, reopen, accept or reject while every other
+     *  comment that answer brought stays as the server has it (R7). */
+    shows:
+      ({ id, kind }) =>
+      (shown) => {
+        shown.on<Comment[]>(commentsKey, (current) =>
+          current.map((comment) => {
+            if (comment.id !== id) {
+              return comment;
+            }
+            if (kind === "reopen") {
+              return { ...comment, resolved: false, resolved_at: null, resolved_by: null };
+            }
+            if (kind === "resolve") {
+              return { ...comment, resolved: true };
+            }
+            return comment.suggestion === null
+              ? comment
+              : {
+                  ...comment,
+                  resolved: true,
+                  suggestion: { ...comment.suggestion, accepted: kind === "accept" },
+                };
+          })
+        );
+      },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: commentsKey });
       if (owner?.kind === "issue") {

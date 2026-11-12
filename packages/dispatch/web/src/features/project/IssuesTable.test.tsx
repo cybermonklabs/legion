@@ -5,14 +5,14 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { answerIssueCreates, answerIssuePatches } from "../../__tests__/send-answers";
-import { ApiError, api, issuePatchRequest } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import { projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { SendStoppedError } from "../writes/keyed-write";
-import { plainWrite, writesOf } from "../writes/write-store";
+import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
 import { ISSUE_TABLE_COLUMNS } from "./issues-table-model";
 import { readLayout } from "./issues-table-storage";
@@ -386,32 +386,6 @@ test("dismissing an interrupted action preserves layout and sends none of its fu
   expect(saved.action).toBeUndefined();
   expect(saved.sizing.title).toBe(360);
   expect(send).not.toHaveBeenCalled();
-});
-
-test("the open table read waits behind an unanswered Board move", async () => {
-  const { client, listing } = table([issue("CORE-1")]);
-  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  const answer = Promise.withResolvers<Issue>();
-  const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
-  // The move as the board makes it (`features/project/board-moves.ts`): one write of the store
-  // on the issue's line, which is what a project list holds its fetch for.
-  const move = writesOf(client).run({
-    detail: null,
-    kind: plainWrite,
-    label: "CORE-1 moved on the board",
-    presentation: "indicator",
-    request: issuePatchRequest("CORE-1", { status: "in_progress" }),
-    target: "issue:CORE-1",
-  });
-  await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-  const calls = listing.mock.calls.length;
-  const reading = client.fetchQuery(projectIssuesQuery("CORE", [], true));
-  await Promise.resolve();
-  expect(listing.mock.calls.length).toBe(calls);
-  answer.resolve(savedIssue("CORE-1"));
-  await move;
-  await reading;
-  expect(listing.mock.calls.length).toBe(calls + 1);
 });
 
 test("a failed project listing can be retried without navigating away", async () => {

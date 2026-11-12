@@ -16,7 +16,7 @@
  */
 
 import { inboxThreadRow } from "@legion/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -28,7 +28,6 @@ import {
   issueQuery,
   myRepliesKey,
 } from "../../api/queries";
-import { rowQuery } from "../../api/row-query";
 import type {
   Actor,
   Comment,
@@ -302,7 +301,7 @@ function CommentThreadBody({
     owner.kind === "issue" ? { issue: owner.issueKey } : { artifact: owner.artifactId }
   );
   const comments = useQuery(
-    rowQuery({
+    queryOptions({
       queryKey: commentsKey,
       queryFn: () =>
         owner.kind === "issue"

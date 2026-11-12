@@ -19,10 +19,11 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches, answerIssueStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, issuePatchRequest, issueStateRequest } from "../../api/client";
-import { inboxQuery, projectIssuesQuery } from "../../api/queries";
+import { inboxQuery, issueQuery, projectIssuesQuery } from "../../api/queries";
 import type {
   InboxRow,
   Issue,
+  IssueDetails,
   IssueSummary,
   RepoProject,
   UserIssueState,
@@ -33,7 +34,6 @@ import { AssigneeControl } from "../issue/AssigneeControl";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { RepoControl } from "../issue/RepoControl";
-import { useIssueComponents } from "../issue/useIssueComponents";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { plainWrite, writesOf } from "../writes/write-store";
@@ -598,7 +598,12 @@ test("a board refetch already on the wire when a card moves is dropped: the card
   }
 });
 
-test("a board refetch asked for while a move is unanswered waits for the answer, then reads the moved board", async () => {
+// R7. No reader is held: a refetch asked for while a move is unanswered goes out at once and
+// its answer is read. That the moved card keeps its placement over such an answer is the move
+// write's own to show again (`features/project/board-moves.ts`, which still stores the list it
+// computed rather than a change to the list as it stands); this row reads the reader's side of
+// it - the fetch, and the board once the server has applied the move.
+test("a board refetch asked for while a move is unanswered goes out at once, and the answer is read", async () => {
   const user = userEvent.setup();
   const answer = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
@@ -614,42 +619,39 @@ test("a board refetch asked for while a move is unanswered waits for the answer,
     );
     expect(listIssues).toHaveBeenCalledTimes(1);
 
-    // An event arrives while the PATCH is unanswered. The server has not applied the move, so a
-    // GET now would answer with Bravo still in Todo: none goes out.
-    await act(async () => {
-      void queryClient.invalidateQueries({ queryKey: ["issues"] });
-    });
-    expect(listIssues).toHaveBeenCalledTimes(1);
-    expect(articleLabels(inProgress)).toEqual(["CORE-2 Bravo", "CORE-4 Delta"]);
-
-    // The server applies the move and answers; the refetch goes out and reads the moved board.
+    // An event arrives while the PATCH is unanswered: the read goes out, nothing holds it.
     listIssues.mockResolvedValue(
       keyboardIssues.map((entry) =>
         entry.key === "CORE-2" ? { ...entry, status: "in_progress" } : entry
       )
     );
     await act(async () => {
-      answer.resolve({ ...patched, key: "CORE-2", status: "in_progress" });
+      void queryClient.invalidateQueries({ queryKey: ["issues"] });
+      await settle();
     });
-    await waitFor(() => expect(listIssues.mock.calls.length).toBeGreaterThan(1));
+    await waitFor(() => expect(listIssues).toHaveBeenCalledTimes(2));
+
+    // The server applies the move and answers; the board reads the server's list.
+    await act(async () => {
+      answer.resolve({ ...patched, key: "CORE-2", status: "in_progress" });
+      await settle();
+    });
     await waitFor(() => expect(queryClient.getQueryState(boardListKey)?.fetchStatus).toBe("idle"));
     expect(articleLabels(inProgress)).toEqual(["CORE-2 Bravo", "CORE-4 Delta"]);
-    expect(within(inProgress).getByRole("article", { name: "CORE-2 Bravo" })).toHaveFocus();
   } finally {
     cleanup();
     patchIssue.mockRestore();
   }
 });
 
-// The rows from here to the end of this block measure R4 of dispatch://INFRA-299, the race the
-// board-move row above measures for a move: an answer of a list that shows an issue's fields
-// must not put an older value of that issue on screen while a write to it is out. The three
-// field controls - priority, assignee and repository - write the issue detail, every project
-// issue list and every Inbox row before their PATCH goes out and cancel the reads in flight
-// (`features/issue/useIssueFieldWrite.ts`), but nothing holds a read that *starts* after that,
-// so the server's older value lands on screen over the pick. Each row holds one list's fetch
-// while one write of an issue is in one state, answers that fetch with the server's old value,
-// and reads what the control and the list then show.
+// The rows from here to the end of this block measure R7 of dispatch://INFRA-299: a change a
+// person has made and not saved survives every answer that lands under it, and no reader is
+// held. The three field controls - priority, assignee and repository - show their pick through
+// the store (`features/issue/useIssueFieldWrite.ts`, `WriteSpec.shows`), which shows it again
+// over each answer that lands on a cache the write wrote, until the write settles. So each row
+// here lets the answer land - the server's older value for the issue written, and a change of
+// another row the same answer carries - and reads that the pick is still on screen and that the
+// other row's change arrived.
 
 /** The project list as the server has it: CORE-1 at P1, nobody, and no repository of its own. */
 const fieldIssues: IssueSummary[] = [
@@ -661,6 +663,13 @@ const fieldIssues: IssueSummary[] = [
 function fieldIssuesWith(fields: Partial<IssueSummary>): IssueSummary[] {
   return fieldIssues.map((entry) => (entry.key === "CORE-1" ? { ...entry, ...fields } : entry));
 }
+
+/** The list as another browser has left it while this one holds an unsaved pick: CORE-1 as the
+ *  server still has it, and CORE-2 moved to P3 by somebody else. That second row is what every
+ *  row below reads to see that the whole answer arrived. */
+const listSinceOtherBrowser: IssueSummary[] = fieldIssues.map((entry) =>
+  entry.key === "CORE-2" ? { ...entry, priority: 3 } : entry
+);
 
 /** The Inbox as the server has it: one row on CORE-1, one on an issue of another project. An
  *  Inbox row carries its issue's priority and the person it waits on, and no repository. */
@@ -679,6 +688,12 @@ const raceInbox: InboxRow[] = [
   }),
 ];
 
+/** The Inbox as another browser has left it: the other project's row moved to P3, which is the
+ *  row an answer landing under an unsaved pick must still bring through. */
+const inboxSinceOtherBrowser: InboxRow[] = raceInbox.map((row) =>
+  row.issue_key === "OTHER-1" ? { ...row, priority: 3 } : row
+);
+
 const repoMappings: RepoProject[] = [
   {
     created_at: "2026-09-13T00:00:00Z",
@@ -691,6 +706,41 @@ const repoMappings: RepoProject[] = [
 ];
 
 const inboxKey = inboxQuery().queryKey;
+
+/** The issue as the server has it for the issue's own read (`["issue", "CORE-1"]`), the cache
+ *  every field write writes beside the lists. */
+const raceDetails: IssueDetails = {
+  ...patched,
+  artifacts: [],
+  children: [],
+  design_gates: [],
+  holder_state: null,
+  last_seen: null,
+  open_asks: [],
+  priority: 1,
+  progress: { tasks: null, children: null },
+  referenced_by_count: 0,
+  route_holder: null,
+  route_status: null,
+  route_status_reason: null,
+  takeable_at: null,
+  title: "Alpha",
+};
+
+/** The issue's own read, as the header draws it from the issue rather than from a list: the
+ *  priority a write of it shows its change on, and the title the same answer carries. */
+function IssueDetail(): ReactNode {
+  const details = useQuery(issueQuery("CORE-1"));
+  if (details.data === undefined) {
+    return null;
+  }
+  return (
+    <div data-testid="issue-detail">
+      <output data-testid="detail-priority">{String(details.data.priority)}</output>
+      <output data-testid="detail-title">{details.data.title}</output>
+    </div>
+  );
+}
 
 /** The issue's assignee and repository controls, drawn from the project list the board reads, as
  *  the issue header draws them from the issue: what the reader sees while a write of either
@@ -734,30 +784,9 @@ function InboxRows(): ReactNode {
   );
 }
 
-/** The components save, the write no field control makes and nothing registers for a list
- *  (`useIssueComponents`, pressed from the architecture pane and the header's editor). */
-function ComponentsSave(): ReactNode {
-  const write = useIssueComponents({
-    key: "CORE-1",
-    project: "CORE",
-    status: "todo",
-    title: "Alpha",
-  });
-  return (
-    <button
-      onClick={() => {
-        void write.submit({ ids: [], mode: "none", reason: "Not architectural" });
-      }}
-      type="button"
-    >
-      Save components
-    </button>
-  );
-}
-
 /** The page these rows read: the board, CORE-1's assignee and repository controls over the same
- *  project list, the Inbox's own read, and the components save. One query client, so one write
- *  store (`writesOf`) and one copy of each list. */
+ *  project list, the issue's own read, and the Inbox's own read. One query client, so one write
+ *  store (`writesOf`) and one copy of each cache. */
 function renderRace(issues: IssueSummary[] = fieldIssues) {
   const listIssues = spyOn(api, "listIssues").mockResolvedValue(issues);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
@@ -767,6 +796,7 @@ function renderRace(issues: IssueSummary[] = fieldIssues) {
     { login: "bob" },
   ]);
   const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue(repoMappings);
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue(raceDetails);
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -776,7 +806,7 @@ function renderRace(issues: IssueSummary[] = fieldIssues) {
         <KeymapProvider>
           <IssueBoard project="CORE" />
           <ListFields />
-          <ComponentsSave />
+          <IssueDetail />
           <InboxRows />
         </KeymapProvider>
       </QueryClientProvider>
@@ -784,11 +814,12 @@ function renderRace(issues: IssueSummary[] = fieldIssues) {
   );
   return {
     getInbox,
+    getIssue,
     listIssues,
     queryClient,
     cleanup() {
       view.unmount();
-      for (const spy of [listIssues, getMyState, getInbox, listUsers, listRepoProjects]) {
+      for (const spy of [listIssues, getMyState, getInbox, getIssue, listUsers, listRepoProjects]) {
         spy.mockRestore();
       }
     },
@@ -800,6 +831,7 @@ async function raceReady(): Promise<HTMLElement> {
   const board = await screen.findByRole("region", { name: "Project board" });
   await screen.findByTestId("issue-fields");
   await screen.findByRole("combobox", { name: "Repository of CORE-1" });
+  await screen.findByTestId("issue-detail");
   await screen.findByTestId("inbox-row-CORE-1");
   return board;
 }
@@ -842,7 +874,7 @@ async function pickAssignee(user: UserEvent, login: string): Promise<void> {
   await user.selectOptions(assigneeSelect(), login);
 }
 
-test("a project list fetch asked for while a priority write is out waits for it, then reads the list the server moved", async () => {
+test("a project list answer landing while a priority write is out keeps the pick and brings every other row", async () => {
   const user = userEvent.setup();
   const answer = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
@@ -853,25 +885,25 @@ test("a project list fetch asked for while a priority write is out waits for it,
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
     );
-    expect(race.listIssues).toHaveBeenCalledTimes(1);
 
-    // An event arrives while the PATCH is out. The server still holds P1, so a GET now would
-    // answer P1 and put it back on the card: the fetch waits for the write instead.
+    // An event arrives while the PATCH is out. The server still holds P1 for CORE-1, and
+    // another browser has moved CORE-2 to P3 since this page read the list.
+    race.listIssues.mockResolvedValue(listSinceOtherBrowser);
     await askAgain(race.queryClient, ["issues"]);
-    expect(race.listIssues).toHaveBeenCalledTimes(1);
-    expect(race.queryClient.getQueryState(boardListKey)?.fetchStatus).toBe("fetching");
-    expect(priorityIn(board, "CORE-1").value).toBe("0");
 
-    // The server takes the pick and answers; the held fetch reads the list it moved.
+    // The answer landed whole - nothing was held - and the write showed its pick again over it.
+    await waitFor(() => expect(race.listIssues).toHaveBeenCalledTimes(2));
+    expect(race.queryClient.getQueryState(boardListKey)?.fetchStatus).toBe("idle");
+    expect(priorityIn(board, "CORE-1").value).toBe("0");
+    expect(priorityIn(board, "CORE-2").value).toBe("3");
+
+    // The server takes the pick; its own answer is what the page reads from then on.
     race.listIssues.mockResolvedValue(fieldIssuesWith({ priority: 0 }));
     await act(async () => {
       answer.resolve({ ...patched, key: "CORE-1", priority: 0 });
       await settle();
     });
-    await waitFor(() => expect(race.listIssues.mock.calls.length).toBeGreaterThan(1));
-    await waitFor(() =>
-      expect(race.queryClient.getQueryState(boardListKey)?.fetchStatus).toBe("idle")
-    );
+    await waitFor(() => expect(race.listIssues.mock.calls.length).toBeGreaterThan(2));
     expect(priorityIn(board, "CORE-1").value).toBe("0");
   } finally {
     race.cleanup();
@@ -879,194 +911,15 @@ test("a project list fetch asked for while a priority write is out waits for it,
   }
 });
 
-test("a project list fetch asked for while an assignee write is out waits for it, then reads the assigned list", async () => {
+test("a project list answer landing while a priority write waits its turn keeps the pick", async () => {
   const user = userEvent.setup();
-  const answer = Promise.withResolvers<Issue>();
-  const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
-  const race = renderRace();
-  try {
-    await raceReady();
-    await pickAssignee(user, "bob");
-    await waitFor(() =>
-      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt)
-    );
-    expect(race.listIssues).toHaveBeenCalledTimes(1);
-
-    // The server still holds nobody: its answer would unassign the issue on screen.
-    await askAgain(race.queryClient, ["issues"]);
-    expect(race.listIssues).toHaveBeenCalledTimes(1);
-    expect(race.queryClient.getQueryState(boardListKey)?.fetchStatus).toBe("fetching");
-    expect(assigneeSelect().value).toBe("bob");
-
-    race.listIssues.mockResolvedValue(fieldIssuesWith({ assignee: "bob" }));
-    await act(async () => {
-      answer.resolve({ ...patched, assignee: "bob", key: "CORE-1" });
-      await settle();
-    });
-    await waitFor(() => expect(race.listIssues.mock.calls.length).toBeGreaterThan(1));
-    expect(assigneeSelect().value).toBe("bob");
-  } finally {
-    race.cleanup();
-    patchIssue.mockRestore();
-  }
-});
-
-test("a project list fetch asked for while a repository write is out waits for it, then reads the mapped list", async () => {
-  const user = userEvent.setup();
-  const answer = Promise.withResolvers<Issue>();
-  const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
-  const race = renderRace();
-  try {
-    await raceReady();
-    await user.selectOptions(repoSelect(), "acme/widgets");
-    await waitFor(() =>
-      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/widgets" }, keyedAttempt)
-    );
-    expect(race.listIssues).toHaveBeenCalledTimes(1);
-
-    // The server still holds no repository of its own: its answer would clear the pick.
-    await askAgain(race.queryClient, ["issues"]);
-    expect(race.listIssues).toHaveBeenCalledTimes(1);
-    expect(race.queryClient.getQueryState(boardListKey)?.fetchStatus).toBe("fetching");
-    expect(repoSelect().value).toBe("acme/widgets");
-
-    race.listIssues.mockResolvedValue(
-      fieldIssuesWith({ repo: "acme/widgets", resolved_repo: "acme/widgets" })
-    );
-    await act(async () => {
-      answer.resolve({
-        ...patched,
-        key: "CORE-1",
-        repo: "acme/widgets",
-        resolved_repo: "acme/widgets",
-      });
-      await settle();
-    });
-    await waitFor(() => expect(race.listIssues.mock.calls.length).toBeGreaterThan(1));
-    expect(repoSelect().value).toBe("acme/widgets");
-  } finally {
-    race.cleanup();
-    patchIssue.mockRestore();
-  }
-});
-
-test("the Inbox's fetch asked for while a priority write is out waits for it: the row keeps the pick", async () => {
-  const user = userEvent.setup();
-  const answer = Promise.withResolvers<Issue>();
-  const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
-  const race = renderRace();
-  try {
-    await raceReady();
-    await user.selectOptions(priorityIn(inboxRow("CORE-1"), "CORE-1"), "0");
-    await waitFor(() =>
-      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
-    );
-    expect(race.getInbox).toHaveBeenCalledTimes(1);
-
-    await askAgain(race.queryClient, ["inbox"]);
-    expect(race.getInbox).toHaveBeenCalledTimes(1);
-    expect(race.queryClient.getQueryState(inboxKey)?.fetchStatus).toBe("fetching");
-    expect(priorityIn(inboxRow("CORE-1"), "CORE-1").value).toBe("0");
-
-    race.getInbox.mockResolvedValue(
-      raceInbox.map((row) => (row.issue_key === "CORE-1" ? { ...row, priority: 0 } : row))
-    );
-    await act(async () => {
-      answer.resolve({ ...patched, key: "CORE-1", priority: 0 });
-      await settle();
-    });
-    await waitFor(() => expect(race.getInbox.mock.calls.length).toBeGreaterThan(1));
-    expect(priorityIn(inboxRow("CORE-1"), "CORE-1").value).toBe("0");
-  } finally {
-    race.cleanup();
-    patchIssue.mockRestore();
-  }
-});
-
-test("the Inbox's fetch asked for while an assignee write is out waits for it: the row keeps the person", async () => {
-  const user = userEvent.setup();
-  const answer = Promise.withResolvers<Issue>();
-  const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
-  const race = renderRace();
-  try {
-    await raceReady();
-    await pickAssignee(user, "bob");
-    await waitFor(() =>
-      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt)
-    );
-    expect(screen.getByTestId("inbox-waits-CORE-1").textContent).toBe("bob");
-    expect(race.getInbox).toHaveBeenCalledTimes(1);
-
-    // An Inbox row waits on the person its issue is assigned to until somebody hands the ask
-    // on, so the server's answer would put "nobody" back on this row.
-    await askAgain(race.queryClient, ["inbox"]);
-    expect(race.getInbox).toHaveBeenCalledTimes(1);
-    expect(race.queryClient.getQueryState(inboxKey)?.fetchStatus).toBe("fetching");
-    expect(screen.getByTestId("inbox-waits-CORE-1").textContent).toBe("bob");
-
-    race.getInbox.mockResolvedValue(
-      raceInbox.map((row) =>
-        row.issue_key === "CORE-1"
-          ? {
-              ...row,
-              issue: { assignee: "bob", key: "CORE-1", title: "Alpha" },
-              waiting_on_person: "bob",
-            }
-          : row
-      )
-    );
-    await act(async () => {
-      answer.resolve({ ...patched, assignee: "bob", key: "CORE-1" });
-      await settle();
-    });
-    await waitFor(() => expect(race.getInbox.mock.calls.length).toBeGreaterThan(1));
-    expect(screen.getByTestId("inbox-waits-CORE-1").textContent).toBe("bob");
-  } finally {
-    race.cleanup();
-    patchIssue.mockRestore();
-  }
-});
-
-test("a list fetch waits for a write that is late and still being tried, which may still land", async () => {
-  jest.useFakeTimers();
-  const user = userOnFakeClock();
-  const answer = Promise.withResolvers<Issue>();
-  const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
+  const first = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => first.promise);
   const race = renderRace();
   try {
     const board = await raceReady();
-    await user.selectOptions(priorityIn(board, "CORE-1"), "0");
-    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    // Past the send deadline the write is late: it is still out, still being tried, and its
-    // answer is still to come.
-    await tick(SEND_DEADLINE_MS + 1_000);
-    expect(
-      writesOf(race.queryClient)
-        .rows()
-        .map((write) => write.status)
-    ).toEqual(["late"]);
-
-    await askAgain(race.queryClient, ["issues"]);
-    expect(race.listIssues).toHaveBeenCalledTimes(1);
-    expect(race.queryClient.getQueryState(boardListKey)?.fetchStatus).toBe("fetching");
-    expect(priorityIn(board, "CORE-1").value).toBe("0");
-  } finally {
-    realClock();
-    race.cleanup();
-    patchIssue.mockRestore();
-  }
-});
-
-test("a refused write of the issue holds no list fetch: the list reads at once and keeps the server's value", async () => {
-  // The status pick the issue header makes, which stays refused in the store because the shell's
-  // indicator shows its refusal rather than the control (`IssueHeader`'s `updateIssue`).
-  const patchIssue = answerIssuePatches().mockRejectedValue(
-    new ApiError(422, { error: "Dispatch refused the status" })
-  );
-  const race = renderRace();
-  try {
-    await raceReady();
     const writes = writesOf(race.queryClient);
+    // A write of CORE-1 that never answers, so the pick behind it waits its turn.
     await act(async () => {
       void writes
         .run({
@@ -1080,32 +933,313 @@ test("a refused write of the issue holds no list fetch: the list reads at once a
         .catch(() => undefined);
       await settle();
     });
+    await user.selectOptions(priorityIn(board, "CORE-1"), "0");
     await waitFor(() =>
-      expect(writes.rows().map((write) => [write.target, write.status])).toEqual([
-        ["issue:CORE-1", "refused"],
-      ])
+      expect(writes.rows().map((write) => write.status)).toEqual(["sending", "queued"])
     );
 
-    // Nothing is on its way to the server, so the list is read and its answer is the truth.
+    race.listIssues.mockResolvedValue(listSinceOtherBrowser);
     await askAgain(race.queryClient, ["issues"]);
-    expect(race.listIssues).toHaveBeenCalledTimes(2);
-    expect(race.queryClient.getQueryState(boardListKey)?.fetchStatus).toBe("idle");
-    expect(writes.rows().map((write) => write.status)).toEqual(["refused"]);
+
+    await waitFor(() => expect(race.listIssues).toHaveBeenCalledTimes(2));
+    expect(priorityIn(board, "CORE-1").value).toBe("0");
+    expect(priorityIn(board, "CORE-2").value).toBe("3");
   } finally {
     race.cleanup();
     patchIssue.mockRestore();
   }
 });
 
-test("a read mark holds no fetch: its line is the reader's own, not the issue's", async () => {
+test("a project list answer landing while an assignee write is out keeps the person and brings every other row", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
+  const race = renderRace();
+  try {
+    const board = await raceReady();
+    await pickAssignee(user, "bob");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt)
+    );
+
+    // The server still holds nobody: its answer alone would unassign the issue on screen.
+    race.listIssues.mockResolvedValue(listSinceOtherBrowser);
+    await askAgain(race.queryClient, ["issues"]);
+
+    await waitFor(() => expect(race.listIssues).toHaveBeenCalledTimes(2));
+    expect(assigneeSelect().value).toBe("bob");
+    expect(priorityIn(board, "CORE-2").value).toBe("3");
+
+    race.listIssues.mockResolvedValue(fieldIssuesWith({ assignee: "bob" }));
+    await act(async () => {
+      answer.resolve({ ...patched, assignee: "bob", key: "CORE-1" });
+      await settle();
+    });
+    await waitFor(() => expect(race.listIssues.mock.calls.length).toBeGreaterThan(2));
+    expect(assigneeSelect().value).toBe("bob");
+  } finally {
+    race.cleanup();
+    patchIssue.mockRestore();
+  }
+});
+
+test("a project list answer landing while a repository write is out keeps the repository and brings every other row", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
+  const race = renderRace();
+  try {
+    const board = await raceReady();
+    await user.selectOptions(repoSelect(), "acme/widgets");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/widgets" }, keyedAttempt)
+    );
+
+    // The server still holds no repository of its own: its answer alone would clear the pick.
+    race.listIssues.mockResolvedValue(listSinceOtherBrowser);
+    await askAgain(race.queryClient, ["issues"]);
+
+    await waitFor(() => expect(race.listIssues).toHaveBeenCalledTimes(2));
+    expect(repoSelect().value).toBe("acme/widgets");
+    expect(priorityIn(board, "CORE-2").value).toBe("3");
+
+    race.listIssues.mockResolvedValue(
+      fieldIssuesWith({ repo: "acme/widgets", resolved_repo: "acme/widgets" })
+    );
+    await act(async () => {
+      answer.resolve({
+        ...patched,
+        key: "CORE-1",
+        repo: "acme/widgets",
+        resolved_repo: "acme/widgets",
+      });
+      await settle();
+    });
+    await waitFor(() => expect(race.listIssues.mock.calls.length).toBeGreaterThan(2));
+    expect(repoSelect().value).toBe("acme/widgets");
+  } finally {
+    race.cleanup();
+    patchIssue.mockRestore();
+  }
+});
+
+test("an Inbox answer landing while a priority write is out keeps the pick and brings every other row", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
+  const race = renderRace();
+  try {
+    await raceReady();
+    await user.selectOptions(priorityIn(inboxRow("CORE-1"), "CORE-1"), "0");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
+    );
+
+    race.getInbox.mockResolvedValue(inboxSinceOtherBrowser);
+    await askAgain(race.queryClient, ["inbox"]);
+
+    await waitFor(() => expect(race.getInbox).toHaveBeenCalledTimes(2));
+    expect(race.queryClient.getQueryState(inboxKey)?.fetchStatus).toBe("idle");
+    expect(priorityIn(inboxRow("CORE-1"), "CORE-1").value).toBe("0");
+    expect(priorityIn(inboxRow("OTHER-1"), "OTHER-1").value).toBe("3");
+
+    race.getInbox.mockResolvedValue(
+      raceInbox.map((row) => (row.issue_key === "CORE-1" ? { ...row, priority: 0 } : row))
+    );
+    await act(async () => {
+      answer.resolve({ ...patched, key: "CORE-1", priority: 0 });
+      await settle();
+    });
+    await waitFor(() => expect(race.getInbox.mock.calls.length).toBeGreaterThan(2));
+    expect(priorityIn(inboxRow("CORE-1"), "CORE-1").value).toBe("0");
+  } finally {
+    race.cleanup();
+    patchIssue.mockRestore();
+  }
+});
+
+test("an Inbox answer landing while an assignee write is out keeps the person and brings every other row", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
+  const race = renderRace();
+  try {
+    await raceReady();
+    await pickAssignee(user, "bob");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt)
+    );
+    expect(screen.getByTestId("inbox-waits-CORE-1").textContent).toBe("bob");
+
+    // An Inbox row waits on the person its issue is assigned to until somebody hands the ask
+    // on, so the server's answer alone would put "nobody" back on this row.
+    race.getInbox.mockResolvedValue(inboxSinceOtherBrowser);
+    await askAgain(race.queryClient, ["inbox"]);
+
+    await waitFor(() => expect(race.getInbox).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId("inbox-waits-CORE-1").textContent).toBe("bob");
+    expect(priorityIn(inboxRow("OTHER-1"), "OTHER-1").value).toBe("3");
+  } finally {
+    race.cleanup();
+    patchIssue.mockRestore();
+  }
+});
+
+test("a list answer landing while a write is late and still being tried keeps the pick", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const answer = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
+  const race = renderRace();
+  try {
+    const board = await raceReady();
+    await user.selectOptions(priorityIn(board, "CORE-1"), "0");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    // Past the send deadline the write is late: it is still out, still being tried, and its
+    // answer is still to come, so it is live and shows its pick again.
+    await tick(SEND_DEADLINE_MS + 1_000);
+    expect(
+      writesOf(race.queryClient)
+        .rows()
+        .map((write) => write.status)
+    ).toEqual(["late"]);
+
+    race.listIssues.mockResolvedValue(listSinceOtherBrowser);
+    await askAgain(race.queryClient, ["issues"]);
+
+    await waitFor(() => expect(race.listIssues).toHaveBeenCalledTimes(2));
+    expect(priorityIn(board, "CORE-1").value).toBe("0");
+    expect(priorityIn(board, "CORE-2").value).toBe("3");
+  } finally {
+    realClock();
+    race.cleanup();
+    patchIssue.mockRestore();
+  }
+});
+
+test("a refused write shows nothing again: the list answer's own value stands", async () => {
+  const user = userEvent.setup();
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new ApiError(422, { error: "Dispatch refused the priority" })
+  );
+  const race = renderRace();
+  try {
+    const board = await raceReady();
+    await user.selectOptions(priorityIn(board, "CORE-1"), "0");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    // The engine shows its own refusals, so the store lets the write go the moment Dispatch
+    // refuses it, and the pick it showed was rolled back with it.
+    await waitFor(() => expect(writesOf(race.queryClient).rows()).toEqual([]));
+
+    race.listIssues.mockResolvedValue(listSinceOtherBrowser);
+    await askAgain(race.queryClient, ["issues"]);
+
+    await waitFor(() => expect(race.listIssues.mock.calls.length).toBeGreaterThan(1));
+    await waitFor(() => expect(priorityIn(board, "CORE-2").value).toBe("3"));
+    expect(priorityIn(board, "CORE-1").value).toBe("1");
+  } finally {
+    race.cleanup();
+    patchIssue.mockRestore();
+  }
+});
+
+test("a discarded write shows nothing again: the reader took it back", async () => {
+  const answer = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
+  const race = renderRace();
+  try {
+    const board = await raceReady();
+    const writes = writesOf(race.queryClient);
+    // A write of CORE-1 that holds the line, and behind it one that shows a pick and waits its
+    // turn: a write waiting its turn, unsent, is the reader's to discard.
+    await act(async () => {
+      void writes
+        .run({
+          detail: null,
+          kind: plainWrite,
+          label: "CORE-1 set to done",
+          presentation: "indicator",
+          request: issuePatchRequest("CORE-1", { status: "done" }),
+          target: "issue:CORE-1",
+        })
+        .catch(() => undefined);
+      await settle();
+    });
+    const key = "discarded-pick";
+    await act(async () => {
+      void writes
+        .run({
+          detail: null,
+          key,
+          kind: plainWrite,
+          label: "CORE-1 set to P0",
+          presentation: "indicator",
+          request: issuePatchRequest("CORE-1", { priority: 0 }),
+          shows: (shown) => {
+            shown.under<IssueSummary[]>(["issues", "project"], (rows) =>
+              rows.map((row) => (row.key === "CORE-1" ? { ...row, priority: 0 } : row))
+            );
+          },
+          target: "issue:CORE-1",
+        })
+        .catch(() => undefined);
+      await settle();
+    });
+    expect(priorityIn(board, "CORE-1").value).toBe("0");
+    act(() => {
+      expect(writes.discard(writes.idOf(key) ?? 0)).toBe(true);
+    });
+
+    race.listIssues.mockResolvedValue(listSinceOtherBrowser);
+    await askAgain(race.queryClient, ["issues"]);
+
+    await waitFor(() => expect(race.listIssues).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(priorityIn(board, "CORE-1").value).toBe("1"));
+    expect(priorityIn(board, "CORE-2").value).toBe("3");
+  } finally {
+    race.cleanup();
+    patchIssue.mockRestore();
+  }
+});
+
+test("a settled write shows nothing again: what the server answers is the page's from then on", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
+  const race = renderRace();
+  try {
+    const board = await raceReady();
+    await user.selectOptions(priorityIn(board, "CORE-1"), "0");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    race.listIssues.mockResolvedValue(fieldIssuesWith({ priority: 0 }));
+    await act(async () => {
+      answer.resolve({ ...patched, key: "CORE-1", priority: 0 });
+      await settle();
+    });
+    await waitFor(() => expect(writesOf(race.queryClient).rows()).toEqual([]));
+
+    // Another browser moves CORE-1 back to P1 and CORE-2 to P3. The write is made, so nothing
+    // is shown over this answer and the server's value stands on both rows.
+    race.listIssues.mockResolvedValue(listSinceOtherBrowser);
+    await askAgain(race.queryClient, ["issues"]);
+
+    await waitFor(() => expect(priorityIn(board, "CORE-1").value).toBe("1"));
+    expect(priorityIn(board, "CORE-2").value).toBe("3");
+  } finally {
+    race.cleanup();
+    patchIssue.mockRestore();
+  }
+});
+
+test("a read mark shows nothing, and so shows nothing again", async () => {
   const mark = Promise.withResolvers<UserIssueState>();
   const putIssueState = answerIssueStates().mockImplementation(() => mark.promise);
   const race = renderRace();
   try {
-    await raceReady();
+    const board = await raceReady();
     const writes = writesOf(race.queryClient);
     // The read mark every conversation sends (`useSendMarkOnce`): one write of the store, on the
-    // reader's own line for the issue (`read:issue:<KEY>`), which changes no field of it.
+    // reader's own line for the issue (`read:issue:<KEY>`), which shows no change of any cache.
     await act(async () => {
       void writes
         .run({
@@ -1123,12 +1257,14 @@ test("a read mark holds no fetch: its line is the reader's own, not the issue's"
       ["read:issue:CORE-1", "sending"],
     ]);
 
+    race.listIssues.mockResolvedValue(listSinceOtherBrowser);
     await askAgain(race.queryClient, ["issues"]);
-    expect(race.listIssues).toHaveBeenCalledTimes(2);
-    expect(race.queryClient.getQueryState(boardListKey)?.fetchStatus).toBe("idle");
     await askAgain(race.queryClient, ["inbox"]);
+
+    await waitFor(() => expect(race.listIssues).toHaveBeenCalledTimes(2));
     expect(race.getInbox).toHaveBeenCalledTimes(2);
-    expect(race.queryClient.getQueryState(inboxKey)?.fetchStatus).toBe("idle");
+    await waitFor(() => expect(priorityIn(board, "CORE-2").value).toBe("3"));
+    expect(priorityIn(board, "CORE-1").value).toBe("1");
 
     await act(async () => {
       mark.resolve({ dismissed: [], last_read_seq: 2, pinned: false, seq: 2 });
@@ -1140,7 +1276,7 @@ test("a read mark holds no fetch: its line is the reader's own, not the issue's"
   }
 });
 
-test("a write the reader stopped holds the fetch until the attempt already out answers, and nothing after it", async () => {
+test("a write the reader stopped keeps showing its change until the attempt already out answers", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const answer = Promise.withResolvers<Issue>();
@@ -1153,28 +1289,28 @@ test("a write the reader stopped holds the fetch until the attempt already out a
     await tick(SEND_DEADLINE_MS + 1_000);
     const writes = writesOf(race.queryClient);
     const late = writes.rows()[0];
-    // Stop trying ends the retries, not the attempt in flight: that one may still land.
+    // Stop trying ends the retries, not the attempt in flight: that one may still land, so the
+    // write is live and its pick is shown again.
     act(() => {
       expect(writes.stop(late?.id ?? 0)).toBe(true);
     });
     expect(writes.rows().map((write) => write.status === "late" && write.stopping)).toEqual([true]);
 
+    race.listIssues.mockResolvedValue(listSinceOtherBrowser);
     await askAgain(race.queryClient, ["issues"]);
-    expect(race.listIssues).toHaveBeenCalledTimes(1);
-    expect(race.queryClient.getQueryState(boardListKey)?.fetchStatus).toBe("fetching");
-    expect(priorityIn(board, "CORE-1").value).toBe("0");
 
-    // The attempt answers: the write is made, holds nothing more, and the fetch reads the list.
-    race.listIssues.mockResolvedValue(fieldIssuesWith({ priority: 0 }));
+    await waitFor(() => expect(race.listIssues).toHaveBeenCalledTimes(2));
+    expect(priorityIn(board, "CORE-1").value).toBe("0");
+    expect(priorityIn(board, "CORE-2").value).toBe("3");
+
+    // The attempt answers: the write is made and shows nothing more.
     await act(async () => {
       answer.resolve({ ...patched, key: "CORE-1", priority: 0 });
       await settle();
     });
-    await waitFor(() => expect(race.listIssues.mock.calls.length).toBeGreaterThan(1));
-    await waitFor(() =>
-      expect(race.queryClient.getQueryState(boardListKey)?.fetchStatus).toBe("idle")
-    );
-    expect(priorityIn(board, "CORE-1").value).toBe("0");
+    await waitFor(() => expect(writes.rows()).toEqual([]));
+    await askAgain(race.queryClient, ["issues"]);
+    await waitFor(() => expect(priorityIn(board, "CORE-1").value).toBe("1"));
   } finally {
     realClock();
     race.cleanup();
@@ -1182,72 +1318,83 @@ test("a write the reader stopped holds the fetch until the attempt already out a
   }
 });
 
-test("a write of another project's issue holds this project's list not at all, and the Inbox's fetch all the same", async () => {
+test("a write of another project's issue leaves this project's list alone and keeps its own Inbox row", async () => {
   const user = userEvent.setup();
   const answer = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
   const race = renderRace();
   try {
-    await raceReady();
+    const board = await raceReady();
     await user.selectOptions(priorityIn(inboxRow("OTHER-1"), "OTHER-1"), "0");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("OTHER-1", { priority: 0 }, keyedAttempt)
     );
 
-    // CORE's list holds no row of OTHER-1, so no answer of it can be older than this write.
+    // CORE's list holds no row of OTHER-1, so this write changes nothing there: its answer is
+    // the server's whole.
+    race.listIssues.mockResolvedValue(listSinceOtherBrowser);
     await askAgain(race.queryClient, ["issues"]);
-    expect(race.listIssues).toHaveBeenCalledTimes(2);
-    expect(race.queryClient.getQueryState(boardListKey)?.fetchStatus).toBe("idle");
+    await waitFor(() => expect(race.listIssues).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(priorityIn(board, "CORE-2").value).toBe("3"));
+    expect(priorityIn(board, "CORE-1").value).toBe("1");
 
-    // The Inbox lists every project's issues, so it waits for this write as for any other.
+    // The Inbox lists every project's issues, so the pick is shown again over its answer.
     await askAgain(race.queryClient, ["inbox"]);
-    expect(race.getInbox).toHaveBeenCalledTimes(1);
-    expect(race.queryClient.getQueryState(inboxKey)?.fetchStatus).toBe("fetching");
+    await waitFor(() => expect(race.getInbox).toHaveBeenCalledTimes(2));
     expect(priorityIn(inboxRow("OTHER-1"), "OTHER-1").value).toBe("0");
+    expect(priorityIn(inboxRow("CORE-1"), "CORE-1").value).toBe("1");
   } finally {
     race.cleanup();
     patchIssue.mockRestore();
   }
 });
 
-test("the components save holds the list's fetch too, though no field control makes it", async () => {
-  const user = userEvent.setup();
+test("two live writes of one list show their changes again in the order the store holds them", async () => {
   const answer = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
   const race = renderRace();
   try {
-    await raceReady();
-    await user.click(screen.getByRole("button", { name: "Save components" }));
-    await waitFor(() =>
-      expect(patchIssue).toHaveBeenCalledWith(
-        "CORE-1",
-        { components: { ids: [], mode: "none", reason: "Not architectural" } },
-        keyedAttempt
-      )
-    );
-    expect(race.listIssues).toHaveBeenCalledTimes(1);
-
-    // One rule holds a list's fetch: this write carries the issue's line (`issue:CORE-1`) like
-    // any other, and nothing had to be registered for the list to wait for it.
-    await askAgain(race.queryClient, ["issues"]);
-    expect(race.listIssues).toHaveBeenCalledTimes(1);
-    expect(race.queryClient.getQueryState(boardListKey)?.fetchStatus).toBe("fetching");
-
+    const board = await raceReady();
+    const writes = writesOf(race.queryClient);
+    const pick = (priority: number, key: string) =>
+      writes
+        .run({
+          detail: null,
+          key,
+          kind: plainWrite,
+          label: `CORE-1 set to P${priority}`,
+          presentation: "indicator",
+          request: issuePatchRequest("CORE-1", { priority }),
+          shows: (shown) => {
+            shown.under<IssueSummary[]>(["issues", "project"], (rows) =>
+              rows.map((row) => (row.key === "CORE-1" ? { ...row, priority } : row))
+            );
+          },
+          target: "issue:CORE-1",
+        })
+        .catch(() => undefined);
     await act(async () => {
-      answer.resolve({ ...patched, key: "CORE-1", priority: 1 });
+      void pick(0, "first-pick");
+      void pick(2, "second-pick");
       await settle();
     });
-    await waitFor(() => expect(race.listIssues.mock.calls.length).toBeGreaterThan(1));
-    await waitFor(() =>
-      expect(race.queryClient.getQueryState(boardListKey)?.fetchStatus).toBe("idle")
-    );
+    expect(priorityIn(board, "CORE-1").value).toBe("2");
+
+    race.listIssues.mockResolvedValue(listSinceOtherBrowser);
+    await askAgain(race.queryClient, ["issues"]);
+
+    // Both are live, so both are shown again, in the order the store holds them: the last
+    // pressed is the last seen.
+    await waitFor(() => expect(race.listIssues).toHaveBeenCalledTimes(2));
+    expect(priorityIn(board, "CORE-1").value).toBe("2");
+    expect(priorityIn(board, "CORE-2").value).toBe("3");
   } finally {
     race.cleanup();
     patchIssue.mockRestore();
   }
 });
 
-test("a fetch the next pick cancels while a write holds it ends there: nothing is read and nothing hangs", async () => {
+test("a cache emptied before the answer lands, as a reload leaves it, carries the pending change too", async () => {
   const user = userEvent.setup();
   const answer = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
@@ -1256,20 +1403,270 @@ test("a fetch the next pick cancels while a write holds it ends there: nothing i
     const board = await raceReady();
     await user.selectOptions(priorityIn(board, "CORE-1"), "0");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    await askAgain(race.queryClient, ["issues"]);
-    expect(race.listIssues).toHaveBeenCalledTimes(1);
-    expect(race.queryClient.getQueryState(boardListKey)?.fetchStatus).toBe("fetching");
 
-    // The ordinary end of a held fetch: the next pick cancels the reads in flight, this one
-    // among them, so the wait ends with the signal's reason rather than hanging on the store.
-    await user.selectOptions(priorityIn(board, "CORE-2"), "2");
-    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
-    expect(race.listIssues).toHaveBeenCalledTimes(1);
-    const state = race.queryClient.getQueryState(boardListKey);
-    expect(state?.fetchStatus).toBe("idle");
-    expect(state?.status).toBe("success");
+    // The list's cache is emptied under the write, as a reload leaves it: there is no row there
+    // to hold the pick, and the answer fills the cache for the first time.
+    race.listIssues.mockResolvedValue(listSinceOtherBrowser);
+    act(() => {
+      race.queryClient.resetQueries({ queryKey: boardListKey });
+    });
+    await askAgain(race.queryClient, ["issues"]);
+
+    await waitFor(() => expect(race.listIssues.mock.calls.length).toBeGreaterThan(1));
+    await waitFor(() =>
+      expect(
+        (race.queryClient.getQueryData<IssueSummary[]>(boardListKey) ?? []).map((row) => [
+          row.key,
+          row.priority,
+        ])
+      ).toEqual([
+        ["CORE-1", 0],
+        ["CORE-2", 3],
+      ])
+    );
     expect(priorityIn(board, "CORE-1").value).toBe("0");
-    expect(priorityIn(board, "CORE-2").value).toBe("2");
+  } finally {
+    race.cleanup();
+    patchIssue.mockRestore();
+  }
+});
+
+// A board move is the write's own change too: the placement rule run against the list as it
+// stands, never a list computed once against the rows the drop read. So an answer that lands
+// while the move is unanswered leaves the card where the person dropped it and brings every
+// other card's move with it.
+test("a list answer landing under an unanswered move keeps the card where it was dropped", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const answer = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
+  /** The server's board: Todo holds Bravo then Charlie, and Alpha waits in Triage. */
+  const board: IssueSummary[] = [
+    issue({ key: "CORE-1", rank: "a", status: "triage", title: "Alpha" }),
+    issue({ key: "CORE-2", rank: "b", status: "todo", title: "Bravo" }),
+    issue({ key: "CORE-3", rank: "c", status: "todo", title: "Charlie" }),
+  ];
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue(board);
+  const hook = renderMoves(queryClient);
+  const todoKeys = () =>
+    (queryClient.getQueryData<IssueSummary[]>(boardListKey) ?? [])
+      .filter((row) => row.status === "todo")
+      .map((row) => row.key);
+  try {
+    await act(async () => {
+      await queryClient.fetchQuery(projectIssuesQuery("CORE", []));
+    });
+    let moved: Promise<void> = Promise.resolve();
+    act(() => {
+      moved = hook.result.current.moveCard("CORE-1", "todo", 1);
+    });
+    // Alpha was dropped as the column's second card, between Bravo and Charlie.
+    expect(todoKeys()).toEqual(["CORE-2", "CORE-1", "CORE-3"]);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue.mock.calls[0]).toEqual([
+      "CORE-1",
+      { rank: { after: "CORE-2", before: "CORE-3" }, status: "todo" },
+      keyedAttempt,
+    ]);
+
+    // Another browser moves Charlie to the head of the column, and this page reads the list
+    // again while its own move is still unanswered. The server lists a project's issues by
+    // status then rank, which is the order each column is drawn in.
+    listIssues.mockResolvedValue([
+      issue({ key: "CORE-1", rank: "a", status: "triage", title: "Alpha" }),
+      issue({ key: "CORE-3", rank: "a0", status: "todo", title: "Charlie" }),
+      issue({ key: "CORE-2", rank: "b", status: "todo", title: "Bravo" }),
+    ]);
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: boardListKey });
+      await settle();
+    });
+
+    // The answer landed whole - Charlie's move came with it - and the move showed its own
+    // placement again over it: Alpha is still the column's second card, now after Charlie.
+    expect(listIssues).toHaveBeenCalledTimes(2);
+    expect(todoKeys()).toEqual(["CORE-3", "CORE-1", "CORE-2"]);
+
+    // The server takes the move, and what it answers is the board's from then on.
+    listIssues.mockResolvedValue([
+      issue({ key: "CORE-3", rank: "a0", status: "todo", title: "Charlie" }),
+      issue({ key: "CORE-1", rank: "ab", status: "todo", title: "Alpha" }),
+      issue({ key: "CORE-2", rank: "b", status: "todo", title: "Bravo" }),
+    ]);
+    await act(async () => {
+      answer.resolve({ ...patched, key: "CORE-1", status: "todo" });
+      await moved;
+    });
+    expect(hook.result.current.error).toBeUndefined();
+  } finally {
+    hook.unmount();
+    listIssues.mockRestore();
+    patchIssue.mockRestore();
+  }
+});
+
+test("a project list answer landing while an assignee write waits its turn keeps the person", async () => {
+  const user = userEvent.setup();
+  const first = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => first.promise);
+  const race = renderRace();
+  try {
+    const board = await raceReady();
+    const writes = writesOf(race.queryClient);
+    // A write of CORE-1 that never answers, so the pick behind it waits its turn.
+    await act(async () => {
+      void writes
+        .run({
+          detail: null,
+          kind: plainWrite,
+          label: "CORE-1 set to done",
+          presentation: "indicator",
+          request: issuePatchRequest("CORE-1", { status: "done" }),
+          target: "issue:CORE-1",
+        })
+        .catch(() => undefined);
+      await settle();
+    });
+    await pickAssignee(user, "bob");
+    await waitFor(() =>
+      expect(writes.rows().map((write) => write.status)).toEqual(["sending", "queued"])
+    );
+
+    race.listIssues.mockResolvedValue(listSinceOtherBrowser);
+    await askAgain(race.queryClient, ["issues"]);
+
+    await waitFor(() => expect(race.listIssues).toHaveBeenCalledTimes(2));
+    expect(assigneeSelect().value).toBe("bob");
+    expect(priorityIn(board, "CORE-2").value).toBe("3");
+  } finally {
+    race.cleanup();
+    patchIssue.mockRestore();
+  }
+});
+
+test("a list answer landing while an assignee write is late and still being tried keeps the person", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const answer = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
+  const race = renderRace();
+  try {
+    const board = await raceReady();
+    await pickAssignee(user, "bob");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await tick(SEND_DEADLINE_MS + 1_000);
+    expect(
+      writesOf(race.queryClient)
+        .rows()
+        .map((write) => write.status)
+    ).toEqual(["late"]);
+
+    race.listIssues.mockResolvedValue(listSinceOtherBrowser);
+    await askAgain(race.queryClient, ["issues"]);
+
+    await waitFor(() => expect(race.listIssues).toHaveBeenCalledTimes(2));
+    expect(assigneeSelect().value).toBe("bob");
+    expect(priorityIn(board, "CORE-2").value).toBe("3");
+  } finally {
+    realClock();
+    race.cleanup();
+    patchIssue.mockRestore();
+  }
+});
+
+test("a project list answer landing while a repository write waits its turn keeps the repository", async () => {
+  const user = userEvent.setup();
+  const first = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => first.promise);
+  const race = renderRace();
+  try {
+    const board = await raceReady();
+    const writes = writesOf(race.queryClient);
+    await act(async () => {
+      void writes
+        .run({
+          detail: null,
+          kind: plainWrite,
+          label: "CORE-1 set to done",
+          presentation: "indicator",
+          request: issuePatchRequest("CORE-1", { status: "done" }),
+          target: "issue:CORE-1",
+        })
+        .catch(() => undefined);
+      await settle();
+    });
+    await user.selectOptions(repoSelect(), "acme/widgets");
+    await waitFor(() =>
+      expect(writes.rows().map((write) => write.status)).toEqual(["sending", "queued"])
+    );
+
+    race.listIssues.mockResolvedValue(listSinceOtherBrowser);
+    await askAgain(race.queryClient, ["issues"]);
+
+    await waitFor(() => expect(race.listIssues).toHaveBeenCalledTimes(2));
+    expect(repoSelect().value).toBe("acme/widgets");
+    expect(priorityIn(board, "CORE-2").value).toBe("3");
+  } finally {
+    race.cleanup();
+    patchIssue.mockRestore();
+  }
+});
+
+test("a list answer landing while a repository write is late and still being tried keeps it", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const answer = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
+  const race = renderRace();
+  try {
+    const board = await raceReady();
+    await user.selectOptions(repoSelect(), "acme/widgets");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await tick(SEND_DEADLINE_MS + 1_000);
+    expect(
+      writesOf(race.queryClient)
+        .rows()
+        .map((write) => write.status)
+    ).toEqual(["late"]);
+
+    race.listIssues.mockResolvedValue(listSinceOtherBrowser);
+    await askAgain(race.queryClient, ["issues"]);
+
+    await waitFor(() => expect(race.listIssues).toHaveBeenCalledTimes(2));
+    expect(repoSelect().value).toBe("acme/widgets");
+    expect(priorityIn(board, "CORE-2").value).toBe("3");
+  } finally {
+    realClock();
+    race.cleanup();
+    patchIssue.mockRestore();
+  }
+});
+
+test("an issue read answer landing while a priority write is out keeps the pick and brings the rest of the issue", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
+  const race = renderRace();
+  try {
+    const board = await raceReady();
+    expect(screen.getByTestId("detail-priority").textContent).toBe("1");
+    await user.selectOptions(priorityIn(board, "CORE-1"), "0");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
+    );
+    expect(screen.getByTestId("detail-priority").textContent).toBe("0");
+
+    // The issue's own read answers while the PATCH is out: the server still holds P1, and the
+    // title another person wrote comes with that answer.
+    race.getIssue.mockResolvedValue({
+      ...raceDetails,
+      title: "Alpha, retitled",
+      updated_at: "2026-09-14T00:00:00Z",
+    });
+    await askAgain(race.queryClient, ["issue", "CORE-1"]);
+
+    await waitFor(() => expect(race.getIssue).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId("detail-title").textContent).toBe("Alpha, retitled");
+    expect(screen.getByTestId("detail-priority").textContent).toBe("0");
   } finally {
     race.cleanup();
     patchIssue.mockRestore();

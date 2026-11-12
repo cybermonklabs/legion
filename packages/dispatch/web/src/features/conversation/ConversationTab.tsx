@@ -1,10 +1,9 @@
-import { type MutationKey, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type MutationKey, queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api, issueStateRequest, type WriteBounds } from "../../api/client";
 import { commentsQueryKey, whoAmIQuery } from "../../api/queries";
-import { rowQuery } from "../../api/row-query";
 import type {
   Agent,
   Artifact,
@@ -675,9 +674,8 @@ function CommentTurn({
   const [editingCommentId, setEditingCommentId] = useState<string>();
   const [savingCommentEditId, setSavingCommentEditId] = useState<string>();
   /** One attempt of a comment edit's save, under the composer's key (`sendRequest`). What it
-   *  saved is read again once it lands, and that read is not awaited here: the comments list
-   *  holds its fetch for every unanswered write of a comment (R7 of dispatch://INFRA-299), so an
-   *  attempt that waited for its own refetch would wait for itself. */
+   *  saved is read again once it lands, and that read is not awaited here: an attempt that
+   *  waited for its own refetch would wait for itself. */
   const editComment = useCallback(
     async (id: string, body: string, carried: CarriedBlockIds | undefined, bounds: WriteBounds) => {
       setSavingCommentEditId(id);
@@ -930,7 +928,7 @@ export function ConversationTab({
     queryFn: () => api.listIssueAskThreads(issueKey, "all"),
   });
   const comments = useQuery(
-    rowQuery({
+    queryOptions({
       queryKey: commentsQueryKey({ issue: issueKey }),
       queryFn: () => api.listComments(issueKey),
     })

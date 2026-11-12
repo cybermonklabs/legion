@@ -1,5 +1,5 @@
 import { DISPATCH_SCOPES } from "@legion/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
 import {
@@ -8,7 +8,6 @@ import {
   agentTokenScopesRequest,
   api,
 } from "../../api/client";
-import { rowQuery } from "../../api/row-query";
 import type { AgentToken, CreatedAgentToken, DispatchScope } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
@@ -41,11 +40,12 @@ import {
   settingsTableWrapper,
 } from "./classes";
 
-/** The viewer's agent tokens. Its fetch waits for the writes of a token's own row and of the
- *  list a mint adds to (`agent-token:<id>`, `agent-tokens:me`), so a list read while a mint,
- *  a scope change or a revoke is unanswered does not put the older list back on screen. */
+/** The viewer's agent tokens, the list a mint adds to and each token's own row
+ *  (`agent-tokens:me`, `agent-token:<id>`): a write of either that is live shows its change
+ *  again over each answer of this read, so a list read while a mint, a scope change or a revoke
+ *  is unanswered does not put the older list on screen (R7 of dispatch://INFRA-299). */
 const agentTokensQuery = () =>
-  rowQuery({
+  queryOptions({
     queryKey: ["agent-tokens"],
     queryFn: () => api.listAgentTokens(),
   });

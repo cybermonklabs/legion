@@ -1,10 +1,9 @@
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { infiniteQueryOptions, useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { askThreadQuery } from "../../api/queries";
-import { rowInfiniteQuery } from "../../api/row-query";
 import type { MyAnswerRow, MyAnswersResponse } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -127,7 +126,7 @@ export function AnswersPage(): ReactNode {
   useDocumentTitle("Answered by you · Dispatch");
   const [changingAsk, setChangingAsk] = useState<string | null>(null);
   const answers = useInfiniteQuery(
-    rowInfiniteQuery({
+    infiniteQueryOptions({
       getNextPageParam: (last: MyAnswersResponse) =>
         last.offset + (last.rows ?? []).length < last.total
           ? last.offset + (last.rows ?? []).length

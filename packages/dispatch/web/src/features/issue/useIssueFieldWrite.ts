@@ -11,6 +11,7 @@ import { type Shape, shape } from "../writes/write-storage";
 import {
   defineWriteKind,
   ofKind,
+  type Shown,
   useWriteSelection,
   useWrites,
   type Write,
@@ -90,18 +91,21 @@ function stillInLine(row: Write, issue: string, field: string): boolean {
 
 /**
  * The optimistic write engine behind every single-field issue write (priority, assignee,
- * repository). The caller supplies `patch`, the request body for a value, and `show`, which lands
+ * repository). The caller supplies `patch`, the request body for a value, and `show`, which puts
  * the value in the issue detail, every project issue list and every inbox row that shows the
- * issue.
+ * issue, through the store's own `Shown`.
  *
  * Every pick joins the store's line when it is pressed: one write of its own on the issue's line,
  * kept with the request it will send, so picks reach the server in press order whatever becomes
  * of the control - another page, an unmount, a reload - and none the person saw is lost. The
- * engine snapshots the caches before showing a pick and restores that snapshot if the server
- * refuses it, merges the server's answer and reads the issue again once the save settles - each
- * of those only while no newer write of the field is left in the line, where the screen is
- * already the newer pick's. A pick that replaces one of this control's that has not gone out
- * takes it out of the line (`Writes.discard`), which refuses that press with
+ * store shows the pick as the write joins and shows it again over each answer that lands on one
+ * of those caches while the write is live (R7 of dispatch://INFRA-299), so an answer composed
+ * before the pick arrives whole - every other row of it with it - and leaves the person's own
+ * change on screen. The engine snapshots the caches before the pick is shown and restores that
+ * snapshot if the server refuses it, merges the server's answer and reads the issue again once
+ * the save settles - each of those only while no newer write of the field is left in the line,
+ * where the screen is already the newer pick's. A pick that replaces one of this control's that
+ * has not gone out takes it out of the line (`Writes.discard`), which refuses that press with
  * `WriteDiscardedError`: the engine made that write go, so the person sees no failure for it.
  */
 export function useIssueFieldWrite<Value>(
@@ -111,7 +115,10 @@ export function useIssueFieldWrite<Value>(
      *  field of the same issue. */
     name: string;
     patch: (value: Value) => UpdateIssueInput;
-    show: (value: Value) => void;
+    /** Shows the value on each cache that draws it, through the store's own `Shown`: the store
+     *  calls this at the press and again over each answer that lands on one of those caches
+     *  while the write is live. */
+    show: (value: Value, shown: Shown) => void;
     /** What the shell's indicator names one save of this field. */
     label: (value: Value) => string;
   }
@@ -180,7 +187,6 @@ export function useIssueFieldWrite<Value>(
       void queryClient.cancelQueries({ queryKey });
     }
     const snapshot = takeSnapshot();
-    field.show(value);
     const again = stopped.current;
     stopped.current = undefined;
     // A value here is a priority, a login or a repository, so the same value is the same press
@@ -194,6 +200,9 @@ export function useIssueFieldWrite<Value>(
       label: field.label(value),
       presentation: "indicator",
       request: issuePatchRequest(issueKey, field.patch(value)),
+      // The pick is shown here, by the store, so it is shown again over each answer that lands
+      // on one of the caches it writes until this write settles (R7).
+      shows: (shown) => field.show(value, shown),
       target: `issue:${issueKey}`,
     });
     const id = writes.idOf(key);

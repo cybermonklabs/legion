@@ -95,12 +95,18 @@ export function SettingsPage(): ReactNode {
         ...variables,
       });
     },
-    onMutate: async (variables) => {
+    onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: ["repo-projects"] });
-      const previous = queryClient.getQueryData<RepoProject[]>(["repo-projects"]);
-      const existing = previous?.find((mapping) => mapping.repo === variables.repo);
-      queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
-        withMapping(current, {
+      // What a refusal puts back, read before the press shows its mapping.
+      return { previous: queryClient.getQueryData<RepoProject[]>(["repo-projects"]) };
+    },
+    /** The mapping this press shows, written into the list as it stands - so an answer this is
+     *  shown over again carries the mapping, and every other mapping that answer brought with
+     *  it stays (R7). */
+    shows: (variables) => (shown) => {
+      shown.on<RepoProject[]>(["repo-projects"], (current) => {
+        const existing = current.find((mapping) => mapping.repo === variables.repo);
+        return withMapping(current, {
           created_at: new Date().toISOString(),
           created_by: { id: "you", kind: "user" },
           // As the server decides it: the body's default, else the mapping's own while its
@@ -112,9 +118,8 @@ export function SettingsPage(): ReactNode {
           // This page's write names no rename, so the stored one stands (`putRepoProject`).
           renamed_to: existing?.renamed_to ?? null,
           repo: variables.repo,
-        })
-      );
-      return { previous };
+        });
+      });
     },
     // A landing with no answer keeps the optimistic row; `onSettled` reads them all again.
     onSuccess: (mapping, variables) => {
@@ -148,13 +153,17 @@ export function SettingsPage(): ReactNode {
         repo,
       });
     },
-    onMutate: async (repo) => {
+    onMutate: async () => {
       await queryClient.cancelQueries({ queryKey: ["repo-projects"] });
-      const previous = queryClient.getQueryData<RepoProject[]>(["repo-projects"]);
-      queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
+      // What a refusal puts back, read before the press shows the removal.
+      return { previous: queryClient.getQueryData<RepoProject[]>(["repo-projects"]) };
+    },
+    /** The removal this press shows: the row out of the list as it stands, so an answer this is
+     *  shown over again loses it too while every other mapping it carries stays. */
+    shows: (repo) => (shown) => {
+      shown.on<RepoProject[]>(["repo-projects"], (current) =>
         current.filter((mapping) => mapping.repo !== repo)
       );
-      return { previous };
     },
     onSuccess: () => setFailedAction(undefined),
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["repo-projects"] }),

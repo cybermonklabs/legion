@@ -1,10 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { inboxQuery, pinnedIssuesKey, projectsQuery, userAgentStateQuery } from "../../api/queries";
-import { rowQuery } from "../../api/row-query";
 import type { AuthenticatedUser } from "../../api/types";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { PinButton } from "../../components/PinButton";
@@ -150,7 +149,7 @@ export function Sidebar({
   const location = useLocation();
   const inbox = useQuery(inboxQuery());
   const pinned = useQuery(
-    rowQuery({
+    queryOptions({
       queryKey: pinnedIssuesKey,
       queryFn: () => api.listIssues({ pinned: true }),
     })

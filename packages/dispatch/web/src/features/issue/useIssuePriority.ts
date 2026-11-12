@@ -1,7 +1,6 @@
-import { useQueryClient } from "@tanstack/react-query";
-
 import { issueQuery, projectListsKey } from "../../api/queries";
 import type { InboxRow, IssueDetails, IssuePriority, IssueSummary } from "../../api/types";
+import type { Shown } from "../writes/write-store";
 import { inboxKey, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 export interface IssuePriorityWrite {
@@ -17,22 +16,20 @@ export interface IssuePriorityWrite {
 
 /**
  * The one way the SPA writes an issue's priority. Every surface that renders it (issue header,
- * board cards, list rows, inbox rows) shares this: the new value lands optimistically in the
- * issue detail, every project issue list and every inbox query that shows the issue, rolls back
- * on failure, and the lists refetch once the server has answered (see `useIssueFieldWrite`).
+ * board cards, list rows, inbox rows) shares this: the new value lands in the issue detail,
+ * every project issue list and every inbox query that shows the issue, the store shows it there
+ * again over each answer that lands while the write is live (R7), it rolls back on failure, and
+ * the lists refetch once the server has answered (see `useIssueFieldWrite`).
  */
 export function useIssuePriority(issueKey: string): IssuePriorityWrite {
-  const queryClient = useQueryClient();
   const detailKey = issueQuery(issueKey).queryKey;
-  const showPriority = (priority: IssuePriority | null) => {
-    queryClient.setQueryData<IssueDetails>(detailKey, (current) =>
-      current === undefined ? undefined : { ...current, priority }
+  const showPriority = (priority: IssuePriority | null, shown: Shown) => {
+    shown.on<IssueDetails>(detailKey, (current) => ({ ...current, priority }));
+    shown.under<IssueSummary[]>(projectListsKey, (current) =>
+      current.map((issue) => (issue.key === issueKey ? { ...issue, priority } : issue))
     );
-    queryClient.setQueriesData<IssueSummary[]>({ queryKey: projectListsKey }, (current) =>
-      current?.map((issue) => (issue.key === issueKey ? { ...issue, priority } : issue))
-    );
-    queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-      current?.map((row) => (row.issue_key === issueKey ? { ...row, priority } : row))
+    shown.under<InboxRow[]>(inboxKey, (current) =>
+      current.map((row) => (row.issue_key === issueKey ? { ...row, priority } : row))
     );
   };
   const write = useIssueFieldWrite<IssuePriority | null>(issueKey, {
