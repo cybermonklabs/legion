@@ -474,7 +474,9 @@ func refuseInATurn(w http.ResponseWriter, token claim.Token, op controllerOp) {
 }
 
 // refuseWorkingClaim is the one read of a claim stored working, which both recoveries make in
-// this order, and it reports whether it answered the caller (refuseState, freshSession).
+// this order, and it reports whether it answered the caller. It has three callers: the
+// compaction's door (refuseState), the fresh session's (freshSession), and the fresh session's
+// second read of a claim whose suspension the machine refused as working (suspendForFreshSession).
 //
 // A launch the wake pacing parks is read first, because such a claim is nearest to that
 // launch whatever its process is doing: the launch's turn lets that process go and starts the
@@ -489,10 +491,12 @@ func refuseInATurn(w http.ResponseWriter, token claim.Token, op controllerOp) {
 // What is left is read at the runtime, now, and the answer is of the process itself rather
 // than of the daemon's memory of a report a restart forgets (supervise.Machine.ReadProcess):
 //
-//   - a process that is gone is answered by neither door here: this reports that it answered
-//     nothing, and each door acts on it in its own words — the fresh session stops the claim
-//     and starts it again (freshSession, storedWorking), and the compaction, which
-//     has no agent to ask, names that door (refuseState);
+//   - a process that is gone is answered by no caller here: this reports that it answered
+//     nothing, and each caller acts on it in its own words — the fresh session stops the claim
+//     and starts it again (freshSession, storedWorking), the compaction, which has no agent to
+//     ask, names that door (refuseState), and the fresh session's second read, which already
+//     had its suspension refused, answers that the claim moved under the request
+//     (suspendForFreshSession, refuseMovedClaim);
 //   - a runtime that would not say is no statement about the process, so neither door acts
 //     and nothing of the claim changes (refuseUnreadableProcess);
 //   - a process that is running is a claim in a turn, in the words every claim stored working
@@ -522,11 +526,12 @@ func (s *server) refuseWorkingClaim(w http.ResponseWriter, r *http.Request, m *s
 		return true
 	}
 	// The read is a decision of this claim, as every other request either recovery makes of the
-	// machine is: it writes nothing of the stored claim (supervise.Machine.ReadProcess), but a
-	// caller that hangs up mid-request must not cut the probe short or take the claim out of the
-	// set the daemon's drain keeps a connection open for while the suspension that follows a
-	// gone read is posted (server.decision, postClaimEvent). Nesting one inside another decision
-	// is the compaction's case, and the set counts them (RouteDecisions.begin).
+	// machine is (server.decision): the context it runs under outlives the caller's connection
+	// and ends at the daemon's drain, so a caller that hangs up mid-request does not cut the
+	// probe short, nor the write of a death charge the read clears (supervise.Machine.ReadProcess).
+	// The decision ends when this returns; the suspension that follows a gone read runs under a
+	// decision of its own (postClaimEvent). Nesting one inside another decision is the
+	// compaction's case, and the set counts them (RouteDecisions.begin).
 	ctx, decided := s.decision(r, token)
 	defer decided()
 	switch read := m.ReadProcess(ctx); read {
@@ -744,8 +749,12 @@ func storedWorking(state supervise.ClaimState) bool {
 // suspension over a process that is not running, which lands where it arrives, so the claim
 // was not that claim when the suspension reached it. That is answered as it is, with nothing
 // of the claim changed (refuseMovedClaim), and not read a third time: a request that chased
-// the claim would have no end it could promise. Every other refusal is the machine's own
-// answer, in the words operatorFailure gives it. It reports false when it answered the caller.
+// the claim would have no end it could promise. A claim no longer stored working when the
+// view is taken again — its turn ended and left it idle, or another request suspended it — is
+// answered the same way rather than read, since every read's answer says the claim "is stored
+// working", which it no longer is; a suspension held over the claim keeps the answer every
+// held claim takes (refuseHeldSuspension). Every other refusal is the machine's own answer, in
+// the words operatorFailure gives it. It reports false when it answered the caller.
 func (s *server) suspendForFreshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) bool {
 	posted, err := s.postClaimEvent(w, r, m, token, "suspend", supervise.RequestSuspend{
 		Claim: token, Reason: freshSessionReason, By: supervise.SuspendedByOperator, NeverHold: true,
@@ -758,9 +767,12 @@ func (s *server) suspendForFreshSession(w http.ResponseWriter, r *http.Request, 
 		// A suspension another request posted between the route's view and this lock is held
 		// over the claim now, and a held claim keeps the answer the door gives every held
 		// claim, which R2 leaves as it is (refuseHeldSuspension).
-		if view := m.View(); view.SuspensionHeld {
+		switch view := m.View(); {
+		case view.SuspensionHeld:
 			refuseHeldSuspension(w, token, view.State, view.Role, freshSessionOp)
-		} else if !s.refuseWorkingClaim(w, r, m, token, view, freshSessionOp) {
+		case view.State != supervise.StateWorking:
+			refuseMovedClaim(w, token, freshSessionOp)
+		case !s.refuseWorkingClaim(w, r, m, token, view, freshSessionOp):
 			refuseMovedClaim(w, token, freshSessionOp)
 		}
 		return false

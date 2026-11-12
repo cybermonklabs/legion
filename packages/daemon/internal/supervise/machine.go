@@ -307,9 +307,8 @@ type Claim struct {
 	// write of it is made where the decision it records is made, because the windows that leave
 	// such a claim are the windows where nothing else writes the claim at all: died writes the
 	// charge with the count it charged, and the report that finds the process running again
-	// writes the clear (judge, reportedProcess). The read a recovery makes of the process is no
-	// such report: it writes nothing, so its clear stays in memory for the claim's next write
-	// (ReadProcess).
+	// writes the clear (judge, reportedProcess). The read a recovery makes of the process records
+	// what it finds as such a report does, and writes that clear in the same write (ReadProcess).
 	//
 	// It is of the process the claim records, as ProcessGone is, and goes with it: letGo clears
 	// it with the process it is about, and the claim written there records no process for a

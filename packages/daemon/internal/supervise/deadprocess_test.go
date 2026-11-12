@@ -19,11 +19,11 @@ import (
 // Every verdict is scripted, the uninteresting one included: the fake answers Alive when nothing
 // is queued (runtime/fake's ScriptProbe), so a row that queued none would pass whichever way the
 // read went. The two verdicts that find the process running clear what was charged for its death
-// in memory and write nothing (Claim.DeathCharged): the stored claim keeps the charge until the
-// claim's next write, so a recovery refused on the read has changed nothing of the stored claim
-// (dispatch://INFRA-3161 R3). The two that find it gone leave both records standing, and the two
-// that are no answer at all — a verdict of Uncertain and a runtime that could not be asked —
-// leave the claim exactly as it stood. No row writes the claim, whatever it found.
+// and write that clear once, in the write the sweep's report of a running process makes
+// (Claim.DeathCharged, judge). The two that find it gone leave both
+// records standing, and the two that are no answer at all — a verdict of Uncertain and a runtime
+// that could not be asked — leave the claim exactly as it stood; none of those four writes the
+// claim.
 func TestReadProcessAnswersEachVerdictAndRecordsProcessGone(t *testing.T) {
 	for _, row := range []struct {
 		name  string
@@ -41,6 +41,12 @@ func TestReadProcessAnswersEachVerdictAndRecordsProcessGone(t *testing.T) {
 		{"the runtime cannot say what became of it", fake.ProbeResult{Kind: runtime.Uncertain}, ProcessUnanswered, true, true},
 		{"the runtime itself could not be asked", fake.ProbeResult{Err: errBoom}, ProcessUnanswered, true, true},
 	} {
+		// A row whose read clears the charge writes that clear once, and the stored claim is the
+		// one before the read with the charge cleared; every other row writes nothing.
+		wantWrites := 0
+		if !row.charged {
+			wantWrites = 1
+		}
 		t.Run(row.name, func(t *testing.T) {
 			h, dead := workingOverTheProcessItsRefusedRelaunchKept(t)
 			before := h.store.load(h.token)
@@ -63,10 +69,15 @@ func TestReadProcessAnswersEachVerdictAndRecordsProcessGone(t *testing.T) {
 				t.Errorf("the claim reports ProcessGone %v and DeathCharged %v after the read, want %v and %v",
 					c.ProcessGone, c.DeathCharged, row.gone, row.charged)
 			}
-			if got := len(h.store.history()) - writes; got != 0 {
-				t.Errorf("the read wrote the claim %d times, want none: the read writes nothing", got)
+			if got := len(h.store.history()) - writes; got != wantWrites {
+				t.Errorf("the read wrote the claim %d times, want %d", got, wantWrites)
 			}
-			if stored := h.store.load(h.token); !reflect.DeepEqual(stored, before) {
+			// A clearing row's write carries the claim as the machine holds it, as judge's write of
+			// the same clear does, so only the charge is asserted of it; every other row leaves the
+			// stored claim exactly as it was.
+			if stored := h.store.load(h.token); wantWrites == 1 && stored.DeathCharged {
+				t.Errorf("the stored claim is still charged after the read found the process running, want the clear written")
+			} else if wantWrites == 0 && !reflect.DeepEqual(stored, before) {
 				t.Errorf("the stored claim is %+v after the read, want it unchanged, %+v", stored, before)
 			}
 			// The read reports and judges nothing else: no death, no relaunch, no stop.
@@ -78,6 +89,40 @@ func TestReadProcessAnswersEachVerdictAndRecordsProcessGone(t *testing.T) {
 			h.wantCalls("Resume", 0)
 			h.wantCalls("Suspend", 0)
 		})
+	}
+}
+
+// A read that finds the process running writes the death charge it clears, so a daemon restart
+// right after it restores a claim with nothing charged and the process's next real death is
+// counted toward the deaths limit (Claim.DeathCharged, chargeDeath). Held in memory alone, the
+// clear would be lost at the restart and the sweep's next report of the live process would find
+// nothing to clear; the restored claim would read that later death as one already charged, and
+// it would go uncounted.
+//
+// The negative control is the read's write taken out (ReadProcess's persist): the restored claim
+// is charged again, and the death after the restart leaves the count where it stood.
+func TestAReadThatFindsTheProcessRunningWritesTheClearSoTheNextDeathAfterARestartIsCounted(t *testing.T) {
+	h, _ := workingOverTheProcessItsRefusedRelaunchKept(t)
+	deaths := h.claim().Budgets.Deaths
+	if !h.store.load(h.token).DeathCharged {
+		t.Fatal("the stored claim reports no death charged before the read, want the charge its death wrote")
+	}
+	h.rt.ScriptProbe(fake.ProbeResult{Kind: runtime.Alive})
+	if got := h.m.ReadProcess(h.ctx); got != ProcessRuns {
+		t.Fatalf("the read answered %q, want %q", got, ProcessRuns)
+	}
+	if h.store.load(h.token).DeathCharged {
+		t.Fatal("the stored claim is still charged after the read found the process running, want the clear written")
+	}
+
+	h.restart()
+	if h.claim().DeathCharged {
+		t.Fatal("the restored claim reports a death charged, want the clear the read wrote")
+	}
+	h.observe(runtime.Gone)
+
+	if got := h.claim().Budgets.Deaths; got != deaths+1 {
+		t.Errorf("the claim counts %d deaths after the process died again, want %d: the death after the restart goes uncounted", got, deaths+1)
 	}
 }
 
@@ -322,16 +367,24 @@ func TestASuspendOverAProcessTheReadFoundGoneStopsTheDeadSessionAndKeepsTheEndsN
 // The take-back is written before the stop is sent (suspendOverADeadProcess): a take-back the
 // store will not write ends the suspension with nothing stopped, so the clean stop of the dead
 // process's Envoy session is not sent either, and the claim is left exactly as it stood for the
-// next request to take back. That next request, with the store answering again, lands the
-// suspension and sends the stop once. The negative control is the stop sent before the write,
-// which leaves the session stopped behind a refused suspension.
+// next request to take back, its last death's cause included, which the suspension set from the
+// read and puts back (Claim.LastDeathCause). That next request, with the store answering again,
+// lands the suspension, records the read's cause and sends the stop once. The negative controls
+// are the stop sent before the write, which leaves the session stopped behind a refused
+// suspension, and the cause not put back, which leaves the claim naming a death it did not
+// take back.
 func TestASuspendOverADeadProcessWhoseTakeBackTheStoreRefusesSendsNoStop(t *testing.T) {
 	h, stopped := sessionStops(t)
 	h.reach(StateWorking)
 	held := h.pending()
+	cause := h.claim().LastDeathCause
 	h.rt.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
 	if got := h.m.ReadProcess(h.ctx); got != ProcessGone {
 		t.Fatalf("the read of the claim's process answered %q, want %q", got, ProcessGone)
+	}
+	gone := deathCause(runtime.Observation{Kind: runtime.Gone})
+	if cause == gone {
+		t.Fatalf("the claim already records its last death as %q, the cause the read finds, so its restore would show nothing", cause)
 	}
 	h.store.fail("PutDelivery", errBoom)
 
@@ -349,6 +402,9 @@ func TestASuspendOverADeadProcessWhoseTakeBackTheStoreRefusesSendsNoStop(t *test
 	if p := h.pending(); p.ID != held.ID || p.ConfirmedAt.IsZero() || p.Interrupted {
 		t.Errorf("the claim holds %+v, want the dead turn's task as it stood, %+v", p, held)
 	}
+	if c := h.claim().LastDeathCause; c != cause {
+		t.Errorf("the claim records its last death as %q after the refused take-back, want the cause it held before, %q", c, cause)
+	}
 
 	h.store.fail("PutDelivery", nil)
 	if err := h.handle(RequestSuspend{Claim: testToken, Reason: "a fresh session was asked for",
@@ -358,6 +414,9 @@ func TestASuspendOverADeadProcessWhoseTakeBackTheStoreRefusesSendsNoStop(t *test
 	h.wantState(StateSuspended)
 	if !slices.Equal(*stopped, []string{session}) {
 		t.Errorf("stopped sessions %v, want the dead process's own session once", *stopped)
+	}
+	if c := h.claim().LastDeathCause; c != gone {
+		t.Errorf("the suspended claim records its last death as %q, want the read's own account %q", c, gone)
 	}
 }
 

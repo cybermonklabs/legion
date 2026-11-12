@@ -1259,11 +1259,14 @@ package api
 // means a process that is running: a claim whose process the read finds alive, and one whose
 // session is being compacted. A claim whose process the runtime would not answer for, and one
 // that records no process to read, is refused `CLAIM_UNSETTLED` instead, left exactly as the
-// request found it and told which read did not happen; so is a claim whose state moved while a
-// fresh session was made of it, which the daemon reads again and does not chase. A claim under
-// a relaunch the wake pacing parks keeps `CLAIM_UNSETTLED`. The read itself writes nothing of
-// the claim. One answer more changed: a fresh session that stopped the claim and could not
-// start it again — the forget of its session or its start refused — answers 200 with that
+// request found it and told which read did not happen; so is a claim that moved under a fresh
+// session and that the daemon's second read finds no longer working or gone once more, a moved
+// claim being otherwise answered as that second read finds it. A claim under a relaunch the
+// wake pacing parks keeps `CLAIM_UNSETTLED`. The read records what it finds as the sweep's
+// report of the process would, the death charge a running verdict clears included, and a refusal
+// stops, suspends, forgets, takes back and starts nothing. One answer more changed: a fresh
+// session that stopped the claim and could not start it again — the forget of its session or
+// its start refused — answers 200 with that
 // refusal, and the state it left the claim in, in `phaseNotRestarted`, rather than reporting a
 // failure about a claim it had already stopped, so that member now carries either the
 // workflow's refused phase restart or a step the machine refused after the claim was stopped.

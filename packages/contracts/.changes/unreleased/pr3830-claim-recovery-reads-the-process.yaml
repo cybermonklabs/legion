@@ -6,7 +6,8 @@ body: |-
   that claim's process at the request. `CLAIM_IN_A_TURN` is for a claim whose process that read
   finds running, and one whose session is being compacted. A claim whose process the runtime
   would not answer for, and one that records no process to read, take `CLAIM_UNSETTLED`, as a
-  fresh session's claim that moved while the request was made does, each with nothing changed.
+  fresh session's claim that moved under the request does where a second read finds it no longer
+  working or gone once more, each with nothing changed.
   The compaction's `CLAIM_NOT_RUNNING` covers the claim no process stands behind as well as a
   suspended, failed or retired one. `LegionFreshSessionResponse`'s `phaseNotRestarted` now
   carries either the workflow's refused phase restart or, where the request stopped the claim, the

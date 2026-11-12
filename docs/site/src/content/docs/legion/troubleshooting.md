@@ -594,7 +594,8 @@ working under a relaunch the wake pacing parked, and a claim whose role runs on 
 which has no Oh My Pi session.
 For a claim the daemon records as working it reads that claim's process at the runtime, at the
 moment of the request, rather than the daemon's memory of an older report, which a daemon restart
-forgets, and that read writes nothing of the claim. A process that read finds running is refused
+forgets, and that read records what it finds as the sweep's report of the process would, a
+cleared death charge included, and changes nothing else of the claim. A process that read finds running is refused
 `CLAIM_IN_A_TURN`, because a compaction would abort the turn that may be the one ending the run
 of refusals. A claim whose session is being compacted takes that code too. A claim whose process
 the runtime would not answer for, and a claim that records no process to read, are refused

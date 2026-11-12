@@ -375,8 +375,9 @@ export function createLegionTool(deps: {
         "The daemon refuses it for a claim whose process that read finds running " +
         "(CLAIM_IN_A_TURN), for a claim whose session is being compacted, which is not read at " +
         "all (CLAIM_IN_A_TURN), for a claim whose process the runtime would not answer for, for " +
-        "one that records no process to read, and for one that moved while the request was made, " +
-        "each left exactly as the request found it (CLAIM_UNSETTLED), for a claim a " +
+        "one that records no process to read, and for one that moved under the request and that a second read " +
+        "finds no longer working or gone once more, each left exactly as the request found it " +
+        "(CLAIM_UNSETTLED; a claim that moved is otherwise answered as that second read finds it), for a claim a " +
         "suspension is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
         "the claim is working, CLAIM_UNSETTLED where it is not), for a claim between states — " +
         "one queued, one whose launch is in flight, and one left working under a relaunch the " +

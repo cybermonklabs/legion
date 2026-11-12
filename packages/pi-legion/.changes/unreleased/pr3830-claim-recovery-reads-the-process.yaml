@@ -9,8 +9,8 @@ body: |-
   for a claim whose session a provider keeps refusing, and `fresh_session` for a claim no process
   stands behind. `CLAIM_IN_A_TURN` is for a claim whose process the daemon reads as running, and
   one whose session is being compacted. A claim whose process the runtime would not answer for,
-  one that records no process to read, and one that moved while a fresh session was made of it
-  are refused `CLAIM_UNSETTLED`, each left exactly as the request found it, and so is a claim
+  one that records no process to read, and one that moved under the request and that a second
+  read finds no longer working or gone once more are refused `CLAIM_UNSETTLED`, each left exactly as the request found it, and so is a claim
   left working under a relaunch the wake pacing parked. A fresh session that stopped the claim
   and then had the forget of its session or its start refused answers with that refusal in
   `phaseNotRestarted`, and the sentence names the state the refused step left the claim in: ask
