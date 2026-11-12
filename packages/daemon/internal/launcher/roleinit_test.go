@@ -1267,6 +1267,15 @@ type roleDrainPlan struct {
 	Leaves bool
 }
 
+// roleDrainSlack is what that row allows the stage's own clock on a loaded machine. The stage
+// times role-init's wait from its read of the status report, while role-init starts its
+// roleNamespaceDrain after it has written that report and sent the SIGTERM, so under load the
+// stage's clock starts the later of the two and a wait that ran in full reads a little short of
+// the ceiling. It is that scheduling gap alone, never a span of the wait itself: it is a small
+// part of roleNamespaceDrain, and an init that sends no signal and kills the namespace at once
+// ends its wait in milliseconds, which the lower bound below still reads as the failure it is.
+const roleDrainSlack = 250 * time.Millisecond
+
 // A role whose shim exits on its own has its namespace signalled before it is killed: role-init
 // sends SIGTERM over the role's whole namespace once it has reported the shim's status and before
 // the kill(-1, SIGKILL) that ends the namespace, so a git or a jj the role left running finishes
@@ -1321,9 +1330,9 @@ func TestARoleWhoseShimExitsSignalsItsNamespaceBeforeItKills(t *testing.T) {
 			case tc.leaves && drained > roleNamespaceDrain/2:
 				t.Errorf("role-init exited %s after it reported the shim's status, want well inside %s: the wait runs to its ceiling rather than ending with the namespace\n%s",
 					drained, roleNamespaceDrain, output)
-			case !tc.leaves && drained < roleNamespaceDrain:
-				t.Errorf("role-init exited %s after it reported the shim's status, want at least %s: a descendant that never leaves is killed before the wait is over\n%s",
-					drained, roleNamespaceDrain, output)
+			case !tc.leaves && drained < roleNamespaceDrain-roleDrainSlack:
+				t.Errorf("role-init exited %s after it reported the shim's status, want at least %s (roleNamespaceDrain less the roleDrainSlack the stage's own clock may lose under load): a descendant that never leaves is killed before the wait is over\n%s",
+					drained, roleNamespaceDrain-roleDrainSlack, output)
 			case !tc.leaves && drained > 2*roleNamespaceDrain:
 				t.Errorf("role-init exited %s after it reported the shim's status, want twice roleNamespaceDrain (%s) and no more: the wait is not bounded\n%s",
 					drained, 2*roleNamespaceDrain, output)
@@ -1439,10 +1448,24 @@ func runRoleDrain(plan roleDrainPlan) error {
 // writes the file it removes when it is signalled, so the shim's exit says the trap is in place,
 // and a file that is gone was removed rather than never written; a file that never appeared is
 // the shim's own exit 1 rather than a case that reads as a pass.
+//
+// The descendant holds its life in one sleep, started before its trap so the trap can name it,
+// and spends that life waiting on that one sleep: it forks nothing after the signal, and its
+// trap ends that sleep before caught runs. A descendant that waited in a loop of sleeps would
+// fork its next sleep the moment role-init's SIGTERM killed the one it was waiting for, before
+// the shell ran the pending trap, and a trap that then left would leave that new sleep behind
+// with no signal of its own — a process of the row's own making, which role-init rightly waits
+// the whole of roleNamespaceDrain for and then kills, so the case that reads an early end would
+// read the ceiling instead and fail for what the rig left rather than for what role-init did.
+// The caught of the case whose descendant stays does go on forking sleeps after the signal,
+// which is that case's whole point: a descendant that never leaves is what keeps the role's
+// namespace up until the ceiling.
 func roleDrainShim(caught string) string {
-	return fmt.Sprintf(`/bin/sh -c "trap '%s' TERM
+	return fmt.Sprintf(`/bin/sh -c "/bin/sleep 600 &
+sleeper=\$!
+trap 'kill \$sleeper 2>/dev/null; %s' TERM
 printf alive > /tmp/%s
-while :; do /bin/sleep 600 & wait; done" &
+wait \$sleeper" &
 waited=0
 while [ ! -f /tmp/%s ]; do
 	waited=$((waited + 1))
