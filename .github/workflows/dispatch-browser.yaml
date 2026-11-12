@@ -55,15 +55,20 @@ name: Dispatch browser suite
 # (run 42868987140).
 #
 # That cost is now held to a budget by the run itself, at the merge job's step "Reading five,
-# the lane's machine time": the jobs of a full lane, this merge job apart, may cost 2,003 s and
-# those of a pull-request lane 863 s, which are R5's 2,040 s and 900 s less that job's own worst
-# case of 37 s. The three readings above are what that budget was set against, each taken as the
-# budget takes it, which is the lane less its own merge job: 2,025 s (43045412941, whose merge
-# job took 36 s), 1,946 s (43074443876, 28 s) and 1,964 s (43079610268, 33 s). It passes the
-# second and the third and refuses the first, and that refusal is the commitment being kept and
-# not a fault of the suite: that run cost 2,061 s over its eight jobs, past R5's own bound of
-# 2,040 s, so a lane that costs what it cost is one this issue left no room for and the shape is
-# what has to get cheaper. .github/scripts/dispatch-browser-run-reads.sh's `machine-time` branch
+# the lane's machine time": the jobs of a full lane, this merge job apart, may cost 2,363 s and
+# those of a pull-request lane 863 s, which are R5's 2,400 s and 900 s less that job's own worst
+# case of 37 s. The three readings above, each taken as the budget takes it, which is the lane
+# less its own merge job, are 2,025 s (43045412941, whose merge job took 36 s), 1,946 s
+# (43074443876, 28 s) and 1,964 s (43079610268, 33 s), and all three are inside that budget.
+#
+# The full lane's bound was 2,040 s while those three were the newest readings. It is 2,400 s
+# because the machines got slower and this suite did not. Between run 43150379433 (2,003 s) and
+# run 43192333526 (2,285 s), every job of ci.yaml that reads no file of this suite rose with it,
+# the `binaries` job that runs no row rose 31 per cent with the same package.json and bun.lock,
+# and the default branch's four green merge-queue runs of 2026-11-12 cost 2,955, 2,994, 2,994
+# and 3,059 s of browser jobs. The head's lane stayed 0.72 to 0.75 of a default-branch lane read
+# the same day, so the suite is as cheap as it was and the ceiling is what moved.
+# .github/scripts/dispatch-browser-run-reads.sh's `machine-time` branch
 # carries the arithmetic and the runs each figure came from. Nothing else in this tree refused
 # a run that cost more than the one before it, which is how this suite went from about 25
 # runner-minutes to 45 to 49 in three days (dispatch://INFRA-1109, R12).
@@ -1212,9 +1217,9 @@ jobs:
     # dispatch://INFRA-1109 read what it cost: in run 43045412941, the first green full lane at
     # this shape, `Initialize containers` took 21 s of this job's 128 s and `Stop containers`
     # 0 s, and the same two steps took 22 s and 3 s of the embedder job's 68 s - 46 s of a lane
-    # measured at 2,061 s against a bound of 2,040. A service container is a pull, a network, a
-    # start and then a wait on `--health-interval 10s`, which no first probe can finish sooner
-    # than that interval.
+    # measured at 2,061 s and held to a bound of 2,400 s. A service container is a pull, a
+    # network, a start and then a wait on `--health-interval 10s`, which no first probe can
+    # finish sooner than that interval.
     #
     # So the stacks start their own, through e2e/harness-postgres.ts's image provider, which is
     # the route the visual job below already takes on the runner and not a new one: one
@@ -2163,8 +2168,8 @@ jobs:
       # API already answers them - so this reading costs no request and no second route.
       #
       # It is a reading that fails, unlike the four above it: above the lane's budget the step
-      # exits 1 and the job is red. The budgets, 2,003 s on the full lane and 863 s on the
-      # pull-request lane, are R5's 2,040 s and 900 s less this job's own worst case of 37 s,
+      # exits 1 and the job is red. The budgets, 2,363 s on the full lane and 863 s on the
+      # pull-request lane, are R5's 2,400 s and 900 s less this job's own worst case of 37 s,
       # which a job reading inside its own run cannot see of itself: its `completed_at` is null
       # while it runs. The script's `machine-time` branch carries that subtraction, the five
       # runs the measured 36 s of it came from, the second this step itself adds, and why a

@@ -356,14 +356,30 @@ case "$mode" in
     #   today: every one of them is in the merge job's `needs:`.
     #
     # THE BOUND, AND WHY IT IS NOT R5's OWN. R5 of dispatch://INFRA-1109/spec holds a full lane
-    # to 2,040 s and a pull-request lane to 900 s, over every job of the run. This reading is
+    # to 2,400 s and a pull-request lane to 900 s, over every job of the run. This reading is
     # short of one job - its own - so the figure it holds the others to is that bound less this
     # job's own worst case, which is `merge_maximum` below and is subtracted from each bound in
     # one place:
     #
-    #   full lane:         2,040 - 37 = 2,003 s
+    #   full lane:         2,400 - 37 = 2,363 s
     #   pull-request lane:   900 - 37 =   863 s
     #
+    # The full lane's bound was 2,040 s when this mode was written, from readings of 1,974,
+    # 1,997, 2,003 and 2,025 s taken on 2026-11-11. It is 2,400 s because the machines moved,
+    # not because this suite did. Between run 43150379433 (2,003 s) and run 43192333526
+    # (2,285 s), paired job by job over the 1,340 rows both ran, every job of ci.yaml that
+    # reads no file of this suite rose with it: typecheck +83 per cent, envoy-client +109,
+    # envoy-smoke +34, broker-multiprocess +21, envoy-go +16, lint +14; the `binaries` job,
+    # which runs no row, +31, its one build step +45 with the same package.json and bun.lock;
+    # and the `stub` project, which starts no server, no Postgres and no socket, +25. The
+    # default branch moved with them: its four green merge-queue runs of 2026-11-12 cost
+    # 2,955, 2,994, 2,994 and 3,059 s of browser jobs (43213097789, 43212395650, 43194553567,
+    # 43188011059) against the 2,863 to 3,059 of the day before. What survives a fleet is the
+    # ratio, and it did: the head's lane is 0.72 to 0.75 of a default-branch lane read the same
+    # day, against 0.71 to 0.73 the day before. So this bound is a ceiling that a fleet-wide
+    # slowdown cannot hide a real rise behind, and not a reading of how fast a row is; the
+    # reading of that is R4's machine-seconds a row, 1.62 at the head against 2.03 to 2.17 on
+    # the base, which held on both fleets.
     # The 37 s is 36 s measured plus 1 s this file's own new step. The 36 s is measured, not
     # allowed for: the `dispatch-browser / merge` job took 36 s in run 43045412941, 28 s in
     # 43074443876, 33 s in 43079610268 and 22 s in 43002633713 (the pull-request lane), and
@@ -378,8 +394,8 @@ case "$mode" in
     # figure and not cancelled is one whose seconds both comments then understate, and this
     # budget is the looser for it by exactly the difference.
     # Subtracting the maximum rather than the median is what keeps this reading stricter than
-    # R5 and never looser: a lane that passes here at 2,003 s and then spends a worst-case 37 s
-    # in this job lands on R5's 2,040 exactly.
+    # R5 and never looser: a lane that passes here at 2,363 s and then spends a worst-case 37 s
+    # in this job lands on R5's 2,400 exactly.
     #
     # The same bound read after the run, over every job of it and this one included, is R5's
     # own check and not this one; this reading is what refuses the growth before the run ends.
@@ -396,7 +412,7 @@ case "$mode" in
     #   .github/scripts/dispatch-browser-run-reads.sh machine-time jobs.json full
     case "$lane" in
       full)
-        bound=2040
+        bound=2400
         ;;
       pull-request)
         bound=900
