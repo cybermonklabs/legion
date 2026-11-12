@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"path"
+	"reflect"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -48,16 +51,17 @@ import (
 //
 // This guard is the envoy pool's, ported, and two of its forms were left behind: a mark a caller
 // sets around a connection it holds itself (envoy's HoldsConnection, for a connection taken with
-// Acquire) and a per-read mark for reads of one caller that run side by side (envoy's
-// ForConcurrentRead). No call site of this daemon does either, so neither form is here; a daemon
-// that grows one ports back the form it needs rather than keeping an untested copy of both.
+// envoy's Acquire, which this pool does not hand out) and a per-read mark for reads of one caller
+// that run side by side (envoy's ForConcurrentRead). No call site of this daemon does either, so
+// neither form is here; a daemon that grows one ports back the form it needs rather than keeping
+// an untested copy of both.
 var ErrNestedAcquire = errors.New(
 	"this caller already holds a connection of the pool: a second one would deadlock it",
 )
 
-// holding records whether the context's caller holds a connection of this pool: its transaction,
-// an open cursor of its own, or one it acquired directly. One writer sets it and one reader tests
-// it, so a flag is the whole state — a transaction never opens a second transaction of its own.
+// holding records whether the context's caller holds a connection of this pool: its transaction
+// or an open cursor of its own. One writer sets it and one reader tests it, so a flag is the
+// whole state — a transaction never opens a second transaction of its own.
 type holding struct {
 	connection atomic.Bool
 }
@@ -66,12 +70,13 @@ type holding struct {
 // that runs on the context it was opened with is covered with no threading of its own.
 type holdingKey struct{}
 
-// WithTransactionTracking marks ctx so the pool can refuse a second connection while one of its
-// transactions is open, and hands back a context already marked as it is, so a caller inside a
-// marked one does not get a mark that cannot see the connection the caller holds. Every API
-// request is marked where the mux is built; every other entry point that opens a transaction —
-// the intake of a message, the outbox's lanes, the boot's steps, the supervision callbacks that
-// apply facts — marks its own context.
+// WithTransactionTracking marks ctx so the pool can refuse its caller a second connection while
+// one of its transactions or cursors is open, and hands back a context already marked as it is,
+// so a caller inside a marked one does not get a mark that cannot see the connection the caller
+// holds. It is the mark of a sequential flow, one call after another on one goroutine: every API
+// route (api's trackTransactions, where the mux is built), the boot's steps, its readiness probes
+// and its replay of the terminal facts no daemon applied. A goroutine that runs beside others
+// takes ForConcurrentWorker instead.
 func WithTransactionTracking(ctx context.Context) context.Context {
 	if ctx.Value(holdingKey{}) != nil {
 		return ctx
@@ -108,7 +113,9 @@ func holdsConnection(ctx context.Context) bool {
 // worker a second connection of its own. Every goroutine of the daemon that runs beside others
 // takes one: the outbox's lanes and each row's lease renewal, the workflow runtime's loops, the
 // serving group's goroutines, the supervision sweeps and relaunches, each machine's feeding
-// goroutine, timers and sends, and each hello the worker stream resolves.
+// goroutine, timers and sends, each hello the worker stream resolves, and each write a
+// supervision callback hands a goroutine of its own — a live terminal fact, a session fact, a
+// task's confirmation, a provider-errors notice, a pod resume's stamp and a stall's notice.
 //
 // It differs from WithTransactionTracking, this package's other mark, by never reusing ctx's:
 // that one hands back the mark ctx already carries, which siblings sharing it would set and
@@ -120,29 +127,102 @@ func ForConcurrentWorker(ctx context.Context) context.Context {
 	return context.WithValue(ctx, holdingKey{}, &holding{})
 }
 
-// loggedSites remembers the call sites that have already logged a refusal, so a caller that trips
-// the guard in a loop reports its stack once instead of flooding the log. The error itself is
-// returned to every caller, every time.
-var loggedSites sync.Map
+// loggedSites is the call sites that have already logged a refusal (refusalSite), so a site that
+// trips the guard in a loop reports its stack once instead of flooding the log, while a refusal
+// at any other site still logs a line of its own. The error itself is returned to every caller,
+// every time. A plain map under a mutex keeps the key unboxed, and a site's file name is the
+// runtime's own string, so remembering a site costs no allocation beyond the walk that finds it.
+var loggedSites = struct {
+	sync.Mutex
+	seen map[callSite]struct{}
+}{seen: map[callSite]struct{}{}}
 
-// refusalFrames is how many frames above runtime.Callers the call site that asked for the
-// connection stands, which is the frame a refusal is remembered and logged under:
-// runtime.Callers, logRefusal, guard and the guarded method itself.
-const refusalFrames = 4
+// callSite is a call that asked for a connection, by the line of source it is written on. A line
+// and not a program counter, because the compiler copies a small function into each of its
+// callers: one call written once then stands at a program counter per copy, and keyed on those it
+// would log once per copy rather than once.
+type callSite struct {
+	file string
+	line int
+}
+
+// refusalDepth bounds how many frames above logRefusal a refusal reads while it looks for its
+// call site. The frames passed over on the way (passedOver) are a handful — the guard, the
+// guarded method, a Store method, pgx's BeginFunc, intake.ApplyFact — so the bound is never
+// reached by a stack the daemon builds; one that did would be remembered under its last frame.
+const refusalDepth = 32
+
+// storeFunctions, applyFact and applied are how passedOver knows a frame of this package or of
+// intake's two functions, by the name the runtime gives its function (runtime.Frame.Function: an
+// import path, then the symbol). This package's path is read off its own type, and intake's
+// beside it under internal/, so a rename of the module renames nothing here; intake imports this
+// package, so its functions can only be named.
+var (
+	storeFunctions = reflect.TypeFor[Pool]().PkgPath() + "."
+	applyFact      = path.Dir(reflect.TypeFor[Pool]().PkgPath()) + "/intake.ApplyFact"
+	applied        = path.Dir(reflect.TypeFor[Pool]().PkgPath()) + "/intake.Applied"
+)
+
+// pgxFunctions is how every pgx function's name starts, the driver's own package and its
+// subpackages alike, which is how passedOver knows a frame of pgx.BeginFunc or pgx.BeginTxFunc.
+const pgxFunctions = "github.com/jackc/pgx/"
 
 // logRefusal logs one refusal per call site, with the stack that asked for the second connection,
-// which is what names the path to repair. Every refusal is the guard's, so that site always
-// stands the same four frames up (refusalFrames).
+// which is what names the path to repair. The site is the caller's own call (refusalSite), not
+// the frame just above the guarded method: that frame is pgx's for every transaction opened
+// through pgx.BeginFunc, Store.Tx among them, and intake's for every fact, so keyed on it one
+// refusal would silence every other caller's defect. The frames are read into a fixed array, and
+// the stack is only formatted for a site's first refusal.
 func logRefusal() {
-	var caller [1]uintptr
-	if runtime.Callers(refusalFrames, caller[:]) == 0 {
+	var callers [refusalDepth]uintptr
+	n := runtime.Callers(2, callers[:])
+	if n == 0 {
 		return
 	}
-	if _, seen := loggedSites.LoadOrStore(caller[0], struct{}{}); seen {
+	site := refusalSite(callers[:n])
+	loggedSites.Lock()
+	_, seen := loggedSites.seen[site]
+	if !seen {
+		loggedSites.seen[site] = struct{}{}
+	}
+	loggedSites.Unlock()
+	if seen {
 		return
 	}
 	slog.Error("legion: second pooled connection requested while one is held",
 		"error", ErrNestedAcquire, "stack", string(debug.Stack()))
+}
+
+// refusalSite is the call that asked for a refused connection: the first of callers' frames that
+// passedOver does not pass over, or the last frame when it passes over every one. Two calls of
+// one function on two lines are two sites, and a call made again in a loop is the same one.
+func refusalSite(callers []uintptr) callSite {
+	frames := runtime.CallersFrames(callers)
+	for {
+		frame, more := frames.Next()
+		if !more || !passedOver(frame) {
+			return callSite{file: frame.File, line: frame.Line}
+		}
+	}
+}
+
+// passedOver answers whether frame only carries a call on to the pool, so that a refusal is not
+// remembered under it: this package's code (the guard, the guarded method, and every Store
+// method that asks the pool on its caller's behalf, Store.Tx among them), pgx's (BeginFunc and
+// BeginTxFunc, which open the transaction they wrap through Begin and BeginTx), and
+// intake.ApplyFact and intake.Applied, which every fact and every replay asks through. Each of
+// them stands above the pool for every caller it serves. This package's tests are callers like
+// any other, so a frame of a test file is a site.
+func passedOver(frame runtime.Frame) bool {
+	switch {
+	case frame.Function == applyFact, frame.Function == applied:
+		return true
+	case strings.HasPrefix(frame.Function, pgxFunctions):
+		return true
+	case strings.HasPrefix(frame.Function, storeFunctions):
+		return !strings.HasSuffix(frame.File, "_test.go")
+	}
+	return false
 }
 
 // Pool is the daemon's connection pool. Every way it hands out a connection refuses one asked for
@@ -159,8 +239,8 @@ func NewPool(pool *pgxpool.Pool) *Pool {
 }
 
 // guard refuses a connection to a caller that already holds one, and records the call site that
-// asked (logRefusal). It runs in each exported method rather than here in one place below them,
-// so the site a refusal names is the caller's and not one of this pool's own frames.
+// asked (logRefusal). Every exported method that hands out a connection runs it before it asks
+// pgx for anything, so a refusal touches neither the pool nor the database.
 func (p *Pool) guard(ctx context.Context) error {
 	if !holdsConnection(ctx) {
 		return nil
@@ -171,8 +251,8 @@ func (p *Pool) guard(ctx context.Context) error {
 
 // Query runs a query on a pooled connection. The rows hold that connection until they close, so
 // the caller counts as holding one for as long as they are open: a cursor is one of this pool's
-// three connection-holders — a transaction, an open cursor and a connection taken with Acquire —
-// and work done inside the loop over the rows is exactly the shape that wedged the deployment.
+// two connection-holders — a transaction and an open cursor — and work done inside the loop over
+// the rows is exactly the shape that wedged the deployment.
 func (p *Pool) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 	if err := p.guard(ctx); err != nil {
 		return nil, err
@@ -243,19 +323,9 @@ func (p *Pool) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comman
 	return p.pool.Exec(ctx, sql, args...)
 }
 
-// Acquire takes a pooled connection the caller holds until it releases it. The pool cannot see
-// that release: the mark a caller would set around a hold of its own is one of the two forms of
-// this guard the daemon does not carry (ErrNestedAcquire), so a caller that read through the
-// pool while it held this connection would be refused nothing. No caller of this daemon reads
-// that way.
-func (p *Pool) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
-	if err := p.guard(ctx); err != nil {
-		return nil, err
-	}
-	return p.pool.Acquire(ctx)
-}
-
-// Begin opens a transaction and marks the caller as holding a connection.
+// Begin opens a transaction and marks the caller as holding a connection. It is what
+// pgx.BeginFunc opens its transaction through, and with it Store.Tx, so every call site that
+// wraps a transaction in a function keeps working as it was written.
 func (p *Pool) Begin(ctx context.Context) (pgx.Tx, error) {
 	if err := p.guard(ctx); err != nil {
 		return nil, err
@@ -264,8 +334,8 @@ func (p *Pool) Begin(ctx context.Context) (pgx.Tx, error) {
 }
 
 // BeginTx opens a transaction with options and marks the caller as holding a connection. It is
-// what pgx.BeginFunc and pgx.BeginTxFunc call through, so every call site that wraps a
-// transaction in a function keeps working as it was written.
+// what pgx.BeginTxFunc opens its transaction through, and what intake.ApplyFact opens each
+// fact's with.
 func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
 	if err := p.guard(ctx); err != nil {
 		return nil, err
@@ -273,11 +343,9 @@ func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, erro
 	return p.begin(ctx, options)
 }
 
-// begin is the guarded body both transaction entry points share: guard runs in the exported
-// method, as it does in every exported method that hands out one of this pool's connections, so a
-// refusal records the caller that asked for the transaction rather than one of this pool's own
-// frames. A transaction on a context the pool cannot see has no mark to clear and is handed on as
-// pgx opened it: a trackedTx around it would only forward its Commit and Rollback.
+// begin is the body both transaction entry points share once their guard has passed. A
+// transaction on a context the pool cannot see has no mark to clear and is handed on as pgx
+// opened it: a trackedTx around it would only forward its Commit and Rollback.
 func (p *Pool) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
 	tx, err := p.pool.BeginTx(ctx, options)
 	if err != nil {
