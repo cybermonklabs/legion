@@ -94,3 +94,5 @@ func TestMigrate0071AddressesAnAgentsArtifactsAndKeepsEveryOtherRefKey(t *testin
 		t.Errorf("a second agent/01a1058e-f14f/shot-png: %v, want artifacts_ref_key_key to refuse it", err)
 	}
 }
+
+// INFRA-1413 selection probe, never merged.
