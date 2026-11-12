@@ -1,4 +1,4 @@
 kind: Changed
 body: |-
-  The plugin declares daemon API contract 91, which adds `mergeWait` to an issue of the daemon
+  The plugin declares daemon API contract 93, which adds `mergeWait` to an issue of the daemon
   state.

@@ -266,10 +266,10 @@ func TestTheMergeWaitIsStrippedBelowItsContract(t *testing.T) {
 // mergeWaitContract is the contract whose entry in version.go added the object, and this daemon's
 // own contract is never below it: a caller at this contract is served what the round waits on.
 func TestMergeWaitContractIsTheContractThatAddedTheObject(t *testing.T) {
-	// Read at 2026-11-12T20:30Z: main declares 86, #3939 declares 87, #3730 88, #3519 and #3659
-	// 89, and #3575 and #3830 90, so 91 is the lowest number above the base's that no other open
-	// head has claimed (version.go).
-	const addedMergeWait = 91
+	// Read at 2026-11-12T22:42Z: main declares 86, #3939 87, #3730 88, #3519 and #3659 89, #3575
+	// and #3830 90, #3573 and #3712 91, and #3715 92, so 93 is the lowest number above the base's
+	// that no other open head has claimed (version.go).
+	const addedMergeWait = 93
 	if mergeWaitContract != addedMergeWait {
 		t.Fatalf("mergeWaitContract = %d, want %d, the contract whose entry in version.go added what a review round waits on from GitHub",
 			mergeWaitContract, addedMergeWait)

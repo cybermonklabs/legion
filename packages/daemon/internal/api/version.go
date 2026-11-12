@@ -1242,7 +1242,7 @@ package api
 // retired: the route starts the worker's phase again — restoring a held one, as the architect's
 // retry_or_escalate does — so the session it starts, new or kept, is given that phase's task.
 //
-// 91: dispatch://INFRA-3027 -- the issue record of `GET /legion/v1/state` gains `mergeWait`, what
+// 93: dispatch://INFRA-3027 -- the issue record of `GET /legion/v1/state` gains `mergeWait`, what
 // the issue's review round waits on from GitHub (api.MergeWaitView, which projection's
 // mergeWaitView builds for exactly the rounds classify.RoundWaitsOnMergeState names — the one
 // rule the engine reads to decide whether to ask GitHub about a round at all, so the object is on
@@ -1260,7 +1260,7 @@ package api
 // that reading rather than a gap in the view; and `toldHead` with `toldState`, the head
 // and state the architect and the reviewer were told of once the round was reported stuck, both
 // empty while the round still waits for its first answer, which is what tells a stuck round from
-// a new one. A caller from a pod whose claims record a contract below 91 is served the state with
+// a new one. A caller from a pod whose claims record a contract below 93 is served the state with
 // no `mergeWait` on any issue at all — the key absent rather than empty, since a strict reader
 // before the contract that added a key refuses it whether or not it names anything (api's
 // stateNarrowings, withoutMergeWait) — as a caller below 85 is served every issue without `why`
@@ -1276,16 +1276,17 @@ package api
 // own for any of it: every field is the record as the daemon's own reads of the pull request have
 // left it, so a state request costs no GitHub call and the object says how old the daemon's
 // knowledge of the head is rather than what GitHub would answer now. (Read at
-// 2026-11-12T20:30Z, of `const DaemonAPIVersion` at refs/pull/<n>/head for each open pull
-// request of this repository that touches this file or whose file list GitHub cut short: main
-// declares 86, #3939 declares 87, #3730 88, #3519 and #3659 89, and #3575 and #3830 90, so 91 is
-// the lowest number above the base's that no other open head has claimed, and this change takes
-// it. Earlier readings on the same day took 83 at 11:00Z, 85 at 12:42Z, which two other pull
-// requests had declared by 15:32Z, 86 at 15:32Z, which the lane itself then declared and main
-// now carries, and 90 at 18:57Z, which two other pull requests had declared by 20:30Z. That is
-// why the number is a census of every open head at the moment it is written and never the
-// base's number plus one. The entries above keep the numbers they were read at. Read the base's
-// own number and every open head again at the next merge rather than from this line, as
+// 2026-11-12T22:42Z, of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 151 open
+// pull requests of this repository: main declares 86, #3939 87, #3730 88, #3519 and #3659 89,
+// #3575 and #3830 90, #3573 and #3712 91, and #3715 92, so 93 is the lowest number above the
+// base's that no other open head has claimed, and this change takes it. Earlier readings on the
+// same day took 83 at 11:00Z, 85 at 12:42Z, which two other pull requests had declared by
+// 15:32Z, 86 at 15:32Z, which the lane itself then declared and main now carries, 90 at 18:57Z,
+// which two other pull requests had declared by 20:30Z, and 91 at 20:30Z, which two other pull
+// requests had declared by 22:42Z. That is why the number is a census of every open head at the
+// moment it is written and never the base's number plus one. The entries above keep the numbers
+// they were read at. Read the base's own number and every open head again at the next merge
+// rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 91
+const DaemonAPIVersion = 93

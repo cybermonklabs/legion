@@ -281,7 +281,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// answer gone, the `why` contract 85 added beside the line's own fields, which go
 			// with the `waitingLine` key itself for a caller this far back
 			// (withoutWhyAndLineFields), and with what each reviewing issue's round waits on from
-			// GitHub gone, the object contract 91 added (withoutMergeWait). Every row that
+			// GitHub gone, the object contract 93 added (withoutMergeWait). Every row that
 			// reaches here is below all of them, so those thirteen keys go whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
