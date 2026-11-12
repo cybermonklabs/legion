@@ -40,24 +40,32 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 	migrateThrough(t, store, seenReleaseVersion-1)
 
 	at := time.Now().UTC().Truncate(time.Millisecond)
-	release := func(issue string, when time.Time) int64 {
+	releaseIn := func(project, issue string, when time.Time) int64 {
 		t.Helper()
 		var id int64
 		if err := store.Pool().QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, at, bundle_bytes)
-			values ('legion', $1, 1, 'implementer', $2, 0) returning id`, issue, when).Scan(&id); err != nil {
-			t.Fatalf("seed the release of %s: %v", issue, err)
+			values ($1, $2, 1, 'implementer', $3, 0) returning id`, project, issue, when).Scan(&id); err != nil {
+			t.Fatalf("seed the release of %s's %s: %v", project, issue, err)
+		}
+		return id
+	}
+	release := func(issue string, when time.Time) int64 {
+		t.Helper()
+		return releaseIn("legion", issue, when)
+	}
+	resumeIn := func(project, issue string, role claim.Role, releaseID int64, when time.Time) int64 {
+		t.Helper()
+		var id int64
+		if err := store.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at)
+			values ($1, $2, $3, $4, $5, $6) returning id`,
+			releaseID, project, issue, string(role), pods.WakeRoleMessage, when).Scan(&id); err != nil {
+			t.Fatalf("seed the resume of %s's %s %s: %v", project, issue, role, err)
 		}
 		return id
 	}
 	resumeOf := func(issue string, role claim.Role, releaseID int64, when time.Time) int64 {
 		t.Helper()
-		var id int64
-		if err := store.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at)
-			values ($1, 'legion', $2, $3, $4, $5) returning id`,
-			releaseID, issue, string(role), pods.WakeRoleMessage, when).Scan(&id); err != nil {
-			t.Fatalf("seed the resume of %s's %s: %v", issue, role, err)
-		}
-		return id
+		return resumeIn("legion", issue, role, releaseID, when)
 	}
 	resume := func(issue string, releaseID int64, when time.Time) int64 {
 		t.Helper()
@@ -75,7 +83,15 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 	// LEGION-210 has no release at all.
 	stale := release("LEGION-208", at.Add(-3*time.Hour))
 	staleResume := resume("LEGION-208", stale, at.Add(-2*time.Hour))
+	// A second project holding the same issue key, which is the state a deployment of two projects
+	// is in: every table here is keyed by project as well as issue, and nothing else in the
+	// package writes two, so the project scoping is a predicate no row observes. This resume is
+	// stale within its own project and its anchor stands below legion's release below, so a heal
+	// that stopped asking which project a row is of would close it.
+	otherStale := releaseIn("widgets", "LEGION-208", at.Add(-3*time.Hour))
+	otherResume := resumeIn("widgets", "LEGION-208", claim.RoleImplementer, otherStale, at.Add(-2*time.Hour))
 	gone := release("LEGION-208", at.Add(-time.Hour))
+	releaseIn("widgets", "LEGION-208", at.Add(-time.Hour))
 	live := release("LEGION-209", at.Add(-3*time.Hour))
 	liveResume := resume("LEGION-209", live, at.Add(-2*time.Hour))
 	noRelease := resume("LEGION-210", 0, at.Add(-2*time.Hour))
@@ -111,6 +127,11 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 	// row is what observes that: with the role filter dropped, the implementer's heal would close
 	// a resume the architect's pod is coming back for and cost it a duplicate start row.
 	architectResume := resumeOf("LEGION-208", claim.RoleArchitect, stale, at.Add(-90*time.Minute))
+
+	// The other project's release of the same key as legion's LEGION-209, recorded last so it is
+	// the newest row of that key anywhere: a reading that stopped asking which project it reads
+	// would make legion's own LEGION-209 resume, the pod coming back, look stale.
+	releaseIn("widgets", "LEGION-209", at)
 
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the resume's own anchor: %v", err)
@@ -210,5 +231,15 @@ func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
 	}
 	if architectClosed != nil {
 		t.Fatalf("the architect's resume of LEGION-208 was closed by the implementer's heal: a heal is one role's, and closing another role's resume costs the pod coming back for it a second start row")
+	}
+
+	// The same of the second project: a heal is one project's, and the row of another project's
+	// issue of the same key is no row of this one's.
+	var otherClosed *time.Time
+	if err := store.Pool().QueryRow(ctx, `select closed_at from pod_resumes where id = $1`, otherResume).Scan(&otherClosed); err != nil {
+		t.Fatalf("read the other project's resume of LEGION-208: %v", err)
+	}
+	if otherClosed != nil {
+		t.Fatalf("the other project's resume of LEGION-208 was closed by legion's heal: a heal is one project's, and two projects holding one issue key are two issues")
 	}
 }
