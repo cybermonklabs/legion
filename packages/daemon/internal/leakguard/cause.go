@@ -16,6 +16,9 @@ const RefusalPrefix = "the shared public leak check could not be installed: "
 // of `legion claims list`, so a long error underneath is cut rather than carried whole.
 const maxCauseBytes = 400
 
+// oneLine turns every line break of a cause sentence into a space.
+var oneLine = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
+
 // Cause is the one-line cause sentence of a check that could not be installed: RefusalPrefix,
 // then what happened, then err's text after a colon where err is not nil. A what that already
 // begins with RefusalPrefix — the launcher's own sentence, which the daemon carries on — is not
@@ -29,7 +32,7 @@ func Cause(what string, err error) string {
 	if err != nil {
 		sentence += ": " + err.Error()
 	}
-	sentence = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(sentence)
+	sentence = oneLine.Replace(sentence)
 	if len(sentence) <= maxCauseBytes {
 		return sentence
 	}

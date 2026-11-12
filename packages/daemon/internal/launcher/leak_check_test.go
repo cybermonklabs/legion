@@ -1,9 +1,7 @@
 package launcher
 
 import (
-	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -49,36 +47,12 @@ func packedLeakCheck(t *testing.T, launcher string) []byte {
 	t.Helper()
 	fixture := make([]byte, shimwire.LauncherBundlePayloadBytes+4096)
 	_, _ = rand.NewChaCha8([32]byte{}).Read(fixture)
-	const prefix = "theorem-labs-agent-infra-84d835ba5d00f97212253ffa221898f1f234a772/"
-	var raw bytes.Buffer
-	zipped := gzip.NewWriter(&raw)
-	archive := tar.NewWriter(zipped)
-	if err := archive.WriteHeader(&tar.Header{Name: prefix + "leak-check/", Typeflag: tar.TypeDir, Mode: 0o755}); err != nil {
-		t.Fatal(err)
-	}
-	for _, m := range []struct {
-		name string
-		mode int64
-		body []byte
-	}{
-		{prefix + "README.md", 0o644, []byte("the rest of the repository\n")},
-		{prefix + "leak-check/" + leakguardtest.CheckName, 0o755, []byte("#!/bin/sh\n" + launcher)},
-		{prefix + "leak-check/public_leak_check.py", 0o644, []byte("# the check itself\n")},
-		{prefix + "leak-check/fixtures/must-pass.bin", 0o644, fixture},
-	} {
-		if err := archive.WriteHeader(&tar.Header{Name: m.name, Mode: m.mode, Size: int64(len(m.body))}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := archive.Write(m.body); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, closer := range []interface{ Close() error }{archive, zipped} {
-		if err := closer.Close(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	body, files, err := leakguard.PackTarball(&raw)
+	raw := leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
+		leakguardtest.CheckName:  {Body: "#!/bin/sh\n" + launcher, Mode: 0o755},
+		"public_leak_check.py":   {Body: "# the check itself\n", Mode: 0o644},
+		"fixtures/must-pass.bin": {Body: string(fixture), Mode: 0o644},
+	})
+	body, files, err := leakguard.PackTarball(bytes.NewReader(raw))
 	if err != nil {
 		t.Fatalf("pack the test's tarball: %v", err)
 	}

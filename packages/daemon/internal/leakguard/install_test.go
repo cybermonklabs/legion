@@ -6,7 +6,6 @@ import (
 	"compress/gzip"
 	"errors"
 	"io"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -52,79 +52,21 @@ echo "LEAK CHECK ERROR: /usr/bin/python3 is missing or not executable, so the ch
 exit 2
 `
 
-// member is one file of the test's tarball: a regular file, or a symbolic link where link is set.
-type member struct {
-	body string
-	mode int64
-	link string
-}
-
-// repositoryPrefix is the one directory GitHub's tarball of a repository holds every member under.
-const repositoryPrefix = "theorem-labs-agent-infra-84d835ba5d00f97212253ffa221898f1f234a772/"
-
-// gzipTar writes a gzipped tarball whose members write adds, and answers its bytes.
-func gzipTar(t *testing.T, write func(*tar.Writer)) []byte {
-	t.Helper()
-	var raw bytes.Buffer
-	zipped := gzip.NewWriter(&raw)
-	archive := tar.NewWriter(zipped)
-	write(archive)
-	for _, closer := range []interface{ Close() error }{archive, zipped} {
-		if err := closer.Close(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return raw.Bytes()
-}
-
-// writeFile adds one member to a test tarball.
-func writeFile(t *testing.T, archive *tar.Writer, name string, m member) {
-	t.Helper()
-	header := &tar.Header{Name: name, Mode: m.mode, Size: int64(len(m.body))}
-	if m.link != "" {
-		header = &tar.Header{Name: name, Mode: m.mode, Typeflag: tar.TypeSymlink, Linkname: m.link}
-	}
-	if err := archive.WriteHeader(header); err != nil {
-		t.Fatal(err)
-	}
-	if m.link == "" {
-		if _, err := archive.Write([]byte(m.body)); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
-// tarball writes a gzipped tarball shaped like GitHub's tarball of the check's repository: every
-// member under one `<owner>-<repo>-<sha>` directory, the check's own files under that directory's
-// `leak-check`, and one file of the repository outside it. It answers its bytes.
-func tarball(t *testing.T, files map[string]member) []byte {
-	t.Helper()
-	return gzipTar(t, func(archive *tar.Writer) {
-		if err := archive.WriteHeader(&tar.Header{Name: repositoryPrefix + checkDirectory + "/", Typeflag: tar.TypeDir, Mode: 0o755}); err != nil {
-			t.Fatal(err)
-		}
-		writeFile(t, archive, repositoryPrefix+"README.md", member{body: "the rest of the repository\n", mode: 0o644})
-		for _, name := range slices.Sorted(maps.Keys(files)) {
-			writeFile(t, archive, repositoryPrefix+checkDirectory+"/"+name, files[name])
-		}
-	})
-}
-
 // theCheck is the members of a check that runs: the launcher, its python file, its fixture and a
 // nested directory.
-func theCheck(launcher string) map[string]member {
-	return map[string]member{
-		checkName:    {body: launcher, mode: 0o755},
-		theNeighbour: {body: "# the check itself\n", mode: 0o644},
-		theFixture:   {body: "a line the self-test must pass\n", mode: 0o600},
-		theNested:    {body: "# the revert gate\n", mode: 0o644},
+func theCheck(launcher string) map[string]leakguardtest.Member {
+	return map[string]leakguardtest.Member{
+		checkName:    {Body: launcher, Mode: 0o755},
+		theNeighbour: {Body: "# the check itself\n", Mode: 0o644},
+		theFixture:   {Body: "a line the self-test must pass\n", Mode: 0o600},
+		theNested:    {Body: "# the revert gate\n", Mode: 0o644},
 	}
 }
 
 // wholeCheck is a tarball of a check that runs.
 func wholeCheck(t *testing.T, launcher string) []byte {
 	t.Helper()
-	return tarball(t, theCheck(launcher))
+	return leakguardtest.GitHubTarball(t, theCheck(launcher))
 }
 
 // served is what the daemon serves of a tarball: its leak-check directory, packed.
@@ -255,7 +197,7 @@ func TestTheTagShapeIsTheWiresOwn(t *testing.T) {
 // paths, with their bytes and modes, and nothing of the rest of the repository nor its prefix.
 func TestThePackHoldsTheDirectoryAlone(t *testing.T) {
 	files := theCheck(answersItsHelp)
-	body, count, err := PackTarball(bytes.NewReader(tarball(t, files)))
+	body, count, err := PackTarball(bytes.NewReader(leakguardtest.GitHubTarball(t, files)))
 	if err != nil {
 		t.Fatalf("pack: %v", err)
 	}
@@ -275,9 +217,9 @@ func TestThePackHoldsTheDirectoryAlone(t *testing.T) {
 	}
 	for name, m := range files {
 		got := members[name]
-		if got.typeflag != tar.TypeReg || got.body != m.body || got.mode != m.mode {
+		if got.typeflag != tar.TypeReg || got.body != m.Body || got.mode != m.Mode {
 			t.Errorf("the pack holds %s as (type %q, mode %o, %q), want a regular file of mode %o holding %q",
-				name, got.typeflag, got.mode, got.body, m.mode, m.body)
+				name, got.typeflag, got.mode, got.body, m.Mode, m.Body)
 		}
 	}
 }
@@ -294,26 +236,26 @@ func TestThePackRefusesWhatIsNotTheCheck(t *testing.T) {
 			name: "a member outside the directory",
 			raw: func(t *testing.T) []byte {
 				files := theCheck(answersItsHelp)
-				files["../escaped.sh"] = member{body: "#!/bin/sh\n", mode: 0o755}
-				return tarball(t, files)
+				files["../escaped.sh"] = leakguardtest.Member{Body: "#!/bin/sh\n", Mode: 0o755}
+				return leakguardtest.GitHubTarball(t, files)
 			},
-			want: `holds the member "` + repositoryPrefix + `leak-check/../escaped.sh", which is no path inside leak-check/`,
+			want: `holds the member "` + leakguardtest.TarballPrefix + `leak-check/../escaped.sh", which is no path inside leak-check/`,
 		},
 		{
 			name: "a symbolic link",
 			raw: func(t *testing.T) []byte {
 				files := theCheck(answersItsHelp)
-				files["linked"] = member{link: "/etc/passwd", mode: 0o777}
-				return tarball(t, files)
+				files["linked"] = leakguardtest.Member{Link: "/etc/passwd", Mode: 0o777}
+				return leakguardtest.GitHubTarball(t, files)
 			},
-			want: `holds the member "` + repositoryPrefix + `leak-check/linked", which is neither a directory nor a regular file`,
+			want: `holds the member "` + leakguardtest.TarballPrefix + `leak-check/linked", which is neither a directory nor a regular file`,
 		},
 		{
 			name: "no leak-check directory",
 			raw: func(t *testing.T) []byte {
-				return gzipTar(t, func(archive *tar.Writer) {
-					writeFile(t, archive, repositoryPrefix+"README.md", member{body: "the rest of the repository\n", mode: 0o644})
-					writeFile(t, archive, repositoryPrefix+"other/"+checkName, member{body: answersItsHelp, mode: 0o755})
+				return leakguardtest.Tarball(t, map[string]leakguardtest.Member{
+					leakguardtest.TarballPrefix + "README.md":          {Body: "the rest of the repository\n", Mode: 0o644},
+					leakguardtest.TarballPrefix + "other/" + checkName: {Body: answersItsHelp, Mode: 0o755},
 				})
 			},
 			want: "holds no leak-check directory",
@@ -355,8 +297,8 @@ func TestTheServedInstallLandsTheCheckAndReplacesWhatWasThere(t *testing.T) {
 			t.Errorf("the install is missing %s: %v", name, err)
 			continue
 		}
-		if got := int64(info.Mode().Perm()); got != m.mode {
-			t.Errorf("the install holds %s with mode %o, want %o", name, got, m.mode)
+		if got := int64(info.Mode().Perm()); got != m.Mode {
+			t.Errorf("the install holds %s with mode %o, want %o", name, got, m.Mode)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(dir, "README.md")); !os.IsNotExist(err) {
@@ -421,7 +363,7 @@ func TestAServedCheckThatDoesNotAnswerLeavesTheDirectoryAsItWas(t *testing.T) {
 		},
 		{
 			name: "a body holding no file",
-			body: func(t *testing.T) []byte { return served(t, tarball(t, nil)) },
+			body: func(t *testing.T) []byte { return served(t, leakguardtest.GitHubTarball(t, nil)) },
 			want: "the pod's launcher could not unpack the check the daemon served: it holds no file",
 		},
 		{

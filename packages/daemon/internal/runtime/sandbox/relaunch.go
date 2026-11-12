@@ -346,8 +346,7 @@ func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
 // bound, since the start's own deadline may be what ended it.
 func (r *Runtime) stopIssuedChild(ctx context.Context, token claim.Token, podUID string, generation uint64, startErr error) error {
 	var refused startRefusal
-	var leakCheck runtime.LeakCheckRefusal
-	if errors.As(startErr, &refused) || errors.As(startErr, &leakCheck) {
+	if errors.As(startErr, &refused) || runtime.LeakCheckCause(startErr) != "" {
 		return nil
 	}
 	stopping, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.bootTimeout+r.terminationGrace)

@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1005,11 +1006,10 @@ func SplitLeakCheck(tag string, body []byte) ([]LauncherLeakCheck, error) {
 	id := "leak-check-" + tag + "-" + digest[:12]
 	count := (len(body) + LauncherBundlePayloadBytes - 1) / LauncherBundlePayloadBytes
 	frames := make([]LauncherLeakCheck, 0, count)
-	for index := range count {
-		end := min((index+1)*LauncherBundlePayloadBytes, len(body))
+	for payload := range slices.Chunk(body, LauncherBundlePayloadBytes) {
 		frames = append(frames, LauncherLeakCheck{
-			ID: id, Index: index, Count: count, Tag: tag,
-			SHA256: digest, Payload: body[index*LauncherBundlePayloadBytes : end],
+			ID: id, Index: len(frames), Count: count, Tag: tag,
+			SHA256: digest, Payload: payload,
 		})
 	}
 	return frames, nil

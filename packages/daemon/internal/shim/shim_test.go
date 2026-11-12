@@ -1,10 +1,8 @@
 package shim_test
 
 import (
-	"archive/tar"
 	"bufio"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -583,29 +581,14 @@ const theTag = "leak-check-v15"
 
 // installedCheck is the directory the pod's launcher installs the check the daemon served into,
 // made the way the launcher makes it: a GitHub-shaped tarball of a stand-in check whose --help
-// names both shapes, packed (leakguard.PackTarball) and installed at tag (leakguard.InstallServed).
+// names both shapes (leakguardtest.AnswersHelp), packed (leakguard.PackTarball) and installed at
+// tag (leakguard.InstallServed).
 func installedCheck(t *testing.T, tag string) string {
 	t.Helper()
-	const launcher = "#!/bin/sh\necho '# Usage: check-public-text FILE..., gh-guard ARGS, or REMOTE URL.'\nexit 1\n"
-	var raw bytes.Buffer
-	zipped := gzip.NewWriter(&raw)
-	archive := tar.NewWriter(zipped)
-	const prefix = "theorem-labs-agent-infra-84d835ba5d00f97212253ffa221898f1f234a772/leak-check/"
-	if err := archive.WriteHeader(&tar.Header{Name: prefix, Typeflag: tar.TypeDir, Mode: 0o755}); err != nil {
-		t.Fatal(err)
-	}
-	if err := archive.WriteHeader(&tar.Header{Name: prefix + leakguardtest.CheckName, Mode: 0o755, Size: int64(len(launcher))}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := archive.Write([]byte(launcher)); err != nil {
-		t.Fatal(err)
-	}
-	for _, closer := range []interface{ Close() error }{archive, zipped} {
-		if err := closer.Close(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	body, _, err := leakguard.PackTarball(&raw)
+	raw := leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
+		leakguardtest.CheckName: {Body: "#!/bin/sh\n" + leakguardtest.AnswersHelp(filepath.Join(t.TempDir(), "help-runs")), Mode: 0o755},
+	})
+	body, _, err := leakguard.PackTarball(bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
 	}

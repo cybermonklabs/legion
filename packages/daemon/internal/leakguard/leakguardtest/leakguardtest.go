@@ -10,7 +10,9 @@
 // into one: Passes, Refuses and CannotFinish are the plain ones, Refusing is a refusal whose
 // report is the caller's own, Recording records the call it was handed, Reading is the
 // two-go shape of a call whose body is on standard input, and AnswersHelp is a check a pod's
-// launcher installs, counting the verifications that ran it.
+// launcher installs, counting the verifications that ran it. GitHubTarball writes the tarball
+// GitHub serves of the check's repository, which the daemon packs for the launcher, and Tarball
+// one of a shape GitHub's is not.
 //
 // It is an ordinary package rather than a _test.go file of one of them because cmd/legion is
 // package main, which can import no other package's test-only helpers (internal/fixturegit says

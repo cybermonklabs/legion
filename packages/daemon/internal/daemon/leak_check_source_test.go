@@ -1,9 +1,6 @@
 package daemon
 
 import (
-	"archive/tar"
-	"bytes"
-	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -22,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // leakCheckTag is the tag these tests read the check at, spelled as the worker image pins one.
@@ -41,34 +39,13 @@ var leakCheckGrant = map[string]string{"actions": "write", "checks": "read", "co
 	"metadata": "read", "pull_requests": "write", "statuses": "write", "workflows": "write"}
 
 // leakCheckTarball is a GitHub tarball of the check's repository: every member under one
-// `<owner>-<repo>-<sha>` directory, the check's launcher under its leak-check directory.
+// `<owner>-<repo>-<sha>` directory, the check's launcher (leakguardtest.AnswersHelp) under its
+// leak-check directory.
 func leakCheckTarball(t *testing.T) []byte {
 	t.Helper()
-	var raw bytes.Buffer
-	zipped := gzip.NewWriter(&raw)
-	archive := tar.NewWriter(zipped)
-	const prefix = "theorem-labs-agent-infra-84d835ba5d00f97212253ffa221898f1f234a772/"
-	launcher := "#!/bin/sh\necho '# Usage: check-public-text FILE..., gh-guard ARGS'\nexit 1\n"
-	for _, header := range []*tar.Header{
-		{Name: prefix + "leak-check/", Typeflag: tar.TypeDir, Mode: 0o755},
-		{Name: prefix + "leak-check/public-leak-check.sh", Typeflag: tar.TypeReg, Mode: 0o755, Size: int64(len(launcher))},
-	} {
-		if err := archive.WriteHeader(header); err != nil {
-			t.Fatal(err)
-		}
-		if header.Typeflag == tar.TypeReg {
-			if _, err := io.WriteString(archive, launcher); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	if err := archive.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := zipped.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return raw.Bytes()
+	return leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
+		leakguardtest.CheckName: {Body: "#!/bin/sh\n" + leakguardtest.AnswersHelp(filepath.Join(t.TempDir(), "help-runs")), Mode: 0o755},
+	})
 }
 
 // leakCheckRepo is a stand-in for the check's repository: GitHub's tarball route at any tag,

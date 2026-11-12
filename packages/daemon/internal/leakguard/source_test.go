@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // sourceToken is the read-only token the tests' Source mints, and the bearer the fake GitHub
@@ -160,7 +161,7 @@ func TestOneReadServesEveryLauncherThatAsksForATag(t *testing.T) {
 // repository prefix, and its digest is the body's SHA-256.
 func TestTheServedBodyIsTheDirectoryAloneWithItsDigest(t *testing.T) {
 	files := theCheck(answersItsHelp)
-	raw := tarball(t, files)
+	raw := leakguardtest.GitHubTarball(t, files)
 	fake := serveCheck(t, func(w http.ResponseWriter, _ *http.Request, _ string) { _, _ = w.Write(raw) })
 	var mints atomic.Int32
 	got, err := sourceOver(fake.url, &mints).Get(bound(t), theTag)
@@ -177,9 +178,9 @@ func TestTheServedBodyIsTheDirectoryAloneWithItsDigest(t *testing.T) {
 		t.Fatalf("the served body holds %q, want the directory's own files alone, %q", names, want)
 	}
 	for name, m := range files {
-		if member := members[name]; member.typeflag != tar.TypeReg || member.body != m.body || member.mode != m.mode {
+		if member := members[name]; member.typeflag != tar.TypeReg || member.body != m.Body || member.mode != m.Mode {
 			t.Errorf("the served body holds %s as (type %q, mode %o, %q), want a regular file of mode %o holding %q",
-				name, member.typeflag, member.mode, member.body, m.mode, m.body)
+				name, member.typeflag, member.mode, member.body, m.Mode, m.Body)
 		}
 	}
 }
@@ -248,8 +249,8 @@ func TestARefusedReadIsRefusedWithGitHubsAnswerAndNotKept(t *testing.T) {
 
 // A tarball with no leak-check directory is refused naming the tarball and the tag.
 func TestATarballWithoutTheDirectoryIsRefused(t *testing.T) {
-	raw := gzipTar(t, func(archive *tar.Writer) {
-		writeFile(t, archive, repositoryPrefix+"README.md", member{body: "the rest of the repository\n", mode: 0o644})
+	raw := leakguardtest.Tarball(t, map[string]leakguardtest.Member{
+		leakguardtest.TarballPrefix + "README.md": {Body: "the rest of the repository\n", Mode: 0o644},
 	})
 	fake := serveCheck(t, func(w http.ResponseWriter, _ *http.Request, _ string) { _, _ = w.Write(raw) })
 	var mints atomic.Int32
@@ -352,7 +353,7 @@ func TestACallerThatGivesUpDoesNotEndTheReadOthersWaitOn(t *testing.T) {
 // token and GitHub's headers, follows the redirect, and hands the download host no token.
 func TestTheReadFollowsGitHubsRedirectAndHandsTheDownloadHostNoToken(t *testing.T) {
 	const downloads = "codeload.leak-check.test"
-	raw := tarball(t, theCheck(answersItsHelp))
+	raw := leakguardtest.GitHubTarball(t, theCheck(answersItsHelp))
 	var downloadAuth atomic.Value
 	download := githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		downloadAuth.Store(r.Header.Get("Authorization"))

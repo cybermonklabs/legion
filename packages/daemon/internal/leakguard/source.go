@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -22,6 +24,9 @@ const leakCheckReadBound = 2 * time.Minute
 // refusalBodyBytes is how much of GitHub's answer a refused read keeps: its first line is what
 // the cause sentence quotes, and GitHub's refusals are a line of JSON.
 const refusalBodyBytes = 64 << 10
+
+// checkRepository is the check's repository (CheckSlug), whose tarball a read fetches.
+var checkRepository = ghrepo.MustParse(CheckSlug)
 
 // Source is the daemon's reader of the shared public leak check: it reads the check's repository
 // (CheckSlug) at the tag a pod's launcher names, with a read-only token of the daemon's own, and
@@ -52,24 +57,26 @@ type Source struct {
 	ReadBound time.Duration
 
 	mu    sync.Mutex
-	reads map[string]*read
+	reads map[string]*tagRead
 }
 
-// read is one read of the check at a tag: done is closed once served or err is set, and neither
-// changes after.
-type read struct {
+// tagRead is one read of the check at a tag: done is closed once served or err is set, and
+// neither changes after.
+type tagRead struct {
 	done   chan struct{}
 	served Served
 	err    error
 }
 
 // Served is the check at Tag as the daemon serves it: Body is the packed leak-check directory
-// (PackTarball) and SHA256 its lower-case hex digest. Body is shared by every caller served the
-// same read, so no caller writes to it.
+// (PackTarball), SHA256 its lower-case hex digest and Frames the launcher_leak_check sequence that
+// carries it (shimwire.SplitLeakCheck). Body and Frames are shared by every caller served the same
+// read, so no caller writes to them.
 type Served struct {
 	Tag    string
 	Body   []byte
 	SHA256 string
+	Frames []shimwire.LauncherLeakCheck
 }
 
 // Get answers the check at tag, read once for every caller (Source). Every error is one cause
@@ -95,16 +102,16 @@ func (s *Source) Get(ctx context.Context, tag string) (Served, error) {
 
 // reading is the read at tag: the one kept or running, or a new one, started on a context
 // detached from ctx.
-func (s *Source) reading(ctx context.Context, tag string) *read {
+func (s *Source) reading(ctx context.Context, tag string) *tagRead {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if r, kept := s.reads[tag]; kept {
 		return r
 	}
 	if s.reads == nil {
-		s.reads = map[string]*read{}
+		s.reads = map[string]*tagRead{}
 	}
-	r := &read{done: make(chan struct{})}
+	r := &tagRead{done: make(chan struct{})}
 	s.reads[tag] = r
 	go s.fill(context.WithoutCancel(ctx), tag, r)
 	return r
@@ -112,7 +119,7 @@ func (s *Source) reading(ctx context.Context, tag string) *read {
 
 // fill makes the read r of tag under the read bound. A failed read is removed before its waiters
 // are released, so an ask that follows a failure reads again.
-func (s *Source) fill(ctx context.Context, tag string, r *read) {
+func (s *Source) fill(ctx context.Context, tag string, r *tagRead) {
 	bound := s.ReadBound
 	if bound <= 0 {
 		bound = leakCheckReadBound
@@ -128,9 +135,9 @@ func (s *Source) fill(ctx context.Context, tag string, r *read) {
 	close(r.done)
 }
 
-// read mints the token, fetches GitHub's tarball of the check's repository at tag and packs its
-// leak-check directory. ctx carries the read's bound, which a refusal names where it ended the
-// read.
+// read mints the token, fetches GitHub's tarball of the check's repository at tag, packs its
+// leak-check directory and slices it into the sequence that carries it. ctx carries the read's
+// bound, which a refusal names where it ended the read.
 func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Served, error) {
 	token, err := s.Token(ctx)
 	if err != nil {
@@ -139,11 +146,7 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 	// GitHub answers the tarball route with a redirect to its download host
 	// (https://docs.github.com/en/rest/repos/contents#download-a-repository-archive-tar), which
 	// the client follows.
-	api := s.API
-	if api == "" {
-		api = "https://api.github.com"
-	}
-	target := strings.TrimRight(api, "/") + "/repos/" + CheckSlug + "/tarball/" + tag
+	target := githubrest.RepositoryAPI(s.API, checkRepository) + "/tarball/" + tag
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return Served{}, errors.New(Cause(fmt.Sprintf("the daemon could not ask GitHub for %s at %s", CheckSlug, tag), err))
@@ -175,7 +178,11 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 		}
 		return Served{}, errors.New(Cause(fmt.Sprintf("the tarball of %s at %s %s", CheckSlug, tag, err), nil))
 	}
-	return Served{Tag: tag, Body: body, SHA256: shimwire.BundleDigest(body)}, nil
+	frames, err := shimwire.SplitLeakCheck(tag, body)
+	if err != nil {
+		return Served{}, errors.New(Cause(fmt.Sprintf("the daemon could not slice the check it read at %s", tag), err))
+	}
+	return Served{Tag: tag, Body: body, SHA256: shimwire.BundleDigest(body), Frames: frames}, nil
 }
 
 // readFailure is the cause of a read that did not arrive: the bound's own sentence where the

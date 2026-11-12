@@ -37,8 +37,9 @@ type checkInstall struct {
 	count    int
 	digest   string
 	slices   [][]byte
-	// installedTag and installedDigest are the check this process installed, "" until it has.
-	installedTag, installedDigest string
+	// installedDigest is the digest of the check this process installed at its pin, "" until it
+	// has: a slice of any other tag is refused before mu is taken, so the digest alone names it.
+	installedDigest string
 }
 
 // newCheckInstall is the install of a launcher whose environment pins tag pin ("" for none), into
@@ -82,7 +83,7 @@ func (c *checkInstall) receive(ctx context.Context, frame shimwire.LauncherLeakC
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if frame.Tag == c.installedTag && frame.SHA256 == c.installedDigest {
+	if frame.SHA256 == c.installedDigest {
 		return shimwire.LauncherLeakCheckResult{ID: frame.ID, Index: frame.Index, OK: true, Installed: true}
 	}
 	if frame.ID != c.sequence {
@@ -109,7 +110,7 @@ func (c *checkInstall) receive(ctx context.Context, frame shimwire.LauncherLeakC
 	}); err != nil {
 		return refuse(leakguard.Cause(err.Error(), nil))
 	}
-	c.installedTag, c.installedDigest = frame.Tag, frame.SHA256
+	c.installedDigest = frame.SHA256
 	c.done.Store(true)
 	logf("launcher: installed the shared public leak check %s at %s, served by the daemon (sha256 %s)",
 		frame.Tag, c.dir, frame.SHA256[:12])

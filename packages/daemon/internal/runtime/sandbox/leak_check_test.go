@@ -20,8 +20,8 @@ import (
 const testLeakCheckTag = "leak-check-v3"
 
 // fakeLeakCheck stands in for the daemon's reader of the shared public leak check
-// (leakguard.Source): it answers body at any tag, or refuses every read with err, and records the
-// tag of each read.
+// (leakguard.Source): it answers body at any tag, sliced as the reader slices it, or refuses every
+// read with err, and records the tag of each read.
 type fakeLeakCheck struct {
 	body []byte
 	err  error
@@ -37,7 +37,11 @@ func (f *fakeLeakCheck) Get(_ context.Context, tag string) (leakguard.Served, er
 	if f.err != nil {
 		return leakguard.Served{}, f.err
 	}
-	return leakguard.Served{Tag: tag, Body: f.body, SHA256: shimwire.BundleDigest(f.body)}, nil
+	frames, err := shimwire.SplitLeakCheck(tag, f.body)
+	if err != nil {
+		return leakguard.Served{}, err
+	}
+	return leakguard.Served{Tag: tag, Body: f.body, SHA256: shimwire.BundleDigest(f.body), Frames: frames}, nil
 }
 
 func (f *fakeLeakCheck) reads() []string {

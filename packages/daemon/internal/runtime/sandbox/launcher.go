@@ -389,13 +389,9 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 	if err != nil {
 		return refuse(err.Error(), nil)
 	}
-	frames, err := shimwire.SplitLeakCheck(served.Tag, served.Body)
-	if err != nil {
-		return refuse(fmt.Sprintf("the daemon could not slice the check it read at %s", tag), err)
-	}
 	hop, cancel := context.WithTimeout(ctx, d.leakCheckHop)
 	defer cancel()
-	for _, frame := range frames {
+	for _, frame := range served.Frames {
 		answer, confirmed, err := d.request(hop, token, podUID, frame, bundleWaiter(frame.ID, frame.Index))
 		if err != nil {
 			if hop.Err() != nil && ctx.Err() == nil {
@@ -419,7 +415,7 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 		confirmed.leakCheckInstalled = true
 		confirmed.mu.Unlock()
 		d.log.Info("launcher leak check: the pod's launcher installed the shared public leak check the daemon read",
-			"launcher", token, "pod", podUID, "tag", tag, "bytes", len(served.Body), "slices", len(frames))
+			"launcher", token, "pod", podUID, "tag", tag, "bytes", len(served.Body), "slices", len(served.Frames))
 		return nil
 	}
 	return refuse(fmt.Sprintf("the pod's launcher took every slice of %s without installing it", tag), nil)

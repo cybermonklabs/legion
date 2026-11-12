@@ -90,8 +90,8 @@ const (
 	maxPackedBytes  = 16 << 20
 )
 
-// errOverLimit is what a capped reader or writer answers once its limit is passed; the caller
-// reads which one passed it from the cap itself.
+// errOverLimit is what a cappedBuffer answers once its limit is passed; the caller reads that it
+// was passed from the buffer's own over.
 var errOverLimit = errors.New("over the read limit")
 
 // PackTarball reads a GitHub tarball of the check's repository (gzip, then tar), and answers its
@@ -106,11 +106,11 @@ var errOverLimit = errors.New("over the read limit")
 // the tarball, written to follow `the tarball of <CheckSlug> at <tag> ` in the cause sentence the
 // daemon builds of it (Cause).
 func PackTarball(r io.Reader) (body []byte, files int, err error) {
-	in := &cappedReader{r: r, left: maxTarballBytes}
+	in := &io.LimitedReader{R: r, N: maxTarballBytes + 1}
 	out := &cappedBuffer{left: maxPackedBytes}
 	files, found, err := pack(in, out)
 	switch {
-	case in.over:
+	case in.N <= 0:
 		return nil, 0, fmt.Errorf("is over the %d MiB this daemon reads of one", maxTarballBytes>>20)
 	case out.over:
 		return nil, 0, fmt.Errorf("holds a %s directory that packs over the %d MiB this daemon serves", checkDirectory, maxPackedBytes>>20)
@@ -177,29 +177,6 @@ func pack(r io.Reader, w io.Writer) (files int, found bool, err error) {
 		return 0, false, fmt.Errorf("could not be packed: %w", err)
 	}
 	return files, found, nil
-}
-
-// cappedReader reads r and answers errOverLimit, setting over, once more than left bytes came.
-type cappedReader struct {
-	r    io.Reader
-	left int64
-	over bool
-}
-
-func (c *cappedReader) Read(p []byte) (int, error) {
-	if c.over {
-		return 0, errOverLimit
-	}
-	if int64(len(p)) > c.left+1 {
-		p = p[:c.left+1]
-	}
-	n, err := c.r.Read(p)
-	if int64(n) > c.left {
-		c.over = true
-		return 0, errOverLimit
-	}
-	c.left -= int64(n)
-	return n, err
 }
 
 // cappedBuffer holds what is written to it and answers errOverLimit, setting over, for a write
