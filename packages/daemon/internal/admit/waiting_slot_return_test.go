@@ -97,9 +97,11 @@ func assertWaitsOnce(t *testing.T, pool *pgxpool.Pool, key string) {
 // While the wait stands the issue is no taker for the slot it freed: the controller is told of a
 // free slot (Admission.slotFree, the `slot-free` notice), because a slot held open for an issue
 // that cannot run would hide the project's capacity from the one reader that may hand Legion
-// work. And an issue whose phase ended while it waited owes its next worker a start: it stands
-// in the line once, the start waits on the row as every phase worker's start does
-// (record.SuperviseRequest.NeedsSlot), and the row's return is what delivers it.
+// work. And an issue whose phase ended while it held no row owes its next worker a start with
+// no mark beside it: the owed start is then the whole of what says the daemon started it, so it
+// stands in the line once as a waiting issue, holds no row while its blocker is open, and the
+// start waits on the row as every phase worker's start does
+// (record.SuperviseRequest.NeedsSlot) until the row's return delivers it.
 func TestTheSlotComesBackWhenTheLastWaitEnds(t *testing.T) {
 	t.Run("the wait begins, the slot goes to the candidate behind it, and the last done brings it back", func(t *testing.T) {
 		const (
@@ -257,37 +259,38 @@ func TestTheSlotComesBackWhenTheLastWaitEnds(t *testing.T) {
 		)
 		pool := migratedPool(t)
 		admission := quiet(t, 2)
-		seedStarted(t, pool, waiter, phase.Implementing, nil)
+		// An issue the daemon has started whose phase ended while it held no row: the transition
+		// wrote the start its next worker is owed and nothing else, so the record holds no slot
+		// row and carries no mark of a release for a wait. That owed start is the whole of what
+		// says the daemon started this issue, and it must say so as loudly as a row or a mark:
+		// judged unstarted, the issue would stand in the line as a return and the pass would
+		// grant it a slot and deliver its start with its blocker still open.
+		putIssue(t, pool, record.Issue{Key: waiter, Repo: "acme/widgets", DefaultBranch: "main",
+			GitHubRepo: "acme/widgets", Project: testProject, Title: waiter, Tree: waiter,
+			Phase: phase.Testing, Generation: 1, Status: "in_progress", Rank: "A", HandedOver: true})
+		seedLifecycle(t, pool, waiter)
+		oweStart(t, pool, waiter, waiter, phase.Testing)
 		seedMirror(t, pool, waiter, "in_progress", blocker)
 		seedMirror(t, pool, blocker, "in_progress")
 
-		tick(t, pool, admission, "the-wait-begins")
-		if holdsSlot(t, pool, waiter) {
-			t.Fatalf("%s holds a row while it waits, want none", waiter)
-		}
-
-		// Its phase ends while the wait stands: the transition moves it on and writes the start
-		// its next worker is owed, which waits for the issue's row like every phase worker's.
-		moved := issue(t, pool, waiter)
-		moved.Phase = phase.Testing
-		putIssue(t, pool, moved)
-		oweStart(t, pool, waiter, waiter, phase.Testing)
-
 		tick(t, pool, admission, "the-wait-stands")
 
-		assertWaitsOnce(t, pool, waiter)
+		if holdsSlot(t, pool, waiter) {
+			t.Fatalf("%s holds a row while its blocker is open, want none: an issue that owes a start and waits is an issue the daemon has started", waiter)
+		}
 		owed := startsOf(t, pool, waiter)
 		if len(owed) != 1 || !owed[0].needsSlot || owed[0].claimable || owed[0].role != claim.RoleTester {
 			t.Fatalf("the starts of %s while it waits = %+v, want the tester's one row, held for a slot and claimable by no lane", waiter, owed)
 		}
-		if holdsSlot(t, pool, waiter) {
-			t.Fatalf("%s holds a row while it waits, want none: the start it owes takes no row for it", waiter)
+		if got := issue(t, pool, waiter); got.ReleasedForWaitAt != nil {
+			t.Fatalf("%s carries a mark of a release at %v, want none: it held no row for the pass to take away", waiter, got.ReleasedForWaitAt)
 		}
+		assertWaitsOnce(t, pool, waiter)
 
 		dispatchEvent(t, pool, admission, "the-wait-ends", blocker, "done")
 
 		if !holdsSlot(t, pool, waiter) {
-			t.Fatalf("%s holds no row once its wait ended, want the one it gave back", waiter)
+			t.Fatalf("%s holds no row once its wait ended, want the one its promotion grants it", waiter)
 		}
 		delivered := startsOf(t, pool, waiter)
 		if len(delivered) != 1 || !delivered[0].claimable {

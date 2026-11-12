@@ -777,9 +777,9 @@ type countingStore struct {
 	mirrorReads int
 }
 
-func (s *countingStore) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, project string, keys []string) ([]record.DispatchIssueRow, error) {
+func (s *countingStore) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, keys []string) ([]record.DispatchIssueRow, error) {
 	s.mirrorReads++
-	return s.Store.DispatchIssuesOf(ctx, tx, project, keys)
+	return s.Store.DispatchIssuesOf(ctx, tx, keys)
 }
 
 // Promotion judges every candidate from one read of the project's mirror, however many candidates

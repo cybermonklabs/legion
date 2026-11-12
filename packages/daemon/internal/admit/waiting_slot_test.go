@@ -35,12 +35,15 @@ func seedStarted(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, s
 // testing, held from its implementing, merging and accepting each gives its row back, as one in
 // implementing does.
 //
-// Two started issues keep theirs though a wait names them. A root in awaiting_person waits on a
-// person, and the row it holds is what its resume takes back. And a tree's own root whose design
+// Three started issues keep theirs though a wait names them. A root in awaiting_person waits on a
+// person, and the row it holds is what its resume takes back. A tree's own root whose design
 // gate has never opened is its architect writing the design, the whole of that tree's work
 // (record.AtWork at phase.Admitted): releasing it would take the slot of the one issue of the
 // tree that is working, and it is still the root that may hand its work to a person, which this
-// test reads of it last (record.CanWaitOnPerson).
+// test reads of it last (record.CanWaitOnPerson). And a root that arrived from another tree
+// carrying the row it held there (record.QueuedRoot) keeps it, because the line judges such a
+// root by the queued-root rule, which starts a root carrying a run whatever its links say: the
+// subtest below reads that one.
 //
 // blockers.Exempt is read by no part of this. That rule is the promotion's, about what a
 // candidate may start in spite of its links, so an issue carrying a run — which every issue in a

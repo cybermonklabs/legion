@@ -112,14 +112,14 @@ func (s *Postgres) DispatchIssues(ctx context.Context, tx pgx.Tx, project string
 // statement: the set is built first, from the keys and the blockers of their rows, and the rows are
 // then read by primary key, so the read never scans the project's mirror.
 //
-// Neither the outer filter nor the sub-select that collects the blockers names project: a key the
-// judgement asks for is read whatever project it is in, since an issue may wait on an issue of
-// another project and a blocker whose row the judgement cannot read counts as unfinished for ever
-// (blockers.Blocked), which would hold its slot back for good. The table is keyed by the issue
-// alone, so a key names one row and project is the row's own. DispatchIssues and DispatchChildren
-// keep their project term: the first is the daemon's listing of its own project, and a parent link
-// cannot cross a project, so a child of one is of that project too.
-func (s *Postgres) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, project string, keys []string) ([]DispatchIssueRow, error) {
+// It names no project at all: a key the judgement asks for is read whatever project it is in,
+// since an issue may wait on an issue of another project and a blocker whose row the judgement
+// cannot read counts as unfinished for ever (blockers.Blocked), which would hold its slot back
+// for good. The table is keyed by the issue alone, so a key names one row and project is the
+// row's own. DispatchIssues and DispatchChildren keep their project term: the first is the
+// daemon's listing of its own project, and a parent link cannot cross a project, so a child of
+// one is of that project too.
+func (s *Postgres) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, keys []string) ([]DispatchIssueRow, error) {
 	if len(keys) == 0 {
 		return nil, nil
 	}
@@ -130,7 +130,7 @@ func (s *Postgres) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, project stri
 			union select unnest(judged.blockers) from dispatch_issues judged where judged.key = any($1)))
 		order by i.key`, keys)
 	if err != nil {
-		return nil, fmt.Errorf("read the Dispatch mirror of %v in %s: %w", keys, project, err)
+		return nil, fmt.Errorf("read the Dispatch mirror of %v: %w", keys, err)
 	}
 	return mirrored, nil
 }

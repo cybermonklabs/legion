@@ -3,14 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/sjawhar/legion/daemon/internal/api"
 )
 
 // A waiting issue is reported waiting and blocked. This half reads what an operator running
@@ -72,20 +69,5 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), want) {
 		t.Fatalf("legion state printed %q, want the line %q", out.String(), want)
-	}
-
-	// The same line from the summary itself, over the state's own blocked list: the command
-	// prints what blockedSummary builds, and each of the four issues of the fixture stands on
-	// it.
-	var state struct {
-		Admission struct {
-			Blocked []api.BlockedIssue `json:"blocked"`
-		} `json:"admission"`
-	}
-	if err := json.Unmarshal([]byte(served), &state); err != nil {
-		t.Fatalf("decode the served state: %v", err)
-	}
-	if got := blockedSummary(state.Admission.Blocked) + "\n"; got != want {
-		t.Fatalf("blockedSummary = %q, want %q", got, want)
 	}
 }

@@ -51,15 +51,16 @@ import (
 //
 // Whatever the departure, the issue carries no mark of a slot released for a wait afterwards.
 // The mark is the daemon's answer to "this issue was started and its row is gone because it
-// waits on another issue" (record.Issue.ReleasedForWaitAt), and the one thing that clears it
-// besides a slot granted again is admission's release, which reads the project's live issues
-// alone (admit's releaseSlots): a child this function parks at phase.Done is in neither half of
-// that read (record.Postgres.LiveIssues), so nothing else would ever clear it. Left standing, a
-// person's later todo would re-enter the issue carrying it, and the line would stand it among
-// the issues whose work came back, at a moment from before the leave, rather than among the
-// issues whose first phase can start, which are ordered by Dispatch rank (record.Waiting). The
-// write is made whatever the record in hand says, because that copy may have been read before
-// the release wrote the mark, and a departure is rare enough that one statement costs nothing.
+// waits on another issue" (record.Issue.ReleasedForWaitAt), and this write is the third of the
+// three that clear it: the other two are the grant of a slot and admission's release, which
+// reads the project's live issues alone (admit's releaseSlots), and a child this function parks
+// at phase.Done is in neither half of that read (record.Postgres.LiveIssues), so without this
+// write nothing would ever clear it. Left standing, a person's later todo would re-enter the
+// issue carrying it, and the line would stand it among the issues whose work came back, at a
+// moment from before the leave, rather than among the issues whose first phase can start, which
+// are ordered by Dispatch rank (record.Waiting). The write is made whatever the record in hand
+// says, because that copy may have been read before the release wrote the mark, and a departure
+// is rare enough that one statement costs nothing.
 func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {
 	e.logOnCommit(ctx, "workflow: issue left the workflow", "issue", issue.Key, "tree", issue.Tree, "status", status)
 	if err := e.store.ClearReleasedForWait(ctx, tx, issue.Key); err != nil {

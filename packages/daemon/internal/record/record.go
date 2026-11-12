@@ -158,13 +158,13 @@ type Issue struct {
 	MemoryDrawnAt  *time.Time
 	// ReleasedForWaitAt is when the daemon took the issue's admission slot away because the issue
 	// waits on another issue — a Dispatch blocker of it that is not done, or an open child its own
-	// first phase waits for — and nil for every other record. It is the one mark that tells the
-	// waiting line an issue the daemon started and that gave its row back for a wait from one that
-	// never started, and it is the moment that issue stands at in the line (Waiting). The row and
-	// the mark are written and cleared together, so neither can stand without the other: only
-	// Store.ReleaseSlotForWait writes it, with the delete of the row in one statement, and the
-	// grant of a slot and the ordinary release of a row each clear it
-	// (Store.ClearReleasedForWait); PutIssue keeps the stored value.
+	// first phase waits for — and nil for every other record. It is the mark that stands an issue
+	// whose row was taken away for a wait in the waiting line at the moment it lost that row
+	// (Waiting). The row and the mark are written together, so no pass reads a mark beside a row:
+	// only Store.ReleaseSlotForWait writes it, with the delete of the row in one statement. Three
+	// writes clear it (Store.ClearReleasedForWait): the grant of a slot, the ordinary release of
+	// a row for good, and the issue's departure from the workflow, which the release's own read
+	// of the live issues no longer reaches (workflow's leave). PutIssue keeps the stored value.
 	ReleasedForWaitAt *time.Time
 }
 
@@ -1253,10 +1253,10 @@ type Store interface {
 	// DispatchIssuesOf is the mirrored row of each of keys and the row of each issue those rows
 	// say they wait on, by key, read by primary key: what a judgement of keys reads
 	// (blockers.Load), whatever the number of rows the project's mirror holds. No keys read
-	// nothing. A key is read whatever project it is in, since an issue may wait on an issue of
-	// another project and a blocker whose row the judgement cannot read counts as unfinished for
-	// ever; project names the project the judgement is of and survives for the error text alone.
-	DispatchIssuesOf(ctx context.Context, tx pgx.Tx, project string, keys []string) ([]DispatchIssueRow, error)
+	// nothing. It names no project: a key is read whatever project it is in, since an issue may
+	// wait on an issue of another project and a blocker whose row the judgement cannot read
+	// counts as unfinished for ever.
+	DispatchIssuesOf(ctx context.Context, tx pgx.Tx, keys []string) ([]DispatchIssueRow, error)
 	// DispatchChildren is every mirrored issue of the Dispatch project key project whose parent is
 	// one of parents, grouped by parent and in key order within each group; a parent with no
 	// children has no entry, and no parents reads nothing. A later step reads it to decide whether

@@ -160,8 +160,9 @@ func (w *workflowRuntime) readObserved(ctx context.Context, keys []string) []int
 //
 // An answer that names no project at all is left out as a failed read is, and logged the same
 // way: its row would be written under the empty project, which drops it out of every project's
-// read, and leaving it out keeps the row as the last answer that named one left it. The project
-// is never derived from the key here — the read that saw the issue is the one derivation.
+// read, and leaving it out keeps the row as the last answer that named one left it. The key's
+// own prefix decides which keys the turn reads singly (ownDispatchKey); the project a mirror
+// row carries is the one this read saw on the issue.
 func (w *workflowRuntime) readBlocker(ctx context.Context, key string) (intake.IssueStatus, bool) {
 	issue, err := w.dispatch.GetIssue(ctx, key)
 	if err != nil {

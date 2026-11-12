@@ -218,11 +218,13 @@ func HeldUnderAccepted(issue Issue, byKey map[string]Issue) bool {
 type LineKind int
 
 const (
-	// LineReturning is an issue that owes its worker a start and holds no row: a transition
-	// applied in full and left only that start waiting for a slot (SuperviseRequest.NeedsSlot),
-	// and an issue that still held a row would have had the start released by the row itself.
-	// Its promotion grants the slot and nothing else — the held start becomes claimable the
-	// moment the slot row exists, and the grant's own lane wake delivers it.
+	// LineReturning is an issue that owes its worker a start, holds no row and waits on nothing:
+	// a transition applied in full and left only that start waiting for a slot
+	// (SuperviseRequest.NeedsSlot), and an issue that still held a row would have had the start
+	// released by the row itself. Its promotion grants the slot and nothing else — the held
+	// start becomes claimable the moment the slot row exists, and the grant's own lane wake
+	// delivers it. An issue owing a start that waits on another issue stands in the line as
+	// LineWaitingOnIssue instead, so its start is not delivered while the wait is open.
 	LineReturning LineKind = iota + 1
 	// LineAnswered is a root that waited on a person and was answered. Its tree already runs; its
 	// promotion resumes its architect where it stands (workflow's ResumeAwaitedRoot).
@@ -236,12 +238,14 @@ const (
 	// once its own work comes round. Its promotion starts that phase as the gate's opening used
 	// to (workflow's gateOpened).
 	LineFirstPhase
-	// LineWaitingOnIssue is an issue the daemon has started that gave its slot back because it
-	// waits on another issue: a Dispatch blocker of it that is not done, or an open child its own
-	// first phase waits for (Issue.ReleasedForWaitAt, which is the mark of that release and the
-	// moment the entry stands at). Nothing of its work stopped, so its promotion grants it a row
-	// again and clears the mark; while the wait lasts the entry says what it waits on (Waits) and
-	// the promotion passes over it, as it passes over every candidate that waits on an issue.
+	// LineWaitingOnIssue is an issue the daemon has started that waits on another issue: a
+	// Dispatch blocker of it that is not done, or an open child its own first phase waits for.
+	// It holds no row — a pass took it away for the wait (Issue.ReleasedForWaitAt), or its last
+	// transition left it owing a start with none — and the entry stands at the moment that mark
+	// records, or at the owed row's own creation time where no mark stands (LineFacts.Owed).
+	// Nothing of its work stopped, so its promotion grants it a row again and clears the mark;
+	// while the wait lasts the entry says what it waits on (Waits) and the promotion passes over
+	// it, as it passes over every candidate that waits on an issue.
 	LineWaitingOnIssue
 )
 
@@ -311,10 +315,10 @@ type LineFacts struct {
 	// issues that wait on another issue and for no other: the two waits are the unfinished
 	// Dispatch blockers of the issue and the open children its own first phase waits for, and an
 	// issue with no entry waits on neither. Such an issue holds no admission slot — the pass
-	// takes its row away and marks it (Issue.ReleasedForWaitAt, admit's promoteHolds) — and
-	// stands in the line as LineWaitingOnIssue until the wait ends. Only the caller can fill it,
-	// for the reason Held gives, and it is read again on every pass as ChildWaits is
-	// (blockers.StartedWaits).
+	// takes its row away and marks it (Issue.ReleasedForWaitAt, admit's promoteHolds), or its
+	// last transition left it owing a start while it held none — and stands in the line as
+	// LineWaitingOnIssue until the wait ends. Only the caller can fill it, for the reason Held
+	// gives, and it is read again on every pass as ChildWaits is (blockers.startedWaits).
 	Waits map[string][]string
 }
 
@@ -575,7 +579,7 @@ func AtWork(issue Issue, gate TreeGate) bool {
 // person or for its review holds its place against the cap and wins none back from the line
 // when the wait ends. A wait on another issue is the one wait that is not read here: an issue
 // the daemon has started that waits on one gives its row back and stands in the line for one
-// again, by the rule beside this (blockers.Waits, admit's releaseSlotsForWaits), which reads
+// again, by the rule beside this (blockers.waitsOf, admit's releaseSlotsForWaits), which reads
 // this one for the phases it applies to rather than restating them.
 //
 // It is the one statement of that half, and the two rules that must never disagree read it: the
@@ -661,20 +665,21 @@ const WaitingLineBand = "among the issues whose work came back, oldest first"
 // whose work has come back to them. Four kinds of record say that work came back, and each
 // gives the moment it did:
 //
-//   - an issue that owes its worker a start takes that row's own creation time and id
-//     (OwedStart), which is durable — the transition wrote the row in its own transaction — so a
-//     restart finds the line exactly as it was, and a second transition before the slot replaces
-//     that row's payload without moving it (Store.ReplaceOwedStart);
+//   - an issue that owes its worker a start and waits on nothing takes that row's own creation
+//     time and id (OwedStart), which is durable — the transition wrote the row in its own
+//     transaction — so a restart finds the line exactly as it was, and a second transition
+//     before the slot replaces that row's payload without moving it (Store.ReplaceOwedStart);
 //   - a root a person answered while it waited in awaiting_person takes its Awaiting.AnsweredAt;
 //   - a tree's own root standing at admitted under an open gate, whose first phase can start,
 //     takes the moment that gate opened (gateReturn). It holds its row throughout — an issue
 //     the daemon has started keeps one (KeepsSlot) — so its first phase is work coming back
 //     rather than work that never started, and its promotion takes no further slot.
-//   - an issue the daemon started and released because it waits on another issue takes the
-//     moment its row was taken away (Issue.ReleasedForWaitAt, LineWaitingOnIssue). It holds no
-//     row while it waits, which is the whole of the rule: a started issue that waits holds none
-//     of the cap's slots and stands in this line for one again, and until its wait ends its
-//     entry's own answer passes it over (LineEntry.Waits).
+//   - an issue the daemon started that waits on another issue takes the moment its row was
+//     taken away for that wait (Issue.ReleasedForWaitAt, LineWaitingOnIssue), or, where it owes
+//     a start and carries no mark, that owed row's own creation time and id. It holds no row
+//     while it waits, which is the whole of the rule: a started issue that waits holds none of
+//     the cap's slots and stands in this line for one again, and until its wait ends its
+//     entry's own answer passes it over (LineEntry.Waits), the start it owes with it.
 //
 // Where a root has both an answer and an open gate, the later of the two is when its work came
 // back. The four are merged on the one time axis, and ties are broken by the owed row's id and
@@ -801,25 +806,33 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		if !recorded || !NeedsSlot(issue, root, running) {
 			continue
 		}
-		// An issue the daemon started and then released because it waits on another issue stands
-		// here, at the moment its row was taken away (Issue.ReleasedForWaitAt), with what it
-		// waits on. The mark is what tells it from an issue that never started and holds no row
-		// for that reason — a child at admitted waiting for its first phase — which never had a
-		// row to give back. Its promotion grants the row again and clears the mark, and until
-		// the wait ends the entry's own answer passes it over (LineEntry.Waits), so it keeps its
-		// place in the line and nothing of its work stops meanwhile.
-		if issue.ReleasedForWaitAt != nil {
+		// An issue the daemon has started that waits on another issue stands here as the waiting
+		// kind, whatever else it owes: its entry carries what it waits on, the promotion passes
+		// over it until that wait ends (LineEntry.Waits), and nothing of its work moves
+		// meanwhile. Two records say such an issue has started while it holds no row, and each
+		// gives the moment its entry stands at: the mark of the row a pass took away for the
+		// wait (Issue.ReleasedForWaitAt), and, where no mark stands, the start it owes its next
+		// worker, which nothing but a transition of a run writes and whose row carries its own
+		// creation time and id, as a return's entry does. An issue that never started has
+		// neither — a child at admitted waiting for its first phase had no row to give back and
+		// owes nothing — so none is a candidate here.
+		owed, owes := facts.Owed[issue.Key]
+		marked := issue.ReleasedForWaitAt != nil
+		if _, waits := facts.Waits[issue.Key]; marked || (owes && waits) {
+			at, id := owed.CreatedAt, owed.ID
+			if marked {
+				at, id = *issue.ReleasedForWaitAt, 0
+			}
 			releasedForWait[issue.Key] = struct{}{}
-			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineWaitingOnIssue, Waits: facts.Waits[issue.Key]},
-				at: *issue.ReleasedForWaitAt})
+			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineWaitingOnIssue,
+				Waits: facts.Waits[issue.Key]}, at: at, id: id})
 			continue
 		}
-		owed, owes := facts.Owed[issue.Key]
 		if !owes {
 			continue
 		}
-		// This issue holds no row: the skip above took every holder out of the line, so the
-		// entry says so and its promotion takes one for it.
+		// This issue holds no row and waits on nothing: the skip above took every holder out of
+		// the line, so the entry says so and its promotion takes one for it.
 		returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineReturning}, at: owed.CreatedAt, id: owed.ID})
 	}
 
@@ -859,10 +872,11 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		if issue.Phase != phase.Admitted || issue.AwaitingPerson() || OutOfWorkflow(issue.Status) {
 			continue
 		}
-		// An issue the first loop has already put in the line, released for what it waits on,
-		// stands there once: its wait ends and its promotion starts the very phase this branch
-		// would, on the row that promotion grants it back. A queued root never reaches that
-		// branch (the first loop's own skip above), so this is the one place it can double.
+		// An issue the first loop has already put in the line, waiting on another issue, stands
+		// there once: its promotion grants it the row back and nothing else, and the pass that
+		// reads the line after it offers the first phase this branch would. A queued root never
+		// reaches that branch (the first loop's own skip above), so this is the one place it can
+		// double.
 		if _, waits := releasedForWait[issue.Key]; waits {
 			continue
 		}

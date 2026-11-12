@@ -88,7 +88,7 @@ func (s projectionStore) GatesOf(_ context.Context, _ pgx.Tx, issue string) (map
 func (s projectionStore) OpenProductionChecks(context.Context, pgx.Tx) ([]record.ProductionCheck, error) {
 	return s.checks, nil
 }
-func (s projectionStore) DispatchIssuesOf(_ context.Context, _ pgx.Tx, _ string, keys []string) ([]record.DispatchIssueRow, error) {
+func (s projectionStore) DispatchIssuesOf(_ context.Context, _ pgx.Tx, keys []string) ([]record.DispatchIssueRow, error) {
 	wanted := make(map[string]bool, len(keys))
 	for _, key := range keys {
 		wanted[key] = true

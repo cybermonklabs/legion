@@ -5,12 +5,10 @@
 -- released_for_wait_at is the moment the daemon took the issue's slots row away because the issue
 -- waits on another issue: a Dispatch blocker of it that is not done, or an open child its own
 -- first phase waits for. It is null for every issue holding its slot and for every issue that
--- never started, and it is what tells the waiting line the difference between the two kinds of
--- issue standing there with no row — one the daemon started and gave the row back for a wait,
--- which stands among the issues whose work came back at the moment this column records, and one
--- that never started at all. The daemon clears it the moment the issue takes a slot again, and
--- whenever the slot rule releases the row for good (record.NeedsSlot), so a mark outlives neither
--- the wait nor the row.
+-- never started, and it is the moment such an issue stands at in the waiting line, among the
+-- issues whose work came back. Three writes clear it: the grant of a slot, the release of the
+-- row for good (record.NeedsSlot), and the issue's departure from the workflow, which that
+-- release no longer reads — so a mark outlives neither the wait nor the row.
 --
 -- The column is nullable with no backfill because null is exactly the truth about every issue
 -- recorded before this migration: none of them ever gave a slot back for a wait, since no daemon

@@ -1112,9 +1112,13 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 // releaseSlots releases the slot of every issue of this project that no longer needs one
 // (record.NeedsSlot, the one statement of the release, whose phase half the grant reads too —
 // record.KeepsSlot) and reports those issues in slot order. Each release is logged once the
-// fact commits. It is the one release the daemon makes: a tree leaving the workflow, a root
-// finishing, an issue reaching its done or its wait for a merge, and a linger all read the same
-// predicate, so there is one rule and one place a slot can go.
+// fact commits. It is the release for good: a tree leaving the workflow, a root finishing, an
+// issue reaching its done or its wait for a merge, and a linger all read the same predicate, so
+// one rule says when an issue has stopped needing a slot at all. The daemon makes one other
+// release, releaseSlotsForWaits, which frees the row of an issue that goes on working and waits
+// on another issue; the two are apart because they free rows for opposite reasons — this one
+// because there is no more work to hold a row for, that one because the work is held — and only
+// that one leaves a mark, since only its issue stands in the line for the row again.
 //
 // It reads the slotted issues in one query (record.Store.SlottedIssues), never a record per slot
 // and never the whole issues table: every fact applies this under the one fact lock
@@ -1175,11 +1179,13 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 
 // releaseSlotsForWaits takes back the row of every issue of this project that holds one and
 // waits on another issue (record.LineFacts.Waits, the pass's own judgement), and reports the
-// issues it took one from. An issue the daemon has started and that now waits holds none of the
-// cap's slots: the cap counts the issues Legion is working on, and an issue waiting for another
-// issue to finish is not one of them, so its row goes to the line and it stands there for a row
-// of its own again. Nothing else of it moves — no claim is suspended, no phase changes, no
-// Dispatch status is written — and the issue takes a row again by itself when the wait ends.
+// issues it took one from. It is the release for a wait, beside releaseSlots, which frees the
+// row of an issue that needs none at all: an issue this one frees goes on working and keeps its
+// place in the line, so the row comes back to it by itself when the wait ends, which is why the
+// two are written apart and why this one marks the issue. The cap counts the issues Legion is
+// working on, and an issue waiting for another issue to finish is not one of them, so its row
+// goes to the line and it stands there for a row of its own again. Nothing else of it moves —
+// no claim is suspended, no phase changes, no Dispatch status is written.
 //
 // The release is one statement an issue (record.Store.ReleaseSlotForWait): the delete of the row
 // and the mark that says why are written together, so no pass can read one without the other.
@@ -1768,9 +1774,9 @@ func (a *Admission) waitsForChildren(waits map[string]record.ChildWait, issue re
 // What a root's own Dispatch links say is not asked, though it reads as a wait of the same
 // kind. A root the line holds behind an unfinished link is in todo, which this rule has already
 // passed over, and a root at a running status whose links hold it is a started root the pass
-// has released for that wait (blockers.Waits): its tree stands open, so liveness has already
-// spared it above and the links add nothing here. Asking blockers.WaitsOn here answered from
-// the mirror rows this pass happened to read for other issues, so whether the safety net
+// has released for that wait (record.LineFacts.Waits): its tree stands open, so liveness has
+// already spared it above and the links add nothing here. Asking blockers.WaitsOn here answered
+// from the mirror rows this pass happened to read for other issues, so whether the safety net
 // spared a root turned on whether something else had named it.
 //
 // What is left is a root whose tree nothing will ever open again, recorded at a running status.

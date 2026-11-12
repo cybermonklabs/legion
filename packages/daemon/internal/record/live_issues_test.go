@@ -79,7 +79,7 @@ func TestDispatchIssuesOfReadsTheKeysAndWhatTheyWaitOn(t *testing.T) {
 		}
 		must(t, records.PutDispatchClaim(t.Context(), tx, "LEGION-10", "session:s-1", 9))
 
-		rows, err := records.DispatchIssuesOf(t.Context(), tx, "LEGION", []string{"LEGION-10"})
+		rows, err := records.DispatchIssuesOf(t.Context(), tx, []string{"LEGION-10"})
 		if err != nil {
 			t.Fatalf("read the mirror of LEGION-10: %v", err)
 		}
@@ -92,7 +92,7 @@ func TestDispatchIssuesOfReadsTheKeysAndWhatTheyWaitOn(t *testing.T) {
 		if !reflect.DeepEqual(rows, want) {
 			t.Fatalf("the mirror of LEGION-10 = %#v, want %#v: its row and its blockers', whatever project they are in, by key", rows, want)
 		}
-		if none, err := records.DispatchIssuesOf(t.Context(), tx, "LEGION", nil); err != nil || len(none) != 0 {
+		if none, err := records.DispatchIssuesOf(t.Context(), tx, nil); err != nil || len(none) != 0 {
 			t.Fatalf("the mirror of no key = %#v, %v; want none", none, err)
 		}
 	})

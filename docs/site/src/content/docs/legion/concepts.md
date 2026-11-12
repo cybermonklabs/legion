@@ -174,9 +174,10 @@ an open child under it, holds no admission slot.
 The daemon takes its slot back, stands it in the
 waiting line among the issues whose work came back, oldest first, and gives it a slot again by
 itself at the first pass after the wait ends.
-Two started issues keep their slot although a wait
-names them: a root in `awaiting_person`, and a root at `admitted` whose design gate has never
-opened, whose architect is writing the design.
+Three started issues keep their slot although a wait
+names them: a root in `awaiting_person`; a root at `admitted` whose design gate has never
+opened, whose architect is writing the design; and a root that arrived from another tree
+carrying the row it held there, which the line starts whatever its links say.
 
 An issue holding a
 slot starts its next phase whatever the cap says, and an issue holding none, a child its architect
