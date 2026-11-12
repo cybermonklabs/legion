@@ -73,12 +73,22 @@ func TestReadProcessAnswersEachVerdictAndRecordsProcessGone(t *testing.T) {
 				t.Errorf("the read wrote the claim %d times, want %d", got, wantWrites)
 			}
 			// A clearing row's write carries the claim as the machine holds it, as judge's write of
-			// the same clear does, so only the charge is asserted of it; every other row leaves the
-			// stored claim exactly as it was.
-			if stored := h.store.load(h.token); wantWrites == 1 && stored.DeathCharged {
+			// the same clear does — here the launch failure and pending cause the refused relaunch
+			// set in memory as well as the clear — so its stored claim is the machine's; every
+			// other row leaves the stored claim exactly as it was.
+			want := before
+			if wantWrites == 1 {
+				// The step record is the store's own row, written by the step it records and not
+				// by a claim write (putStep), so it is the one the read leaves as it was.
+				want = StoredClaim(h.claim())
+				want.Step = before.Step
+			}
+			stored := h.store.load(h.token)
+			if wantWrites == 1 && stored.DeathCharged {
 				t.Errorf("the stored claim is still charged after the read found the process running, want the clear written")
-			} else if wantWrites == 0 && !reflect.DeepEqual(stored, before) {
-				t.Errorf("the stored claim is %+v after the read, want it unchanged, %+v", stored, before)
+			}
+			if !reflect.DeepEqual(StoredClaim(stored), StoredClaim(want)) {
+				t.Errorf("the stored claim is %+v after the read, want %+v", stored, want)
 			}
 			// The read reports and judges nothing else: no death, no relaunch, no stop.
 			h.wantState(StateWorking)

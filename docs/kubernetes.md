@@ -1134,7 +1134,7 @@ A forget or a start the machine refuses after this request stopped the claim is 
 No `forget-session` comes before it, and no recovery here needs an edit of the daemon's store.
 
 Both read the claim's process at the runtime, at the moment of the request, rather than the daemon's memory of an older report, which a daemon restart forgets, so what that read found is what answers a claim the daemon records as working.
-That read records what it finds as the sweep's own report of the process would, so a read that finds the process running writes the death charge it clears, in the same write that report makes; a refusal it answers stops, suspends, forgets, takes back and starts nothing.
+That read records what it finds as the sweep's own report of the process would, so a read that finds the process running and clears a death charge writes the claim as the daemon holds it, in the same write that report makes; a refusal it answers stops, suspends, forgets, takes back and starts nothing.
 Both refuse such a claim `CLAIM_IN_A_TURN` where the read finds the process running, since compacting or suspending a claim in a turn would cut that turn off and that turn may be the one that ends the run of refusals.
 A claim whose session is being compacted takes that code too: it is answered before any process is read, because the compaction in flight owns what becomes of its agent.
 A claim whose process the runtime would not answer for is refused `CLAIM_UNSETTLED`, and the refusal says the read was not answered: an unread process may be a running one, and it may be a dead one, so the claim is left exactly as the request found it, with nothing suspended, nothing forgotten and nothing started.

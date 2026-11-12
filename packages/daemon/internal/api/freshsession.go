@@ -766,23 +766,34 @@ func (s *server) suspendForFreshSession(w http.ResponseWriter, r *http.Request, 
 	case !posted:
 		return false
 	case errors.As(err, &refused) && refused.State == supervise.StateWorking:
-		// A suspension another request posted between the route's view and this lock is held
-		// over the claim now, and a held claim keeps the answer the door gives every held
-		// claim, which R2 leaves as it is (refuseHeldSuspension).
-		switch view := m.View(); {
-		case view.SuspensionHeld:
-			refuseHeldSuspension(w, token, view.State, view.Role, freshSessionOp)
-		case view.State != supervise.StateWorking:
-			refuseMovedClaim(w, token, freshSessionOp)
-		case !s.refuseWorkingClaim(w, r, m, token, view, freshSessionOp):
-			refuseMovedClaim(w, token, freshSessionOp)
-		}
+		s.refuseSuspensionRefusedAsWorking(w, r, m, token, m.View())
 		return false
 	case err != nil:
 		s.operatorFailure(w, "suspend", token, err)
 		return false
 	}
 	return true
+}
+
+// refuseSuspensionRefusedAsWorking answers a fresh session whose suspension the machine refused
+// because it found the claim working, from view, the claim as the machine published it after
+// that refusal (suspendForFreshSession says why each answer is the one given). A suspension
+// another request posted between the route's view and that lock is held over the claim now,
+// and a held claim keeps the answer the door gives every held claim, which R2 leaves as it is
+// (refuseHeldSuspension); a claim no longer stored working moved under the request
+// (refuseMovedClaim); and a claim still stored working is read again, a process found gone once
+// more being the claim that moved (refuseWorkingClaim). It takes the view rather than reading
+// it, so the moment between the machine's refusal and that view is one a caller can hand it.
+func (s *server) refuseSuspensionRefusedAsWorking(w http.ResponseWriter, r *http.Request, m *supervise.Machine,
+	token claim.Token, view supervise.ClaimView) {
+	switch {
+	case view.SuspensionHeld:
+		refuseHeldSuspension(w, token, view.State, view.Role, freshSessionOp)
+	case view.State != supervise.StateWorking:
+		refuseMovedClaim(w, token, freshSessionOp)
+	case !s.refuseWorkingClaim(w, r, m, token, view, freshSessionOp):
+		refuseMovedClaim(w, token, freshSessionOp)
+	}
 }
 
 // notStartedAgain is the sentence of a fresh session that stopped the claim and then met the

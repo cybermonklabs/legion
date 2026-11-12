@@ -1337,6 +1337,57 @@ func TestARecoveryStepRefusesAWorkingClaimThatRecordsNoProcessAsUnsettled(t *tes
 	}
 }
 
+// A claim the machine refused as working whose view, read after that refusal, no longer shows it
+// working — its turn ended, or another request suspended it — moved under the request, and each
+// door says so with nothing of the claim changed and no process read (refuseMovedClaim): the
+// fresh session after its suspension was refused (refuseSuspensionRefusedAsWorking), and the
+// compaction after the compaction was refused (refuseState). Every answer of the shared read says
+// the claim "is stored working", which such a claim no longer is. Nothing runs between the
+// machine's refusal and that view in a test, so each step is called directly with the refused
+// state and the view of a claim that is not working, as the claim that records no process is
+// above.
+//
+// The negative control is each arm replaced with refuseInATurn, which answers CLAIM_IN_A_TURN
+// for a claim with no turn.
+func TestARecoveryRefusedAsWorkingWhoseLaterViewIsNotWorkingAnswersThatTheClaimMoved(t *testing.T) {
+	for _, door := range []struct {
+		name    string
+		reaches string
+		refuse  func(s *server, w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, view supervise.ClaimView)
+	}{
+		{"the fresh session", wantFreshSessionReaches, func(s *server, w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, view supervise.ClaimView) {
+			s.refuseSuspensionRefusedAsWorking(w, r, m, token, view)
+		}},
+		{"the compaction", wantCompactionReaches, func(s *server, w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, view supervise.ClaimView) {
+			s.refuseState(w, r, m, token, supervise.StateWorking, view)
+		}},
+	} {
+		t.Run(door.name, func(t *testing.T) {
+			h := compactHarness(t, nil)
+			token := readyImplementer(t, h)
+			m, _ := h.supervisor.Machine(token)
+			view := m.View()
+			if view.State == supervise.StateWorking || view.SuspensionHeld || view.Compacting {
+				t.Fatalf("the claim is %s with a suspension held %v and compacting %v, want it out of working with nothing held",
+					view.State, view.SuspensionHeld, view.Compacting)
+			}
+			reads := processReads(h)
+			before := h.stored(token)
+			recorder := httptest.NewRecorder()
+
+			door.refuse(routeServer(h), recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token, view)
+
+			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled, movedClaimRefusal(token, door.reaches))
+			if got := processReads(h) - reads; got != 0 {
+				t.Errorf("the runtime was asked %d times, want nothing asked of a claim that is not working", got)
+			}
+			if after := h.stored(token); !reflect.DeepEqual(after, before) {
+				t.Errorf("the refused claim is stored as %+v, want the claim the step found, untouched: %+v", after, before)
+			}
+		})
+	}
+}
+
 // suspensionHeldOverTheParkedRelaunch is that window with an operator's suspension held over
 // it: the suspend arrives while the claim is stored working, so the machine holds it for the
 // turn's end rather than stopping anything, and the park keeps its launch. The launch's turn
