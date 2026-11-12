@@ -1548,6 +1548,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/design-gates": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of decisions, criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of the three, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
+    put: operations["putApiV1IssuesByKeyDesignGates"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues/{key}/events": {
     parameters: {
       query?: never;
@@ -1865,7 +1882,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's per-agent conversation state: cleared_before, read_through, and unread_replies (the session's replies to the caller's direct messages newer than both and not read by id). */
+    /** @description The caller's per-agent conversation state: cleared_before, read_through, unread_replies (the session's replies to the caller's direct messages newer than both and not read by id), and pinned_at (when the caller pinned the session, which puts it in their sidebar's Agents list). */
     get: operations["getApiV1MeAgentsState"];
     put?: never;
     post?: never;
@@ -1883,7 +1900,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Clear an agent's conversation for the caller (cleared_before hides exchanges at or before it), mark it read (read_through only moves forward), and/or mark some of its replies read by id (read_replies, the session's own messages); answers the session's state. */
+    /** @description Clear an agent's conversation for the caller (cleared_before hides exchanges at or before it), mark it read (read_through only moves forward), mark some of its replies read by id (read_replies, the session's own messages), and/or pin it to the caller's sidebar (pinned: true pins it, false unpins it, and neither touches the Clear); answers the session's state. */
     put: operations["putApiV1MeAgentsBySessionIdState"];
     post?: never;
     delete?: never;
@@ -4532,6 +4549,19 @@ export interface components {
       document: null | string;
       open_questions: components["schemas"]["IssueAskRow"][] | null;
     };
+    IssueDesignGate: {
+      artifact_id: string;
+      /** @enum {string} */
+      step: "decisions" | "criteria" | "spec";
+    };
+    IssueDesignGates: {
+      gates: components["schemas"]["IssueDesignGate"][] | null;
+      issue: string;
+    };
+    IssueDesignGatesInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      gates: null | components["schemas"]["IssueDesignGate"][];
+    };
     IssueDetails: {
       artifacts: components["schemas"]["Artifact"][] | null;
       assignee: null | string;
@@ -4545,6 +4575,7 @@ export interface components {
       created_at: string;
       created_by: components["schemas"]["Actor"] | null;
       decisions_artifact_id: string;
+      design_gates: components["schemas"]["IssueDesignGate"][] | null;
       external_links: components["schemas"]["ExternalLink"][] | null;
       holder_state: null | string;
       key: string;
@@ -5329,7 +5360,13 @@ export interface components {
     SupersededApproval: {
       approved_by: string;
       approved_version: number;
+      design_gates?: components["schemas"]["SupersededApprovalGate"][];
       version: number;
+    };
+    SupersededApprovalGate: {
+      issue: string;
+      /** @enum {string} */
+      step: "decisions" | "criteria" | "spec";
     };
     TablePosition: {
       cells: string[] | null;
@@ -5406,11 +5443,13 @@ export interface components {
     };
     UserAgentState: {
       cleared_before?: string;
+      pinned_at?: string;
       read_through?: string;
       unread_replies: number;
     };
     UserAgentStateInput: {
       cleared_before?: null | string;
+      pinned?: null | boolean;
       read_replies?: string[] | null;
       read_through?: null | string;
     };
@@ -9453,6 +9492,44 @@ export interface operations {
       };
     };
   };
+  putApiV1IssuesByKeyDesignGates: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["IssueDesignGatesInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IssueDesignGates"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1IssuesByKeyEvents: {
     parameters: {
       query?: {
@@ -12684,6 +12761,9 @@ export type IssueComponents = components["schemas"]["IssueComponents"];
 export type IssueComponentsInput = components["schemas"]["IssueComponentsInput"];
 export type IssueCoverage = components["schemas"]["IssueCoverage"];
 export type IssueDecisions = components["schemas"]["IssueDecisions"];
+export type IssueDesignGate = components["schemas"]["IssueDesignGate"];
+export type IssueDesignGates = components["schemas"]["IssueDesignGates"];
+export type IssueDesignGatesInput = components["schemas"]["IssueDesignGatesInput"];
 export type IssueDetails = components["schemas"]["IssueDetails"];
 export type IssueDuplicateError = components["schemas"]["IssueDuplicateError"];
 export type IssueOpenAsk = components["schemas"]["IssueOpenAsk"];
@@ -12782,6 +12862,7 @@ export type Subscriber = components["schemas"]["Subscriber"];
 export type Suggestion = components["schemas"]["Suggestion"];
 export type Suggestions = components["schemas"]["Suggestions"];
 export type SupersededApproval = components["schemas"]["SupersededApproval"];
+export type SupersededApprovalGate = components["schemas"]["SupersededApprovalGate"];
 export type TablePosition = components["schemas"]["TablePosition"];
 export type TargetCandidate = components["schemas"]["TargetCandidate"];
 export type TestHookOK = components["schemas"]["TestHookOK"];

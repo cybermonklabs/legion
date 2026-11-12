@@ -136,7 +136,7 @@
       }
     },
     "serviceAccountName": "envoy-nats-listener",
-    "terminationGracePeriodSeconds": 35,
+    "terminationGracePeriodSeconds": 40,
     "volumes": [
       {
         "name": "nats-seed",

@@ -34,6 +34,7 @@ function issue(key: string, title: string): IssueDetails {
     closed_at: null,
     created_at: "2026-09-09T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
+    design_gates: [],
     external_links: [],
     key,
     labels: ["ui"],

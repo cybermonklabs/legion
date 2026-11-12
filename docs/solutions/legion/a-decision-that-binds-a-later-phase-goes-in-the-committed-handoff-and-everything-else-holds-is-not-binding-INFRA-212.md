@@ -1,5 +1,5 @@
 ---
-title: "A plan decision that binds a later phase goes in the plan handoff, and a review's \"everything else holds\" is not a ruling"
+title: "A plan decision that binds a later phase goes in the plan handoff, and a review's \"everything else holds\" is not binding"
 category: legion
 tags:
   - handoffs
@@ -13,13 +13,13 @@ applies_when:
   - A planner records decisions in the Dispatch plan document and a summary in the plan handoff
   - A phase worker is about to act on something the plan did not spell out in its own handoff
   - A reviewer submits a round while still checking part of the diff
-  - A finding or ruling lands after a review has been submitted
+  - A finding or decision lands after a review has been submitted
 related_issues:
   - "INFRA-212"
   - "sjawhar/legion#2152"
 ---
 
-# A decision that binds a later phase goes in the plan handoff, and "everything else holds" is not a ruling
+# A decision that binds a later phase goes in the plan handoff, and "everything else holds" is not binding
 
 Extends docs/solutions/legion/a-decision-taken-between-rounds-dies-with-the-pane-and-an-endorsement-is-a-claim-INFRA-62.md.
 That document says a between-rounds decision must reach a durable artefact and that an
@@ -35,9 +35,9 @@ endorsement is a claim. Two deltas, each of which cost a round here.
   `plan` field is a summary string, never the plan; a decision you never saw still binds you.
 - **Reviewer: enumerate what you checked and name what is still open. Never write a blanket
   "everything else holds" over a clause you are still checking** — a later role, and the merger,
-  read that sentence as a ruling on the whole diff.
+  read that sentence as deciding the whole diff.
 - **A finding that lands after your review is submitted gets a thread, not a message.** An
-  out-of-band ruling leaves the pull request showing one finding where there were two, and the
+  out-of-band decision leaves the pull request showing one finding where there were two, and the
   only record is prose in the body. Where the message is already sent, the implementer records it
   in the body's `Threads` section and its handoff, and says there that it has no thread.
 
@@ -60,7 +60,7 @@ removes changes the review regime of the whole pull request, not just the diff.
 finding and wrote "Everything else in the diff holds: I checked all eleven rows, both citations
 and all six anchor targets against the code." At **21:45:39** the same reviewer ruled by Envoy on a
 second clause of the same paragraph, which it had not finished checking when it submitted. The
-ruling arrived in time to join the round, so the fix cost nothing; it carries no review thread,
+decision arrived in time to join the round, so the fix cost nothing; it carries no review thread,
 and GitHub shows one thread, one resolved. A merger reading threads alone would see a clean
 one-finding round.
 

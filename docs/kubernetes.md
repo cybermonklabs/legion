@@ -131,12 +131,12 @@ It carries:
     the apt line names the package even though Debian's `priority:required` set already brings it into the base, so the day a base drops it the build fails instead of every launch in the fleet)
 
   - `ssh-keygen` (from `openssh-client`, which also brings `ssh`, `scp` and `sftp`:
-    they reach no host that `curl`, `wget`, `git`, `python3` and `socat` on the same apt line could not already reach, and what a pod may reach is Legion's ruling, the withheld `network` capability row
+    they reach no host that `curl`, `wget`, `git`, `python3` and `socat` on the same apt line could not already reach, and what a pod may reach is Legion's decision, the withheld `network` capability row
     — dispatch://LEGION-5, the pod is the boundary, except a workload a role starts where its deployment's cluster admits it and the Service fronting it ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role))
     — a declaration the capability report renders, not a network control this repository ships;
     the package's setuid `/usr/lib/openssh/ssh-keysign` and setgid `/usr/bin/ssh-agent` lose those bits in the `runtime-base` stage, and the build's final step refuses an image where any file under `/usr/lib/openssh` or `/usr/bin/ssh-agent` carries one)
 
-  - `psql` (from `postgresql-client`: the Dispatch browser suite `bun run e2e`, which a reader-facing Dispatch change must pass before it merges, reaches `psql` through `packages/dispatch/e2e/psql.ts` — `packages/dispatch/e2e/seed.ts` calls it for every spec's database reset
+  - `psql` (from `postgresql-client`: the Dispatch browser suite, which a reader-facing Dispatch change must pass before it merges, is the pair `bun run e2e` and `bun run e2e:clock`, the second running the three wall-clock projects that are out of the first's selection, and both reach `psql` through `packages/dispatch/e2e/psql.ts` — `packages/dispatch/e2e/seed.ts` calls it for every spec's database reset
     — and the local stack `bun run dispatch:local` (`packages/dispatch/e2e/local-instance.ts`) refuses to start without `go`, `psql`, `flock`, `openssl` and `python3` on `PATH`, and without `docker` too unless a `DATABASE_URL` is given;
     the image carries `go`, `flock`, `openssl` and `python3`, a `DATABASE_URL` stands in for `docker`, and `psql` was the one a role had no way to supply, so a role on a digest without it cannot run the suite its own change owes
     — Debian's `psql` is a Perl wrapper around the versioned client, and it resolves because `perl-base` is in the image)
@@ -259,7 +259,7 @@ Each item below names an option and its measurement, then the verdict on it.
   — the issue's disk is 49 GiB, and every cache already sits on it (`XDG_CACHE_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `TMPDIR`, `GOCACHE`, `GOMODCACHE`, `BUN_INSTALL_CACHE_DIR`, `UV_CACHE_DIR` and `UV_PYTHON_INSTALL_DIR`, the nine `skills/legion-worker/references/tools.md` lists), so disk is not what rules it out
 
   **rejected for a compiled client on a role's `PATH`**:
-  `apt` refuses above, and leaving one unpacked where a role's later commands resolve it is the withheld `operator-setup` capability (ruling dispatch://LEGION-200), the extraction item below.
+  `apt` refuses above, and leaving one unpacked where a role's later commands resolve it is the withheld `operator-setup` capability (decision dispatch://LEGION-200), the extraction item below.
   Still right for a language's own package set — which is the runner item — and for a test harness's own prefix, which only its own commands resolve through
 
 - a runner the image already provides, pinned and failing closed
@@ -274,7 +274,7 @@ Each item below names an option and its measurement, then the verdict on it.
   `redis-cli`, `sqlite3` and `dig` ran from the prefix with `LD_LIBRARY_PATH` set and `psql` did not, Debian's `/usr/bin/psql` being a Perl wrapper that loads `PgCommon.pm` through Perl's own search path, which no extraction prefix is on
 
   **rejected as the way to get these five clients onto a role's `PATH`**:
-  that is the withheld `operator-setup` capability (`packages/daemon/internal/capabilities/capabilities.go`, ruling dispatch://LEGION-200) under the test in `skills/legion-worker/references/withheld-capability.md`, "What the withheld capability is, and what it is not", and it is fragile for exactly the client this change exists for.
+  that is the withheld `operator-setup` capability (`packages/daemon/internal/capabilities/capabilities.go`, decision dispatch://LEGION-200) under the test in `skills/legion-worker/references/withheld-capability.md`, "What the withheld capability is, and what it is not", and it is fragile for exactly the client this change exists for.
   The same unpacking inside a test harness's own environment passes that test and is a different verdict — and it would not have got a role `psql` either way
 
 - `runtime.kubernetes.setup`, the operator-set command run before each role's agent starts — it runs on every start of every role, six times per issue
@@ -490,7 +490,7 @@ the mark reads `unread` when the probe could not read `retry.modelFallback` unde
 An image row the image carries prints `present` with its evidence (`codegraph`'s:
 the CLI on PATH and the plugin enabled in the profile's lock, which a pod's launch loads with extension discovery on).
 A live row prints `reported` (``a claimed session reports it while it runs, so the probe cannot check it; `legion state` renders it: <summary>``:
-the probe proves nothing of it; [The deployment's capability report](#the-deployments-capability-report) says what each session measures), a deployment row `reported` too (the daemon reports it from the deployment's configuration), a withheld row `withheld` with its ruling, and an image row the image lacks `missing` with why.
+the probe proves nothing of it; [The deployment's capability report](#the-deployments-capability-report) says what each session measures), a deployment row `reported` too (the daemon reports it from the deployment's configuration), a withheld row `withheld` with its decision, and an image row the image lacks `missing` with why.
 A build whose image lacks a capability fails, the probe naming every missing one.
 The daemon's Agent Sandbox runtime runs the same command in a probe Sandbox, `legion-probe-<project>-<digest12>`, with its own contract, under the operator's pod, at every boot, and requires `agent-models=resolved`:
 each agent's model resolves, with a working key, as the task tool resolves a subagent's (`packages/daemon/internal/runtime/sandbox/probe.go`).
@@ -2744,7 +2744,7 @@ every worker is a full agent), 21 rows, each checked at one site.
 The image rows (`eval-js`, `eval-python`, `browser`, `lsp`, `codegraph`, `skills`, `toolchain`, `claude-code`) are `legion probe-image`'s ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)), `present` once the probe passed;
 the live rows (`subagents`, `web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) are measured by each claimed session while it runs, inside its own Oh My Pi, and reported on a `claims/ready` of its own, and the daemon renders each from what its live sessions reported (LEGION-663, INFRA-927;
 the paragraphs after the deployment rows);
-the withheld rows carry the ruling that keeps them from every worker (`network`:
+the withheld rows carry the decision that keeps them from every worker (`network`:
 dispatch://LEGION-5, the pod is the boundary, except a workload a role starts where its deployment's cluster admits it and the Service fronting it ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 `operator-setup`: dispatch://LEGION-200, Legion owns its dependencies;
 `production-identities`: dispatch://LEGION-551 and dispatch://LEGION-205);
@@ -2822,7 +2822,7 @@ The row is `present` when no live session fails it and at least one proved it, i
 `open` when any live session fails it, its detail naming each failing session as `pod <sandbox>/<container> (<role>, <issue>):
 <fact>`, `; `-joined, the first three then ` +N more`, and carrying no `configLine` — no `capabilities.decided` line exists for a live row, since a session's failing check is a fact to fix (the operator's, or the issue's architect's), not a deployment decision, and `legion start
 --check-config` says nothing of live rows;
-and `unchecked` before any live session has reported, its detail `no session has reported yet (<ruling>): <summary>`, where the ruling is the issue whose check proves the row (`repository-extensions`:
+and `unchecked` before any live session has reported, its detail `no session has reported yet (<decision>): <summary>`, where the decision is the issue whose check proves the row (`repository-extensions`:
 dispatch://LEGION-629; `github`: dispatch://LEGION-631; the other four: dispatch://LEGION-663).
 Nothing measures again mid-session, so a session that booted during a Dispatch, GitHub or search-provider outage reads open until its next boot.
 
@@ -5178,7 +5178,7 @@ each issue's pod (every role of it alike) and the image probe's.
   either way, stop it declaring the ConfigMap first.
   To change a role's model, edit its line under `modelRoles` in that `overlay.yml` and run the same command again.
   Pods started after that use it; a running pod keeps the files it started with until it restarts, since both are mounted by `subPath`, which the kubelet never refreshes.
-  The example overlay also turns `retry.modelFallback` on (LEGION-578's ruling:
+  The example overlay also turns `retry.modelFallback` on (LEGION-578's decision:
   a failed model call is retried on another model;
   which model is the repository's `retry.fallbackChains` to name):
   the probe pod reads the effective value under the operator's configuration (`omp config get retry.modelFallback`) onto its OK line's `model-fallback` mark (`unread` when it could not read it:

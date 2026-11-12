@@ -1670,15 +1670,22 @@ func (r *workflowTokenRecorder) InstalledOn(_ context.Context, role appauth.AppR
 // the repository mapping, acme/widgets the default of project; the webhook App check, Dispatch's
 // GitHub App installed on every repository; the publish of the project's gated design steps,
 // which the boot queues for its own project (daemon.queueGatedStepsPublish) and the outbox's
-// first sweep sends; and the read of a gate's own document, which the boot's catch-up makes for
-// every root it reads (bindGateRequest through dispatch.Client.Approval). It reports whether it
-// answered r. A board that leaves one of these to its own default arm fails the test with an
-// unexpected request, which is what this helper exists to stop: none of them belongs to a test
-// here.
+// first sweep sends; the publish of the documents a gated issue's own gates record, which the
+// boot queues for every recorded issue Dispatch has not closed (daemon.queueRecordedGatesPublish)
+// and that same sweep sends; and the read of a gate's own document, which the boot's catch-up
+// makes for every root it reads (bindGateRequest through dispatch.Client.Approval). It reports
+// whether it answered r. A board that leaves one of these to its own default arm fails the test
+// with an unexpected request, which is what this helper exists to stop: none of them belongs to a
+// test here.
 func servedBootCall(t *testing.T, w http.ResponseWriter, r *http.Request, project string) bool {
 	t.Helper()
 	if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/v1/projects/") &&
 		strings.HasSuffix(r.URL.Path, "/gated-steps") {
+		w.WriteHeader(http.StatusNoContent)
+		return true
+	}
+	if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/v1/issues/") &&
+		strings.HasSuffix(r.URL.Path, "/design-gates") {
 		w.WriteHeader(http.StatusNoContent)
 		return true
 	}
