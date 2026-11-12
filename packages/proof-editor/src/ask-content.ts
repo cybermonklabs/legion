@@ -176,10 +176,13 @@ export const brokenAskInputGuards: EditorProps = {
       event.preventDefault();
       if (inputType === "insertText" && data) {
         guardBrokenAskTextInput(view, from, to, data, () =>
+          // ProseMirror's own transaction flag, not a scroll: it asks the view to keep the
+          // caret in sight when it applies this transaction.
           view.state.tr.insertText(data).scrollIntoView()
         );
       } else if (inputType.startsWith("delete")) {
         try {
+          // The same transaction flag, on the deletion.
           view.dispatch(view.state.tr.deleteSelection().scrollIntoView());
         } catch {
           // Declined: nothing applied.

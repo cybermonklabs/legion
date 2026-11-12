@@ -32,6 +32,8 @@ export const trailingNewlineInputPlugin = $prose(
             if (
               !view.someProp("handleTextInput", (handle) => handle(view, from, to, text, insert))
             ) {
+              // ProseMirror's own transaction flag: the caret stays in sight when this insert
+              // is applied. It moves no scroll of its own.
               view.dispatch(insert().scrollIntoView());
             }
             event.preventDefault();

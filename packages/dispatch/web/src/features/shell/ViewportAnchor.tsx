@@ -210,6 +210,8 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     const held = this.held;
     const scroller = this.scrollerElement();
     if (held === null || scroller === null || held.id !== id || held.top !== top) return;
+    // Not a scroll: `held` is this component's own record of where the box stood, restamped so
+    // the next compensation measures against the offset this one left.
     held.scrollTop = scroller.scrollTop;
   }
 
@@ -266,6 +268,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     if (top === null) return;
     const delta = element.getBoundingClientRect().top - top;
     if (delta === 0) return;
+    // This component's own `scrollBy` below, which goes through `moveTheBox`.
     this.scrollBy(delta);
     this.restampHeld(held.id, top);
   };
@@ -415,6 +418,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     if (group !== undefined && element.getAttribute(group) !== snapshot.group) return;
     const delta = element.getBoundingClientRect().top - snapshot.top;
     if (delta === 0) return;
+    // This component's own `scrollBy` above, which goes through `moveTheBox`.
     this.scrollBy(delta);
     this.restampHeld(snapshot.id, snapshot.top);
   }

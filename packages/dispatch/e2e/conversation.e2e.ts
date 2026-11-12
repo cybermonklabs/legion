@@ -31,6 +31,7 @@ import {
   resolveComment,
 } from "./api";
 import { conversationFilter, holdFirstRequest } from "./editor";
+import { expectNoneOf } from "./none-of";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -1323,9 +1324,7 @@ test("clearing a conversation's New mark moves no card @phone", async ({ browser
       });
     const before = await boxes();
     // The three cards the row is about, one of each placement named above: a comment's thread
-    // card, an ask's card, and a message's byline mark. A page that drew none of them, or three
-    // of one kind, would leave the comparison below nothing of this row's subject to compare.
-    expect(before).toHaveLength(3);
+    // card, an ask's card, and a message's byline mark.
     expect(before.map((card) => card.turn.split(":")[0]).sort()).toEqual([
       "ask",
       "comment",
@@ -1334,7 +1333,24 @@ test("clearing a conversation's New mark moves no card @phone", async ({ browser
 
     await (await held).continue();
     await expect(marks).toHaveCount(0);
-    expect(await boxes()).toEqual(before);
+    // Every card stands where it stood, over the three the page drew: a page that drew none of
+    // them, or that lost one as the mark went, would leave this clause nothing of the row's
+    // subject to compare (dispatch://INFRA-341, the pairing every universal clause of a check
+    // takes).
+    const after = await boxes();
+    expectNoneOf(
+      after.map((card, at) => ({ now: card, was: before[at] })),
+      {
+        amongAtLeast: 3,
+        are: ({ now, was }) =>
+          was === undefined ||
+          now.top !== was.top ||
+          now.height !== was.height ||
+          now.turn !== was.turn,
+        matched: "cards the mark clearing moved, resized or replaced",
+        measured: "cards of the conversation, each against where it stood before the mark went",
+      }
+    );
   } finally {
     await alice.close();
   }

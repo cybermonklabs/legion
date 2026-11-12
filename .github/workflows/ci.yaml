@@ -2191,6 +2191,14 @@ jobs:
       - name: Check every fireEvent call of the Dispatch suite carries its own reason
         run: .github/scripts/check-fireevent-reasons.sh
 
+      # The other half of the same rule, for where a reader is. A surface that reads
+      # `window.scrollY` is right only while the page is the box that scrolls, and one that writes
+      # a scroll leaves no record for the landing correction to tell the page's own place-keeping
+      # from the reader, so both go through web/src/features/doc/readers-place.ts. Nothing in the
+      # type system says so: each is one plain line every element offers.
+      - name: Check every reading of a reader's place and every scroll write goes through one module
+        run: .github/scripts/check-readers-place.sh
+
       - name: Check the release workflows keep credentials out of jobs that run dependency code
         run: .github/scripts/check-release-credentials.sh
 
@@ -3812,6 +3820,9 @@ jobs:
 
       - name: Test the fireEvent reason check
         run: .github/scripts/check-fireevent-reasons.test.sh
+
+      - name: Test the reader's-place check
+        run: .github/scripts/check-readers-place.test.sh
 
       - name: Test the release credential check
         run: .github/scripts/check-release-credentials.test.sh

@@ -45,6 +45,7 @@ import {
 } from "./large-documents-page";
 import { agent, seedDocument, shortDocument } from "./large-documents-rows";
 import { settledScrollTop, withoutScrollAnchoring } from "./mermaid-helpers";
+import { expectNoneOf } from "./none-of";
 import { asUser } from "./users";
 
 // The three rows below are about what the page does in front of the document's own draw,
@@ -921,17 +922,24 @@ test("the chrome arriving moves the document's own first block by no pixels @pho
       return Math.round(block.getBoundingClientRect().top);
     });
     expect(landed, "the row never found the document's first block").toBe(16);
-    // The box the clause below is about is in the page, so "every box is above the reader" is
-    // read over a chrome that was really drawn rather than over nothing: a renamed test id or
-    // a chrome not yet mounted would otherwise satisfy it (dispatch://INFRA-341, the pairing
-    // every universal clause of a check takes, as the row above does at its own read).
-    await expect(page.getByTestId("issue-tabs-box")).toBeAttached();
-    const chromeAbove = await page.evaluate(() =>
-      [...document.querySelectorAll('[data-testid="issue-tabs-box"], header')]
-        .map((box) => Math.round(box.getBoundingClientRect().top))
-        .filter((top) => top >= 0)
+    // Over a chrome that was really drawn rather than over nothing: "every box is above the
+    // reader" is met by a renamed test id or a chrome not yet mounted, so the clause says
+    // nothing until the boxes it is about are in the page - the tab strip's box and the issue
+    // header, which is the skeleton's own `header` while the socket is held
+    // (dispatch://INFRA-341, the pairing every universal clause of a check takes, as the row
+    // above does at its own read).
+    const chrome = await page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="issue-tabs-box"], header')].map((box) => ({
+        name: box.getAttribute("data-testid") ?? box.tagName.toLowerCase(),
+        top: Math.round(box.getBoundingClientRect().top),
+      }))
     );
-    expect(chromeAbove, "a box the chrome stands in was still on the reader's screen").toEqual([]);
+    expectNoneOf(chrome, {
+      amongAtLeast: 2,
+      are: (box) => box.top >= 0,
+      matched: "boxes the chrome stands in that were still on the reader's screen",
+      measured: "boxes of the chrome above the document",
+    });
 
     // From here the row reads the first block after every frame the browser paints - a task
     // scheduled from an animation frame runs once that frame is on the screen - so what it

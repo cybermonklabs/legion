@@ -87,6 +87,7 @@ import {
   type TheBuildRan,
   topLevelBlocks,
 } from "./large-documents-rows";
+import { expectNoneOf } from "./none-of";
 import { asUser } from "./users";
 
 interface Row {
@@ -188,22 +189,6 @@ for (const row of rows) {
           // then a scroll through the whole document.
           await expect(documentEditor(page)).toBeVisible();
           expect(measured.scrollSteps).toBeGreaterThan(0);
-          // And the tasks the second target is read over are a set the page really collected:
-          // the `longtask` observer was watching this page, and it was given entries. "No task
-          // over half a second" is true of no tasks at all, so the longest of them says nothing
-          // until both of these do (dispatch://INFRA-341, the pairing every universal clause of
-          // a check takes).
-          expect(
-            measured.longTasksWatched,
-            "the page never took the `longtask` observer, so every main-thread number of this " +
-              "reading is a reading of nothing"
-          ).toBe(true);
-          expect(
-            measured.longTasks.length,
-            "the observer recorded no main-thread task at all over the whole window, so this " +
-              "reading's longest task is the target met by an empty set rather than by a quick " +
-              "build"
-          ).toBeGreaterThan(0);
           readings.push(measured);
         } finally {
           // Each reading is a first visit, so the page that took this one is shut before the
@@ -215,6 +200,21 @@ for (const row of rows) {
 
       const median = printTheMedian(what, readings, row.firstBlockTargetMs);
       expect(median.firstBlockMs).toBeLessThanOrEqual(row.firstBlockTargetMs);
+      // And the readings the second target is taken over are readings the page really
+      // collected: the `longtask` observer was watching, and it was given entries. "No task
+      // over half a second" is true of no tasks at all, so the median of their longest says
+      // nothing until every reading has some (dispatch://INFRA-341, the pairing every
+      // universal clause of a check takes). It stands here rather than inside the loop
+      // because this is the clause it guards; each reading is printed in full as it is taken,
+      // so a reading that collected nothing is on the report as it happens either way.
+      expectNoneOf(readings, {
+        amongAtLeast: measuredReadings,
+        are: (reading) => !reading.longTasksWatched || reading.longTasks.length === 0,
+        matched:
+          "readings whose page never took the `longtask` observer, or whose observer " +
+          "recorded no main-thread task at all over the whole window",
+        measured: "readings the median's longest task is taken over",
+      });
       expect(median.longestTaskMs).toBeLessThanOrEqual(longTaskTargetMs);
     } finally {
       await alice.close();

@@ -738,6 +738,8 @@ async function theConstruction(
       const escaped = cssEscapeAttrValue(markId);
       const elements = view.dom.querySelectorAll<HTMLElement>(`[data-id="${escaped}"]`);
       if (elements.length === 0) return;
+      // The editor placing its own selection inside its own DOM, which is the one scroll this
+      // package owns: no surface of Dispatch is reading or keeping a reader's place here.
       elements[0].scrollIntoView(FOCUS_SCROLL);
       pulseHighlight(view, 'mark', markId);
     },
@@ -745,6 +747,7 @@ async function theConstruction(
       const escaped = cssEscapeAttrValue(blockId);
       const element = view.dom.querySelector<HTMLElement>(`[${BLOCK_ID_DOM_ATTR}="${escaped}"]`);
       if (element === null) return;
+      // The editor's own focus scroll again, for a block.
       element.scrollIntoView(FOCUS_SCROLL);
       pulseHighlight(view, 'block', blockId);
     },
