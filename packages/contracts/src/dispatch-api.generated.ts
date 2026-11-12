@@ -1962,6 +1962,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/me/going-runs": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The caller's own command-bar runs of the last thirty days, newest first, and nobody else's: each row is one answered pause with every part stored - the words, the context chip, the hits, the decision, the proposal, each write {id, action, target, field, before, after, outcome {ok, status, code, message}, approved (auto, person or confirmed), at}, each undo {write_id, outcome, at}, the issues its hits and writes touched, structured_output, finished (whether it ended), created_at and finished_at. ?issue= keeps the runs that touched that issue, ?q= the runs whose words hold that text (any case), and ?undoable=true the runs holding a write that went through and that no undo reverted; pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}. */
+    get: operations["getApiV1MeGoingRuns"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/me/inbox/dismiss": {
     parameters: {
       query?: never;
@@ -4245,6 +4262,12 @@ export interface components {
       actions: components["schemas"]["GoingAction"][] | null;
       total: number;
     };
+    GoingContext: {
+      block: string;
+      issue: string;
+      path: string;
+      project: string;
+    };
     GoingRequest: {
       author: components["schemas"]["Actor"];
       /** Format: date-time */
@@ -4258,6 +4281,61 @@ export interface components {
     GoingRoute: {
       method: string;
       pattern: string;
+    };
+    GoingRun: {
+      author_login: string;
+      context: components["schemas"]["GoingContext"] | null;
+      /** Format: date-time */
+      created_at: string;
+      decision: unknown;
+      finished: boolean;
+      /** Format: date-time */
+      finished_at: null | string;
+      hits: components["schemas"]["GoingRunHit"][] | null;
+      id: string;
+      issues: string[] | null;
+      proposal: unknown;
+      structured_output: null | string;
+      undos: components["schemas"]["GoingRunUndo"][] | null;
+      words: string;
+      writes: components["schemas"]["GoingRunWrite"][] | null;
+    };
+    GoingRunHit: {
+      href: string;
+      id: string;
+      kind: string;
+      title: string;
+    };
+    GoingRunUndo: {
+      /** Format: date-time */
+      at: string;
+      outcome: components["schemas"]["GoingWriteOutcome"];
+      write_id: string;
+    };
+    GoingRunWrite: {
+      action: string;
+      after: unknown;
+      /** @enum {string} */
+      approved: "auto" | "person" | "confirmed";
+      /** Format: date-time */
+      at: string;
+      before: unknown;
+      field: string;
+      id: string;
+      outcome: components["schemas"]["GoingWriteOutcome"];
+      target: string;
+    };
+    GoingRunsPage: {
+      limit: number;
+      offset: number;
+      rows: components["schemas"]["GoingRun"][] | null;
+      total: number;
+    };
+    GoingWriteOutcome: {
+      code: string;
+      message: string;
+      ok: boolean;
+      status: number;
     };
     GraphEdge: {
       block?: components["schemas"]["GraphNode"];
@@ -10551,6 +10629,43 @@ export interface operations {
       };
     };
   };
+  getApiV1MeGoingRuns: {
+    parameters: {
+      query?: {
+        issue?: string;
+        q?: string;
+        undoable?: boolean;
+        limit?: number;
+        offset?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GoingRunsPage"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   postApiV1MeInboxDismiss: {
     parameters: {
       query?: {
@@ -12734,8 +12849,15 @@ export type ExternalLink = components["schemas"]["ExternalLink"];
 export type GoingAction = components["schemas"]["GoingAction"];
 export type GoingCapability = components["schemas"]["GoingCapability"];
 export type GoingCatalogueBody = components["schemas"]["GoingCatalogueBody"];
+export type GoingContext = components["schemas"]["GoingContext"];
 export type GoingRequest = components["schemas"]["GoingRequest"];
 export type GoingRoute = components["schemas"]["GoingRoute"];
+export type GoingRun = components["schemas"]["GoingRun"];
+export type GoingRunHit = components["schemas"]["GoingRunHit"];
+export type GoingRunUndo = components["schemas"]["GoingRunUndo"];
+export type GoingRunWrite = components["schemas"]["GoingRunWrite"];
+export type GoingRunsPage = components["schemas"]["GoingRunsPage"];
+export type GoingWriteOutcome = components["schemas"]["GoingWriteOutcome"];
 export type GraphEdge = components["schemas"]["GraphEdge"];
 export type GraphExcerpt = components["schemas"]["GraphExcerpt"];
 export type GraphNode = components["schemas"]["GraphNode"];

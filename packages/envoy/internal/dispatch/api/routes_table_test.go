@@ -506,6 +506,9 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"DELETE /api/v1/issues/{key}/subscribers/{session_id}",
 		"GET /api/v1/inbox",
 		"GET /api/v1/me/answers",
+		// A person's command-bar runs are no older row: they are the person's own record, read by
+		// the person alone, as the answers above them are.
+		"GET /api/v1/me/going-runs",
 		"GET /api/v1/me/replies",
 		"PUT /api/v1/me/threads/{id}/read",
 		// The Inbox's Mark all read is no older row either: it writes the person's own read

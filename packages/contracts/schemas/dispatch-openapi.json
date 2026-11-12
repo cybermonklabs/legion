@@ -7867,6 +7867,83 @@
         "x-write-scope": "session"
       }
     },
+    "/api/v1/me/going-runs": {
+      "get": {
+        "description": "The caller's own command-bar runs of the last thirty days, newest first, and nobody else's: each row is one answered pause with every part stored - the words, the context chip, the hits, the decision, the proposal, each write {id, action, target, field, before, after, outcome {ok, status, code, message}, approved (auto, person or confirmed), at}, each undo {write_id, outcome, at}, the issues its hits and writes touched, structured_output, finished (whether it ended), created_at and finished_at. ?issue= keeps the runs that touched that issue, ?q= the runs whose words hold that text (any case), and ?undoable=true the runs holding a write that went through and that no undo reverted; pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}.",
+        "operationId": "getApiV1MeGoingRuns",
+        "parameters": [
+          {
+            "name": "issue",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "undoable",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoingRunsPage"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
     "/api/v1/me/inbox/dismiss": {
       "post": {
         "description": "Take threads out of the caller's Inbox, or put them back: {threads} (the row ids reply:\u003cthread id\u003e and agent:\u003croot message id\u003e) with {seen_replies}, or the Inbox's own narrowing - kind, priority, urgency, project, and issue or artifact, as POST /api/v1/me/inbox/read reads them - with {dismiss_through} (RFC3339, required with the narrowing; stored as no later than now; missing, unparsable or more than a minute ahead of the server is 400 INVALID_STATE), never both (400 INVALID_QUERY). seen_replies is what the page drew in each row threads names, keyed by that same row id, and a dismissal naming threads without it is 400 INVALID_QUERY: a reply: row's entry is {version}, that row's version as GET /api/v1/me/replies answered it, and an agent: row's is {newest_reply, unread_replies}, that row's reply.id and the ids it drew as unread. The mark is written only while the row still holds what the page drew, so a dismissal buries no write nobody has read. A restore takes no seen_replies, and neither does the narrowing, where the server draws the rows itself (each 400 INVALID_QUERY). With the narrowing it changes exactly the threads GET /api/v1/me/replies answers under it whose newest reply, or whose dismissal, is at or before dismiss_through. {restore: true} clears the marks instead of writing them, so the threads are in the Inbox again. Dismissing marks a thread read as well, so a dismissed thread never counts as unread, and a later write by somebody else clears the mark and brings the thread back unread, while the caller's own reply leaves it dismissed. An Ask row's id, a row id of neither shape and an id that is not a uuid are 400 INVALID_QUERY. Answers {dismissed}, the number of threads it changed; a request that changes nothing answers 0 and appends no event. It takes the lock order and appends the events POST /api/v1/me/inbox/read does: one user_thread_state.updated per project and one user_agent_state.updated per session it touched.",
@@ -17738,6 +17815,29 @@
         ],
         "type": "object"
       },
+      "GoingContext": {
+        "properties": {
+          "block": {
+            "type": "string"
+          },
+          "issue": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "project",
+          "issue",
+          "block"
+        ],
+        "type": "object"
+      },
       "GoingRequest": {
         "properties": {
           "author": {
@@ -17783,6 +17883,244 @@
         "required": [
           "method",
           "pattern"
+        ],
+        "type": "object"
+      },
+      "GoingRun": {
+        "properties": {
+          "author_login": {
+            "type": "string"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GoingContext"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "decision": {},
+          "finished": {
+            "type": "boolean"
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "hits": {
+            "items": {
+              "$ref": "#/components/schemas/GoingRunHit"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "proposal": {},
+          "structured_output": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "undos": {
+            "items": {
+              "$ref": "#/components/schemas/GoingRunUndo"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "words": {
+            "type": "string"
+          },
+          "writes": {
+            "items": {
+              "$ref": "#/components/schemas/GoingRunWrite"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "author_login",
+          "words",
+          "context",
+          "hits",
+          "decision",
+          "proposal",
+          "writes",
+          "undos",
+          "issues",
+          "structured_output",
+          "finished",
+          "created_at",
+          "finished_at"
+        ],
+        "type": "object"
+      },
+      "GoingRunHit": {
+        "properties": {
+          "href": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "title",
+          "href"
+        ],
+        "type": "object"
+      },
+      "GoingRunUndo": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/GoingWriteOutcome"
+          },
+          "write_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "write_id",
+          "outcome",
+          "at"
+        ],
+        "type": "object"
+      },
+      "GoingRunWrite": {
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "after": {},
+          "approved": {
+            "enum": [
+              "auto",
+              "person",
+              "confirmed"
+            ],
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "before": {},
+          "field": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/GoingWriteOutcome"
+          },
+          "target": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "action",
+          "target",
+          "field",
+          "before",
+          "after",
+          "outcome",
+          "approved",
+          "at"
+        ],
+        "type": "object"
+      },
+      "GoingRunsPage": {
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/GoingRun"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rows",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "type": "object"
+      },
+      "GoingWriteOutcome": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ok",
+          "status",
+          "code",
+          "message"
         ],
         "type": "object"
       },

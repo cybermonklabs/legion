@@ -279,6 +279,22 @@ type myAnswersQuery struct {
 	Offset int `query:"offset"`
 }
 
+// myGoingRunsQuery is GET /api/v1/me/going-runs's query: the filters it narrows the caller's
+// runs by, and the offset page GET /api/v1/me/answers answers.
+type myGoingRunsQuery struct {
+	// Issue keeps the runs whose hits or writes touched that issue key.
+	Issue string `query:"issue"`
+	// Q keeps the runs whose words hold that text, in any case.
+	Q string `query:"q"`
+	// Undoable, true, keeps the runs holding a write that went through and that no undo
+	// reverted; any value but true or false is 400 INVALID_QUERY.
+	Undoable bool `query:"undoable"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
 // myRepliesQuery is GET /api/v1/me/replies's query: the kinds of row and the state it reads
 // them in, the page that state takes, and the one thread owner it may be narrowed to.
 type myRepliesQuery struct {
@@ -620,6 +636,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
+	"GET /api/v1/me/going-runs":        {Status: http.StatusOK, Response: goingRunsPage{}, Params: myGoingRunsQuery{}},
 	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}},
 	"PUT /api/v1/me/threads/{id}/read": {Status: http.StatusNoContent, Request: threadReadInput{}},
 	"POST /api/v1/me/inbox/read": {
