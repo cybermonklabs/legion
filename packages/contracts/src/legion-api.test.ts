@@ -4,6 +4,7 @@ import path from "node:path";
 import { z } from "zod";
 import * as legionApi from "./legion-api";
 import {
+  LEGION_CLAIM_STATES,
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PHASES,
   LEGION_WAIT_ANSWERS,
@@ -46,7 +47,7 @@ import {
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
 } from "./legion-api";
-import { DISPATCH_KEY_PATTERN, isLegionRole, LEGION_ROLES } from "./legion-roles";
+import { DISPATCH_KEY_PATTERN, GATED_STEPS, isLegionRole, LEGION_ROLES } from "./legion-roles";
 
 const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
 
@@ -287,9 +288,45 @@ interface EnumeratedFieldRow {
  * `issues.*.waitingOn.answeredBy` of the state and `waitingOn.answeredBy` of the record are one
  * field read by one `z.enum`. Every row of the daemon's table must find a tail here, so the
  * field a later contract declares is compared with the schema that parses it rather than passing
- * unread. */
+ * unread. A tail must name at most one field: `state` alone would match the claim view's, the
+ * pull request's, a stranded claim's and a cache's, so each of those carries enough of its path
+ * to tell them apart.
+ *
+ * This map is kept by hand, and it is meant to be deleted rather than grown. An entry whose
+ * values come from an exported constant reads that constant, and an entry of a field declared
+ * with an inline `z.enum([...])` writes the members out, which is a second copy of a list this
+ * file already holds a few lines above. The census of dispatch://INFRA-2694, which derives the
+ * enumerated fields and their members from these schemas themselves, is what ends that: whoever
+ * lands it takes this map out with the test around it, and until then a field added to the
+ * daemon's table needs a line here. */
 const READER_ENUMS: Record<string, readonly string[]> = {
   "waitingOn.answeredBy": LEGION_WAIT_ANSWERS,
+  phase: LEGION_PHASES,
+  // `legionClaimView.state`, which the architect's view and each worker's claim both carry.
+  "architect.state": LEGION_CLAIM_STATES,
+  "claim.state": LEGION_CLAIM_STATES,
+  // `legionClaimView.updateState` (contract 81).
+  updateState: ["none", "open", "asked", "push-check-reask", "answered"],
+  // `legionPullRequestView.state`.
+  "pullRequest.state": ["open", "merged", "closed"],
+  // `legionGatedStepView`: `step` is `legionDesignStep`, the shared tuple.
+  "gatedSteps.*.step": GATED_STEPS,
+  "gatedSteps.*.status": ["unregistered", "waiting", "approved", "changes_requested"],
+  // The issue's memory draw.
+  memoryGroup: ["memory", "none"],
+  memoryDrawMode: ["off", "on", "random"],
+  // Every `role` of every answer: a stranded claim's, a waiting wake's and the registration's.
+  role: LEGION_ROLES,
+  // `legionStrandedClaim.state`.
+  "strandedClaims.*.state": ["suspended", "failed", "retired"],
+  // `legionControllerLocator.runtime`.
+  "controllerLocator.runtime": ["tmux", "kubernetes"],
+  // `legionCapabilityState`.
+  "capabilities.*.status": ["present", "unchecked", "withheld", "decided", "open"],
+  "capabilities.*.source": ["configuration", "boot"],
+  // `legionCacheView.state`, under a mapped repository and under a retained cache.
+  "cache.state": ["starting", "cloning", "ready", "failing", "refused"],
+  "caches.*.state": ["starting", "cloning", "ready", "failing", "refused"],
 };
 
 // The two statements of one domain, held to each other. The daemon serves a value down to a

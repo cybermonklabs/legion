@@ -37,10 +37,11 @@ import (
 // widened field is a shape change exactly as an added key is (answers.go's EnumeratedFields).
 //
 // A record holds keys and the domains of the fields that table declares, so a serving-down that
-// moves neither is outside what it can see: the one such serving-down today is
+// moves neither is outside what it can see. The one serving-down that moves no key is
 // withoutRetiredStranded, which drops the entries of `strandedClaims` whose `state` is a word
-// contract 56 added, leaves every key where it was, and whose field the table declares no row
-// for. state_caller_test.go holds that one, entry by entry.
+// contract 56 added; the table does declare that field, so a record below 56 admits two values
+// where this daemon's own admits three, and a body carrying the third below 56 is red here.
+// state_caller_test.go holds the dropping itself, entry by entry.
 //
 // A key under a block the plugin parses loosely is recorded like any other, `settings.hooks.*`
 // and its three keys among them, and that is right: loose is not blind. A loose block passes a
@@ -242,7 +243,7 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 			// than answer it (contract 68, record.AnsweredByDecline). A reader below 68 parses
 			// `answeredBy` with an enumeration of eight values and refuses the whole body for
 			// the ninth, so this issue is what the serving-down of a value is read for
-			// (server.go's withoutUnadmittedWaitAnswer): the state served at every contract
+			// (shaping.go's withoutUnadmittedWaitAnswer): the state served at every contract
 			// below 68 carries this wait without its answered pair.
 			"SHAPES-2": {
 				Key:           "SHAPES-2",
@@ -417,7 +418,7 @@ func typesOf(values ...any) []reflect.Type {
 //
 // It reads declared json tags and nothing else. The shadow struct of a hand-written marshaller is
 // the same type with the same tags (`type wire State`), so it declares the same set; the
-// unexported stand-in fields — PullRequestView.fixAttempts, Settings.maxFixAttempts and
+// unexported stand-in flags — PullRequestView.fixAttemptsShown, Settings.maxFixAttemptsShown and
 // CheckView.roleHidden — are no json fields of any type and are not walked. A map's value, a
 // list's element and the inner type of a pointer are each walked as the node below `*` or below
 // the field's own name.
@@ -987,14 +988,14 @@ func shapeProblems(key shapeKey, served answerShape, record contractShape) []str
 	for _, path := range served.paths {
 		if !described[path] {
 			problems = append(problems, fmt.Sprintf(
-				"contract %d, the %s answer: the body carries `%s` and the contract does not describe it. Serve the key down to this contract (server.go's shapeState) or, where the contract's own reader takes it, record it here beside the version.go entry that adds it.",
+				"contract %d, the %s answer: the body carries `%s` and the contract does not describe it. Serve the key down to this contract (shaping.go's shapeState) or, where the contract's own reader takes it, record it here beside the version.go entry that adds it.",
 				key.contract, key.answer, path))
 		}
 	}
 	for _, path := range record.KeyPaths {
 		if !carried[path] {
 			problems = append(problems, fmt.Sprintf(
-				"contract %d, the %s answer: the body lacks `%s` and the contract describes it. A reader at %d requires the key, so write a stand-in back for it (server.go's withFixAttempts is one) or, where this contract never read it, correct the record and say why in the version.go entry.",
+				"contract %d, the %s answer: the body lacks `%s` and the contract describes it. A reader at %d requires the key, so write a stand-in back for it (shaping.go's withFixAttempts is one) or, where this contract never read it, correct the record and say why in the version.go entry.",
 				key.contract, key.answer, path, key.contract))
 		}
 	}
@@ -1004,7 +1005,7 @@ func shapeProblems(key shapeKey, served answerShape, record contractShape) []str
 				continue
 			}
 			problems = append(problems, fmt.Sprintf(
-				"contract %d, the %s answer: the body carries `%s` at `%s` and the contract admits no such value. A reader at %d parses the field with a strict enumeration and refuses the whole body for a value it does not name, as it refuses a key it does not know, so serve the value down to this contract (server.go's shapeIssue) or, where the contract's own reader admits it, record its arrival in answers.go's EnumeratedFields beside the version.go entry that adds it.",
+				"contract %d, the %s answer: the body carries `%s` at `%s` and the contract admits no such value. A reader at %d parses the field with a strict enumeration and refuses the whole body for a value it does not name, as it refuses a key it does not know, so serve the value down to this contract (shaping.go's shapeIssue) or, where the contract's own reader admits it, record its arrival in answers.go's EnumeratedFields beside the version.go entry that adds it.",
 				key.contract, key.answer, value, path, key.contract))
 		}
 	}
@@ -1132,7 +1133,7 @@ func TestTheRecordSetIsOneRecordPerAnswerPerContract(t *testing.T) {
 	}
 }
 
-// What the gate catches, shown by five changes a shape change would make. Each is applied to a
+// What the gate catches, shown by six changes a shape change would make. Each is applied to a
 // copy inside this case, so none of them edits a file and none needs a commit.
 func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 	if *updateGolden {
@@ -1246,6 +1247,25 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 		// row in answers.go and served it to every caller. `-update` then records the widened
 		// domain at this contract, and every older contract's record holds the domain it
 		// always held, which is the reader this change exists for.
+		widened := withDeclaredValue(t, EnumeratedFields, AnswerState, field, added, DaemonAPIVersion)
+		changed := withServedValue(t, served, AnswerState, field, added)
+		problems := allShapeProblems(afterUpdate(changed, widened), changed)
+		wantProblemsNaming(t, problems, field, SupportedContracts, DaemonAPIVersion)
+		for _, problem := range problems {
+			if !strings.Contains(problem, "`"+added+"`") {
+				t.Errorf("the gate reported a problem naming the field and not the value `%s`: %s", added, problem)
+			}
+		}
+	})
+
+	t.Run("a fourth stranded state is added with no serving-down", func(t *testing.T) {
+		const field = "strandedClaims.*.state"
+		const added = "parked"
+		// The second field whose values a serving-down moves, and the one that carries no
+		// serving-down of its own: withoutRetiredStranded drops the whole entry of a retired
+		// claim below 56, which is why the three states this daemon writes pass the gate
+		// today. A fourth state served to every caller with nothing dropping its entry is
+		// caught at every contract below this daemon's own, as a tenth `answeredBy` is.
 		widened := withDeclaredValue(t, EnumeratedFields, AnswerState, field, added, DaemonAPIVersion)
 		changed := withServedValue(t, served, AnswerState, field, added)
 		problems := allShapeProblems(afterUpdate(changed, widened), changed)
@@ -1425,7 +1445,7 @@ const deploysNeverFilled = "the daemon holds no deploy since contract 54, so `se
 // `architect.capabilities` and `workers.*.claim.capabilities` — are one field, and the fixture
 // realises it wherever it carries one. The walk reads declared json tags (walkDeclaredType), so
 // a hand-written marshaller's shadow struct declares the same set as the type it shadows, and
-// the unexported stand-in fields (PullRequestView.fixAttempts, Settings.maxFixAttempts,
+// the unexported stand-in flags (PullRequestView.fixAttemptsShown, Settings.maxFixAttemptsShown,
 // CheckView.roleHidden) are no json fields of any type and are walked by nothing. They are
 // served all the same, which the records of the contracts below 59 and below 54 show.
 func TestEveryDeclaredFieldOfAnAnswerIsRealisedByItsFixture(t *testing.T) {

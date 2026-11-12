@@ -1,6 +1,7 @@
 package api
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -111,18 +112,18 @@ func TestTheStateServedBelowThisContractLeavesTheNextCallersStateWhole(t *testin
 	}
 }
 
-// shapedAnswersContract is this change's own number, and the five keys of its entry are served
-// down below it. A constant above DaemonAPIVersion would be keys no caller is ever served; one
-// below the contract that added them would serve a key to a reader that refuses the whole body
-// for it.
-func TestTheShapedAnswersContractIsThisChangesOwnNumber(t *testing.T) {
-	const addedTheRoundReport = 81
-	if shapedAnswersContract != addedTheRoundReport {
-		t.Fatalf("shapedAnswersContract = %d, want %d, the contract whose entry in version.go adds `lowestPluginContract` and the claim views' round report",
-			shapedAnswersContract, addedTheRoundReport)
-	}
+// shapedAnswersContract is at or below this daemon's own contract, which is what makes the five
+// keys of its entry reach a caller at all: a constant above DaemonAPIVersion would be keys no
+// caller is ever served. Which number it is is answers.go's `Since` of this change's two new
+// answers and version.go's own entry, each of them the constant itself, so nothing here pins it
+// to a literal: a renumber moves one constant.
+func TestTheShapedAnswersContractIsAContractThisDaemonServes(t *testing.T) {
 	if shapedAnswersContract > DaemonAPIVersion {
 		t.Fatalf("shapedAnswersContract = %d, above DaemonAPIVersion %d: no caller could be served the keys",
 			shapedAnswersContract, DaemonAPIVersion)
+	}
+	if !slices.Contains(SupportedContracts, shapedAnswersContract) {
+		t.Fatalf("shapedAnswersContract = %d, which SupportedContracts does not record: the contract that adds a key is a contract this daemon describes a shape for",
+			shapedAnswersContract)
 	}
 }

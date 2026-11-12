@@ -105,13 +105,13 @@ type ControllerRegisterResponse struct {
 func (s *server) controllerSecret(w http.ResponseWriter, r *http.Request) {
 	if !s.operatorAuthorized(r) {
 		s.log.Warn("api: refused a controller secret: no operator bearer, or the wrong one")
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusForbidden, errorBody(invalidOperatorToken))
+		s.refuse(w, r, http.StatusForbidden, invalidOperatorToken)
 		return
 	}
 	if s.controllerLaunched {
 		s.log.Warn("api: refused a controller secret: this daemon launches the project's controller itself")
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, errorBody(
-			"this daemon launches the project's controller itself (controller: daemon), so legion controller start has none to start"))
+		s.refuse(w, r, http.StatusConflict,
+			"this daemon launches the project's controller itself (controller: daemon), so legion controller start has none to start")
 		return
 	}
 	var req ControllerSecretRequest
@@ -125,9 +125,9 @@ func (s *server) controllerSecret(w http.ResponseWriter, r *http.Request) {
 		if req.PluginContract != 0 {
 			named = fmt.Sprintf("holds the controller's pi-legion to daemon API contract %d", req.PluginContract)
 		}
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, errorBody(fmt.Sprintf(
+		s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
 			"legion controller start %s; this daemon requires %d: run the legion built with this daemon",
-			named, DaemonAPIVersion)))
+			named, DaemonAPIVersion))
 		return
 	}
 	secret := rand.Text()
@@ -136,7 +136,7 @@ func (s *server) controllerSecret(w http.ResponseWriter, r *http.Request) {
 	generation, err := s.controller.MintController(context.WithoutCancel(r.Context()), s.project, capabilityHash(secret))
 	if err != nil {
 		s.log.Error("api: mint a controller capability", "error", err)
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("controller secret failed: the daemon could not record it"))
+		s.refuse(w, r, http.StatusInternalServerError, "controller secret failed: the daemon could not record it")
 		return
 	}
 	s.grants.RevokeControllers()
@@ -265,7 +265,7 @@ func (s *server) registerController(w http.ResponseWriter, r *http.Request, req 
 	stored, found, err := s.controller.Controller(ctx, s.project)
 	if err != nil {
 		s.log.Error("api: read the controller record for a registration", "error", err)
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("register failed: the daemon could not read its controller record"))
+		s.refuse(w, r, http.StatusInternalServerError, "register failed: the daemon could not read its controller record")
 		return
 	}
 	if !found || subtle.ConstantTimeCompare(stored.CapabilityHash, capabilityHash(req.BootToken)) != 1 {
@@ -275,15 +275,15 @@ func (s *server) registerController(w http.ResponseWriter, r *http.Request, req 
 	if req.PluginContract != DaemonAPIVersion {
 		s.log.Warn("api: refused a controller registration: its plugin speaks another daemon API contract",
 			"session", req.SessionID, "pluginContract", req.PluginContract, "daemonApiVersion", DaemonAPIVersion)
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, errorBody(fmt.Sprintf(
-			"pi-legion speaks daemon API contract %d; this daemon requires %d", req.PluginContract, DaemonAPIVersion)))
+		s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
+			"pi-legion speaks daemon API contract %d; this daemon requires %d", req.PluginContract, DaemonAPIVersion))
 		return
 	}
 	secret := rand.Text()
 	registered, err := s.controller.RegisterController(ctx, s.project, stored.Generation, req.SessionID, capabilityHash(secret), time.Now().UTC(), req.PluginContract)
 	if err != nil {
 		s.log.Error("api: record a controller registration", "error", err)
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("register failed: the daemon could not record it"))
+		s.refuse(w, r, http.StatusInternalServerError, "register failed: the daemon could not record it")
 		return
 	}
 	if !registered {
@@ -328,14 +328,14 @@ func (s *server) registerLaunchedController(w http.ResponseWriter, r *http.Reque
 	generation, err := s.controller.MintController(ctx, s.project, controller.UnheldCapability())
 	if err != nil {
 		s.logFailure("api: record the launched controller's capability", "claim", launch.Claim, "error", err)
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("register failed: the daemon could not record its controller"))
+		s.refuse(w, r, http.StatusInternalServerError, "register failed: the daemon could not record its controller")
 		return
 	}
 	s.grants.RevokeControllers()
 	registered, err := s.controller.RegisterController(ctx, s.project, generation, req.SessionID, capabilityHash(secret), time.Now().UTC(), req.PluginContract)
 	if err != nil || !registered {
 		s.logFailure("api: record the launched controller's registration", "claim", launch.Claim, "registered", registered, "error", err)
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("register failed: the daemon could not record its controller"))
+		s.refuse(w, r, http.StatusInternalServerError, "register failed: the daemon could not record its controller")
 		return
 	}
 	s.log.Info("api: launched controller registered", "claim", launch.Claim, "generation", launch.Generation,

@@ -1843,7 +1843,7 @@ func staleForTheLane(c supervise.Claim, noPluginInstall func(supervise.Claim) bo
 // whole of it (staleForTheLane): the round term is in there with the other four, so no claim
 // the pass would post is left out of this count and none it passes over is named by it. It is
 // computed here, where the lane's own rule lives, rather than in internal/api, which does not
-// own that rule and which cuts the body to its caller only after it is built (api's stateFor).
+// own that rule and which cuts the body to its caller only after it is built (api's shapeState).
 //
 // A claim in a turn is counted, for the same reason the pass posts it: the lane has it left to
 // refresh, its relaunch is raised at that turn's end (supervise's holdStaleRelaunch, afterTurn),

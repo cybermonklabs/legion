@@ -1038,8 +1038,11 @@ package api
 // boot gate alone covered are now served the shape their own entry describes: a caller below 54
 // is served the state with each check view's `role` left off (`withoutCheckRole`), and a caller
 // below 59 is served `pullRequest.fixAttempts` of 0 and `settings.max_fix_attempts` of 3 as
-// stand-ins. This entry is written while the change is in flight. It names the surfaces the
-// change moves, and it may be completed once every shape is settled. (This entry first took 60,
+// stand-ins. A value is served down as a key is: an issue's `waitingOn.answeredBy` carries a
+// value only to a caller whose own contract admits it, and the records under
+// `packages/contracts/fixtures/daemon-api/contract-shapes.json` hold what this daemon serves
+// every contract it supports, key path by key path and value domain by value domain, so a later
+// shape change that carries no serving-down is red before it ships. (This entry first took 60,
 // when the base carried 59, then 81 at the forward merge of 2026-11-12 that brought main in at
 // 68, and 81 again here. main declares 73, the entry right above this one, and a reading of
 // `const DaemonAPIVersion` at refs/pull/<n>/head for each open pull request of this repository
@@ -1050,7 +1053,7 @@ package api
 // answers without this path. Read the base's own number and every open pull request again at the
 // next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says. A renumber moves `shapedAnswersContract` in server.go with it, which is the number the
-// five keys of this entry are served down below, as it moves the arrival contracts of this
-// change's two new answers in answers.go.)
+// says. A renumber moves `shapedAnswersContract` in shaping.go with it, and that one constant
+// alone: it is the number the five keys of this entry are served down below, and it is what
+// answers.go gives the two answers this change adds as their arrival.)
 const DaemonAPIVersion = 81

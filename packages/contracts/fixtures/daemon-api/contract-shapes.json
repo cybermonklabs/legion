@@ -56,7 +56,16 @@
       "secret",
       "tree"
     ],
-    "domains": {}
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
   },
   {
     "contract": 46,
@@ -415,6 +424,60 @@
       "strandedClaims.*.state"
     ],
     "domains": {
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [],
+      "issues.*.gatedSteps.*.status": [],
+      "issues.*.gatedSteps.*.step": [],
+      "issues.*.memoryDrawMode": [],
+      "issues.*.memoryGroup": [],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_merge",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
       "issues.*.waitingOn.answeredBy": [
         "approved",
         "ask",
@@ -424,7 +487,48 @@
         "retracted",
         "turn",
         "version"
-      ]
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": []
     }
   },
   {
@@ -501,7 +605,16 @@
       "secret",
       "tree"
     ],
-    "domains": {}
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
   },
   {
     "contract": 48,
@@ -897,6 +1010,60 @@
       "strandedClaims.*.state"
     ],
     "domains": {
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [],
+      "issues.*.gatedSteps.*.status": [],
+      "issues.*.gatedSteps.*.step": [],
+      "issues.*.memoryDrawMode": [],
+      "issues.*.memoryGroup": [],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_merge",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
       "issues.*.waitingOn.answeredBy": [
         "approved",
         "ask",
@@ -906,7 +1073,48 @@
         "retracted",
         "turn",
         "version"
-      ]
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": []
     }
   },
   {
@@ -983,7 +1191,16 @@
       "secret",
       "tree"
     ],
-    "domains": {}
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
   },
   {
     "contract": 49,
@@ -1382,6 +1599,67 @@
       "strandedClaims.*.state"
     ],
     "domains": {
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [],
+      "issues.*.gatedSteps.*.status": [],
+      "issues.*.gatedSteps.*.step": [],
+      "issues.*.memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "issues.*.memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_merge",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
       "issues.*.waitingOn.answeredBy": [
         "approved",
         "ask",
@@ -1391,7 +1669,48 @@
         "retracted",
         "turn",
         "version"
-      ]
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": []
     }
   },
   {
@@ -1468,7 +1787,16 @@
       "secret",
       "tree"
     ],
-    "domains": {}
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
   },
   {
     "contract": 51,
@@ -1870,6 +2198,67 @@
       "strandedClaims.*.state"
     ],
     "domains": {
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [],
+      "issues.*.gatedSteps.*.status": [],
+      "issues.*.gatedSteps.*.step": [],
+      "issues.*.memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "issues.*.memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_merge",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
       "issues.*.waitingOn.answeredBy": [
         "approved",
         "ask",
@@ -1879,7 +2268,48 @@
         "retracted",
         "turn",
         "version"
-      ]
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": []
     }
   },
   {
@@ -1956,7 +2386,16 @@
       "secret",
       "tree"
     ],
-    "domains": {}
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
   },
   {
     "contract": 52,
@@ -2358,6 +2797,67 @@
       "strandedClaims.*.state"
     ],
     "domains": {
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [],
+      "issues.*.gatedSteps.*.status": [],
+      "issues.*.gatedSteps.*.step": [],
+      "issues.*.memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "issues.*.memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_merge",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
       "issues.*.waitingOn.answeredBy": [
         "approved",
         "ask",
@@ -2367,7 +2867,48 @@
         "retracted",
         "turn",
         "version"
-      ]
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": []
     }
   },
   {
@@ -2444,7 +2985,16 @@
       "secret",
       "tree"
     ],
-    "domains": {}
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
   },
   {
     "contract": 53,
@@ -2853,6 +3403,67 @@
       "wakesWaiting.*.role"
     ],
     "domains": {
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [],
+      "issues.*.gatedSteps.*.status": [],
+      "issues.*.gatedSteps.*.step": [],
+      "issues.*.memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "issues.*.memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_merge",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
       "issues.*.waitingOn.answeredBy": [
         "approved",
         "ask",
@@ -2862,6 +3473,54 @@
         "retracted",
         "turn",
         "version"
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
       ]
     }
   },
@@ -2939,7 +3598,16 @@
       "secret",
       "tree"
     ],
-    "domains": {}
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
   },
   {
     "contract": 54,
@@ -3349,6 +4017,67 @@
       "wakesWaiting.*.role"
     ],
     "domains": {
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [],
+      "issues.*.gatedSteps.*.status": [],
+      "issues.*.gatedSteps.*.step": [],
+      "issues.*.memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "issues.*.memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_merge",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
       "issues.*.waitingOn.answeredBy": [
         "approved",
         "ask",
@@ -3358,6 +4087,54 @@
         "retracted",
         "turn",
         "version"
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
       ]
     }
   },
@@ -3435,7 +4212,16 @@
       "secret",
       "tree"
     ],
-    "domains": {}
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
   },
   {
     "contract": 55,
@@ -3853,6 +4639,76 @@
       "wakesWaiting.*.role"
     ],
     "domains": {
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [],
+      "issues.*.gatedSteps.*.status": [
+        "approved",
+        "changes_requested",
+        "unregistered",
+        "waiting"
+      ],
+      "issues.*.gatedSteps.*.step": [
+        "criteria",
+        "decisions",
+        "spec"
+      ],
+      "issues.*.memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "issues.*.memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_merge",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
       "issues.*.waitingOn.answeredBy": [
         "approved",
         "ask",
@@ -3862,6 +4718,54 @@
         "retracted",
         "turn",
         "version"
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
       ]
     }
   },
@@ -3939,7 +4843,16 @@
       "secret",
       "tree"
     ],
-    "domains": {}
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
   },
   {
     "contract": 56,
@@ -4357,6 +5270,76 @@
       "wakesWaiting.*.role"
     ],
     "domains": {
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [],
+      "issues.*.gatedSteps.*.status": [
+        "approved",
+        "changes_requested",
+        "unregistered",
+        "waiting"
+      ],
+      "issues.*.gatedSteps.*.step": [
+        "criteria",
+        "decisions",
+        "spec"
+      ],
+      "issues.*.memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "issues.*.memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_merge",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
       "issues.*.waitingOn.answeredBy": [
         "approved",
         "ask",
@@ -4366,6 +5349,55 @@
         "retracted",
         "turn",
         "version"
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "retired",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
       ]
     }
   },
@@ -4443,7 +5475,16 @@
       "secret",
       "tree"
     ],
-    "domains": {}
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
   },
   {
     "contract": 57,
@@ -4878,6 +5919,76 @@
       "wakesWaiting.*.role"
     ],
     "domains": {
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [],
+      "issues.*.gatedSteps.*.status": [
+        "approved",
+        "changes_requested",
+        "unregistered",
+        "waiting"
+      ],
+      "issues.*.gatedSteps.*.step": [
+        "criteria",
+        "decisions",
+        "spec"
+      ],
+      "issues.*.memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "issues.*.memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_merge",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
       "issues.*.waitingOn.answeredBy": [
         "approved",
         "ask",
@@ -4887,6 +5998,55 @@
         "retracted",
         "turn",
         "version"
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "retired",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
       ]
     }
   },
@@ -4964,7 +6124,16 @@
       "secret",
       "tree"
     ],
-    "domains": {}
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
   },
   {
     "contract": 58,
@@ -5402,6 +6571,76 @@
       "wakesWaiting.*.role"
     ],
     "domains": {
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [],
+      "issues.*.gatedSteps.*.status": [
+        "approved",
+        "changes_requested",
+        "unregistered",
+        "waiting"
+      ],
+      "issues.*.gatedSteps.*.step": [
+        "criteria",
+        "decisions",
+        "spec"
+      ],
+      "issues.*.memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "issues.*.memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_merge",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
       "issues.*.waitingOn.answeredBy": [
         "approved",
         "ask",
@@ -5411,6 +6650,55 @@
         "retracted",
         "turn",
         "version"
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "retired",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
       ]
     }
   },
@@ -5507,7 +6795,16 @@
       "secret",
       "tree"
     ],
-    "domains": {}
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
   },
   {
     "contract": 59,
@@ -5943,6 +7240,76 @@
       "wakesWaiting.*.role"
     ],
     "domains": {
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [],
+      "issues.*.gatedSteps.*.status": [
+        "approved",
+        "changes_requested",
+        "unregistered",
+        "waiting"
+      ],
+      "issues.*.gatedSteps.*.step": [
+        "criteria",
+        "decisions",
+        "spec"
+      ],
+      "issues.*.memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "issues.*.memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_merge",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
       "issues.*.waitingOn.answeredBy": [
         "approved",
         "ask",
@@ -5952,6 +7319,55 @@
         "retracted",
         "turn",
         "version"
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "retired",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
       ]
     }
   },
@@ -6048,7 +7464,16 @@
       "secret",
       "tree"
     ],
-    "domains": {}
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
   },
   {
     "contract": 62,
@@ -6486,6 +7911,76 @@
       "wakesWaiting.*.role"
     ],
     "domains": {
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [],
+      "issues.*.gatedSteps.*.status": [
+        "approved",
+        "changes_requested",
+        "unregistered",
+        "waiting"
+      ],
+      "issues.*.gatedSteps.*.step": [
+        "criteria",
+        "decisions",
+        "spec"
+      ],
+      "issues.*.memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "issues.*.memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_merge",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
       "issues.*.waitingOn.answeredBy": [
         "approved",
         "ask",
@@ -6495,6 +7990,55 @@
         "retracted",
         "turn",
         "version"
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "retired",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
       ]
     }
   },
@@ -6591,7 +8135,16 @@
       "secret",
       "tree"
     ],
-    "domains": {}
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
   },
   {
     "contract": 64,
@@ -7029,6 +8582,76 @@
       "wakesWaiting.*.role"
     ],
     "domains": {
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [],
+      "issues.*.gatedSteps.*.status": [
+        "approved",
+        "changes_requested",
+        "unregistered",
+        "waiting"
+      ],
+      "issues.*.gatedSteps.*.step": [
+        "criteria",
+        "decisions",
+        "spec"
+      ],
+      "issues.*.memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "issues.*.memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_merge",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
       "issues.*.waitingOn.answeredBy": [
         "approved",
         "ask",
@@ -7038,6 +8661,55 @@
         "retracted",
         "turn",
         "version"
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "retired",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
       ]
     }
   },
@@ -7134,7 +8806,16 @@
       "secret",
       "tree"
     ],
-    "domains": {}
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
   },
   {
     "contract": 68,
@@ -7572,6 +9253,76 @@
       "wakesWaiting.*.role"
     ],
     "domains": {
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [],
+      "issues.*.gatedSteps.*.status": [
+        "approved",
+        "changes_requested",
+        "unregistered",
+        "waiting"
+      ],
+      "issues.*.gatedSteps.*.step": [
+        "criteria",
+        "decisions",
+        "spec"
+      ],
+      "issues.*.memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "issues.*.memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_merge",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
       "issues.*.waitingOn.answeredBy": [
         "approved",
         "ask",
@@ -7582,6 +9333,55 @@
         "retracted",
         "turn",
         "version"
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "retired",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
       ]
     }
   },
@@ -7678,7 +9478,16 @@
       "secret",
       "tree"
     ],
-    "domains": {}
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
   },
   {
     "contract": 73,
@@ -8117,6 +9926,76 @@
       "wakesWaiting.*.role"
     ],
     "domains": {
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [],
+      "issues.*.gatedSteps.*.status": [
+        "approved",
+        "changes_requested",
+        "unregistered",
+        "waiting"
+      ],
+      "issues.*.gatedSteps.*.step": [
+        "criteria",
+        "decisions",
+        "spec"
+      ],
+      "issues.*.memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "issues.*.memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_merge",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
       "issues.*.waitingOn.answeredBy": [
         "approved",
         "ask",
@@ -8127,6 +10006,55 @@
         "retracted",
         "turn",
         "version"
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "retired",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
       ]
     }
   },
@@ -8339,6 +10267,67 @@
       "workers.*.rounds"
     ],
     "domains": {
+      "architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "architect.updateState": [
+        "answered",
+        "asked",
+        "none",
+        "open",
+        "push-check-reask"
+      ],
+      "gatedSteps.*.status": [
+        "approved",
+        "changes_requested",
+        "unregistered",
+        "waiting"
+      ],
+      "gatedSteps.*.step": [
+        "criteria",
+        "decisions",
+        "spec"
+      ],
+      "memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "phase": [
+        "accepting",
+        "admitted",
+        "awaiting_merge",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
       "waitingOn.answeredBy": [
         "approved",
         "ask",
@@ -8349,6 +10338,26 @@
         "retracted",
         "turn",
         "version"
+      ],
+      "workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "workers.*.claim.updateState": [
+        "answered",
+        "asked",
+        "none",
+        "open",
+        "push-check-reask"
       ]
     }
   },
@@ -8383,7 +10392,16 @@
       "secret",
       "tree"
     ],
-    "domains": {}
+    "domains": {
+      "role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ]
+    }
   },
   {
     "contract": 81,
@@ -8833,6 +10851,82 @@
       "wakesWaiting.*.role"
     ],
     "domains": {
+      "capabilities.*.source": [
+        "boot",
+        "configuration"
+      ],
+      "capabilities.*.status": [
+        "decided",
+        "open",
+        "present",
+        "unchecked",
+        "withheld"
+      ],
+      "controllerLocator.runtime": [
+        "kubernetes",
+        "tmux"
+      ],
+      "issues.*.architect.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.architect.updateState": [
+        "answered",
+        "asked",
+        "none",
+        "open",
+        "push-check-reask"
+      ],
+      "issues.*.gatedSteps.*.status": [
+        "approved",
+        "changes_requested",
+        "unregistered",
+        "waiting"
+      ],
+      "issues.*.gatedSteps.*.step": [
+        "criteria",
+        "decisions",
+        "spec"
+      ],
+      "issues.*.memoryDrawMode": [
+        "off",
+        "on",
+        "random"
+      ],
+      "issues.*.memoryGroup": [
+        "memory",
+        "none"
+      ],
+      "issues.*.phase": [
+        "accepting",
+        "admitted",
+        "awaiting_merge",
+        "awaiting_person",
+        "done",
+        "held",
+        "implementing",
+        "integrating",
+        "merging",
+        "planning",
+        "retro",
+        "reviewing",
+        "testing",
+        "unrecorded"
+      ],
+      "issues.*.pullRequest.state": [
+        "closed",
+        "merged",
+        "open"
+      ],
       "issues.*.waitingOn.answeredBy": [
         "approved",
         "ask",
@@ -8843,6 +10937,61 @@
         "retracted",
         "turn",
         "version"
+      ],
+      "issues.*.workers.*.claim.state": [
+        "failed",
+        "idle",
+        "launch_uncertain",
+        "launching",
+        "queued",
+        "ready",
+        "registered",
+        "retired",
+        "shim_connected",
+        "suspended",
+        "working"
+      ],
+      "issues.*.workers.*.claim.updateState": [
+        "answered",
+        "asked",
+        "none",
+        "open",
+        "push-check-reask"
+      ],
+      "repositories.caches.*.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "repositories.mapped.*.cache.state": [
+        "cloning",
+        "failing",
+        "ready",
+        "refused",
+        "starting"
+      ],
+      "strandedClaims.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
+      ],
+      "strandedClaims.*.state": [
+        "failed",
+        "retired",
+        "suspended"
+      ],
+      "wakesWaiting.*.role": [
+        "architect",
+        "implementer",
+        "merger",
+        "planner",
+        "reviewer",
+        "tester"
       ]
     }
   },

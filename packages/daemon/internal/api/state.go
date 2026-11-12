@@ -114,13 +114,13 @@ type State struct {
 	// recorded (contract 81).
 	LowestPluginContract *int `json:"lowestPluginContract,omitempty"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
-	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below server.go's
+	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below shaping.go's
 	// wakesWaitingContract): that reader knows no `wakesWaiting` and refuses the key as surely
 	// when it is empty as when it names a wake, so MarshalJSON leaves the key off that one body
 	// rather than writing it empty, as Admission.treesHidden does for `trees`.
 	wakesWaitingHidden bool
 	// claimsToRefreshHidden is the same for ClaimsToRefresh, set on the copy the route serves a
-	// caller below server.go's claimsToRefreshContract (api's withoutClaimsToRefresh): the count
+	// caller below shaping.go's claimsToRefreshContract (api's withoutClaimsToRefresh): the count
 	// is written on every other body, 0 included, and a strict reader before that contract
 	// refuses the key when it is zero as surely as when it names a number, so MarshalJSON
 	// leaves it off that one body. The two flags compose on one body: a caller below
@@ -410,7 +410,7 @@ type Admission struct {
 	// the line carries is in Waiting too. Never null; empty when nothing waits on a link.
 	Blocked []BlockedIssue `json:"blocked"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
-	// the contract that added Trees (api's withoutTrees, below server.go's treeContract): that
+	// the contract that added Trees (api's withoutTrees, below shaping.go's treeContract): that
 	// reader knows no `trees` and refuses the key as surely when it is empty as when it names a
 	// tree, so MarshalJSON leaves the key off that one body rather than writing it empty.
 	treesHidden bool
@@ -727,13 +727,14 @@ type PullRequestView struct {
 	State          string `json:"state"`
 	ChecksVerdict  string `json:"checksVerdict,omitempty"`
 	ReviewDecision string `json:"reviewDecision,omitempty"`
-	// fixAttempts is set on the copy the state route serves a caller below the contract that
-	// removed `fixAttempts` from this view (api's withFixAttempts, below server.go's
+	// fixAttemptsShown is set on the copy the state route serves a caller below the contract
+	// that removed `fixAttempts` from this view (api's withFixAttempts, below shaping.go's
 	// fixAttemptsContract): that reader parses the pull request strictly and refuses the whole
 	// body for want of the key, so MarshalJSON writes the stand-in on that one body and no
-	// other. It is a pointer so that the key is written only where one was asked for, zero
-	// being a value the field could have carried.
-	fixAttempts *int
+	// other. It is a flag of the view's own and the stand-in is a constant, as
+	// CheckView.roleHidden is a flag and no value: one body in a hundred carries the key, and
+	// the value it carries is the same on every one of them.
+	fixAttemptsShown bool
 }
 
 // MarshalJSON writes `fixAttempts` on the one body that carries a stand-in for it, and leaves the
@@ -742,13 +743,13 @@ type PullRequestView struct {
 // can carry it.
 func (p PullRequestView) MarshalJSON() ([]byte, error) {
 	type wire PullRequestView
-	if p.fixAttempts == nil {
+	if !p.fixAttemptsShown {
 		return json.Marshal(wire(p))
 	}
 	return json.Marshal(struct {
 		wire
 		FixAttempts int `json:"fixAttempts"`
-	}{wire: wire(p), FixAttempts: *p.fixAttempts})
+	}{wire: wire(p), FixAttempts: fixAttemptsStandIn})
 }
 
 // GateView is the design gate: the spec document, the version Dispatch currently holds, and the
@@ -873,7 +874,7 @@ type CheckView struct {
 	NextWakeAt  time.Time      `json:"nextWakeAt"`
 	Last        bool           `json:"last"`
 	// roleHidden is set on the copy the state route serves a caller below the contract that added
-	// Role (api's withoutCheckRole, below server.go's checkRoleContract): that reader knows no
+	// Role (api's withoutCheckRole, below shaping.go's checkRoleContract): that reader knows no
 	// `role` and refuses the whole body for it, so MarshalJSON leaves the key off that one body
 	// rather than writing it empty.
 	roleHidden bool

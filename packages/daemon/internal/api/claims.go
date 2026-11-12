@@ -63,7 +63,7 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	launch, known, err := s.bootTokens.Resolve(r.Context(), req.BootToken)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: resolve a registration's boot token")
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("register failed: the daemon could not resolve the boot token"))
+		s.refuse(w, r, http.StatusInternalServerError, "register failed: the daemon could not resolve the boot token")
 		return
 	}
 	if !known {
@@ -83,8 +83,8 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		if !s.controllerLaunched {
 			s.log.Warn("api: refused a launched controller's registration: this daemon leaves the controller to its operator",
 				"claim", launch.Claim, "generation", launch.Generation, "session", req.SessionID)
-			s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, errorBody(fmt.Sprintf(
-				"%s is a launch of the daemon's own controller, and this daemon leaves the controller to its operator (controller: operator)", launch.Claim)))
+			s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
+				"%s is a launch of the daemon's own controller, and this daemon leaves the controller to its operator (controller: operator)", launch.Claim))
 			return
 		}
 		s.registerLaunchedController(w, r, req, launch, m)
@@ -248,7 +248,7 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Activity.At.IsZero() {
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusBadRequest, errorBody("activity.at is required"))
+		s.refuse(w, r, http.StatusBadRequest, "activity.at is required")
 		return
 	}
 	m, ok := s.authenticated(req.ClaimToken, req.Secret)
@@ -260,14 +260,14 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.claimActivity == nil {
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("the daemon has no store to record session activity in"))
+		s.refuse(w, r, http.StatusInternalServerError, "the daemon has no store to record session activity in")
 		return
 	}
 	known, err := s.claimActivity.PutClaimActivity(r.Context(), req.ClaimToken, req.Activity)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: a session's activity report was not recorded", "claim", req.ClaimToken,
 			"session", req.SessionID)
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("record session activity: "+err.Error()))
+		s.refuse(w, r, http.StatusInternalServerError, "record session activity: "+err.Error())
 		return
 	}
 	if !known {
@@ -364,7 +364,7 @@ func (s *server) releaseRecords(w http.ResponseWriter, r *http.Request) {
 	token := req.ClaimToken
 	from, err := time.Parse(time.RFC3339, req.Since)
 	if err != nil {
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusBadRequest, errorBody("since must be an RFC 3339 time: "+err.Error()))
+		s.refuse(w, r, http.StatusBadRequest, "since must be an RFC 3339 time: "+err.Error())
 		return
 	}
 	m, ok := s.authenticated(token, req.Secret)
@@ -376,13 +376,13 @@ func (s *server) releaseRecords(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.releaseRecordStore == nil {
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("the daemon keeps no release records"))
+		s.refuse(w, r, http.StatusInternalServerError, "the daemon keeps no release records")
 		return
 	}
 	records, err := s.releaseRecordStore.PodReleaseRecords(r.Context(), s.project, from.UTC())
 	if err != nil {
 		s.logRequestFailure(r, err, "api: the release records could not be read", "claim", token)
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("read the release records: "+err.Error()))
+		s.refuse(w, r, http.StatusInternalServerError, "read the release records: "+err.Error())
 		return
 	}
 	s.writeAnswer(w, r, AnswerReleaseRecords, http.StatusOK, releaseRecordsBody(records))
@@ -453,11 +453,11 @@ func (s *server) claimFailure(w http.ResponseWriter, r *http.Request, request st
 	}
 	var refused *supervise.RefusedError
 	if errors.As(err, &refused) {
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, errorBody(refused.Error()))
+		s.refuse(w, r, http.StatusConflict, refused.Error())
 		return
 	}
 	s.logFailure("api: a claim request failed", "request", request, "claim", token, "error", err)
-	s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody(request+" failed: the daemon could not record it"))
+	s.refuse(w, r, http.StatusInternalServerError, request+" failed: the daemon could not record it")
 }
 
 // capabilityHash is the one hash a registration's secret is stored and compared by.
@@ -493,7 +493,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, into any, strict bool) (
 // error, never the body itself (it may carry a secret), logged with the route.
 func (s *server) refuseBadBody(w http.ResponseWriter, r *http.Request, err error) {
 	s.log.Warn("api: refused an undecodable request body", "route", r.URL.Path, "error", err)
-	s.writeAnswer(w, r, AnswerRefusal, http.StatusBadRequest, errorBody("invalid request body: "+err.Error()))
+	s.refuse(w, r, http.StatusBadRequest, "invalid request body: "+err.Error())
 }
 
 // identityCheck is readBody's lenient fallback for a route family that has a caller to name: it
@@ -644,7 +644,7 @@ type field struct{ name, value string }
 func (s *server) requireFields(w http.ResponseWriter, r *http.Request, fields ...field) bool {
 	for _, f := range fields {
 		if strings.TrimSpace(f.value) == "" {
-			s.writeAnswer(w, r, AnswerRefusal, http.StatusBadRequest, errorBody(f.name+" is required"))
+			s.refuse(w, r, http.StatusBadRequest, f.name+" is required")
 			return false
 		}
 	}
@@ -655,7 +655,7 @@ func (s *server) requireFields(w http.ResponseWriter, r *http.Request, fields ..
 // claim and operator routes read: a request that names no generation is fenced against nothing.
 func (s *server) requireGeneration(w http.ResponseWriter, r *http.Request, generation uint64) bool {
 	if generation == 0 {
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusBadRequest, errorBody("generation is required"))
+		s.refuse(w, r, http.StatusBadRequest, "generation is required")
 		return false
 	}
 	return true

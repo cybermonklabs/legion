@@ -47,6 +47,14 @@ func (s *server) writeFailure(w http.ResponseWriter, r *http.Request, status int
 	s.writeAnswer(w, r, AnswerRefusal, status, Failure{Code: code, Error: message})
 }
 
+// refuse is the one writer of a refusal in the sentence-only shape the claim and operator routes
+// use (errorBody), as writeFailure is the one writer of the coded shape. A refusal is an answer
+// of the table like any other (AnswerRefusal), so it goes through the shaping every answer goes
+// through, and the request is threaded here for that.
+func (s *server) refuse(w http.ResponseWriter, r *http.Request, status int, message string) {
+	s.writeAnswer(w, r, AnswerRefusal, status, errorBody(message))
+}
+
 // requireFailureFields refuses the first field that is blank, by its wire name, in the Failure
 // shape every credential and workflow refusal takes. The claim and operator routes refuse with
 // their sentence alone (requireFields).

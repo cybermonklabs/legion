@@ -124,7 +124,7 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
 	m, ok := s.supervisor.Machine(token)
 	if !ok {
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusNotFound, errorBody("no claim "+string(token)))
+		s.refuse(w, r, http.StatusNotFound, "no claim "+string(token))
 		return
 	}
 	answer, ok := s.compact(w, r, m, token)

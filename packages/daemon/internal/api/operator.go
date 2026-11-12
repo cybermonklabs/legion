@@ -315,7 +315,7 @@ func (s *server) operator(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		given, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !s.operatorSet || !bearer || !secureBearerEqual(s.operatorHash, given) {
-			s.writeAnswer(w, r, AnswerRefusal, http.StatusForbidden, errorBody(invalidOperatorToken))
+			s.refuse(w, r, http.StatusForbidden, invalidOperatorToken)
 			return
 		}
 		next(w, r)
@@ -338,12 +338,12 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, key := range []field{{"tree", req.Tree}, {"issue", req.Issue}} {
 		if !claim.IsIssueKey(key.value) {
-			s.writeAnswer(w, r, AnswerRefusal, http.StatusBadRequest, errorBody(fmt.Sprintf("%s %q is not an issue key", key.name, key.value)))
+			s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("%s %q is not an issue key", key.name, key.value))
 			return
 		}
 	}
 	if !claim.IsRole(req.Role) {
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusBadRequest, errorBody(fmt.Sprintf("role %q is not a role", req.Role)))
+		s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("role %q is not a role", req.Role))
 		return
 	}
 	token, err := claim.NewToken(s.project, req.Issue, req.Role)
@@ -358,7 +358,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Tree == req.Issue && req.Role == claim.RoleArchitect {
 		if _, err := s.trees.OpenOperatorTreeLifecycle(ctx, s.project, req.Tree, s.drawMemory(req.Tree)); errors.Is(err, treelifecycle.ErrCleanupReserved) {
-			s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, errorBody(fmt.Sprintf("operator tree %s is waiting for durable cleanup: %v", req.Tree, err)))
+			s.refuse(w, r, http.StatusConflict, fmt.Sprintf("operator tree %s is waiting for durable cleanup: %v", req.Tree, err))
 			return
 		} else if err != nil {
 			s.operatorFailure(w, r, "spawn", token, err)
@@ -414,7 +414,7 @@ func (s *server) claimRequest(request string, event func(http.ResponseWriter, *h
 		token := claim.Token(r.PathValue("token"))
 		m, ok := s.supervisor.Machine(token)
 		if !ok {
-			s.writeAnswer(w, r, AnswerRefusal, http.StatusNotFound, errorBody("no claim "+string(token)))
+			s.refuse(w, r, http.StatusNotFound, "no claim "+string(token))
 			return
 		}
 		ev, ok := event(w, r, m.Claim())
@@ -519,18 +519,18 @@ func (s *server) forgetSession(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
 	m, ok := s.supervisor.Machine(token)
 	if !ok {
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusNotFound, errorBody("no claim "+string(token)))
+		s.refuse(w, r, http.StatusNotFound, "no claim "+string(token))
 		return
 	}
 	c := m.Claim()
 	if req.Session != c.Session {
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, errorBody(fmt.Sprintf(
-			"forget-session refused: %s records session %s; pass --session %s to start fresh", c.Token, c.Session, c.Session)))
+		s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
+			"forget-session refused: %s records session %s; pass --session %s to start fresh", c.Token, c.Session, c.Session))
 		return
 	}
 	if !forgettable(c.State) {
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, errorBody(fmt.Sprintf(
-			"forget-session refused: %s is %s; suspend, fail, or retire it before starting fresh", c.Token, c.State)))
+		s.refuse(w, r, http.StatusConflict, fmt.Sprintf(
+			"forget-session refused: %s is %s; suspend, fail, or retire it before starting fresh", c.Token, c.State))
 		return
 	}
 	if s.beforeForgetSessionHandle != nil {
@@ -568,7 +568,7 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
 	m, ok := s.supervisor.Machine(token)
 	if !ok {
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusNotFound, errorBody("no claim "+string(token)))
+		s.refuse(w, r, http.StatusNotFound, "no claim "+string(token))
 		return
 	}
 	var req RetryRequest
@@ -612,7 +612,7 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 	if failedOrRetired(c.State) {
 		if status, refusal, restarted := s.restartWorkedPhase(r, token, c); restarted {
 			if refusal != "" {
-				s.writeAnswer(w, r, AnswerRefusal, status, errorBody(refusal))
+				s.refuse(w, r, status, refusal)
 				return 0, false
 			}
 			return status, true
@@ -760,7 +760,7 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
 	root, ok := s.supervisor.Machine(token)
 	if !ok {
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusNotFound, errorBody("no claim "+string(token)))
+		s.refuse(w, r, http.StatusNotFound, "no claim "+string(token))
 		return
 	}
 	c := root.Claim()
@@ -773,7 +773,7 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 	claims, err := s.supervisor.Claims(ctx)
 	if err != nil {
 		s.logFailure("api: read the claims of a tree the operator closes", "tree", c.Tree, "error", err)
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody(fmt.Sprintf("closed nothing: the daemon could not read the claims of tree %s", c.Tree)))
+		s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("closed nothing: the daemon could not read the claims of tree %s", c.Tree))
 		return
 	}
 	defer s.decisions.begin(treeOthers(claims, c.Tree, token))()
@@ -787,13 +787,13 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 	lifecycle, cleanup, err := s.trees.ReserveOperatorTreeCleanup(ctx, s.project, c.Tree)
 	if err != nil {
 		s.logFailure("api: reserve cleanup of an operator-closed tree", "tree", c.Tree, "error", err)
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, errorBody(fmt.Sprintf("closed %s's root claim, but its durable tree cleanup could not be reserved: %v. Retry legion claims close once that is resolved", c.Tree, err)))
+		s.refuse(w, r, http.StatusConflict, fmt.Sprintf("closed %s's root claim, but its durable tree cleanup could not be reserved: %v. Retry legion claims close once that is resolved", c.Tree, err))
 		return
 	}
 	claims, err = s.supervisor.Claims(ctx)
 	if err != nil {
 		s.logFailure("api: read the claims of a tree the operator closed", "tree", c.Tree, "error", err)
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody(fmt.Sprintf("closed %s's root claim %s, but the daemon could not read the tree's other claims to stop them", c.Tree, token)))
+		s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("closed %s's root claim %s, but the daemon could not read the tree's other claims to stop them", c.Tree, token))
 		return
 	}
 	others := treeOthers(claims, c.Tree, token)
@@ -817,14 +817,14 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(unstopped) > 0 {
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody(fmt.Sprintf("closed %s's root claim %s, but these claims of the tree were not stopped: %s. Stop each now with legion claims stop, then close again: the tree's durable cleanup waits for every claim of it",
-			c.Tree, token, strings.Join(unstopped, "; "))))
+		s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("closed %s's root claim %s, but these claims of the tree were not stopped: %s. Stop each now with legion claims stop, then close again: the tree's durable cleanup waits for every claim of it",
+			c.Tree, token, strings.Join(unstopped, "; ")))
 		return
 	}
 	if cleanup {
 		if err := s.trees.CleanupReservedTree(ctx, s.project, c.Tree, lifecycle.Epoch, s.releaser); err != nil {
 			s.logFailure("api: cleanup an operator-closed tree", "tree", c.Tree, "error", err)
-			s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody(fmt.Sprintf("closed %s's claims, but durable resource cleanup is pending: %v. Retry legion claims close after the reported cleanup error is resolved", c.Tree, err)))
+			s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("closed %s's claims, but durable resource cleanup is pending: %v. Retry legion claims close after the reported cleanup error is resolved", c.Tree, err))
 			return
 		}
 	}
@@ -876,7 +876,7 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 	claims, err := s.supervisor.Claims(r.Context())
 	if err != nil {
 		s.logRequestFailure(r, err, "api: read the claims")
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody("the daemon could not read its claims"))
+		s.refuse(w, r, http.StatusInternalServerError, "the daemon could not read its claims")
 		return
 	}
 	sort.Slice(claims, func(i, j int) bool { return claims[i].Token < claims[j].Token })
@@ -901,9 +901,9 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 func (s *server) operatorFailure(w http.ResponseWriter, r *http.Request, request string, token claim.Token, err error) {
 	var refused *supervise.RefusedError
 	if errors.As(err, &refused) {
-		s.writeAnswer(w, r, AnswerRefusal, http.StatusConflict, errorBody(refused.Error()))
+		s.refuse(w, r, http.StatusConflict, refused.Error())
 		return
 	}
 	s.logFailure("api: an operator request failed", "request", request, "claim", token, "error", err)
-	s.writeAnswer(w, r, AnswerRefusal, http.StatusInternalServerError, errorBody(fmt.Sprintf("%s %s: %v", request, token, err)))
+	s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("%s %s: %v", request, token, err))
 }

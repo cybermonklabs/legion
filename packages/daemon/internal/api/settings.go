@@ -114,13 +114,14 @@ type Settings struct {
 	// one default hook for a file that names no key. It carries no hook's words: see
 	// HookSettings.
 	Hooks []HookSettings `json:"hooks"`
-	// maxFixAttempts is set on the copy the state route serves a caller below the contract that
-	// removed `max_fix_attempts` from this block (api's withMaxFixAttempts, below server.go's
-	// fixAttemptsContract). Such a reader parses the settings loosely, so the key is a stand-in
-	// it never misses the absence of; it is served all the same because the same contract's
-	// other removal is one a strict reader does refuse, and the two are restored together. It
-	// is a pointer so that the key is written only where one was asked for.
-	maxFixAttempts *int
+	// maxFixAttemptsShown is set on the copy the state route serves a caller below the contract
+	// that removed `max_fix_attempts` from this block (api's withMaxFixAttempts, below
+	// shaping.go's fixAttemptsContract). Such a reader parses the settings loosely, so the key
+	// is a stand-in it never misses the absence of; it is served all the same because the same
+	// contract's other removal is one a strict reader does refuse, and the two are restored
+	// together. It is a flag of the block's own and the stand-in is a constant, as
+	// PullRequestView.fixAttemptsShown is.
+	maxFixAttemptsShown bool
 }
 
 // MarshalJSON writes `max_fix_attempts` on the one body that carries a stand-in for it, and
@@ -129,13 +130,13 @@ type Settings struct {
 // contract writes can carry it.
 func (s Settings) MarshalJSON() ([]byte, error) {
 	type wire Settings
-	if s.maxFixAttempts == nil {
+	if !s.maxFixAttemptsShown {
 		return json.Marshal(wire(s))
 	}
 	return json.Marshal(struct {
 		wire
 		MaxFixAttempts int `json:"max_fix_attempts"`
-	}{wire: wire(s), MaxFixAttempts: *s.maxFixAttempts})
+	}{wire: wire(s), MaxFixAttempts: maxFixAttemptsStandIn})
 }
 
 // RuntimeSettings is `runtime`: its name, the kubernetes block under that runtime alone, and the

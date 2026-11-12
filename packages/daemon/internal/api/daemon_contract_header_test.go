@@ -1,10 +1,13 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -65,10 +68,14 @@ var registeredPatterns = []string{
 // Every route an answer of the table names is a route this server registers. An answer's Routes
 // say which doors write that answer, and a door shapes its body by the answer id it writes
 // (shapeAnswer), so a door writing an id whose Routes do not name it shapes that body to a
-// contract that door never declared. The operator's compaction door
+// contract that door never declared.
+//
+// This case reads the table against the list of patterns and nothing more: it says that each
+// route named is a door of this daemon, and it would pass a door that wrote any id at all.
+// What a door writes is held by the census below, which reads the pairs the writes themselves
+// made (routeAnswerProblems). The operator's compaction door
 // (`POST /legion/v1/operator/claims/{token}/compact`) wrote AnswerCompact, whose one route is
-// the controller's door. That answer shapes to itself at every contract today, so no case
-// failed for it, and this one reads the pair rather than the shape.
+// the controller's door, and the census is what names that.
 //
 // The patterns come from registeredPatterns, and the case above holds that list to the live
 // routes of the server, so a route held to it is held to a route this daemon answers.
@@ -85,6 +92,67 @@ func TestEveryRouteOfTheAnswerTableIsARegisteredRoute(t *testing.T) {
 			}
 		}
 	}
+}
+
+// routeAnswer is one pair a write of this package made: the pattern of the route that wrote a
+// body, and the id of the answer it wrote it under.
+type routeAnswer struct {
+	pattern string
+	id      AnswerID
+}
+
+// answersWritten is every such pair the tests of this package have made. Every write goes
+// through writeAnswerFrom, which tells answerWritten (shaping.go), and the hook is set here for
+// the whole run: a route's own tests drive it to its success body, which no case of this file
+// could reach on its own, and the pairs they make are read once the run ends
+// (routeAnswerProblems, called by TestMain).
+var answersWritten = struct {
+	mu    sync.Mutex
+	pairs map[routeAnswer]bool
+}{pairs: map[routeAnswer]bool{}}
+
+func init() {
+	answerWritten = func(pattern string, id AnswerID) {
+		answersWritten.mu.Lock()
+		defer answersWritten.mu.Unlock()
+		answersWritten.pairs[routeAnswer{pattern: pattern, id: id}] = true
+	}
+}
+
+// routeAnswerProblems is every pair this run made that the table does not name: a door writing
+// an id whose Routes do not name that door. It is what the registration case above cannot say,
+// and it is the census that catches the operator compaction door's AnswerCompact.
+//
+// Three kinds of pair are no finding. A write with no pattern is a handler a test called
+// directly rather than through the mux, which names no route to hold. AnswerRefusal has no
+// route of its own: every door refuses, and the table says so with an empty Routes. And
+// answerUnparsed is no row of the table at all, being the bodies no plugin parses.
+func routeAnswerProblems() []string {
+	answersWritten.mu.Lock()
+	defer answersWritten.mu.Unlock()
+	routes := map[AnswerID][]string{}
+	for _, answer := range Answers {
+		routes[answer.ID] = answer.Routes
+	}
+	problems := []string{}
+	for pair := range answersWritten.pairs {
+		if pair.pattern == "" || pair.id == AnswerRefusal || pair.id == answerUnparsed {
+			continue
+		}
+		declared, named := routes[pair.id]
+		if !named {
+			problems = append(problems, fmt.Sprintf(
+				"%s wrote the answer %s, which answers.go's Answers has no row for", pair.pattern, pair.id))
+			continue
+		}
+		if !slices.Contains(declared, pair.pattern) {
+			problems = append(problems, fmt.Sprintf(
+				"%s wrote the answer %s, whose Routes name %v and not that door: the body was shaped to a contract that door never declared",
+				pair.pattern, pair.id, declared))
+		}
+	}
+	slices.Sort(problems)
+	return problems
 }
 
 // askedPattern is the method and the target one pattern is asked with: a wildcard stands for a

@@ -221,9 +221,14 @@ func mixedPodClaims(low, high int) []supervise.Claim {
 	return append(claims, claimInPod("legion-legion-legion-208-tester", statePodUID, 0))
 }
 
-// keysAddedAfterTheFloor is every key the ten servings-down remove, as the wire names it: a
-// caller served all of them is served the whole of what this contract writes above the floor.
-// The last five are this change's own, which shapedAnswersContract serves down.
+// keysAddedAfterTheFloor is the sixteen keys the ten servings-down below remove, as the wire
+// names them: the two of the update round, the three of the memory draw, the two of the trees,
+// `wakesWaiting`, `gatedSteps`, the claim views' `step`, each waiting issue's place in the line,
+// and the five this contract's own entry adds, which shapedAnswersContract serves down. Three
+// keys a serving-down removes are left out of it, each read another way: each check's `role`,
+// which shapeOf reads because an issue carries a check only while its production check is open,
+// and `backwardMoves` and `claimsToRefresh`, whose own cases walk the bands they arrived at
+// (backward_moves_test.go, memory_test.go).
 var keysAddedAfterTheFloor = []string{
 	`"updateRound"`, `"updateHead"`, `"memoryGroup"`, `"memoryDrawMode"`, `"memoryDrawnAt"`,
 	`"trees"`, `"tree"`, `"wakesWaiting"`, `"gatedSteps"`, `"step"`, `"` + WaitingLineField + `"`,
@@ -274,8 +279,8 @@ func TestTheEdgesOfTheContractACallerIsServed(t *testing.T) {
 		body := stateStating(t, handler, statePodAddr+":41000", 0)
 
 		// The restore side is the floor's, which carries both stand-ins, and the strip side is
-		// the caller's own number, which is below every contract the eight strips name: it
-		// loses every key it loses today and no more.
+		// the caller's own number, which is below every one of the eight contracts those
+		// sixteen keys arrived at: it loses every key it loses today and no more.
 		wantStandIns(t, body)
 		for _, key := range keysAddedAfterTheFloor {
 			if strings.Contains(string(body), key) {
@@ -397,7 +402,12 @@ func TestTheServedContractsOfACallerBelowTheFloor(t *testing.T) {
 // Every answer of the table has a row in shapeAnswer: a shape change that lands with no row of
 // its own is an answer this names and that does not, which is a programming error rather than a
 // body served unshaped.
+//
+// Each row is handed a body its own route could write, because the two rows whose shape has
+// moved shape a State and an Issue and panic on anything else: a row handed the wrong type
+// would fail here as an answer with no row does, and never serve that body unshaped.
 func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
+	state := populatedState(t)
 	for _, answer := range Answers {
 		t.Run(string(answer.ID), func(t *testing.T) {
 			defer func() {
@@ -405,33 +415,50 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 					t.Fatalf("shapeAnswer has no row for %s: %v", answer.ID, recovered)
 				}
 			}()
-			body := map[string]string{"shape": "unmoved"}
-			if shaped := shapeAnswer(answer.ID, body, ServingFloor, ServingFloor); !reflectEqualBody(shaped, body) {
-				t.Errorf("the %s answer was shaped to %v, want the body it was given", answer.ID, shaped)
+			switch answer.ID {
+			case AnswerState:
+				shaped, isState := shapeAnswer(AnswerState, state, ServingFloor, ServingFloor).(State)
+				if !isState {
+					t.Fatalf("the state answer was shaped to %T, want a State", shaped)
+				}
+				if !shaped.Settings.maxFixAttemptsShown {
+					t.Error("the state served at the floor carries no `max_fix_attempts` stand-in")
+				}
+			case AnswerIssueRecord:
+				shaped, isIssue := shapeAnswer(AnswerIssueRecord, state.Issues[recordGoldenIssue], ServingFloor, ServingFloor).(Issue)
+				if !isIssue {
+					t.Fatalf("the record answer was shaped to %T, want an Issue", shaped)
+				}
+				if shaped.PullRequest == nil || !shaped.PullRequest.fixAttemptsShown {
+					t.Error("the record served at the floor carries no `fixAttempts` stand-in: the record's row shapes the issue as the state's row shapes it (shapeIssue)")
+				}
+				if shaped.MemoryGroup != "" {
+					t.Error("the record served at the floor carries its tree's memory group, which the reader before memoryContract refuses")
+				}
+			default:
+				body := map[string]string{"shape": "unmoved"}
+				if shaped := shapeAnswer(answer.ID, body, ServingFloor, ServingFloor); !reflectEqualBody(shaped, body) {
+					t.Errorf("the %s answer was shaped to %v, want the body it was given", answer.ID, shaped)
+				}
 			}
 		})
 	}
-	t.Run("the state's own row", func(t *testing.T) {
-		shaped, isState := shapeAnswer(AnswerState, populatedState(t), ServingFloor, ServingFloor).(State)
-		if !isState {
-			t.Fatalf("the state answer was shaped to %T, want a State", shaped)
-		}
-		if shaped.Settings.maxFixAttempts == nil {
-			t.Error("the state served at the floor carries no `max_fix_attempts` stand-in")
-		}
-	})
-	t.Run("the record's own row", func(t *testing.T) {
-		shaped, isIssue := shapeAnswer(AnswerIssueRecord, populatedState(t).Issues[recordGoldenIssue], ServingFloor, ServingFloor).(Issue)
-		if !isIssue {
-			t.Fatalf("the record answer was shaped to %T, want an Issue", shaped)
-		}
-		if shaped.PullRequest == nil || shaped.PullRequest.fixAttempts == nil {
-			t.Error("the record served at the floor carries no `fixAttempts` stand-in: the record's row shapes the issue as the state's row shapes it (shapeIssue)")
-		}
-		if shaped.MemoryGroup != "" {
-			t.Error("the record served at the floor carries its tree's memory group, which the reader before memoryContract refuses")
-		}
-	})
+}
+
+// The two rows that shape a body of their own panic on a body of another type, as a row that
+// does not exist panics: a route that wrote a State under AnswerIssueRecord would otherwise
+// have it served unshaped and in silence.
+func TestShapeAnswerPanicsOnABodyItsRowCannotShape(t *testing.T) {
+	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord} {
+		t.Run(string(id), func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("shapeAnswer served a body of the wrong type under %s without a sound", id)
+				}
+			}()
+			shapeAnswer(id, map[string]string{"shape": "wrong"}, ServingFloor, ServingFloor)
+		})
+	}
 }
 
 // reflectEqualBody is whether a shaped answer is the very body it was given, for the rows whose
