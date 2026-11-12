@@ -68,7 +68,8 @@ import {
  * recipes carry. All three are a Dispatch read, so they are built once, shared by every arm and
  * every judgement of that case, and written to a cache under `--out`, which a resumed run reads
  * rather than fetching again. `assertNoLeak` runs over every rendered case before any arm is
- * asked, and a case that fails it stops the round naming the case.
+ * asked, and a case that fails it stops the round naming the case; it runs again in `promptOf`
+ * over each judgement's own rendering, which is the text that prompt carries.
  *
  * Each judgement carries its own seed, derived from the case id, the arm's name and the
  * judgement's index, and that seed decides the order of the evidence: the order of the documents
@@ -563,6 +564,11 @@ function choicesOf(row: CaseRow): JevChoice[] {
 /**
  * One judgement's prompt: the case rendered with its documents in this seed's order, and the
  * recipe's examples in this seed's own second order. The same seed renders the same prompt.
+ *
+ * The rendering is held to `assertNoLeak` here, over the very bytes this prompt carries. Each
+ * judgement renders the documents in its own order, so the rendering the round guards once per
+ * case before any arm runs is not this one; that guard refuses a bad case early and cheaply,
+ * and this one holds what the judge is given.
  */
 export async function promptOf(
   arm: Arm,
@@ -574,6 +580,7 @@ export async function promptOf(
   const documents =
     evidence.documents.length > 1 ? inSeedOrder(evidence.documents, seed) : [...evidence.documents];
   const text = renderCase(scored.row, documents, { issueTitle: evidence.issueTitle });
+  assertNoLeak(scored.row, text);
   const nearest =
     evidence.nearest === null
       ? undefined

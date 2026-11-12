@@ -156,52 +156,110 @@ export function corpusSlicesPath(corpus: string): string {
 }
 
 /**
- * One field read as a string, null where the record holds none at all, and a refusal where it
- * holds something that is no string: a fact that is there and is not what it claims to be is
- * the file being no draw, while a fact that is not there is a draw that recorded none.
+ * What is wrong with one field held as a string, worded as the tail of a refusal, and null
+ * where nothing is: a field that is not there at all is no fault, since a fact that is not
+ * there is a record that holds none, while a fact that is there and is not what it claims to
+ * be is the file being no record of its kind.
  */
-function stringAt(record: Record<string, unknown>, name: string, where: string): string | null {
+function stringFault(record: Record<string, unknown>, name: string): string | null {
   const value = record[name];
   if (value === undefined || value === null) return null;
-  if (typeof value !== "string") {
-    throw new CorpusError(`${where} holds a ${name} that is no string`);
-  }
-  return value;
+  return typeof value === "string" ? null : `holds a ${name} that is no string`;
 }
 
 /**
- * One entry of a draw's roots: the issue's key, and the facts the never-decide rule reads.
- *
- * `issueFactsOf` builds those facts, here as for the issue list route, so which fields a root
- * carries is kept in one place and a draw's roots cannot come to carry another list than the
- * route's. What a draw adds is its own policy on how they are read: a field that is there and
- * is not of the type the record holds it for stops the reading, where that reader takes what it
- * can read and leaves the rest null.
+ * One field read as a string, null where the record holds none at all, and a refusal where it
+ * holds something that is no string: the fault `stringFault` reads, in this reader's words.
  */
-function rootAt(value: unknown, at: number, path: string): { key: string } & IssueFacts {
+function stringAt(record: Record<string, unknown>, name: string, where: string): string | null {
+  const fault = stringFault(record, name);
+  if (fault !== null) throw new CorpusError(`${where} ${fault}`);
+  return stringOf(record[name]);
+}
+
+/**
+ * One entry of a list of roots, read: the issue's key and the facts the never-decide rule
+ * reads, or what is malformed about the entry.
+ *
+ * This is the one reader of the shape, and the field list lives in it: a root is read here for
+ * a draw's `backlogLegionRoots`, for the issue list route (`primary_artifact_id`, which a draw
+ * writes as `primaryArtifactId`) and for the file `--backlog-roots` names, so those three
+ * cannot come to read different fields or to read them under different policies.
+ *
+ * One policy, and it is refusal: a field that is there and is not of the type a root holds it
+ * for makes the entry no root, and the fault names the field and quotes the offending label.
+ * Nothing here is dropped. These labels decide whether the never-decide rule holds a parked
+ * `legion` root (`waitingLegionRoot` in `never-decide.ts`), so a label dropped for being no
+ * string makes a parked root look like no root at all: the hold would silently not happen and
+ * nobody would be told. A refusal stops the run and says which label it was.
+ *
+ * The fault is a phrase and not a sentence because each caller words its own refusal around
+ * it: a corpus's own draw is a `CorpusError` naming the file, and the file a person names on
+ * the command line is a usage error naming the flag. One reading of the shape, two wordings.
+ */
+export interface RootReading {
+  /** The root, and null where the entry is malformed. */
+  root: ({ key: string } & IssueFacts) | null;
+  /**
+   * Which root it is, where the entry names a key that is a string, so that a refusal can name
+   * it; null where it does not, and the caller then says which entry of the list it was.
+   */
+  key: string | null;
+  /** What is malformed, and null where nothing is. */
+  fault: string | null;
+}
+
+/** One entry of a list of roots, read under the one policy `RootReading` states. */
+export function rootReadingOf(value: unknown): RootReading {
   const issue = recordOf(value);
-  if (issue === null) throw new CorpusError(`${path} root ${at + 1} is no issue`);
-  const where = `${path} root ${at + 1}`;
-  const read = issueFactsOf(issue);
-  if (read === null) {
+  if (issue === null) return { root: null, key: null, fault: "is no issue" };
+  const key = stringOf(issue.key);
+  const status = stringOf(issue.status);
+  if (key === null || status === null) {
     // Which of the two it is: a key or a status of the wrong type, or neither named at all.
-    stringAt(issue, "key", where);
-    stringAt(issue, "status", where);
-    throw new CorpusError(`${where} names no key or no status`);
+    const fault =
+      stringFault(issue, "key") ?? stringFault(issue, "status") ?? "names no key or no status";
+    return { root: null, key: null, fault };
   }
-  const key = read.key;
   const held = issue.labels;
   if (held !== undefined && held !== null && !Array.isArray(held)) {
-    throw new CorpusError(`${path} root ${key} holds labels that are no list`);
+    return { root: null, key, fault: "holds labels that are no list" };
   }
+  const labels: string[] = [];
   for (const label of listOf(held)) {
-    if (typeof label !== "string") {
-      throw new CorpusError(`${path} root ${key} names a label that is no string`);
+    const read = stringOf(label);
+    if (read === null) {
+      return {
+        root: null,
+        key,
+        fault: `names a label that is no string: ${JSON.stringify(label)}`,
+      };
     }
+    labels.push(read);
   }
-  stringAt(issue, "parent", `${path} root ${key}`);
-  stringAt(issue, "primaryArtifactId", `${path} root ${key}`);
-  return { key, ...read.facts };
+  const fault =
+    stringFault(issue, "parent") ??
+    stringFault(issue, "primary_artifact_id") ??
+    stringFault(issue, "primaryArtifactId");
+  if (fault !== null) return { root: null, key, fault };
+  return {
+    root: {
+      key,
+      parent: stringOf(issue.parent),
+      labels,
+      status,
+      primaryArtifactId: stringOf(issue.primary_artifact_id) ?? stringOf(issue.primaryArtifactId),
+    },
+    key,
+    fault: null,
+  };
+}
+
+/** One entry of a draw's roots, whose every fault is the file being no draw. */
+function rootAt(value: unknown, at: number, path: string): { key: string } & IssueFacts {
+  const read = rootReadingOf(value);
+  if (read.root === null) throw new CorpusError(`${path} root ${read.key ?? at + 1} ${read.fault}`);
+  return read.root;
 }
 
 /** The roots a draw recorded, read entry by entry, which is what a reader is handed. */
@@ -300,29 +358,6 @@ export async function readSlices(path: string): Promise<DrawnSlices | null> {
     slices[slice] = ids;
   }
   return slices;
-}
-
-/**
- * The issue facts of one entry of a list of roots, as the issue list route answers them
- * (`primary_artifact_id`) or as a draw holds them (`primaryArtifactId`), so one reader serves
- * both, and null where the entry is no issue.
- */
-export function issueFactsOf(value: unknown): { key: string; facts: IssueFacts } | null {
-  const issue = recordOf(value);
-  const key = stringOf(issue?.key);
-  const status = stringOf(issue?.status);
-  if (key === null || status === null) return null;
-  return {
-    key,
-    facts: {
-      parent: stringOf(issue?.parent),
-      labels: listOf(issue?.labels)
-        .map(stringOf)
-        .filter((label): label is string => label !== null),
-      status,
-      primaryArtifactId: stringOf(issue?.primary_artifact_id) ?? stringOf(issue?.primaryArtifactId),
-    },
-  };
 }
 
 /**

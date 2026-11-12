@@ -320,6 +320,21 @@ export interface StratumNames {
 }
 
 /**
+ * The sentence an answer ends with where some of its lines hold too few cases to carry a bound:
+ * how many of them there are and why they carry none, and nothing at all where every line
+ * carries one. `consensus.ts` ends its own answer with this same sentence, over its subsets, so
+ * the words live here once and `MINIMUM_DECIDED` is quoted in one place rather than two.
+ */
+export function noBoundTail(lines: readonly { bound: number | null }[]): string {
+  const small = lines.filter((line) => line.bound === null).length;
+  if (small === 0) return "";
+  return (
+    ` ${count(small)} of ${count(lines.length)} ${small === 1 ? "holds" : "hold"} fewer than ` +
+    `${MINIMUM_DECIDED} cases and so ${small === 1 ? "carries" : "carry"} no bound.`
+  );
+}
+
+/**
  * The answer the question takes over a set of strata: the ones that hold the rate, or, where
  * none does, the lowest bound any of them reaches and the count behind it, since that is the
  * whole strength of the negative.
@@ -328,13 +343,7 @@ export function answerOf(lines: readonly StratumLine[], what: StratumNames): str
   const under = lines
     .filter((line) => line.bound !== null && line.bound < RATE)
     .sort((one, two) => two.share - one.share);
-  const small = lines.filter((line) => line.bound === null).length;
-  const tail =
-    small === 0
-      ? ""
-      : ` ${count(small)} of ${count(lines.length)} ${small === 1 ? "holds" : "hold"} ` +
-        `fewer than ${MINIMUM_DECIDED} cases and so ${small === 1 ? "carries" : "carry"} ` +
-        "no bound.";
+  const tail = noBoundTail(lines);
   if (under.length > 0) {
     const said = under
       .map(

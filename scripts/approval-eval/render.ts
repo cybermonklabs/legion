@@ -225,6 +225,47 @@ interface GuardedSection {
 }
 
 /**
+ * The document each `## Document ` line standing in a rendering opens the section of, in the
+ * order those lines stand, and null where the lines are not the row's own headings, each once.
+ *
+ * A document is matched by the heading it would be written under at that place in the
+ * rendering, which is `headingOf` over the row's own document and the position the line stands
+ * at: the index a heading carries is of the rendering and the rest of it - the document's name
+ * and the version it was asked about - is the document's own. So the row's documents may be
+ * rendered in any order, which is what `run-round.ts` does per judgement, and each section is
+ * still held to the version of the document whose heading opens it.
+ *
+ * Null, which drops the whole rendering to the lowest version, where a standing line is no
+ * heading of the row's, where one of the row's headings stands twice or not at all (the counts
+ * then differ, or a line finds no document left to take), and where one line could open the
+ * section of two documents the request holds to different versions: which section is which is
+ * then not in the text, and a guess is not a guard.
+ */
+function openedBy(
+  documents: readonly ApprovalDocument[],
+  standing: readonly string[]
+): ApprovalDocument[] | null {
+  if (standing.length !== documents.length) return null;
+  const opened: ApprovalDocument[] = [];
+  const taken = new Set<number>();
+  for (const [at, line] of standing.entries()) {
+    const matched = documents
+      .map((document, which) => ({ document, which }))
+      .filter(
+        ({ document, which }) =>
+          !taken.has(which) && headingOf(document, at, documents.length) === line
+      );
+    const first = matched[0];
+    if (first === undefined) return null;
+    const held = first.document.requestedVersion;
+    if (matched.some(({ document }) => document.requestedVersion !== held)) return null;
+    taken.add(first.which);
+    opened.push(first.document);
+  }
+  return opened;
+}
+
+/**
  * The rendering cut into the stretches the version rule is held over, each with the version it
  * is held to.
  *
@@ -236,20 +277,29 @@ interface GuardedSection {
  * document a version named up there is a version of.
  *
  * The cut is made over the rendering rather than over each document's markdown before it is
- * rendered, because the guard must hold what reaches the judge: `assertNoLeak` is handed the
- * bytes that go into the prompt, and a rule read off anything else leaves the difference between
- * the two unguarded.
+ * rendered, because the rendering is what a prompt carries: a rule read off each document
+ * alone would leave the head of the rendering, and every stretch belonging to no document,
+ * unguarded. Both callers hand it the bytes they put in a prompt - `fresh-agent.ts`'s
+ * `promptOf` and `run-round.ts`'s - so there is no second rendering to argue the guard's
+ * verdict over to.
  *
  * The cut is made at the heading `renderCase` writes for each document, which both are built by
- * `headingOf` so neither can drift from the other, and it is made only where the headings
- * standing in the rendering are the row's own, in the row's order and one each. Where they are
- * not, the whole rendering is one stretch held to the lowest version: the old whole-text rule,
- * and never a weaker one. Two readings reach that: a rendering of other documents than the row
- * names - `fresh-agent.ts` takes the row from the corpus and the documents from a round's cache,
- * which checks the case id and the cache version and not the names - and a line of a document's
- * own body that reads like one of these headings. Holding a stretch to one document's version
- * alone is the weaker rule, and it is applied only where the text says which document each
- * stretch is, never where that has to be guessed at.
+ * `headingOf` so neither can drift from the other. A document is found by the heading that
+ * opens its section and not by where that section stands, because the order of the documents
+ * is the judgement's own: `run-round.ts` renders them in each judgement's seed order, so the
+ * row's second document opens the first section as readily as the second. `openedBy` reads
+ * which document each heading opens.
+ *
+ * Where the headings standing in the rendering are not the row's own, each exactly once, the
+ * whole rendering is one stretch held to the lowest version: the old whole-text rule, and
+ * never a weaker one. Four readings reach that: a rendering of other documents than the row
+ * names - `fresh-agent.ts` takes the row from the corpus and the documents from a round's
+ * cache, which checks the case id and the cache version and not the names - a line of a
+ * document's own body that reads like one of these headings, a heading of the row's standing
+ * twice or not at all, and two documents of one request writing the same heading while being
+ * held to different versions, where which section is which cannot be read off the text at all.
+ * Holding a stretch to one document's version alone is the weaker rule, and it is applied only
+ * where the text says which document each stretch is, never where that has to be guessed at.
  *
  * A document the request names no `requestedVersion` for is held to that lowest version too.
  * Its own section names no version to be held to, and holding it to nothing would be weaker than
@@ -262,20 +312,19 @@ function guardedSectionsOf(row: CaseRow, text: string): GuardedSection[] {
   const documents = row.approval?.documents ?? [];
   const lowest = lowestRequestedVersion(documents);
   const lines = text.split("\n");
-  // Built once for the whole rendering: one heading per document, and never one per line of it.
-  const headings = documents.map((document, at) => headingOf(document, at, documents.length));
-  const standing = lines.filter((line) => line.startsWith(DOCUMENT_HEADING));
-  const theRow =
-    standing.length === headings.length && standing.every((line, at) => line === headings[at]);
-  if (!theRow) return [{ guarded: lowest, document: null, text }];
+  const opened = openedBy(
+    documents,
+    lines.filter((line) => line.startsWith(DOCUMENT_HEADING))
+  );
+  if (opened === null) return [{ guarded: lowest, document: null, text }];
   const sections: GuardedSection[] = [];
   let guarded = lowest;
   let named: string | null = null;
   let held: string[] = [];
   let next = 0;
   for (const line of lines) {
-    const document = documents[next];
-    if (document !== undefined && line === headings[next]) {
+    const document = opened[next];
+    if (document !== undefined && line.startsWith(DOCUMENT_HEADING)) {
       sections.push({ guarded, document: named, text: held.join("\n") });
       guarded = document.requestedVersion ?? lowest;
       named = document.requestedVersion === null ? null : (document.name ?? "unnamed");

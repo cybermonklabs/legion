@@ -23,8 +23,8 @@ import {
   type DrawnSlices,
   type DrawRecord,
   drawPath,
-  issueFactsOf,
   rootFactsOf,
+  rootReadingOf,
   SLICES,
   type SliceName,
   slicesPath,
@@ -80,9 +80,10 @@ import { replayCase } from "./replay";
  * keyed on the prose of the definition among other things, so a redraw of a frozen definition
  * pays for none of them again and a changed definition is asked afresh by construction.
  *
- * The anchor slice is written with a descriptor per case - the ask, the first document the judge
- * was shown, the version requested and the SHA-256 of that document as rendered - so a later
- * round can prove it scored the same cases over the same bytes.
+ * The anchor slice is written with a descriptor per case - the ask, the first document of the
+ * request that could be read, the version it was asked about and the SHA-256 of that document
+ * as `renderDocument` renders it. Nothing here reads `anchor-descriptors.json` back: it is
+ * written for a later round, whose own digest of a case differs as soon as the bytes do.
  */
 
 const USAGE = `usage: bun scripts/approval-eval/draw.ts --corpus <dir> --cut <date> --out <dir> \\
@@ -156,7 +157,7 @@ export interface DrawCase {
   row: CaseRow;
   /** What the never-decide rule said over this case's rendered evidence. */
   hold: NeverDecideAnswer;
-  /** The first document of an approval request the judge was shown, and null for a question. */
+  /** The first document of the approval request that could be read, and null where none was. */
   documentId: string | null;
   /** The version that document was asked about. */
   requestedVersion: number | null;
@@ -191,7 +192,10 @@ const UNDRAWABLE_NAMES: Readonly<Record<UndrawableKind, string>> = {
   "rule-unreadable": "unreadable never-decide answers",
 };
 
-/** The corpus is not what the draw takes it for, so no draw over it would mean anything. */
+/**
+ * What the draw was given is not what it takes it for, so no draw over it would mean anything:
+ * a corpus read wrongly, or an issue list answering a root that is no root.
+ */
 export class DrawError extends CannotRunError {
   override readonly name = "DrawError";
 }
@@ -407,6 +411,11 @@ export function drawSlices(cases: readonly DrawCase[], seed: number): Draw {
  * list answers it in one page per status, which is why no case is read for on its own. The list
  * is sorted by key, so what `draw.json` writes of one reading is the same bytes however the
  * pages came back.
+ *
+ * An entry of a page that is no root stops the draw, as every reading of this shape does
+ * (`rootReadingOf` in `draw-io.ts`): a root dropped here for a label that is no string is a
+ * parked root the never-decide rule is never told about, and the draw would record a list
+ * shorter than the one Dispatch answered without saying so.
  */
 async function backlogLegionRoots(config: DispatchConfig): Promise<BacklogRoots> {
   const issues: Array<{ key: string } & IssueFacts> = [];
@@ -416,11 +425,16 @@ async function backlogLegionRoots(config: DispatchConfig): Promise<BacklogRoots>
       const path = `/api/v1/issues?label=legion&status=${status}&limit=${ISSUE_PAGE}&offset=${offset}`;
       const answer = recordOf(await readJson<unknown>(path, config));
       const page = listOf(answer?.issues);
-      for (const value of page) {
-        const read = issueFactsOf(value);
-        if (read === null || seen.has(read.key)) continue;
-        seen.add(read.key);
-        issues.push({ key: read.key, ...read.facts });
+      for (const [at, value] of page.entries()) {
+        const read = rootReadingOf(value);
+        if (read.root === null) {
+          throw new DrawError(
+            `the ${status} issue list root ${read.key ?? offset + at + 1} ${read.fault}`
+          );
+        }
+        if (seen.has(read.root.key)) continue;
+        seen.add(read.root.key);
+        issues.push(read.root);
       }
       const total = answer?.total;
       if (page.length < ISSUE_PAGE || typeof total !== "number" || offset + ISSUE_PAGE >= total) {
@@ -437,13 +451,14 @@ async function backlogLegionRoots(config: DispatchConfig): Promise<BacklogRoots>
  * whole file or the `backlogLegionRoots` object inside it. The reading time the file carries is
  * kept, because it is when the list was true; the source becomes the file.
  *
- * This reads a draw-shaped file itself rather than through `draw-io.ts`, and stays that way.
- * What it reads is not a corpus's own draw but a file a person named on the command line, so
- * every way it can fail is a usage error about `--backlog-roots` and says what that flag takes.
- * Reading it through the owner of `draw.json` would answer a corpus error over a flag, and a
- * refusal that names the wrong thing is a refusal that has lost its words.
+ * The roots themselves are read by `rootReadingOf`, the one reader of that shape, which checks
+ * every field and refuses an entry holding one that is no such field. What this adds is its own
+ * words for that refusal, and it keeps them rather than throwing the reader's: what it reads is
+ * not a corpus's own draw but a file a person named on the command line, so every way it can
+ * fail is a usage error about `--backlog-roots` and says what that flag takes. Answering a
+ * corpus error over a flag would be a refusal that has lost its words.
  */
-async function pinnedBacklogRoots(path: string): Promise<BacklogRoots> {
+export async function pinnedBacklogRoots(path: string): Promise<BacklogRoots> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(await readFile(path, "utf8"));
@@ -460,10 +475,16 @@ async function pinnedBacklogRoots(path: string): Promise<BacklogRoots> {
     );
   }
   const issues: Array<{ key: string } & IssueFacts> = [];
-  for (const value of listed) {
-    const read = issueFactsOf(value);
-    if (read === null) throw new UsageError(`--backlog-roots ${path} holds an entry with no key`);
-    issues.push({ key: read.key, ...read.facts });
+  for (const [at, value] of listed.entries()) {
+    const read = rootReadingOf(value);
+    if (read.root === null) {
+      throw new UsageError(
+        `--backlog-roots ${path} root ${read.key ?? at + 1} ${read.fault} (it takes the shape ` +
+          "draw.json writes, whose every root names a key and a status that are strings, and " +
+          "labels that are a list of strings)"
+      );
+    }
+    issues.push(read.root);
   }
   issues.sort((one, other) => (one.key < other.key ? -1 : 1));
   return { readAt: stringOf(held.readAt) ?? "unknown", source: path, issues };
@@ -479,16 +500,18 @@ async function drawCaseOf(
   const replayed = row.kind === "approval" ? await replayCase(row, config) : null;
   const documents = replayed?.documents ?? [];
   const text = renderCase(row, documents);
-  // The descriptor's digest is over the first document the judge is shown, as it is shown it,
-  // so a later round that renders other bytes sees it. A case with no document is digested
-  // whole. This is the first document that could be read, and not `leadDocumentOf`, which is
-  // the first the request names an artifact and a version for: a digest of a document that
-  // could not be read is no record of what was scored, so an unread document is passed over.
-  const shown = documents.find((document) => document.markdown !== null) ?? null;
+  // The descriptor's digest is over the first document of the request that could be read, as
+  // `renderDocument` renders it, which is byte for byte the document's section of the case
+  // `renderCase` built above: a rendering of other bytes for this case digests differently. A
+  // case with no readable document is digested whole, over the rendered case. It is the first
+  // readable document and not `leadDocumentOf`, which is the first the request names an
+  // artifact and a version for: a digest of a document that could not be read is no record of
+  // what was drawn, so an unread document is passed over.
+  const first = documents.find((document) => document.markdown !== null) ?? null;
   const digested =
-    shown === null || shown.markdown === null
+    first === null || first.markdown === null
       ? text
-      : renderDocument(shown.markdown, row.answeredAt);
+      : renderDocument(first.markdown, row.answeredAt);
   const sha256 = createHash("sha256").update(digested, "utf8").digest("hex");
   const issue = row.issueKey === null ? null : (issues.get(row.issueKey) ?? null);
   return {
@@ -499,13 +522,13 @@ async function drawCaseOf(
           text,
           row,
           issue,
-          documentId: shown?.artifactId ?? null,
-          documentVersion: shown?.requestedVersion ?? null,
+          documentId: first?.artifactId ?? null,
+          documentVersion: first?.requestedVersion ?? null,
         },
         options
       ),
-      documentId: shown?.artifactId ?? null,
-      requestedVersion: shown?.requestedVersion ?? null,
+      documentId: first?.artifactId ?? null,
+      requestedVersion: first?.requestedVersion ?? null,
       sha256,
     },
     unread: documents.filter((document) => document.refusal !== null).length,

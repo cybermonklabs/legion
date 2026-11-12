@@ -1,14 +1,27 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { CaseKind, CaseRow } from "../build-corpus";
-import { type Draw, type DrawCase, DrawError, drawSlices, TARGETS } from "../draw";
-import { SLICES } from "../draw-io";
-import type { NeverDecideAnswer } from "../never-decide";
+import { CorpusError, UsageError } from "../corpus-io";
+import {
+  type Draw,
+  type DrawCase,
+  DrawError,
+  drawSlices,
+  pinnedBacklogRoots,
+  TARGETS,
+} from "../draw";
+import { drawPath, readDraw, rootFactsOf, SLICES } from "../draw-io";
+import { type AskModel, type NeverDecideAnswer, neverDecide } from "../never-decide";
 
 /**
- * The draw over a hand-written corpus: nothing here reads a corpus from disk, renders a document
- * or reads Dispatch. What it holds the draw to is the plan's own rules - a group goes into one
- * slice whole, a seed reproduces a draw, and a held or undrawable case is left out of every
- * slice.
+ * The draw over a hand-written corpus: nothing here renders a document or reads Dispatch, and
+ * the one file read is the fixture a test writes for the roots, since the recorded corpus's own
+ * draw holds no malformed root to drive either reader of them with. What it holds the draw to
+ * is the plan's own rules - a group goes into one slice whole, a seed reproduces a draw, and a
+ * held or undrawable case is left out of every slice - and the roots it is given to the one
+ * policy both readers of that shape read under.
  */
 
 const DECIDED: NeverDecideAnswer = {
@@ -273,5 +286,109 @@ describe("drawSlices", () => {
     ];
     const draw = drawSlices(cases, 3);
     expect(draw.groupCount).toBe(2);
+  });
+});
+
+/**
+ * The roots a draw is given, over fixtures: the recorded corpus's own draw records 122 roots
+ * and not one of them is malformed under any field, so what a reader does with a malformed one
+ * is shown here and nowhere else.
+ *
+ * Both readers of the shape are driven over the same file: `draw.json`, which `draw-io.ts`
+ * owns, and the file `--backlog-roots` names, which this command reads itself so that its own
+ * refusals stay usage errors about the flag. One policy, refusal with the offending label
+ * quoted, and two wordings of it. What those labels decide is the never-decide rule's hold over
+ * a parked `legion` root, which is driven here over the roots each reader hands back.
+ */
+describe("the roots a draw is given", () => {
+  /** A root of a parked Legion tree, as a draw records one. */
+  const parked = {
+    key: "INFRA-7",
+    parent: null,
+    labels: ["legion"],
+    status: "backlog",
+    primaryArtifactId: "document-INFRA-7",
+  };
+
+  /** The directories this file made, each removed by its own exact path. */
+  const made: string[] = [];
+
+  afterEach(async () => {
+    for (const directory of made.splice(0)) await rm(directory, { recursive: true, force: true });
+  });
+
+  /** One `draw.json` carrying the roots named, which is the file both readers are given. */
+  async function written(...issues: unknown[]): Promise<string> {
+    const directory = await mkdtemp(join(tmpdir(), "draw-roots-"));
+    made.push(directory);
+    const path = drawPath(directory);
+    const roots = { readAt: "2026-11-06T09:00:00Z", source: "dispatch", issues };
+    await writeFile(path, `${JSON.stringify({ backlogLegionRoots: roots })}\n`, "utf8");
+    return path;
+  }
+
+  test("refuses a label that is no string, as a usage error naming the flag", async () => {
+    const path = await written({ ...parked, labels: ["legion", 7] });
+    await expect(pinnedBacklogRoots(path)).rejects.toThrow(UsageError);
+    await expect(pinnedBacklogRoots(path)).rejects.toThrow(
+      `--backlog-roots ${path} root INFRA-7 names a label that is no string: 7`
+    );
+    await expect(pinnedBacklogRoots(path)).rejects.toThrow(/it takes the shape draw\.json writes/);
+  });
+
+  test("refuses that same label through the draw, as the file being no draw", async () => {
+    const path = await written({ ...parked, labels: ["legion", 7] });
+    await expect(readDraw(path)).rejects.toThrow(CorpusError);
+    await expect(readDraw(path)).rejects.toThrow(
+      `${path} root INFRA-7 names a label that is no string: 7`
+    );
+  });
+
+  test("takes a well-formed root, keeping the reading time the file carries", async () => {
+    const path = await written(parked);
+    const read = await pinnedBacklogRoots(path);
+    expect(read.issues).toEqual([parked]);
+    expect(read.readAt).toBe("2026-11-06T09:00:00Z");
+    expect(read.source).toBe(path);
+    expect((await readDraw(path))?.roots).toEqual([parked]);
+  });
+
+  test("hands the rule a parked root it holds, read either way", async () => {
+    const path = await written(parked);
+    const row = caseRow("case-1", "approval", "INFRA-7");
+    const text = "# An approval request\n";
+    // The rule holds this root on the issue's facts alone, so a call is a test that failed.
+    const never: AskModel = () => Promise.reject(new Error("the rule was put to the model"));
+    const read = [
+      rootFactsOf((await readDraw(path))?.roots),
+      rootFactsOf((await pinnedBacklogRoots(path)).issues),
+    ];
+    for (const facts of read) {
+      const answer = await neverDecide(
+        { text, row, issue: facts.get("INFRA-7") ?? null },
+        { ask: never, definition: "the rule" }
+      );
+      expect(answer.held).toBe(true);
+      expect(answer.kind).toBe("waiting-legion-root");
+      expect(answer.source).toBe("issue-facts");
+    }
+    // What the labels decide: with the `legion` label gone the facts hold nothing, and the rule
+    // goes to the model. That is where a root whose malformed label was dropped would end up,
+    // its hold silently not made and nobody told, which is why a reader refuses instead.
+    await expect(
+      neverDecide(
+        {
+          text,
+          row,
+          issue: {
+            parent: null,
+            labels: [],
+            status: "backlog",
+            primaryArtifactId: "document-INFRA-7",
+          },
+        },
+        { ask: never, definition: "the rule" }
+      )
+    ).rejects.toThrow("the rule was put to the model");
   });
 });

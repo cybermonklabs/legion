@@ -8,10 +8,10 @@ import {
   corpusSlicesPath,
   type DrawRecord,
   drawPath,
-  issueFactsOf,
   readDraw,
   readSlices,
   rootFactsOf,
+  rootReadingOf,
   slicesPath,
 } from "../draw-io";
 
@@ -181,7 +181,7 @@ describe("readDraw", () => {
     );
     const label = await written(rootsOf(root({ labels: ["legion", 3] })));
     await expect(readDraw(label)).rejects.toThrow(
-      `${label} root INFRA-1 names a label that is no string`
+      `${label} root INFRA-1 names a label that is no string: 3`
     );
     const parent = await written(rootsOf(root({ parent: 3 })));
     await expect(readDraw(parent)).rejects.toThrow(
@@ -245,30 +245,65 @@ describe("readSlices", () => {
   });
 });
 
+/**
+ * The one reader of a root, which the three places that read one all go through: a draw's own
+ * `backlogLegionRoots`, the issue list route, and the file `--backlog-roots` names. Its policy
+ * is refusal and never a value dropped, because these labels are what the never-decide rule
+ * reads to hold a parked `legion` root: a label dropped for being no string would make such a
+ * root look like no root and the hold would silently not happen.
+ */
 describe("the facts a reader takes out of a draw", () => {
-  test("reads an issue's facts as the list route and a draw each hold them", () => {
-    const route = issueFactsOf({
+  test("reads a root's fields as the list route and a draw each hold them", () => {
+    const route = rootReadingOf({
       key: "INFRA-1",
       status: "backlog",
       parent: null,
-      labels: ["legion", 3],
+      labels: ["legion"],
       primary_artifact_id: "a",
     });
     expect(route).toEqual({
+      root: {
+        key: "INFRA-1",
+        parent: null,
+        labels: ["legion"],
+        status: "backlog",
+        primaryArtifactId: "a",
+      },
       key: "INFRA-1",
-      facts: { parent: null, labels: ["legion"], status: "backlog", primaryArtifactId: "a" },
+      fault: null,
     });
-    const held = issueFactsOf({
+    const held = rootReadingOf({
       key: "INFRA-1",
       status: "backlog",
       parent: "INFRA-0",
       labels: [],
       primaryArtifactId: "a",
     });
-    expect(held?.facts.primaryArtifactId).toBe("a");
-    expect(held?.facts.parent).toBe("INFRA-0");
-    expect(issueFactsOf({ status: "backlog" })).toBeNull();
-    expect(issueFactsOf("INFRA-1")).toBeNull();
+    expect(held.root?.primaryArtifactId).toBe("a");
+    expect(held.root?.parent).toBe("INFRA-0");
+  });
+
+  test("refuses a root holding a field that is no such field, and quotes the label", () => {
+    expect(rootReadingOf("INFRA-1")).toEqual({ root: null, key: null, fault: "is no issue" });
+    expect(rootReadingOf({ status: "backlog" }).fault).toBe("names no key or no status");
+    expect(rootReadingOf({ key: 7, status: "backlog" }).fault).toBe(
+      "holds a key that is no string"
+    );
+    expect(rootReadingOf({ key: "INFRA-1", status: 7 }).fault).toBe(
+      "holds a status that is no string"
+    );
+    expect(rootReadingOf({ key: "INFRA-1", status: "backlog", labels: "legion" }).fault).toBe(
+      "holds labels that are no list"
+    );
+    const label = rootReadingOf({ key: "INFRA-1", status: "backlog", labels: ["legion", 7] });
+    expect(label).toEqual({
+      root: null,
+      key: "INFRA-1",
+      fault: "names a label that is no string: 7",
+    });
+    expect(rootReadingOf({ key: "INFRA-1", status: "backlog", primary_artifact_id: 7 }).fault).toBe(
+      "holds a primary_artifact_id that is no string"
+    );
   });
 
   test("reads the roots a draw recorded by key", () => {

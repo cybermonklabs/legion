@@ -22,6 +22,7 @@ import {
   DEFAULT_CONFIDENCE,
   MINIMUM_DECIDED,
 } from "./stats";
+import { noBoundTail } from "./strata";
 
 /**
  * Selective prediction read off agreement across model families, which is the abstention signal
@@ -312,13 +313,7 @@ export function answerOf(lines: readonly ConsensusLine[]): string {
   const under = lines
     .filter((line) => line.bound !== null && line.bound < RATE)
     .sort((one, two) => two.coverage - one.coverage);
-  const small = lines.filter((line) => line.bound === null).length;
-  const tail =
-    small === 0
-      ? ""
-      : ` ${count(small)} of ${count(lines.length)} ${small === 1 ? "holds" : "hold"} ` +
-        `fewer than ${MINIMUM_DECIDED} cases and so ${small === 1 ? "carries" : "carry"} ` +
-        "no bound.";
+  const tail = noBoundTail(lines);
   if (under.length > 0) {
     const said = under
       .map(

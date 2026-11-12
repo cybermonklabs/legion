@@ -422,3 +422,77 @@ describe("assertNoLeak", () => {
     }
   });
 });
+
+/**
+ * The order of the documents, which is the judgement's own: `run-round.ts` renders them in each
+ * judgement's seed order and guards that rendering, so the row's second document opens the
+ * first section as readily as the second. What these hold is that each section is still held to
+ * its own document's version in any order of them, and that the readings where which section is
+ * which cannot be read off the text still drop the whole rendering to the lowest version.
+ */
+describe("the order of a row's documents", () => {
+  const documents = [
+    documentNamed("spec.md", "artifact-1", 23, bodyQuoting("Approval: approved v13 by a person")),
+    documentNamed("verification.md", "artifact-2", 7, "# Verification\n\nIt was checked."),
+  ];
+
+  test("takes a rendering in another order as the row's own", () => {
+    const row = caseOver(documents);
+    expect(() => {
+      assertNoLeak(row, renderCase(row, documents));
+    }).not.toThrow();
+    // The same case a39f4947-8990-487f-b0b7-e00531273575 above, rendered the other way about:
+    // spec.md's quoted approval of v13 is still held to spec.md's own v23 and not to the v7 of
+    // verification.md, which standing second rather than first says nothing about.
+    expect(() => {
+      assertNoLeak(row, renderCase(row, [...documents].reverse()));
+    }).not.toThrow();
+  });
+
+  test("refuses in another order what it refuses in the row's own", () => {
+    const leaking = [
+      documentNamed("spec.md", "artifact-1", 13, bodyQuoting("Approval: approved v13 by a person")),
+      documentNamed("verification.md", "artifact-2", 7, "# Verification\n\nIt was checked."),
+    ];
+    const row = caseOver(leaking);
+    expect(() => {
+      assertNoLeak(row, renderCase(row, leaking));
+    }).toThrow(/at or above the version 13 of spec\.md/);
+    expect(() => {
+      assertNoLeak(row, renderCase(row, [...leaking].reverse()));
+    }).toThrow(/at or above the version 13 of spec\.md/);
+  });
+
+  test("holds a rendering where one heading stands twice to the lowest version", () => {
+    const asked = documentNamed("a.md", "artifact-1", 9, "# A\n\nIt says what it says.");
+    const row = caseOver([asked, documentNamed("b.md", "artifact-2", 3, "# B\n\nIt was checked.")]);
+    // The cache holds the first document twice, so the row's second heading never stands and
+    // the body under the repeat is no stretch of any document the request names.
+    const cached = [
+      asked,
+      documentNamed("a.md", "artifact-1", 9, bodyQuoting("Approval: approved v3 by a person")),
+    ];
+    expect(() => {
+      assertNoLeak(row, renderCase(row, cached));
+    }).toThrow(/at or above the lowest version the request asked about, 3/);
+  });
+
+  test("holds a rendering whose two documents write one heading to the lowest version", () => {
+    // Both read as `spec.md (version 3)` where each stands, one by its name and version and one
+    // by a name that reads like them, and the two are held to different versions, so which
+    // section is which is not in the text.
+    const alike = [
+      documentNamed("spec.md", "artifact-1", 3, "# A spec\n\nIt says what it says."),
+      documentNamed(
+        "spec.md (version 3)",
+        "artifact-2",
+        null,
+        bodyQuoting("Approval: approved v3 by them")
+      ),
+    ];
+    const row = caseOver(alike);
+    expect(() => {
+      assertNoLeak(row, renderCase(row, alike));
+    }).toThrow(/at or above the lowest version the request asked about, 3/);
+  });
+});
