@@ -107,31 +107,39 @@ ordinary document rather than holding them too.
 **What this text is worth depends on whether the agent reading it can retrieve, and one run of
 that comparison cannot tell you.** A fresh agent was given this skill and nothing else and judged
 250 of the person's approval decisions; the same agent with no skill at all judged the same 250,
-on `claude-opus-5-5`, one judgement per case. The comparison was run **five times**, nothing
-changed between the runs, and this is what the five printed:
+on `claude-opus-5-5`, one judgement per case. The comparison was run **six times**, nothing
+changed between the runs of one build, and this is what the six printed:
 
-| run | skill arm | control | paired difference | what the program called it |
-| --- | --- | --- | --- | --- |
-| 1 | 0.668 (167) | 0.588 (147) | +0.080 in [+0.040, +0.109] | passes |
-| 2 | 0.644 (161) | 0.620 (155) | +0.024 in [−0.018, +0.063] | fails |
-| 3 | 0.688 (172) | 0.640 (160) | +0.048 in [+0.007, +0.082] | passes |
-| 4 | 0.700 (175) | 0.636 (159) | +0.064 in [+0.019, +0.101] | passes |
-| 5 | 0.652 (163) | 0.644 (161) | +0.008 in [−0.034, +0.048] | fails |
+| run | skill arm | control | paired difference | what the program called it | the skill it read |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 0.668 (167) | 0.588 (147) | +0.080 in [+0.040, +0.109] | passes | `586bb99f` |
+| 2 | 0.644 (161) | 0.620 (155) | +0.024 in [−0.018, +0.063] | fails | `19029752` |
+| 3 | 0.688 (172) | 0.640 (160) | +0.048 in [+0.007, +0.082] | passes | `19029752` |
+| 4 | 0.700 (175) | 0.636 (159) | +0.064 in [+0.019, +0.101] | passes | `19029752` |
+| 5 | 0.652 (163) | 0.644 (161) | +0.008 in [−0.034, +0.048] | fails | `19029752` |
+| 6 | 0.676 (169) | 0.628 (157) | +0.048 in [+0.008, +0.080] | passes | `abcffa20` |
 
-**Three passes and two failures over identical inputs.** The runs differ by 0.072, which is about
+**Four passes and two failures over identical inputs.** The runs differ by 0.072, which is about
 the width of one run's own interval, so no single run of this comparison carries a number worth
 recording. Both arms move together, because the noise is the model's own run and is shared by
 them; what survives it is the paired difference, and it survives only when each case is averaged
 over the runs.
 
-**So the number this skill records is the pooled one: +0.036 in [+0.010, +0.063].** Each of the
+**So the number this skill records is the pooled one: +0.045 in [+0.022, +0.070].** Each of the
 250 cases carries the mean of its outcome over the runs, the estimate is the mean of the 250
 case-level differences, and the interval is a paired bootstrap of 20,000 resamples of those
-differences under seed 7, with a t interval of [+0.010, +0.062] beside it. It is read over the
-four runs made against this file at its present bytes; the five-run figure, which includes one run
-of an earlier draft of this section, is +0.045 in [+0.020, +0.070]. The bootstrap holds the runs
-fixed, so that interval says what the difference is given these runs and carries none of the
+differences under seed 7, with a t interval of [+0.021, +0.069] beside it. The bootstrap holds the
+runs fixed, so that interval says what the difference is given these runs and carries none of the
 0.072 spread between them. Quote the two together or neither.
+
+**The last column is the build each run read, and no run of this comparison can ever be of the
+bytes you are reading**, because writing a measured number into a file changes the file. The six
+runs fall into three builds, which differ in this section and nowhere else: `586bb99f`, one run,
++0.080; `19029752`, four runs pooled, +0.036 in [+0.010, +0.063]; `abcffa20`, one run, +0.048.
+Leaving out the two runs of the other builds lowers the number by 0.009, which is the direction
+that costs this text rather than flatters it. `scripts/approval-eval/pool-runs.ts` reads each
+run's own copy of this file, groups the runs by its hash and prints all of that, so nothing above
+is a hash or a direction anybody typed.
 
 **And the second shape, which measures something else.** With the nearest past decisions placed in
 a file beside each case and both arms told of it, both reached 0.784 (196 of 250), a difference of
@@ -146,7 +154,7 @@ already doing what the text describes.
 
 Read the numbers together before you quote any of them. The never-decide rule has its own evidence
 and it is strong. The retrieval recipe's 0.116 is real and is of stateless calls. This text's own
-gain is +0.036 in [+0.010, +0.063] against nothing, over five runs that singly ranged from +0.008
+gain is +0.045 in [+0.022, +0.070] against nothing, over six runs that singly ranged from +0.008
 to +0.080, and zero against an agent already retrieving.
 
 ## The retrieval step

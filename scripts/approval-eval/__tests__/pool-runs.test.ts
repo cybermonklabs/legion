@@ -10,6 +10,8 @@ import {
   pooledOf,
   type RunOutcomes,
   readRun,
+  recordJson,
+  recordOf,
   reportLines,
   spreadOf,
   tInterval,
@@ -38,14 +40,18 @@ async function scratch(): Promise<string> {
 }
 
 /** One run as the pooling reads it, from the outcome of each arm on each case. */
-function run(directory: string, cases: Record<string, [boolean, boolean]>): RunOutcomes {
+function run(
+  directory: string,
+  cases: Record<string, [boolean, boolean]>,
+  skillSha: string | null = null
+): RunOutcomes {
   const held = new Map<string, ArmOutcome>();
   for (const [caseId, [skill, control]] of Object.entries(cases))
     held.set(caseId, {
       skill,
       control,
     });
-  return { directory, cases: held, finishedAt: null, skillSha: null };
+  return { directory, cases: held, finishedAt: null, skillSha };
 }
 
 /** One answer row as `fresh-agent.ts` writes it. */
@@ -268,8 +274,8 @@ describe("the spread between the runs", () => {
   });
 
   test("is printed beside the interval, which is said not to carry it", () => {
-    const pooling = pooledOf(runs, { resamples: 200, seed: 7 });
-    const printed = reportLines(pooling, { command: null, skill: null }).join("\n");
+    const record = recordOf(runs, { command: null, skill: null }, { resamples: 200, seed: 7 });
+    const printed = reportLines(record).join("\n");
     expect(printed).toContain("+1.000, +0.250, +0.500");
     expect(printed).toContain("range             0.750");
     expect(printed).toContain("standard deviation 0.382");
@@ -279,15 +285,30 @@ describe("the spread between the runs", () => {
 });
 
 describe("the record a reader meets the number in", () => {
+  /** Two builds of the skill, named by the bytes alone, as a run directory names its build. */
+  const bytesA = "a1".repeat(32);
+  const bytesB = "b2".repeat(32);
+
+  /**
+   * Three runs over two cases. The two runs of build A agreed on both cases in the skill arm
+   * and on neither in the control, so build A alone reads +1.000; the one run of build B reads
+   * +0.000; and over all three runs each case carries 2/3 less 0, so the whole reads +0.667.
+   * So the narrowing to build A raises the estimate and the narrowing to build B lowers it.
+   */
+  const builtRuns = [
+    run("/build-a-1", { a: [true, false], b: [true, false] }, bytesA),
+    run("/build-a-2", { a: [true, false], b: [true, false] }, bytesA),
+    run("/build-b-1", { a: [false, false], b: [false, false] }, bytesB),
+  ];
+  const options = { resamples: 128, seed: 7 };
+  const nothing = { command: null, skill: null };
+
   test("names every run pooled by its directory, and when it ran", () => {
     const runs = [
       { ...run("/the/first", { a: [true, false] }), finishedAt: "2026-11-12T07:58:37.776Z" },
       { ...run("/the/second", { a: [false, false] }), finishedAt: null },
     ];
-    const printed = reportLines(pooledOf(runs, { resamples: 100, seed: 7 }), {
-      command: null,
-      skill: null,
-    }).join("\n");
+    const printed = reportLines(recordOf(runs, nothing, { resamples: 100, seed: 7 })).join("\n");
     expect(printed).toContain("/the/first");
     expect(printed).toContain("2026-11-12T07:58:37.776Z");
     expect(printed).toContain("/the/second");
@@ -295,64 +316,145 @@ describe("the record a reader meets the number in", () => {
   });
 
   test("carries the resamples, the seed and why McNemar is not the interval here", () => {
-    const pooling = pooledOf([run("/run-1", { a: [true, false] })], { resamples: 128, seed: 19 });
-    const printed = reportLines(pooling, { command: null, skill: null }).join("\n");
+    const record = recordOf([run("/run-1", { a: [true, false] })], nothing, {
+      resamples: 128,
+      seed: 19,
+    });
+    const printed = reportLines(record).join("\n");
     expect(printed).toContain("128 resamples");
     expect(printed).toContain("under seed 19");
     expect(printed).toContain("McNemar's exact test is not printed here");
     expect(printed).toContain("no longer binary");
   });
 
-  test("carries both readings where the runs are not all of one build, and which to quote", () => {
-    const left = {
-      ...run("/off-build", { a: [true, false], b: [true, false] }),
-      skillSha: "ab".repeat(32),
-    };
-    const kept = [
-      run("/of-the-build-1", { a: [true, false], b: [false, false] }),
-      run("/of-the-build-2", { a: [true, false], b: [false, false] }),
-    ];
-    const options = { resamples: 256, seed: 7 };
+  test("runs of two builds give one reading over every run and one reading per build", () => {
+    const record = recordOf(builtRuns, nothing, options);
+    expect(record.builds.map((build) => build.skillSha)).toEqual([bytesA, bytesB]);
+    expect(record.builds[0]?.runs.map((place) => place.place)).toEqual([1, 2]);
+    expect(record.builds[0]?.pooling.difference).toBeCloseTo(1, 12);
+    expect(record.builds[1]?.runs.map((place) => place.directory)).toEqual(["/build-b-1"]);
+    expect(record.builds[1]?.pooling.difference).toBeCloseTo(0, 12);
+    expect(record.whole.difference).toBeCloseTo(2 / 3, 12);
+    // Each build is read under the same resamples and seed as the reading over every run.
+    expect(record.builds.map((build) => build.pooling.resamples)).toEqual([128, 128]);
+    expect(record.builds.map((build) => build.pooling.seed)).toEqual([7, 7]);
+    const printed = reportLines(record).join("\n");
+    expect(printed).toContain(`sha256 ${bytesA}`);
+    expect(printed).toContain(`sha256 ${bytesB}`);
+    expect(printed).toContain("run 1 (/build-a-1), run 2 (/build-a-2)");
+    expect(printed).toContain("pooled difference +1.000 over 2 cases");
+  });
+
+  test("names each build by a hash it read off a run and by no other name", () => {
+    const printed = reportLines(recordOf(builtRuns, nothing, options)).join("\n");
+    expect(printed).toContain(`### Build ${bytesA.slice(0, 16)} — 2 runs`);
+    expect(printed).toContain(`### Build ${bytesB.slice(0, 16)} — 1 run`);
+    expect(printed).not.toContain("the named build");
+  });
+
+  test("a narrowing that raises the estimate says so, and by how much", () => {
+    const printed = reportLines(recordOf(builtRuns, nothing, options)).join("\n");
+    expect(printed).toContain(
+      "leaves out run 3 (/build-b-1), and leaving that run out raises the estimate by 0.333, " +
+        "from +0.667 over 3 runs to +1.000 over 2 runs."
+    );
+  });
+
+  test("a narrowing that lowers the estimate says so too, and by how much", () => {
+    const printed = reportLines(recordOf(builtRuns, nothing, options)).join("\n");
+    expect(printed).toContain(
+      "leaves out run 1 (/build-a-1), run 2 (/build-a-2), and leaving those runs out lowers " +
+        "the estimate by 0.667, from +0.667 over 3 runs to +0.000 over 1 run."
+    );
+  });
+
+  test("a build of one run is that run's own reading and not a pooling of several", () => {
+    const printed = reportLines(recordOf(builtRuns, nothing, options)).join("\n");
+    expect(printed).toContain("difference        +0.000 over 2 cases");
+    expect(printed).toContain("One run holds these bytes, so this is that run's own reading");
+  });
+
+  test("a build over every run given carries no narrowing sentence", () => {
+    const ofOne = [builtRuns[0] as RunOutcomes, builtRuns[1] as RunOutcomes];
+    const record = recordOf(ofOne, nothing, options);
+    expect(record.builds).toHaveLength(1);
+    expect(record.builds[0]?.leftOut).toEqual([]);
+    expect(reportLines(record).join("\n")).not.toContain("This reading is narrower");
+  });
+
+  test("a run holding no copy of the skill is named, and is of no build", () => {
+    const record = recordOf(
+      [...builtRuns, run("/no-copy", { a: [true, true], b: [true, true] })],
+      nothing,
+      options
+    );
+    expect(record.unrecorded).toEqual([{ place: 4, directory: "/no-copy", skillSha: null }]);
+    expect(record.builds.flatMap((build) => build.runs.map((place) => place.directory))).toEqual([
+      "/build-a-1",
+      "/build-a-2",
+      "/build-b-1",
+    ]);
+    // It stays in the reading over every run, which is over four runs and not three.
+    expect(record.whole.runs).toHaveLength(4);
+    const printed = reportLines(record).join("\n");
+    expect(printed).toContain("run 4 (/no-copy)");
+    expect(printed).toContain("provenance is unrecorded");
+    expect(printed).toContain("no copy of the skill under this run, so it cannot be told");
+  });
+
+  test("says which build this checkout's own skill bytes are, where they are one", () => {
     const printed = reportLines(
-      pooledOf([left, ...kept], options),
-      { command: null, skill: null },
-      pooledOf(kept, options)
+      recordOf(builtRuns, { command: "0".repeat(64), skill: bytesA }, options)
     ).join("\n");
-    expect(printed).toContain("## The same reading over the runs of one build");
-    // Over the three runs the gain is 0.667 of case a and 0.333 of case b, halved; over the
-    // two kept runs it is 1 of case a and 0 of case b, halved.
-    expect(printed).toContain("pooled difference +0.500 over 2 cases");
+    expect(printed).toContain(`sha256 ${bytesA}`);
+    expect(printed).toContain(`These bytes are build ${bytesA.slice(0, 16)} above`);
+    expect(printed).not.toContain("no run can ever be of the bytes that quote its own result");
+  });
+
+  test("says why no run is of the bytes that quote it, where the checkout is no build", () => {
+    const checkout = { command: "0".repeat(64), skill: "cd".repeat(32) };
+    const record = recordOf(builtRuns, checkout, options);
+    expect(record.checkoutBuild).toBeNull();
+    const printed = reportLines(record).join("\n");
+    expect(printed).toContain("These bytes are none of the builds above");
     expect(printed).toContain(
-      "over            2 runs, each holding the named skill bytes: run 2 (/of-the-build-1), " +
-        "run 3 (/of-the-build-2)"
-    );
-    expect(printed).toContain("Left out: run 1 (/off-build)");
-    expect(printed).toContain("the bytes that arm read are recorded nowhere");
-    expect(printed).toContain(
-      "A reader quotes the 2-run number, which is the only one of the two that is a number " +
-        "of a single build of the skill the repository ships"
+      "no run can ever be of the bytes that quote its own result, because writing a measured " +
+        "number into a file changes the file"
     );
   });
 
-  test("carries one reading where every run pooled holds the one build", () => {
-    const pooling = pooledOf([run("/run-1", { a: [true, false] })], { resamples: 100, seed: 7 });
-    const printed = reportLines(pooling, { command: null, skill: null }).join("\n");
-    expect(printed).not.toContain("## The same reading over the runs of one build");
+  test("the JSON carries each build under its own hash, and no fact in prose alone", () => {
+    const checkout = { command: "0".repeat(64), skill: bytesB };
+    const written = recordJson(
+      recordOf(
+        [...builtRuns, run("/no-copy", { a: [true, true], b: [true, true] })],
+        checkout,
+        options
+      )
+    );
+    expect(Object.keys(written.builds)).toEqual([bytesA, bytesB]);
+    expect(written.builds[bytesA]?.pooling.difference).toBeCloseTo(1, 12);
+    expect(written.builds[bytesA]?.shift).toBeCloseTo(0.5, 12);
+    expect(written.builds[bytesA]?.leftOut.map((place) => place.place)).toEqual([3, 4]);
+    expect(written.unrecorded.map((place) => place.directory)).toEqual(["/no-copy"]);
+    expect(written.checkout).toEqual({ command: "0".repeat(64), skill: bytesB, build: bytesB });
+    expect(written.whole.runs).toHaveLength(4);
+    // The round trip is what another program reads, so it holds no Map and no undefined.
+    expect(JSON.parse(JSON.stringify(written)).builds[bytesB].pooling.runs).toHaveLength(1);
   });
 
-  test("says of each run whether it was made against the named skill bytes", async () => {
-    const named = await readRun(
+  test("reads each run's build off that run's own copy of the skill", async () => {
+    const copied = await readRun(
       await runDirectory({ a: [true, false] }, { skill: "# the skill\n" }),
       "without"
     );
     const bare = await readRun(await runDirectory({ a: [true, false] }), "without");
-    const printed = reportLines(pooledOf([named, bare], { resamples: 100, seed: 7 }), {
-      command: "0".repeat(64),
-      skill: null,
-    }).join("\n");
-    expect(printed).toContain("NOT the named build");
+    const bytes = copied.skillSha as string;
+    const record = recordOf([copied, bare], { command: null, skill: null }, options);
+    const printed = reportLines(record).join("\n");
+    expect(record.builds.map((build) => build.skillSha)).toEqual([bytes]);
+    expect(printed).toContain(`### Build ${bytes.slice(0, 16)} — 1 run`);
     expect(printed).toContain("no copy of the skill under this run, so it cannot be told");
-    expect(printed).toContain("which is not the named build: the checkout has moved");
   });
 });
 

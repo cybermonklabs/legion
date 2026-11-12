@@ -36,12 +36,22 @@ import { DEFAULT_CONFIDENCE, type Interval, regularizedIncompleteBeta } from "./
  * run's own difference, their range and their standard deviation beside the pooled interval,
  * and says in words that the pooled interval does not include that spread.
  *
- * The record names the runs it pooled by their directories, and the build they were made
- * against, since a pooled number over runs of two builds is a number of neither. Where the runs
- * named are not all of the named build, the record carries two readings where a reader meets the
- * number: the pooled estimate over every run named, and the same estimate over the runs of that
- * one build, each with its own interval, resamples and seed, with one sentence saying which of
- * the two a reader quotes and why.
+ * The record names the runs it pooled by their directories, and groups them by the build each
+ * was made against: a run directory holds the copy of the skill that run's skill arm read, so
+ * the sha256 of that copy is the name of that run's build, read off the run itself and written
+ * by hand nowhere. A pooled number over runs of two builds is a number of neither, so the
+ * record carries the reading over every run named and, beside it, one reading per build, each
+ * naming its own runs and carrying its own interval, resamples and seed. Every reading narrower
+ * than the reading over every run carries one sentence, generated from the two estimates,
+ * saying which runs it leaves out and whether leaving them out raises or lowers the estimate
+ * and by how much. A run whose directory holds no copy of the skill is of no build: it is
+ * named, its provenance is said to be unrecorded, and it is left out of every per-build reading
+ * while staying in the reading over every run.
+ *
+ * This checkout is compared against the builds the runs fall into and never against a constant.
+ * Where this checkout's own skill bytes are none of them, the record says why no run can ever
+ * be of the bytes that quote its own result: writing a measured number into a file changes the
+ * file.
  */
 
 /** The shape of run this pools where no `--shape` names another. */
@@ -59,20 +69,10 @@ const NAMED_CASES = 10;
 /** How many characters of a sha256 a line carries, which is enough to tell two builds apart. */
 const DIGEST_SHOWN = 16;
 
-/**
- * The bytes the pooled runs were made against, which the record names so that a reader knows
- * which build this is a number of. They are not read from this checkout: this checkout moves on,
- * and the question is which bytes the runs were made against, not which bytes are here now.
- */
-const BUILD = {
-  command: "a2bfbc4fc2897bc4278391dd348ecf5161a0bbc9572dbe8720851bbb475a37da",
-  skill: "19029752f2db9f9ce326539ac9f55fffec8cf7ae5df970a3a30cd6ae31082bf2",
-} as const;
-
 /** Where a run's own copy of the skill sits, which `fresh-agent.ts` writes under `--out`. */
 const SKILL_IN_RUN = join("skills", "approval-review", "SKILL.md");
 
-/** Where this checkout's own copy of each of those two files sits. */
+/** Where this checkout's own copy of the command and of the skill sits. */
 const COMMAND_PATH = join(import.meta.dir, "fresh-agent.ts");
 const SKILL_PATH = join(import.meta.dir, "..", "..", "skills", "approval-review", "SKILL.md");
 
@@ -177,6 +177,47 @@ export interface Pooling {
   spread: Spread;
   /** How many cases the two arms differed on in at least one run. */
   differedInSomeRun: number;
+}
+
+/** One run as a reading that is not the whole one names it: where it sits, and what it holds. */
+export interface RunPlace {
+  /** Where the run sits among the runs given, counting from one, as every line names it. */
+  place: number;
+  directory: string;
+  /** The sha256 of the run's own copy of the skill, and null where it holds no copy. */
+  skillSha: string | null;
+}
+
+/**
+ * One build the runs fall into: the skill bytes the runs of it hold their own copies of, and
+ * the reading over those runs alone. The bytes are the build's only name, since a run records
+ * no other name for what its skill arm read.
+ */
+export interface BuildReading {
+  /** The sha256 of the skill every run of this build holds its own copy of. */
+  skillSha: string;
+  /** The runs of this build, in the order the runs were given. */
+  runs: RunPlace[];
+  /** The reading over those runs alone, drawn as the reading over every run is drawn. */
+  pooling: Pooling;
+  /** The runs this reading leaves out, which is empty where it is over every run given. */
+  leftOut: RunPlace[];
+  /** How far this reading's estimate sits from the reading over every run, signed. */
+  shift: number;
+}
+
+/** The record whole: the reading over every run, each build's reading, and this checkout. */
+export interface PooledRecord {
+  /** The reading over every run given, whichever build each of them was made against. */
+  whole: Pooling;
+  /** One reading per build, in the order the runs first name each build. */
+  builds: BuildReading[];
+  /** The runs holding no copy of the skill, which are of no build and in no build's reading. */
+  unrecorded: RunPlace[];
+  /** What this checkout holds now of the command and of the skill. */
+  checkout: CheckoutBuild;
+  /** The build this checkout's skill bytes are, and null where they are none of the builds. */
+  checkoutBuild: string | null;
 }
 
 /** The flags, as the command reads them. */
@@ -504,17 +545,84 @@ export function pooledOf(runs: readonly RunOutcomes[], options: PoolOptions = {}
   };
 }
 
-/** What this checkout holds now of the two files the named build is of. */
+/** What this checkout holds now of the command and of the skill, each read off this checkout. */
 export interface CheckoutBuild {
   command: string | null;
   skill: string | null;
 }
 
-/** Whether one run was made against the named skill bytes, in the words the record prints. */
-function skillSaysOf(run: RunReading): string {
-  if (run.skillSha === null) return "no copy of the skill under this run, so it cannot be told";
-  const digest = run.skillSha.slice(0, DIGEST_SHOWN);
-  return `${digest} — ${run.skillSha === BUILD.skill ? "the named build" : "NOT the named build"}`;
+/**
+ * The record over the runs given: the reading over every one of them, one reading per build
+ * they fall into, the runs whose provenance no copy of the skill records, and this checkout
+ * beside those builds. Every hash it carries is one read off a file.
+ */
+export function recordOf(
+  runs: readonly RunOutcomes[],
+  checkout: CheckoutBuild,
+  options: PoolOptions = {}
+): PooledRecord {
+  const whole = pooledOf(runs, options);
+  const placeOf = (at: number): RunPlace => {
+    const run = whole.runs[at] as RunReading;
+    return { place: at + 1, directory: run.directory, skillSha: run.skillSha };
+  };
+  // Insertion order, so the builds are read in the order the runs first name them.
+  const byBuild = new Map<string, number[]>();
+  const unrecorded: RunPlace[] = [];
+  runs.forEach((run, at) => {
+    if (run.skillSha === null) {
+      unrecorded.push(placeOf(at));
+      return;
+    }
+    const held = byBuild.get(run.skillSha) ?? [];
+    byBuild.set(run.skillSha, held);
+    held.push(at);
+  });
+  const builds = [...byBuild].map(([skillSha, places]): BuildReading => {
+    const kept = new Set(places);
+    const leftOut: RunPlace[] = [];
+    for (let at = 0; at < runs.length; at += 1) if (!kept.has(at)) leftOut.push(placeOf(at));
+    const pooling = pooledOf(
+      places.map((at) => runs[at] as RunOutcomes),
+      options
+    );
+    return {
+      skillSha,
+      runs: places.map(placeOf),
+      pooling,
+      leftOut,
+      shift: pooling.difference - whole.difference,
+    };
+  });
+  return {
+    whole,
+    builds,
+    unrecorded,
+    checkout,
+    checkoutBuild: builds.find((build) => build.skillSha === checkout.skill)?.skillSha ?? null,
+  };
+}
+
+/** The record as the JSON beside the markdown carries it, each build under its own hash. */
+export interface RecordJson {
+  whole: Pooling;
+  builds: Record<string, BuildReading>;
+  unrecorded: RunPlace[];
+  checkout: CheckoutBuild & { build: string | null };
+}
+
+/**
+ * The record as JSON. Its readers are other programs, so it carries every fact the markdown
+ * carries: the whole reading, each build's reading under that build's hash, the runs of
+ * unrecorded provenance, and this checkout's own bytes with the build they are.
+ */
+export function recordJson(record: PooledRecord): RecordJson {
+  return {
+    whole: record.whole,
+    builds: Object.fromEntries(record.builds.map((build) => [build.skillSha, build])),
+    unrecorded: record.unrecorded,
+    checkout: { ...record.checkout, build: record.checkoutBuild },
+  };
 }
 
 /** The runs pooled, named by their directories, with what each one alone measured. */
@@ -528,71 +636,135 @@ function runLines(pooling: Pooling): string[] {
       rate(run.skill),
       rate(run.control),
       signed(run.difference),
-      skillSaysOf(run),
+      // The build this run was made against: the digest of the run's own copy of the skill.
+      run.skillSha === null
+        ? "no copy of the skill under this run, so it cannot be told"
+        : run.skillSha.slice(0, DIGEST_SHOWN),
     ])
   );
 }
 
-/** What the record says about the build the pooled runs were made against. */
-function buildLines(pooling: Pooling, checkout: CheckoutBuild): string[] {
-  const off = pooling.runs.filter((run) => run.skillSha !== null && run.skillSha !== BUILD.skill);
-  const untold = pooling.runs.filter((run) => run.skillSha === null);
-  const places = (runs: readonly RunReading[]): string =>
-    runs.map((run) => `run ${pooling.runs.indexOf(run) + 1} (${run.directory})`).join(", ");
+/** The runs named as every line that names one names them: where each sits, and where it is. */
+function placesSay(places: readonly RunPlace[]): string {
+  return places.map((place) => `run ${place.place} (${place.directory})`).join(", ");
+}
+
+/**
+ * Which way a reading narrower than the reading over every run cuts: which runs it leaves out,
+ * and whether leaving them out raises or lowers the estimate, and by how much. It is generated
+ * from the two estimates, so a narrowing that moves the number towards a claim carries it, and
+ * one that moves the number away from a claim earns its trust by carrying it too.
+ */
+function narrowingSays(build: BuildReading, whole: Pooling): string {
+  const way =
+    build.shift === 0
+      ? "leaves the estimate where it is"
+      : `${build.shift > 0 ? "raises" : "lowers"} the estimate by ${rate(Math.abs(build.shift))}`;
+  const one = build.leftOut.length === 1;
+  const kept = build.pooling.runs.length;
+  return (
+    `This reading is narrower than the reading over all ${count(whole.runs.length)} runs: it ` +
+    `leaves out ${placesSay(build.leftOut)}, and leaving ${one ? "that run" : "those runs"} ` +
+    `out ${way}, from ${signed(whole.difference)} over ${count(whole.runs.length)} runs to ` +
+    `${signed(build.pooling.difference)} over ${count(kept)} ${kept === 1 ? "run" : "runs"}.`
+  );
+}
+
+/** One build's reading: the bytes that name it, its runs, its estimate, and what it leaves out. */
+function buildLines(build: BuildReading, whole: Pooling): string[] {
+  const runs = build.pooling.runs.length;
   const lines = [
-    "## The build these runs were made against",
+    `### Build ${build.skillSha.slice(0, DIGEST_SHOWN)} — ${count(runs)} ` +
+      `${runs === 1 ? "run" : "runs"}`,
     "",
-    `A pooled number over runs of two builds is a number of neither, so the record names the ` +
-      "bytes. The named build is:",
+    `skill bytes       sha256 ${build.skillSha}`,
+    `runs              ${placesSay(build.runs)}`,
     "",
-    `    scripts/approval-eval/fresh-agent.ts            sha256 ${BUILD.command}`,
-    `    skills/approval-review/SKILL.md                 sha256 ${BUILD.skill}`,
+    ...estimateLines(build.pooling),
     "",
   ];
-  if (off.length === 0 && untold.length === 0) {
+  if (runs === 1) {
     lines.push(
-      `Every one of the ${count(pooling.runs.length)} pooled runs holds the named skill bytes ` +
-        "under its own skills/approval-review/SKILL.md, which is the copy the skill arm read, " +
-        "so every pooled run was made against that skill."
+      "One run holds these bytes, so this is that run's own reading and not a pooling of " +
+        "several: its interval is drawn over its own cases, and it has no spread between runs " +
+        "to read.",
+      ""
+    );
+  }
+  if (build.leftOut.length > 0) lines.push(narrowingSays(build, whole), "");
+  return lines;
+}
+
+/** The builds the runs fall into, each read on its own, and the runs that are of no build. */
+function buildsLines(record: PooledRecord): string[] {
+  const { whole, builds, unrecorded } = record;
+  const recorded = whole.runs.length - unrecorded.length;
+  const lines = [
+    "## The builds these runs fall into",
+    "",
+    "A run directory holds the copy of skills/approval-review/SKILL.md that run's skill arm " +
+      "read, so the sha256 of that copy is the build of that run, read off the run itself and " +
+      "written by hand nowhere. A pooled number over runs of two builds is a number of " +
+      "neither, so each build is read on its own here, beside the reading over every run above.",
+    "",
+  ];
+  if (builds.length === 0) {
+    lines.push(
+      `No one of the ${count(whole.runs.length)} runs holds a copy of the skill, so no run's ` +
+        "build can be told and there is no reading of one build to make.",
+      ""
     );
   } else {
-    if (off.length > 0) {
-      lines.push(
-        `${count(off.length)} of the ${count(pooling.runs.length)} pooled runs ` +
-          `${off.length === 1 ? "holds" : "hold"} skill bytes that are not the named ones: ` +
-          `${places(off)}. So this pooled number is over more than one build of the skill and ` +
-          "is not a number of the named build alone."
-      );
-    }
-    if (untold.length > 0) {
-      lines.push(
-        `${count(untold.length)} of the pooled runs ${untold.length === 1 ? "holds" : "hold"} ` +
-          `no copy of the skill, so which skill ${untold.length === 1 ? "it was" : "they were"} ` +
-          `made against could not be told: ${places(untold)}.`
-      );
-    }
+    lines.push(
+      `The ${count(recorded)} ${recorded === 1 ? "run" : "runs"} whose provenance is recorded ` +
+        `fall into ${count(builds.length)} ${builds.length === 1 ? "build" : "builds"}.`,
+      ""
+    );
+    for (const build of builds) lines.push(...buildLines(build, whole));
+  }
+  if (unrecorded.length > 0) {
+    const one = unrecorded.length === 1;
+    lines.push(
+      `${count(unrecorded.length)} of the ${count(whole.runs.length)} runs ` +
+        `${one ? "holds" : "hold"} no copy of the skill: ${placesSay(unrecorded)}. ` +
+        `${one ? "Its" : "Their"} provenance is unrecorded — the bytes ` +
+        `${one ? "that arm" : "those arms"} read are recorded nowhere — so ` +
+        `${one ? "it is" : "they are"} of no build and ${one ? "is" : "are"} left out of every ` +
+        "per-build reading here, while staying in the reading over every run above.",
+      ""
+    );
+  }
+  return lines;
+}
+
+/** This checkout's own bytes beside the builds the runs fall into. */
+function checkoutLines(record: PooledRecord): string[] {
+  const { checkout, checkoutBuild } = record;
+  const lines = ["## This checkout beside those builds", ""];
+  if (checkout.skill === null) {
+    lines.push(
+      "This checkout holds no skills/approval-review/SKILL.md to read, so its own bytes are " +
+        "none of the builds above."
+    );
+  } else {
+    lines.push(
+      `skills/approval-review/SKILL.md  sha256 ${checkout.skill}`,
+      "",
+      checkoutBuild === null
+        ? "These bytes are none of the builds above, and no run can ever be of the bytes that " +
+            "quote its own result, because writing a measured number into a file changes the " +
+            "file. So a number quoted in this checkout's skill is a number of the bytes the runs " +
+            "were made against and never of the bytes that quote it, which is a standing " +
+            "property of this measurement and not a fault to be put right."
+        : `These bytes are build ${checkoutBuild.slice(0, DIGEST_SHOWN)} above, so that ` +
+            "build's reading is a reading of the skill bytes this checkout holds now."
+    );
   }
   lines.push(
     "",
-    "A run records no copy of the command that made it, so which bytes of fresh-agent.ts each " +
-      "run was made against cannot be told from the run itself. This checkout holds " +
-      `${checkout.command === null ? "no fresh-agent.ts to read" : `sha256 ${checkout.command}`}` +
-      `${
-        checkout.command === null
-          ? ""
-          : checkout.command === BUILD.command
-            ? ", which is the named build."
-            : ", which is not the named build: the checkout has moved since these runs were made."
-      }`,
-    `This checkout's skills/approval-review/SKILL.md is ` +
-      `${checkout.skill === null ? "not readable" : `sha256 ${checkout.skill}`}` +
-      `${
-        checkout.skill === null || checkout.skill === BUILD.skill
-          ? checkout.skill === null
-            ? "."
-            : ", which is the named build."
-          : ", which is not the named build."
-      }`
+    "A run records no copy of the command that made it, so which bytes of fresh-agent.ts a run " +
+      "was made against cannot be told from the run itself. This checkout holds " +
+      `${checkout.command === null ? "no fresh-agent.ts to read" : `sha256 ${checkout.command}`}.`
   );
   return lines;
 }
@@ -601,8 +773,11 @@ function buildLines(pooling: Pooling, checkout: CheckoutBuild): string[] {
 function estimateLines(pooling: Pooling): string[] {
   const cases = pooling.cases.length;
   const percent = `${Math.round(pooling.confidence * 100)} per cent`;
+  // A reading over one run is that run's own reading, and calling it pooled would dress it as
+  // a pooling of several that it is not.
+  const named = (pooling.runs.length === 1 ? "difference" : "pooled difference").padEnd(17);
   return [
-    `pooled difference ${signed(pooling.difference)} over ${count(cases)} cases`,
+    `${named} ${signed(pooling.difference)} over ${count(cases)} cases`,
     `  bootstrap       ${span(pooling.bootstrap)} at ${percent}, from ` +
       `${count(pooling.resamples)} resamples of the ${count(cases)} case-level differences ` +
       `under seed ${pooling.seed}`,
@@ -612,60 +787,17 @@ function estimateLines(pooling: Pooling): string[] {
 }
 
 /**
- * The same reading over the runs that hold the named skill bytes alone, where the runs pooled
- * do not all hold them. Both readings sit where a reader meets the number, since one of them is
- * of a single build of the skill and the other is the wider evidence, and a reader given only
- * the wider one would quote a number of two builds as a number of the build the skill ships.
+ * The record as it is printed and written: the reading over every run, the reading of each
+ * build those runs fall into, the spread between the runs, and this checkout beside those
+ * builds. No line of it carries a hash a person typed.
  */
-function oneBuildLines(pooling: Pooling, verified: Pooling): string[] {
-  const kept = new Set(verified.runs.map((run) => run.directory));
-  const left = pooling.runs.filter((run) => !kept.has(run.directory));
-  // The runs of the second reading are read a second time, so they are numbered by where they
-  // are and never by which object they are.
-  const places = (runs: readonly RunReading[]): string =>
-    runs
-      .map((run) => {
-        const at = pooling.runs.findIndex((one) => one.directory === run.directory);
-        return `run ${at + 1} (${run.directory})`;
-      })
-      .join(", ");
-  return [
-    "## The same reading over the runs of one build",
-    "",
-    ...estimateLines(verified),
-    `  over            ${count(verified.runs.length)} runs, each holding the named skill ` +
-      `bytes: ${places(verified.runs)}`,
-    "",
-    `Left out: ${places(left)}. ` +
-      `${left.length === 1 ? "Its own copy" : "Their own copies"} of the skill ` +
-      `${left.length === 1 ? "is" : "are"} ` +
-      `${left.map((run) => run.skillSha?.slice(0, DIGEST_SHOWN) ?? "no copy at all").join(", ")}` +
-      ", and not the named bytes. A run directory holds one copy of the skill, which the last " +
-      "run into that directory wrote, so a copy that differs tells a reader the directory is " +
-      "of more than one build and never which bytes an earlier run's arm read: the bytes " +
-      `${left.length === 1 ? "that arm" : "those arms"} read are recorded nowhere.`,
-    "",
-    `A reader quotes the ${count(verified.runs.length)}-run number, which is the only one of ` +
-      "the two that is a number of a single build of the skill the repository ships; the " +
-      `${count(pooling.runs.length)}-run number belongs beside it as the wider evidence, and ` +
-      "neither is quoted without the spread between the runs below.",
-    "",
-  ];
-}
-
-/**
- * The pooled reading as the record prints it, and beside it the same reading over the runs of
- * the named build alone, where `verified` holds one.
- */
-export function reportLines(
-  pooling: Pooling,
-  checkout: CheckoutBuild,
-  verified: Pooling | null = null
-): string[] {
+export function reportLines(record: PooledRecord): string[] {
+  const pooling = record.whole;
   const runs = pooling.runs.length;
   const cases = pooling.cases.length;
   const spread = pooling.spread;
-  const lines = [
+  const unrecorded = record.unrecorded.length;
+  return [
     "# The pooled reading of the fresh-agent comparison",
     "",
     `shape             ${pooling.shape}`,
@@ -673,12 +805,17 @@ export function reportLines(
     `cases             ${count(cases)}, each carried by ${count(pooling.runsPerCase)} runs`,
     `arms differed on  ${count(pooling.differedInSomeRun)} of ${count(cases)} cases in at ` +
       "least one run",
+    `builds            ${count(record.builds.length)} by the runs' own copies of the skill` +
+      (unrecorded === 0
+        ? ""
+        : `, and ${count(unrecorded)} ${unrecorded === 1 ? "run" : "runs"} of unrecorded ` +
+          "provenance"),
     "",
     "## The runs pooled",
     "",
     ...runLines(pooling),
     "",
-    "## The pooled difference",
+    "## The reading over every run",
     "",
     ...estimateLines(pooling),
     "",
@@ -690,12 +827,12 @@ export function reportLines(
       "the estimator is read per case.",
     "",
     "McNemar's exact test is not printed here. A case's outcome is no longer binary once " +
-      `${count(runs)} runs have judged it — a case the skill arm agreed on in three runs of ` +
-      "five carries 0.6 — and McNemar's exact interval is built over a 2x2 table of discordant " +
-      "pairs, which no such case fits. McNemar stays where a single run is reported, in " +
-      "fresh-agent.ts, where each case's outcome is one judgement.",
+      `${count(runs)} runs have judged it — a case the skill arm agreed on in one of them ` +
+      `carries ${(1 / runs).toFixed(3)} — and McNemar's exact interval is built over a 2x2 ` +
+      "table of discordant pairs, which no such case fits. McNemar stays where a single run " +
+      "is reported, in fresh-agent.ts, where each case's outcome is one judgement.",
     "",
-    ...(verified === null ? [] : oneBuildLines(pooling, verified)),
+    ...buildsLines(record),
     "## The spread between the runs",
     "",
     `run differences   ${pooling.runs.map((run) => signed(run.difference)).join(", ")}`,
@@ -710,9 +847,8 @@ export function reportLines(
       `Single runs of this comparison ranged over ${rate(spread.range)} of agreement, from ` +
       `${signed(spread.lowest)} to ${signed(spread.highest)}.`,
     "",
-    ...buildLines(pooling, checkout),
+    ...checkoutLines(record),
   ];
-  return lines;
 }
 
 /** One whole-number flag, at or above `least`. */
@@ -774,25 +910,21 @@ async function pool(flags: Flags): Promise<number> {
   const runs: RunOutcomes[] = [];
   for (const directory of flags.runs) runs.push(await readRun(directory, flags.shape));
   const options = { resamples: flags.resamples, seed: flags.seed, shape: flags.shape };
-  const pooling = pooledOf(runs, options);
-  // The runs of the named build alone, where the runs named are not all of it: two readings of
-  // two different quantities, and a reader who met only the wider one would quote a number of
-  // more than one build as a number of the build the skill ships.
-  const ofBuild = runs.filter((one) => one.skillSha === BUILD.skill);
-  const verified =
-    ofBuild.length > 0 && ofBuild.length < runs.length ? pooledOf(ofBuild, options) : null;
   const checkout: CheckoutBuild = {
     command: await sha256Of(COMMAND_PATH),
     skill: await sha256Of(SKILL_PATH),
   };
-  const lines = reportLines(pooling, checkout, verified);
+  // The builds are the runs' own, read off each run's copy of the skill: which builds there
+  // are is the runs' to say, and a reading over runs of two builds is a number of neither.
+  const record = recordOf(runs, checkout, options);
+  const lines = reportLines(record);
   console.log(lines.join("\n"));
   if (flags.out !== null) {
     const out = await outDirectory(flags.out);
     await mkdir(out, { recursive: true });
     await writeFile(
       join(out, "pool-runs.json"),
-      `${JSON.stringify({ ...pooling, ofNamedBuild: verified, build: { named: BUILD, checkout } }, null, 2)}\n`,
+      `${JSON.stringify(recordJson(record), null, 2)}\n`,
       "utf8"
     );
     await writeFile(join(out, "pool-runs.md"), `${lines.join("\n")}\n`, "utf8");
