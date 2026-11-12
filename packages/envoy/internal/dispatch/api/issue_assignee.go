@@ -13,9 +13,10 @@ import (
 )
 
 // parseIssueAssignee decodes the tri-state `assignee` field of an issue write. Absent →
-// (nil, false): leave it alone. JSON null → (nil, true): clear it. A string → its canonical
-// email, which must name a person who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise).
-// Anything else → 400 INVALID_ISSUE.
+// (nil, false): leave it alone. JSON null → (nil, true): clear it, which only an update does; a
+// create reads a null as naming nobody, as it reads an absent field, and fills the assignee in
+// (defaultAssignee). A string → its canonical email, which must name a person who has signed in
+// (400 ASSIGNEE_NOT_ALLOWED otherwise). Anything else → 400 INVALID_ISSUE.
 func (s *server) parseIssueAssignee(ctx context.Context, raw json.RawMessage) (assignee *string, provided bool, err error) {
 	if len(raw) == 0 {
 		return nil, false, nil
@@ -71,13 +72,13 @@ func actorPerson(actor model.Actor) (string, bool) {
 	return "", false
 }
 
-// defaultAssignee is who a new issue goes to when the create names nobody, in order: the person
-// the creating credential acts for (actorPerson - the human who created it, else the owner of
-// the token that did), the parent's assignee, and the project's default assignee
-// (projectDefault, the column a human sets through PUT
-// /api/v1/projects/{key}/default-assignee). An explicit assignee on the create, a JSON null
-// among them, never reaches here: parseIssueAssignee decides both, so the only new issue
-// nobody holds is one whose create named null and one whose parent holds nobody.
+// defaultAssignee is who a new issue goes to when the create names nobody, with no assignee key
+// or a JSON null, in order: the person the creating credential acts for (actorPerson - the human
+// who created it, else the owner of the token that did), the parent's assignee, and the project's
+// default assignee (projectDefault, the column a human sets through PUT
+// /api/v1/projects/{key}/default-assignee). A create that names a person never reaches here:
+// parseIssueAssignee checks that login instead. So no create leaves an issue nobody holds, under
+// a parent that holds nobody included; only PATCH /api/v1/issues/{key} with a null assignee does.
 //
 // The last step is the stored column as it stands, which every project names
 // (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql): a shared token

@@ -41,11 +41,10 @@ test("a question on an issue nobody holds follows its project's default assignee
   const project = await createProject({ key: "CORE", name: "Core" });
   expect(project.default_assignee).toBe("alice");
   // The issue holds nobody, so its question reaches the project's default and no earlier step of
-  // the chain can answer for it.
-  const issue = await createIssue(
-    { assignee: null, project: "CORE", title: "Nobody holds this" },
-    asker
-  );
+  // the chain can answer for it. A create always lands on a person, so it is created and then
+  // cleared.
+  const created = await createIssue({ project: "CORE", title: "Nobody holds this" }, asker);
+  const issue = await patchIssue(created.key, { assignee: null }, asker);
   expect(issue.assignee).toBeNull();
   const ask = await createAsk(issue.key, { question: "Which rollout flag?" }, asker);
   expect((await getAsk(ask.id)).ask.waiting_on_person).toBe("alice");

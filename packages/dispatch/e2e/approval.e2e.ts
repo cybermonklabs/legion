@@ -19,6 +19,7 @@ import {
   getArtifactVersion,
   getIssueEvents,
   listIssueAsks,
+  patchIssue,
   rejectSuggestion,
   requestApproval,
   reviewArtifact,
@@ -892,15 +893,12 @@ test("an approval request for an unassigned issue's non-primary document remains
   browser,
 }, testInfo) => {
   await createProject({ key: "GATE", name: "Gate" });
-  const issue = await createIssue(
-    {
-      assignee: null,
-      project: "GATE",
-      spec: "Primary review target.",
-      title: "Two approval targets",
-    },
+  // A create always lands on a person, so the issue nobody holds is created and then cleared.
+  const created = await createIssue(
+    { project: "GATE", spec: "Primary review target.", title: "Two approval targets" },
     session
   );
+  const issue = await patchIssue(created.key, { assignee: null }, session);
   expect(issue.assignee).toBeNull();
   const supporting = await createIssueArtifact(
     issue.key,

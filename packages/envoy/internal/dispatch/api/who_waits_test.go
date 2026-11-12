@@ -59,20 +59,19 @@ func authorOpenAsks(t *testing.T, handler http.Handler, sessionID string) map[st
 	return rows
 }
 
-// specIssue creates an issue nobody holds, with a spec of its own. The create sends assignee
-// null, which parseIssueAssignee reads as a value the caller gave (api/issue_assignee.go), so
-// no step of the create's own chain fills the field in and the question the spec opens stands
-// on an issue that holds nobody.
+// specIssue creates an issue nobody holds, with a spec of its own. A create always lands on a
+// person (defaultAssignee, api/issue_assignee.go), so the issue is created and then its assignee
+// cleared (unassignIssue), and the question the spec opens stands on an issue that holds nobody.
+// It answers the issue the clear wrote.
 func specIssue(t *testing.T, handler http.Handler, project, title, spec string) model.Issue {
 	t.Helper()
 	response := agentRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": project, "title": title, "spec": spec,
-		"actor": sessionActor(), "assignee": nil,
+		"project": project, "title": title, "spec": spec, "actor": sessionActor(),
 	}, "agent-token")
 	if response.Code != http.StatusCreated {
 		t.Fatalf("create %s: status=%d body=%s", title, response.Code, response.Body.String())
 	}
-	return decodeBody[model.Issue](t, response)
+	return unassignIssue(t, handler, decodeBody[model.Issue](t, response).Key)
 }
 
 // blockAskOf is the id of the ask the document settler wrote for the `:::ask` block blockID of
@@ -193,9 +192,10 @@ func TestOneExpressionDecidesWhoWaits(t *testing.T) {
 		return decodeBody[model.Issue](t, response).Key
 	}
 	alicesIssue := createIssue("Alice's issue", map[string]any{"assignee": "alice"})
-	// An issue nobody holds: the create sends assignee null, which parseIssueAssignee reads as
-	// a value the caller gave, so no step of the create's own chain fills it in.
-	nobodysIssue := createIssue("Nobody's issue", map[string]any{"actor": sessionActor(), "assignee": nil})
+	// An issue nobody holds: a create always lands on a person, so the issue is created and then
+	// its assignee cleared.
+	nobodysIssue := createIssue("Nobody's issue", map[string]any{"actor": sessionActor()})
+	unassignIssue(t, handler, nobodysIssue)
 	// The assignee the API was given in mixed case, stored as the canonical login both sides of
 	// the expression compare with.
 	mixedCaseIssue := createIssue("Alice's issue, written loudly", map[string]any{"assignee": "  ALICE  "})

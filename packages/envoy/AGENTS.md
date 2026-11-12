@@ -2493,13 +2493,14 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   absent leaves it, `null` clears, a string is canonicalised and must name a row of `people` (migration `0068`:
   everyone who has signed in) — else `400 ASSIGNEE_NOT_ALLOWED` naming the email; a non-string is `400 INVALID_ISSUE`).
   Any authenticated actor may set it; the event's actor is who assigned it, and the whole issue rides in `issue.created` / `issue.updated`, so there is no `assigned_by`.
-  Absent on create, the default is the first match of:
+  Absent or `null` on create (both name nobody there, so only the `PATCH`'s `null` clears), the default is the first match of:
   a human actor's email; a personal token's `Owner`;
   the parent's assignee when it names someone;
   the project's `default_assignee`, which every project names (`projects.default_assignee`, migrations `0116` and `20261111210103`;
   the column is not null, and a default left stale by a restore or a direct write is used as it stands rather than refusing the create, so the step is the column the create's own transaction already read and not `allowedLogin`).
   The chain therefore ends on a person: an issue the shared token creates with no assignee named and no parent assignee lands on the project's default.
-  Nothing back-fills issues already filed, an explicit `null` on the create still means nobody, and a daemon status PATCH (no `assignee` key) never touches it.
+  Nothing back-fills issues already filed, and a daemon status PATCH (no `assignee` key) never touches it.
+  A new issue therefore always has an assignee, whatever the create sends; the one way to an issue nobody holds is `PATCH /api/v1/issues/{key}` with `{"assignee": null}`, so a test that needs one creates the issue and then clears it.
   A project's default is moved by a person alone, through `GET /api/v1/settings/project-default-assignees` (every project, since every project names one) and `PUT /api/v1/projects/{key}/default-assignee` `{assignee}` (an email of a row of `people`; nothing clears a default, so an absent, null or blank `assignee` is `400 INVALID_PROJECT`, a login nobody has signed in with `400 ASSIGNEE_NOT_ALLOWED`, and the write appends a `settings.project_default_assignee.updated` event naming both people it moved rows between);
   `POST /api/v1/projects` takes the project's first default, `default_assignee`, else the person creating it, else the person its credential acts for, holds whichever answers to a row of `people` (`400 ASSIGNEE_NOT_ALLOWED`; a broker-issued token's owner comes from the broker, not from `people`), refuses a call that can name none with `400 INVALID_PROJECT`, and answers the project plus the `default_assignee` it took (`createdProject`); `GET /api/v1/projects` lists no default, so the person-scoped settings read above is the one source of it (`api/project_default_assignee.go`, `api/projects.go`).
   `GET /api/v1/users` (needs the `person` scope) returns everyone in `people`, sorted by email, as `{users: [{login}]}` — the picker's options;

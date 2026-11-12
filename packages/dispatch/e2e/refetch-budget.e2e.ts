@@ -523,10 +523,9 @@ test("project default: a project's default moved between two other people reads 
   const open = await createIssue({ project: "CORE", title: "Alice's open page" });
   const hers = await createIssue({ project: "CORE", title: "Alice's own" });
   await createAsk(hers.key, { question: "Alice's decision" }, bob);
-  const unheld = await createIssue(
-    { assignee: null, project: "CORE", title: "Nobody holds this" },
-    bob
-  );
+  // A create always lands on a person, so the issue nobody holds is created and then cleared.
+  const unheld = await createIssue({ project: "CORE", title: "Nobody holds this" }, bob);
+  await patchIssue(unheld.key, { assignee: null }, bob);
   await createAsk(unheld.key, { question: "Anyone's decision" }, bob);
 
   const alice = await asUser(browser, "alice");

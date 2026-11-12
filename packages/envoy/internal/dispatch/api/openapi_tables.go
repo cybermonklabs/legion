@@ -169,8 +169,9 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	// precondition that the value is unset, a string the value it must hold.
 	{reflect.TypeOf(answerAskInput{}), "expected_answer_at"}: rawField{Fragment: openAPITimestamp, Nullable: true},
 	{reflect.TypeOf(answerAskInput{}), "expected_edited_at"}: rawField{Fragment: openAPITimestamp, Nullable: true},
-	// parseIssueAssignee (issue_assignee.go) reads create and update alike: null clears the
-	// assignee, a string names a person who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise).
+	// parseIssueAssignee (issue_assignee.go) reads create and update alike: a string names a
+	// person who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise); null clears the assignee on
+	// an update, and on a create names nobody, so the create's chain fills it in (defaultAssignee).
 	{reflect.TypeOf(createIssueInput{}), "assignee"}: rawField{Fragment: openAPIPersonEmail, Nullable: true},
 	{reflect.TypeOf(updateIssueInput{}), "assignee"}: rawField{Fragment: openAPIPersonEmail, Nullable: true},
 	// parseIssueComponents (issue_components.go) reads create and update alike: null is back to

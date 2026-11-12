@@ -199,7 +199,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	assignee, assigneeProvided, err := s.parseIssueAssignee(r.Context(), input.Assignee)
+	// A create names a person or nobody: no assignee key and a JSON null both leave assignee nil,
+	// and defaultAssignee below fills it in, so a new issue always has somebody on it. Only the
+	// PATCH clears an issue's assignee.
+	assignee, _, err := s.parseIssueAssignee(r.Context(), input.Assignee)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -311,7 +314,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// The project's stored default is the chain's last step, and this update already holds the
 	// project row: the decision moves below it so the create takes no round trip and no lock of
 	// its own for it.
-	if !assigneeProvided {
+	if assignee == nil {
 		assignee = defaultAssignee(actor, parentAssignee, projectDefaultAssignee)
 	}
 	// The project row is locked from here; the mapping check takes its key-share lock only now, in
