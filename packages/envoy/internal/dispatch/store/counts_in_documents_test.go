@@ -1,8 +1,11 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/docnumbers"
@@ -47,7 +50,8 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 		storeArch = ".dispatch/architecture/dispatch-store.md"
 	)
 	number := docnumbers.Number
-	stated := sumTerms(t, readme, number)
+	root := filepath.Join("..", "..", "..", "..", "..")
+	stated := sumTerms(t, root, readme, number)
 	stated = append(stated, []docnumbers.Stated{
 		{File: site, Pattern: `up to ` + number + ` for the work it runs once across the servers`,
 			Number: LeasePoolSize,
@@ -120,7 +124,7 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 			Number: listenerConnections - 1,
 			Says:   "the listeners that wait on a Postgres notification, the total less the cursor sender"},
 	}...)
-	docnumbers.Check(t, filepath.Join("..", "..", "..", "..", ".."), stated)
+	docnumbers.Check(t, root, stated)
 }
 
 // sumTerms is one entry per term of the README's connection sum, "opens at most 64 + 20 + 8 + 4 +
@@ -132,7 +136,7 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 // The generated count is asserted rather than assumed: a loop that produced no entry, or one
 // entry too few, would leave the sum unread while every other row passed, which is the quietest
 // way a guard stops guarding.
-func sumTerms(t *testing.T, readme, number string) []docnumbers.Stated {
+func sumTerms(t *testing.T, root, readme, number string) []docnumbers.Stated {
 	t.Helper()
 	terms := []struct {
 		value int
@@ -161,8 +165,22 @@ func sumTerms(t *testing.T, readme, number string) []docnumbers.Stated {
 			prefix += ` \+ `
 		}
 	}
-	if len(stated) != len(terms) {
-		t.Fatalf("the sum has %d terms and this generated %d entries", len(terms), len(stated))
+	// How many terms the DOCUMENT writes, read from the document rather than from the loop above:
+	// comparing the entries with the slice they came from compares a count with itself and cannot
+	// fail, while a term added to the sum and not to this list would leave that term unread and
+	// every row still green. This reads the sum as the README writes it and fails when the two
+	// disagree, in either direction.
+	body, err := os.ReadFile(filepath.Join(root, readme))
+	if err != nil {
+		t.Fatalf("read %s: %v", readme, err)
+	}
+	written := regexp.MustCompile(`opens at most ((?:\d+ \+ )+\d+) =`).FindStringSubmatch(string(body))
+	if written == nil {
+		t.Fatalf("%s states no connection sum this row can read, so its terms are unchecked", readme)
+	}
+	if got := len(strings.Split(written[1], " + ")); got != len(terms) {
+		t.Fatalf("%s writes a sum of %d terms (%s) and this registers %d: a term added to the "+
+			"document and not to this list would go unread", readme, got, written[1], len(terms))
 	}
 	return stated
 }

@@ -784,10 +784,12 @@ the first one checks its keys again before it counts as live once more, and besi
 
 **Every release keeps the build before it working** (Two builds at once, below):
 a rolling update runs the old build and the new build against one database and one NATS at once, and the page and the `dispatch` command of either build reach either process.
-From the release that carries this rule on, no release is an exception to that, and no release stops every server process.
-Two crossings came before it, each taken once:
+A release is an exception to it only where this document says so, and each exception is named here or in the section that owns it.
+Three crossings came before this rule, each taken once:
 migration `0117` (Database migrations, below), which a deployment still on a release before it crosses with Dispatch stopped, before it runs more than one replica;
-and the release that introduced the process registry (`server.started`, below), deployed with no process of the release before it serving beside it.
+the release that introduced the process registry (`server.started`, below), deployed with no process of the release before it serving beside it;
+and the release that moves live updates to `/ws/live` and keys every write (INFRA-258, immediately below), which deploys with no server of the earlier release running because of its API.
+One exception is still to come rather than past: an upgrade of ygo that changes its update encoding (Two builds at once, Stored documents, below), which no build can roll through because the build that cannot read the new encoding is already serving when it arrives.
 
 **A build keeps the earlier build's requests answerable while both serve** (Two builds at once, below, states this surface by surface).
 A route either build serves answers a body either build sends: a member one build does not declare is ignored rather than refused, so a request still does what it asks for, and a member whose loss would change what a request does ships as a route of its own instead.

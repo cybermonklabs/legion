@@ -78,5 +78,8 @@ func TestTheDocumentsStateTheCadencesThisPackageHolds(t *testing.T) {
 			Number: heartbeat, Says: "how often the registry pool's connection stamps its row"},
 		{File: readme, Pattern: `Every ` + number + ` seconds \(the registry's live window\)`,
 			Number: live, Says: "how often a process re-checks its open document sockets"},
+		{File: readme, Pattern: `leaves it up to ` + number + ` seconds after its last heartbeat`,
+			Number: live,
+			Says:   "how long a killed process's row stays in the fleet after its last heartbeat"},
 	})
 }
