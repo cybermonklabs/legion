@@ -60,7 +60,7 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 				"admission must write no todo over the release", released)
 		}
 		writes, starts := queuedWrites(t, pool), queuedStarts(t, pool)
-		want := record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}
+		want := record.OrdinaryStatusWrite("in_progress", "todo", "")
 		if len(writes) != 1 || writes[0] != want {
 			t.Fatalf("status writes = %+v, want the one %+v: the status of the phase the issue ends in", writes, want)
 		}

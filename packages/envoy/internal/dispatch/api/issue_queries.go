@@ -671,7 +671,7 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	read, err := s.loadIssueDetail(r.Context(), r.PathValue("key"))
+	read, err := s.loadIssueDetail(r.Context(), r.PathValue("key"), wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -682,9 +682,10 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 // loadIssueDetail is the whole answer of GET /api/v1/issues/{key}: readIssue's two batches, and
 // beside them where the issue's route reaches and what state the session holding its claim is
 // in. getIssue answers it, and GET /api/v1/landing carries it on the issue page, so the two
-// cannot read one issue differently.
-func (s *server) loadIssueDetail(ctx context.Context, key string) (issueDetail, error) {
-	read, err := s.readIssue(ctx, key)
+// cannot read one issue differently. trees is what the request asked for (wantsDisplayTrees),
+// which readIssue reads the display trees by.
+func (s *server) loadIssueDetail(ctx context.Context, key string, trees bool) (issueDetail, error) {
+	read, err := s.readIssue(ctx, key, trees)
 	if err != nil {
 		return issueDetail{}, err
 	}
@@ -710,7 +711,7 @@ type issueDetail struct {
 	// must never be stored in one (model.IssueClaimLiveness carries the rest of the reason).
 	model.IssueClaimLiveness
 	Progress  model.IssueProgress `json:"progress"`
-	Artifacts []model.Artifact    `json:"artifacts"`
+	Artifacts []artifactRead      `json:"artifacts"`
 	OpenAsks  []issueOpenAsk      `json:"open_asks"`
 	Children  []model.IssueChild  `json:"children"`
 	// DesignGates is the document each of this issue's Legion design-gate steps records
@@ -728,10 +729,12 @@ type issueDetail struct {
 // readIssue runs getIssue's two batches, whose statements and scans are the ones the sequential
 // loaders run - loadIssueWithProgress, loadArtifacts, queryOwnerAsks with issueOpenAsksOf,
 // issueChildrenStatement with scanIssueChildren and refs.BacklinkCounts - so the two paths answer
-// the same bytes.
-func (s *server) readIssue(ctx context.Context, key string) (issueDetail, error) {
+// the same bytes. trees is what the request asked for (wantsDisplayTrees): the display trees of
+// the documents' approval reasons and of the open asks' texts, which only the dashboard reads.
+func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDetail, error) {
 	var read issueDetail
 	var links []model.ExternalLink
+	var artifacts []model.Artifact
 	var asks []model.Ask
 	var replies map[string]model.AskLastReply
 	issueCounts := map[string]int{}
@@ -754,7 +757,7 @@ func (s *server) readIssue(ctx context.Context, key string) (issueDetail, error)
 	})
 	first.Queue(issueArtifactsStatement, key).Query(func(rows pgx.Rows) error {
 		scanned, err := collectArtifacts(rows)
-		read.Artifacts = scanned
+		artifacts = scanned
 		return err
 	})
 	first.Queue(listIssueAsksQueryOpen, key).Query(func(rows pgx.Rows) error {
@@ -784,10 +787,17 @@ func (s *server) readIssue(ctx context.Context, key string) (issueDetail, error)
 	read.Issue.ExternalLinks = links
 	read.ReferencedByCount = issueCounts[read.Issue.Key]
 
-	if err := s.readIssueDetails(ctx, artifactPointers(read.Artifacts), askReadPointers(asks)); err != nil {
+	if err := s.readIssueDetails(ctx, artifactPointers(artifacts), askReadPointers(asks)); err != nil {
 		return issueDetail{}, err
 	}
-	read.OpenAsks = issueOpenAsksOf(asks, replies)
+	// The approvals are read by the second batch, so their reasons are registered after it,
+	// where the sequential loader read them after loadArtifacts. The reasons and the open asks'
+	// texts are one query of the stored trees, and what it did not hold is stored on a goroutine
+	// of its own, beside the rest of the request.
+	reader := s.readDisplayTrees(ctx, trees)
+	read.Artifacts = artifactReads(artifacts, reader)
+	read.OpenAsks = issueOpenAsksOf(asks, replies, reader)
+	reader.resolve()
 	return read, nil
 }
 
@@ -813,16 +823,18 @@ func (s *server) readIssueDetails(ctx context.Context, artifacts []*model.Artifa
 // comment in its thread — the same last_reply the inbox row carries — so the
 // issue header can show who spoke last beside the ask's waiting_on.
 type issueOpenAsk struct {
-	model.Ask
+	shapedAsk
 	LastReply *model.AskLastReply `json:"last_reply"`
 }
 
 // issueOpenAsksOf pairs each ask with the newest reply in its thread, the shape the detail
-// response lists; an ask nobody has replied to carries a null last_reply.
-func issueOpenAsksOf(asks []model.Ask, replies map[string]model.AskLastReply) []issueOpenAsk {
+// response lists; an ask nobody has replied to carries a null last_reply. Each ask is read as
+// the dashboard reads one (shapedAsk.shape), its texts registered with the request's reader.
+func issueOpenAsksOf(asks []model.Ask, replies map[string]model.AskLastReply, reader *displayTreeReader) []issueOpenAsk {
 	openAsks := make([]issueOpenAsk, len(asks))
 	for index, ask := range asks {
-		openAsks[index] = issueOpenAsk{Ask: ask}
+		openAsks[index].shapedAsk.Ask = ask
+		openAsks[index].shapedAsk.shape(reader)
 		if reply, ok := replies[ask.ID]; ok {
 			openAsks[index].LastReply = &reply
 		}

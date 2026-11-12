@@ -1,0 +1,46 @@
+-- 20261105081500_outbox_kinds_of_both_releases.up.sql — one outbox_kind_check holding the kinds
+-- of this release and of the idle release it merged (dispatch://INFRA-714).
+--
+-- Two releases rewrote this constraint from bases that did not know each other. This release's
+-- 20261029120800 dropped the three kinds of the daemon's own merge and added `role_message`;
+-- main's 20261101222956 added `issue_bundle` and `issue_release` to the list as it stood before
+-- that drop. Which of the two a database ends at is decided by what it had already recorded, not
+-- by the file order: Store.apply asks whether each migration's own version is recorded, so a
+-- database that took the idle release first skips 20261101222956 for ever and ends at this
+-- release's list, which names neither of the idle release's kinds, and the daemon's own
+-- `issue_bundle` and `issue_release` rows are then refused by the constraint (internal/daemon's
+-- idle release queues both on the lifecycle lane). A fresh database applies them the other way
+-- round and ends at the idle release's list, which names no `role_message`.
+--
+-- So neither file can be the last word, and editing either reaches only the databases that have
+-- not recorded it. This migration is a version both orders lack: it names the union of what the
+-- two releases left — this release's fifteen kinds with the idle release's two — and every
+-- database ends at it whichever order ran. It is written to be safe to run on either shape, and
+-- on one that already carries a constraint of this name from any of them, by dropping the
+-- constraint if it exists before adding it.
+--
+-- It names `check_wake` beside `check_compare`: INFRA-809 renamed the compare kind on main, and a
+-- database that ran main's own rewrite has rows of the new name, which this list has to admit
+-- when it runs late over them. The compare kind stays named for the database that queued one
+-- under the release before that rename, and `gated_steps_publish` for the same reason: INFRA-1272
+-- added that kind on main after this version, and a database that ran it first queues such a row.
+-- `claim_release` is named for the same reason and is the one that has to be: main's
+-- 20261108000545 added it, a park queues such a row on main and retries it for up to an hour, so
+-- a database main migrated carries one at the upgrade and this version runs after main's. A list
+-- without it fails that upgrade on the row (SQLSTATE 23514) and the daemon cannot boot.
+-- 20261108152000 is the last word of every one of these lists and names only what the merged
+-- daemon writes.
+--
+-- `hook_prompt` and `design_gates_publish` are named here although main added them: main's
+-- 20261110225246 and 20261110235320 admit them and a
+-- database main migrated has recorded those versions, so an upgrade runs this list over a hook's
+-- pending prompt row and over a pending publication of an issue's gates, either of which a list
+-- without its kind would refuse (SQLSTATE 23514), failing the upgrade and the daemon's boot. The
+-- merged daemon writes both kinds itself (internal/record's lanes).
+alter table outbox drop constraint if exists outbox_kind_check;
+alter table outbox add constraint outbox_kind_check check (kind in (
+  'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
+  'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_compare',
+  'check_wake', 'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle',
+  'issue_release', 'gated_steps_publish', 'claim_release', 'hook_prompt',
+  'design_gates_publish'));

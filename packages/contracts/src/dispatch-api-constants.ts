@@ -2,20 +2,22 @@
  * The constants and plain functions of Dispatch's HTTP and WebSocket contract: the header names,
  * the idempotency codes, the limits, the search operators and the small rules over them.
  *
- * Why they are a module of their own, beside `dispatch-api.ts` rather than inside it. That
- * module builds about two hundred zod schemas at its top level, and a bundler may drop none of
- * them: a value is used, so the module is kept, and the schemas are kept with it. A reader who
- * only needs a header's name was therefore given zod as well - 79,622 bytes of it in the
- * dashboard's entry chunk, which every page parses before it draws anything, for a page that
- * validates nothing (dispatch://INFRA-1109, R13). A constant a reader needs must not drag a
- * schema builder into a browser, so the constants live here and `dispatch-api.ts` re-exports
- * every one of them: an import of that module, or of the package index, answers exactly what it
- * answered before.
+ * Why they are a module of their own rather than beside the schemas of their area. The area
+ * modules `dispatch-api.ts` re-exports build about two hundred zod schemas at their top level,
+ * and a bundler may drop none of them: a value is used, so its module is kept, and the schemas
+ * are kept with it. A reader who only needs a header's name was therefore given zod as well -
+ * 79,622 bytes of it in the dashboard's entry chunk, which every page parses before it draws
+ * anything, for a page that validates nothing (dispatch://INFRA-1109, R13). A constant a reader
+ * needs must not drag a schema builder into a browser, so the constants live here, an area
+ * module that reads one imports it from here, and `dispatch-api.ts` re-exports every one of
+ * them: an import of that module, or of the package index, answers exactly what it answered
+ * before.
  */
 
-// Types only, from the module these constants came out of: a type import is erased by the
-// compiler, so it builds no edge a bundler would follow back to the schemas.
-import type { MyReplyAgentRow, MyReplyRow, MyReplyThreadRow } from "./dispatch-api";
+// Types only: a type import is erased by the compiler, so it builds no edge a bundler would
+// follow back to the schemas.
+import type { MyReplyRow } from "./dispatch-api.generated";
+import type { MyReplyAgentRow, MyReplyThreadRow } from "./dispatch-api-inbox";
 
 /** The OAuth scopes a Dispatch credential can hold, mirroring Go's `model.ScopePerson` and
  *  `model.ScopeApprove` and the `agent_tokens.scopes` check that stores them: `person` acts as

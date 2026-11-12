@@ -173,6 +173,9 @@ export default defineConfig({
         new URL("../../contracts/src/dispatch-tools-constants.ts", import.meta.url)
       ),
       "@legion/contracts": fileURLToPath(new URL("../../contracts/src/index.ts", import.meta.url)),
+      "@legion/proof-editor/document-json": fileURLToPath(
+        new URL("../../proof-editor/src/document-json.ts", import.meta.url)
+      ),
       "@legion/proof-editor/headless": fileURLToPath(
         new URL("../../proof-editor/src/lib-headless.ts", import.meta.url)
       ),
@@ -198,10 +201,10 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    // Every size here was measured with `bun run build:web` on 2026-11-12, at this head. The
+    // Every size here was measured with `bun run build:web` on 2026-11-13, at this head. The
     // largest chunk is ECharts (an `index-*.js` of 1,134,772 bytes raw), which only the
     // Delivery page loads, and the entry - the one `assets/index-*.js` that dist/index.html
-    // names - is 490,562 bytes, down from 1,028,690 before dispatch://INFRA-1109 split the
+    // names - is 491,121 bytes, down from 1,028,690 before dispatch://INFRA-1109 split the
     // shell: the Inbox and its peek, the ask card, the search bar, the Create issue dialog,
     // the shortcut sheet, the reference-preview layer and the event-refresh map are each a
     // chunk of their own now, and `@legion/contracts`' subpaths keep that package's reference
@@ -212,7 +215,7 @@ export default defineConfig({
     // beautiful-mermaid and ELK live only in the Mermaid worker's bundle
     // (features/refs/mermaid-render.worker.ts, 1,565,608 bytes), fetched once a body or a
     // document holds a mermaid block; Vite emits it as an asset and holds it to no chunk limit.
-    // The editor's lazy chunk (`lib-*.js`, 208,147 bytes) carries none of the renderer.
+    // The editor's lazy chunk (`lib-*.js`, 208,284 bytes) carries none of the renderer.
     chunkSizeWarningLimit: 1200,
     emptyOutDir: true,
   },

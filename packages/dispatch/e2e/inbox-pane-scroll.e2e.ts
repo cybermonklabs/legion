@@ -51,6 +51,7 @@ import {
 import { holdReadMarks } from "./inbox-threads";
 import { holdMermaidWorkers } from "./mermaid-helpers";
 import { resetDatabase } from "./seed";
+import { serveWithoutDisplayTrees } from "./strip-trees";
 import { asUser } from "./users";
 
 /**
@@ -573,6 +574,35 @@ test("a thread whose replies are served after the placement opens at its anchore
     expect(await headingOffset(page, SECTION_HEADING)).toBeLessThanOrEqual(8);
     expect(await headingOffset(page, SECTION_HEADING)).toBeGreaterThan(-8);
     expect(await offsetInColumn(page, "[data-inbox-thread-first-unread]")).toBeGreaterThan(40);
+  } finally {
+    await alice.close();
+  }
+});
+
+// The same approval from a server that answers no reading of its texts, which is what a pod of
+// the build before this one serves while a deploy rolls: the version and the baseline it is
+// marked against both arrive as markdown alone. The pane parses them, as every view of a stored
+// text does, so the reader still sees what changed and still has a change to step to - where a
+// baseline read for its reading alone left the approval with no marks at all.
+// @pr: An approval whose answers carry no reading still marks its changed blocks and offers Next change.
+test("an approval whose answers carry no reading still marks what changed @pr", async ({
+  browser,
+}) => {
+  const seed = await seedApprovalWithMarks();
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await serveWithoutDisplayTrees(page);
+    const pane = inboxPane(page);
+
+    await page.goto(inboxAt(seed.approvalAskId));
+    await expect(pane.getByRole("region", { name: "Document version 2" })).toBeVisible();
+    await expect(pane.locator(".dispatch-change-block")).toHaveCount(seed.changedBlocks);
+    await expect(
+      pane.locator("header").getByRole("button", { exact: true, name: "Next change" })
+    ).toBeEnabled();
+    await expect(pane.getByText("Could not load this document version.")).toHaveCount(0);
   } finally {
     await alice.close();
   }

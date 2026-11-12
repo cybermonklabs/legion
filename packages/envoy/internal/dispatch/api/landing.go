@@ -114,7 +114,7 @@ type landingIssuePage struct {
 	// UserState is GET /api/v1/me/state.
 	UserState userState `json:"user_state"`
 	// Comments is GET /api/v1/issues/{key}/comments.
-	Comments []model.Comment `json:"comments"`
+	Comments []shapedComment `json:"comments"`
 	// Asks is GET /api/v1/issues/{key}/asks?state=all&thread=1: every ask of the issue with the
 	// thread its card draws.
 	Asks []issueAskRow `json:"asks"`
@@ -145,7 +145,7 @@ type landingIssuePage struct {
 // landingIssueDocument is the issue's primary document as the Spec tab reads it.
 type landingIssueDocument struct {
 	// Artifact is GET /api/v1/artifacts/{id}.
-	Artifact *model.Artifact `json:"artifact"`
+	Artifact *artifactRead `json:"artifact"`
 	// Text is GET /api/v1/artifacts/{id}/text.
 	Text *artifactText `json:"text"`
 	// Blocks is GET /api/v1/artifacts/{id}/blocks.
@@ -178,17 +178,17 @@ type landingInboxPage struct {
 type landingDocumentPage struct {
 	// Artifact is GET /api/v1/projects/{project}/artifacts/{slug}; null for a slug that is no
 	// document of that project, and with it every part below, which that document names.
-	Artifact *model.Artifact `json:"artifact"`
+	Artifact *artifactRead `json:"artifact"`
 	// Text is GET /api/v1/artifacts/{id}/text.
 	Text *artifactText `json:"text"`
 	// Blocks is GET /api/v1/artifacts/{id}/blocks.
 	Blocks []model.ArtifactBlock `json:"blocks"`
 	// Asks is GET /api/v1/artifacts/{id}/asks?state=all.
-	Asks []model.Ask `json:"asks"`
+	Asks []shapedAsk `json:"asks"`
 	// Subscribers is GET /api/v1/artifacts/{id}/subscribers.
 	Subscribers []subscriber `json:"subscribers"`
 	// Comments is GET /api/v1/artifacts/{id}/comments.
-	Comments []model.Comment `json:"comments"`
+	Comments []shapedComment `json:"comments"`
 }
 
 // landingRequest is one landing as its query asks for it: the page, and the parameters that page
@@ -246,6 +246,10 @@ func parseLandingRequest(w http.ResponseWriter, r *http.Request) (landingRequest
 
 // getLanding answers one page's whole cold read. The caller is resolved as the `me` routes
 // resolve one, so a browser with no cookie reads the same 401 it reads from whoami.
+//
+// The dashboard asks every read for the display trees of the stored texts it answers
+// (`Dispatch-Trees: 1`, wantsDisplayTrees), this one included, and each part is read with what
+// this request asked for, so a part carries exactly the trees the route it stands in for would.
 func (s *server) getLanding(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -273,19 +277,20 @@ func (s *server) getLanding(w http.ResponseWriter, r *http.Request) {
 			"the event log's head could not be read")
 		return
 	}
+	trees := wantsDisplayTrees(r)
 	answer := landingResponse{
 		Viewer: landingViewer{EventHead: strconv.FormatInt(head, 10), Kind: "user", Login: caller.ID},
-		Shell:  s.landingShell(r.Context(), caller),
+		Shell:  s.landingShell(r.Context(), caller, trees),
 	}
 	switch read.page {
 	case landingPageIssue:
-		answer.Page.Issue = s.landingIssuePage(r.Context(), caller, read.key)
+		answer.Page.Issue = s.landingIssuePage(r.Context(), caller, read.key, trees)
 	case landingPageBoard:
-		answer.Page.Board = s.landingBoardPage(r.Context(), caller, read.project)
+		answer.Page.Board = s.landingBoardPage(r.Context(), caller, read.project, trees)
 	case landingPageInbox:
 		answer.Page.Inbox = s.landingInboxPage(r.Context(), caller)
 	case landingPageDocument:
-		answer.Page.Document = s.landingDocumentPage(r.Context(), read.project, read.slug)
+		answer.Page.Document = s.landingDocumentPage(r.Context(), read.project, read.slug, trees)
 	}
 	WriteJSON(w, http.StatusOK, answer)
 }
@@ -318,11 +323,11 @@ func landingPart[T any](name string, value T, err error) T {
 }
 
 // landingShell reads what every page draws.
-func (s *server) landingShell(ctx context.Context, caller model.Actor) landingShell {
+func (s *server) landingShell(ctx context.Context, caller model.Actor, trees bool) landingShell {
 	var shell landingShell
 
 	// The inbox as the dashboard reads it on every page: no project and no assignee narrowing.
-	inbox, err := s.loadInbox(ctx, caller, "", "", "")
+	inbox, err := s.loadInbox(ctx, caller, "", "", "", trees)
 	shell.Inbox = landingPart("shell.inbox", inbox, err)
 
 	pinned, _, err := s.loadIssueListing(ctx, issueListRead{pinnedBy: caller.ID})
@@ -374,19 +379,22 @@ func (s *server) landingCredentialRequests(ctx context.Context, caller model.Act
 
 // landingIssuePage reads what the issue page draws. An issue the caller cannot read leaves every
 // part of the page null but the ones that are not the issue's: their routes answer them anyway.
-func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key string) *landingIssuePage {
+func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key string, trees bool) *landingIssuePage {
 	page := &landingIssuePage{}
 
-	read, err := s.loadIssueDetail(ctx, key)
+	read, err := s.loadIssueDetail(ctx, key, trees)
 	page.Issue = landingPart("issue.detail", &read, err)
 
 	state, err := s.loadUserState(ctx, caller.ID)
 	page.UserState = landingPart("issue.user_state", state, err)
 
+	// Shaped as the comments route shapes them, over a reader of their own.
 	comments, err := s.loadOwnerComments(ctx, s.deps.Store.Pool, issueOwner(key), "")
-	page.Comments = landingPart("issue.comments", comments, err)
+	reader := s.readDisplayTrees(ctx, trees)
+	page.Comments = shapedComments(landingPart("issue.comments", comments, err), reader)
+	reader.resolve()
 
-	asks, err := s.loadIssueAskRows(ctx, issueOwner(key), "all", true)
+	asks, err := s.loadIssueAskRows(ctx, issueOwner(key), "all", true, trees)
 	page.Asks = landingPart("issue.asks", asks, err)
 
 	// The subscribers are the listener's to answer, and loadSubscribers refuses with
@@ -401,7 +409,7 @@ func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key s
 		page.Subscribers = landingPart("issue.subscribers", subscribers, err)
 	}
 
-	decisions, err := s.loadIssueDecisions(ctx, key)
+	decisions, err := s.loadIssueDecisions(ctx, key, trees)
 	page.Decisions = landingPart("issue.decisions", &decisions, err)
 
 	// Every repository mapping there is, which is what the repository control reads whatever the
@@ -423,7 +431,7 @@ func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key s
 		sources, err := s.loadProjectArchitectureSources(ctx, page.Issue.Project)
 		page.ArchitectureSources = landingPart("issue.architecture_sources", sources, err)
 
-		page.Document = s.landingIssueDocument(ctx, caller, page.Issue)
+		page.Document = s.landingIssueDocument(ctx, caller, page.Issue, trees)
 	}
 	return page
 }
@@ -444,13 +452,14 @@ func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key s
 //
 // The issue arrives by pointer because this reads two of its fields and the detail behind them
 // is the whole issue: its artifacts, its labels, its relations and its events. Taken by value it
-// was all copied to read an id and a list.
-func (s *server) landingIssueDocument(ctx context.Context, caller model.Actor, issue *issueDetail) *landingIssueDocument {
+// was all copied to read an id and a list. Its artifacts are already shaped as the artifact
+// route shapes one (readIssue), so the document part carries the same trees that route would.
+func (s *server) landingIssueDocument(ctx context.Context, caller model.Actor, issue *issueDetail, trees bool) *landingIssueDocument {
 	primary := issue.PrimaryArtifactID
 	if primary == "" {
 		return nil
 	}
-	index := slices.IndexFunc(issue.Artifacts, func(artifact model.Artifact) bool {
+	index := slices.IndexFunc(issue.Artifacts, func(artifact artifactRead) bool {
 		return artifact.ID == primary
 	})
 	if index < 0 {
@@ -462,10 +471,10 @@ func (s *server) landingIssueDocument(ctx context.Context, caller model.Actor, i
 	document := &landingIssueDocument{Artifact: artifact}
 
 	// No blocks beside the text: the document's blocks are a part of their own, below.
-	text, err := s.loadArtifactText(ctx, *artifact, false)
+	text, err := s.loadArtifactText(ctx, artifact.Artifact, false, trees)
 	document.Text = landingPart("issue.document.text", &text, err)
 
-	blocks, err := s.loadArtifactBlocks(ctx, *artifact)
+	blocks, err := s.loadArtifactBlocks(ctx, artifact.Artifact)
 	document.Blocks = landingPart("issue.document.blocks", blocks, err)
 
 	mark, err := s.loadDocumentRead(ctx, caller.ID, artifact.ID)
@@ -474,13 +483,13 @@ func (s *server) landingIssueDocument(ctx context.Context, caller model.Actor, i
 }
 
 // landingBoardPage reads what a project's board draws.
-func (s *server) landingBoardPage(ctx context.Context, caller model.Actor, project string) *landingBoardPage {
+func (s *server) landingBoardPage(ctx context.Context, caller model.Actor, project string, trees bool) *landingBoardPage {
 	page := &landingBoardPage{}
 
 	issues, _, err := s.loadIssueListing(ctx, issueListRead{project: project, open: true})
 	page.Issues = landingPart("board.issues", issues, err)
 
-	inbox, err := s.loadInbox(ctx, caller, project, "", "")
+	inbox, err := s.loadInbox(ctx, caller, project, "", "", trees)
 	page.Inbox = landingPart("board.inbox", inbox, err)
 
 	state, err := s.loadUserState(ctx, caller.ID)
@@ -505,24 +514,29 @@ func (s *server) landingInboxPage(ctx context.Context, caller model.Actor) *land
 // landingDocumentPage reads what a project document's page draws. The document is the part every
 // other part names, so a slug that is no document of the project leaves them all null and the
 // page reads the document itself, which is the refusal it already draws.
-func (s *server) landingDocumentPage(ctx context.Context, project, slug string) *landingDocumentPage {
+//
+// The document, its asks and its comments are shaped as their own routes shape them, over one
+// reader for the page, so the three are one read of the stored trees.
+func (s *server) landingDocumentPage(ctx context.Context, project, slug string, trees bool) *landingDocumentPage {
 	page := &landingDocumentPage{}
 
 	artifact, err := s.loadArtifactByDocumentReference(ctx, s.deps.Store.Pool, artifactTarget{Project: project}, slug)
-	page.Artifact = landingPart("document.artifact", &artifact, err)
-	if page.Artifact == nil {
+	if landingPart("document.artifact", &artifact, err) == nil {
 		return page
 	}
+	reader := s.readDisplayTrees(ctx, trees)
+	page.Artifact = &artifactRead{Artifact: artifact}
+	page.Artifact.shape(reader)
 
 	// No blocks beside the text: the page's blocks are a part of their own, below.
-	text, err := s.loadArtifactText(ctx, artifact, false)
+	text, err := s.loadArtifactText(ctx, artifact, false, trees)
 	page.Text = landingPart("document.text", &text, err)
 
 	blocks, err := s.loadArtifactBlocks(ctx, artifact)
 	page.Blocks = landingPart("document.blocks", blocks, err)
 
 	asks, _, err := s.queryOwnerAsks(ctx, s.deps.Store.Pool, documentOwner(artifact.ID), "all")
-	page.Asks = landingPart("document.asks", asks, err)
+	page.Asks = shapedAsks(landingPart("document.asks", asks, err), reader)
 
 	// Guarded as the issue page's subscribers are, for the reason given there: a deployment with
 	// no listener has nothing to answer this part with, and reading it anyway wrote a warn line
@@ -533,6 +547,7 @@ func (s *server) landingDocumentPage(ctx context.Context, project, slug string) 
 	}
 
 	comments, err := s.loadOwnerComments(ctx, s.deps.Store.Pool, documentOwner(artifact.ID), "")
-	page.Comments = landingPart("document.comments", comments, err)
+	page.Comments = shapedComments(landingPart("document.comments", comments, err), reader)
+	reader.resolve()
 	return page
 }

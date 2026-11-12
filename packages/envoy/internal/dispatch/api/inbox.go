@@ -27,10 +27,10 @@ type inboxDocument struct {
 // fetch per ask. `answers` is empty on an Inbox row, which is an open ask; the issue ask list
 // fills it for the answered asks on the page.
 type askThread struct {
-	Replies   []model.Comment     `json:"replies"`
-	Edits     []model.AskEdit     `json:"edits"`
-	Answers   []model.AskAnswer   `json:"answers"`
-	Followers []model.AskFollower `json:"followers"`
+	Replies   []shapedComment           `json:"replies"`
+	Edits     []askEditRead             `json:"edits"`
+	Answers   []model.AskAnswerWithTree `json:"answers"`
+	Followers []model.AskFollower       `json:"followers"`
 	askReach
 }
 
@@ -52,7 +52,7 @@ type askReach struct {
 }
 
 type inboxAsk struct {
-	model.Ask
+	shapedAsk
 	Issue     *inboxIssue         `json:"issue,omitempty"`
 	Document  *inboxDocument      `json:"document,omitempty"`
 	Priority  *int                `json:"priority"`
@@ -96,7 +96,7 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	asks, err := s.loadInbox(r.Context(), caller, project, assigneeMode, assigneeLogin)
+	asks, err := s.loadInbox(r.Context(), caller, project, assigneeMode, assigneeLogin, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -111,8 +111,9 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 //
 // listInbox calls it, and so does GET /api/v1/landing, which carries this list in its shell and
 // the same list narrowed to one project on a board. The statement lives here and in no other
-// reader, so the two answers cannot differ.
-func (s *server) loadInbox(ctx context.Context, caller model.Actor, project, assigneeMode, assigneeLogin string) ([]inboxAsk, error) {
+// reader, so the two answers cannot differ. trees is what the request asked for
+// (wantsDisplayTrees), so the landing's rows carry the trees the route's do.
+func (s *server) loadInbox(ctx context.Context, caller model.Actor, project, assigneeMode, assigneeLogin string, trees bool) ([]inboxAsk, error) {
 	// waiting_on is askReadColumns' alias for the turn rule, 'human' or 'agent' on an open ask, so
 	// sorting it descending puts the human's turn first. ORDER BY can name an output column only
 	// bare, never inside an expression such as `waiting_on = 'agent'`, so the rule runs once a row.
@@ -175,12 +176,20 @@ func (s *server) loadInbox(ctx context.Context, caller model.Actor, project, ass
 	if err := loadAskDetails(ctx, s.deps.Store.Pool, askPointers); err != nil {
 		return nil, err
 	}
-	threads, err := s.loadAskThreads(ctx, askIDs)
+	// The Inbox's asks and the threads under them are one read of the stored trees: each row
+	// registers its texts with this reader, and one query answers the page.
+	reader := s.readDisplayTrees(ctx, trees)
+	threads, err := s.loadAskThreads(ctx, askIDs, reader)
 	if err != nil {
 		return nil, err
 	}
 	for index := range asks {
 		asks[index].Thread = threads[asks[index].ID]
+		// The row's shape is taken once the ask is final: attachAskReadFields has just written
+		// the part ids of its options and of its answer into the row these fields stand in
+		// front of.
+		asks[index].shape(reader)
 	}
+	reader.resolve()
 	return asks, nil
 }

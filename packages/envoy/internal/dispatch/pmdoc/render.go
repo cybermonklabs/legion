@@ -11,6 +11,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
+// RendererVersion numbers what this build writes of a document: its rendering (Render,
+// RenderWithBlockOffsets) and the token a read answers beside it (EncodeTokenJSON). A stored
+// rendering is served in place of rendering the document again only while the version that stored
+// it was written by a build standing at this number (docs' TextWithToken), so a change to either
+// raises it and every stored rendering made before it is rendered again. The golden
+// testdata/renderer-version.json holds it beside a hash of the corpus's renderings and one of the
+// corpus's document tokens, and TestRendererVersionGoldenHoldsTheCorpus holds this build to both.
+// A hash also moves when the corpus itself gains or loses a document, which changes nothing a
+// stored rendering holds: that writes the new hash and leaves this number where it is. Only a
+// change to what the renderer writes of a document the corpus already held raises it.
+const RendererVersion = 1
+
 type renderer struct {
 	b                bytes.Buffer
 	inlineCodeFence  string

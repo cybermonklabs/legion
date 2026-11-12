@@ -23,6 +23,7 @@ import {
   selectEditorText,
 } from "./editor";
 import { navigateInApp } from "./sends";
+import { serveWithoutDisplayTrees } from "./strip-trees";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -1284,5 +1285,46 @@ test("every item link lands on exactly one marked card, and a reply link marks i
     await untilNotFound(page, "Comment not found");
   } finally {
     await context.close();
+  }
+});
+
+// The same link from a server that answers no reading of the version's text, which is what a
+// pod of the build before this one serves while a deploy rolls. The page parses the markdown
+// and embeds the quote in its own reading of it, so the reader lands on the words the comment
+// names rather than being told the range is gone - the message this row refuses by name.
+// No `@pr` tag: the pull-request lane's real-stack budget is full, and of this round's two
+// rows this is the one the lane answers least - its claim is also made by a unit row, which
+// asserts the mark and the absence of the changed-text message, while the approval's marks have
+// no unit row that draws them on a real server. It runs on the full lane at the merge queue.
+test("a past version's comment link marks its quote where the answer carried no reading", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: "Plain document:\n\nTarget paragraph holds the quoted words.\n",
+    title: "Highlighted mark with no reading",
+  });
+  const comment = await createComment(
+    issue.key,
+    { anchor: { artifact: "spec", quote: "quoted words" }, body: "Read this." },
+    agentSession
+  );
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await serveWithoutDisplayTrees(page);
+    await page.goto(
+      `/issues/${issue.key}/artifact/spec?v=1&comment=${encodeURIComponent(comment.id)}`
+    );
+    const versionView = page.getByRole("region", { name: "Document version 1" });
+    await expect(versionView.locator(`[data-id="${comment.id}"]`)).toHaveText("quoted words");
+    await expect(
+      page.getByText("Text changed. The selected range no longer exists in this document.")
+    ).toHaveCount(0);
+    await expect(page.getByText("Could not load this document version.")).toHaveCount(0);
+  } finally {
+    await alice.close();
   }
 });
