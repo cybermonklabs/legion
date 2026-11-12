@@ -372,6 +372,17 @@ export interface DocumentMeasurement {
  * inside its budget (`BATCH_BUDGET_MS` in `packages/proof-editor/src/progressive-build.ts`)
  * and a slower renderer converts fewer of them. A row that reads a clock may not: every number
  * R11 is held to is read under the rate the spec names.
+ *
+ * Set it for the build the row reads, not for the page's way to that build. It takes effect
+ * from the call rather than from the navigation, and a row that holds the document's socket
+ * (`documentTransport`'s `holding`) already has the two apart: no batch of the editor runs
+ * until `release()`, so the page's boot, its own draw of the document and whatever the row
+ * arranges over that draw are setup no reading is taken of, and a rate set before the
+ * navigation charges every one of them what the build is charged. Measured on this pod, over
+ * the whole of `large-documents-reader.e2e.ts`: 23.0 s of the two-people row's 102 s went on
+ * that setup before the window it reads opened, against 58.3 s of build inside it. A row with
+ * no hold has no such moment - its build begins with the sync its load asks for - and sets the
+ * rate before the navigation, as it must.
  */
 export async function throttleTheCpu(page: Page, rate = cpuThrottlingRate): Promise<void> {
   const session = await page.context().newCDPSession(page);

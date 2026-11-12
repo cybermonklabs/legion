@@ -296,13 +296,16 @@ test(`typing in ${documentNames.small}'s first block while it is built reaches t
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await throttleTheCpu(page);
     await readerEditsTheBuild(page, typing);
     const transport = await documentTransport(page, { holding: true });
     await page.goto(path);
     await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeAttached(
       { timeout: 240_000 }
     );
+
+    // Throttled here and not before the load: the build this row reads begins with the release
+    // below, and the boot and draw above it are setup (`throttleTheCpu`).
+    await throttleTheCpu(page);
 
     await transport.release();
     await expect(documentEditor(page)).toBeVisible({ timeout: 900_000 });
@@ -411,22 +414,31 @@ test(`two people write in ${documentNames.small} while its editor is built @phon
   try {
     // Bob has the document open and his caret in its first block before Alice's socket is let
     // through, so the only thing left for him to do afterwards is press the keys.
+    //
+    // The two of them get ready side by side, because neither waits on the other: her socket is
+    // held from its construction, so no batch of her build runs until the release below, and
+    // his page is a reader of this document like any other. One after the other, his whole
+    // build stood in front of her load for nothing.
     const bobPage = await bob.newPage();
-    await bobPage.goto(path);
-    await expect(documentEditor(bobPage)).toContainText(title, { timeout: 240_000 });
-    await expect(connectedDot(bobPage)).toHaveText("connected");
-    await placeCaret(bobPage, "after", title);
-
     const page = await alice.newPage();
-    await throttleTheCpu(page, aBuildFourWritesFitInside);
     await readerEditsTheBuild(page, reading);
     await framesOfHerBuild(page);
     const build = await watchTheBuildsWindow(page);
     const transport = await documentTransport(page, { holding: true });
-    await page.goto(path);
-    await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeAttached(
-      { timeout: 240_000 }
-    );
+    await Promise.all([
+      (async () => {
+        await bobPage.goto(path);
+        await expect(documentEditor(bobPage)).toContainText(title, { timeout: 240_000 });
+        await expect(connectedDot(bobPage)).toHaveText("connected");
+        await placeCaret(bobPage, "after", title);
+      })(),
+      (async () => {
+        await page.goto(path);
+        await expect(
+          page.locator('[aria-label="Document text"] [data-block-id]').first()
+        ).toBeAttached({ timeout: 240_000 });
+      })(),
+    ]);
 
     // Bob writes from inside her build: a word in a block her batches have built, a block
     // inserted inside that built run, and that block taken out of it again over the prose it
@@ -460,6 +472,10 @@ test(`two people write in ${documentNames.small} while its editor is built @phon
     const heWrote = (): void => {
       hisWrites.push(Date.now());
     };
+    // Throttled here and not before the load: her build begins with the release below, and her
+    // boot and her page's own draw above it are setup no reading of this row is taken of
+    // (`throttleTheCpu`). The rate covers the whole of the window this row reads.
+    await throttleTheCpu(page, aBuildFourWritesFitInside);
     await transport.release();
     const firstBatchMs = await build.firstBatch(300_000);
     // His two words go in as one `Input.insertText` each rather than as one round trip per

@@ -157,7 +157,6 @@ test(`the editor opens ${documentNames.small} with every block of it in the DOM 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await throttleTheCpu(page);
     await framesOfTheBuild(page);
     const transport = await documentTransport(page, { holding: true });
     await page.goto(path);
@@ -168,6 +167,9 @@ test(`the editor opens ${documentNames.small} with every block of it in the DOM 
     );
     expect(await blocksBuilt(page)).toBe(0);
 
+    // Throttled here and not before the load: the build this row reads begins with the release
+    // below, and the boot and the page's own draw above it are setup (`throttleTheCpu`).
+    await throttleTheCpu(page);
     await transport.release();
     // The wait is this row's own reading as much as it is the build: the per-frame count of
     // `framesOfTheBuild` scans every block element the editor holds in each frame the build
@@ -234,13 +236,16 @@ test(`an edit made while ${documentNames.small}'s editor is being built is in it
     await placeCaret(bobPage, "after", title);
 
     const page = await alice.newPage();
-    await throttleTheCpu(page);
     await framesOfTheBuild(page);
     const transport = await documentTransport(page, { holding: true });
     await page.goto(path);
     await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeAttached(
       { timeout: 240_000 }
     );
+
+    // Throttled here and not before the load: her build begins with the release below, and her
+    // boot and her page's own draw above it are setup (`throttleTheCpu`).
+    await throttleTheCpu(page);
 
     // Bob writes a word at a time, from the moment Alice's socket is let through until her
     // editor is open, so his writing covers the whole of her build rather than a moment the row
@@ -346,7 +351,6 @@ test("every block of a document is on the screen exactly once as its editor is b
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await throttleTheCpu(page);
     await framesOfTheBlocks(page);
     const transport = await documentTransport(page, { holding: true });
     await page.goto(path);
@@ -362,6 +366,10 @@ test("every block of a document is on the screen exactly once as its editor is b
       .toBe(whole);
     const drewAt = await page.evaluate(() => window.__blockFrames?.length ?? 0);
 
+    // Throttled here and not before the load: the build this row reads begins with the release
+    // below, and the boot and the page's own draw above it - with the poll that waits for it -
+    // are setup (`throttleTheCpu`).
+    await throttleTheCpu(page);
     await transport.release();
     await expect(documentEditor(page)).toBeVisible({ timeout: 480_000 });
     const frames = (await page.evaluate(() => window.__blockFrames ?? [])).slice(drewAt);

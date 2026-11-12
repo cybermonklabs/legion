@@ -1525,7 +1525,6 @@ test(`a decision answered while ${documentNames.large}'s editor is built goes ou
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await throttleTheCpu(page);
     const build = await watchTheBuildsWindow(page);
     await theReaderAnswersAtTheFirstBatch(page, {
       answer: `/api/v1/asks/${indexed?.id}/answer`,
@@ -1545,6 +1544,10 @@ test(`a decision answered while ${documentNames.large}'s editor is built goes ou
     // in it (`large-documents-build.e2e.ts`).
     expect(await page.locator(`${liveEditorRoot} [data-block-id]`).count()).toBe(0);
 
+    // Throttled here and not before the load: the build the press crosses begins with the
+    // release below, and the boot, the draw and the reader's own picking above it are setup no
+    // reading of this row is taken of (`throttleTheCpu`).
+    await throttleTheCpu(page);
     await transport.release();
     const firstBatchMs = await build.firstBatch(300_000);
 
@@ -1770,10 +1773,18 @@ async function theBuildsTime(
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await throttleTheCpu(page);
     const reached = await watchTheDocument(page);
     const transport =
       overTheWholeDraw === undefined ? undefined : await documentTransport(page, { holding: true });
+    // The rate is the build's, and both builds are read under it. The page that holds its
+    // socket is throttled once its draw is whole and before that socket is let through, so the
+    // draw this arranges - and the poll that waits for it - is not paid at the build's rate;
+    // neither is read, and the build that is begins at the release below. The page that holds
+    // no socket has no such moment - its build begins with the sync its own load asks for - so
+    // it is throttled before the navigation (`throttleTheCpu`).
+    if (transport === undefined) {
+      await throttleTheCpu(page);
+    }
     await page.goto(path, { waitUntil: "commit" });
     if (transport !== undefined) {
       await expect
@@ -1783,6 +1794,7 @@ async function theBuildsTime(
           timeout: 300_000,
         })
         .toBeGreaterThanOrEqual(overTheWholeDraw ?? 0);
+      await throttleTheCpu(page);
       await transport.release();
     }
     const firstBlock = await reached.firstBlock;
