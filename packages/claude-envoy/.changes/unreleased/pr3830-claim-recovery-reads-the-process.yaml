@@ -1,5 +1,5 @@
 kind: Changed
 body: |-
-  The plugin declares daemon API contract 86, which has the daemon's two claim recoveries read a
+  The plugin declares daemon API contract 90, which has the daemon's two claim recoveries read a
   claim's process at the request: `fresh_session` reaches a claim stored working that no process
   stands behind, and the compaction refuses it with `CLAIM_NOT_RUNNING` naming `fresh_session`.

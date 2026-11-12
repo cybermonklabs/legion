@@ -396,6 +396,12 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 			"%s is %s. %s. %s", token, c.State, freshSessionOp.reaches, askAgainLater))
 		return 0, "", false, false
 	}
+	// The recorded session is dropped before the retry, never after it: the lane the restart's
+	// fact wakes starts the claim, and a start that found the session still recorded would resume
+	// the very session this call is leaving behind (operator_test's
+	// TestTheOperatorsFreshSessionRetryForgetsTheSessionBeforeTheRestartIsApplied). The ask rides
+	// the retry as well (RequestOperatorRetry.FreshSession, intake.RestartPhase.FreshSession), so
+	// the start the workflow raises spawns rather than resumes whatever the claim still records.
 	if session := m.Claim().Session; session != "" {
 		switch err := s.forgetRecordedSession(r, m, token, session); {
 		case err != nil && stopped:
@@ -408,7 +414,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 		}
 	}
 	if m.Claim().State != supervise.StateSuspended {
-		status, ok := s.retryStart(w, r, m, token)
+		status, ok := s.retryStart(w, r, m, token, true)
 		return status, "", ok, ok
 	}
 	switch posted, err := s.postClaimEvent(w, r, m, token, "resume", supervise.RequestResume{Claim: token}); {
@@ -432,7 +438,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// through a phase at all.
 	status = http.StatusOK
 	if m.Claim().Pending == nil {
-		if phaseStatus, refusal, restarted := s.restartWorkedPhase(r, token, m.Claim()); restarted {
+		if phaseStatus, refusal, restarted := s.restartWorkedPhase(r, token, m.Claim(), false); restarted {
 			status = phaseStatus
 			if refusal != "" {
 				status, notRestarted = http.StatusOK, fmt.Sprintf(

@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 86,
-    "caller": 86
+    "daemon": 90,
+    "caller": 90
   },
   "admission": {
     "cap": 3,
@@ -61,6 +61,7 @@
             "pluginContract": 0
           },
           "handoffCommit": "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40",
+          "pass": 1,
           "rounds": 1
         }
       },
@@ -179,6 +180,7 @@
               "startedAt": "2026-09-22T09:17:12Z"
             }
           },
+          "pass": 3,
           "rounds": 2,
           "backwardMoves": {
             "reviewing-implementing": 1,
@@ -210,6 +212,7 @@
             "id": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b",
             "version": 1
           },
+          "pass": 0,
           "rounds": 0
         }
       },
@@ -218,7 +221,6 @@
         "number": 1247,
         "head": "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
         "state": "open",
-        "checksVerdict": "pending",
         "reviewDecision": "changes_requested"
       },
       "designGate": {
@@ -288,6 +290,7 @@
             },
             "pendingCause": "died"
           },
+          "pass": 1,
           "rounds": 1
         }
       },
@@ -328,6 +331,7 @@
               "lastSendError": "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused"
             }
           },
+          "pass": 0,
           "rounds": 1
         }
       },
@@ -620,7 +624,7 @@
     "withoutWebhookApp": [
       {
         "repo": "zeta/tools",
-        "reason": "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes"
+        "reason": "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
       }
     ],
     "caches": [
@@ -749,9 +753,6 @@
     "dispatch_url": "https://dispatch.internal.example",
     "projects": {
       "LEGION": {
-        "merge": {
-          "by_hand": []
-        },
         "slack_channels": [
           "C0123ABCD",
           "C0123ABCE"
@@ -763,13 +764,6 @@
         "deploys": []
       },
       "WIDGETS": {
-        "merge_queue_role": "merge-queue",
-        "merge": {
-          "by_hand": [
-            "^deploy/",
-            "\\.sql$"
-          ]
-        },
         "slack_channels": [],
         "memory": {
           "config_files": []

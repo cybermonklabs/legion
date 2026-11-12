@@ -74,7 +74,7 @@
 # so it needs bun and the repository's node_modules. It needs no kube context, no Claude Code and
 # no tmux — the panes are child process groups of the driver — so it runs in a Legion pod and on a
 # devbox alike. The run around the driver is lib/live-daemon-proof.sh's, which
-# provider-error-retry.sh and ci-red-no-takeover.sh make too.
+# provider-error-retry.sh and conflict-no-takeover.sh make too.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)

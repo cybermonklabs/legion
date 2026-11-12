@@ -135,6 +135,13 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 // suspension that may not be held (RequestSuspend.NeverHold), which it refuses before it records
 // anything: a claim read idle can be launching again by the time the request reaches the lock.
 //
+// A claim whose launch this very suspension stopped is suspended here and now instead: the
+// suspension cancelled that start before it took the lock (Handle), so nothing of this claim is
+// running and no ready will ever arrive to run a hold. The caller is answered that the claim is
+// suspended, which is what it asked for, rather than a hold nothing would ever end. A launch
+// waiting to be tried again (relaunchLater), which this suspension did not stop, keeps the hold:
+// its retry runs it.
+//
 // One claim here does not wait: the one whose paced wake is still waiting over no process at all,
 // which the gate wrote launching and parked before it had launched anything (reserveWake,
 // parkWake). A hold protects a turn and a process, and this claim has neither — the launch its
@@ -163,6 +170,10 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
 		return err
+	}
+	if m.stoppedAStart() && m.launchRecordsNoProcess() {
+		m.log.Info("supervise: the suspension stopped the claim's start, so it suspends the claim now", "reason", request.Reason, "by", request.By)
+		return m.suspendedFor(ctx, request)
 	}
 	if ev.(RequestSuspend).NeverHold {
 		return &RefusedError{State: m.claim.State, Request: "suspend",
@@ -338,11 +349,13 @@ func (m *Machine) endHeld(ctx context.Context) error {
 // The task of the dead turn goes back to waiting first, unconfirmed and under a new id, exactly
 // as a death in a turn takes it back (interrupted): the turn ran, the agent read the task, and
 // no process finished it. It carries the note of a pod that ran out of memory where the report
-// that found the process gone said so (goneOutOfMemory), as died's take-back does. A take-back
-// the store will not write stops everything — nothing is stopped, nothing is sent and the claim
-// is left as it stands, as died leaves it — so the caller's next request takes it back then,
-// rather than this leaving a suspended claim holding a task settle would retire as a finished
-// turn.
+// that found the process gone said so (goneOutOfMemory), and the claim records that report's
+// account of the death (goneCause, Claim.LastDeathCause), as died records the death it judges,
+// so the task is sent again saying why the process died. A take-back the store will not write
+// stops everything — nothing is stopped, nothing is sent and the claim is left as it stands, its
+// last death's cause put back, as died leaves it — so the caller's next request takes it back
+// then, rather than this leaving a suspended claim holding a task settle would retire as a
+// finished turn.
 //
 // The clean stop of the dead process's Envoy session is sent once that write has landed, and
 // before the process is let go (sessionGone, letProcessGoFor). Sent before the write, a write
@@ -361,7 +374,10 @@ func (m *Machine) endHeld(ctx context.Context) error {
 // toward the deaths limit for a death the daemon is being asked to recover from. A suspension is
 // no launch failure of its own either.
 func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSuspend) error {
+	cause := m.claim.LastDeathCause
+	m.claim.LastDeathCause = m.goneCause
 	if err := m.interrupted(ctx, "the process the task's turn ran on is gone", m.goneOutOfMemory); err != nil {
+		m.claim.LastDeathCause = cause
 		return err
 	}
 	m.sessionGone()
