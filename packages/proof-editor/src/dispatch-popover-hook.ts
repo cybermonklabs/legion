@@ -18,15 +18,15 @@
  * ourselves, without depending on ProofEditorImpl, so `onMarkAction` — not a
  * local doc edit — is what fires when a host requests the host-mediated
  * flow, and the original in-editor mutation still runs unchanged for any
- * `createProofEditor()` instance that didn't ask for it.
+ * editor `constructProofEditor()` built that didn't ask for it.
  *
  * `window.proof` is a single page-global, but Dispatch may render more than
- * one editor on a page, so each `createProofEditor()` call registers itself
- * here; the popover only ever passes a `markId`, so the dispatcher resolves
- * the owning instance by scanning registered instances for one whose current
- * marks contain that id. Every popover mutation reports through `onMarkAction`
- * when it is provided; otherwise its established local mutation remains the
- * fallback for standalone hosts.
+ * one editor on a page, so each `constructProofEditor()` call registers its
+ * editor here; the popover only ever passes a `markId`, so the dispatcher
+ * resolves the owning instance by scanning registered instances for one whose
+ * current marks contain that id. Every popover mutation reports through
+ * `onMarkAction` when it is provided; otherwise its established local mutation
+ * remains the fallback for standalone hosts.
  */
 
 import type { EditorView } from '@milkdown/kit/prose/view';
@@ -121,7 +121,8 @@ function installWindowProofHook(): void {
   };
 }
 
-/** Call once per `createProofEditor()` instance. Returns an unregister function for `destroy()`. */
+/** Call once per editor `constructProofEditor()` builds. Returns an unregister function for
+ *  `destroy()`. */
 export function registerPopoverHookInstance(
   view: EditorView,
   onMarkAction: ((action: MarkAction) => void | Promise<void>) | undefined,

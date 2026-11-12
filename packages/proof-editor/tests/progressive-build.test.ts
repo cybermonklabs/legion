@@ -795,6 +795,57 @@ describe("another person's change while the batches run", () => {
     expect(built.text).not.toContain("Quokka.");
   });
 
+  // The same refusal with more of their delta behind it: one transaction of theirs puts the
+  // refused block inside the built run, a paragraph of their own further down, and takes a
+  // block out after that. The refusal leaves the fragment one block shorter than the insert
+  // held, so a cursor that moved by what the insert held rather than by what the conversion
+  // made reads every op after it one index high: their paragraph goes into the editor a block
+  // late and their delete takes the block after the one they removed, and the binding's first
+  // write after the adoption carries that order into the Yjs document.
+  test("reads the ops after a refused one of theirs at the indices the fragment holds", async () => {
+    let afterwards: string[] = [];
+    const built = await build(
+      paragraphs(BLOCKS),
+      ({ ydoc }) => {
+        const peer = peerOf(ydoc);
+        const theirs = peer.getXmlFragment("prosemirror");
+        // One transaction, so one delta: a retain, the refused insert, their own insert, and
+        // their delete, every one of them inside the run the first batch has built.
+        peer.transact(() => {
+          theirs.insert(1, [refusedBlock("refused-while-building")]);
+          theirs.insert(4, [paragraphBlock("written-while-building", "Otter.")]);
+          theirs.delete(6, 1);
+        });
+        sendToTheEditor(peer, ydoc);
+      },
+      {
+        afterwards: ({ fragment, view }) => {
+          // The reader's next keystroke, which carries the editor's own document into the Yjs
+          // document through the binding that has just adopted it.
+          caretIn(view, 0, 0);
+          view.dispatch(view.state.tr.insertText("!"));
+          afterwards = everyBlockText(fragment);
+        },
+      }
+    );
+
+    // Their paragraph stands where the fragment holds it, between the second and the third of
+    // the document's own, and the block their delete took is the one they deleted.
+    expect(afterwards.slice(0, 6)).toEqual([
+      `!${paragraph(0)}`,
+      paragraph(1),
+      paragraph(2),
+      "Otter.",
+      paragraph(3),
+      paragraph(5),
+    ]);
+    expect(afterwards.length).toBe(BLOCKS);
+    expect(afterwards[BLOCKS - 1]).toBe(paragraph(BLOCKS - 1));
+    expect(built.documentAfter[3]).toBe("written-while-building:Otter.");
+    expect(built.blocks).toBe(BLOCKS);
+    expect(built.text).not.toContain("Quokka.");
+  });
+
   // The same refusal reached through `redraw`: their edit makes a block the batches have
   // already built one the schema cannot hold, so the whole block is refused and deleted from
   // the Yjs document. The editor used to keep the block that is no longer there, and the

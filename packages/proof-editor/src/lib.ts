@@ -868,13 +868,14 @@ async function theConstruction(
 /**
  * The two phases in one call, for a caller whose document is already in hand.
  *
- * This package's own tests are those callers: Dispatch builds every editor it has - the live
- * document, a past version, the reading pane - through `constructProofEditor`, since even a
- * host with its document in hand wants the editor's typed blocks on the view before the build
- * (`features/doc/editor.ts`'s `constructEditor`). A host whose document is still arriving over
- * a socket needs the two phases apart for a second reason: it constructs as the socket opens
- * and binds when the state frame has been applied, so the construction runs beside the sync
- * rather than after it.
+ * This package's own tests, and Dispatch's `first-screen.live-editor.test.tsx`, are those
+ * callers: Dispatch's app builds every editor it shows - the live document, a past version,
+ * the reading pane - through `constructProofEditor`, since even a host with its document in
+ * hand wants the editor's typed blocks on the view before the build
+ * (`features/doc/editor.ts`'s `constructEditor`). A host whose document is still arriving
+ * over a socket needs the two phases apart for a second reason: it constructs as the socket
+ * opens and binds when the state frame has been applied, so the construction runs beside the
+ * sync rather than after it.
  */
 export async function createProofEditor(
   root: HTMLElement,

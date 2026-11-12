@@ -12,7 +12,7 @@
  * draws open so the source is readable at once.
  *
  * A document's blocks draw here too, through the editor's drawer: `features/doc/editor.ts` gives
- * `createProofEditor` `requestMermaidDrawing` as its `drawMermaid`, so the live editor, a
+ * `constructProofEditor` `requestMermaidDrawing` as its `drawMermaid`, so the live editor, a
  * read-only document and a past version share this queue, its time limit and its cache with every
  * body on the page. Neither a body's block nor a document's asks for anything until it is within
  * `MERMAID_DRAW_MARGIN` of the viewport, one viewport height each way

@@ -166,7 +166,7 @@ function nextBatch(blocks: number, costMs: number): number {
 /**
  * The end of this task, so what runs next is a task of its own and the browser has the thread
  * back in between: each batch of the build, the binding's adoption after the last of them, and
- * the host's swap after that (`createProofEditor`).
+ * the host's swap after that (`./lib.ts`'s `bind`, what `constructProofEditor` answers).
  *
  * A **timer**, so the continuation queues behind everything the page is already waiting on,
  * which is the whole point of handing the thread back. Two other ways were measured on this
@@ -255,9 +255,9 @@ export interface ProgressiveBuild {
  * The last batch, the adoption, the peer cursors and the host's swap are four tasks, not one
  * (dispatch://INFRA-341, R11): together they were 1,370 ms on a phone at 4x CPU throttling,
  * over the 500 ms a reader feels as a freeze. The task between the last batch and the adoption
- * is this function's; the two after it are `createProofEditor`'s, which installs the peer
- * cursors a task after the adoption and answers its handle a task after that, so the host's
- * swap joins neither.
+ * is this function's; the two after it are `bind`'s (`./lib.ts`, what `constructProofEditor`
+ * answers), which installs the peer cursors a task after the adoption and answers its handle
+ * a task after that, so the host's swap joins neither.
  */
 export async function buildTheDocumentInBatches({
   adopt,
@@ -432,10 +432,11 @@ export async function buildTheDocumentInBatches({
   /** Applies another person's insert or delete of a whole block inside the built run. The delta
    *  is walked over the fragment as it now stands, so `at` is the index each change lands at;
    *  a block added at or past the frontier is left to the batch that reaches it, which is why
-   *  the loop below runs once more, synchronously, after its last `await`. The frontier moves
-   *  by what the conversion made, not by what the insert held: a block the schema refuses
-   *  makes no node, and `createNodeFromYElement` has deleted it from the fragment as it
-   *  refused it, so counting it would take the window past the editor. */
+   *  the loop below runs once more, synchronously, after its last `await`. The frontier and
+   *  the cursor both move by what the conversion made, not by what the insert held: a block
+   *  the schema refuses makes no node, and `createNodeFromYElement` has deleted it from the
+   *  fragment as it refused it, so counting it would take the window past the editor and read
+   *  every op of the delta after it one index high. */
   const restructure = (delta: Y.YEvent<Y.XmlFragment>["changes"]["delta"]): void => {
     let at = 0;
     for (const op of delta) {
@@ -447,8 +448,14 @@ export async function buildTheDocumentInBatches({
           const content = convert(added);
           change((tr) => tr.insert(startOf(tr.doc, at), content));
           built += content.childCount;
+          // The converting branch moves the cursor by the blocks the conversion made, since a
+          // refusal has taken the rest out of the fragment this cursor walks; the branch past
+          // the frontier converts nothing, so there the insert's own blocks are all still
+          // there to walk over.
+          at += content.childCount;
+        } else {
+          at += added.length;
         }
-        at += added.length;
       } else if (op.delete !== undefined) {
         const gone = Math.min(op.delete, Math.max(built - at, 0));
         if (gone === 0) continue;
