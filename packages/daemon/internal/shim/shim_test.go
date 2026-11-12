@@ -1464,11 +1464,13 @@ func treeOf(t *testing.T, root string) map[string]string {
 }
 
 // A git lock an interrupted git or jj left in a running pod's workspace fails the adoption on
-// every write of what it locks, and nothing under a running pod removes it: another role's live git
-// may hold it. The failure names the lock and how long ago it was last written, says not to remove
-// it while the pod runs and that replacing the pod removes it, and says what holds under tmux,
-// whether jj's own git backend reported it (the index jj rewrites as it snapshots the working copy,
-// as in LEGION-731) or a git command jj ran; and the lock stays.
+// every write of what it locks, and the role that reads the failure removes nothing: the launcher
+// of the pod's roles container sweeps such a lock once no process of the container holds it open
+// and it is more than 15 minutes old (internal/launcher's gitLockSweep). The failure names the
+// lock and how long ago it was last written, says what that sweep does and how long it takes,
+// tells the role to run the command again, and says what holds under tmux, whether jj's own git
+// backend reported it (the index jj rewrites as it snapshots the working copy, as in LEGION-731)
+// or a git command jj ran; and the lock stays.
 func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 	jj, err := exec.LookPath("jj")
 	if err != nil {
@@ -1526,9 +1528,10 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 			for _, want := range []string{
 				"Command failed (exit 1)",
 				"git lock " + lock + " was last written 31m",
-				"Do not remove it while the issue's pod runs: another role's git, which this container cannot see, may hold it.",
-				"Replacing the issue's pod removes it.",
+				"The launcher of the issue's pod removes a git lock that no process of the pod holds open and that is more than 15 minutes old, and it looks again every minute.",
+				"Run the command again in about 16 minutes.",
 				"Under the tmux runtime nothing removes it",
+				"If the lock is still there after that time, tell the issue's architect.",
 			} {
 				if !strings.Contains(got.Error, want) {
 					t.Errorf("the result's error %q does not mention %q", got.Error, want)

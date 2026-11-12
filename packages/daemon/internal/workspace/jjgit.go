@@ -92,7 +92,7 @@ func OutputLines(out string) []string {
 // wherever the caller's process stands would read a repository nobody named (docs/testing.md).
 // stdin is fed to the command, and nil is an empty standard input. started is when the caller's
 // budget began, which a timeout's report names. A failure's report ends with a note on each
-// stale git lock it names (staleGitLockNote). The command timed out only when the budget ended
+// stale git lock it names (StaleGitLockNote). The command timed out only when the budget ended
 // it: once the command has exited on its own, procgroup.WaitDelay can hold Run open past the
 // budget for a child still holding the command's pipes, and the command's own exit is then its
 // answer. A command that never started because an earlier one on the same budget spent it timed
@@ -135,7 +135,7 @@ func RunCommand(ctx context.Context, budget time.Duration, started time.Time, en
 		return strings.TrimSpace(stdout.String()), nil
 	}
 	report := strings.TrimSpace(stderr.String())
-	if note := staleGitLockNote(report, time.Now()); note != "" {
+	if note := StaleGitLockNote(report, time.Now()); note != "" {
 		report += "\n" + note
 	}
 	if timedOut {
@@ -156,15 +156,30 @@ var gitLockReports = []*regexp.Regexp{
 	regexp.MustCompile(`Unable to create '([^']+)': File exists`),
 }
 
-// staleGitLockNote is one line for each git lock file output names that is still on disk: its
+// staleGitLockNoteText is the note's wording, with the lock's path and its age in that order. It
+// is one line, and a single constant, because packages/pi-shared's own copy of this note is held
+// to it by a test that reads this source and compares the two (git-lock.test.ts): a wording split
+// over concatenated pieces could not be read out of here.
+//
+// The numbers in it are internal/launcher's gitLockGuard (15 minutes) and gitLockInterval (a
+// minute), which this package cannot read: internal/launcher imports this one. A test there
+// renders this note and asserts both numbers, so a change of either without a change of this
+// wording fails (TestStaleGitLockNoteCarriesTheLaunchersSweepNumbers).
+const staleGitLockNoteText = "git lock %s was last written %s ago and blocks this command. The launcher of the issue's pod removes a git lock that no process of the pod holds open and that is more than 15 minutes old, and it looks again every minute. Run the command again in about 16 minutes. Under the tmux runtime nothing removes it: remove it by hand only once no git or jj process on the host is using the repository. If the lock is still there after that time, tell the issue's architect."
+
+// StaleGitLockNote is one line for each git lock file output names that is still on disk: its
 // path, how long ago it was last written, and what becomes of it. A git or jj interrupted
-// mid-write leaves its lock, and every later write of what it locks fails on it. In a pod no
-// process removes it while the pod runs, since another role's git, in a container whose
-// processes this one cannot see, may hold it; replacing the issue's pod does (`workspace-init
-// provision`, cmd/legion/workspace_init.go). Under tmux nothing removes it. The Legion tools'
-// staleGitLockNote (packages/pi-shared/src/git-lock.ts) words the same note for its own jj
-// calls. Empty when output names no lock, or each one it names is already gone.
-func staleGitLockNote(output string, now time.Time) string {
+// mid-write leaves its lock, and every later write of what it locks fails on it. In an issue pod
+// the launcher of the roles container removes such a lock once no process of the container holds
+// it open and it is more than 15 minutes old, and looks again every minute
+// (internal/launcher's gitLockSweep), and the pod's `workspace-init provision` removes every lock
+// it finds before any container starts (RemoveStaleGitLocks, stalelock.go): the role's answer is
+// to run its command again, never to remove the file, which another role's live git may hold.
+// Under tmux nothing removes it, and the last sentence is what stands where a pod's image
+// predates that sweep. The Legion tools' staleGitLockNote
+// (packages/pi-shared/src/git-lock.ts) words the same note for its own jj calls. Empty when
+// output names no lock, or each one it names is already gone.
+func StaleGitLockNote(output string, now time.Time) string {
 	var locks, notes []string
 	for _, report := range gitLockReports {
 		for _, match := range report.FindAllStringSubmatch(output, -1) {
@@ -178,11 +193,7 @@ func staleGitLockNote(output string, now time.Time) string {
 		if err != nil {
 			continue
 		}
-		notes = append(notes, fmt.Sprintf("git lock %s was last written %s ago and blocks this command. "+
-			"Do not remove it while the issue's pod runs: another role's git, which this container cannot see, may hold it. "+
-			"Replacing the issue's pod removes it. "+
-			"Under the tmux runtime nothing removes it: remove it by hand only once no git or jj process on the host is using the repository.",
-			lock, now.Sub(info.ModTime()).Round(time.Second)))
+		notes = append(notes, fmt.Sprintf(staleGitLockNoteText, lock, now.Sub(info.ModTime()).Round(time.Second)))
 	}
 	return strings.Join(notes, "\n")
 }

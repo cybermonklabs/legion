@@ -1192,3 +1192,37 @@ func TestTheSweepGoesOnAfterALockItCannotRemove(t *testing.T) {
 		requireRemoved(t, log, refused)
 	})
 }
+
+// The note a role reads when a git lock fails its command (workspace.StaleGitLockNote) tells the
+// role what this sweep does, in words: the age a lock must pass before a pass removes it, how
+// often a pass looks again, and the wait those two add up to. The note cannot read the two
+// numbers — it lives in internal/workspace, which this package imports, so reading them from here
+// would be an import cycle — so this row is what holds the text and the numbers together: a
+// change of either number without a rewording of the note fails here, which is the only place it
+// can fail.
+func TestStaleGitLockNoteCarriesTheLaunchersSweepNumbers(t *testing.T) {
+	c := newLockClone(t)
+	lock := c.lock("index.lock", "a killed writer's", 31*time.Minute)
+	note := workspace.StaleGitLockNote(
+		fmt.Sprintf("error: cannot lock ref 'refs/heads/main': Unable to create '%s': File exists.", lock), time.Now())
+	if note == "" {
+		t.Fatalf("the note for the planted lock %s is empty, want the note a role reads", lock)
+	}
+	// The note says the guard in whole minutes and the interval as `every minute`: numbers it
+	// cannot print from here, so a change of their shape is a rewording of the note, not a
+	// rewriting of this row's arithmetic.
+	if gitLockGuard%time.Minute != 0 || gitLockInterval != time.Minute {
+		t.Fatalf("gitLockGuard is %s and gitLockInterval is %s: the note words them as whole minutes and as a minute (workspace.staleGitLockNoteText), so reword the note and this row",
+			gitLockGuard, gitLockInterval)
+	}
+	guard := int(gitLockGuard / time.Minute)
+	for _, want := range []string{
+		fmt.Sprintf("more than %d minutes old", guard),
+		"it looks again every minute",
+		fmt.Sprintf("Run the command again in about %d minutes.", guard+int(gitLockInterval/time.Minute)),
+	} {
+		if !strings.Contains(note, want) {
+			t.Errorf("the note is %q, want %q in it", note, want)
+		}
+	}
+}

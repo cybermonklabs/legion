@@ -441,8 +441,10 @@ test.skipIf(withoutJj)(
 );
 
 // A git lock an interrupted git or jj left in the workspace fails every jj that snapshots a change
-// into the working copy (jj rewrites the git index then), and nothing under a running pod removes
-// it. The failure names the lock and its age, and the lock stays.
+// into the working copy (jj rewrites the git index then). In a pod the roles container's launcher
+// sweeps such a lock once it is more than 15 minutes old and no process of the container holds it
+// open, so the note tells the role to run the command again; this test removes nothing either.
+// The failure names the lock and its age, and the lock stays.
 test.skipIf(withoutJj)(
   "a jj that fails on a stale git lock names it, its age, and when it goes",
   async () => {
@@ -461,7 +463,7 @@ test.skipIf(withoutJj)(
     await expect(failure).rejects.toThrow("Could not acquire lock for index file");
     await expect(failure).rejects.toThrow(
       new RegExp(
-        `git lock ${lock.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")} was last written 31m\\d+s ago and blocks this command\\. Do not remove it while the issue's pod runs: .* Replacing the issue's pod removes it\\. Under the tmux runtime nothing removes it`
+        `git lock ${lock.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")} was last written 31m\\d+s ago and blocks this command\\. The launcher of the issue's pod removes a git lock .* Run the command again in about 16 minutes\\. Under the tmux runtime nothing removes it: .* tell the issue's architect\\.`
       )
     );
     expect((await lstat(lock)).isFile()).toBe(true);

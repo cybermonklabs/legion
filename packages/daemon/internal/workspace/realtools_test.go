@@ -71,7 +71,7 @@ func whenLockAppears(lock string, done <-chan struct{}) <-chan time.Time {
 
 // locksUnder is every lock file left under dir, as paths relative to it: git and jj's git backend
 // both take what they lock by writing `<name>.lock` beside it, and a stopped command that left
-// one stops every later git and jj of that repository (staleGitLockNote, jjgit.go). A directory
+// one stops every later git and jj of that repository (StaleGitLockNote, jjgit.go). A directory
 // that is gone by the time the walk reaches it is no lock: the walk runs once the run has
 // returned, so what it finds is what the stop left.
 func locksUnder(t *testing.T, dir string) []string {

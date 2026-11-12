@@ -22,12 +22,15 @@ function age(ms: number): string {
 /**
  * One line for each git lock file `output` names that is still on disk: its path, how long ago it
  * was last written, and what becomes of it. A git or jj interrupted mid-write leaves its lock, and
- * every later write of what it locks fails on it. In a pod no process removes it while the pod
- * runs, since another role's git, in a container whose processes this one cannot see, may hold it;
- * replacing the issue's pod does (`legion workspace-init provision`). Under tmux nothing removes
- * it. The daemon's shim words the same note for its own jj calls (`staleGitLockNote`,
- * packages/daemon/internal/shim/gitlock.go). Empty when `output` names no lock, or each one it
- * names is already gone.
+ * every later write of what it locks fails on it. In an issue pod the launcher of the roles
+ * container removes such a lock once no process of the container holds it open and it is more than
+ * 15 minutes old, and looks again every minute, so the role's answer is to run its command again,
+ * never to remove the file, which another role's live git may hold. Under tmux nothing removes it,
+ * and the last sentence is what stands where a pod's image predates that sweep, since this plugin
+ * can be newer than the launcher the pod runs. The daemon words the same note for its own jj calls
+ * (`StaleGitLockNote`, packages/daemon/internal/workspace/jjgit.go), whose wording this text is
+ * held to by `git-lock.test.ts`, which reads that source. Empty when `output` names no lock, or
+ * each one it names is already gone.
  */
 export async function staleGitLockNote(output: string, now = Date.now()): Promise<string> {
   const locks = new Set<string>();
@@ -42,7 +45,7 @@ export async function staleGitLockNote(output: string, now = Date.now()): Promis
     );
     if (written === undefined) continue;
     notes.push(
-      `git lock ${lock} was last written ${age(now - written)} ago and blocks this command. Do not remove it while the issue's pod runs: another role's git, which this container cannot see, may hold it. Replacing the issue's pod removes it. Under the tmux runtime nothing removes it: remove it by hand only once no git or jj process on the host is using the repository.`
+      `git lock ${lock} was last written ${age(now - written)} ago and blocks this command. The launcher of the issue's pod removes a git lock that no process of the pod holds open and that is more than 15 minutes old, and it looks again every minute. Run the command again in about 16 minutes. Under the tmux runtime nothing removes it: remove it by hand only once no git or jj process on the host is using the repository. If the lock is still there after that time, tell the issue's architect.`
     );
   }
   return notes.join("\n");
