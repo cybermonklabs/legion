@@ -201,16 +201,18 @@ export function uploadErrorMessage(error: unknown): string {
 
 /** The sentence a tab with no document of its own shows about the uploads that follow the one
  *  making it: such an upload replaces the whole document, and Dispatch takes it only where it
- *  names the version it replaces. Both tabs and their tests read these words from here. */
-export const REPLACING_UPLOAD_NOTE =
+ *  names the version it replaces. `ReplacingUploadNote` is the only reader: the words are held
+ *  to by that component's own case, and each tab's case asks only that the note is there. */
+const REPLACING_UPLOAD_NOTE =
   "A later upload under that name replaces the document, so it names the token of the version it replaces";
 
 /** `REPLACING_UPLOAD_NOTE` as an empty state shows it, with where that token is read: the Plan
  *  tab and the Verification tab render this one paragraph under the command that makes their
- *  document, so a person reads the same words on either. */
+ *  document, so a person reads the same words on either. Each tab's case finds this paragraph
+ *  by its test id, which is how it asks for the note without asking what it says. */
 export function ReplacingUploadNote(): ReactNode {
   return (
-    <p className="mt-3">
+    <p className="mt-3" data-testid="replacing-upload-note">
       {REPLACING_UPLOAD_NOTE}: add <code>--precondition-json</code> with the document token{" "}
       <code>dispatch doc-read</code> prints.
     </p>

@@ -188,12 +188,8 @@ test("an issue with no plan document shows the command that makes one", () => {
   const empty = screen.getByTestId("plan-empty");
   expect(empty.textContent).toContain("CORE-1 has no plan document.");
   expect(empty.textContent).toContain("dispatch artifact --issue CORE-1 --name plan.md");
-  // The words themselves, not the constant they are read from: the sentence is here to tell a
-  // person that a later upload names the version it replaces, and a case asserting the constant
-  // would pass whatever that sentence came to say.
-  expect(empty.textContent).toContain(
-    "A later upload under that name replaces the document, so it names the token of the version it replaces"
-  );
-  expect(empty.textContent).toContain("--precondition-json");
+  // The note's words are asserted once, in `ArtifactUpload.test.tsx`, where they live: this
+  // case asks only that the tab shows the note.
+  expect(within(empty).getByTestId("replacing-upload-note")).not.toBeNull();
   expect(getArtifactBlocks).not.toHaveBeenCalled();
 });

@@ -17,6 +17,7 @@ import {
   appendToDraft,
   captureUploadBase,
   DraftUploadStatus,
+  ReplacingUploadNote,
   useArtifactUpload,
   useDraftUpload,
 } from "./ArtifactUpload";
@@ -423,6 +424,24 @@ test("an upload Dispatch required a version of is told it named none, not that t
   }
 });
 
+// The words of this note live here and are asserted here, once. The Plan tab and the
+// Verification tab both render it and their cases ask only that it is there, so this is the
+// case that fails when the sentence a person reads changes - including the flag, which is the
+// one thing in it a person types.
+test("the replacing-upload note says a later upload names the version it replaces, and how", () => {
+  const view = render(<ReplacingUploadNote />);
+
+  try {
+    expect(screen.getByTestId("replacing-upload-note").textContent).toBe(
+      "A later upload under that name replaces the document, so it names the token of the " +
+        "version it replaces: add --precondition-json with the document token " +
+        "dispatch doc-read prints."
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 // One press is one key, and Dispatch digests the whole body under that key, the `precondition`
 // field included (`bodyDigest` in the server's `api/request_keys.go`). An attempt that read the
 // base again would send other bytes and be answered `422 KEY_REUSED` instead of what the first
@@ -714,8 +733,9 @@ test("a draft's Retry after a stopped upload sends that press's base under its k
 // field shows is its newest press's, whichever press the reader stopped last, so Retry sends the
 // file that refusal is about - chart.png here, stopped before notes.md - under chart.png's own
 // key, and Dispatch answers it with what that stopped attempt did. Sent as the press stopped
-// last instead, it would store notes.md a second time and leave chart.png unsent, with nothing
-// on screen saying so.
+// last instead, notes.md would go out under notes.md's own key, which Dispatch answers as it
+// answered that press, so nothing would be stored twice: the harm is that chart.png - the file
+// the refusal on screen is about - is never sent, with nothing on screen saying so.
 test("a draft's Retry with two presses stopped sends the file whose refusal it shows", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
