@@ -461,7 +461,8 @@ func (s *server) landingIssueDocument(ctx context.Context, caller model.Actor, i
 	artifact := &issue.Artifacts[index]
 	document := &landingIssueDocument{Artifact: artifact}
 
-	text, err := s.loadArtifactText(ctx, *artifact)
+	// No blocks beside the text: the document's blocks are a part of their own, below.
+	text, err := s.loadArtifactText(ctx, *artifact, false)
 	document.Text = landingPart("issue.document.text", &text, err)
 
 	blocks, err := s.loadArtifactBlocks(ctx, *artifact)
@@ -513,7 +514,8 @@ func (s *server) landingDocumentPage(ctx context.Context, project, slug string) 
 		return page
 	}
 
-	text, err := s.loadArtifactText(ctx, artifact)
+	// No blocks beside the text: the page's blocks are a part of their own, below.
+	text, err := s.loadArtifactText(ctx, artifact, false)
 	page.Text = landingPart("document.text", &text, err)
 
 	blocks, err := s.loadArtifactBlocks(ctx, artifact)

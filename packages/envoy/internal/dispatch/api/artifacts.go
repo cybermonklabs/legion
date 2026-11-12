@@ -673,9 +673,23 @@ func (s *server) storeArtifact(
 	// replacement of an approved spec closes its design gate as an edit does, unless the restore
 	// above carried the approval to it. A new document has no review of its own to supersede.
 	var superseded *supersededApproval
+	var moved *movedApprovalRequest
 	if kind == "doc" && !created {
+		// This handler serves the project upload as well (uploadProjectArtifact), and a document
+		// upload is an issue's or a project's, so the route both reads below name is the one the
+		// request came in on: a read that failed is logged where it ran.
+		route := "POST /api/v1/projects/{key}/artifacts"
+		if target.IssueKey != nil {
+			route = "POST /api/v1/issues/{key}/artifacts"
+		}
 		superseded = s.supersededApprovalAdvice(
-			r.Context(), tx, "POST /api/v1/issues/{key}/artifacts", artifactIssueKey(artifact), artifact.ID, version.Number,
+			r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID, version.Number,
+		)
+		// The open approval request this upload's own version took back from the person it was
+		// waiting on, read after the move above and after the restore's carry, so a carry that
+		// answered the request reports nothing. A new document carries no request either.
+		moved = s.movedApprovalRequestAdvice(
+			r.Context(), tx, route, artifactIssueKey(artifact), artifact.ID,
 		)
 	}
 	var advice *writeAdvice
@@ -702,13 +716,20 @@ func (s *server) storeArtifact(
 	if advice != nil {
 		advice.documentBlocks = blocks
 		advice.SupersededApproval = superseded
+		advice.MovedApprovalRequest = moved
 	}
 	responsePayload := artifactUploadResponse{Artifact: artifact, Version: version}
-	if target.IssueKey != nil {
+	// An issue document whose bounded issue-advice read failed leaves advice nil, and the three
+	// document reports with nothing to ride on: they are about the document alone, so they go
+	// out on their own shape here rather than being dropped with the issue state that failed,
+	// which is what withAdvice would do with a nil *writeAdvice. The edit route answers the
+	// same way. A write with nothing at all to report still answers the bare payload, so no
+	// reader is handed an empty advice envelope.
+	if target.IssueKey != nil && advice != nil {
 		WriteJSON(w, http.StatusCreated, withAdvice(responsePayload, advice))
-	} else if blocks != nil || superseded != nil {
+	} else if blocks != nil || superseded != nil || moved != nil {
 		WriteJSON(w, http.StatusCreated, withRawAdvice(responsePayload, documentWriteAdvice{
-			documentBlocks: blocks, SupersededApproval: superseded,
+			documentBlocks: blocks, SupersededApproval: superseded, MovedApprovalRequest: moved,
 		}))
 	} else {
 		WriteJSON(w, http.StatusCreated, responsePayload)
@@ -732,11 +753,13 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 
 // artifactText is the body GET /api/v1/artifacts/{id}/text,
 // GET /api/v1/issues/{key}/artifacts/{slug}/text and
-// GET /api/v1/projects/{key}/artifacts/{slug}/text answer.
+// GET /api/v1/projects/{key}/artifacts/{slug}/text answer. Blocks is absent unless the request
+// asked for it with ?blocks=true.
 type artifactText struct {
-	Markdown string `json:"markdown"`
-	Token    string `json:"token"`
-	Version  *int   `json:"version"`
+	Markdown string                 `json:"markdown"`
+	Token    string                 `json:"token"`
+	Version  *int                   `json:"version"`
+	Blocks   *[]model.ArtifactBlock `json:"blocks,omitempty"`
 }
 
 func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
@@ -748,7 +771,7 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	text, err := s.loadArtifactText(r.Context(), artifact)
+	text, err := s.loadArtifactText(r.Context(), artifact, r.URL.Query().Get("blocks") == "true")
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -757,14 +780,15 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 }
 
 // loadArtifactText is the read behind the three text routes: a document's canonical markdown with
-// the token a write holds it to, and the number of its latest version. A file is 400 NOT_DOCUMENT,
-// as it was when the check stood in the handler. getArtifactText answers it, and GET
-// /api/v1/landing carries it beside the document a page opens.
-func (s *server) loadArtifactText(ctx context.Context, artifact model.Artifact) (artifactText, error) {
+// the token a write holds it to, the number of its latest version, and the document's blocks for
+// a caller that asked for them. A file is 400 NOT_DOCUMENT, as it was when the check stood in the
+// handler. getArtifactText answers it, and GET /api/v1/landing carries it beside the document a
+// page opens.
+func (s *server) loadArtifactText(ctx context.Context, artifact model.Artifact, withBlocks bool) (artifactText, error) {
 	if artifact.Kind != "doc" {
 		return artifactText{}, errorf(http.StatusBadRequest, "NOT_DOCUMENT", "artifact is not a document")
 	}
-	markdown, token, err := s.deps.Docs.TextWithToken(ctx, artifact.ID)
+	markdown, token, blocks, err := s.artifactTextBody(ctx, artifact.ID, withBlocks)
 	if err != nil {
 		return artifactText{}, err
 	}
@@ -776,7 +800,32 @@ func (s *server) loadArtifactText(ctx context.Context, artifact model.Artifact) 
 	if err != nil {
 		return artifactText{}, err
 	}
-	return artifactText{Markdown: markdown, Token: token, Version: version}, nil
+	return artifactText{Markdown: markdown, Token: token, Version: version, Blocks: blocks}, nil
+}
+
+// artifactTextBody is the markdown and the token the three text routes answer, with the blocks
+// beside them for a caller that asked for them (?blocks=true on those routes). The three come
+// from one rendering of one tree (docs.TextWithTokenAndBlocks), so a write by another session
+// cannot leave a listing's byte ranges indexing markdown they were not computed over; nil blocks
+// for a caller that asked for none, which pays for none of that rendering.
+func (s *server) artifactTextBody(ctx context.Context, artifactID string, withBlocks bool) (string, string, *[]model.ArtifactBlock, error) {
+	if !withBlocks {
+		markdown, token, err := s.deps.Docs.TextWithToken(ctx, artifactID)
+		return markdown, token, nil, err
+	}
+	markdown, token, blocks, err := s.deps.Docs.TextWithTokenAndBlocks(ctx, artifactID)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if err := s.describeBlocks(ctx, artifactID, blocks); err != nil {
+		return "", "", nil, err
+	}
+	// A document with no blocks answers the empty list, never a missing key: the key is absent
+	// only where the caller asked for no blocks.
+	if blocks == nil {
+		blocks = []model.ArtifactBlock{}
+	}
+	return markdown, token, &blocks, nil
 }
 
 func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
@@ -808,17 +857,26 @@ func (s *server) loadArtifactBlocks(ctx context.Context, artifact model.Artifact
 	if err != nil {
 		return nil, err
 	}
-	references, err := s.blockReferences(ctx, artifact.ID)
-	if err != nil {
+	if err := s.describeBlocks(ctx, artifact.ID, blocks); err != nil {
 		return nil, err
 	}
-	// The windows of a document's blocks are written under the artifact id; a block the live
-	// document holds and no window covers - a block inside another, whose text its parent's
-	// window already holds, and every block of a version the indexer has not windowed yet -
-	// reads as model.BlockNotEmbedded.
-	embedding, err := refs.BlockEmbeddingStates(ctx, s.deps.Store.Pool, refs.DocumentWindowKind, artifact.ID)
+	return blocks, nil
+}
+
+// describeBlocks writes onto each block what the document's rows say about it, which its
+// rendering does not hold: the comments and asks anchored to it, a table's folded in from the
+// cells it holds, and where meaning search stands on it. The windows of a document's blocks are
+// written under the artifact id; a block the live document holds and no window covers - a block
+// inside another, whose text its parent's window already holds, and every block of a version the
+// indexer has not windowed yet - reads as model.BlockNotEmbedded.
+func (s *server) describeBlocks(ctx context.Context, artifactID string, blocks []model.ArtifactBlock) error {
+	references, err := s.blockReferences(ctx, artifactID)
 	if err != nil {
-		return nil, err
+		return err
+	}
+	embedding, err := refs.BlockEmbeddingStates(ctx, s.deps.Store.Pool, refs.DocumentWindowKind, artifactID)
+	if err != nil {
+		return err
 	}
 	for index := range blocks {
 		counts := references[blocks[index].ID]
@@ -830,7 +888,7 @@ func (s *server) loadArtifactBlocks(ctx context.Context, artifact model.Artifact
 		blocks[index].References = counts
 		blocks[index].Embedding = blockEmbedding(embedding, blocks[index].ID)
 	}
-	return blocks, nil
+	return nil
 }
 
 func (s *server) getArtifactBlockPath(w http.ResponseWriter, r *http.Request) {
@@ -1173,9 +1231,17 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	// version and any carry it made: a person's approval of a spec is Legion's design gate, and
 	// the writer is the only one who learns in time that this write closed it.
 	var superseded *supersededApproval
+	var moved *movedApprovalRequest
 	if written != nil {
 		superseded = s.supersededApprovalAdvice(
 			r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID, written.Version.Number,
+		)
+		// The open approval request this edit's own version took back from the person it was
+		// waiting on, read after that version moved it (docs.MoveApprovalAsk) and after any
+		// carry: an edit that stored no version moved nothing, and one whose carry answered the
+		// request leaves it with the person and reports nothing.
+		moved = s.movedApprovalRequestAdvice(
+			r.Context(), tx, routeEditDocument, artifactIssueKey(artifact), artifact.ID,
 		)
 	}
 	// An edit hears about the asks of this issue a person declined to answer only where it added
@@ -1222,12 +1288,13 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	if artifact.IssueKey == nil || advice == nil {
 		WriteJSON(w, http.StatusOK, withRawAdvice(responsePayload, documentWriteAdvice{
-			editBlocks: blocks, SupersededApproval: superseded,
+			editBlocks: blocks, SupersededApproval: superseded, MovedApprovalRequest: moved,
 		}))
 		return
 	}
 	advice.editBlocks = blocks
 	advice.SupersededApproval = superseded
+	advice.MovedApprovalRequest = moved
 	WriteJSON(w, http.StatusOK, withAdvice(responsePayload, advice))
 }
 
@@ -1873,7 +1940,8 @@ func artifactSlug(name string) string {
 // roleSlugs pairs each role a document plays with the slug that names it: the one place the two
 // spellings are written. Everything that asks what part a document plays is built from it —
 // documentRole, which writes the role on a new row, the SQL predicates that hold a row to a role
-// (documentRolePredicate), and documentPlays, which asks the same of a row already read.
+// (documentRolePredicate), documentPlays, which asks the same of a row already read, and
+// documentRoleOf, which names the part one row plays.
 var roleSlugs = map[string]string{
 	model.ArtifactRoleVerification: "verification-md",
 	model.ArtifactRolePlan:         "plan-md",
@@ -1909,6 +1977,23 @@ func documentRole(target artifactTarget, kind, slug string) *string {
 // judge the document in hand — agrees about the same row.
 func documentPlays(artifact model.Artifact, role string) bool {
 	return artifact.Role == role || (artifact.Role == "" && artifact.Slug == roleSlugs[role])
+}
+
+// documentRoleOf is the part a document plays: the role of roleSlugs that documentPlays answers
+// true for, asked of the row as every other reader asks it. A row plays at most one of them - a
+// row that carries a role carries one of them, and a row that carries none falls back to its
+// slug, which the map pairs with a single role - so the order this walks the map in cannot
+// change the answer. Asking documentPlays rather than reading artifacts.role is what gives a row
+// whose role column is still null the role its slug decides, which is the state a rolling deploy
+// leaves behind. A document that plays none of them answers "", which omits the field of a
+// report that carries it (movedApprovalDocument).
+func documentRoleOf(artifact model.Artifact) string {
+	for role := range roleSlugs {
+		if documentPlays(artifact, role) {
+			return role
+		}
+	}
+	return ""
 }
 
 // isSpecDocument reports whether an artifact already read is an issue's spec: the primary

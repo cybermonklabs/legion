@@ -7,7 +7,7 @@ import (
 
 // The release before 20261105022045 kept a claim's answer through a turn the daemon sent nothing
 // for whenever the claim's running process had registered a plugin contract below 46, the
-// contract that introduced ready_for_update (supervise.CannotAnswerUpdate). This release reads
+// contract that introduced ready_for_update (supervise.PodUpdateContract). This release reads
 // claims.update_answered_by_turn_end in place of that contract, and the column arrives false for
 // every row the table already holds, so the migration backfills it: a claim below 46 that had
 // answered its open round by the end of its task's turn keeps that answer across the upgrade,
