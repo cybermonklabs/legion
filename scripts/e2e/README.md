@@ -269,8 +269,16 @@ Each item below names a script, then what it proves.
   a CI red takes no role's turn over, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with CI's settlements, the pushes and the synchronizes as GitHub envelopes and each role's registration, turns and completions over the daemon's own HTTP routes and worker stream:
   the red starts the implementer at once, while the tester is still working the turn its own assignment began and nothing at all is sent to the tester's connection;
   the tester is told its phase ended by one message on its own role topic;
-  a completion it reports from that old turn is refused `409 HANDOFF_STALE_ASSIGNMENT` while the completion of the handoff the new assignment's own task calls for, at a commit of its own, is taken;
+  a completion it reports from that old turn, a verdict on the head before the fix, is refused `409 HANDOFF_STALE_ASSIGNMENT` while the completion of the new assignment's own work, at the head the fix pushed, is taken;
+  a behind completion at the head the record holds is taken all the same, since the phase was handed out again at that head for the very work the turn did, and one naming no commit at all is refused;
   and a phase-ended message to a role topic no live session holds finishes its outbox row rather than retrying, with the start still acting
+
+- `backward-move-fence.sh`
+
+  the move that raised a phase entry outranks both heads in that same fence, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, at one head that never moves:
+  the control is the tester's completion of an entry the issue has moved past, at the head the record holds, which is taken `200` and puts the issue in `reviewing`;
+  the registered reviewer then requests the move back to testing over `POST /legion/v1/phase/backward`, with nothing pushed between, which raises a testing entry the record marks as a move back's;
+  and the same completion at that same head is then refused `409 HANDOFF_STALE_ASSIGNMENT`, naming the move back, with nothing recorded and the issue still in `testing`
 
 - `phase-entry-converge.sh`
 
@@ -4248,7 +4256,7 @@ Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py
 the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
-A run takes about a minute.
+A measured run took 73 s, 13 s of it the proof itself and the rest building the driver.
 The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `merged-root-waits.sh` and `no-required-checks.sh` make too.
 
 | check | what it holds |
@@ -4256,7 +4264,7 @@ The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'
 | `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
 | `driver` | a test binary of `TestACIRedStartsTheNextRoleAtOnceAndTakesNoTurnOverLive` (`internal/daemon/ci_red_no_takeover_live_test.go`, `-tags e2e`) |
-| `proof` | the five steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+| `proof` | the seven steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, and seeds one root implementing on an open pull request whose base requires `ci`, holding its tree's slot, with its implementer's claim mid-launch, serving run 1, which the boot relaunches.
 Facts enter only as production's do:
@@ -4271,8 +4279,10 @@ the role's connection is sent nothing at all while the start acts, read by readi
 | `step1-the-tester-works-the-assignment-its-phase-handed-it` | the seeded implementer's `handoff_complete` at `h1`, then the tester's registration, readiness and turn on the task it is prompted | the issue in `testing`, and the tester's claim `working` on a confirmed delivery of its testing task |
 | `step2-the-red-starts-the-implementer-while-the-testers-turn-runs-on` | CI's settlement of `h1` with `ci` failed, while that turn runs | the implementer prompted its fix task at once, named with the red; the issue in `implementing`; the tester still `working` the delivery it confirmed before the red; its connection sent nothing at all over three seconds; and the runtime asked to suspend nothing |
 | `step3-the-tester-is-told-its-phase-ended-on-its-own-role-topic` | nothing: the red's own `phase_ended` row, on the outbox's role-message lane | exactly one message on `notifications.role.<the tester's claim>`, the sentence `record.PhaseEnded` writes, printed in full, with the red behind its `Reason:` label; and the architect's one `checks-red` on its own topic beside it — a different message to a different role |
-| `step4-the-old-turns-completion-is-refused-and-the-new-assignments-is-taken` | the implementer's push of `h2`, GitHub's synchronize and its completion there, which hands testing out again; then the tester's completion from the turn it began in step 1, at its first handoff `t1`, and, once that turn has ended and the new assignment's task has reached it, the completion of the handoff `t2` that task's work wrote | the first refused `409 HANDOFF_STALE_ASSIGNMENT` with the issue left in `testing`, the second taken, with the issue in `reviewing` |
+| `step4-the-old-turns-completion-is-refused-and-the-new-assignments-is-taken` | the implementer's push of `h2`, GitHub's synchronize and its completion there, which hands testing out again; then the tester's completion from the turn it began in step 1, its verdict on `h1`, the head it tested, and, once that turn has ended and the new assignment's task has reached it, that task's own completion at `h2` | the first refused `409 HANDOFF_STALE_ASSIGNMENT`, the refusal naming the commit this completion gave against the head the record holds, with the issue left in `testing`; the second taken, with the issue in `reviewing` |
 | `step5-a-phase-ended-message-no-session-holds-finishes-and-the-start-still-acts` | the reviewer's role topic answered `404 unclaimed`, as the listener answers for a role no live session holds; then the push of `h3`, its synchronize and CI's settlement of `h3` with `ci` failed | the implementer prompted its fix task again and the issue in `implementing`, one refused publish on that topic and no retry over three seconds, no `phase_ended` row left in the outbox, and nothing delivered on the topic |
+| `step6-behind-at-the-head-the-record-holds-the-completion-is-taken` | the implementer's push of `h4` and its completion there, which hands testing out and the tester takes; then CI's settlement of `h4` with `ci` failed and the implementer's answer to it at `h4` with nothing pushed, which hands testing out again at that same head; then the tester's completion from the turn the entry before it began, its verdict on `h4` | the tester's row on a second entry while its claim still works the delivery of the first, the record still at `h4`, and that behind completion taken `200`, with the issue in `reviewing` |
+| `step7-behind-with-no-head-at-all-the-completion-is-refused` | the push of `h5`, its synchronize, CI's settlement of `h5` with `ci` failed and the implementer's fix there, which hands testing out once more; then a completion from that same turn naming no commit at all | refused `409 HANDOFF_STALE_ASSIGNMENT`, the refusal saying it named no commit while the record holds `h5`, with the issue left in `testing` on the entry it stood on |
 
 What the proof stands in for lies outside the rule:
 the broker is a native `nats-server`, GitHub is a REST stand-in for the one pull request (its base requiring `ci`, the base branch's rulesets, its reviews and the repository a launch reads, with a GraphQL root that knows no pull request), Dispatch is the board the whole-daemon drivers share (`liveDispatch`, in `internal/daemon/live_proof_test.go`), Envoy's listener is the package's `noticeListener` with the listener's own no-holder refusal added for the topic step 5 names, the two Apps' tokens are placeholders, and no agent runs:
@@ -4281,6 +4291,57 @@ The issue, its pull request, its slot and the implementer's claim are seeded thr
 The configuration, the store and its migrations, the HTTP API, the claim supervision and its worker stream, `openWorkflow`, the JetStream consumers and the outbox lanes — the phase-ended lane among them — are the real ones.
 The store is read for one thing no route shows: whether step 5's `phase_ended` row is still in the outbox.
 `CI_RED_NO_TAKEOVER_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log and the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`.
+
+## backward-move-fence.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/backward-move-fence.sh     # → "backward move fence e2e: PASS in <n>s", exit 0
+```
+
+The live proof that the move which raised a phase entry outranks both heads in the completion route's entry fence, the clause the two head arms of [`ci-red-no-takeover.sh`](#ci-red-no-takeoversh) are the control for.
+A behind completion at the head the record holds is taken there;
+here the same completion at the same head is refused, because the entry the phase stands on was raised by a move back, which asks for that phase's work to be done again (`record.PhaseRow.EntryMovedBack`, read by `internal/api/handoff.go`).
+No reading of the heads tells the two cases apart, since a move back sends the work back at the head that is already there, which is why this proof pushes nothing at all and drives both readings at one head.
+Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
+`LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
+the script starts none.
+The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
+The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
+A measured run took 27 s, 3 s of it the proof itself and the rest building the driver.
+The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `ci-red-no-takeover.sh` and `merged-root-waits.sh` make too.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestABehindCompletionIsRefusedWhenAMoveBackRaisedTheEntryLive` (`internal/daemon/backward_move_fence_live_test.go`, `-tags e2e`) |
+| `proof` | the five steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+
+The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, and seeds one root implementing on an open pull request whose base requires `ci`, holding its tree's slot, with its implementer's claim mid-launch, serving run 1, which the boot relaunches.
+Facts enter only as production's do:
+CI's settlements as `notifications.github.…` envelopes on the `ENVOY_NOTIFICATIONS` stream;
+the daemon's own HTTP routes for each role's registration, readiness, grants, completions and the reviewer's backward move;
+and the daemon's worker stream for each role's turns, which the driver speaks as `legion worker-shim` does (`shimwire` frames).
+The move back is the reviewer's own request over `POST /legion/v1/phase/backward`, from `reviewing`, under a grant its registered session minted, because the engine takes a backward move from no role but the one running the issue's phase (`internal/workflow`'s `Engine.backward`, `BACKWARD_REFUSED`);
+that registered reviewer is why this is a rig of its own rather than two more steps of [`ci-red-no-takeover.sh`](#ci-red-no-takeoversh), whose last step turns on a reviewer no session holds.
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `step1-the-tester-works-the-assignment-its-phase-handed-it` | the seeded implementer's `handoff_complete` at `bm1`, then the tester's registration, readiness and turn on the task it is prompted | the issue in `testing` on its first testing entry at `bm1`, and the tester's claim `working` on a confirmed delivery of that entry's task |
+| `step2-testing-is-handed-out-again-at-the-head-that-did-not-move` | CI's settlement of `bm1` with `ci` failed, which sends the work back; then CI's settlement of that same `bm1` with `ci` passed, the run again that the sound branch gets; then the implementer's completion there, with nothing pushed | the tester's row on a second entry, raised by no move back (`phases.entry_moved_back` false), the record still at `bm1`, and the tester still `working` the delivery of the entry before it |
+| `step3-the-control-the-behind-completion-at-that-head-is-taken` | the tester's completion from that turn, its verdict on `bm1`, the head the record holds | taken `200`, with the issue in `reviewing` and the tester still in the turn step 5 reports from |
+| `step4-the-registered-reviewer-moves-the-work-back-into-testing` | the reviewer's registration, readiness and turn on its review task, then its `POST /legion/v1/phase/backward` to `testing` | `200`, the issue in `testing` on a third entry, that entry raised by a move back (`phases.entry_moved_back` true), and the record still at `bm1`, nothing having been pushed |
+| `step5-the-same-completion-at-the-same-head-is-refused-after-the-move-back` | the same completion as step 3, from the same turn, at the same head | refused `409 HANDOFF_STALE_ASSIGNMENT`, the refusal naming the two heads as the one commit they are and saying the move back is what refused it, with the issue still in `testing` on that entry and the tester's phases row holding no verdict and no commit |
+
+What the proof stands in for lies outside the rule:
+the broker is a native `nats-server`, GitHub is a REST stand-in for the one pull request (its base requiring `ci`, the base branch's rulesets, its reviews and the repository a launch reads, with a GraphQL root that knows no pull request), Dispatch is the board the whole-daemon drivers share (`liveDispatch`, in `internal/daemon/live_proof_test.go`), Envoy's listener is that harness's `noticeListener`, the two Apps' tokens are placeholders, and no agent runs:
+every claim is launched by the package's fake runtime, which provisions its own workspace so the daemon clones nothing, and each role the proof acts as is driven over the daemon's own worker stream and HTTP routes.
+The issue, its pull request, its slot and the implementer's claim are seeded through the store, as every daemon test seeds its fixture;
+no `phases` row is, so every entry the fence reads is raised live, by the starts the completions and the move back make.
+The configuration, the store and its migrations, the HTTP API, the claim supervision and its worker stream, `openWorkflow`, the JetStream consumers and the outbox lanes are the real ones.
+The store is read for one thing no route shows, and that thing is the fence's own input: whether the entry the tester's phases row stands on was raised by a move back.
+`BACKWARD_MOVE_FENCE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log and the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`.
 
 ## phase-entry-converge.sh
 
@@ -4861,10 +4922,10 @@ Seven of them source that file through [`lib/rig.sh`](#librigsh), and [`envoy-se
 require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
 ```
 
-The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prerequisites` check reads `LEGION_TEST_PG_DSN` for each of the nine proofs that make that run: `child-adoption.sh`, `ci-red-no-takeover.sh`, `claim-compaction.sh`, [`handoff-records.sh`](#handoff-recordssh), [`merged-root-waits.sh`](#merged-root-waitssh), `no-required-checks.sh`, [`phase-entry-converge.sh`](#phase-entry-convergesh), [`provider-error-retry.sh`](#provider-error-retrysh) and [`role-prompt-rule.sh`](#role-prompt-rulesh).
+The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prerequisites` check reads `LEGION_TEST_PG_DSN` for each of the ten proofs that make that run: [`backward-move-fence.sh`](#backward-move-fencesh), `child-adoption.sh`, `ci-red-no-takeover.sh`, `claim-compaction.sh`, [`handoff-records.sh`](#handoff-recordssh), [`merged-root-waits.sh`](#merged-root-waitssh), `no-required-checks.sh`, [`phase-entry-converge.sh`](#phase-entry-convergesh), [`provider-error-retry.sh`](#provider-error-retrysh) and [`role-prompt-rule.sh`](#role-prompt-rulesh).
 [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) read their DSN with `run_database_url` alone, in the step that names the run's own database.
 Every proof that writes a server its caller's DSN names reads that DSN with this guard before it starts anything.
-That is the first of two frames for the nine whole-daemon proofs: this guard reads the caller's DSN with libpq in the shell, and the test binary those nine run reads every DSN it builds from that one back with pgx inside itself (`DatabaseURL`, `packages/daemon/internal/testpg/testdb/testdb.go`).
+That is the first of two frames for the ten whole-daemon proofs: this guard reads the caller's DSN with libpq in the shell, and the test binary those ten run reads every DSN it builds from that one back with pgx inside itself (`DatabaseURL`, `packages/daemon/internal/testpg/testdb/testdb.go`).
 The rationale is written once, above `require_loopback_dsn` in [`lib/loopback-dsn.sh`](#libloopback-dsnsh): the client the run then writes that server with must be libpq too, because libpq and a URL parser read different text as the host.
 That one copy also says which client each call site then writes the server with, what the pinned `github.com/jackc/pgx/v5 v5.11.0` carries for the four proofs that give Dispatch the caller's raw DSN and for the binary's own rewrites, and what a raise of that pin moves.
 
@@ -4914,7 +4975,7 @@ Two more cases pin a refusal of that mode: a password of bytes libpq reads as no
 The two helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask libpq.
 Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this file addresses beside itself, so it needs nothing of its caller's.
 [`lib/rig.sh`](#librigsh) sources it, which is how seven of the eight proofs have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
-[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources it on its own too, and calls `require_loopback_dsn` in `prerequisites` for the nine proofs that make its run.
+[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources it on its own too, and calls `require_loopback_dsn` in `prerequisites` for the ten proofs that make its run.
 
 ```sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"     # sourced, never run
@@ -6234,7 +6295,7 @@ Each item below names a function, then what it does.
 ## lib/live-daemon-proof.sh
 
 The run a whole-daemon live proof makes around its driver.
-`merged-root-waits.sh`, `no-required-checks.sh`, `child-adoption.sh`, `ci-red-no-takeover.sh`, `phase-entry-converge.sh`, `handoff-records.sh`, `provider-error-retry.sh`, `claim-compaction.sh` and `role-prompt-rule.sh` differ only in what their driver proves, so each sets its own values and makes this run.
+`merged-root-waits.sh`, `no-required-checks.sh`, `child-adoption.sh`, `ci-red-no-takeover.sh`, `backward-move-fence.sh`, `phase-entry-converge.sh`, `handoff-records.sh`, `provider-error-retry.sh`, `claim-compaction.sh` and `role-prompt-rule.sh` differ only in what their driver proves, so each sets its own values and makes this run.
 
 ```sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"     # sourced, never run

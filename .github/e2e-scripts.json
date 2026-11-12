@@ -13,6 +13,16 @@
   ],
   "hosted": [
     {
+      "script": "backward-move-fence.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": false,
+      "evidence_variable": "BACKWARD_MOVE_FENCE_EVIDENCE_DIR",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/backward-move-fence.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
+      "jj": true
+    },
+    {
       "script": "child-adoption.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],

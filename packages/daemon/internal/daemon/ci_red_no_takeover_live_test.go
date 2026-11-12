@@ -6,8 +6,12 @@
 // to end its turn, the role is told its phase is over by one message on its own Envoy role topic,
 // and a completion the old turn reports once the issue has handed the phase out again is refused
 // HANDOFF_STALE_ASSIGNMENT, where the new assignment's completion in the turn that assignment's
-// task starts is taken. scripts/e2e/ci-red-no-takeover.sh builds this driver with `-tags e2e` and
-// owns the nats-server and the PostgreSQL it runs against.
+// task starts is taken. What such a behind completion names decides it, and the last three steps
+// are the three readings of that: a verdict on a head the record has left is refused, a verdict on
+// the head the record holds is taken, since the phase was handed out again for the very work that
+// turn did (api/handoff.go's behindAtRecordedHead), and a completion naming no commit at all,
+// which says nothing about a head, is refused. scripts/e2e/ci-red-no-takeover.sh builds this
+// driver with `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
 // own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
@@ -82,23 +86,23 @@ const (
 	ciRedBase  = "main"
 )
 
-// The three heads the proof drives: the implementer's seeded head, the fix it pushes for the
-// tester's second assignment, and the fix it pushes while the reviewer reviews. Each red is
-// settled at a head of its own, since a settlement that replays to the judgement already recorded
-// changes nothing (classify.ApplyCheckSettlement).
+// The five heads the proof drives: the implementer's seeded head, the fix it pushes for the
+// tester's second assignment, the fix it pushes while the reviewer reviews, the fix that hands
+// testing out for the two head arms, and the fix for the red that hands it out once more. Each
+// red is settled at a head of its own, since a settlement that replays to the judgement already
+// recorded changes nothing (classify.ApplyCheckSettlement).
+//
+// Every completion of the tester names one of them in its commit, because that is what a tester
+// reports: a verdict on a head. The entry fence reads that commit against the head the record
+// holds, so the head a completion names is what decides a behind completion (behindAtRecordedHead,
+// api/handoff.go). The handoff record each completion names is written for it on the board, a new
+// one per completion (ciRedClaimant.handoff).
 const (
 	ciRedFirstHead  = "h1"
 	ciRedSecondHead = "h2"
 	ciRedThirdHead  = "h3"
-)
-
-// The two handoffs the tester writes: the one its first assignment's turn wrote, whose completion
-// the fence refuses, and the one it writes for the work the second assignment's task names. They
-// are two commits because the second assignment is for the head the implementer's fix pushed, so
-// the verdict of the turn before it answers for nothing there.
-const (
-	ciRedFirstTesterHandoff  = "t1"
-	ciRedSecondTesterHandoff = "t2"
+	ciRedFourthHead = "h4"
+	ciRedFifthHead  = "h5"
 )
 
 // ciRedNoTakeoverLive is one run of the proof: the booted daemon, the one issue it drives, the
@@ -124,12 +128,14 @@ type ciRedNoTakeoverLive struct {
 	seq int64
 }
 
-// TestACIRedStartsTheNextRoleAtOnceAndTakesNoTurnOverLive drives the five steps of the proof
+// TestACIRedStartsTheNextRoleAtOnceAndTakesNoTurnOverLive drives the seven steps of the proof
 // against one booted daemon, in the order each step's state follows from the last: the tester
 // working the assignment its phase handed it, the red that starts the implementer while that turn
 // runs on, the message that tells the tester its phase ended, the old turn's completion refused
-// and the new assignment's taken, and last a red whose phase-ended message reaches a topic no
-// session holds, which finishes the row and leaves the start acting all the same.
+// at a head the record has left and the new assignment's taken, a red whose phase-ended message
+// reaches a topic no session holds, which finishes the row and leaves the start acting all the
+// same, and last the two readings of a behind completion the head decides: the one at the head
+// the record holds, which is taken, and the one naming no commit at all, which is refused.
 func TestACIRedStartsTheNextRoleAtOnceAndTakesNoTurnOverLive(t *testing.T) {
 	fixtureenv.Live(t)
 	r := newCIRedNoTakeoverLive(t)
@@ -138,6 +144,8 @@ func TestACIRedStartsTheNextRoleAtOnceAndTakesNoTurnOverLive(t *testing.T) {
 	r.step("step3-the-tester-is-told-its-phase-ended-on-its-own-role-topic", r.testerIsToldItsPhaseEnded)
 	r.step("step4-the-old-turns-completion-is-refused-and-the-new-assignments-is-taken", r.staleAssignmentRefused)
 	r.step("step5-a-phase-ended-message-no-session-holds-finishes-and-the-start-still-acts", r.noHolderFinishesTheRow)
+	r.step("step6-behind-at-the-head-the-record-holds-the-completion-is-taken", r.behindAtTheHead)
+	r.step("step7-behind-with-no-head-at-all-the-completion-is-refused", r.behindWithNoHead)
 }
 
 // newCIRedNoTakeoverLive boots the daemon over the script's broker with the issue already
@@ -526,25 +534,15 @@ func (r *ciRedNoTakeoverLive) testerIsToldItsPhaseEnded() {
 }
 
 // Step 4. The implementer fixes and completes, which hands testing out again with an assignment of
-// its own. The tester's first turn is still running and still serving the assignment before it, so
-// the completion it reports from that turn is refused HANDOFF_STALE_ASSIGNMENT and records
-// nothing, and the refusal sends it to the new task's own work: the completion of the handoff that
-// task's turn writes, at a commit of its own, is taken.
+// its own. The tester's first turn is still running and still serving the assignment before it,
+// and what it reports from that turn is its verdict on the head it tested — the head before the
+// fix, which the record has left. So the completion is refused HANDOFF_STALE_ASSIGNMENT and
+// records nothing, and the refusal sends it to the new task's own work: the completion of that
+// task's turn, at the head the fix pushed and the handoff that turn wrote, is taken.
 func (r *ciRedNoTakeoverLive) staleAssignmentRefused() {
 	t := r.t
-	r.github.head(ciRedSecondHead)
-	r.publishPush(ciRedFirstHead, ciRedSecondHead)
-	r.publishSynchronize(ciRedSecondHead)
-	r.note("drove the implementer's push of %s onto %s and GitHub's synchronize of #%d to it", ciRedSecondHead, ciRedFirstHead, r.number)
-	r.waitFor("the pull request at the pushed head", func(got api.Issue) bool {
-		return got.PullRequest != nil && got.PullRequest.Head == ciRedSecondHead
-	})
-	if status, failure := r.imp.complete("fixed the red", ciRedSecondHead, "", r.imp.handoff("implement")); status != http.StatusOK {
-		t.Fatalf("the implementer's second completion = %d %s %s, want 200", status, failure.Code, failure.Error)
-	}
-	r.imp.endTurn()
-	r.note("drove POST /legion/v1/handoff/complete for the implementer at %s, then its agent_end: 200", ciRedSecondHead)
-	got := r.waitFor("the issue back in testing", func(got api.Issue) bool { return got.Phase == phase.Testing })
+	r.pushes(ciRedFirstHead, ciRedSecondHead)
+	got := r.handsTestingOut("fixed the red", ciRedSecondHead)
 	r.note("read back: %s is in %s again — a second testing phase, with a second assignment for the tester", r.key, got.Phase)
 
 	// The tester's first turn has run throughout, and still serves the assignment the first testing
@@ -553,9 +551,12 @@ func (r *ciRedNoTakeoverLive) staleAssignmentRefused() {
 	if stale.State != string(supervise.StateWorking) {
 		t.Fatalf("the tester is %s, want it still working the turn it began in step 1", stale.State)
 	}
-	status, failure := r.test.complete("tested it", ciRedFirstTesterHandoff, "pass", r.test.handoff("test"))
+	status, failure := r.test.complete("tested it", ciRedFirstHead, "pass", r.test.handoff("test"))
 	if status != http.StatusConflict || failure.Code != "HANDOFF_STALE_ASSIGNMENT" {
 		t.Fatalf("the completion from the tester's old turn = %d %s %s, want 409 HANDOFF_STALE_ASSIGNMENT", status, failure.Code, failure.Error)
+	}
+	if want := "this completion is at commit " + ciRedFirstHead + " while the pull request the record holds is at head " + ciRedSecondHead; !strings.Contains(failure.Error, want) {
+		t.Fatalf("the refusal = %q, want it to say %q: the head this verdict is of and the head the record holds are what decided it", failure.Error, want)
 	}
 	r.note("read back: the completion the tester reported from its first turn = 409 %s — %s", failure.Code, failure.Error)
 	if after := r.issue(r.key); after.Phase != phase.Testing {
@@ -564,18 +565,19 @@ func (r *ciRedNoTakeoverLive) staleAssignmentRefused() {
 	r.note("read back: %s is still in testing — the refusal recorded nothing", r.key)
 
 	// The turn ends; the task of the new assignment, waiting for it, is sent. That task is work of
-	// its own — the head the fix pushed — so the tester completes it at the handoff it wrote for
-	// that work, never at the commit the refused completion named, and it is taken.
+	// its own — the head the fix pushed — so the tester works it and reports its verdict on that
+	// head, with a handoff of its own, never the head the refused completion named, and it is
+	// taken.
 	r.test.endTurn()
 	prompt := r.test.takeTask("Phase: testing")
 	r.note("read back: the tester's first turn ended and the second assignment's task reached it (%s)", firstLine(prompt.Message))
-	if status, failure := r.test.complete("tested the fix", ciRedSecondTesterHandoff, "pass", r.test.handoff("test")); status != http.StatusOK {
+	if status, failure := r.test.complete("tested the fix", ciRedSecondHead, "pass", r.test.handoff("test")); status != http.StatusOK {
 		t.Fatalf("the completion from the tester's new turn = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.test.endTurn()
 	moved := r.waitFor("the issue in reviewing", func(got api.Issue) bool { return got.Phase == phase.Reviewing })
-	r.note("read back: the completion of the second assignment's own handoff (%s), in the turn its task started, was taken: %s is in %s",
-		ciRedSecondTesterHandoff, r.key, moved.Phase)
+	r.note("read back: the completion of the second assignment's own work, its verdict on %s in the turn that task started, was taken: %s is in %s",
+		ciRedSecondHead, r.key, moved.Phase)
 }
 
 // Step 5. The reviewer's claim was started by the tester's pass and nothing registered it, so no
@@ -625,6 +627,141 @@ func (r *ciRedNoTakeoverLive) noHolderFinishesTheRow() {
 		t.Fatalf("the listener took %d messages on %s, want none: no session holds it", len(accepted), topic)
 	}
 	r.note("read back: nothing was delivered on %s", topic)
+}
+
+// Step 6. A behind completion at the head the record holds is taken. The implementer's fix for
+// the red of step 5 hands testing out, and the tester takes that task and works it. CI then goes
+// red at that same head, and the implementer answers that red with nothing pushed: the branch is
+// sound, the red was the run's own, and CI run again passes at the very same head. So the
+// forward move back into testing raises a second entry at the head the tester is testing. The
+// completion that turn reports is behind its row's entry, as step 4's was, and is a verdict on
+// the head the record holds: the work the second entry's task asks for is the work this turn
+// did, so the daemon takes it (api/handoff.go's behindAtRecordedHead) and the pass moves the
+// issue to reviewing.
+func (r *ciRedNoTakeoverLive) behindAtTheHead() {
+	t := r.t
+	r.pushes(ciRedThirdHead, ciRedFourthHead)
+	r.handsTestingOut("fixed the red in reviewing", ciRedFourthHead)
+	prompt := r.test.takeTask("Phase: testing")
+	first := r.issue(r.key)
+	working := r.d.claim(r.test.token)
+	if working.State != string(supervise.StateWorking) || working.Pending == nil || working.Pending.ConfirmedAt == nil {
+		t.Fatalf("the tester is %s holding %+v, want working on a confirmed delivery of its testing task", working.State, working.Pending)
+	}
+	r.note("read back: the tester took the task of entry %d and is %s on delivery %s, with the record holding head %s (%s)",
+		first.PhaseEntry, working.State, working.Pending.ID, first.PullRequest.Head, firstLine(prompt.Message))
+
+	r.publishSettlement(ciRedFourthHead, true)
+	fix := r.imp.takeTask("CI is red at " + ciRedFourthHead)
+	r.note("drove CI's settlement of %s at %s with %s failed, and the implementer was prompted its fix task while the tester's turn ran (%s)",
+		r.key, ciRedFourthHead, ciRedCheck, firstLine(fix.Message))
+	r.runsGreen(ciRedFourthHead)
+	r.handsTestingOut("the red was the run's own; CI passes at the same head, with nothing pushed", ciRedFourthHead)
+	again := r.waitFor("the tester's row on a second entry at the head that did not move", func(got api.Issue) bool {
+		return got.Phase == phase.Testing && got.PhaseEntry > first.PhaseEntry
+	})
+	if again.PullRequest == nil || again.PullRequest.Head != ciRedFourthHead {
+		t.Fatalf("the record holds %+v for %s, want the pull request still at %s: nothing was pushed", again.PullRequest, r.key, ciRedFourthHead)
+	}
+	held := r.d.claim(r.test.token)
+	if held.State != string(supervise.StateWorking) || held.Pending == nil || held.Pending.ID != working.Pending.ID {
+		t.Fatalf("the tester is %s holding %+v, want it still working the delivery %+v of entry %d it confirmed",
+			held.State, held.Pending, working.Pending, first.PhaseEntry)
+	}
+	r.note("read back: %s is in testing on entry %d, above the entry %d whose task the tester took, and the record still holds head %s; the tester is still %s on that same delivery %s",
+		r.key, again.PhaseEntry, first.PhaseEntry, again.PullRequest.Head, held.State, held.Pending.ID)
+
+	if status, failure := r.test.complete("tested it at "+ciRedFourthHead, ciRedFourthHead, "pass", r.test.handoff("test")); status != http.StatusOK {
+		t.Fatalf("the behind completion at the head the record holds = %d %s %s, want 200", status, failure.Code, failure.Error)
+	}
+	moved := r.waitFor("the issue in reviewing", func(got api.Issue) bool { return got.Phase == phase.Reviewing })
+	r.note("read back: the completion of entry %d at %s, reported from that entry's own turn while the row stands on entry %d, was taken 200: %s is in %s",
+		first.PhaseEntry, ciRedFourthHead, again.PhaseEntry, r.key, moved.Phase)
+}
+
+// Step 7. A behind completion naming no commit at all is refused. Testing is handed out once
+// more — CI is red at a fifth head while the issue is in reviewing, and the implementer answers
+// that red as it answered the last, with CI green at the same head and nothing pushed, which
+// moves the issue forward into testing again — and the tester reports from the turn step 6 left
+// running, which is behind that entry as it was behind the one before it. This completion says
+// nothing about a head, so nothing makes it the work the current entry's task asks for: it is
+// refused HANDOFF_STALE_ASSIGNMENT, the refusal says it named no commit and what head the record
+// holds, and nothing is recorded.
+func (r *ciRedNoTakeoverLive) behindWithNoHead() {
+	t := r.t
+	r.pushes(ciRedFourthHead, ciRedFifthHead)
+	r.publishSettlement(ciRedFifthHead, true)
+	fix := r.imp.takeTask("CI is red at " + ciRedFifthHead)
+	r.note("drove CI's settlement of %s at %s with %s failed, and the implementer was prompted its fix task (%s)",
+		r.key, ciRedFifthHead, ciRedCheck, firstLine(fix.Message))
+	r.runsGreen(ciRedFifthHead)
+	entered := r.handsTestingOut("the red was the run's own here too; CI passes at this head", ciRedFifthHead)
+	held := r.d.claim(r.test.token)
+	if held.State != string(supervise.StateWorking) {
+		t.Fatalf("the tester is %s, want it still working the turn step 6 left running", held.State)
+	}
+	r.note("read back: %s is in testing on entry %d at head %s, and the tester is still %s on delivery %s",
+		r.key, entered.PhaseEntry, entered.PullRequest.Head, held.State, held.Pending.ID)
+
+	status, failure := r.test.complete("tested it", "", "pass", r.test.handoff("test"))
+	if status != http.StatusConflict || failure.Code != "HANDOFF_STALE_ASSIGNMENT" {
+		t.Fatalf("the behind completion naming no commit = %d %s %s, want 409 HANDOFF_STALE_ASSIGNMENT", status, failure.Code, failure.Error)
+	}
+	if want := "this completion names no commit while the pull request the record holds is at head " + ciRedFifthHead; !strings.Contains(failure.Error, want) {
+		t.Fatalf("the refusal = %q, want it to say %q: what the completion gave and the head the record holds are what decided it", failure.Error, want)
+	}
+	r.note("read back: the behind completion naming no commit = 409 %s — %s", failure.Code, failure.Error)
+	after := r.issue(r.key)
+	if after.Phase != phase.Testing || after.PhaseEntry != entered.PhaseEntry {
+		t.Fatalf("%s is in %s on entry %d after the refused completion, want testing on entry %d: a refusal records nothing",
+			r.key, after.Phase, after.PhaseEntry, entered.PhaseEntry)
+	}
+	r.note("read back: %s is still in testing on entry %d — the refusal recorded nothing", r.key, after.PhaseEntry)
+}
+
+// pushes is the implementer's push of to onto from: GitHub's own copy of the pull request moves
+// first, as it does on github.com, then the push and the synchronize Envoy relays, and it returns
+// once the head the daemon's record holds is the pushed one.
+func (r *ciRedNoTakeoverLive) pushes(from, to string) {
+	r.t.Helper()
+	r.github.head(to)
+	r.publishPush(from, to)
+	r.publishSynchronize(to)
+	r.note("drove the implementer's push of %s onto %s and GitHub's synchronize of #%d to it", to, from, r.number)
+	r.waitFor("the pull request at the pushed head "+to, func(got api.Issue) bool {
+		return got.PullRequest != nil && got.PullRequest.Head == to
+	})
+}
+
+// runsGreen is CI run again at head, passing, with nothing pushed: the settlement, and the wait
+// for the verdict the record holds to be green there. The two head arms need it because a phase
+// the issue enters while the record holds its head red is sent straight back out of it by the
+// red the record already holds (the workflow's checks_red row), so the only way to re-enter
+// testing at a head that did not move is for that head's verdict to have moved instead — which
+// is the case the arms are of: the branch was sound and the red was the run's own.
+func (r *ciRedNoTakeoverLive) runsGreen(head string) {
+	r.t.Helper()
+	r.publishSettlement(head, false)
+	r.waitFor("the record's verdict green at "+head, func(got api.Issue) bool {
+		return got.PullRequest != nil && got.PullRequest.ChecksVerdict == "green"
+	})
+	r.note("drove CI's settlement of %s at %s with %s passed, nothing pushed: the record holds that head green", r.key, head, ciRedCheck)
+}
+
+// handsTestingOut is the implementer completing implementing at commit, from the turn it is in,
+// and ending that turn: the forward move that hands testing to the tester and raises that role's
+// next entry. It answers the issue as the state shows it once the daemon has moved it.
+func (r *ciRedNoTakeoverLive) handsTestingOut(summary, commit string) api.Issue {
+	t := r.t
+	t.Helper()
+	if status, failure := r.imp.complete(summary, commit, "", r.imp.handoff("implement")); status != http.StatusOK {
+		t.Fatalf("the implementer's completion at %s = %d %s %s, want 200", commit, status, failure.Code, failure.Error)
+	}
+	r.imp.endTurn()
+	got := r.waitFor("the issue in testing", func(got api.Issue) bool { return got.Phase == phase.Testing })
+	r.note("drove POST /legion/v1/handoff/complete for the implementer at %s, then its agent_end: 200, and %s is in %s on entry %d",
+		commit, r.key, got.Phase, got.PhaseEntry)
+	return got
 }
 
 // outboxRows is how many rows of kind the outbox holds for the proof's issue. A finished row is
