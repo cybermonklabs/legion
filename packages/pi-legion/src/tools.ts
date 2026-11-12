@@ -196,16 +196,16 @@ export function createLegionTool(deps: {
   return {
     name: "legion",
     label: "legion",
-    // No sentence on read_record, whose name says what it reads; the shared sentence on
-    // read_release_records before handoff_complete's contract, since the records it answers are
-    // not read from its name; after that contract the shared sentence on request_backward_move
-    // (an architect's names the issue it returns from accepting), then the architect's
-    // retry_or_escalate, its sign_off and the controller's operations: the exact text
-    // tools.test.ts pins, so a change to the shared template cannot reach an Oh My Pi agent
-    // unnoticed.
+    // The shared sentence on read_record, since its name does not say that it reads the caller's
+    // own issue when the call names none; the shared sentence on read_release_records before
+    // handoff_complete's contract, since the records it answers are not read from its name;
+    // after that contract the shared sentence on request_backward_move (an architect's names the
+    // issue it returns from accepting), then the architect's retry_or_escalate, its sign_off and
+    // the controller's operations: the exact text tools.test.ts pins, so a change to the shared
+    // template cannot reach an Oh My Pi agent unnoticed.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
-      before: PHASE_OP_SENTENCES.readReleaseRecords,
+      before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
       after:
         PHASE_OP_SENTENCES.requestBackwardMove +
         "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +

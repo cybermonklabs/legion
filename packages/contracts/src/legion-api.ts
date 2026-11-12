@@ -678,7 +678,7 @@ const legionAgentSecretsLoginView = z.object({
 
 /** `api.CapabilityState` — one row of the deployment's capability report
  * (`capabilities.Deployment.Report`), in the table's order: `present`, `unchecked` (no probe has
- * checked an image row, or no session has reported a live row), `withheld` (a ruling, cited in
+ * checked an image row, or no session has reported a live row), `withheld` (the issue that withholds it, cited in
  * `detail`), `decided` (the operator's reason in `decision`) or `open`, an open deployment row
  * carrying `configLine`, the `legion.yaml` line that records a decision. The probe's own table also
  * prints `missing` and `reported`, which never reach this state (and `installed`, no status since

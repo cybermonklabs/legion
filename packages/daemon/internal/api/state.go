@@ -74,7 +74,7 @@ type State struct {
 	// Capabilities is the deployment's capability report (capabilities.Deployment.Report), one row
 	// per capability in the table's order: what the worker image was probed for, what the live
 	// sessions' reports prove (present), fail (open) or have not reported yet (unchecked), what a
-	// ruling withholds, and what the deployment's own configuration closes, decides or leaves open
+	// cited issue withholds, and what the deployment's own configuration closes, decides or leaves open
 	// — each open deployment row with the legion.yaml line that records a decision. Never null; a
 	// gap is reported here, never refused (contract 16).
 	Capabilities []CapabilityState `json:"capabilities"`

@@ -14,7 +14,7 @@ except a clear defect a role reports ([Issues handed to Legion](#issues-handed-t
 
 - Handle no wake until the extension has registered this session with the daemon as the project's controller, at session startup or, in a controller an operator started, from its first command once Oh My Pi has started, because without that registration the daemon does not know you as its controller.
 - Answer a person's direct message first, in the conversation. A plain user turn that is neither the start message nor a task sent with `legion claims deliver` is a person writing from Dispatch's Agents page.
-- A direct Dispatch message that decides scope, priority or an owner is a ruling: after you answer it, run the weekly-plan reconciliation (`skill://legion-controller/references/backlog-stewardship.md`), because the plan must record the rule.
+- A direct Dispatch message that settles scope, priority or an owner is a directive: after you answer it, run the weekly-plan reconciliation (`skill://legion-controller/references/backlog-stewardship.md`), because the plan must record the rule.
 - Handle one wake per turn, then end the turn. Never poll or wait for an event, because the daemon wakes you again (`tick` at least every `controller_wake_interval_seconds`).
 - Before any side effect, read `read_state` and the Dispatch issue, because a wake can be stale or sent twice.
 - Read a session's state from the Envoy registry, never from its absence from a list (`skill://envoy`). Start no replacement for an `unresponsive` session, take nothing from it, and never report it as gone, because it is working and keeps its claims.
@@ -99,7 +99,7 @@ Before you publish to more than one role topic, read whether a wave of wakes is 
 The daemon works only issues carrying the Dispatch label `legion` (any case). Work reaches Legion
 by a person's decision: they set the label from the issue header, or ask you to (a direct
 message, a Slack request that asks Legion to do the work, their answer to a finding ask, or a
-ruling the weekly plan records with its link). The one exception is a clear defect a role hands
+directive the weekly plan records with its link). The one exception is a clear defect a role hands
 you whose code no running tree owns: you file it with the label, because its fix is how to do work
 a person already wants, and humans decide what, agents decide how (the operator's answer on one
 such case: a clear defect is fixed, not asked about). A defect whose code a running
@@ -133,7 +133,7 @@ which branch to open the pull request against; nothing else carries that.
 
 A free slot is no reason to take an issue: a labelled root in `todo` takes the next slot through
 `admission.waiting` without you, and a parked issue (status `backlog` or `icebox`) means "do not
-run now". Move an issue out of `backlog` or `icebox` only on a request or a plan ruling that names
+run now". Move an issue out of `backlog` or `icebox` only on a request or a plan directive that names
 it, and cite that request. A slot is one issue the daemon has started, a root or a child, not one
 tree: a tree of four started issues holds four slots. An issue takes its slot when the daemon
 starts it and keeps it
@@ -157,7 +157,7 @@ move to `todo` you make is one of these:
   gone, or because a person asks;
 - a tree you parked for a hold (`Parked by Legion while it waits on:`), once a person's decision
   gives it a next step (`skill://legion-controller/references/parked-decisions.md`);
-- stopped-session work that a person's ruling in the weekly plan moves to Legion.
+- stopped-session work that a person's directive in the weekly plan moves to Legion.
 
 ## Findings, and the issues you file
 
