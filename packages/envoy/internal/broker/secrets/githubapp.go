@@ -229,7 +229,10 @@ const revokedCheckMessage = "broker: GitHub did not revoke a token minted for a 
 
 // missingActionsMessage is logged, at WARN, when GitHub refuses the permissions a read-only
 // narrowing asked for and the token is minted without actions, followed by app= and
-// installation=. It never holds the token.
+// installation=. It never holds the token. A check (MintRequest.Check) does not log it: it
+// releases no token, so its words about the token released for the installation would be
+// untrue, and one check of a narrowing mints as many times as it has repositories to probe,
+// each of which would write the line again for the one release behind it.
 const missingActionsMessage = "broker: a GitHub App installation does not hold actions, so the read-only token released for it reads no Actions runs, jobs or job logs; grant the App Actions: Read and approve it on that account"
 
 // revokeInstallationToken asks GitHub to revoke token, as the token itself
@@ -275,7 +278,9 @@ func (m GitHubApp) revokeToken(ctx context.Context, token string) error {
 // without one is the owner-wide one the broker already makes; a check without one is refused
 // before GitHub is asked anything.
 // The value is the JSON object stored in the secret, never part of an error. Every error wraps
-// one of ErrMintStoredValue, ErrMintRefused, ErrMintNarrowingRefused or ErrMintUpstream.
+// one of ErrMintStoredValue, ErrMintRefused, ErrMintNarrowingRefused or ErrMintUpstream; the
+// refusal of an App with no installation on the account also wraps ErrMintNoInstallation, which
+// is inside ErrMintRefused and which the broker's narrowing check reads.
 func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 	if req.Check && req.GitHubNarrowing == nil {
 		// A programming error in the broker: the caller asked this minter to find out about a
@@ -283,7 +288,9 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 		// refuses before any upstream is asked, as it is for the Azure login that is not human
 		// tier; ErrMintUpstream would log MintErrorClass's "upstream" and send an operator to
 		// GitHub's status and the broker's egress, which this fault has nothing to do with, and
-		// ErrMintStoredValue would blame the secret's owner for code the broker holds.
+		// ErrMintStoredValue would blame the secret's owner for code the broker holds. It is not
+		// ErrMintNoInstallation, so the check reads it as trouble and lets the request through,
+		// which is right: the broker's own code is at fault and the caller's narrowing is not.
 		return Minted{}, fmt.Errorf("%w: a github app mint check needs the narrowing it checks", ErrMintRefused)
 	}
 	var secret githubAppSecret
@@ -345,7 +352,10 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 			// reads contents, metadata and pull requests releases those rather than nothing
 			// (optionalReadOnlyPermission). heldBy still bounds what the answer may hold.
 			token, err = m.installationToken(ctx, jwt, installation.ID, narrowing.accessTokensBody(readOnlyPermissionsWithoutActions))
-			if err == nil {
+			if err == nil && !req.Check {
+				// A check releases nothing, so the line would say a token was released that
+				// never was, and it would be written once for each mint the check makes
+				// (missingActionsMessage).
 				slog.Warn(missingActionsMessage, "app", secret.AppID, "installation", installation.ID)
 			}
 		}
@@ -385,10 +395,13 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 		}
 	}
 	if len(minted.Installations) == 0 {
+		// ErrMintNoInstallation, not the ErrMintRefused it wraps: this is the one refusal of
+		// GitHub's the broker's narrowing check refuses a request for, and it is told apart
+		// from every other 4xx by this sentinel alone.
 		if narrowing != nil {
-			return Minted{}, fmt.Errorf("%w: github app %s has no installation on %s", ErrMintRefused, secret.AppID, narrowing.Owner)
+			return Minted{}, fmt.Errorf("%w: github app %s has no installation on %s", ErrMintNoInstallation, secret.AppID, narrowing.Owner)
 		}
-		return Minted{}, fmt.Errorf("%w: github app %s has no installation on an account its github-owners tag lists", ErrMintRefused, secret.AppID)
+		return Minted{}, fmt.Errorf("%w: github app %s has no installation on an account its github-owners tag lists", ErrMintNoInstallation, secret.AppID)
 	}
 	if req.Check {
 		// Every token this check minted is revoked and none is held, so there is nothing to

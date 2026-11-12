@@ -30,15 +30,17 @@ agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] -- <com
   `Authorization` header carries. Without `--github-token` the name holds the JSON object of
   installations, and a command that sends that object to GitHub reads `401`.
 - The broker checks a narrowing before the approval request, so a narrowing it cannot serve costs
-  nobody an approval. It refuses the request, nothing runs, and the status is 1, in four cases:
+  nobody an approval. It refuses the request, nothing runs, and the status is 1, in five cases:
 
   - an account the secret's `github-owners` tag does not list,
   - a run that names no GitHub App secret,
   - a name behind the airlock (the bullet below),
   - a narrowing GitHub itself refuses, such as a repository the App's installation does not
-    reach, or read access the App does not hold.
+    reach, or read access the App does not hold,
+  - an account the App is not installed on, which the message says in the words `has no
+    installation on`. Install the App on that account, or narrow to an account it is on.
 
-  The message says which of the four it is. Two cases keep the older behaviour, where the
+  The message says which of the five it is. Two cases keep the older behaviour, where the
   refusal comes when the grant is read instead: a request every name of which is granted at
   once, which no person decides, and a request on which the broker reaches no verdict, because
   GitHub is out of reach or the check passes its own time bounds.

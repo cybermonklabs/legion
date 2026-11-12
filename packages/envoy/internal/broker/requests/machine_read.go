@@ -243,9 +243,16 @@ func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g
 // narrowingRefusal is why narrowing cannot reach granted, with the name it refuses for, in the
 // order the three are reported: the grant holds no github-app secret
 // (ErrNarrowingNotApplicable), a github-app secret of it does not list the narrowing's owner in
-// its github-owners tag in set, the snapshot the release mints from (ErrNarrowingOwnerNotListed),
-// or the airlock holds back a granted name (ErrNarrowingBehindAirlock, naming the first such
-// name). GitHubApp.Mint refuses that owner too, as a second barrier.
+// its github-owners tag in set, the snapshot the names are judged against
+// (ErrNarrowingOwnerNotListed), or the airlock holds back one of those names
+// (ErrNarrowingBehindAirlock, naming the first such name). GitHubApp.Mint refuses that owner
+// too, as a second barrier.
+//
+// Both places a narrowing is judged make these three refusals through this one function, so
+// neither can answer one of them differently: the release of a grant (Values, where set is the
+// snapshot the release mints from and granted its granted names) and Create's check before
+// anybody is asked (checkNarrowing, where set is the snapshot the request is evaluated against
+// and granted the names it asks for).
 //
 // The airlock's refusal is there because the broker would answer that it applied the narrowing
 // while the proxy went on swapping in the value it holds for that grant, which is minted
@@ -406,11 +413,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	if err != nil {
 		return secrets.Minted{}, err
 	}
-	token, err := mint(ctx, secrets.MintRequest{
-		Name: g.name, HumanTier: served.Tier == policy.TierHuman, Value: shapedValue(value, served.Shape, g.name),
-		GitHubOwners: served.GitHubOwnerLogins(), GoogleScopes: served.ScopeURLs(),
-		GitHubNarrowing: narrowing,
-	})
+	token, err := mint(ctx, mintRequest(g.name, served, shapedValue(value, served.Shape, g.name), narrowing))
 	if errors.Is(err, secrets.ErrMintNarrowingRefused) {
 		return secrets.Minted{}, err
 	}
@@ -421,6 +424,23 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 		return secrets.Minted{}, fmt.Errorf("%w: %w", ErrMintFailed, err)
 	}
 	return token, nil
+}
+
+// mintRequest is the input one granted name's release gives its minter: the name, the stored
+// value as the shape rule spends it, the tier, GitHub owners and Google OAuth scopes of the
+// policy snapshot the release was checked against, and the narrowing the caller asked for, nil
+// where it asked for none. Create's check builds its request here too and sets Check on it
+// (checkNarrowingMint), which is the whole worth of the check: it asks GitHub about the same
+// secret, with the same owners and the same narrowing, as the release it stands for.
+func mintRequest(name string, served policy.Secret, value string, narrowing *secrets.GitHubNarrowing) secrets.MintRequest {
+	return secrets.MintRequest{
+		Name:            name,
+		HumanTier:       served.Tier == policy.TierHuman,
+		Value:           value,
+		GitHubOwners:    served.GitHubOwnerLogins(),
+		GoogleScopes:    served.ScopeURLs(),
+		GitHubNarrowing: narrowing,
+	}
 }
 
 // shapedValue answers the value release spends for a stored value it has just read, under that

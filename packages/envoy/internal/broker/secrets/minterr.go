@@ -2,6 +2,7 @@ package secrets
 
 import (
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -82,7 +83,9 @@ var (
 	// ErrMintRefused: the minter refuses the release (an Azure login that is not the configured
 	// human-tier secret), or GitHub or Google refused (a 4xx other than GitHub's 422 to a narrowed
 	// token, a Google login that needs a new sign-in, an App with no installation on a listed
-	// account). A refusal of the narrowing a release asked for is ErrMintNarrowingRefused.
+	// account, a 401 to the App's own JWT). A refusal of the narrowing a release asked for is
+	// ErrMintNarrowingRefused, and the one refusal that is about the account alone is
+	// ErrMintNoInstallation.
 	ErrMintRefused = errors.New("the upstream refused the mint")
 	// ErrMintNarrowingRefused: the narrowing the release asked for cannot be served: it names an
 	// account the secret's github-owners tag does not list, which requests.Machine.Values refuses
@@ -105,6 +108,21 @@ var (
 	// refused before any credential is resolved and before any call reaches Google.
 	ErrMintNotBound = errors.New("the deployment binds no such account to this secret")
 )
+
+// ErrMintNoInstallation is the one refusal of GitHub's that is about the account a release is
+// for: the App has no installation on the account the narrowing names, or on any account the
+// secret's github-owners tag lists (GitHubApp.Mint). It is no class of its own: it wraps
+// ErrMintRefused, so MintErrorClass still reads "refused" and a release still answers it as the
+// mint failure it is.
+//
+// It exists because the broker's narrowing check must tell this refusal from every other 4xx
+// GitHub answers (mintStatusError.Unwrap wraps them all in ErrMintRefused): a 401 to the App's
+// JWT, a 403 that is no rate limit and a 404 on the token route say nothing about the narrowing
+// the caller asked for, and a check that read them as a refusal would tell the caller to fix a
+// narrowing that is not at fault. Its own text is ErrMintRefused's, which it wraps, so a
+// refusal naming it reads word for word as it did when it named the class alone: a released
+// client matches "has no installation on" in those words (packages/daemon's appauth).
+var ErrMintNoInstallation = fmt.Errorf("%w", ErrMintRefused)
 
 // MintErrorClass names the class err wraps, for the broker's log line: "stored-value",
 // "refused", "narrowing", "binding", "upstream", or "unknown" for an error that wraps none.

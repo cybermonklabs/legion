@@ -110,37 +110,9 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 	case errors.Is(err, policy.ErrUnknownSecret):
 		writeError(w, http.StatusBadRequest, "UNKNOWN_SECRET", err.Error())
 		return
-	case errors.Is(err, requests.ErrNarrowingNotApplicable):
-		// The request asks for no github-app secret, so nothing its grant releases could be
-		// narrowed. Bad input, and the release answers 400 for the same cause.
-		writeError(w, http.StatusBadRequest, "NARROWING_NOT_APPLICABLE", err.Error())
-		return
-	case errors.Is(err, requests.ErrNarrowingBehindAirlock):
-		// The request asks for a name the airlock keeps back, whose value the proxy spends on
-		// the session's behalf and mints owner-wide once per pod, so no narrowing of its
-		// release could hold for it. A conflict between the narrowing and the names asked for,
-		// not bad input, so 409 rather than 400, as the release answers for the same cause.
-		writeError(w, http.StatusConflict, "NARROWING_BEHIND_AIRLOCK", err.Error())
-		return
-	case errors.Is(err, requests.ErrNarrowingOwnerNotListed):
-		// The narrowing names an account a github-app secret of the request does not list;
-		// GitHub was not asked. The caller's input, so a 4xx, and 403 as the release answers.
-		writeError(w, http.StatusForbidden, "NARROWING_OWNER_NOT_LISTED", err.Error())
-		return
-	case errors.Is(err, secrets.ErrMintNarrowingRefused):
-		// GitHub refused the narrowed token the check asked for (a repository the installation
-		// does not reach, or a permission the App does not hold); the message names the part it
-		// refused. The caller fixes the narrowing, so a 4xx, and 422 as the release answers.
-		writeError(w, http.StatusUnprocessableEntity, "NARROWING_REFUSED", err.Error())
-		return
-	case errors.Is(err, secrets.ErrMintRefused):
-		// The App has no installation on the account the narrowing names. The release answers
-		// 502 MINT_FAILED for this one, because there it cannot tell it from an upstream that
-		// failed; here the check reached GitHub and decided it is the narrowing's own account
-		// that has no installation, which the caller fixes, so it reads as the narrowing
-		// refusal it is. It comes after the narrowing refusal above, which is the more
-		// particular of the two.
-		writeError(w, http.StatusUnprocessableEntity, "NARROWING_REFUSED", err.Error())
+	case writeNarrowingRefusal(w, err):
+		// Create refused the narrowing the request carries, before anybody was asked to approve
+		// it. The release route answers those refusals through the same helper.
 		return
 	case errors.Is(err, pgx.ErrNoRows):
 		// The proof was verified moments ago against a live enrollment, but it was revoked (or
@@ -365,6 +337,48 @@ func (s *server) cancelRequest(w http.ResponseWriter, r *http.Request, enrollmen
 	writeJSON(w, http.StatusOK, stateResponse{State: "cancelled"})
 }
 
+// writeNarrowingRefusal answers err where it is one of the refusals of a GitHub App narrowing,
+// and reports whether it answered. The request route (createRequest, where Create's check makes
+// these refusals before anybody is asked) and the release route (grantValues, where Values
+// makes them again) answer them in this one place, so neither route can answer the same
+// refusal differently. Each is the caller's own input to fix, so each is a 4xx and none is
+// MINT_FAILED.
+//
+// It must not be given an error that wraps requests.ErrMintFailed. A release wraps every mint
+// failure in that one, the App-with-no-installation refusal among them, and answers 502
+// MINT_FAILED for all of them, which is the answer that route has always given a refused mint
+// and which this change does not move. Create's check answers that one refusal 422
+// NARROWING_REFUSED instead, because it reached GitHub before anybody was asked and the caller
+// can still fix the account it named. grantValues therefore answers ErrMintFailed before it
+// reaches this.
+func writeNarrowingRefusal(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, requests.ErrNarrowingNotApplicable):
+		// The request or the grant holds no github-app secret, so nothing it releases could be
+		// narrowed. Bad input.
+		writeError(w, http.StatusBadRequest, "NARROWING_NOT_APPLICABLE", err.Error())
+	case errors.Is(err, requests.ErrNarrowingBehindAirlock):
+		// It holds a name the airlock keeps back, whose value the proxy spends on the session's
+		// behalf and mints owner-wide once per pod, so no narrowing of its release could hold
+		// for it. A conflict between the narrowing and the names asked for, not bad input, so
+		// 409 rather than 400.
+		writeError(w, http.StatusConflict, "NARROWING_BEHIND_AIRLOCK", err.Error())
+	case errors.Is(err, requests.ErrNarrowingOwnerNotListed):
+		// The narrowing names an account a github-app secret of it does not list; no minter ran
+		// and GitHub was not asked.
+		writeError(w, http.StatusForbidden, "NARROWING_OWNER_NOT_LISTED", err.Error())
+	case errors.Is(err, secrets.ErrMintNarrowingRefused), errors.Is(err, secrets.ErrMintNoInstallation):
+		// GitHub refused the narrowed token (a repository the installation does not reach, or a
+		// permission the App does not hold), or the App has no installation on the account the
+		// narrowing names. The message says which it is, and the caller fixes the narrowing
+		// either way.
+		writeError(w, http.StatusUnprocessableEntity, "NARROWING_REFUSED", err.Error())
+	default:
+		return false
+	}
+	return true
+}
+
 func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentID string) {
 	id, ok := pathUUID(w, r, "id", "GRANT_ID_INPUT", "grant")
 	if !ok {
@@ -396,32 +410,17 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 	case errors.Is(err, requests.ErrSecretNotInStore):
 		writeError(w, http.StatusNotFound, "SECRET_NOT_IN_STORE", err.Error())
 		return
-	case errors.Is(err, requests.ErrNarrowingNotApplicable):
-		writeError(w, http.StatusBadRequest, "NARROWING_NOT_APPLICABLE", err.Error())
-		return
-	case errors.Is(err, requests.ErrNarrowingBehindAirlock):
-		// The grant holds a name the airlock keeps back, whose value the proxy spends on the
-		// session's behalf and mints owner-wide once per pod, so no narrowing of this release
-		// could hold for it. Nothing was released and no minter ran. A conflict between the
-		// request and the grant it names, not bad input, so 409 rather than 400.
-		writeError(w, http.StatusConflict, "NARROWING_BEHIND_AIRLOCK", err.Error())
-		return
-	case errors.Is(err, requests.ErrNarrowingOwnerNotListed):
-		// The narrowing names an account a github-app secret of the grant does not list; no minter
-		// ran and GitHub was not asked. The caller's input, so a 4xx and never MINT_FAILED.
-		writeError(w, http.StatusForbidden, "NARROWING_OWNER_NOT_LISTED", err.Error())
-		return
-	case errors.Is(err, secrets.ErrMintNarrowingRefused):
-		// GitHub refused the narrowed token (a repository the installation does not reach, or a
-		// permission the App does not hold); its message names the narrowing's likely mistake. The
-		// caller's input, so a 4xx and never MINT_FAILED.
-		writeError(w, http.StatusUnprocessableEntity, "NARROWING_REFUSED", err.Error())
-		return
 	case errors.Is(err, requests.ErrMintFailed):
 		// The kind's upstream (GitHub or Google) refused or failed a mint the narrowing, if any, is
 		// not at fault: an App with no installation, a Google login that needs a new sign-in, an
 		// upstream that could not be asked. Its message says why and never holds the stored value.
+		// It comes before the narrowing refusals below because a release wraps the
+		// App-with-no-installation refusal in it (writeNarrowingRefusal).
 		writeError(w, http.StatusBadGateway, "MINT_FAILED", err.Error())
+		return
+	case writeNarrowingRefusal(w, err):
+		// The narrowing refusals Values makes for a grant released a second time, answered as
+		// the request route answers Create's own.
 		return
 	case err != nil:
 		writeInternal(w, "read grant values", err)

@@ -69,6 +69,21 @@ func answerStatus(status int, header map[string]string, body string) func(http.R
 	}
 }
 
+// answersInstallationsWith makes the stand-in answer status, with body, to the call that lists
+// the App's installations, and leaves every other route to the stand-in's own answer. The token
+// hook (answersTokensWith) does not reach that call: GitHub answers it before any token is
+// asked for, and the App's own JWT is what it refuses.
+func answersInstallationsWith(stand *gitHubStand, status int, body string) {
+	stand.service.AnswerWith(func(w http.ResponseWriter, r *http.Request, seen airlocktest.Request) bool {
+		if seen.Method == http.MethodGet && strings.HasSuffix(seen.Path, "/app/installations") {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+			return true
+		}
+		return stand.answer(w, r, seen)
+	})
+}
+
 // TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses: trouble of any kind leaves
 // Create exactly where it was before the check existed — the request is written pending and its
 // approver is asked — and the refusal the trouble earns is then read at the release, where it
@@ -128,6 +143,28 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 				// (secrets' mintStatusError.rateLimited).
 				f.stand.answersTokensWith(answerStatus(http.StatusUnprocessableEntity,
 					map[string]string{"X-RateLimit-Remaining": "0"}, `{"message":"API rate limit exceeded"}`))
+			},
+			want:   requests.ErrMintFailed,
+			status: "502 MINT_FAILED",
+		},
+		{
+			// A 4xx that is no rate limit is refused by the minter (secrets' mintStatusError),
+			// and every refusal but the App with no installation on the account says nothing
+			// about the narrowing: this one says the App's own JWT was not accepted, which a
+			// rotated or wrong key and a clock far out both earn.
+			name: "GitHub answers 401 to the App's installations call",
+			trouble: func(_ *testing.T, f *narrowingFixture) {
+				answersInstallationsWith(f.stand, http.StatusUnauthorized, `{"message":"A JSON web token could not be decoded"}`)
+			},
+			want:   requests.ErrMintFailed,
+			status: "502 MINT_FAILED",
+		},
+		{
+			// The same for the token call: a 404 on access_tokens is GitHub refusing the call,
+			// not the narrowing it carried, so the caller is not told to fix its narrowing.
+			name: "GitHub answers 404 to the token request",
+			trouble: func(_ *testing.T, f *narrowingFixture) {
+				f.stand.answersTokensWith(answerStatus(http.StatusNotFound, nil, `{"message":"Not Found"}`))
 			},
 			want:   requests.ErrMintFailed,
 			status: "502 MINT_FAILED",

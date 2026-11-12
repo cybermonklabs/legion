@@ -156,6 +156,14 @@ func (m *Machine) checkNarrowing(ctx context.Context, enr enrollmentRow, names [
 // path it took before the check existed. That last rule is a requirement of its own: an outage at
 // GitHub must not stop every GitHub App request of the fleet, which is a larger failure than the
 // spent approval this check saves.
+//
+// Only two answers of GitHub's refuse the request: the narrowing itself refused
+// (secrets.ErrMintNarrowingRefused) and the App with no installation on the account
+// (secrets.ErrMintNoInstallation). Every other refusal GitHub makes is trouble here, since
+// every 4xx that is no rate limit wraps secrets.ErrMintRefused (secrets' mintStatusError) and
+// a 401 to the App's JWT, a 403 of some other kind and a 404 on the token route each say
+// nothing about what the narrowing asked for. Refusing the request for one of those would tell
+// the caller to fix a narrowing that is not at fault and would hide a broken App key behind it.
 func (m *Machine) checkNarrowingFor(ctx context.Context, mint Minter, enrollmentID, name, source string, served policy.Secret, narrowing *secrets.GitHubNarrowing) (checked bool, refusal error) {
 	stored, err := m.Secrets.Read(ctx, source)
 	if err != nil {
@@ -171,7 +179,7 @@ func (m *Machine) checkNarrowingFor(ctx context.Context, mint Minter, enrollment
 		return true, nil
 	case errors.Is(err, secrets.ErrMintNarrowingRefused):
 		return true, m.narrowingCause(ctx, mint, name, served, value, narrowing)
-	case errors.Is(err, secrets.ErrMintRefused):
+	case errors.Is(err, secrets.ErrMintNoInstallation):
 		// The App has no installation on the account the narrowing names, which no narrowing of
 		// that account can mend and which the release refuses too. The minter's own words hold
 		// "has no installation on", which a released client matches in this broker's answer
@@ -179,11 +187,14 @@ func (m *Machine) checkNarrowingFor(ctx context.Context, mint Minter, enrollment
 		// secret's name is put in front of them.
 		return true, fmt.Errorf("%s: %w", name, err)
 	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
-		// The check's own budget, a mint's own bound or a caller that went away ended it before
-		// the mint asked GitHub anything (checkNarrowingMint answers ctx.Err() first of all).
-		// GitHub said nothing here, so this is not logged as an answer of GitHub's: an operator
-		// reading a run of these raises the bounds or looks at what is slowing Create down.
-		skippedNarrowingCheck(enrollmentID, name, "the check's time ran out, or its caller went away, before GitHub was asked", err)
+		// The check's own budget, a mint's own bound or a caller that went away ended it, either
+		// before the mint asked GitHub anything (checkNarrowingMint answers ctx.Err() first of
+		// all) or while a call of it was in flight (it wraps the context error over the
+		// minter's own, which writes the context's words into its text without wrapping it).
+		// GitHub decided nothing either way, so this is not logged as an answer of GitHub's: an
+		// operator reading a run of these raises the bounds or looks at what is slowing Create
+		// down.
+		skippedNarrowingCheck(enrollmentID, name, "the check's time ran out, or its caller went away, before GitHub answered", err)
 		return false, nil
 	case errors.Is(err, secrets.ErrMintStoredValue):
 		// The stored value was read and the minter cannot mint from it: it is no JSON object of
@@ -191,6 +202,16 @@ func (m *Machine) checkNarrowingFor(ctx context.Context, mint Minter, enrollment
 		// new value, and the release says the same thing again. GitHub said nothing here
 		// either, and the error holds no part of the value (secrets' GitHubApp.Mint).
 		skippedNarrowingCheck(enrollmentID, name, "the stored value is not an App id and private key the minter can read", err)
+		return false, nil
+	case errors.Is(err, secrets.ErrMintRefused):
+		// GitHub refused the call rather than the narrowing: the App's JWT was not accepted (a
+		// clock far out, a key rotated or wrong), or its answer was some other 4xx that is no
+		// rate limit, a 404 on the token route among them. The narrowing may be perfectly
+		// servable once the App works again, so the request takes the path it took before the
+		// check existed and the release says the same thing again. The minter refusing its own
+		// caller (a check that named no narrowing, GitHubApp.Mint) reads as this too, and that
+		// is right: the broker's own code is at fault, never the caller's narrowing.
+		skippedNarrowingCheck(enrollmentID, name, "GitHub refused the App rather than the narrowing", err)
 		return false, nil
 	default:
 		skippedNarrowingCheck(enrollmentID, name, "GitHub's answer decided nothing about the narrowing", err)
@@ -200,9 +221,9 @@ func (m *Machine) checkNarrowingFor(ctx context.Context, mint Minter, enrollment
 
 // checkNarrowingMint is one mint of the check: the calls the release makes, in the same
 // order, with every token GitHub answers revoked at once and none released, answering the error
-// the release would have answered (secrets.MintRequest.Check). The request is built from the
-// snapshot this request is being evaluated against, as Machine.release builds one, so the check
-// and the release ask GitHub the same thing about the same secret.
+// the release would have answered (secrets.MintRequest.Check). The request is the one
+// Machine.release builds for this name (mintRequest), with Check set, so the check and the
+// release ask GitHub the same thing about the same secret.
 //
 // Each mint, and the revoke inside it, is bounded by NarrowingCheckMint and by what is left of
 // the check's whole budget, whichever ends first: ctx already carries the budget, so deriving the
@@ -213,12 +234,19 @@ func (m *Machine) checkNarrowingMint(ctx context.Context, mint Minter, name stri
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, m.narrowingCheckMintBound())
+	bounded, cancel := context.WithTimeout(ctx, m.narrowingCheckMintBound())
 	defer cancel()
-	_, err := mint(ctx, secrets.MintRequest{
-		Name: name, HumanTier: served.Tier == policy.TierHuman, Value: value,
-		GitHubOwners: served.GitHubOwnerLogins(), GitHubNarrowing: narrowing, Check: true,
-	})
+	request := mintRequest(name, served, value, narrowing)
+	request.Check = true
+	_, err := mint(bounded, request)
+	if err != nil && bounded.Err() != nil {
+		// The bound, or the budget it was derived from, ended the call while it was in flight.
+		// The minter names such a call by its class and writes the context's own words into its
+		// text without wrapping the context error (secrets' mintCall and transportFailure), so
+		// the context error is wrapped here instead: the caller then reads this as its time
+		// running out rather than as an answer of GitHub's that decided nothing.
+		return fmt.Errorf("%w: %w", bounded.Err(), err)
+	}
 	return err
 }
 

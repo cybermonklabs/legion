@@ -78,18 +78,20 @@ var (
 	// a Google login that needs a new sign-in or a GitHub App GitHub refuses. Its returned error
 	// carries the minter's own message, which never holds the stored value or a token.
 	ErrMintFailed = errors.New("the broker could not mint a token from this secret")
-	// ErrNarrowingNotApplicable: a release asked to narrow a GitHub App token, and the grant holds
-	// no github-app secret, so nothing it releases could be narrowed; it releases nothing rather
-	// than every value whole.
+	// ErrNarrowingNotApplicable: a request or a release asked to narrow a GitHub App token, and
+	// the names it covers hold no github-app secret, so nothing it releases could be narrowed.
+	// Create refuses the request before anybody is asked to approve it, and Values refuses the
+	// release of a grant; either way nothing is released rather than every value whole.
 	ErrNarrowingNotApplicable = errors.New("this grant holds no github-app secret to narrow")
-	// ErrNarrowingOwnerNotListed: a release asked to narrow a GitHub App token to an account that a
-	// github-app secret of the grant does not list in its github-owners tag; it releases nothing,
-	// and no minter runs, since the caller's input, not the App, is at fault.
+	// ErrNarrowingOwnerNotListed: a request or a release asked to narrow a GitHub App token to an
+	// account that a github-app secret of it does not list in its github-owners tag. Create
+	// refuses the request and Values the release; nothing is released, and no minter runs, since
+	// the caller's input, not the App, is at fault.
 	ErrNarrowingOwnerNotListed = errors.New("the narrowing names an account a github-app secret of this grant does not serve")
-	// ErrNarrowingBehindAirlock: a release asked to narrow a GitHub App token while the airlock
-	// holds back one of the grant's names. It releases nothing, and no minter runs. The broker
-	// cannot apply such a narrowing and say so truthfully: the names behind the airlock are
-	// spent through the proxy, which mints its own values once per grant per pod and would go
+	// ErrNarrowingBehindAirlock: a request or a release asked to narrow a GitHub App token while
+	// the airlock holds back one of its names. Nothing is released, and no minter runs. The
+	// broker cannot apply such a narrowing and say so truthfully: the names behind the airlock
+	// are spent through the proxy, which mints its own values once per grant per pod and would go
 	// on swapping in the owner-wide token. Its returned error names the name the airlock holds.
 	ErrNarrowingBehindAirlock = errors.New("this grant holds a name behind the airlock, which takes no narrowing")
 	// ErrRequestPending means this session already has a person deciding one of the requested
