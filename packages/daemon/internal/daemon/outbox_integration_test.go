@@ -279,6 +279,9 @@ func (d *blockingDispatch) WebhookAppInstalled(context.Context, string) (bool, e
 func (d *blockingDispatch) PutGatedSteps(context.Context, string, []string) error {
 	return nil
 }
+func (d *blockingDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
+	return nil
+}
 func (d *blockingDispatch) count() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -459,6 +462,9 @@ func (d *refusingDispatch) WebhookAppInstalled(context.Context, string) (bool, e
 func (d *refusingDispatch) PutGatedSteps(context.Context, string, []string) error {
 	return nil
 }
+func (d *refusingDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
+	return nil
+}
 
 // boardDispatch is one issue's Dispatch board: it fails the first failures writes, then applies.
 type boardDispatch struct {
@@ -504,6 +510,9 @@ func (d *boardDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProjec
 }
 func (d *boardDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
 func (d *boardDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
+func (d *boardDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
+	return nil
+}
 
 // A failed transaction is one row's failure, never the runner's end: a Postgres restart drops the
 // pool's connections, and the outbox has to keep draining once they are back. A claim that fails

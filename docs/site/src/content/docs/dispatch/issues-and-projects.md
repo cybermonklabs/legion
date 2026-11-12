@@ -24,8 +24,9 @@ A project page has up to three tabs:
   sources**.
 
 Opening a project from the sidebar takes you to Architecture when the project has a source, and to
-Issues otherwise. When an ask in the project is waiting on you — its next move a person's, on an
-issue assigned to you — the header shows a **Blocked on you · N** pill that links to the Inbox.
+Issues otherwise. When an ask in the project is waiting on you — its next move a person's, and
+you are the person it waits on — the header shows a **Blocked on you · N** pill that links to
+the Inbox.
 It counts no credential request: a request belongs to no project.
 
 A project's components can come from more than one repository. Each architecture source is one
@@ -149,7 +150,8 @@ Inbox row. Choose it and pick a value. Closed issues cannot change priority.
 
 ### Assignee
 
-The assignee is the person who answers the issue's asks, and whose Inbox lists them by default.
+The assignee is the person every ask on the issue waits on until somebody hands that ask to
+another person, and whose Inbox lists those asks.
 Change it from the issue header. The choices are **Unassigned** and every login allowed to sign in.
 An agent that creates an issue without naming one gets the person its token acts for, else the
 parent's assignee, else the project's default assignee: the person you name in the projects table
@@ -293,10 +295,14 @@ agents using it stop working at once.
   no check serves reads `has no check`, and one no plan task serves reads `has no plan task` once
   the issue has a plan document.
 - **Verification** is the issue's Verification document and, under it, each check the document
-  marks, with the results recorded against that check, newest first. A check reads **Passed** or
-  **Failed** when its newest result stands at the commit the work is at, **Older** when that
-  result no longer does, **No result** when nothing has been recorded against it, and
-  **Unmarked** when Dispatch could not read the repository to say which.
+  marks, with every result recorded against that check, newest first. Each check says whether a
+  pass stands and from which roles, and names what Dispatch compared the results with: each head
+  of the issue's pull requests for a before-merge check, the branches for the other two kinds,
+  or the reason there is nothing to compare with, which is that the issue has no pull request
+  and no branch, or that Dispatch could not read the repository. Each result carries the whole
+  commit, the reading its role recorded, whether that commit is one of the compared commits, and
+  whether the check's words moved after the result was recorded. A retracted result shows as
+  retracted with its reason, and counts as no evidence.
 - **Plan** is the issue's plan document, the plan review's approval, and each plan task the
   document marks, with the requirements that task serves and the tasks it needs.
 - **Conversation** is the issue's conversations, one card each: every ask with its replies and

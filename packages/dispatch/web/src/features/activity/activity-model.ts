@@ -151,6 +151,10 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `edited the question "${event.payload.question}"`;
     case "ask.handed_back":
       return `handed “${event.payload.question}” back for approval`;
+    case "ask.asked_of":
+      // Who the ask waits on now. The payload names no login where it was handed to the
+      // assignee of its own issue, which is where an ask with no `asked_of` waits.
+      return `handed “${event.payload.question}” to ${event.payload.asked_of ?? "the issue's assignee"}`;
     case "ask.answered":
       return event.payload.previous_answer === undefined
         ? `answered “${event.payload.question}”`
@@ -202,6 +206,10 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `marked decision ${event.payload.block_id} malformed: ${event.payload.reason}`;
     case "result.recorded":
       return `recorded ${event.payload.verdict} for check ${event.payload.check_block_id} at ${event.payload.commit_sha} as ${event.payload.role}`;
+    case "result.retracted":
+      return `retracted the result of check ${event.payload.check_block_id} at ${event.payload.commit_sha}: ${event.payload.reason}`;
+    case "issue.pull_request_attribution_changed":
+      return `moved pull request ${event.payload.repo}#${event.payload.number} from ${event.payload.from ?? "no issue"} to ${event.payload.to ?? "no issue"}, decided by ${event.payload.source}`;
   }
 }
 

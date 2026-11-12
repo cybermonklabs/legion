@@ -1,4 +1,3 @@
-import { expect, test } from "@playwright/test";
 import type { Issue } from "../web/src/api/types";
 import { SEND_DEADLINE_MS } from "../web/src/features/writes/keyed-write";
 import { setLiveSessions } from "./agents";
@@ -13,12 +12,8 @@ import {
 } from "./api";
 import { filterPicker } from "./filters";
 import { dropFirstAnswer, watchWrites } from "./keyed-writes";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 test("the table sorts, searches facets and fuzzy text, groups, pages and receives a second page's edit live", async ({
   browser,
@@ -1120,6 +1115,8 @@ test("an arrow key on the merge select closes no epic, and the confirmed merge d
     const select = page.getByRole("combobox", { name: "Merge into another epic" });
     await select.focus();
     await page.keyboard.press("ArrowDown");
+    // Nothing must follow the keystroke: a merge the arrow key had started would leave the page
+    // in that keypress's own task, so this window is where its write and its dialog would show.
     await page.waitForTimeout(500);
     expect((await getIssue(source.key)).status).not.toBe("done");
     expect((await getIssue(child.key)).parent).toBe(source.key);

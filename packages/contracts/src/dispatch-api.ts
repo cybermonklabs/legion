@@ -312,12 +312,15 @@ export type InboxDismissSeen = InboxDismissSeenReply | InboxDismissSeenAgent;
 
 /** What a `SessionAnswer` is to the session Dispatch delivered it to, one snake_case wire value per
  *  relation, each spelling the phrase a reader prints: a person answered the session's ask,
- *  replied in its ask's thread, replied in a comment thread it wrote in, commented on a document it
- *  wrote, commented on an issue routed to it, mentioned it, sent it a message (direct, on an issue,
- *  or a broadcast's copy), or replied to its message. Mirrored in Go as the
- *  `model.SessionAnswerRelation*` constants. */
+ *  declined to answer it, replied in its ask's thread, replied in a comment thread it wrote in,
+ *  commented on a document it wrote, commented on an issue routed to it, mentioned it, sent it a
+ *  message (direct, on an issue, or a broadcast's copy), or replied to its message. A decline is
+ *  the item of the new kind `declined`, whose `text` is the person's own note and whose
+ *  `dispatch_words` is what Dispatch wrote beside it, so a reader draws the two apart. Mirrored in
+ *  Go as the `model.SessionAnswerRelation*` constants, in this order. */
 export const SESSION_ANSWER_RELATIONS = [
   "answered_your_ask",
+  "declined_your_ask",
   "replied_on_your_ask",
   "replied_in_a_comment_thread",
   "commented_on_a_document",
@@ -411,7 +414,9 @@ export type IssueEventPayload = Issue & ReferenceChangesPayload & IssueEventChan
  *  anything new. A restore the release before Dispatch kept the mark writes - every one already in
  *  the event log, and one written during a rollout or an image rollback - carries no mark, so a
  *  missing `restored` does not prove an event is a new answer. `thread_logins` (the ask's own
- *  thread) is carried by `ask.opened`, `ask.answered` and `ask.resolved`. */
+ *  thread) is carried by `ask.opened`, `ask.answered` and `ask.resolved`; on `ask.asked_of` it
+ *  is the two people the hand-on moved the ask between instead, since no reader of the thread
+ *  changes list there. */
 export type AskEventPayload = Ask &
   ReferenceChangesPayload &
   ThreadLoginsPayload & { readonly restored?: boolean };
@@ -937,12 +942,6 @@ export interface ArtifactReviewEventPayload {
   readonly content_sha256_source?: "insert" | "backfill";
 }
 
-/** Whether a recorded result still speaks for the work as it stands: `current` at the commit the
- *  work stands at and the words the result proved, `older` at an earlier commit or against words
- *  that have changed since, and `unknown` when the check's issue resolves to no repository or
- *  Dispatch's GitHub App cannot read it. */
-export type CheckResultCurrency = "current" | "older" | "unknown";
-
 /** When a check runs: before the merge, after it, or against the default branch. The closed
  *  enum `pmdoc/schema/blocks.json` declares under the `when` attribute's `choices`. */
 export type CheckWhen = "before_merge" | "after_merge" | "default_branch";
@@ -960,6 +959,33 @@ export interface CheckResultEventPayload {
   readonly verdict: "pass" | "fail";
   readonly role: string;
   readonly commit_sha: string;
+}
+
+/** `result.retracted`: one recorded result marked wrong, appended on the **check's** issue as
+ *  `result.recorded` is, and naming in `issue` the issue the result was recorded on. The result
+ *  itself is neither updated nor deleted, and `reason` is why it is wrong. */
+export interface CheckResultRetractedEventPayload {
+  readonly result_id: string;
+  readonly issue: string;
+  readonly check_issue: string;
+  readonly check_block_id: string;
+  readonly commit_sha: string;
+  readonly reason: string;
+}
+
+/** `issue.pull_request_attribution_changed`: a pull request Dispatch credited to one issue now
+ *  belongs to another, which changes what that issue's results are measured against. One event
+ *  goes on the issue it left and one on the issue it reached, each carrying this payload;
+ *  `from` and `to` are those two issues, either null and never both, and `source` is what
+ *  decided the new one (`external_link`, `github_issue_link`, `branch`, `title_body`,
+ *  `commit_message`, or `none` where the pull request is now credited to nobody). */
+export interface IssuePullRequestAttributionEventPayload {
+  readonly repo: string;
+  readonly number: number;
+  readonly url: string;
+  readonly from: string | null;
+  readonly to: string | null;
+  readonly source: string;
 }
 
 /** A server-owned typed-block attribute was restored from its indexed row. */
@@ -1273,6 +1299,14 @@ export type DispatchEvent =
       readonly type: "ask.handed_back";
       readonly payload: AskEventPayload;
     })
+  /** One person handed an open ask to another: `asked_of` is whom it waits on from now on, empty
+   *  where that is the assignee of its own issue, and `asked_of_by` who handed it on. The ask
+   *  keeps its question, its thread and its followers; only whose list it sits in moves, so
+   *  `thread_logins` names those two people and nobody else. */
+  | (DispatchEventBase & {
+      readonly type: "ask.asked_of";
+      readonly payload: AskEventPayload;
+    })
   | (DispatchEventBase & {
       readonly type: "ask.answered";
       readonly payload: AskAnsweredEventPayload;
@@ -1295,6 +1329,14 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "result.recorded";
       readonly payload: CheckResultEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "result.retracted";
+      readonly payload: CheckResultRetractedEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "issue.pull_request_attribution_changed";
+      readonly payload: IssuePullRequestAttributionEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "comment.created";
@@ -1579,6 +1621,14 @@ export const ArtifactReviewEventPayloadSchema = z.object({
   content_sha256_source: z.enum(["insert", "backfill"]).optional(),
 });
 
+// The fields every `ask.*` payload carries. A resolution's `kind` is a plain string rather than
+// the list of kinds the server writes today (`retracted`, `resolved`, `withdrawn`, and
+// `declined`, which is a person's own act: they chose not to answer the question, so it closes
+// with no answer). This object strips what it does not declare, so a closed list would make the
+// next kind cost every older reader the whole card, and the kind is the part a reader prints
+// first. `dispatch_words` is declared for the same reason the other way round: a reader keeps
+// only the parts its schema names, so the words Dispatch writes beside a decline reach only a
+// reader built with this change, and they stay apart from `reason`, the person's own note.
 const askEventPayloadFields = {
   id: z.string().optional(),
   opened_event_id: z.number().int().positive(),
@@ -1629,8 +1679,9 @@ const askEventPayloadFields = {
     .optional(),
   resolution: z
     .object({
-      kind: z.enum(["retracted", "resolved", "withdrawn"]).optional(),
+      kind: z.string().optional(),
       reason: z.string().optional(),
+      dispatch_words: z.string().optional(),
       actor: z
         .object({ kind: z.string().optional(), id: z.string().optional() })
         .passthrough()
@@ -1638,6 +1689,14 @@ const askEventPayloadFields = {
       at: z.string().optional(),
     })
     .nullish(),
+  // The three stored fields of a hand-on, carried by every ask payload as the row carries them:
+  // whom the ask waits on, who handed it there and when. `waiting_on_person` is deliberately
+  // absent: it is read-time only (the ask row never stores it), as `waiting_on` is, and this
+  // object strips any field it does not declare, so a payload that somehow carried it would
+  // reach no reader with it.
+  asked_of: z.string().nullish(),
+  asked_of_by: z.string().nullish(),
+  asked_of_at: z.string().nullish(),
   thread_logins: z.array(z.string()).optional(),
 };
 

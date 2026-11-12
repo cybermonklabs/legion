@@ -40,6 +40,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -142,6 +143,16 @@ type Deps struct {
 	// DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW, under the test hooks), so a send to a session that
 	// is gone settles without sleeping the production window.
 	ListenerTakeoverWindow time.Duration
+	// HorizonStallAfter and HorizonWarnEvery replace how long a pending event-horizon
+	// observation waits before the process logs its stall warning, and how often each of that
+	// Horizon's three warnings repeats - the stall warning while the stall stands, the
+	// failed-observation warning and the failed-persist warning (events.Horizon.SetStallWarning).
+	// Zero keeps the horizon's own five and thirty seconds; a deployment leaves both zero, and
+	// only a test process sets another (cmd/dispatch: DISPATCH_TEST_HORIZON_STALL_AFTER and
+	// DISPATCH_TEST_HORIZON_WARN_EVERY, under the test hooks), so a test whose wait keys on the
+	// stall warning sees it inside its own patience.
+	HorizonStallAfter time.Duration
+	HorizonWarnEvery  time.Duration
 	// TestHookTimeout replaces how long a test hook waits for every process's acknowledgement
 	// (testHookTimeout, test_hooks_fanout.go). Zero keeps ten seconds; neither
 	// routes.BuildAppContext nor cmd/dispatch sets it, so every deployment with the hooks on and
@@ -221,6 +232,10 @@ type DepsInput struct {
 	// ListenerTakeoverWindow replaces the twelve-second listener take-over window; see
 	// Deps.ListenerTakeoverWindow.
 	ListenerTakeoverWindow time.Duration
+	// HorizonStallAfter and HorizonWarnEvery replace the five-second stall threshold and the
+	// thirty-second repeat of every event-horizon warning; see Deps.HorizonStallAfter.
+	HorizonStallAfter time.Duration
+	HorizonWarnEvery  time.Duration
 	// TestHookTimeout replaces the ten-second test-hook acknowledgement timeout; see
 	// Deps.TestHookTimeout.
 	TestHookTimeout time.Duration
@@ -305,6 +320,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		StreamHeartbeat:        heartbeat,
 		RouteRosterTTL:         input.RouteRosterTTL,
 		ListenerTakeoverWindow: input.ListenerTakeoverWindow,
+		HorizonStallAfter:      input.HorizonStallAfter,
+		HorizonWarnEvery:       input.HorizonWarnEvery,
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		DashboardEntry:         input.DashboardEntry,
@@ -358,6 +375,11 @@ type server struct {
 	// (newFailingAdviceHandler, and the check's bound tests), so a case's outcome is its own choice
 	// rather than its machine's speed.
 	suggestionTimeout time.Duration
+	// beforeCrossProjectRead runs at the head of relatedOtherProjects, before it reads, and its
+	// error stands in for the read failing. Only a test sets it: it is how a case holds that one
+	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
+	// as it runs in production.
+	beforeCrossProjectRead func(ctx context.Context) error
 	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
 	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it
 	// (the forced create whose check does not answer), so a case's outcome is its own choice
@@ -464,13 +486,13 @@ type server struct {
 	// branches is what the results reads last learned about each repository's default branch
 	// (delivery.Branches), held across requests so the Verification tab's refetch on every
 	// result.recorded does not spend one GET /repos/{owner}/{repo} apiece. It answers about
-	// every branch a check is measured against, and caches the default branch alone, since what
+	// every branch a check is compared with, and caches the default branch alone, since what
 	// a named branch holds of a commit is kept in the database (branch_commits). The policy is
 	// delivery's; the server holds the one cache the process shares.
 	branches delivery.Branches
 	// commitPulls is the moment before which the results read will not read GitHub again for the
 	// pull requests of a commit it could answer for no other way (delivery.CommitPullReads,
-	// currencyReader.readThroughHead), held across requests so one commit costs at most one such
+	// comparisonReader.readThroughHead), held across requests so one commit costs at most one such
 	// read per delivery.CommitPullReadStaleAfter however often the tab refetches, and one per
 	// delivery.CommitPullSettledFor once GitHub has put that pull request's head elsewhere. The
 	// policy is delivery's; the server holds the one cache the process shares.
@@ -1309,14 +1331,20 @@ func countExceededError(code, field string, count, limit int) *apiError {
 		"%s is %d over the %d-item limit (%d/%d)", field, count-limit, limit, count, limit)
 }
 
-// blockBoundError is what a route answers an itemblocks.Check with: nil where the body passed
-// both bounds, else the refusal the typed error words (itemblocks.CapExceeded names the block,
-// itemblocks.CountExceeded the count), with the status and code every cap refusal carries.
-// Every route that bounds a body calls this one helper, so a route added later cannot word the
-// same refusal differently.
+// blockBoundError is what a route answers an itemblocks.Check with: nil where the body broke no
+// rule, else the refusal the typed error words, under the code that rule is refused by. A bound
+// broken (itemblocks.CapExceeded names the block, itemblocks.CountExceeded the count) carries
+// CAP_EXCEEDED, the code every cap refusal carries; a body holding a decision block
+// (itemblocks.DecisionBlock) carries DECISION_BLOCK_IN_BODY, since what it is refused for is
+// what it holds rather than how long it is. Every route that checks a body calls this one
+// helper, so a route added later cannot word the same refusal differently.
 func blockBoundError(err error) *apiError {
 	if err == nil {
 		return nil
+	}
+	var decision *itemblocks.DecisionBlock
+	if errors.As(err, &decision) {
+		return errorf(http.StatusBadRequest, "DECISION_BLOCK_IN_BODY", "%s", err)
 	}
 	return errorf(http.StatusBadRequest, "CAP_EXCEEDED", "%s", err)
 }

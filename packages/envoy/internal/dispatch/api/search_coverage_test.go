@@ -75,8 +75,11 @@ func requireCoverageIdentity(t *testing.T, report model.SearchCoverage, identity
 // vector.
 func TestSearchCoverageCountsItemsWithNoRowAsLacking(t *testing.T) {
 	embedder := &fakeEmbedder{}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	seedSearchCorpus(t, handler)
+	// The corpus's writes record their blocks and leave the windows to the block-index tick,
+	// which the coverage report counts (INFRA-988).
+	windowOwedOwners(t, deps)
 	if _, err := database.Pool.Exec(context.Background(), "delete from embeddings where kind = 'issue'"); err != nil {
 		t.Fatalf("delete the issue's row: %v", err)
 	}
@@ -102,8 +105,9 @@ func TestSearchCoverageCountsItemsWithNoRowAsLacking(t *testing.T) {
 // by another identity, is lacking.
 func TestSearchCoverageCountsCurrentFailedAndLackingRows(t *testing.T) {
 	embedder := &fakeEmbedder{}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	corpus := seedSearchCorpus(t, handler)
+	windowOwedOwners(t, deps)
 	processAllPending(t, database, embedder)
 
 	drained := searchCoverageResponse(t, handler)
@@ -147,10 +151,12 @@ func TestSearchCoverageCountsCurrentFailedAndLackingRows(t *testing.T) {
 }
 
 // With no embedder configured the report names no identity, place or model, and nothing is
-// current: the rows the issue's trigger and the corpus's indexers wrote are never embedded.
+// current: the rows the issue's trigger and the block-index tick's window arm wrote are never
+// embedded.
 func TestSearchCoverageWithNoEmbedderNamesNoIdentity(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, _, deps := newTestServer(t, testServerOptions{})
 	seedSearchCorpus(t, handler)
+	windowOwedOwners(t, deps)
 
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/search/coverage", nil, "alice")
 	if !bytes.HasPrefix(response.Body.Bytes(), []byte(`{"identity":null,"place":null,"model":null,`)) {

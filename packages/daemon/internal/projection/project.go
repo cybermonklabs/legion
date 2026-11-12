@@ -80,17 +80,9 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 				return api.State{}, fmt.Errorf("project claim %s: %w", current.Token, err)
 			}
 		}
-		view := api.ClaimView{
-			Session:        current.Session,
-			State:          string(current.State),
-			Locator:        current.Locator,
-			PluginContract: current.PluginContract,
-			UpdateRound:    current.UpdateRound,
-			UpdateHead:     current.UpdateHead,
-			// What the daemon last saw this claim's agent do, which the stall backstop and an
-			// operator read alike; nil for a claim whose agent has not stepped (api.StepViewOf).
-			Step: api.StepViewOf(current.Step),
-		}
+		// Every field of the claim record is served or withheld by a decision, and the view that
+		// serves it is built in one place (api.ClaimViewOf, api.ClaimRecordFields).
+		view := api.ClaimViewOf(current)
 		if report, reported := reports[current.Token]; reported {
 			view.Capabilities = api.CapabilityReportViewOf(report)
 		}
@@ -117,7 +109,14 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			Tree:          issue.Tree,
 			Repo:          issue.Repo,
 			DefaultBranch: issue.DefaultBranch,
-			Workers:       map[claim.Role]api.PhaseView{},
+			// When this root's linger runs out, nil for every issue that is not a lingering
+			// root: it is what a reader of a held issue served no reason reads the suppression
+			// of that reason by (api.Issue.LingerUntil).
+			LingerUntil: issue.LingerUntil,
+			// The parent chain a labelled root is held under, empty for every other record: the
+			// hold on it is the ancestry hold, and nothing else on this wire names the chain.
+			Ancestry: issue.Ancestry,
+			Workers:  map[claim.Role]api.PhaseView{},
 		}
 		// The tree's memory draw, which every issue of the tree is shown, a done one included: it
 		// is what the issue's roles ran with, and nothing redraws it.
@@ -127,8 +126,16 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		// An escalation waits on the controller only while its tree runs. A held issue of a tree
 		// that lingers or closed keeps the reason on its record, and shows it again once the tree is
 		// re-admitted, which leaves the issue held.
-		if issue.Hold != nil && !lingering[issue.Tree] {
-			view.HoldReason = string(issue.Hold.Reason)
+		//
+		// The phase the hold took the issue out of is shown whatever the tree is doing, which is
+		// the deliberate difference: the reason is a decision to act on and a lingering tree has
+		// none, while the phase is a fact of the record, so every issue the body shows at
+		// `phase: held` names the phase that stopped.
+		if issue.Hold != nil {
+			view.HeldFrom = string(issue.Hold.From)
+			if !lingering[issue.Tree] {
+				view.HoldReason = string(issue.Hold.Reason)
+			}
 		}
 		if slot, ok := slotViews[issue.Key]; ok {
 			view.Slot = &slot
@@ -154,10 +161,14 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 				view.Architect = &claimView
 				continue
 			}
+			// The worker's view exists only while its claim is live, so its counts of the moves
+			// back ride with the claim exactly as `rounds` does: a role whose process has gone
+			// shows neither, and the record keeps both for the role's next claim.
 			worker := api.PhaseView{
 				Claim:         claimView,
 				HandoffCommit: item.HandoffCommit,
 				Rounds:        item.Rounds,
+				BackwardMoves: item.BackwardMoves,
 			}
 			if item.HandoffRecord != "" {
 				worker.HandoffRecord = &api.HandoffRecordView{ID: item.HandoffRecord, Version: item.HandoffVersion}
@@ -350,7 +361,11 @@ func checkView(check record.ProductionCheck) *api.CheckView {
 }
 
 // waitingOn is the view of what a root in awaiting_person waits on: the gate shape when the wait
-// names a spec version, otherwise the question; the answer only once a person gave one.
+// names a spec version, otherwise the question; the answer only once a person gave one. The act
+// that answered travels as the record's own word for it (record.Answer), `declined` for a person
+// who closed an ask of the root rather than answer it among them, so a value the record gains is
+// served as it stands and the contract number is what holds a plugin to the list it parses
+// (api.DaemonAPIVersion).
 func waitingOn(w record.Awaiting) *api.WaitingOnView {
 	view := &api.WaitingOnView{Kind: "ask", Ask: w.Ask}
 	if w.GateVersion != 0 {

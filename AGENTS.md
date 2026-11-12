@@ -168,7 +168,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 - **The tool gate** `.github/scripts/check-ci-tools.sh` is a step of `lint`.
   It holds each row to its shape — every field present, and not empty but for the six a row may leave empty (`primary`, `mirror_member`, `second_member` and the three `primary_*` fields), one name per row, a `primary_source` and a `second_source` each written in one of the five words the helper names a source by (`github-release`, `ghcr-mirror`, `npm`, `pypi` and `pulumi-releases`), of which a primary may take the three that are an origin of the bytes alone (`github-release`, `pypi` and `pulumi-releases`), the two further fields the second word decides (`mirror_from` and `mirror_member` for `ghcr-mirror`, `npm_package` and `npm_member` for `npm`, `second_url` and `second_member` for the other three), a bare 64-hex lower-case `digest`, and a `primary`, a `mirror_from` and a `second_url` that each hold the row's own `version` where they are not empty.
   A member field holds that same `version` where it holds a version at all — `primary_member`, `mirror_member`, `npm_member` and `second_member` alike, a version being a dotted run of digits such as `0.13.5` — so a member that holds no such token is left alone, which is what keeps `./jj`, `package/bin/bun` and `uv-x86_64-unknown-linux-gnu/uv` right, and a member left behind at the old version while its row and its URLs move names a path the new archive does not hold, which is an install that fetches the right bytes and then finds no tool inside them.
-  Where that surfaces is the side the member is written on: a stale `primary_member` breaks the install that reads the primary, which for the one row that names one, `uv`, is `install-uv` in the `test` job on every pull request that selects it, and a stale member on the second side is read only where that source is, which is `tool-fallback`, a job of about half an hour; the gate says either in `lint` in a second.
+  Where that surfaces is the side the member is written on: a stale `primary_member` breaks the install that reads the primary, which for the one row that names one, `uv`, is `install-uv` in the `test` job on every pull request that selects it, and a stale member on the second side is read only where that source is, which is `tool-fallback`, a job of about five minutes (job 129885098900 ran 284 s); the gate says either in `lint` in a second.
   `primary_digest` is bare 64-hex too where it is set, a row that sets `primary_member` sets `primary_digest`, and a row that sets `primary_digest` sets `primary_digest_of`, because a digest that does not say what it is of is how an archive comes to be checked against a binary and called equal.
   It holds each row to the pin that installs it as well: `.bun-version`; `ARG MISE_VERSION`, `ARG MISE_SHA256` and `ARG JJ_TOOL` of the worker image's Dockerfile, and that same file's `ARG UV_VERSION` and `ARG UV_SHA256`, which the `uv` row's `version` and its `primary_digest` answer to; `const DockerPluginVersion` of `packages/envoy/infra/internal/pulumitest/pulumitest.go`, which the `pulumi-docker` row's `version` answers to; and the `crane`, `changie`, `elan` and `pulumi-cli` rows, which are their own pins, since their installs hold no version of their own.
 
@@ -248,9 +248,10 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   `bun test scripts/conflicts` runs in the `conflicts-script` job instead, after that job's biome and tsc steps over the same directory.
   Beyond `bun install`, a suite needs only what it names in the line it prints when it skips, and that line, not this entry, is the whole of it:
   the two Claude backend rigs (`scripts/e2e/lib/claude-backend-app-secrets.test.ts` and `scripts/e2e/lib/claude-backend-bun-pin.test.ts`) name 44 POSIX programs each, from `bash` and `jq` to `flock` and `sha256sum`.
-  Examples of the rest: `gofmt` (contracts' Go generator), `go` (the daemon-pane scenario and the held-port proof), `docker` (the rigs that start a container), `openssl` (the h2 settings proof), `tmux` (claude-envoy's session-title rows and the parked-decision teardown proof), `bash` and `sleep` (the Claude backend guard rows, where pi-shared's shell-command row needs `bash` alone), `node` (claude-envoy's channel rows, and packages/dispatch's lane row, which also needs the Playwright `bun install` wrote into this checkout), `jj` (pi-shared's handoff record and pi-legion's pane fixtures), and `psql` with `LEGION_TEST_PG_DSN` naming a PostgreSQL server the run may create a database on (packages/dispatch's psql and lane suites, whose one skip line names whichever of the two the host does not have).
+  Examples of the rest: `gofmt` (contracts' Go generator), `go` (the daemon-pane scenario and the held-port proof), `docker` (the rigs that start a container), `openssl` (the h2 settings proof), `tmux` (claude-envoy's session-title rows and the parked-decision teardown proof), `bash` and `sleep` (the Claude backend guard rows, where pi-shared's shell-command row needs `bash` alone), `node` (claude-envoy's channel rows, and packages/dispatch's pull-request lane row, which also needs the Playwright `bun install` wrote into this checkout), `jj` (pi-shared's handoff record and pi-legion's pane fixtures), and `psql` with `LEGION_TEST_PG_DSN` naming a PostgreSQL server the run may create a database on (packages/dispatch's psql and stack suites, whose one skip line names whichever of the two the host does not have).
   The `-omp` and Claude Code suites are the exception that prints nothing: they skip silently unless `LEGION_TEST_OMP` or `LEGION_TEST_CLAUDE` names a real binary, and on GitHub Actions they fail rather than skip.
-  The browser suite is no `bun run test` at all — `bun run e2e` in packages/dispatch builds @legion/contracts and the SPA and runs Playwright, and refuses before it starts a harness or a Postgres when `bun run e2e:install` has not downloaded the browsers (docs/testing.md, "Bun tests")
+  The browser suite is no `bun run test` at all — `bun run e2e` and `bun run e2e:clock` in packages/dispatch build @legion/contracts and the SPA and run Playwright, and refuse before they start a harness or a Postgres when `bun run e2e:install` has not downloaded the browsers (docs/testing.md, "Bun tests")
+  `bun run e2e` runs the default selection and `bun run e2e:clock` the three wall-clock projects, which are out of that selection because their rows are read from the clock and need the machine to themselves, so the two commands together are the whole suite.
 
 - `legion start [--config <legion.yaml>] [--check-config]`
 
@@ -276,7 +277,9 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   The operator's: relaunch a failed architect on its session with fresh budgets, or retry a failed phase worker whose issue is held for its own role through that phase's retry (409 when the issue stays held, as a lingering tree's does);
   `--claim` reaches a claim an operator stopped as well as a failed one, because `legion claims stop` retires the claim it stops, and starts a phase worker on the task of the phase its issue stands in now;
   `--fresh-session` forgets the claim's recorded session first, so the retry starts a fresh agent instead of resuming that session, and it reaches a claim whose agent is registered, ready or idle as well as one that is suspended, failed or retired, with no suspension held over it, a root architect included;
-  `--failed` lists the claims and retries every failed one in turn, printing each it retried and exiting 1 naming each the daemon refused, and passes over a stopped claim, which is retired and not failed (docs/deployment.md "Moving a project onto tmux")
+  `--failed` lists the claims and retries every failed one in turn, printing each it retried and exiting 1 naming each the daemon refused, and passes over a stopped claim, which is retired and not failed (docs/deployment.md "Moving a project onto tmux");
+  a failed claim carries the one cause word the daemon failed it under, which `legion claims list` prints after the claim's state word, `-` where the daemon holds none, and which `--json` gives with the sentence beside it, the moment and the four counts;
+  a held issue has a release that costs nothing besides this retry: `legion status <KEY> todo` on a tree's own root releases the hold, returning the issue to the phase it was held from and starting that phase's worker at the same generation, in the same pod and at the same place in the admission line
 
 - `legion claims compact --operator-token-file <file> --claim <token>`
 
@@ -307,9 +310,8 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   and refusing to start — exit 1 naming the key and its file, Oh My Pi never spawned
   — when a key's name is already a variable of the shim's own environment, since the export would override it silently (LEGION-186));
   the shim also answers the daemon's `adopt-working-copy` frame by running the shared `jj metaedit --update-author` in its workspace;
-  with `--pod-safety` (the Sandbox runtime passes it;
-  a tmux pane never does), the shim starts Oh My Pi on Legion's pod baseline (`packages/daemon/internal/podsafety`), which names no model, provider or route and holds nothing of a repository's settings off:
-  `PI_CONFIG_DIR=.omp` and `OMP_SESSION_STORAGE=file`, each set only when the pod leaves it unset (the runtime refuses both in an operator's pod, since they place the sessions a resume reads), and nothing else — Legion writes no settings overlay of its own, so `PI_CONFIG_FILES` rides through as the runtime composed it, the operator's own overlays with the role's own (`role_config_files`) after them, and background work is on for every role, the pinned binary's own default under `--mode rpc`;
+  with `--pod-safety` (the Sandbox runtime passes it; a tmux pane never does), the shim starts Oh My Pi on Legion's pod baseline (`packages/daemon/internal/podsafety`), which names no model, provider or route and holds nothing of a repository's settings off:
+  `PI_CONFIG_DIR=.omp` and `OMP_SESSION_STORAGE=file`, each set only when the pod leaves it unset (the runtime refuses both in an operator's pod, since they place the sessions a resume reads), and nothing else — Legion writes no settings overlay of its own, so `PI_CONFIG_FILES` rides through as the runtime composed it, the operator's own overlays with the role's own (`role_config_files`) after them, and `OTEL_RESOURCE_ATTRIBUTES` the same, the operator's attributes then the launch's issue and role, and background work is on for every role, the pinned binary's own default under `--mode rpc`;
   with `--warm-codegraph` (the Sandbox runtime passes it for a role in an issue pod;
   never for a tmux pane, whose workspace the daemon warms itself, nor for the controller, which has no workspace;
   refused without `LEGION_WORKSPACE`), the shim builds the CodeGraph index of the workspace `LEGION_WORKSPACE` names in the background once Oh My Pi has written its first frame, under a cross-process lease at `.codegraph/legion-warm.lock` so the six role shims sharing an issue's workspace never build it twice, and a stop mid-build ends the warm-up with Oh My Pi (the shim exits only once the lease is released, so the relaunch never reads a live build;
@@ -636,6 +638,14 @@ Each item below names a task and where its code is, then notes on it.
   — its machine (`src/phase-stall.ts`), its runner (`src/phase-reminder.ts`) and the four `LEGION_STALL_*` numbers (`src/stall-limits.ts`), one copy for both harnesses.
   See `packages/pi-shared/AGENTS.md`
 
+- Change what a write to a public repository is checked against — `packages/daemon/internal/leakguard/`
+
+  The one guard every Legion write passes before it writes:
+  the shared public leak check, resolved again at each call, and this repository's own four private-name rules in `private-names.toml`, which the `legion` binary embeds and the gitleaks engine linked into it reads in process.
+  Its call sites are the worker image's `git` and `jj` wrappers through the pre-push hook and `legion leak-check` (`packages/daemon/docker/`), `legion gh`, the rescue helper's push, the daemon's branch create, and the release lane's six writes (`.github/scripts/release-push.sh`).
+  See `docs/kubernetes.md`;
+  the live proof of the image's half is `scripts/e2e/leak-guard-image-job.sh`
+
 - Worker image (Kubernetes) — `packages/daemon/docker/worker.Dockerfile`, `.github/workflows/worker-image.yaml`
 
   See `docs/kubernetes.md`
@@ -721,7 +731,7 @@ Each item below names a task and where its code is, then notes on it.
 
 - **The slow test suites run in the merge queue, not on a pull-request push**
   — eight jobs of `ci.yaml` (`envoy-go`, `envoy-go-race`, `envoy-go-race-api`, `envoy-go-race-docs`, `envoy-go-docs-finalizers`, `dispatch-memory`, `dispatch-multiprocess` and `envoy-smoke`) are held back on a pull request, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from.
-  The browser suite (`dispatch-browser`, whose called workflow builds the Go commands its lanes run in a `binaries` job of its own) runs on every pull request that changes what it reads, in its two-project `pull-request` lane; the label puts it on the full lane the merge queue runs.
+  The browser suite (`dispatch-browser`, whose called workflow builds the Go commands its stacks run in a `binaries` job of its own) runs on every pull request that changes what it reads, in its two-project `pull-request` lane; the label puts it on the full lane the merge queue runs.
   A worker adds the label `full-ci` to its pull request only to check a fix for a slow-suite failure that took the pull request out of the queue, or when a person asks.
   The label is read from the pull request as the run's own event carries it, so it takes effect at the next push, not when it is added.
   The worker takes it off again once that run has passed, because the label stays on the pull request and every later push would run the eight again, and the browser suite's full lane with them.
@@ -814,6 +824,9 @@ Each item below names a task and where its code is, then notes on it.
   delete that comment (a submitted review cannot be deleted, so edit its body), since an edit leaves the old text in its edit history, then re-run the newest failed run of each check that reported it on the current head (`ci.yaml`'s `pr-title` job, which carries the push's check, and `pr-title.yaml`'s run once for each other event that is red), never an older run, since a re-run checks the commits of the head its own event named and reports its check there.
   The check reads the title, body and branch name as the pull request has them when it runs, not as its event carried them, so the push-time `pr-title` of `ci.yaml`'s job, which can land after a later edit's run, never passes over text that run refused
 
+  - **The guard runs before the write; both scans above still run after it** — a pod's `git push`, its `jj git push` and its `legion gh` run Legion's leak guard before they write, so a name of any of these classes is refused in the pod rather than found on GitHub afterwards (`packages/daemon/internal/leakguard`, `docs/kubernetes.md`).
+    Neither scan is changed by that, and deleting the pull-request half of them, once the guard has been driven in production, is dispatch://INFRA-1825
+
 - **A skill, a role prompt and an `AGENTS.md` name no person**
   — write the role instead: "a person" for whoever sends a message or makes a request, "the operator" for whoever runs this deployment, "the human" for whoever an agent asks for a decision.
   The rule covers `skills/`, `packages/daemon/internal/prompts/` and every `AGENTS.md`, and so the generated copies the Claude Code plugin builds from `skills/`:
@@ -866,7 +879,7 @@ When the root that held it closes, the tree's linger hands that child to Legion 
 A parent with children puts the work into them, and its own pull request joins and proves their merged work.
 
 **Acceptance:** the reviewer's approval moves the issue to `accepting` (Dispatch status `needs_review`), where no worker runs:
-the tree's architect reads the tester's handoff, each `check` block of the issue's Verification document with its latest result (`dispatch results`), and the reviewer's approval of the head by SHA, then accepts with the `legion` tool's `sign_off` (→ `retro`;
+the tree's architect reads the tester's handoff, each `check` block of the issue's Verification document with the results recorded against it (`dispatch results --issue <issue>`), and the reviewer's approval of the head by SHA, then accepts with the `legion` tool's `sign_off` (→ `retro`;
 refused in every other phase, `SIGNOFF_OUTSIDE_ACCEPTING`;
 refused too while an issue beneath it is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW` naming each one, since a parent's head proves its children's merged work) or sends the issue back to `implementing` or `testing` with `request_backward_move`, which counts a review round, or a conflict round that `review_round_cap` does not count when the record holds the pull request's head as conflicting with its base.
 An architect's `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`); CI red there returns the issue to `implementing`.

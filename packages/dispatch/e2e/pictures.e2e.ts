@@ -1,5 +1,3 @@
-import { expect, type Locator, type Page, type Response, test } from "@playwright/test";
-
 import type { ArtifactUploadResponse } from "../web/src/api/types";
 import {
   REF_PREVIEW_CLOSE_DELAY_MS,
@@ -18,9 +16,9 @@ import {
   getIssueArtifactText,
 } from "./api";
 import { documentEditor, openSpec, typeAtEnd } from "./editor";
-import { resetDatabase } from "./seed";
 import { ONE_PIXEL_PNG, pastePicture } from "./sends";
 import { sessionIds } from "./session-ids";
+import { expect, type Locator, type Page, type Response, test } from "./test";
 import { asUser } from "./users";
 
 // A picture pasted into a message, an ask's answer or a direct message is uploaded and written as
@@ -33,10 +31,6 @@ const agentSession = {
   actor: { kind: "session" as const, id: "e2e-pictures" },
   as: "agent" as const,
 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /** Waits for `picture` to have loaded real pixels: scrolled to first, since it loads lazily. */
 async function expectDrawn(picture: Locator, src: string): Promise<void> {
@@ -181,11 +175,7 @@ test("a picture pasted into a direct message on the Agents page shows inline and
   try {
     const page = await alice.newPage();
     await page.goto("/agents");
-    // A session with no Dispatch activity yet is listed under its fold.
-    await page
-      .getByRole("region", { name: "Agents" })
-      .getByRole("button", { name: "No Dispatch activity (1)" })
-      .click();
+    // A session with no Dispatch activity yet is listed under `Idle`, which is open.
     const row = agentRow(page, planner.session_id);
     await row.getByRole("button", { exact: true, name: "Planner" }).click();
     const field = row.getByRole("textbox", { name: "Comment" });

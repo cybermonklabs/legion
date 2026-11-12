@@ -40,8 +40,9 @@ func goldenPath(name string) string {
 // provider key's store key, the pod's env values, volume, Secret and ServiceAccount names, userinfo
 // on `envoy_url` and the first `nats_urls` entry, which the settings mask, and userinfo and a query
 // on `plugins.pi_envoy`'s tarball URL, which the settings mask and drop while `pi_legion` pins the
-// version form). Every path the settings emit (`state_dir`, `instructions`) is a fixed absolute
-// literal, so the golden does not churn with the temporary directory the file is written under.
+// version form). Every path the settings emit (`state_dir`, `instructions`, the hook's
+// `prompt_file`) is a fixed absolute literal, so the golden does not churn with the temporary
+// directory the file is written under.
 // Hosts are placeholders.
 const settingsFixtureFile = `project: LEGION
 port: 13370
@@ -114,6 +115,13 @@ repository_renames:
 capabilities:
   decided:
     pool-capacity: "the pool is sized by hand for the admission cap"
+hooks:
+  - name: back-to-implementing
+    on: work_back
+    moves: [reviewing-implementing, testing-implementing]
+    every: 2
+    roles: [implementer]
+    prompt_file: /etc/legion/hooks/back-to-implementing.md
 runtime:
   kubernetes:
     namespace: legion
@@ -199,6 +207,10 @@ func populatedState(t *testing.T) State {
 	approvedVersion, mergedApproval, lineApproval := 6, 4, 3
 	waitedSince := time.Date(2026, 9, 22, 8, 5, 0, 0, time.UTC)
 	answeredAt := time.Date(2026, 9, 22, 9, 21, 0, 0, time.UTC)
+	// When LEGION-210's implementer failed, the moment its claim carries beside the cause.
+	implementerFailedAt := time.Date(2026, 9, 22, 8, 47, 3, 0, time.UTC)
+	// When LEGION-207's linger runs out: its work finished and its tree lingers until then.
+	lingerUntil := time.Date(2026, 9, 22, 10, 10, 12, 0, time.UTC)
 	// What the daemon last saw two of the fixture's agents do (supervise.StepRecord): the
 	// architect's last call ended, so it is in none, and the implementer's `bash` call has a
 	// start and no end, which is the shape a stalled turn leaves behind. Neither carries the
@@ -286,9 +298,12 @@ func populatedState(t *testing.T) State {
 							},
 							// The pod's update round, which every claim of that pod shares: the daemon
 							// replaces the pod only once each has answered. This one has, and reported
-							// the head it pushed.
-							UpdateRound: "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
-							UpdateHead:  "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+							// the head it pushed. The reasons are the round's own, so every claim of
+							// the pod carries the same text: what the worker answering is told to act
+							// on.
+							UpdateRound:   "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+							UpdateHead:    "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+							UpdateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
 						},
 						HandoffRecord: &HandoffRecordView{ID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 1},
 						Rounds:        0,
@@ -315,14 +330,33 @@ func populatedState(t *testing.T) State {
 								Open:        []CapabilityGap{{Name: "github", Detail: "gh api user: HTTP 401: Bad credentials"}},
 							},
 							// The same round, on the worker that has not answered it yet: no head is
-							// reported until a worker answers.
-							UpdateRound: "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+							// reported until a worker answers, and the reasons are the round's own.
+							UpdateRound:   "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+							UpdateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
+							// The run of the last confirmed delivery this claim retired, which is
+							// this issue's own generation: the worker is turning over the run the
+							// issue is in.
+							ServingGeneration: 3,
+							// Two turns of this claim ended in a provider error in a row, and the
+							// task went out again behind the daemon's own sentence. It bounds
+							// nothing: the controller is told once at six, and nothing fails a
+							// claim for it.
+							ProviderErrorRun: 2,
+							// The task this worker holds, as every agent surface reads it: that one
+							// is held, the phase it was queued for and when, and nothing of its
+							// text, which the operator routes serve whole.
+							PendingTask: &PendingTaskView{Phase: phase.Implementing, QueuedAt: time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC)},
 							// The call this worker is in: a start the daemon received and no end,
 							// which is what a turn that has stopped moving leaves behind.
 							Step: StepViewOf(implementerStep),
 						},
 						HandoffCommit: "",
 						Rounds:        2,
+						// Both of this issue's rounds came from a move back, and the two were of
+						// different kinds, so the counts name two pairs and add up to the rounds.
+						// LEGION-207's implementer below carries none: an issue whose rounds were
+						// run before the counting landed reads no such key at all.
+						BackwardMoves: map[string]int{"reviewing-implementing": 1, "testing-implementing": 1},
 					},
 				},
 				PullRequest: &PullRequestView{
@@ -362,8 +396,28 @@ func populatedState(t *testing.T) State {
 				Repo:          "zeta/tools",
 				DefaultBranch: "release/v7.1",
 				HoldReason:    "escalated",
+				// The phase the hold took this root out of, which its release puts it back to. It
+				// stands beside the reason here; the two part on a tree that lingers, where the
+				// reason is withheld and this is not (internal/projection).
+				HeldFrom: string(phase.Implementing),
 				Workers: map[claim.Role]PhaseView{
-					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_210", State: "failed"}, Rounds: 1},
+					// Its implementer failed and nothing has launched it since, so the claim
+					// carries why: the one word the supervision chose, the sentence it wrote, the
+					// moment, and the four counts it failed with, which a reader reads against
+					// the limits in `settings`. The pending cause beside it names the death whose
+					// refused relaunches spent that budget, and stands until the agent's ready or
+					// a retry clears it with the launch failures it is counted beside.
+					claim.RoleImplementer: {Claim: ClaimView{
+						Session: "ses_implementer_210",
+						State:   "failed",
+						Failure: &ClaimFailureView{
+							Cause:    supervise.CauseDied,
+							Detail:   "launch failures ran out",
+							At:       &implementerFailedAt,
+							Attempts: BudgetsView{LaunchFailures: 4, Deaths: 1},
+						},
+						PendingCause: supervise.CauseDied,
+					}, Rounds: 1},
 				},
 				// Nobody has registered this root's spec, so its one gated step carries no
 				// document, no version and no approval, and holds the tree's work.
@@ -382,8 +436,23 @@ func populatedState(t *testing.T) State {
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
 				Workers: map[claim.Role]PhaseView{
-					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_211", State: "suspended"}, Rounds: 1},
+					// A released claim keeps the task it was holding through its suspension, and
+					// the two sends that never reached a turn are on it: the diagnosis record a
+					// stalled claim is read by, with no budget spent on either.
+					claim.RoleImplementer: {Claim: ClaimView{
+						Session: "ses_implementer_211",
+						State:   "suspended",
+						PendingTask: &PendingTaskView{
+							Phase: phase.Implementing, QueuedAt: time.Date(2026, 9, 22, 8, 54, 20, 0, time.UTC),
+							SendFailures: 2, LastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused",
+						},
+					}, Rounds: 1},
 				},
+				// The Dispatch parent chain this labelled root was recorded with: LEGION-209 is a
+				// child of LEGION-208's live tree that its architect has not released, so the
+				// ancestry hold is what keeps this root out of the line's front while that tree
+				// runs. Nothing else on this wire names the chain.
+				Ancestry: []string{"LEGION-209", "LEGION-208"},
 				// Its spec stands approved at the version Dispatch holds, which is how its work
 				// began: what holds it now is the blocker, not the gate.
 				GatedSteps: []GatedStepView{{
@@ -439,6 +508,10 @@ func populatedState(t *testing.T) State {
 				Tree:          "LEGION-207",
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
+				// Its work finished, so its tree lingers: until this moment a todo on it takes the
+				// tree back without a re-admission. It is what a reader of a held issue of this
+				// tree would read an absent `holdReason` by, the suppression being the linger's.
+				LingerUntil: &lingerUntil,
 				Workers: map[claim.Role]PhaseView{
 					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_207", State: "working"}, HandoffCommit: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", Rounds: 1},
 				},
@@ -492,8 +565,9 @@ func populatedState(t *testing.T) State {
 			{Issue: "LEGION-212", Role: claim.RoleTester, State: "retired"},
 		},
 		// A wave going out at the pace its operator set, with one wake of each lane still held:
-		// LEGION-207's implementer, working its production check in the pod the daemon keeps, waits
-		// for the update task its plugin round queues it; LEGION-208's architect, already running,
+		// LEGION-207's implementer, working its production check in the pod the daemon keeps,
+		// waits for the relaunch the stale-plugin lane's gate admitted for it, its own kind;
+		// LEGION-208's architect, already running,
 		// waits for the catch-up a child's re-admission wrote it in place of a launch, which waits
 		// on its outbox row rather than in a machine; and LEGION-208's planner, whose pod answered
 		// its update round, waits for the launch that brings it up on the pod's replacement. The
@@ -501,12 +575,17 @@ func populatedState(t *testing.T) State {
 		// other, and the three are one list in claim order whichever lane holds each.
 		WakesWaiting: []WakeWaiting{
 			{Claim: "legion-legion-legion-207-implementer", Issue: "LEGION-207", Role: claim.RoleImplementer,
-				Kind: "plugin-task", DueAt: time.Date(2026, 9, 22, 9, 17, 56, 0, time.UTC)},
+				Kind: supervise.WakePluginRefresh, DueAt: time.Date(2026, 9, 22, 9, 17, 56, 0, time.UTC)},
 			{Claim: "legion-legion-legion-208-architect", Issue: "LEGION-208", Role: claim.RoleArchitect,
 				Kind: "catch-up", DueAt: time.Date(2026, 9, 22, 9, 18, 3, 0, time.UTC)},
 			{Claim: "legion-legion-legion-208-planner", Issue: "LEGION-208", Role: claim.RolePlanner,
 				Kind: "launch", DueAt: time.Date(2026, 9, 22, 9, 18, 11, 0, time.UTC)},
 		},
+		// Four claims are still on an earlier plugin, the one whose refresh wake waits above among
+		// them: the count is everything the lane has left to do and the wakes are the share of it
+		// the pacing is holding now, which is the pair a reader of a running wave needs
+		// (contract 73).
+		ClaimsToRefresh: 4,
 		ControllerLocator: &ControllerLocator{
 			Runtime:      "kubernetes",
 			External:     true,
@@ -585,8 +664,14 @@ func populatedState(t *testing.T) State {
 	return state
 }
 
+// The state golden is the body the route serves a caller at this daemon's own contract: the
+// source answers no mark and the route writes one (server's stateFor), so the fixture carries
+// the two numbers of `contract` and the plugin's schema is held to them. A caller below the
+// contract that added it is served no such key, which TestANarrowedBodySaysSo holds.
 func TestStateGolden(t *testing.T) {
-	golden(t, "state.json", populatedState(t))
+	state := populatedState(t)
+	state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: DaemonAPIVersion}
+	golden(t, "state.json", state)
 }
 
 // Every plugin parses the state with the schema of the contract it was built at, and a
@@ -937,8 +1022,11 @@ func operatorClaim() OperatorClaim {
 			LastSendError:     "prompt the agent: context deadline exceeded",
 		},
 		SuspensionHeld: true,
-		// The claim's own plugin round: its process speaks a plugin contract this daemon does not,
-		// and it is replaced only once its worker has pushed its work and answered, which it has.
+		// A plugin round an earlier daemon opened over this claim, whose process speaks a plugin
+		// contract this daemon does not. This release opens none — the stale-plugin lane asks
+		// its worker nothing and relaunches instead — and a boot takes every claim out of one it
+		// finds (daemon's endPluginRounds), so the shape is still on the wire in the moments
+		// before that pass reaches the claim, which is why the fixture pins it.
 		UpdateRound: "plugin:43",
 		UpdateHead:  "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
 		// What the daemon last saw this agent do: an `eval` call whose start it received and
@@ -961,7 +1049,13 @@ func TestOperatorClaimGolden(t *testing.T) {
 	golden(t, "operator-claim.json", operatorClaim())
 }
 
+// What a successful forget-session answers: the failed claim whose session the operator
+// abandoned, carrying why it failed. This is the fixture that holds the operator wire's failure
+// record, because operatorClaim's is working and a working claim has none: the launch that ran
+// it again cleared it (supervise's launchNow), which is why the record stands on a failed claim
+// alone.
 func TestForgetSessionOperatorClaimGolden(t *testing.T) {
+	failedAt := time.Date(2026, 9, 22, 9, 28, 41, 0, time.UTC)
 	golden(t, "operator-forget-session.json", OperatorClaim{
 		Token:                "legion-legion-legion-208-architect",
 		Tree:                 "LEGION-208",
@@ -974,6 +1068,12 @@ func TestForgetSessionOperatorClaimGolden(t *testing.T) {
 		Budgets:              BudgetsView{LaunchFailures: 3},
 		UncertainStreak:      0,
 		PluginContract:       38,
+		Failure: &ClaimFailureView{
+			Cause:    supervise.CauseLaunchRefused,
+			Detail:   "launch failures ran out: resume the pane: the session table holds no such session",
+			At:       &failedAt,
+			Attempts: BudgetsView{LaunchFailures: 3},
+		},
 	})
 }
 
