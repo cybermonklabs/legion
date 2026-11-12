@@ -474,9 +474,7 @@ func TestADecisionBlockIsRefusedInABodyTheParserRefuses(t *testing.T) {
 //
 // What its line endings are is the comment write's own rule and not this reading's: a body reaches
 // the store the way text written into a document does, with one line ending (pmdoc.LineFeeds,
-// comment_create.go), so the carriage returns read back as line feeds. The row main wrote here
-// asserted the body byte for byte, which was true before that rule and is the one line of it this
-// branch changes.
+// comment_create.go), so the carriage returns read back as line feeds.
 func TestACommentOfLoneCarriageReturnsIsStoredWithLineFeeds(t *testing.T) {
 	f := newDecisionFixture(t)
 	before := f.stored(t)

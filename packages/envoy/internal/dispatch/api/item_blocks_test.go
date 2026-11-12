@@ -290,7 +290,7 @@ func TestABodyWithBlockHTMLReadsBackAsItIsStored(t *testing.T) {
 	body := pmdoc.LineFeeds(sent)
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": sent}, "alice")
 	if read := readThreadComment(t, handler, comment.ID); read.Body != body {
-		t.Fatalf("read body = %q, want %q byte for byte", read.Body, body)
+		t.Fatalf("read body = %q, want %q: the body as sent, with its line endings made line feeds", read.Body, body)
 	}
 	requireCommentBlocks(t, database, comment.ID, "create", "b1@1 b2@1 b3@1", 1)
 	var types string
