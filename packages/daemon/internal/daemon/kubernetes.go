@@ -517,6 +517,11 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// bundle is sent or that pod is refused as no newer than the save, and nothing is
 		// answered for that bundle again.
 		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
+		// The shared public leak check each pod's launcher is pushed before any role of the pod
+		// starts, read with the implement App's read-only token for its repository alone; a daemon
+		// with no Apps reads none, and the runtime refuses the start of a role whose launcher names
+		// a tag with the cause that says so.
+		opts.LeakCheck = leakCheckSource(apps, githubAPI)
 		if apps != nil {
 			// One record per project, written by the two credentials and read by the directory
 			// set for the Apps of the pod it answers for, so no pod is replaced for a directory
@@ -622,18 +627,13 @@ func (t *implementTokens) warnOwnToken(owner string) {
 // tag a pod's launcher names and serves to that launcher (leakguard.Source).
 var leakCheckRepository = ghrepo.MustParse(leakguard.CheckSlug)
 
-// leakCheckReader is what reads the shared public leak check at a tag for a pod's launcher:
-// *leakguard.Source.
-type leakCheckReader interface {
-	Get(ctx context.Context, tag string) (leakguard.Served, error)
-}
-
 // leakCheckSource is the daemon's reader of the shared public leak check, minting through apps
 // (leakCheckToken) and reading under githubAPI, GitHub's REST root ("" is
-// https://api.github.com). A daemon with no GitHub Apps has no reader: the answer is then the nil
-// interface, never a nil *leakguard.Source inside one, so a caller's comparison with nil reads
-// the daemon as holding no credential.
-func leakCheckSource(apps appauth.Tokens, githubAPI string) leakCheckReader {
+// https://api.github.com), which the Sandbox runtime pushes to each pod's launcher before any role
+// of the pod starts (sandbox.Options.LeakCheck). A daemon with no GitHub Apps has no reader: the
+// answer is then the nil interface, never a nil *leakguard.Source inside one, so the runtime's
+// comparison with nil reads the daemon as holding no credential.
+func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckReader {
 	if apps == nil {
 		return nil
 	}

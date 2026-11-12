@@ -274,6 +274,13 @@ type Options struct {
 	// neither restores nothing, which is what a pod whose issue was never released does anyway.
 	SavedWorkspaceBundle    runtime.SavedWorkspaceBundle
 	WorkspaceBundleRestored runtime.WorkspaceBundleRestored
+	// LeakCheck reads the shared public leak check at the tag a pod's launcher names in its hello
+	// (shimwire.LauncherHello.LeakCheckTag), which the runtime pushes to that launcher before it
+	// starts any role of it (launchers.serveLeakCheck): the launcher installs the check once for
+	// its pod, and every role's shim reads that install. The daemon fills it from its GitHub App
+	// (*leakguard.Source); nil is a daemon with no GitHub credential, which refuses the start of
+	// every role whose launcher names a tag and starts a launcher that names none as it is.
+	LeakCheck LeakCheckReader
 	// Now stamps observations and ages pods and orphans; time.Now when nil.
 	Now func() time.Time
 	// Log receives what the runtime decides without being asked; slog.Default() when nil.
