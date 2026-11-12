@@ -164,7 +164,11 @@ a bound of its own:
 - an ask's question and its options together are at most 32,000 characters, with at most eight
   options;
 - a comment or message body is bounded block by block: each block — a paragraph, list, quote,
-  table or code block — is at most 32,000 characters, and one body holds at most 32,768 blocks;
+  table or code block — is at most 32,000 characters, and one body holds at most 32,768 blocks.
+  A body holding a decision block (`:::ask`) is refused whatever its length, `400
+  DECISION_BLOCK_IN_BODY`: nobody can answer a question there, so it belongs in the issue's own
+  document, as a decision block, or in an ask opened with `dispatch ask`. To show one as an
+  example, put it in a fenced code block;
 - a comment anchored to a document is also projected into that document's margin, which is bounded
   in bytes and not by that character limit: 256 KiB per thread, and 1 MiB per document margin. A
   few long anchored comments therefore fill a thread or a margin where many short ones used to
@@ -198,7 +202,7 @@ whole spec with your text. Use `dispatch artifact` for real files, such as a rep
 draft to send as-is.
 
 An upload that does replace a document the owner already holds under that name says which version it replaces.
-Read the document with `dispatch doc-read`, which prints `Document token: sha256:…`, and upload with `--precondition-json '{"document":"sha256:…"}'`.
+Read the document with `dispatch doc-read`, which prints `Document token: sha256:…`, and upload with `--force --precondition-json '{"document":"sha256:…"}'`: `--force` asks the command for the document's next version, which it otherwise refuses before sending anything, and the token is what Dispatch itself asks of every replacement.
 An upload that names no token is refused `400 PRECONDITION_REQUIRED`, and one naming a token the document has moved past is refused `409 PRECONDITION_FAILED`; nothing is written either way, and the refusal tells you to read the document again with `dispatch doc-read`, which prints the token it carries now, decide what that version says, and upload again naming that token.
 A first upload of a name replaces no version, so it names no token.
 

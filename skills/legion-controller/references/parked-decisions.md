@@ -18,6 +18,12 @@ again when a person sets it to `todo`, when a wake tells you to re-admit it (`wo
 Every other park, a person's, another session's or an operator's `legion status`, stays parked
 until whoever parked it sets it to `todo`.
 
+A held root is not a parked one. It stands at `phase: held` and is still in the workflow, and a
+`todo` on it releases the hold instead of starting a new run: the issue returns to the phase its
+hold came from and that phase's role starts again, at the same generation
+(`skill://legion-controller/references/wakes.md`, the `held` wake). The recipe below, `backlog`
+and then `todo`, is for a root that is parked or lingers, and it is what re-admits a tree.
+
 ## The notice
 
 Its payload is `{kind: "parked-decision", decision, root, ref, actor, version?, reason?}`:
@@ -53,10 +59,13 @@ an approval of a document that is not the root's primary one.
      nobody in the tree heard the decision: skip step 2 and judge it in steps 3 and 4. A decision
      that gives the work a next step re-admits the tree as the `worker-died` section of
      [the wakes reference](skill://legion-controller/references/wakes.md) says
-     (`set_status` of the root to `backlog`, then to `todo`), not to `todo` alone. Answer a
-     question as step 4 says, and leave the tree as it is. In that reply and in the root's copy,
-     write `<root>'s architect has stopped, so it` for `<root> is parked, so its architect`,
-     `The tree waits.` for `The tree stays parked.`, and `backlog, then todo,` for `todo`.
+     (`set_status` of the root to `backlog`, then to `todo`), not to `todo` alone. On a root at
+     `phase: held`, `todo` alone releases that hold and starts the held phase's worker, which
+     leaves the failed architect where it is, so the park before it is what gives the tree an
+     architect again. Answer a question as step 4 says, and leave the tree as it is. In that reply
+     and in the root's copy, write `<root>'s architect has stopped, so it` for
+     `<root> is parked, so its architect`, `The tree waits.` for `The tree stays parked.`, and
+     `backlog, then todo,` for `todo`.
      Otherwise the tree already heard the decision: do nothing.
    - Its `phase` is `done`: read the root's Dispatch status (`dispatch read --issue <root>`).
      `backlog` or `icebox`: go on. `done`: the tree finished; set nothing and name `ref` in your
@@ -111,8 +120,9 @@ an approval of a document that is not the root's primary one.
      Where `gatedSteps` carries more than one entry, read each one the same way: the tree runs
      again only once every entry is `approved`, and an entry still `waiting`, `unregistered` or
      `changes_requested` is work the architect holds.
-     - It is your own hold (step 2): set the root to `todo` (`set_status`); admission queues it and
-       its architect resumes. Post one comment on the issue where the decision was made
+     - It is your own hold (step 2): set the root to `todo` (`set_status`). Admission queues it,
+       the tree runs again at a new generation and its architect starts with the decision. That
+       `todo` releases no hold. Post one comment on the issue where the decision was made
        (`dispatch comment --issue <KEY> --body-file -`): `Parked decision read: <ref> by <login>
        gives this tree its next step (<one sentence>). Legion runs it again.`
      - Any other park, or you cannot read who parked the tree: set nothing, since you move only a

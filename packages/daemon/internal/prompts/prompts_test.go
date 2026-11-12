@@ -38,9 +38,11 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 		goParts  []string
 		contains []string
 	}{
-		// Every architect is told what a pull-request-missing notice asks of it, whatever its tree.
-		{"root architect", claim.RoleArchitect, true, []string{"architect-root.md"}, []string{"architect-root.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate`", "end the tree with `close_root`", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice"}, architectOperations...)},
-		{"sub-architect", claim.RoleArchitect, false, []string{"architect.md"}, []string{"architect.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate` refuses a child issue", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice"}, architectOperations...)},
+		// Every architect is told what a pull-request-missing notice asks of it, whatever its tree,
+		// and which code each of the two pre-checked texts is refused with: its length, and the
+		// decision block it holds (INFRA-1201).
+		{"root architect", claim.RoleArchitect, true, []string{"architect-root.md"}, []string{"architect-root.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate`", "end the tree with `close_root`", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`", "`READY_PACKET_DECISION_BLOCK`"}, architectOperations...)},
+		{"sub-architect", claim.RoleArchitect, false, []string{"architect.md"}, []string{"architect.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate` refuses a child issue", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`", "`READY_PACKET_DECISION_BLOCK`"}, architectOperations...)},
 		{"planner", claim.RolePlanner, false, []string{"core/common.md", "core/planner.md", "mechanics/headless.md", "planner.md"}, []string{"planner.md", "worker-common.md"}, []string{`op: "handoff_complete"`, "jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/<issue>", "dispatch handoff-write --issue <issue> --phase <word> --body-file", "dispatch handoff-read --issue <issue> --phase <word> --version <n>", "A handoff is never committed or pushed", "`HANDOFF_SESSION_MISMATCH`", "A refusal records nothing"}},
 		// A root with no code of its own pushes one empty commit to open its pull request. The
 		// implementer is also told the completion of implementing the handoff route refuses with no
@@ -53,10 +55,12 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 			"read CI for everything static", "try to break it", "dispatch handoff-write --issue <issue> --phase test"}},
 		{"reviewer", claim.RoleReviewer, false, []string{"core/common.md", "core/reviewer.md", "mechanics/headless.md", "reviewer.md"}, []string{"reviewer.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
 			"Retro commits nothing, so nothing of retro's sits above your approved head", "`pullRequest.head` is the commit the pull request stands on"}},
-		// The merger is told how its over-long packet is refused, at the call that carries it.
+		// The merger is told how its over-long packet is refused, and how one holding a decision
+		// block is, at the call that carries it.
 		{"merger", claim.RoleMerger, false, []string{"mechanics/headless.md", "merger.md"}, []string{"merger.md", "worker-common.md"}, []string{`op: "handoff_complete"`, "`ready: true`", "`READY_HEAD_CONFLICTS`: the pull request conflicts with its base",
 			"a compare entry whose every path is under `.legion/`", "`READY_DISARM_PENDING`",
 			"refused at `handoff_complete` with `READY_PACKET_TOO_LONG`, which names the bound and how far over the packet is",
+			"refused there with `READY_PACKET_DECISION_BLOCK`",
 			"`READY_HEAD_MOVED`", "`READY_FILES_TRUNCATED`", "`READY_PULL_REQUEST_CLOSED`",
 			"`GITHUB_READ_FAILED`", "`DESIGN_GATE_CLOSED`", "`NO_PULL_REQUEST`", "`READY_REQUIRED`"}},
 	} {
@@ -605,5 +609,67 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 		if strings.Contains(text, headRead) {
 			t.Errorf("the composed %s prompt (root %t) says %q", claim.RoleArchitect, isRoot, headRead)
 		}
+	}
+}
+
+// A pod holds every role of one issue in a single container under one memory limit, and its
+// sandbox ends the container rather than the process that filled it, so a heavy run started by
+// any role ends every role's turn. The rule that says so has to reach each role through the
+// prompt Compose builds, not through the part that happens to hold it today: the phase workers
+// read it from the headless mechanics, which is the only part the merger shares with the four
+// roles that compose a core, and both architect shapes read it from the one common part they
+// share, so the root's wording and the sub-architect's cannot drift apart. Composing and reading
+// the parts back is what makes a part dropped from Compose fail here. This shows the text is
+// loaded, never that a role obeys it.
+func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	const (
+		sandboxEndsTheContainer = "where that pod's sandbox ends the whole container rather than the one process that filled it"
+		everyRolesTurn          = "a command that fills the limit ends every role's turn and not only yours"
+		ciWork                  = "A whole module's test run (`go test ./...`), a whole Postgres-backed package, a browser suite run whole, and `make -j` or `lake build` are CI's work on the pull request"
+	)
+	worker := []string{
+		"In an issue pod every role of this issue runs in one container and shares its memory limit",
+		sandboxEndsTheContainer,
+		everyRolesTurn,
+		ciWork,
+		"what a role runs in the pod is what `skill://legion-worker/references/tools.md` names",
+		"Every other heavy run goes where your deployment's instructions say",
+		"instructions that name no such route are a gap you report to the architect that owns your issue",
+		"Each subagent you start runs its commands in this pod, so put these facts in its context",
+	}
+	architect := []string{
+		"Your subagents run their commands in your own issue pod",
+		sandboxEndsTheContainer,
+		everyRolesTurn,
+		ciWork,
+		"what may run in the pod is what `skill://legion-worker/references/tools.md` names",
+		"every other heavy run goes where your deployment's instructions say and instructions that name no such route are a gap to report, and you put these facts in the context of each subagent you start",
+	}
+	for _, tc := range []struct {
+		name   string
+		role   claim.Role
+		isRoot bool
+		rule   []string
+	}{
+		{"root architect", claim.RoleArchitect, true, architect},
+		{"sub-architect", claim.RoleArchitect, false, architect},
+		{"planner", claim.RolePlanner, false, worker},
+		{"implementer", claim.RoleImplementer, false, worker},
+		{"tester", claim.RoleTester, false, worker},
+		{"reviewer", claim.RoleReviewer, false, worker},
+		{"merger", claim.RoleMerger, false, worker},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := foldWhitespace(composedText(t, composer, tc.role, tc.isRoot))
+			for _, phrase := range tc.rule {
+				if !strings.Contains(text, phrase) {
+					t.Errorf("the composed %s prompt omits %q", tc.name, phrase)
+				}
+			}
+		})
 	}
 }

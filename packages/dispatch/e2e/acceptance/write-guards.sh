@@ -239,10 +239,11 @@ close_issue() {
 
 # upload SECTION ISSUE NAME FILE [BASE]: uploads FILE as the document NAME of ISSUE. BASE is the
 # document token the upload replaces, which an upload over a document the issue already holds
-# names; a first upload of a name has none to name.
+# names, with --force, which is how the command is asked for that document's next version; a
+# first upload of a name replaces nothing, so it names neither.
 upload() {
   if [[ -n "${5:-}" ]]; then
-    run "$1" "upload $3 to $2" artifact --issue "$2" --name "$3" --path "$4" \
+    run "$1" "upload $3 to $2" artifact --issue "$2" --name "$3" --path "$4" --force \
       --precondition-json "$(jq -cn --arg t "$5" '{document: $t}')"
   else
     run "$1" "upload $3 to $2" artifact --issue "$2" --name "$3" --path "$4"
@@ -459,11 +460,19 @@ readonly live_token live_version
   fail base "the second upload moved the document past the base the first read" "$live_token"
 pass base "the token read before the second upload is behind the live document"
 
-cli artifact --issue "$guard" --name guard.md --path "$work/base-three.md" \
+# --force asks the command for the document's next version, so this upload reaches Dispatch and
+# the refusal is the server's for the token; without it the command would refuse the name before
+# sending anything, and that refusal names dispatch doc-read too, so it is ruled out by its own
+# words below.
+cli artifact --issue "$guard" --name guard.md --path "$work/base-three.md" --force \
   --precondition-json "$(jq -cn --arg t "$stale_base" '{document: $t}')" >"$work/out" 2>&1 &&
   fail base "an upload naming a token behind the live document is refused" \
     "the command exited 0: $(<"$work/out")"
 pass base "the upload naming a token behind the live document exits non-zero"
+! grep -qF 'already holds guard.md' "$work/out" ||
+  fail base "the refusal is Dispatch's, not the command's refusal of a name that exists" \
+    "$(<"$work/out")"
+pass base "the refusal is Dispatch's for the token, not the command's for the name"
 grep -qF 'dispatch doc-read' "$work/out" ||
   fail base "the refusal says where a base that is not behind comes from" "$(<"$work/out")"
 pass base "the refusal tells the reader to read the document with dispatch doc-read"
@@ -496,7 +505,24 @@ upload base "$guard" guard.md "$work/base-three.md" "$doc_token"
 # the document stands where the accepted upload above left it.
 read_token base "$guard" guard.md
 before_refusal="$doc_token"
+
+# Asked for no next version, the command refuses the name before it sends anything, and the
+# refusal names both things a replacement takes - --force and the token - so a writer who follows
+# it is not refused a second time, by Dispatch, for the token.
 cli artifact --issue "$guard" --name guard.md --path "$work/base-four.md" >"$work/out" 2>&1 &&
+  fail base "an upload over a name the issue holds, with no --force" \
+    "the command exited 0: $(<"$work/out")"
+pass base "an upload over a name the issue holds, with no --force, exits non-zero"
+grep -qF 'already holds guard.md' "$work/out" ||
+  fail base "the command refuses the name itself" "$(<"$work/out")"
+pass base "the command refuses a name the issue holds before it sends anything"
+grep -qF -- '--precondition-json' "$work/out" ||
+  fail base "the command's refusal names the token a replacement takes" "$(<"$work/out")"
+pass base "the command's refusal names --precondition-json beside --force"
+
+# With --force it reaches Dispatch, which refuses it for the token.
+cli artifact --issue "$guard" --name guard.md --path "$work/base-four.md" --force \
+  >"$work/out" 2>&1 &&
   fail base "a replacement naming no token" "the command exited 0: $(<"$work/out")"
 pass base "a replacement naming no token exits non-zero"
 grep -qF 'must name the token of the version it replaces' "$work/out" ||
