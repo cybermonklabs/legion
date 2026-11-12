@@ -2119,6 +2119,74 @@ func TestTheSweepLeavesItsOwnProcessOutOfTheUsedPathSet(t *testing.T) {
 	f.assertProtected()
 }
 
+// The numbers the trimmer is held to are the approved requirements' own, and this is the only
+// case that writes them out. Every case that exercises them stages itself from the constant it
+// is testing — `clock.advance(volumeSweepBudget + time.Minute)` in the budget and boundary
+// cases below, `clock.advance(volumeUsedPathsMaxAge + time.Millisecond)` in the refresh cases
+// above, the deletions the stall case counts as `volumeSweepStallReadings *
+// volumeSweepReadEvery`, and `for at := range volumeFaultLimit` in the fault case — so each of
+// them moves with its constant and none of them fails when the number changes. That is the
+// fault review round 5 raised against the Go hour's own case, and this is the remedy in that
+// case's shape (TestTheGoCacheSlackIsGosOwnMtimeInterval), as the ten-interval pause writes
+// its ten out in TestThePauseAfterASweepThatFreedUnderAPointIsTenIntervals.
+//
+// The pause's ten is therefore not written here: that case holds it already. volumeSettingsWait
+// and the report's own bounds are not here either, because no requirement names their values —
+// the spec's two "ten seconds" are the pod's termination grace, which is another number.
+//
+// Each number is a t.Errorf and none a t.Fatalf, so one run names every one of them that moved.
+func TestTheTrimmersNumbersAreTheOnesTheRequirementsName(t *testing.T) {
+	const (
+		// "the sweep's budget of five minutes" (R1).
+		fiveMinutes = 5 * time.Minute
+		// "It reads the volume again after every hundred deletions" (R1).
+		hundredDeletions = 100
+		// "it stops the sweep when three of those readings in a row show no decrease" (R1).
+		threeReadings = 3
+		// The used-path set is read "once at the start of a sweep and again at least once a
+		// second during it" (R3), and the second is the design's own figure: the pass over
+		// /proc "is made once a second and not once an entry".
+		oneSecond = time.Second
+		// "A sweep that frees less than one percent of the volume starts no new sweep for the
+		// next ten intervals" (R1), in percentage points of the volume.
+		onePercent = 1.0
+		// The episode number is raised "when a reading rises five percentage points above the
+		// highest reading at the start of any sweep that reported in this episode" (R4).
+		fivePoints = 5.0
+		// The trimmer contains its own faults, and "after three in a row it stays off and sends
+		// one last report saying so" (R1).
+		threeFaults = 3
+	)
+	if volumeSweepBudget != fiveMinutes {
+		t.Errorf("volumeSweepBudget is %s, want the %s of R1's \"the sweep's budget of five minutes\": the budget is counted from the start of the sweep with the listing included, so a longer one lets one sweep hold the process that is PID 1 of the roles container past the five minutes the requirement promises, and a shorter one cuts the sweep of a full volume — 25 to 40 seconds to order a 17 GiB build cache alone — before it has deleted its way down to the low mark",
+			volumeSweepBudget, fiveMinutes)
+	}
+	if volumeSweepReadEvery != hundredDeletions {
+		t.Errorf("volumeSweepReadEvery is %d, want the %d of R1's \"It reads the volume again after every hundred deletions\": fewer deletions to a reading makes the statfs a measurable part of the sweep's own cost, and more lets a sweep of a full volume run on past the low mark it has already reached, deleting caches every role must then rebuild",
+			volumeSweepReadEvery, hundredDeletions)
+	}
+	if volumeSweepStallReadings != threeReadings {
+		t.Errorf("volumeSweepStallReadings is %d, want the %d of R1's \"it stops the sweep when three of those readings in a row show no decrease\": the kernel accounts a deletion asynchronously, so fewer readings end a sweep that is freeing space on the full volume it was started for, and more go on deleting the caches of a volume whose freed space the roles take as fast as the sweep frees it",
+			volumeSweepStallReadings, threeReadings)
+	}
+	if volumeUsedPathsMaxAge != oneSecond {
+		t.Errorf("volumeUsedPathsMaxAge is %s, want the %s of R3's used-path set read \"once at the start of a sweep and again at least once a second during it\": a longer age leaves a tool that starts under a running sweep — a `bun install` taking its flock, a Claude Code launch — unprotected for that long on the full volume the sweep is deleting from, and a shorter one spends another pass over /proc per sweep than the design measured",
+			volumeUsedPathsMaxAge, oneSecond)
+	}
+	if volumeSweepMinFreedPoints != onePercent {
+		t.Errorf("volumeSweepMinFreedPoints is %.1f, want the %.1f of R1's \"A sweep that frees less than one percent of the volume starts no new sweep for the next ten intervals\": a higher figure engages the pause on a sweep that did free real space, so a full volume waits ten intervals with caches the trimmer could have deleted, and a lower one lets a trimmer that can free nothing list the volume's whole reclaimable set once an interval in the process that is PID 1 of the roles container",
+			volumeSweepMinFreedPoints, onePercent)
+	}
+	if volumeRisePoints != fivePoints {
+		t.Errorf("volumeRisePoints is %.1f, want the %.1f of R4's episode raised \"when a reading rises five percentage points above the highest reading at the start of any sweep that reported in this episode\": a smaller rise reads the roles' ordinary rebuilding between the marks as a fresh deterioration and wakes the architect on every cycle of a volume that is merely oscillating, and a larger one holds the three-notice bound shut while a volume whose floor is already above the low mark goes from 86%% to 100%% with nobody told",
+			volumeRisePoints, fivePoints)
+	}
+	if volumeFaultLimit != threeFaults {
+		t.Errorf("volumeFaultLimit is %d, want the %d of R1's \"after three in a row it stays off and sends one last report saying so\": a smaller limit switches the pod's only protection off over a panic or two that an interval apart may never repeat, and a larger one keeps a trimmer that panics on every interval running in the process that is PID 1 of the roles container while the volume it no longer guards fills",
+			volumeFaultLimit, threeFaults)
+	}
+}
+
 // The sweep's budget runs from its start with the listing included, so a tree whose listing
 // alone spends five minutes ends on the budget having deleted nothing, and says so. The listing
 // is the larger half of the work on a full volume — one newestModTime per entry, which is a
