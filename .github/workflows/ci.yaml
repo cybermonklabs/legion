@@ -2465,20 +2465,16 @@ jobs:
   # the host the first source is on, installs all eight tools through the source
   # .github/ci-tools.yaml names for each, and then serves sixteen corrupted payloads and reads
   # the refusal of every one of them.
-  # It is permanent rather than a scaffold. A second source nothing exercises rots — a copy
+  # It is permanent rather than a scaffold: a second source nothing exercises rots — a copy
   # nothing fills, a seam a refactor dropped, a digest nobody reads — and the hour of 504s this
-  # work answers is the hour nobody wants to learn that in (dispatch://INFRA-1873). This
-  # repository's own principle is that testing means booting and running it, so what says the
-  # fallback works on the day the assets are down is a job that takes them down and installs
-  # anyway.
+  # work answers is the hour nobody wants to learn that in (dispatch://INFRA-1873).
   #
-  # Once the fault is up, no step of this job needs a GitHub release host to answer.
-  # Every install that must succeed reads a source the fault does not hold — the ghcr copy, npm,
+  # Once the fault is up, no step of this job needs a GitHub release host to answer. Every
+  # install that must succeed reads a source the fault does not hold — the ghcr copy, npm,
   # PyPI or get.pulumi.com — or, for the Pulumi CLI, whose primary is get.pulumi.com and whose
   # second source is the release asset, the origin serving that release's own staged bytes; the
-  # bytes the corrupted cases serve were staged before the fault; and the one case about a
-  # binary a third party installed seeds mise's install directory from that staged payload
-  # rather than downloading one inside the fault.
+  # corrupted cases' bytes were staged before the fault; and the one case about a binary a
+  # third party installed seeds mise's install directory from that staged payload.
   # That is what keeps ci-ok green during the very outage this job proves survivable: this job
   # is in ci-ok's `needs:`, and its filter selects ci.yaml, .bun-version, the worker image's
   # Dockerfile, the manifest and the helper beside it, and the eight actions, so
@@ -2613,37 +2609,28 @@ jobs:
     # safe by it.
     timeout-minutes: 114
     #
-    # THIS CHANGE ADDS TEN STEPS TO THAT SUM, AND NINE OF THEM COST NOTHING A READER WOULD
-    # NOTICE: eight marks, one before each install with nowhere to go, each a single `echo`
-    # which measured 0 s in jobs 130015112773, 129940828354 and 129966328215 and at most 1 s
-    # in job 130289341628 at the merge of main, and the watch's report, 0 s in all four. The
-    # tenth is the watch's start, which spawns the sampler and reads the file system it will
-    # watch: 3 s, 5 s and 4 s in those three jobs and 9 s in job 130306447638, so it is the
-    # one added step whose cost a reader can see, and the item above allows for it. The watch
-    # itself is a sampler beside the job rather than a step of it, so those two steps are its
-    # whole cost to this budget (dispatch://INFRA-2605).
+    # THIS CHANGE ADDS TEN STEPS TO THAT SUM AND NINE COST NOTHING A READER WOULD NOTICE:
+    # eight marks, one `echo` each before an install with nowhere to go, and the watch's
+    # report, all 0 s in jobs 130015112773, 129940828354 and 129966328215 and at most 1 s in
+    # job 130289341628. The tenth is the watch's start, 3 s, 5 s, 4 s and 9 s in those jobs,
+    # which the item above allows for; the watch itself is a sampler beside the job
+    # (dispatch://INFRA-2605).
     #
-    # SEVEN OF THE EIGHT INSTALLS WITH NOWHERE TO GO DECLARE `timeout-minutes: 11`, the eighth,
-    # the docker provider plugin's, 13, and 11 minutes is what the
-    # measurement below is of; every other install of this job and of tool-fallback-arm carries
-    # the budget its own ladder's arithmetic gives it instead - 22 for one `ci_tools_fetch`, 43
-    # for setup-bun's two, 51 for install-jj's two and its `mise install`, each the figure this
-    # change's 300 s ladder gives, where the same three were 13, 25 and 33 at the 120 s one -
-    # and the twenty-four installs whose control accepts a failure are timed as well, against
-    # the seconds .github/scripts/ci-tools-proof.sh holds every timed install to: a step the
-    # runner ends at its own bound leaves `outcome=failure` behind it, which those controls
-    # accept, so the wall time is the only reading that tells a hang from the refusal the case
-    # expects.
-    # The eleven minutes is derived from the installs as they ran before the ladders stopped
-    # sleeping: over the green runs of these two jobs between 2026-11-09T19:38Z and
-    # 2026-11-10T10:51Z, 2422 install steps — the sixteen-install shape this job carried for
-    # part of that window counted as well as the thirty-two it carries now — gave a median of
-    # 64 s, a 99th percentile of 128 s and a maximum of 326 s, which is `install-jj` on five
-    # slow runs. Eleven minutes is twice that maximum, rounded up to the minute the key takes,
-    # so no step that would have finished is ended by it. Since the ladders stopped sleeping
-    # every install sits under that 99th percentile: the slowest in job 130289341628 is the
-    # head's own `install-crane`, the one kept ladder, at 65 s, that job's reading at the 60 s
-    # bound this branch replaced.
+    # SEVEN OF THE EIGHT INSTALLS WITH NOWHERE TO GO DECLARE `timeout-minutes: 11`, the
+    # eighth, the docker provider plugin's, 13. Every other install of this job and of
+    # tool-fallback-arm carries its own ladder's arithmetic instead — 22 for one
+    # `ci_tools_fetch`, 43 for setup-bun's two, 51 for install-jj's two and its `mise install`,
+    # each the figure this change's 300 s ladder gives, where the same three were 13, 25 and 33
+    # at the 120 s one — and the twenty-four installs whose control accepts a failure are timed
+    # as well, since a step the runner ends at its own bound leaves `outcome=failure` behind it
+    # and only the wall time tells a hang from the refusal the case expects.
+    # THE ELEVEN MINUTES IS DERIVED FROM MEASUREMENT: over the green runs of these two jobs
+    # between 2026-11-09T19:38Z and 2026-11-10T10:51Z, 2422 install steps gave a median of 64 s,
+    # a 99th percentile of 128 s and a maximum of 326 s (`install-jj` on five slow runs), and
+    # eleven minutes is twice that maximum rounded up to the minute, so no step that would have
+    # finished is ended by it. Since the ladders stopped sleeping every install sits under that
+    # 99th percentile; the slowest in job 130289341628 is the kept ladder's own `install-crane`
+    # at 65 s, that job's reading at the 60 s bound this branch replaced.
     # THE BOUND WOULD HAVE CHANGED NOTHING IN THE INCIDENT THAT ASKED FOR IT, because a bound
     # the runner enforces needs a runner that is alive. It is here for the other failure: a
     # command that hangs while the runner answers, where without it the job's own ceiling is
@@ -7174,39 +7161,24 @@ jobs:
         env:
           http_proxy: ${{ steps.stall-changie-proxy.outputs.proxy }}
           https_proxy: ${{ steps.stall-changie-proxy.outputs.proxy }}
-      # Ten stalls, and they are TWO LADDERS OF FIVE rather than one ladder of ten.
-      # install-changie fetches through .github/scripts/ci-tools.sh's `ci_tools_fetch`, which
-      # reads the release asset first and the copy in the package second, and both halves meet
-      # this fault: the asset is on github.com, and ghcr.io answers the blob with a redirect to
-      # pkg-containers.githubusercontent.com, which this proxy faults by suffix
-      # (.github/scripts/ci-fault-proxy.py). Each of those two ladders is `ci_tools_curl`'s
-      # `--retry 7 --retry-all-errors --retry-max-time 300` at the row's `max_time: 60`, and
-      # against a host that spends every attempt's whole bound curl starts no attempt once the
-      # timer reset at the first has passed five minutes: five attempts a ladder, at 0, 62, 124,
-      # 188 and 256 s, the set .github/scripts/ci-tools.sh's own block derives, since the waits
-      # double from one second.
-      # Against the RECOVERING fault an attempt ends the instant the proxy answers 504, so the
-      # timer advances by the waits alone and all eight are made, which is what the recovering
-      # arm above reads.
+      # Ten stalls, and they are TWO LADDERS OF FIVE rather than one ladder of ten:
+      # install-changie fetches through `ci_tools_fetch`, which reads the release asset first
+      # and the copy in the package second, and this fault meets both halves (the asset on
+      # github.com, the blob behind ghcr.io's redirect to pkg-containers.githubusercontent.com,
+      # faulted by suffix in .github/scripts/ci-fault-proxy.py). Against a host that spends
+      # every attempt's whole bound each ladder is five attempts, at 0, 62, 124, 188 and 256 s,
+      # the set .github/scripts/ci-tools.sh's own block derives; against the RECOVERING fault
+      # an attempt ends the instant the proxy answers, so all eight are made, which is what the
+      # recovering arm above reads.
       #
-      # THIS HEAD'S OWN RUN IS WHAT THESE ASSERTIONS ARE READ FROM, not the 120 s bound's:
-      # run 43202546798's job 131129681795 reached this proxy TEN times, from +15 s to +586 s,
-      # and the step ran 646 s. At the 120 s bound this change replaced, the same drive made
-      # two attempts a ladder and ended at about 258 s (run 42573254973's job 129015393389,
-      # read at +15, +76, +137 and +198 s), which is what the four this arm used to assert came
-      # from. So the count asserted is 10 and the floor 640 s: the 10 s probe and two ladders of
-      # (5 x 60 + 15) s, the five bounds and the 1 + 2 + 4 + 8 s of waits between them.
-      #
-      # THE FOUR AND THE 252 WERE A TAUTOLOGY AFTER THE BOUND MOVED, which is why they are
-      # written here with their own negative control: at --retry-max-time 120 this site makes 4
-      # attempts in about 258 s, so the assertions below fail it twice - `the proxy was reached
-      # 4 time(s), fewer than the 10 attempts the retry makes` and `it ended after 258s, under
-      # the 640s its attempts' sleeps alone cost` - while this head's 10 reaches in 646 s pass.
-      # Driven offline against `report` with both shapes before this round pushed
-      # (dispatch://INFRA-1545, round 28, review round 24's finding 2).
-      #
-      # The mutation drive behind that count and floor, and the two clocks they are read on:
-      # .github/ci-budgets.md, "The ten stalls of install-changie".
+      # THE ASSERTIONS BELOW ARE READ FROM THIS BRANCH'S OWN RUN, not the 120 s bound's: ten
+      # reaches from +15 s to +586 s and 646 s of step (run 43202546798, job 131129681795). The
+      # floor is 10 + 2 x (5 x 60 + 15) = 640 s and the budget its own rule's 710 s.
+      # THE FOUR AND THE 252 THIS ARM USED TO ASSERT WERE A TAUTOLOGY ONCE THE BOUND MOVED: a
+      # revert to 120 makes four stalls in about 258 s and passes them. Both shapes were driven
+      # against `report` before this round pushed, the revert refused twice and this head passed
+      # — .github/ci-budgets.md, "The ten stalls of install-changie", holds that drive, the two
+      # clocks the figures are read on, and the 120 s bound's own readings.
       - name: What install-changie's curl did under the stalling fault
         run: >-
           .github/scripts/download-retry-proof.sh report stall-changie
