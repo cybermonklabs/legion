@@ -384,12 +384,17 @@ type HeldIssue = record.HeldIssue
 // so is written by nothing; every other key of the block, including one a later contract adds
 // above, is still written from the one place that writes it.
 //
-// The two are shadowed in one body rather than by one marshaller calling another, because a
-// caller below treeContract is below heldContract too and is served both strips at once: a
-// value embedding a value that already shadows `trees` would write that key again from the
-// inner one, at the depth the outer shadow does not reach. So the four cases — neither hidden,
-// trees alone, held alone, both — are written out here, and a later contract that hides a third
-// key writes its cases here as well.
+// A caller below treeContract is below heldContract too and is served both strips at once, and
+// the four cases — neither hidden, trees alone, held alone, both — are written out rather than
+// one body carrying a shadow field for each key: a shadow field that must still carry its value
+// writes its key at the end of the object, after every field of the embedded value, because the
+// shallower field is the one encoding/json writes. Measured on go1.27.3: a body shadowing both
+// keys with `trees` kept reads `{"cap":…,"active":…,"blocked":…,"trees":…}`, where this block
+// writes `trees` between `waiting` and `blocked`, and every golden body of this repository is
+// compared byte for byte, so moving a key rewrites them all. Nesting one shadow inside another
+// does work — the inner shadow is still shallower than the embedded value's own field, and that
+// same measurement shows both keys omitted — so it is the key order, and not the nesting, that
+// these cases are here for. A later contract that hides a third key writes its cases here too.
 func (a Admission) MarshalJSON() ([]byte, error) {
 	type wire Admission
 	out := wire(a)

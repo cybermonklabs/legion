@@ -12,11 +12,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// adoption is a recorded root that joins the live tree of target, that tree's root, recorded under
-// the Dispatch parent parent (workflow's Engine.Adopt).
+// adoption is a recorded issue that joins the live tree of target, that tree's root, recorded
+// under the Dispatch parent parent: a queued root with every record of its own tree (workflow's
+// Engine.Adopt), or, where member holds, the one member of a closed tree the release named
+// (Engine.AdoptMember, C4 of dispatch://INFRA-3107). The flag is read off the record once, where
+// the wave sorts the children it was given, so the loop that writes asks no question again.
 type adoption struct {
 	issue, target record.Issue
 	parent        string
+	member        bool
 }
 
 // adoptChildren applies an architect's release of children recorded outside its tree: each root
@@ -51,7 +55,8 @@ func (a *Admission) adoptChildren(ctx context.Context, tx pgx.Tx, fact intake.Ch
 			return nil, nil, fmt.Errorf("read released child %s: %w", child.Issue, err)
 		}
 		if stored != nil && stored.Tree != fact.Tree {
-			outside = append(outside, adoption{issue: *stored, parent: child.Parent})
+			outside = append(outside, adoption{issue: *stored, parent: child.Parent,
+				member: !claim.IsTreeRoot(stored.Key, stored.Tree)})
 		}
 	}
 	// The tree's root, its liveness and the project's slot rows are read once for every child the
@@ -80,14 +85,13 @@ func (a *Admission) adoptChildren(ctx context.Context, tx pgx.Tx, fact intake.Ch
 	}
 	queued := make(map[string]bool, len(outside))
 	for _, child := range outside {
-		if claim.IsTreeRoot(child.issue.Key, child.issue.Tree) {
+		if !child.member {
 			queued[child.issue.Key] = true
 		}
 	}
 	var joining []adoption
 	for _, child := range outside {
-		member := !claim.IsTreeRoot(child.issue.Key, child.issue.Tree)
-		if member && queued[child.issue.Tree] {
+		if child.member && queued[child.issue.Tree] {
 			continue
 		}
 		refusal, err := a.engine.AdoptionRefusal(ctx, tx, child.issue, fact.Tree)
@@ -102,7 +106,7 @@ func (a *Admission) adoptChildren(ctx context.Context, tx pgx.Tx, fact intake.Ch
 		}
 		// C4 takes a member of a closed tree that holds no admission slot: one that holds a row is
 		// at work in the tree it stands in, and the daemon keeps what it started out of the route.
-		if slot, holds := slotted[child.issue.Key]; member && holds {
+		if slot, holds := slotted[child.issue.Key]; child.member && holds {
 			return nil, intake.ChildNotAdoptable(child.issue.Key, fact.Tree,
 				fmt.Sprintf("it holds admission slot %d in the tree of %s", slot.Index, child.issue.Tree)), nil
 		}
@@ -112,7 +116,7 @@ func (a *Admission) adoptChildren(ctx context.Context, tx pgx.Tx, fact intake.Ch
 	}
 	for _, child := range joining {
 		join := a.engine.Adopt
-		if !claim.IsTreeRoot(child.issue.Key, child.issue.Tree) {
+		if child.member {
 			join = a.engine.AdoptMember
 		}
 		if err := join(ctx, tx, child.issue, child.target, child.parent); err != nil {

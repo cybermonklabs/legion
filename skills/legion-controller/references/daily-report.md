@@ -68,8 +68,7 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   merge) or its link is taken off (by a person or the tree's architect), and a children-first wait
   ends when the last open child leaves the workflow, so take nothing for them.
 - **What nothing starts.** Each issue in `admission.held`, grouped by its `reason`, with the
-  issues `heldBy` names. Give each group's count and name its issues; where a group is long, name
-  its issues of `--priority 0` and `--priority 1` and give the count of the rest. Say for each
+  issues `heldBy` names: each group's count and its issues. Say for each
   group what ends the hold, from the table in
   `skill://legion-controller/references/admission.md`, so a reader sees whose act the work waits
   on. An issue whose `reason` is `unclassified` goes in the report with its `phase` and its

@@ -345,7 +345,7 @@ func TestAHandedOverChildStaysItsOwnTreeWhenItsOldRootIsReadmitted(t *testing.T)
 			}
 			assertWaiting(t, pool, []string{child})
 			inTx(t, pool, func(tx pgx.Tx) {
-				blocked, err := admission.blocked(context.Background(), tx)
+				_, blocked, err := admission.tickRows(context.Background(), tx)
 				if err != nil {
 					t.Fatalf("read what is blocked: %v", err)
 				}

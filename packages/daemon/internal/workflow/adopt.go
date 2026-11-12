@@ -238,9 +238,14 @@ func (e *Engine) catchUpOnWhatTheTreeIsOwed(ctx context.Context, tx pgx.Tx, root
 //
 // The record takes its next generation, the fence every row of the old tree already checks (its
 // linger's close, its supervise rows, its issue suspend), with its hand-over fence deleted and
-// its generation's facts cleared, and enters the tree admitted on the repository it was first
-// recorded with (enterChild, recordedResolution), as an unrecorded todo child does: no generation
-// is reset, and nothing starts it but the slot the waiting line gives it. The tree's architect is
+// its generation's facts cleared. A todo record enters the tree admitted on the repository it
+// was first recorded with (enterChild, recordedResolution), as an unrecorded todo child does:
+// no generation is reset, and nothing starts it but the slot the waiting line gives it. Any
+// other status enters as a parked child at done, which a todo runs again (ReenterChild), which
+// is Adopt's own branch for a member a person took out of the workflow: a release may name a
+// child Dispatch shows in triage, backlog or icebox (api's releasableChild), and a record at
+// admitted carrying such a status would be an issue in the live tree that no list of the state
+// names and nothing starts. The tree's architect is
 // told with a child-status notice (joinedTheTree), and with a catch-up where a person's decision
 // on the member is kept for it (catchUpOnWhatTheTreeIsOwed). Everything is written in the
 // caller's transaction.
@@ -256,8 +261,18 @@ func (e *Engine) AdoptMember(ctx context.Context, tx pgx.Tx, member record.Issue
 	if err := e.store.ClearGeneration(ctx, tx, member.Key, e.now()); err != nil {
 		return err
 	}
-	if err := e.enterChild(ctx, tx, root, fact, member.Generation+1, recordedResolution(member)); err != nil {
-		return err
+	if member.Status == "todo" {
+		if err := e.enterChild(ctx, tx, root, fact, member.Generation+1, recordedResolution(member)); err != nil {
+			return err
+		}
+	} else {
+		parked := member
+		parked.Parent = record.ParentOf(parent)
+		parked.Tree, parked.Project, parked.Generation, parked.Phase = root.Tree, root.Project, member.Generation+1, phase.Done
+		parked.LingerUntil, parked.Hold, parked.ReadyPending, parked.Ancestry = nil, nil, nil, nil
+		if err := e.store.PutIssue(ctx, tx, parked); err != nil {
+			return err
+		}
 	}
 	if err := e.catchUpOnWhatTheTreeIsOwed(ctx, tx, root); err != nil {
 		return err

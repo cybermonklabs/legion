@@ -607,7 +607,7 @@ func TestAChildThatRanLabelledAsAnOrphanRootIsCheckedUnlessItCarriesItsRun(t *te
 			assertSlots(t, pool, nil)
 			assertWaiting(t, pool, []string{child})
 			inTx(t, pool, func(tx pgx.Tx) {
-				blocked, err := admission.blocked(context.Background(), tx)
+				_, blocked, err := admission.tickRows(context.Background(), tx)
 				if err != nil {
 					t.Fatalf("read what is blocked: %v", err)
 				}
@@ -736,7 +736,7 @@ func TestNoIssueIsBothUnstartedAndUnreported(t *testing.T) {
 	assertBlocked := func(when string) {
 		t.Helper()
 		inTx(t, pool, func(tx pgx.Tx) {
-			got, err := admission.blocked(context.Background(), tx)
+			_, got, err := admission.tickRows(context.Background(), tx)
 			if err != nil {
 				t.Fatalf("read what is blocked %s: %v", when, err)
 			}
@@ -779,9 +779,10 @@ func (s *countingStore) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, project
 
 // Promotion judges every candidate from one read of the project's mirror, however many candidates
 // the waiting line holds: the rows are read before the loop, not inside it. The tick the test
-// drives judges the line twice — promotion's own pass, and the pass that reads what the project
-// holds for the notice it carries (Admission.heldIssues) — so it reads the mirror once for each
-// judgement it makes and never once for each candidate, which three blocked roots would show.
+// drives judges the line twice and no more — promotion's own pass, and the one pass that builds
+// both lists the notice carries (Admission.tickRows) — whether or not a controller is registered
+// to be told, so it reads the mirror once for each judgement it makes and never once for each
+// candidate, which three blocked roots would show.
 func TestPromotionReadsTheMirrorOnceWhateverTheNumberOfBlockedRoots(t *testing.T) {
 	pool := migratedPool(t)
 	store := &countingStore{Store: record.NewStore()}

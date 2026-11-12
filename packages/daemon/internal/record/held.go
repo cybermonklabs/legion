@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
 // HeldReason is the one word for why the daemon runs nothing of an issue its own record holds in
@@ -176,9 +177,9 @@ func openChildren(wait ChildWait) []string {
 // reading would give every parked tree's member tree_closed and leave tree_parked unreachable.
 func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	root, recorded := facts.treeRoot(issue.Tree)
-	ancestry := liveAncestry(issue, facts.Live)
-	blockedBy := facts.Facts.Held[issue.Key]
-	children := facts.Facts.ChildWaits[issue.Key]
+	// Each of these is read where its own word is, and not before it: the ancestry scan, the
+	// chain walk and the two map reads cost nothing for an issue an earlier word answers for,
+	// which on a project of hundreds of records is most of them.
 	switch {
 	case recorded && (root.Status == DoneStatus || Lingering(root, facts.Facts.Now)):
 		return HeldTreeClosed, []string{issue.Tree}
@@ -186,19 +187,31 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 		return HeldTreeParked, []string{issue.Tree}
 	case claim.IsTreeRoot(issue.Key, issue.Tree) && !issue.HandedOver:
 		return HeldLabelOff, nil
-	case len(ancestry) > 0:
+	}
+	if ancestry := liveAncestry(issue, facts.Live); len(ancestry) > 0 {
 		return HeldAncestry, ancestry
+	}
+	switch {
 	case root.AwaitingPerson():
 		return HeldRootAwaitingPerson, []string{issue.Tree}
 	case !facts.Facts.Gates[issue.Tree].Open():
 		return HeldDesignGate, []string{issue.Tree}
-	case len(blockedBy) > 0:
+	}
+	if blockedBy := facts.Facts.Held[issue.Key]; len(blockedBy) > 0 {
 		return HeldDispatchBlocker, blockedBy
-	case len(children.Open) > 0:
+	}
+	if children := facts.Facts.ChildWaits[issue.Key]; len(children.Open) > 0 {
 		return HeldChildrenFirst, openChildren(children)
-	case HeldUnderAccepted(issue, facts.Chain):
-		return HeldAcceptedAncestor, []string{AcceptedAncestor(issue, facts.Chain)}
-	case !KeepsSlot(issue):
+	}
+	// HeldUnderAccepted read for its answer and for the issue that holds it at once: that rule
+	// is this phase test and this walk (project.go), and asking it and then naming the ancestor
+	// would walk the chain twice.
+	if issue.Phase == phase.Admitted {
+		if accepted := AcceptedAncestor(issue, facts.Chain); accepted != "" {
+			return HeldAcceptedAncestor, []string{accepted}
+		}
+	}
+	if !KeepsSlot(issue) {
 		return HeldAtWork, nil
 	}
 	return HeldUnclassified, nil

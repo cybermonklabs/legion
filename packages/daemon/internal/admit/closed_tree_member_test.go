@@ -243,6 +243,38 @@ func TestAClosedTreesMemberIsAdoptedByTheTreeThatTakesIt(t *testing.T) {
 		}
 	})
 
+	// A release may name a child Dispatch shows in triage, backlog or icebox (api's
+	// releasableChild). Such a member enters the live tree as a parked child at done, which a
+	// person's todo runs again (workflow's ReenterChild), rather than at admitted with a status
+	// that is out of the workflow, which no list of the state would name and nothing would start.
+	// It is Adopt's own branch for the same record, and AdoptMember keeps it.
+	t.Run("a member a person parked enters the tree parked", func(t *testing.T) {
+		const parked = "LEGION-505"
+		pool := migratedPool(t)
+		admission := quiet(t, 1)
+		seedClosedTreeAndItsTaker(t, pool)
+		member := treeMember(parked, closedTree, closedTree, "E", 2)
+		member.Status, member.DispatchStatus = "backlog", "backlog"
+		putIssue(t, pool, member)
+
+		if refusal := releaseInto(t, pool, admission, "release-parked", liveTree,
+			intake.AdoptedChild{Issue: parked, Parent: liveTree}); refusal != nil {
+			t.Fatalf("the release of %s = %#v, want it accepted", parked, refusal)
+		}
+
+		got := issue(t, pool, parked)
+		if got.Tree != liveTree || got.Phase != phase.Done || got.Generation != member.Generation+1 {
+			t.Fatalf("%s = %#v, want it done in the tree of %s at generation %d", parked, got, liveTree, member.Generation+1)
+		}
+		if got.Status != "backlog" || got.Repo != closedTreeRepo {
+			t.Fatalf("%s = %#v, want the status a person gave it and the repository it was recorded with", parked, got)
+		}
+		if writes := dispatchWrites(t, pool); writes != 0 {
+			t.Fatalf("Dispatch writes after the release = %d, want none: a parked member is recorded, never started", writes)
+		}
+		assertWaiting(t, pool, nil)
+	})
+
 	t.Run("one child it cannot take refuses the whole wave", func(t *testing.T) {
 		const refused = "LEGION-601"
 		for _, tc := range []struct {

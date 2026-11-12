@@ -410,9 +410,13 @@ func ReadTreeRoots(ctx context.Context, tx pgx.Tx, store Store, project string, 
 	for _, issue := range issues {
 		held[issue.Key] = struct{}{}
 	}
+	// A tree is marked as held the moment it is named, so a project of many closed trees costs
+	// one map write for each rather than a scan of the list built so far, and `missing` keeps
+	// the order the issues name their trees in.
 	var missing []string
 	for _, issue := range issues {
-		if _, inHand := held[issue.Tree]; !inHand && !slices.Contains(missing, issue.Tree) {
+		if _, inHand := held[issue.Tree]; !inHand {
+			held[issue.Tree] = struct{}{}
 			missing = append(missing, issue.Tree)
 		}
 	}
@@ -761,8 +765,8 @@ const WaitingLineBand = "among the issues whose work came back, oldest first"
 // Beside the line it answers with a held row for every candidate it leaves behind, the word for
 // why coming from the one ladder (HeldReasonOf) rather than from the site that drops it, so one
 // issue reads one word (C1). Two of its sixteen skips place the candidate and report nothing;
-// the other fourteen report. Two of those fourteen are deferrals — a queued root the third loop
-// may place, and an answered root the first loop places — and a deferral reports a row the
+// the other fourteen report. Two of those fourteen are deferrals — a queued root the second
+// loop may place, and an answered root the first loop places — and a deferral reports a row the
 // other loop may then place: HeldList drops a row for a key the line names, so a deferral that
 // is placed costs one row and no wrong answer.
 func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []HeldIssue) {
@@ -884,10 +888,10 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			hold(issue)
 			continue
 		}
-		if slices.ContainsFunc(issue.Ancestry, func(key string) bool {
-			_, under := live[key]
-			return under && key != issue.Key
-		}) {
+		// The live roots the issue's own Dispatch chain names are the ancestry hold, and the
+		// word that reports it names the same roots: one statement, read here and by the ladder
+		// (liveAncestry, HeldAncestry), so the hold and the word cannot drift apart.
+		if len(liveAncestry(issue, live)) > 0 {
 			hold(issue)
 			continue
 		}

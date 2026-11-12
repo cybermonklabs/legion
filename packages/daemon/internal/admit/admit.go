@@ -79,20 +79,14 @@ type Admission struct {
 	// it (ReportCapabilities), when a tick names none.
 	openCapabilities func() []string
 
-	// unclassifiedLogged names each issue whose unclassified held row the tick has already
-	// logged, by issue and the generation its record stood at (logUnclassified, C2 of
-	// dispatch://INFRA-3107). It is this daemon run's own memory and nothing durable, written
-	// and read inside the fact lock alone, so it takes none of the mutex above.
-	unclassifiedLogged map[unclassifiedRun]struct{}
-}
-
-// unclassifiedRun is one issue at one generation of its record: the key of the unclassified
-// lines the tick has already written (Admission.unclassifiedLogged). The generation is part of
-// it because a re-admission raises it and clears the phase, which is a state of that issue the
-// log has not reported yet.
-type unclassifiedRun struct {
-	issue      string
-	generation uint64
+	// unclassifiedLogged is the generation at which the tick last logged each issue whose held
+	// row read unclassified (logUnclassified, C2 of dispatch://INFRA-3107). It is this daemon
+	// run's own memory and nothing durable, written and read inside the fact lock alone, so it
+	// takes none of the mutex above. A re-admission raises the generation and clears the phase,
+	// which is a state of that issue the log has not reported, so it is logged again; the
+	// generation is the value rather than half of the key because it never goes back for one
+	// record, which bounds the map at one entry per issue for the life of the run.
+	unclassifiedLogged map[string]uint64
 }
 
 // ReportCapabilities registers open, whose answer every tick controller notice carries as its
@@ -122,7 +116,7 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 	}
 	return &Admission{store: store, engine: engine, cap: cap, project: project, log: log, now: time.Now,
 		coin: memorygroup.CryptoCoin, pending: make(map[string]intake.DispatchIssue),
-		unclassifiedLogged: make(map[unclassifiedRun]struct{})}
+		unclassifiedLogged: make(map[string]uint64)}
 }
 
 // Apply records root and orphan todo observations of issues handed to Legion and every newer
@@ -158,20 +152,20 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 		if err != nil {
 			return nil, nil, err
 		}
-		// What the daemon runs nothing of and queues nowhere is read here, after the promotion
-		// this tick made, and read once: the rows are the tick's own judgement of the project
-		// (heldIssues), and the line each issue none of the words is true of earns is written
-		// from them, whether or not a controller is registered to be told. The wake carries
-		// them as it carries the open capabilities and the blocked rows, and computes neither
-		// these nor anything of them a second time.
-		held, err := a.heldIssues(ctx, tx)
+		// What the project waits on and what nothing starts are read here, after the promotion
+		// this tick made, and read once for both (tickRows): the two lists are two assemblies
+		// of one judgement of the line, and they are built whether or not a controller is
+		// registered to be told. The wake carries them as it carries the open capabilities, and
+		// judges nothing a second time.
+		held, blocked, err := a.tickRows(ctx, tx)
 		if err != nil {
 			return nil, nil, err
 		}
 		// The tick wakes the controller whatever the slots: with every slot taken, it is the only
 		// wake a tree waiting on a refused root claim gets, since only the controller's recheck of
 		// that claim moves it, and it is the turn that posts the day's report.
-		return returned, nil, a.wakeController(ctx, tx, record.ControllerNotice{Kind: record.TickNotice, Held: held}, a.project, a.now())
+		return returned, nil, a.wakeController(ctx, tx,
+			record.ControllerNotice{Kind: record.TickNotice, Held: held, Blocked: blocked}, a.project, a.now())
 	}
 	if handover, ok := fact.(intake.Handover); ok {
 		if err := a.consumeHandover(ctx, tx, handover); err != nil {
@@ -394,12 +388,13 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 // notice of the same kind still waits in the outbox, so a burst of events or ticks queues one
 // wake. The wake needs no record: the controller reads Dispatch and the daemon's state
 // (skill://legion-controller). A tick alone carries the daemon's open capabilities
-// (ReportCapabilities) and every issue Legion is waiting to start behind an unfinished Dispatch
-// issue (blocked), the turn that posts the day's report. The held rows a tick carries are the
-// fact's own, built once there (applyFact, heldIssues) and arriving on the notice, so a tick
-// that wakes nobody has still judged them and nothing judges them twice. Every other kind is
-// queued as the caller built it, so a kind that says something of its own — the role and the
-// reason of TellController's — carries it here.
+// (ReportCapabilities), which this adds, and the two lists the tick's own fact built from one
+// judgement of the project and put on the notice before it reached here (applyFact, tickRows):
+// every issue Legion is waiting to start behind an unfinished Dispatch issue, and every issue
+// nothing starts at all. So a tick that wakes nobody has judged them all the same, and nothing
+// here judges anything a second time. Every other kind is queued as the caller built it, so a
+// kind that says something of its own — the role and the reason of TellController's — carries
+// it here.
 //
 // Which notices count as the same one is the kind's own rule (record.NoticePerClaim): a kind
 // that speaks for the project is one wake per project, which is what the slot wakes and the tick
@@ -421,13 +416,8 @@ func (a *Admission) wakeController(ctx context.Context, tx pgx.Tx, notice record
 	if err != nil || pending {
 		return err
 	}
-	if notice.Kind == record.TickNotice {
-		if a.openCapabilities != nil {
-			notice.OpenCapabilities = a.openCapabilities()
-		}
-		if notice.Blocked, err = a.blocked(ctx, tx); err != nil {
-			return err
-		}
+	if notice.Kind == record.TickNotice && a.openCapabilities != nil {
+		notice.OpenCapabilities = a.openCapabilities()
 	}
 	return a.enqueue(ctx, tx, issue, notice, dueAt)
 }
@@ -471,70 +461,39 @@ func (a *Admission) queuePersonHandover(ctx context.Context, tx pgx.Tx, key, obs
 	return nil
 }
 
-// blocked is every issue Legion is waiting to start that waits on something else, as the tick
-// notice carries it: the candidates promotion passes over, the children the workflow holds
-// behind an unfinished Dispatch issue, and the parents whose own children are still open
-// (workflow.ChildWaitRows), judged from this transaction's own reads by the function the state's
-// `blocked` is built with (blockers.Blocked), so the controller is told exactly what
-// `legion state` shows.
-func (a *Admission) blocked(ctx context.Context, tx pgx.Tx) ([]record.BlockedIssue, error) {
-	issues, err := a.store.LiveIssues(ctx, tx, a.project)
-	if err != nil {
-		return nil, fmt.Errorf("list admission issues: %w", err)
-	}
-	slots, err := a.store.Slots(ctx, tx)
-	if err != nil {
-		return nil, fmt.Errorf("list admission slots: %w", err)
-	}
-	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
-	if err != nil {
-		return nil, err
-	}
-	rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil, a.now())
-	if err != nil {
-		return nil, err
-	}
-	return blockers.Blocked(rows, issues, line, record.ChildWaitRows(facts.ChildWaits)), nil
-}
-
-// heldIssues is every issue of this project the daemon's own record holds in the workflow that
-// stands in neither the active set nor the waiting line, with the one word for why, as the tick
-// notice carries it (C3 of dispatch://INFRA-3107). It is built by the function the state's
-// `admission.held` is built with (record.HeldList), over this transaction's own reads, so the
-// word the controller is told and the word `legion state` shows for one issue are one word.
+// tickRows is what the tick controller notice carries beside the open capabilities: every issue
+// Legion is waiting to start that waits on something else (`blocked`), and every issue the
+// daemon's own record holds in the workflow that stands in neither the active set nor the
+// waiting line, with the one word for why (`held`, C3 of dispatch://INFRA-3107).
 //
-// It is a reader of its own beside blocked rather than a second answer widened out of it: the
-// held rows are computed once per tick, at the fact itself (applyFact), whether or not a
-// controller is registered, while blocked is computed inside the wake (wakeController) and only
-// when one is. One call answering both would either compute the held rows a second time at
-// every wake or move blocked's own reads out of the wake that needs them, and each costs the
-// file more than this function's few lines of reads.
+// The two are two assemblies of one judgement of the line, so they are built together here:
+// `blocked` is blockers.Blocked over the mirror rows and the line, `held` is record.HeldList
+// over the same line and the rows the pass left behind, and both read the judgement promotion
+// itself reads (blockers.JudgeLine). Built apart they cost the tick two judgements of the whole
+// project — the same four reads, and the mirror read twice in one transaction — and a reader of
+// either list could not say the two were made over one record.
 //
-// It makes no read blocked does not make. The candidates are the live issues it reads already
-// filtered by record.InWorkflow, which holds every record the daemon holds in the workflow: a
-// record that predicate keeps stands at a phase short of done. The slot rows are this project's
-// own (ownSlots), as blocked reads them, since record.HeldList reads a row as an issue standing
-// in the active set and another project's row would take an issue of this one out of the list.
-// The line and the rows the pass left behind are the one judgement promotion itself reads
-// (blockers.JudgeLine), so a drop site's word and the ladder's answer for a candidate no drop
-// site saw come from one pass.
-func (a *Admission) heldIssues(ctx context.Context, tx pgx.Tx) ([]record.HeldIssue, error) {
-	issues, err := a.store.LiveIssues(ctx, tx, a.project)
+// Each is built by the function the state builds the same list with, over this transaction's
+// own reads, so what the controller is told and what `legion state` shows for one issue agree:
+// one word in both, and one set of blocked rows in both. The rows are built whether or not a
+// controller is registered to be told, because the unclassified line is written from them
+// (logUnclassified), and that line is the daemon's own record of what the words miss.
+//
+// It makes no read of its own: the three reads are the pass's (reread), the candidates are its
+// live issues filtered by record.InWorkflow, which holds every record the daemon holds in the
+// workflow since a record that predicate keeps stands at a phase short of done, and the slot
+// rows are this project's own (ownSlots), because record.HeldList reads a row as an issue
+// standing in the active set and another project's row would take an issue of this one out of
+// the list.
+func (a *Admission) tickRows(ctx context.Context, tx pgx.Tx) ([]record.HeldIssue, []record.BlockedIssue, error) {
+	issues, slots, facts, err := a.reread(ctx, tx)
 	if err != nil {
-		return nil, fmt.Errorf("list admission issues: %w", err)
-	}
-	slots, err := a.store.Slots(ctx, tx)
-	if err != nil {
-		return nil, fmt.Errorf("list admission slots: %w", err)
-	}
-	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
-	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	own := ownSlots(issues, slots)
-	_, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil, a.now())
+	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil, a.now())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	candidates := make([]record.Issue, 0, len(issues))
 	for _, issue := range issues {
@@ -542,9 +501,9 @@ func (a *Admission) heldIssues(ctx context.Context, tx pgx.Tx) ([]record.HeldIss
 			candidates = append(candidates, issue)
 		}
 	}
-	rows := record.HeldList(candidates, issues, own, line, dropped, facts)
-	a.logUnclassified(rows, issues)
-	return rows, nil
+	held := record.HeldList(candidates, issues, own, line, dropped, facts)
+	a.logUnclassified(held, issues)
+	return held, blockers.Blocked(rows, issues, line, record.ChildWaitRows(facts.ChildWaits)), nil
 }
 
 // logUnclassified writes one line for each row the ladder could put no word to (C2), naming the
@@ -567,20 +526,25 @@ func (a *Admission) heldIssues(ctx context.Context, tx pgx.Tx) ([]record.HeldIss
 // is already written: a fact rolled back has still logged what it logged, and a second line for
 // the same issue would say nothing more.
 func (a *Admission) logUnclassified(rows []record.HeldIssue, issues []record.Issue) {
-	byKey := make(map[string]record.Issue, len(issues))
-	for _, issue := range issues {
-		byKey[issue.Key] = issue
-	}
+	// The map is built on the first row that needs it: a project where every held issue reads a
+	// word of its own — which is every healthy project — builds none at all, and the tick runs
+	// this on each of its passes.
+	var byKey map[string]record.Issue
 	for _, row := range rows {
 		if row.Reason != record.HeldUnclassified {
 			continue
 		}
+		if byKey == nil {
+			byKey = make(map[string]record.Issue, len(issues))
+			for _, issue := range issues {
+				byKey[issue.Key] = issue
+			}
+		}
 		issue := byKey[row.Issue]
-		run := unclassifiedRun{issue: row.Issue, generation: issue.Generation}
-		if _, logged := a.unclassifiedLogged[run]; logged {
+		if logged, seen := a.unclassifiedLogged[row.Issue]; seen && logged == issue.Generation {
 			continue
 		}
-		a.unclassifiedLogged[run] = struct{}{}
+		a.unclassifiedLogged[row.Issue] = issue.Generation
 		a.log.Info("admission: the record holds an issue no held word is true of", "issue", row.Issue,
 			"phase", issue.Phase, "status", issue.Status, "reason", record.HeldUnclassified)
 	}
