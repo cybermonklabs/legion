@@ -112,3 +112,5 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 		t.Fatalf("the rule is spelled in %v, want it written once, in %v", copies, want)
 	}
 }
+
+// INFRA-1413 selection probe, never merged.
