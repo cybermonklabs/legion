@@ -144,12 +144,13 @@ type compactPane struct {
 	stand *paneStandin
 }
 
-// TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive drives the seven steps
+// TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive drives the eight steps
 // in the order each one's state follows from the last: the overlays every pane runs under, the
 // operator's compaction of a phase worker the ladder holds, the controller's own compaction and
 // the second notice its count reset makes possible, a root architect that owes nothing, a
-// compaction the endpoint holds past the RPC timeout, every refusal through both doors, and the
-// fresh sessions both doors start.
+// compaction the endpoint holds past the RPC timeout, every refusal through both doors, the
+// fresh sessions both doors start, and the fresh session that starts a worker whose process is
+// gone, which runs last because it kills the panes the steps before it drive.
 func TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive(t *testing.T) {
 	fixtureenv.Live(t)
 	r := newClaimCompactionLive(t)
@@ -160,6 +161,7 @@ func TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive(t *
 	r.step("step5-a-held-summary-outlasts-the-rpc-timeout-and-refuses-a-fresh-session", r.heldSummaryOutlastsTheTimeout)
 	r.step("step6-every-refusal-gets-its-own-message-through-both-doors", r.everyRefusalGetsItsMessage)
 	r.step("step7-a-fresh-session-starts-each-worker-anew-with-what-its-issue-owes-it", r.freshSessionsStartEachWorker)
+	r.step("step8-a-fresh-session-starts-a-worker-whose-process-is-gone", r.freshSessionStartsAWorkerWhoseProcessIsGone)
 }
 
 // newClaimCompactionLive readies everything a pane needs before the daemon boots: the `legion`
@@ -905,6 +907,220 @@ func (r *claimCompactionLive) freshSessionsStartEachWorker() {
 	r.note("%s runs in the new session %s (was %s) and its new launch was told its tree's catch-up: %q",
 		architect, started.Session, was.Session, told[len(told)-1].Payload)
 	r.note("`legion claims list` at the end reads:\n%s", indentOutput(r.legionClaims("list")))
+}
+
+// freshSessionStartsAWorkerWhoseProcessIsGone drives the recovery of a claim stored working that
+// no process stands behind, through both doors: the ladder's planner through the operator's own
+// `legion claims retry --claim <token> --fresh-session`, and the root architect through the
+// controller's `fresh_session`, which is the dead architect a project's controller has no other
+// recovery for. Both claims are the ones step 7 leaves live, and both panes are killed here, so
+// this step runs last.
+//
+// The window is the one a lifecycle refusal or a daemon restart leaves: a pane's process group
+// died and no report of that death ever reached the daemon, which is what makes the claim stand
+// stored working over nothing (supervise.Claim.ProcessGone). The daemon repairs a dead worker by
+// itself — the worker stream's connection closes, it probes the process, finds it gone and
+// relaunches it — so each half holds the runtime's own reports of its claim back while it kills
+// the pane (localRuntime.hold, killUnderTheRuntimesHold), and what finds the process gone is the
+// read the recovery itself makes at the request (supervise.Machine.ReadProcess). The control is
+// in each half: the same request, against the same pane while its process is alive and in a
+// turn, is refused 409 CLAIM_IN_A_TURN, so a daemon that opened the door for every claim stored
+// working fails this step rather than passing it.
+func (r *claimCompactionLive) freshSessionStartsAWorkerWhoseProcessIsGone() {
+	r.plannerComesBackThroughTheOperatorsDoor()
+	r.architectComesBackThroughTheControllersDoor()
+	r.note("`legion claims list` after both recoveries reads:\n%s", indentOutput(r.legionClaims("list")))
+}
+
+// plannerComesBackThroughTheOperatorsDoor kills the ladder's planner mid-turn with the daemon
+// held blind and starts it again with `legion claims retry --fresh-session`, the built binary
+// against the booted daemon.
+//
+// The turn the kill ends is a turn of the issue's own phase task, so what reaches the new
+// session can be read as that phase's work and not as an operator's errand. A fresh session
+// asked for while the claim is idle is what stages one: it restarts the worked phase, which is
+// how a planner is handed that task (api's restartWorkedPhase), and the stand-in holds the turn
+// that task starts open. The recovery itself restarts no phase — the claim comes back owing the
+// task of its dead turn, taken back unconfirmed and marked interrupted (supervise's
+// suspendOverADeadProcess, interrupted), and a claim that owes a task is handed no other.
+func (r *claimCompactionLive) plannerComesBackThroughTheOperatorsDoor() {
+	t := r.t
+	token := r.token(r.ladder, claim.RolePlanner)
+	stand := r.pane(token).stand
+	at := r.issue(r.ladder).Phase
+	r.awaitNothingOwed(token)
+	stand.holdTurn()
+	staged := r.claim(token)
+	status, body := freshSessionDoors.operator(r, token)
+	if status != http.StatusOK && status != http.StatusAccepted {
+		t.Fatalf("the fresh session that stages %s's phase task = %d %s, want 200 or the 202 a restarted phase answers", token, status, body)
+	}
+	var answered api.OperatorClaim
+	if err := json.Unmarshal(body, &answered); err != nil {
+		t.Fatalf("decode the staging fresh session of %s, %s: %v", token, body, err)
+	}
+	if answered.PhaseNotRestarted != "" {
+		t.Fatalf("the staging fresh session of %s restarted no phase: %s", token, answered.PhaseNotRestarted)
+	}
+	r.awaitFreshPane(token, staged.Session)
+	phaseTask := r.awaitPendingTask(token)
+	if phaseTask.Phase != at {
+		t.Fatalf("%s was staged with a task of phase %q, want its issue's current phase %q: %q", token, phaseTask.Phase, at, phaseTask.Task)
+	}
+	r.await(string(token)+" to be in a turn of its phase's task", 2*time.Minute, func() bool {
+		return r.claim(token).State == string(supervise.StateWorking)
+	})
+	r.note("%s runs a turn its stand-in holds open, on %s's own %s task %q", token, r.ladder, at, firstLine(phaseTask.Task))
+
+	// The control, before anything is killed: the process is alive and in a turn, and the read
+	// made at the request is what says so.
+	r.refusedThroughBothDoors("a worker whose process is alive and in a turn", freshSessionDoors, token, r.ladder, claim.RolePlanner,
+		http.StatusConflict, "CLAIM_IN_A_TURN", "is stored working: if a turn of it is running, a fresh session would cut that turn off")
+
+	hold, dead := r.killUnderTheRuntimesHold(token)
+	defer hold.release()
+	from := r.daemon.count()
+	r.releaseAtASweepsBoundary(hold)
+	retried := r.legionClaims("retry", "--claim", string(token), "--fresh-session")
+	r.note("`legion claims retry --claim %s --fresh-session`, asked of a claim stored %s over its dead process, answered: %s",
+		token, dead.State, retried)
+	r.awaitLogFrom("the daemon's record of which door asked", from, time.Minute, func(record loggedRecord) bool {
+		return record.Message == "api: operator request" && record.Attrs["claim"] == string(token) &&
+			strings.HasSuffix(fmt.Sprint(record.Attrs["route"]), "/retry")
+	})
+	fresh := r.awaitFreshPane(token, dead.Session)
+	task := r.awaitPendingTask(token)
+	switch {
+	case !task.Interrupted:
+		t.Fatalf("%s was sent %+v, want the task of its dead turn back marked interrupted", token, task)
+	case task.Task != phaseTask.Task:
+		t.Fatalf("%s was sent %q, want the task its dead turn held, %q", token, firstLine(task.Task), firstLine(phaseTask.Task))
+	case task.Phase != at:
+		t.Fatalf("%s was sent a task of phase %q, want its issue's current phase %q: %q", token, task.Phase, at, task.Task)
+	}
+	r.note("%s runs in the new session %s (was %s, relaunched with no session to resume) and holds %s's %s task again, "+
+		"the one its dead turn held, marked interrupted: %q",
+		token, fresh.Session, dead.Session, r.ladder, task.Phase, firstLine(task.Task))
+	stand.releaseTurn()
+}
+
+// architectComesBackThroughTheControllersDoor kills the root architect mid-turn with the daemon
+// held blind and starts it again through the controller's own `fresh_session`. An architect
+// works no phase, so the turn the kill ends is one of a task of the operator's own, and what
+// says the new session is at work is its tree's catch-up, as step 7 reads it.
+func (r *claimCompactionLive) architectComesBackThroughTheControllersDoor() {
+	t := r.t
+	token := r.token(r.root, claim.RoleArchitect)
+	stand := r.pane(token).stand
+	r.awaitNothingOwed(token)
+	stand.holdTurn()
+	held := "Say the word DEAD-ARCHITECT-" + randomSuffix(t) + " and nothing else."
+	r.deliver(token, held)
+	r.await(string(token)+" to be in a turn", 2*time.Minute, func() bool {
+		return r.claim(token).State == string(supervise.StateWorking)
+	})
+	r.note("%s runs a turn its stand-in holds open, on the task %q", token, held)
+	r.refusedThroughBothDoors("an architect whose process is alive and in a turn", freshSessionDoors, token, r.root, claim.RoleArchitect,
+		http.StatusConflict, "CLAIM_IN_A_TURN", "is stored working: if a turn of it is running, a fresh session would cut that turn off")
+
+	caughtUp := len(r.architectNotices(r.root, "catch-up"))
+	hold, dead := r.killUnderTheRuntimesHold(token)
+	defer hold.release()
+	from := r.daemon.count()
+	r.releaseAtASweepsBoundary(hold)
+	status, body := freshSessionDoors.controller(r, r.root, claim.RoleArchitect)
+	if status != http.StatusOK {
+		t.Fatalf("the controller's fresh session of %s, stored %s over its dead process, = %d %s, want 200",
+			token, dead.State, status, body)
+	}
+	r.note("the controller's `fresh_session` of %s, asked of a claim stored %s over its dead process, answered %d %s",
+		token, dead.State, status, strings.TrimSpace(string(body)))
+	r.awaitLogFrom("the daemon's record of which door asked", from, time.Minute, func(record loggedRecord) bool {
+		return record.Message == "api: the controller started a claim in a fresh session" && record.Attrs["claim"] == string(token)
+	})
+	started := r.awaitFreshPane(token, dead.Session)
+	told := r.waitArchitectNotices(r.root, "catch-up", caughtUp+1)
+	task := r.awaitPendingTask(token)
+	if !task.Interrupted || task.Task != held {
+		t.Fatalf("%s was sent %+v, want the task of its dead turn, %q, back marked interrupted", token, task, held)
+	}
+	r.note("%s runs in the new session %s (was %s, relaunched with no session to resume), its new launch was told its tree's "+
+		"catch-up (%q), and it holds the task its dead turn held, marked interrupted: %q",
+		token, started.Session, dead.Session, told[len(told)-1].Payload, firstLine(task.Task))
+	stand.releaseTurn()
+}
+
+// killUnderTheRuntimesHold stages the window both halves of step 8 recover from: the runtime's
+// hold taken over the claim, its pane's whole process group killed under it, and the two reads
+// that say the daemon learned nothing of that death — the read it did make answered uncertain,
+// which is no statement about a process, so it recorded nothing and armed its probe interval
+// (supervise's judge, probe), and it judged no death of the claim at all. The claim therefore
+// still stands stored working over the process it records, which is the state both recoveries
+// used to be refused 409 CLAIM_IN_A_TURN in.
+//
+// It answers the hold, which the caller releases at the moment it asks for the fresh session,
+// and the claim as it stood over its dead process.
+func (r *claimCompactionLive) killUnderTheRuntimesHold(token claim.Token) (*localHold, api.OperatorClaim) {
+	t := r.t
+	t.Helper()
+	dead := r.claim(token)
+	if dead.State != string(supervise.StateWorking) || dead.Locator == nil {
+		t.Fatalf("%s is %s running %+v, and this step kills the process of a claim stored working", token, dead.State, dead.Locator)
+	}
+	hold := r.rt.hold(token)
+	from := r.daemon.count()
+	killed := time.Now()
+	pid := r.rt.killProcessGroup(*dead.Locator)
+	// The worker's connection closes with its process, which is what has the daemon read that
+	// process at all (supervise's closed); the hold is what the read answers.
+	uncertain := r.awaitLogFrom("the daemon's read of "+string(token)+"'s process to answer uncertain", from, time.Minute,
+		func(record loggedRecord) bool {
+			return record.Message == "supervise: process uncertain" && record.Attrs["claim"] == string(token)
+		})
+	if uncertain.Attrs["detail"] != localHoldDetail {
+		t.Fatalf("%s's process was read uncertain for %q, want the hold this step holds it under: %q",
+			token, uncertain.Attrs["detail"], localHoldDetail)
+	}
+	if died := r.logs(func(record loggedRecord) bool {
+		return record.Message == "supervise: process died" && record.Attrs["claim"] == string(token) && record.at.After(killed)
+	}); len(died) != 0 {
+		t.Fatalf("the daemon judged %d deaths of %s since its process group was killed, and the window this step recovers from is the one where it judged none: %+v",
+			len(died), token, died[0])
+	}
+	if now := r.claim(token); now.State != string(supervise.StateWorking) {
+		t.Fatalf("%s is %s after its process died unreported, want it stored working over the process it records", token, now.State)
+	}
+	r.note("%s's whole process group (pid %d) was killed and nothing told the daemon: the read it made of that process answered "+
+		"uncertain (%q), it judged no death of the claim, and the claim stands %s over the process it records, in session %s",
+		token, pid, uncertain.Attrs["detail"], dead.State, dead.Session)
+	return hold, dead
+}
+
+// releaseAtASweepsBoundary ends the hold just after the observation sweep's own pass over the
+// held claim, which is what leaves the caller's request the next thing to read that process. The
+// sweep reports every tracked process every localObserveInterval and the hold drops those
+// reports, counting them (localHold.sweeps); released in the middle of an interval, the sweep's
+// first truthful report could reach the daemon ahead of the request, and the daemon would then
+// relaunch the dead worker by itself — which is the repair this window is defined by the absence
+// of, and the request would meet a claim whose launch is in flight.
+func (r *claimCompactionLive) releaseAtASweepsBoundary(hold *localHold) {
+	r.t.Helper()
+	swept := hold.sweeps()
+	r.await("the observation sweep's next pass over the held claim", 4*localObserveInterval, func() bool {
+		return hold.sweeps() > swept
+	})
+	hold.release()
+}
+
+// awaitNothingOwed waits until the claim holds no task and runs no turn, which is where a step
+// may put a turn of its own in front of it: the daemon refuses a second task while one is
+// pending, and a fresh session is refused a claim in a turn.
+func (r *claimCompactionLive) awaitNothingOwed(token claim.Token) {
+	r.t.Helper()
+	r.await(string(token)+" to hold no task and run no turn", 4*time.Minute, func() bool {
+		held := r.claim(token)
+		return held.Pending == nil && held.State != string(supervise.StateWorking)
+	})
 }
 
 // ---- what a step drives --------------------------------------------------------------------------
