@@ -156,3 +156,5 @@ check "the unrecognised-refusal reading says what it read" \
 check "no refusal speaks beside those two" "$(is "$(error_count "$out")" 2)"
 
 summary "ci-tools-proof.sh ladder-report"
+
+# INFRA-1413 selection probe, never merged.
