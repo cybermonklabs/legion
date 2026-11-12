@@ -325,9 +325,10 @@ failed-delivery lane.
 Both GCP hubs run their listener with no bearer and name the hub's own tailnet name in that
 list, so on each of them every tailnet peer the tailnet's access rules let reach port 9020 can
 call `/v1`. The one-VM hub's listener is on loopback, and Tailscale Serve forwards the node's
-tailnet port 9020 to it. The clustered hub's listener is a pod of its own. The tailnet hosts
-forward the Tailscale Service's port 9020 to that pod, and its NetworkPolicy admits those hosts'
-pods alone, so no other pod of the cluster reaches it.
+tailnet port 9020 to it. The clustered hub's listener is a pod of its own. It runs with
+`ENVOY_API_ALLOW_UNAUTHENTICATED=1` and no API token, so its `/v1` on 9020 takes no credential at
+all. The tailnet hosts forward the Tailscale Service's port 9020 to that pod, and its
+NetworkPolicy admits those hosts' pods alone, so no other pod of the cluster reaches that `/v1`.
 
 ## The session list
 

@@ -1,5 +1,5 @@
 ---
-title: "A ruling posted after the plan is acceptance: re-read the issue before each push and carry it to every copy"
+title: "A decision posted after the plan is acceptance: re-read the issue before each push and carry it to every copy"
 category: legion
 tags:
   - implementer
@@ -15,14 +15,14 @@ related_issues:
   - "sjawhar/legion#2190"
 ---
 
-# A ruling posted after the plan is acceptance: re-read the issue before each push and carry it to every copy
+# A decision posted after the plan is acceptance: re-read the issue before each push and carry it to every copy
 
 The plan handoff is frozen when the plan is approved. An architect who widens the issue afterwards does
 it in a comment or an Envoy message, and nothing copies that into the plan's acceptance list, the
 tester's checklist or the throwaway acceptance check. So:
 
 - **Re-read the issue's comments and events before every push and before you complete,** not only
-  at the turn's start. A ruling that arrives mid-turn is not in the context you started with. The
+  at the turn's start. A decision that arrives mid-turn is not in the context you started with. The
   plan names the work you were given; the issue names the work that is due.
 - **Turn each widened item into acceptance before you write its code:** a `proof` entry with its
   own criterion, command and negative control, and an extension of any acceptance script that

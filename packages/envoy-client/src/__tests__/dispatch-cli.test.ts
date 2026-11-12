@@ -35,11 +35,26 @@ function blockCapRefusal(block: number, units: number): string {
   );
 }
 
-/** The server's refusal of `body`, where a paragraph of it is over the bound Dispatch holds each
- *  block to, and undefined where none is: Dispatch bounds a body block by block and never as a
- *  whole, so a body of any length in paragraphs posts and one long paragraph does not. */
-function capExceeded(body: string): { code: string; error: string } | undefined {
+/** How the Dispatch server refuses a body whose block `block` is a decision block, worded as
+ *  `itemblocks.DecisionBlock` words it: the card such a block draws is one nobody can answer
+ *  where it stands, so the body is refused however short it is (INFRA-1201). */
+function decisionBlockRefusal(block: number): string {
+  return (
+    `body block ${block} (ask) holds a decision block, which nobody can answer where it stands: ` +
+    "ask the question in the issue's own document, as a decision block there, or open an ask " +
+    "with `dispatch ask`; to show a decision block as an example, put it in a fenced code block"
+  );
+}
+
+/** The server's refusal of `body`: a decision block in it (400 DECISION_BLOCK_IN_BODY), else a
+ *  paragraph over the bound Dispatch holds each block to (400 CAP_EXCEEDED), else undefined.
+ *  Dispatch bounds a body block by block and never as a whole, so a body of any length in
+ *  paragraphs posts and one long paragraph does not. */
+function bodyRefusal(body: string): { code: string; error: string } | undefined {
   for (const [index, block] of body.split(/\n[ \t]*\n/).entries()) {
+    if (block.startsWith(":::ask")) {
+      return { code: "DECISION_BLOCK_IN_BODY", error: decisionBlockRefusal(index + 1) };
+    }
     if (block.length > DISPATCH_BLOCK_UNITS) {
       return { code: "CAP_EXCEEDED", error: blockCapRefusal(index + 1, block.length) };
     }
@@ -323,7 +338,7 @@ const server = Bun.serve({
       });
     }
     if (pathname === "/api/v1/issues/DSP-1/messages" && request.method === "POST") {
-      const refusal = capExceeded(body.body as string);
+      const refusal = bodyRefusal(body.body as string);
       if (refusal !== undefined) return Response.json(refusal, { status: 400 });
       return Response.json({
         id: "message-1",
@@ -336,7 +351,7 @@ const server = Bun.serve({
       });
     }
     if (pathname === "/api/v1/issues/DSP-1/comments" && request.method === "POST") {
-      const refusal = capExceeded(body.body as string);
+      const refusal = bodyRefusal(body.body as string);
       if (refusal !== undefined) return Response.json(refusal, { status: 400 });
       return Response.json({
         id: "comment-1",
@@ -1567,6 +1582,28 @@ describe("the dispatch entry as its own process", () => {
       ]);
       expect(code, `${command}: ${stdout}${stderr}`).not.toBe(0);
       expect(stdout.trim(), command).toBe(refusal);
+    }
+  }, 30_000);
+
+  // A body holding a decision block is refused whatever its length (400 DECISION_BLOCK_IN_BODY,
+  // INFRA-1201), and what the writer reads is the server's message, not its code: the message
+  // says where the question belongs. The 30 s limit is the hang guard the row above carries, for
+  // the reason written there.
+  test("exits nonzero on the server's decision-block refusal, printing its message, not its code", async () => {
+    const refusal = decisionBlockRefusal(2);
+    const body = 'The mirror is behind.\n\n:::ask{urgency="med"}\nWhich region first?\n:::';
+
+    for (const command of ["comment", "message"] as const) {
+      const { code, stdout, stderr } = await spawnDispatch([
+        command,
+        "--issue",
+        "DSP-1",
+        "--body",
+        body,
+      ]);
+      expect(code, `${command}: ${stdout}${stderr}`).not.toBe(0);
+      expect(stdout.trim(), command).toBe(refusal);
+      expect(stdout, command).not.toContain("DECISION_BLOCK_IN_BODY");
     }
   }, 30_000);
 });
