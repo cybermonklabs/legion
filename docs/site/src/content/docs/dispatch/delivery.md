@@ -217,7 +217,10 @@ pull request ids, run ids and every measure equal what it holds; it exits 1 when
 from, uniformly in [0, n), in place of the page's own `RECONNECT_SPREAD_MS` of two seconds; a
 later attempt keeps the page's backoff whatever it is set to.
 A value above a timer's longest wait, 2147483647 ms, is refused, because the runtime clamps such
-a delay to 1 ms and the probe would reopen at once: the opposite of what the option says. A
+a delay to 1 ms and the probe would reopen at once: the opposite of what the option says. That
+reason rests on a measurement of the runtime rather than on a row or a code reading: on Bun
+1.4.4, `setTimeout` at 2147483648 ms warned `Timeout duration was set to 1` and fired after
+118 ms, measured by the tester of dispatch://INFRA-1571. A
 negative value is refused, and so is one that is not a number, and a blank or whitespace one,
 which `Number` would otherwise read as a spread of zero. Each of these is a usage error: the
 probe writes `--reconnect-spread-ms is a number of milliseconds from 0 to 2147483647, not`
