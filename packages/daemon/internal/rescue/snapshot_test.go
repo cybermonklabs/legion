@@ -683,8 +683,11 @@ func TestASparseWorkspaceHoldingPartOfItsTreeFails(t *testing.T) {
 	if !strings.Contains(w.Error, "holds part of its tree") || !strings.Contains(w.Error, d.Workspace) {
 		t.Errorf("the failure says %q, want it to say that the workspace holds part of its tree", w.Error)
 	}
-	if !strings.Contains(w.Error, "its sparse patterns are base.txt") {
-		t.Errorf("the failure says %q, want it to name the patterns the workspace holds", w.Error)
+	// Each pattern is written with %q: a sparse pattern is a path and may hold the separator the
+	// list is written with, so a reader tells the members of that list apart only when each is
+	// quoted (rescue.quoted).
+	if !strings.Contains(w.Error, `its sparse patterns are "base.txt"`) {
+		t.Errorf("the failure says %q, want it to name the patterns the workspace holds, each quoted", w.Error)
 	}
 	if after := d.RemoteBranches(); !slices.Equal(after, before) {
 		t.Errorf("the remote's branches are %v, want %v unchanged: a narrowed workspace has nothing snapshotted", after, before)

@@ -1079,7 +1079,7 @@ func (r runner) snapshotTree(dir string) (string, error) {
 	case len(held) == 0:
 		return "", fmt.Errorf("the jj workspace %s holds no sparse pattern, so it holds no file of its tree and jj's snapshot of it would carry nothing the git read kept: that is what an unfinished checkout leaves, and a person clears it by running `jj sparse reset` in %s", dir, dir)
 	case !slices.Contains(held, "."):
-		return "", fmt.Errorf("the jj workspace %s holds part of its tree and not all of it, so jj's snapshot would leave out every file the git read kept: its sparse patterns are %s", dir, strings.Join(held, ", "))
+		return "", fmt.Errorf("the jj workspace %s holds part of its tree and not all of it, so jj's snapshot would leave out every file the git read kept: its sparse patterns are %s", dir, quoted(held))
 	}
 	stderr, err := r.snapshot(dir)
 	if err != nil {
@@ -1141,13 +1141,21 @@ func (r runner) carried(dir, tree string, paths []string) (string, error) {
 		if len(missed) > maxNamedPaths {
 			named, rest = missed[:maxNamedPaths], fmt.Sprintf(", and %d more", len(missed)-maxNamedPaths)
 		}
-		quoted := make([]string, len(named))
-		for i, path := range named {
-			quoted[i] = fmt.Sprintf("%q", path)
-		}
-		return "", fmt.Errorf("jj's snapshot of %s left out paths that git could not carry into the tree this check pushes, which are therefore in no commit it can push: %s%s", dir, strings.Join(quoted, ", "), rest)
+		return "", fmt.Errorf("jj's snapshot of %s left out paths that git could not carry into the tree this check pushes, which are therefore in no commit it can push: %s%s", dir, quoted(named), rest)
 	}
 	return r.git(dir, env, "write-tree")
+}
+
+// quoted is paths as one text a person reads, each written with %q. A path and a sparse pattern
+// may both hold any byte, the separator this list is written with among them, so neither is
+// written bare: quoting is what keeps a list of them one list where a reader can tell its
+// members apart, and it keeps a name that is not valid UTF-8 readable.
+func quoted(paths []string) string {
+	one := make([]string, len(paths))
+	for i, path := range paths {
+		one[i] = fmt.Sprintf("%q", path)
+	}
+	return strings.Join(one, ", ")
 }
 
 // staleWorkingCopy is what jj says of a working copy an operation elsewhere moved on from: it
