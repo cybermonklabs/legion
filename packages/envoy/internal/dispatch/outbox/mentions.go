@@ -262,7 +262,7 @@ func (d mentionDeliveries) liveFor(sessionID string) bool {
 // own attempts and the attempts this read resolved to that key, which is the question this
 // filter asks: whose copy a mention decides.
 //
-// What that costs, in the ruling that took it: a credit-only session an unnamed role attempt is
+// What that costs, in the decision that took it: a credit-only session an unnamed role attempt is
 // later pinned to is dropped here, although leftTo, reading state, would have kept a
 // comment_fallback_copies row for it (its mentionResending arm), which the pass that publishes
 // those rows sends should that attempt's send fail. It would not have held the event: a credit

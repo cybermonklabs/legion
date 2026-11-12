@@ -32,7 +32,14 @@ var (
 		// dispatch that carries other arguments is caught too.
 		`agent="`,
 	}
-	repoSpecific = []string{"Inspect", "inspect_ai", "inspect_", "Hawk", "middleman", "Taiga"}
+	repoSpecific = []string{
+		"Inspect", "inspect_ai", "inspect_", "Hawk", "middleman", "Taiga",
+		// A deployment's own name for itself, for the repository it runs the daemon from, for the
+		// runbook it sends a heavy run to, and for the bucket it keeps one's output in. The match
+		// is case-sensitive, so the deployment's name stands here in both the forms a part could
+		// write it in, the slug and the prose one, as `Inspect` and `inspect_ai` already do.
+		"theorem", "Theorem", "agent-infra", "running-heavy-jobs", "gs://",
+	}
 )
 
 func coreFiles() []string {
@@ -64,6 +71,11 @@ func TestCoresAndTheInteractiveFragmentCarryNoHeadlessMechanics(t *testing.T) {
 	}
 }
 
+// A reusable part is composed for every deployment, so it names no repository, library, service or
+// bucket of one deployment's own. Both trees are read: the roles/ parts Compose joins for any role
+// and every go/ part, because the pod memory rule tells a role where its deployment's instructions
+// send a heavy run, and the next hand to write that rule down can spell a deployment's own route
+// out in the architect parts, which this test read nothing of before.
 func TestNoReusablePartNamesARepositoryOrLibrary(t *testing.T) {
 	for _, file := range reusableParts {
 		text := rolePart(t, file)
@@ -72,6 +84,17 @@ func TestNoReusablePartNamesARepositoryOrLibrary(t *testing.T) {
 				t.Errorf("%s contains %q", file, needle)
 			}
 		}
+	}
+	err := eachPart(goParts, "go", func(name string, body []byte) error {
+		for _, needle := range repoSpecific {
+			if strings.Contains(string(body), needle) {
+				t.Errorf("go/%s contains %q", name, needle)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("read the go parts: %v", err)
 	}
 }
 
@@ -441,6 +464,132 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 			if strings.Contains(text, retired) {
 				t.Errorf("%s still contains %q", file, retired)
 			}
+		}
+	}
+}
+
+// The pod memory rule is written twice, once for each reader: a phase worker meets it in the
+// headless fragment every worker composes, and an architect in the common part every architect
+// tree joins. One part each is the whole of it. Copied into a second part of the same tree it
+// drifts, because the next edit reaches one copy and leaves the other saying what the pod no
+// longer does, and a reader that counted the copies would pass while the text spread through
+// every residue. So each paragraph's first sentence is pinned to the one part that carries it
+// and refused in every other part of that tree. The match runs over a body whose whitespace is
+// collapsed to one space, since a part hard-wraps and a sentence can cross the break.
+func TestThePodMemoryRuleIsWrittenInOneWorkerPartAndOneArchitectPart(t *testing.T) {
+	fold := func(body []byte) string { return foldWhitespace(string(body)) }
+	for _, pin := range []struct {
+		dir      string
+		parts    embed.FS
+		want     string
+		sentence string
+	}{
+		{"roles", roleParts, "mechanics/headless.md", "In an issue pod every role of this issue runs in one container and shares its memory limit"},
+		{"go", goParts, "architect-common.md", "Your subagents run their commands in your own issue pod"},
+	} {
+		var carrying []string
+		err := eachPart(pin.parts, pin.dir, func(name string, body []byte) error {
+			if strings.Contains(fold(body), pin.sentence) {
+				carrying = append(carrying, pin.dir+"/"+name)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("read the %s parts: %v", pin.dir, err)
+		}
+		if want := []string{pin.dir + "/" + pin.want}; !slices.Equal(carrying, want) {
+			t.Errorf("%q is in %q, want %q alone", pin.sentence, carrying, want)
+		}
+	}
+}
+
+// Each of the two paragraphs ends by passing the rule on, because a subagent runs its commands in
+// the same pod and reads none of these parts: the worker's clause tells a role to put these facts
+// in the context of each subagent it starts, and the architect's says the same of its own. The
+// clause belongs where the rule is written and nowhere else, so a part that dispatches a task
+// subagent carries no copy of it. The three parts that dispatch one are named here rather than
+// counted, as TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait names its want list,
+// so a part renamed out from under this test fails it rather than passing with nothing read. The
+// match runs over a body whose whitespace is collapsed to one space, since a part hard-wraps and
+// the clause can cross the break.
+func TestThePassOnClauseIsWrittenOnlyWhereThePodMemoryRuleIs(t *testing.T) {
+	fold := func(body []byte) string { return foldWhitespace(string(body)) }
+	for _, pin := range []struct {
+		dir       string
+		parts     embed.FS
+		want      string
+		unwritten []string
+		clause    string
+	}{
+		{
+			dir: "roles", parts: roleParts, want: "mechanics/headless.md",
+			unwritten: []string{"implementer.md", "planner.md"},
+			clause:    "Each subagent you start runs its commands in this pod, so put these facts in its context",
+		},
+		{
+			dir: "go", parts: goParts, want: "architect-common.md",
+			unwritten: []string{"claude-mechanics.md"},
+			clause:    "you put these facts in the context of each subagent you start",
+		},
+	} {
+		var carrying, read []string
+		err := eachPart(pin.parts, pin.dir, func(name string, body []byte) error {
+			read = append(read, name)
+			if strings.Contains(fold(body), pin.clause) {
+				carrying = append(carrying, pin.dir+"/"+name)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("read the %s parts: %v", pin.dir, err)
+		}
+		if want := []string{pin.dir + "/" + pin.want}; !slices.Equal(carrying, want) {
+			t.Errorf("%q is in %q, want %q alone", pin.clause, carrying, want)
+		}
+		// The walk above refuses the clause in every part but one, the dispatching parts of this
+		// tree among them: two under roles/ and one under go/, three across the two. What it
+		// cannot say is that those parts are still there to be read, so each is named and held to
+		// having been walked.
+		for _, name := range pin.unwritten {
+			if !slices.Contains(read, name) {
+				t.Errorf("%s/%s, which dispatches a task subagent, is not a part of this tree any more; the walk read %q", pin.dir, name, read)
+			}
+		}
+	}
+}
+
+// The headless fragment sends four runs to CI on the pull request, and
+// skill://legion-worker/references/tools.md, which that same paragraph sends a role to for what it
+// may run in the pod, sends the same four. A role reads both, so the two must agree: a run the
+// fragment calls CI's work and the skill does not leaves the role with two answers. Three rows
+// pin the four runs, each a substring both files hold: the bare `go test ./...` for the module
+// run, the name with the comma before it for the Postgres-backed package, and for the browser
+// suite and `lake build` the one clause both files carry whole, so one row pins those two. The
+// skill is read from the repository by relative path, as
+// TestEveryTaskAgentARolePromptDispatchesIsShipped reads the plugin's agents/, and a skill file
+// this package cannot read is a fatal rather than a quiet pass. The match runs over a body whose
+// whitespace is collapsed to one space, since the skill hard-wraps: the browser-suite clause
+// crosses a line break in it today, and a reflow of the skill could put a break inside either
+// of the other two.
+func TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI(t *testing.T) {
+	fold := foldWhitespace
+	fragment := fold(rolePart(t, "mechanics/headless.md"))
+	skillPath := filepath.Join("..", "..", "..", "..", "skills", "legion-worker", "references", "tools.md")
+	body, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read %s, the skill the headless fragment sends a role to: %v", skillPath, err)
+	}
+	skill := fold(string(body))
+	for _, run := range []struct{ name, agreed string }{
+		{"a whole module's test run", "`go test ./...`"},
+		{"a whole Postgres-backed package", ", a whole Postgres-backed package"},
+		{"a browser suite run whole and `make -j` or `lake build`", ", a browser suite run whole, and `make -j` or `lake build`"},
+	} {
+		if !strings.Contains(fragment, run.agreed) {
+			t.Errorf("roles/mechanics/headless.md does not hold %q, what it and %s agree on about %s", run.agreed, skillPath, run.name)
+		}
+		if !strings.Contains(skill, run.agreed) {
+			t.Errorf("%s does not hold %q, what it and roles/mechanics/headless.md agree on about %s", skillPath, run.agreed, run.name)
 		}
 	}
 }

@@ -26,8 +26,9 @@ const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
 // (e2e/playwright.config.ts's project lists, e2e/harness-signin.ts:20-40). The fourth names the
 // three wall-clock projects (`clockProjectNames`, e2e/configurations.ts): they carry
 // `default: false` since dispatch://INFRA-1280, so a listing that names no project holds no row
-// of theirs, and `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts` - 50 rows in this head's
-// wall-clock listing - reach the union below from it alone.
+// of theirs, and `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` and
+// `nested-directive.e2e.ts` - 54 rows in this head's wall-clock listing - reach the union below
+// from it alone.
 //
 // Each listing names its own DISPATCH_E2E_PROCESSES and DISPATCH_E2E_SIGNIN and never the
 // ambient ones, so this file reads the same suite wherever it runs. That is also what lets the

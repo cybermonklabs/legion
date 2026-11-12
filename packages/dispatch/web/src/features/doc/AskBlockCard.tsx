@@ -33,6 +33,11 @@ export interface AskBlockCardProps {
    *  ever activates it: a malformed one is not told to fix its text to re-activate. */
   detached?: boolean;
   host: AskBlockHost;
+  /** Whether the block stands in a body a reader reads - a comment, an ask or a message - where
+   *  no answer can be given at all, so the card says so. Every caller says which it is: a
+   *  document surface draws the same block without that line, a preview of a document among
+   *  them. */
+  inBody: boolean;
   /** Called once the server has recorded the reader's answer from this block. */
   onAnswered?: (id: string) => void;
   /** The project document holding the block, for an ask that has no issue to be referenced
@@ -54,12 +59,15 @@ export interface AskBlockCardProps {
  * answered. The one exception is `rowResolution`: there a block whose attribute and ask row are
  * both resolved shows the row's resolution record (its badge and who resolved it), with no
  * composer. A block copied from another document's ask has no ask of its own: it shows its
- * source's state, and the header links to the document where that ask is answered. The question
- * itself is the editor's content, so no part of this card repeats it. */
+ * source's state, and the header links to the document where that ask is answered. Under all of
+ * that, a block standing in a body a reader reads (`inBody`) draws one line: the question is
+ * text, and it must be opened as an ask before anyone can answer it. The question itself is the
+ * editor's content, so no part of this card repeats it. */
 export function AskBlockCard({
   ask,
   detached = false,
   host,
+  inBody,
   onAnswered,
   owner,
   readOnly,
@@ -154,48 +162,57 @@ export function AskBlockCard({
         host.header
       )}
       {createPortal(
-        malformed ? (
-          detached ? null : (
-            <p className={`mt-3 text-sm ${textMutedOnSurfaceMuted}`}>
-              Fix the block text; the decision re-activates once it parses.
+        <>
+          {malformed ? (
+            detached ? null : (
+              <p className={`mt-3 text-sm ${textMutedOnSurfaceMuted}`}>
+                Fix the block text; the decision re-activates once it parses.
+              </p>
+            )
+          ) : hosted ? (
+            <AskCard
+              ask={ask}
+              frame="block"
+              markRead
+              onAnswered={onAnswered}
+              owner={owner}
+              thread="collapsed"
+              variant="compact"
+            />
+          ) : resolvedRow !== undefined ? (
+            <AskCompletionCard
+              artifactSlug={undefined}
+              ask={resolvedRow}
+              documentLink={false}
+              edits={[]}
+              frame="block"
+            />
+          ) : (
+            <AttributeRecord facts={facts} />
+          )}
+          {inBody ? (
+            <p className={`mt-3 text-sm ${textMutedOnSurfaceMuted}`} data-dispatch-ask-text-only="">
+              This question is text: it must be opened as an ask before anyone can answer it.
             </p>
-          )
-        ) : hosted ? (
-          <AskCard
-            ask={ask}
-            frame="block"
-            markRead
-            onAnswered={onAnswered}
-            owner={owner}
-            thread="collapsed"
-            variant="compact"
-          />
-        ) : resolvedRow !== undefined ? (
-          <AskCompletionCard
-            artifactSlug={undefined}
-            ask={resolvedRow}
-            documentLink={false}
-            edits={[]}
-            frame="block"
-          />
-        ) : (
-          <AttributeRecord facts={facts} />
-        ),
+          ) : null}
+        </>,
         host.footer
       )}
     </>
   );
 }
 
-/** The read-only card a past version shows, for a decision block in a text body (a comment, ask
- *  or message): what the app provides as `TextAskCard`, so `useRenderedMarkdown` mounts it into
- *  each `ask` shell the body draws. The block reads its own attributes, never an ask row. */
+/** The read-only card a body shows, for a decision block in a text body (a comment, ask or
+ *  message): what the app provides as `TextAskCard`, so `useRenderedMarkdown` mounts it into
+ *  each `ask` shell the body draws. The block reads its own attributes, never an ask row, and
+ *  the footer says the question is text no one can answer where it stands. */
 export function TextAskBlockCard({ host }: { host: AskBlockHost }): ReactNode {
   return (
     <AskBlockCard
       ask={undefined}
       detached
       host={host}
+      inBody
       owner={undefined}
       readOnly
       rowResolution={false}

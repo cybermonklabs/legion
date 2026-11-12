@@ -315,7 +315,7 @@ func (r *liveRig) checkSecretsSelfEnrollNegative() error {
 const anyoneApprover = "anyone"
 
 // secrets-approval-ask: a request for the approval-gated secret comes back pending with a
-// credential-request record id (ruling 16: the secret's owner and tier pick the approver at
+// credential-request record id (decision 16: the secret's owner and tier pick the approver at
 // request time, naming no issue), and the approver that pick produced is a single owner, not
 // anyoneApprover — LEGION_E2E_APPROVAL is human tier under one owner no person holds, so its card
 // sits on that owner's page alone and on no signed-in person's. The step then cancels the request

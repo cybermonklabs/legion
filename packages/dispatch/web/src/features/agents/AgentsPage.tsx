@@ -5,6 +5,7 @@ import {
   type ReactNode,
   type RefObject,
   useCallback,
+  useEffect,
   useId,
   useLayoutEffect,
   useMemo,
@@ -20,11 +21,18 @@ import {
   userAgentStateQuery,
   whoAmIQuery,
 } from "../../api/queries";
-import type { Agent, Message, MessageDeliveryMode, MessageRead } from "../../api/types";
+import type {
+  Agent,
+  Message,
+  MessageDeliveryMode,
+  MessageRead,
+  UserAgentStates,
+} from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
+import { MultiSelect } from "../../components/MultiSelect";
 import { LabelPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
@@ -55,6 +63,7 @@ import { useHeldSends } from "../conversation/held-sends";
 import { ReplyTurn, ThreadReplies } from "../conversation/ReplyTurn";
 import { capabilitiesForTarget, TargetedMessageCard } from "../conversation/TargetedMessageCard";
 import { useAgents } from "../conversation/useAgents";
+import { type MeasuredHeights, rowWindow, withMeasuredHeights } from "../delivery/lib/rowWindow";
 import { waitingOnYou } from "../inbox/BlockedOnYou";
 import {
   AgentName,
@@ -69,17 +78,16 @@ import { Timestamp } from "../refs/Timestamp";
 import { closestMatching, focusOnDocument } from "../shell/roving";
 import { MD_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { useUserPreference } from "../shell/userPreference";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentMessageComposer, type AgentReply, agentSendKey } from "./AgentMessageComposer";
-import { QUIET_AFTER_MS } from "./agent-groups";
+import { AGENT_GROUP_LABELS, AGENT_GROUPS, type AgentGroup, agentGroup } from "./agent-groups";
 import {
   type AgentFilters,
   filterOptions,
   matchesFilters,
   searchWords,
   sessionIssueKeys,
-  useAgentMachine,
+  useAgentMachines,
   useAgentSearch,
 } from "./agent-search";
 import { type NeedsYouBySession, tallyBySession } from "./ask-tally";
@@ -91,7 +99,8 @@ import type { BroadcastSend } from "./broadcast-queue";
 import { EndedAgentsWithReplies } from "./EndedAgentsWithReplies";
 import { agentReplyTo } from "./exchange-delivery";
 import { AGENT_ROW_SELECTOR, foldToggleOf, leaveAgentComposer, useAgentsKeymap } from "./keyboard";
-import { foldLabel, matchingSelection, selectionSummary, toggleMatching } from "./selection";
+import { useAgentPinWrite, usePinnedAgents } from "./pins";
+import { groupCountLabel, matchingSelection, selectionSummary, toggleMatching } from "./selection";
 import { storeAgentState, unreadRepliesLabel, useMarkRepliesRead, useUnreadAtOpen } from "./unread";
 
 /** The composer's one notice slot: the recipient limit, the exclusions, or the mode the selection
@@ -101,19 +110,6 @@ import { storeAgentState, unreadRepliesLabel, useMarkRepliesRead, useUnreadAtOpe
 const composerLineLayout =
   "mt-2 text-sm narrow-or-short:order-2 narrow-or-short:col-start-2 narrow-or-short:mt-0 narrow-or-short:min-w-0 narrow-or-short:overflow-x-auto narrow-or-short:text-xs narrow-or-short:whitespace-nowrap short:order-3 short:col-span-4 short:col-start-1";
 const composerLine = `${composerLineLayout} ${dangerText}`;
-
-/** The Inactive rule: a session unseen for ten minutes folds under `Inactive (N)`. It is the
- *  Quiet bound of the four groups, taken from there so the two cannot drift. */
-function isInactive(agent: Agent, now: number): boolean {
-  return now - agent.last_seen >= QUIET_AFTER_MS;
-}
-
-/** Whether Dispatch has heard from the session at all: an event, or an open ask. */
-function hasDispatchSignal(agent: Agent, needsYou: NeedsYouBySession): boolean {
-  return (
-    agent.last_activity !== null || agent.open_asks > 0 || (needsYou.get(agent.session_id) ?? 0) > 0
-  );
-}
 
 /**
  * Pinned sessions first, in pin order; then whoever needs the viewer, then the most open asks,
@@ -148,32 +144,38 @@ export function orderAgents(
 }
 
 /**
- * Three lists in `orderAgents` order: `active` — live sessions Dispatch has heard from, plus
- * every pinned one whatever its age or silence; `quiet` — live sessions with no Dispatch
- * signal, for the collapsed `No Dispatch activity (N)` disclosure; `inactive` — sessions unseen
- * for ten minutes, for the collapsed `Inactive (N)` disclosure beneath it. A silent unseen
- * session is inactive.
+ * Every listed session in its group (`agent-groups.ts`), each group in `orderAgents` order. The
+ * pin orders a group's rows and no longer moves a row between groups (INFRA-812's D3): a pinned
+ * session Dispatch has not heard from for ten minutes is first among the Quiet rows, not lifted
+ * out of them.
  */
-export function partitionAgents(
+function groupAgents(
   agents: readonly Agent[],
   pinned: readonly string[],
   needsYou: NeedsYouBySession,
+  states: UserAgentStates,
   now: number
-): { active: Agent[]; quiet: Agent[]; inactive: Agent[] } {
-  const active: Agent[] = [];
-  const quiet: Agent[] = [];
-  const inactive: Agent[] = [];
-  for (const agent of agents) {
-    if (pinned.includes(agent.session_id)) active.push(agent);
-    else if (isInactive(agent, now)) inactive.push(agent);
-    else if (hasDispatchSignal(agent, needsYou)) active.push(agent);
-    else quiet.push(agent);
-  }
-  return {
-    active: orderAgents(active, pinned, needsYou),
-    quiet: orderAgents(quiet, pinned, needsYou),
-    inactive: orderAgents(inactive, pinned, needsYou),
+): Record<AgentGroup, Agent[]> {
+  const grouped: Record<AgentGroup, Agent[]> = {
+    active: [],
+    idle: [],
+    "needs-you": [],
+    quiet: [],
   };
+  for (const agent of agents) {
+    const unread = states[agent.session_id]?.unread_replies ?? 0;
+    grouped[agentGroup(agent, needsYou.get(agent.session_id) ?? 0, unread, now)].push(agent);
+  }
+  for (const group of AGENT_GROUPS) {
+    grouped[group] = orderAgents(grouped[group], pinned, needsYou);
+  }
+  return grouped;
+}
+
+/** Every group open, which is how each load finds them and what a search goes back to. A fresh
+ *  object each time, because it becomes state the toggles then change. */
+function everyGroupOpen(): Record<AgentGroup, boolean> {
+  return { active: true, idle: true, "needs-you": true, quiet: true };
 }
 
 /** Who a row's messages go to, as the delivery lines draw it: the row's own session, through
@@ -515,12 +517,9 @@ function AskCountPill({
   );
 }
 
-/** The list a row sits in: the open list, or one of the two folds below it. */
-type AgentSection = "active" | "inactive" | "quiet";
-
-/** The last segment of a session's directory, which is what a row wide enough to hover shows in
- *  place of the whole path. A trailing slash names no segment, and a path of nothing but slashes
- *  has none at all, so both keep the path itself rather than show an empty directory. */
+/** The last segment of a session's directory, which is what the row shows in place of the whole
+ *  path. A trailing slash names no segment, and a path of nothing but slashes has none at all,
+ *  so both keep the path itself rather than show an empty directory. */
 function lastPathSegment(dir: string): string {
   const segments = dir.split("/").filter((segment) => segment !== "");
   return segments.at(-1) ?? dir;
@@ -534,39 +533,58 @@ const machineLink = `dispatch-inline-link rounded underline outline-none focus-v
 
 function AgentRow({
   agent,
+  expanded,
   hidden,
   liveAgents,
   mdViewport,
   needsYou,
+  onExpand,
   onPin,
   onSelect,
+  opened,
   pinned,
   section,
   selected,
+  unreadReplies,
   waitingOnAgent,
 }: {
   agent: Agent;
-  /** A row in a closed fold, or one the filters exclude: still mounted, so a pin, a fold's toggle
-   *  or a filter loses nothing it holds. */
+  /** Whether the row shows its conversation and its composer. The page holds this, not the row:
+   *  the list is windowed, and the rows it keeps drawn wherever they have scrolled to are the
+   *  ones a reader has opened (`rowWindow.ts`, D1). */
+  expanded: boolean;
+  /** A row a closed fold or the filters hide, which the page draws only while the reader has it
+   *  open: hidden, so what that row holds survives the fold and the filter, as it survives a
+   *  scroll. */
   hidden: boolean;
   /** The roster a reply's delivery capabilities are judged against; `undefined` while the agent
    *  list's read is not current, when every capability is unknown (`capabilitiesForTarget`). */
   liveAgents: readonly Agent[] | undefined;
-  /** Whether the page is at Tailwind's `md` or wider - the width the row's own `md:` classes
-   *  switch at - answered once for the whole list rather than once per row: a list of two
-   *  hundred rows must not hold two hundred media-query listeners. Below it, on a phone, there
-   *  is no hover and the directory has a line of its own under the name, so it shows the whole
-   *  path; at `md` and wider the directory keeps its last segment and the path is a hover
-   *  away. */
+  /** Which side of `md` the page is on, read once for the whole list (`MD_VIEWPORT_QUERY` in
+   *  `AgentsPage`): the directory below it shows the whole path, and from it the last segment
+   *  with the path one hover away. One listener for two hundred rows, not two hundred. */
   mdViewport: boolean;
   /** This session's open questions that wait on the reader themselves: whose next move is a
    *  person's, which wait on them, and not snoozed. */
   needsYou: number;
+  /** Opens the row, or closes it: the page keeps the reader's answer. */
+  onExpand: (expanded: boolean) => void;
   onPin: () => void;
   onSelect: (selected: boolean) => void;
+  /** Whether the reader has ever opened this row, which is what mounts its conversation and its
+   *  composer. They stay mounted, hidden, while the row is collapsed: an unsent draft, an
+   *  upload, the unread set and what the reader unfolded each have one owner, which a collapse
+   *  no more discards than a pin does. A send and its refusal are the held-send store's. */
+  opened: boolean;
   pinned: boolean;
-  section: AgentSection;
+  /** The group the row is listed under, which `keyboard.ts` reads to find that group's
+   *  heading (`data-agent-section`). */
+  section: AgentGroup;
   selected: boolean;
+  /** Replies to this session the reader has not read, from the viewer's agent state. The page
+   *  reads that state once for its grouping and hands each row its own number: a query of the
+   *  row's own would be one more subscription to the same key per mounted row. */
+  unreadReplies: number;
   /** This session's open questions whose next move is its own, counted in their own right
    *  rather than as what is left of `open_asks`. */
   waitingOnAgent: number;
@@ -575,13 +593,12 @@ function AgentRow({
   // The row's attributes name the session as its `AgentName` does: by its current registry title.
   const label = text.sessionText(agent.session_id, agent.title);
   const machineAndDir = `${agent.host} · ${agent.dir}`;
-  // The name takes the row's width, so from `md` - where the span's own `md:` classes truncate
-  // it - the directory gives its own up and keeps the segment that names the session's work,
-  // with the whole path on the hover its `title` is.
+  // From `md` the row is one line, so the directory keeps the segment that names the session's
+  // work and the whole path is the hover its `title` is. Below `md` it has a line of its own
+  // under the name and a phone has no hover to ask that `title` with, so it shows the path
+  // whole. The machine is drawn before it as a link of its own, so it is no part of this.
   const shownDir = mdViewport ? lastPathSegment(agent.dir) : agent.dir;
-  const unreadReplies =
-    useQuery(userAgentStateQuery()).data?.[agent.session_id]?.unread_replies ?? 0;
-  const [expanded, setExpanded] = useState(false);
+  // What the row holds itself is the reply the composer is answering; the page holds the rest.
   // A send the row's composer holds - out, or refused - still answers its reply when the row
   // mounts again, so the row restores the reply it was sent as.
   const heldSends = useHeldSends();
@@ -594,12 +611,6 @@ function AgentRow({
           target: held.replyTo,
         };
   });
-  // The conversation and the composer mount on the first open and stay mounted, hidden while the
-  // row is collapsed: an unsent draft, an upload, the unread set and what the reader unfolded each
-  // have one owner, which a collapse no more discards than a pin does. A send and its refusal are
-  // the held-send store's.
-  const [opened, setOpened] = useState(false);
-  if (expanded && !opened) setOpened(true);
   const detailsId = useId();
 
   return (
@@ -613,95 +624,96 @@ function AgentRow({
       hidden={hidden}
       tabIndex={-1}
     >
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5">
-        <div className="flex min-w-0 flex-auto flex-wrap items-center gap-x-2 md:flex-nowrap">
-          <input
-            aria-label={`Select ${label} for broadcast`}
-            checked={selected}
-            className={`size-4 shrink-0 ${checkboxAccent}`}
-            data-agent-select=""
-            onChange={(event) => onSelect(event.target.checked)}
-            type="checkbox"
-          />
-          {/* A person finds a session by its name, so the name is never cut: the heading shrinks
-              with the row instead of holding a width of its own, and its text wraps - mid-word
-              where the name has nothing else to break on - so a long name makes a taller row
-              rather than a shortened one or a page wider than the screen. The row's toggle keeps
-              the name; `AgentName` draws the running state before it and the live link after it,
-              outside the heading, so the heading's text is the name alone. `contents` keeps each
-              of them a flex item of the row, as the heading is. */}
-          <AgentName
-            className="contents"
-            control={(name) => (
-              <h2 className={`min-w-0 text-sm font-semibold ${textPrimaryOnCanvas}`}>
-                <button
-                  aria-controls={detailsId}
-                  aria-expanded={expanded}
-                  className={`flex min-h-11 max-w-full items-center gap-1 text-left md:min-h-8 ${textPrimaryOnCanvas}`}
-                  data-agent-toggle=""
-                  onClick={() => setExpanded((open) => !open)}
-                  title={label}
-                  type="button"
-                >
-                  <span className="min-w-0 break-words">{name}</span>
-                  <span className={disclosureButtonText}>
-                    <ChevronIcon expanded={expanded} />
-                  </span>
-                </button>
-              </h2>
-            )}
-            kind="control"
-            sessionId={agent.session_id}
-            storedTitle={agent.title}
-          />
-          <CopyButton value={agent.session_id} what="session ID">
-            ID
-          </CopyButton>
-          {agent.title.trim() === "" ? null : (
-            <CopyButton value={agent.title} what="session title">
-              title
-            </CopyButton>
+      {/* One line from `md`: with six hundred rows a second line is six hundred lines, and the
+          window's saving (R7) is paid back in paint. The name and the directory are what give
+          way, each to an ellipsis with its whole text one hover away. Below `md` the directory
+          wraps to a line of its own (the span below), which is the shape the row had before
+          this change and what keeps the name a box wide enough to tap on a phone. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 overflow-hidden px-3 py-1.5 md:flex-nowrap">
+        <input
+          aria-label={`Select ${label} for broadcast`}
+          checked={selected}
+          className={`size-4 shrink-0 ${checkboxAccent}`}
+          data-agent-select=""
+          onChange={(event) => onSelect(event.target.checked)}
+          type="checkbox"
+        />
+        {/* The row's toggle keeps the name; `AgentName` draws the running state before it and
+            the live link after it, outside the heading, so the heading's text is the name
+            alone. `contents` keeps each of them a flex item of the row, as the heading is. The
+            name takes what it needs up to a ceiling, so a long one shortens rather than
+            squeezing the directory beside it to nothing. */}
+        <AgentName
+          className="contents"
+          control={(name) => (
+            <h2 className={`min-w-0 max-w-64 shrink text-sm font-semibold ${textPrimaryOnCanvas}`}>
+              <button
+                aria-controls={detailsId}
+                aria-expanded={expanded}
+                className={`flex min-h-11 w-full items-center gap-1 text-left md:min-h-8 ${textPrimaryOnCanvas}`}
+                data-agent-toggle=""
+                onClick={() => onExpand(!expanded)}
+                title={label}
+                type="button"
+              >
+                <span className="truncate">{name}</span>
+                <span className={`shrink-0 ${disclosureButtonText}`}>
+                  <ChevronIcon expanded={expanded} />
+                </span>
+              </button>
+            </h2>
           )}
-          {/* The directory is what gives the row's width to the name: above a phone it keeps its
-              last segment and the whole path is one hover away, while a phone, which has no
-              hover and already puts the directory on a line of its own under the name, shows the
-              path whole and wraps it rather than cutting it. The floor at `md` is there because
-              the name is allowed to take everything else: without it a long name squeezes this
-              span to nothing, and a directory with no box is painted nowhere and hovered
-              nowhere. It is sized for a host and a last segment at this text size - roughly
-              thirty characters - so the shortened directory stays readable, and the name takes
-              a third line instead. Nothing here ellipsises: the shortened text is meant to be
-              read whole, so a host or segment longer than the floor wraps inside it rather than
-              being cut, and the whole path is still the `title`. */}
-          <span
-            className={`order-last min-w-0 basis-full text-xs break-words md:order-none md:min-w-48 md:flex-1 md:basis-0 ${textMutedOnCanvas}`}
-            data-agent-dir=""
-            title={machineAndDir}
+          kind="control"
+          sessionId={agent.session_id}
+          storedTitle={agent.title}
+        />
+        <CopyButton value={agent.session_id} what="session ID">
+          ID
+        </CopyButton>
+        {agent.title.trim() === "" ? null : (
+          <CopyButton value={agent.title} what="session title">
+            title
+          </CopyButton>
+        )}
+        {/* The directory. From `md` it takes the width the rest of the line leaves and keeps
+            the segment that names the session's work, with the machine before it and the whole
+            path one hover away. Below `md` it takes a line of its own under the name
+            (`order-last basis-full`, the shape the page drew before INFRA-812) and shows the
+            whole path: a phone has no hover to ask with, and on one line a 390 px row squeezed
+            both this and the name button to nothing, which left the name untappable - the live
+            link beside it took the press - and the directory unpainted. It is the row's one
+            stretching item from `md`, so a row with little else in it still reads its directory
+            in full. */}
+        <span
+          className={`order-last basis-full text-xs [overflow-wrap:anywhere] md:order-none md:min-w-0 md:flex-1 md:basis-auto md:truncate ${textMutedOnCanvas}`}
+          data-agent-dir=""
+          title={machineAndDir}
+        >
+          {/* Only the machine is a link: the span still reads `<machine> · <directory>` whole,
+              and the machine's own page is one click from a row that names it. */}
+          <Link
+            className={machineLink}
+            data-agent-machine={agent.host}
+            to={buildMachinePath(agent.host)}
           >
-            {/* Only the machine is a link: the span still reads `<machine> · <directory>` whole,
-                and the machine's own page is one click from a row that names it. */}
-            <Link
-              className={machineLink}
-              data-agent-machine={agent.host}
-              to={buildMachinePath(agent.host)}
-            >
-              {agent.host}
-            </Link>
-            {` · ${shownDir}`}
+            {agent.host}
+          </Link>
+          {` · ${shownDir}`}
+        </span>
+        {(agent.roles ?? []).map((role) => (
+          <span className="shrink-0" key={role}>
+            <LabelPill>{role}</LabelPill>
           </span>
-          {(agent.roles ?? []).map((role) => (
-            <LabelPill key={role}>{role}</LabelPill>
-          ))}
-          {/* A session that has missed its heartbeats is still listed and still worth
-              messaging, so the row says which it is rather than looking like any other: its
-              name's mark alone is a ring a reader would have to hover. */}
-          <AgentUnresponsiveNote
-            lastSeen={agent.last_seen}
-            state={agent.state === "unresponsive" ? "unresponsive" : "running"}
-          />
-        </div>
-        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-          <span className={`text-xs ${textMutedOnCanvas}`}>
+        ))}
+        {/* A session that has missed its heartbeats is still listed and still worth
+            messaging, so the row says which it is rather than looking like any other: its
+            name's mark alone is a ring a reader would have to hover. */}
+        <AgentUnresponsiveNote
+          lastSeen={agent.last_seen}
+          state={agent.state === "unresponsive" ? "unresponsive" : "running"}
+        />
+        <div className="flex shrink-0 items-center gap-2">
+          <span className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}>
             {agent.last_activity === null ? (
               "No Dispatch activity"
             ) : (
@@ -716,7 +728,7 @@ function AgentRow({
               // `label-content-name-mismatch`); the session's name says whose replies they are.
               aria-label={`${unreadRepliesLabel(unreadReplies)} from ${label}`}
               className="inline-flex min-h-11 items-center rounded-full md:min-h-8"
-              onClick={() => setExpanded(true)}
+              onClick={() => onExpand(true)}
               title={`Replies from ${label} you have not read`}
               type="button"
             >
@@ -842,37 +854,57 @@ function AgentRowDetails({
 }
 
 /**
- * A fold's toggle: an item in the one list, between the open rows and the fold's own, labelled by
- * `foldLabel`. Absent when the fold is empty; closed on every load, and open only while this page
- * stays mounted. A block item rather than a bare button, so the toggle keeps its own width, and
- * `keyboard.ts` has a handle on it (`data-agent-fold`): the pin's focus hand-off lands on it, and
- * `j`/`k` step on from it.
+ * A group's heading: an item in the one list, between the rows above it and its own, saying
+ * what the group is and how many rows it holds, and collapsing them. Every group has one,
+ * empty or not, so the four states are always on the page and the browser check can read each
+ * one's count. A block item rather than a bare button, so the heading keeps its own width, and
+ * `keyboard.ts` has a handle on it (`data-agent-fold`): the pin's focus hand-off lands on it,
+ * and `j`/`k` step on from it.
  */
-function FoldToggle({
+function GroupHeading({
   agents,
   expanded,
-  fold,
-  label,
+  group,
   onToggle,
   selected,
 }: {
+  /** The group's rows the filters match: what the count counts, and what the heading hides. */
   agents: readonly Agent[];
   expanded: boolean;
-  fold: Exclude<AgentSection, "active">;
-  label: string;
+  group: AgentGroup;
   onToggle: () => void;
   selected: ReadonlySet<string>;
 }): ReactNode {
-  if (agents.length === 0) return null;
   return (
-    <div data-agent-fold={fold}>
-      <DisclosureToggle
-        expanded={expanded}
-        label={foldLabel(label, agents, selected)}
-        onToggle={onToggle}
-      />
+    <div data-agent-fold={group} data-testid={`agents-group-${group}`}>
+      <button
+        aria-expanded={expanded}
+        className={`flex min-h-11 items-center gap-1 text-sm font-medium ${textSecondaryOnCanvas}`}
+        data-testid={`agents-group-toggle-${group}`}
+        onClick={onToggle}
+        type="button"
+      >
+        <span data-testid={`agents-group-name-${group}`}>{AGENT_GROUP_LABELS[group]}</span>
+        <span className="tabular-nums" data-testid={`agents-group-count-${group}`}>
+          {groupCountLabel(agents, selected)}
+        </span>
+        <span className={disclosureButtonText}>
+          <ChevronIcon expanded={expanded} />
+        </span>
+      </button>
     </div>
   );
+}
+
+/** Which filter panel is open; one at a time, since each is a popover over the page. */
+type OpenFilter = "group" | "machine" | "role" | null;
+
+/** The role control's options, with anything picked that is no longer among them: a role whose
+ *  last session left is still a row, so the reader sees what they are filtering by and can
+ *  untick it. The machine control needs no such pass, because `filterOptions` already seeds its
+ *  host set with every picked machine. */
+function withPicked(options: readonly string[], picked: readonly string[]): string[] {
+  return [...options, ...picked.filter((value) => !options.includes(value))];
 }
 
 function AgentFilterBar({
@@ -886,44 +918,69 @@ function AgentFilterBar({
   onFilters: (filters: AgentFilters) => void;
   searchInputRef: RefObject<HTMLInputElement | null>;
 }): ReactNode {
-  // The options carry the machine the filter names even when no live session reports it, so the
-  // control shows the filter in force and `All machines` can clear it (`filterOptions`).
-  const { machines, roles } = filterOptions(agents, filters.machine);
+  // The options carry every machine the filter names even when no live session reports it, so
+  // the control shows the filter in force and its row can be unticked (`filterOptions`).
+  const { machines, roles } = filterOptions(agents, filters.machines);
+  // One panel open at a time: each is a portalled popover, and two of them over one row would
+  // cover each other.
+  const [open, setOpen] = useState<OpenFilter>(null);
   const field = `min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`;
   return (
-    <fieldset className="mb-3 flex flex-wrap items-center gap-2">
+    <fieldset className="mb-3 flex flex-wrap items-center gap-2" data-testid="agents-filters">
       <legend className="sr-only">Agent filters</legend>
-      <select
-        aria-label="Machine"
-        className={field}
-        onChange={(event) => onFilters({ ...filters, machine: event.target.value })}
-        value={filters.machine}
-      >
-        <option value="">All machines</option>
-        {machines.map((machine) => (
-          <option key={machine} value={machine}>
-            {machine}
-          </option>
-        ))}
-      </select>
-      <select
-        aria-label="Role"
-        className={field}
-        onChange={(event) => onFilters({ ...filters, role: event.target.value })}
-        value={filters.role}
-      >
-        <option value="">All roles</option>
-        {roles.map((role) => (
-          <option key={role} value={role}>
-            {role}
-          </option>
-        ))}
-      </select>
+      {/* No dropdown on this page (R7): each filter is a multi-select whose panel holds a text
+          box that narrows its own options, because forty machines cannot be read in a list that
+          does not search. */}
+      <span className="contents" data-testid="agents-filter-group">
+        <MultiSelect
+          emptyMessage="No group matches that."
+          label="Group"
+          // The control picks strings; these are the four group keys, read back in the one
+          // order the page draws them in, whatever order they were ticked in.
+          onChange={(next) =>
+            onFilters({ ...filters, groups: AGENT_GROUPS.filter((group) => next.includes(group)) })
+          }
+          onOpenChange={(next) => setOpen(next ? "group" : null)}
+          open={open === "group"}
+          optionLabel={(value) => AGENT_GROUP_LABELS[value as AgentGroup]}
+          options={AGENT_GROUPS}
+          searchLabel="Search groups"
+          selected={filters.groups}
+          triggerAriaLabel="Filter by group"
+        />
+      </span>
+      <span className="contents" data-testid="agents-filter-machine">
+        <MultiSelect
+          emptyMessage="No machine matches that."
+          label="Machine"
+          onChange={(next) => onFilters({ ...filters, machines: next })}
+          onOpenChange={(next) => setOpen(next ? "machine" : null)}
+          open={open === "machine"}
+          options={machines}
+          searchLabel="Search machines"
+          selected={filters.machines}
+          triggerAriaLabel="Filter by machine"
+        />
+      </span>
+      <span className="contents" data-testid="agents-filter-role">
+        <MultiSelect
+          emptyMessage="No role matches that."
+          label="Role"
+          onChange={(next) => onFilters({ ...filters, roles: next })}
+          onOpenChange={(next) => setOpen(next ? "role" : null)}
+          open={open === "role"}
+          options={withPicked(roles, filters.roles)}
+          searchLabel="Search roles"
+          selected={filters.roles}
+          triggerAriaLabel="Filter by role"
+        />
+      </span>
       {/* It takes the rest of the row, and a row of its own on a phone, so the fields it searches
           stay readable in the placeholder. */}
       <input
         aria-label="Search agents"
         className={`${field} min-w-0 flex-1 basis-64`}
+        data-testid="agents-filter-search"
         maxLength={SEARCH_QUERY_MAX}
         onChange={(event) => onFilters({ ...filters, search: event.target.value })}
         placeholder="Title, directory, machine, session or open issue"
@@ -1163,27 +1220,204 @@ function BroadcastComposer({
   );
 }
 
+/** One item of the page's list: a group's heading, or a session's row under it. */
+type ListItem =
+  | { kind: "group"; key: string; group: AgentGroup }
+  | { kind: "row"; key: string; group: AgentGroup; agent: Agent };
+
+/** How tall a row nothing has measured is taken to be: a collapsed row at `md`. It gives the
+ *  list a scrollbar before a row is drawn and decides how many rows the first paint draws;
+ *  every drawn row then replaces it with what it measured. */
+const ROW_ESTIMATE_PX = 44;
+
+/** A drawn item of the windowed list, which is what `useListWindow` measures. */
+const LIST_ITEM_SELECTOR = "[data-row-key]";
+
+/** The row `sessionID` draws, drawn or kept hidden, inside `list`. */
+function rowNode(list: HTMLElement | null, sessionID: string): HTMLElement | null {
+  return (
+    [...(list?.querySelectorAll<HTMLElement>(AGENT_ROW_SELECTOR) ?? [])].find(
+      (node) => node.dataset.agentRow === sessionID
+    ) ?? null
+  );
+}
+
+/** What the page draws its list from: which items, where each sits, and how tall the list is. */
+interface ListWindow {
+  containerRef: RefObject<HTMLDivElement | null>;
+  /** Every item the list draws, as indices into the keys it was given, ascending. */
+  drawn: readonly number[];
+  /** Where each item starts, in pixels from the list's own top. */
+  tops: readonly number[];
+  /** The whole list's height, drawn items and undrawn alike. */
+  height: number;
+}
+
+/**
+ * The window over `keys` (`features/delivery/lib/rowWindow.ts`), measured as it is drawn, with
+ * `kept` the items drawn wherever they have scrolled to.
+ *
+ * The page scrolls in the document rather than in a box of its own, so what the window reads is
+ * the list's own top edge against the viewport: everything above the list has scrolled past when
+ * that edge is negative. The scroll listener is a capturing one, which hears an ancestor box
+ * scroll as well as the document. Every drawn item is measured after each render, and a
+ * `ResizeObserver` catches a height that changes with no render of the page's - a conversation
+ * arriving inside an open row - with a height that has not changed costing no render.
+ */
+function useListWindow(keys: readonly string[], kept: ReadonlySet<string>): ListWindow {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [view, setView] = useState(() => ({ scrollTop: 0, viewportHeight: window.innerHeight }));
+  const [measured, setMeasured] = useState<MeasuredHeights>(() => new Map());
+  /** Every item the list has drawn, each carrying the key its height is cached under. Queried
+   *  once per render and handed to both the measuring and the observer, rather than twice. */
+  const drawnItems = useCallback(
+    (): readonly HTMLElement[] => [
+      ...(containerRef.current?.querySelectorAll<HTMLElement>(LIST_ITEM_SELECTOR) ?? []),
+    ],
+    []
+  );
+  const measure = useCallback((items: readonly HTMLElement[]) => {
+    const heights = items.flatMap((item) => {
+      const key = item.dataset.rowKey;
+      return key === undefined ? [] : [[key, item.getBoundingClientRect().height] as const];
+    });
+    setMeasured((held) => withMeasuredHeights(held, heights));
+  }, []);
+  // An arrow rather than `measure` itself: `ResizeObserver` hands its callback the entries that
+  // changed as its first argument, and the list measures every drawn item rather than those.
+  const [observer] = useState(() =>
+    typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => measure(drawnItems()))
+  );
+  const readView = useCallback(() => {
+    const top = containerRef.current?.getBoundingClientRect().top ?? 0;
+    setView((held) => {
+      const next = { scrollTop: Math.max(0, -top), viewportHeight: window.innerHeight };
+      return held.scrollTop === next.scrollTop && held.viewportHeight === next.viewportHeight
+        ? held
+        : next;
+    });
+  }, []);
+  useEffect(() => {
+    readView();
+    window.addEventListener("scroll", readView, { capture: true, passive: true });
+    window.addEventListener("resize", readView);
+    return () => {
+      window.removeEventListener("scroll", readView, { capture: true });
+      window.removeEventListener("resize", readView);
+    };
+  }, [readView]);
+  /** The items the observer is watching. Each render moves it to the items drawn now - what
+   *  left is unobserved, what arrived is observed - rather than disconnecting it and arming it
+   *  again over every one: `observe` delivers an entry for each newly observed element, so
+   *  re-observing them all would measure the whole list a second time after every render. */
+  const observed = useRef<readonly HTMLElement[]>([]);
+  // After every render, because every render can change what is drawn and how tall it is.
+  useLayoutEffect(() => {
+    const items = drawnItems();
+    measure(items);
+    if (observer === null) return;
+    const drawn = new Set(items);
+    for (const item of observed.current) {
+      if (!drawn.has(item)) observer.unobserve(item);
+    }
+    const held = new Set(observed.current);
+    for (const item of items) {
+      if (!held.has(item)) observer.observe(item);
+    }
+    observed.current = items;
+  });
+  // The observer belongs to the list rather than to a render, and goes once, with the list.
+  useEffect(() => () => observer?.disconnect(), [observer]);
+  const list = rowWindow({
+    estimate: ROW_ESTIMATE_PX,
+    kept,
+    keys,
+    measured,
+    scrollTop: view.scrollTop,
+    viewportHeight: view.viewportHeight,
+  });
+  return { containerRef, drawn: list.drawn, height: list.height, tops: list.tops };
+}
+
+/**
+ * The list's own box: as tall as every item, drawn or not, so the scrollbar measures the list
+ * rather than the part of it on screen, and each drawn item sits at the place the window
+ * measured for it.
+ *
+ * The box owns the window, which is why it is a component of its own rather than part of the
+ * page. The window's state moves with every scroll event the page hears, and the page groups,
+ * sorts and filters every listed session on each of its own renders; here a scroll re-renders
+ * this box alone, and what the page worked out - `items`, `kept`, `keptAside` and `renderItem` -
+ * is untouched by it.
+ */
+function WindowedList({
+  items,
+  kept,
+  keptAside,
+  renderItem,
+}: {
+  /** The page's list in the order it draws it, each item under the key it is drawn with. */
+  items: readonly ListItem[];
+  /** The items drawn wherever they have scrolled to (D1). */
+  kept: ReadonlySet<string>;
+  /** The kept rows the list no longer holds, which the page draws hidden. They ride after the
+   *  drawn items in the one array: two arrays would be two slots, and a row moving between
+   *  them would remount. */
+  keptAside: readonly ReactNode[];
+  /** A heading or a row, as the page draws it. */
+  renderItem: (item: ListItem) => ReactNode;
+}): ReactNode {
+  const list = useListWindow(
+    items.map((item) => item.key),
+    kept
+  );
+  return (
+    <div
+      className="relative"
+      data-agents-list=""
+      ref={list.containerRef}
+      style={{ height: `${list.height}px` }}
+    >
+      {[
+        ...list.drawn.flatMap((index) => {
+          const item = items[index];
+          if (item === undefined) return [];
+          return [
+            <div
+              className="absolute inset-x-0 pb-3"
+              data-row-key={item.key}
+              key={item.key}
+              style={{ top: `${list.tops[index] ?? 0}px` }}
+            >
+              {renderItem(item)}
+            </div>,
+          ];
+        }),
+        ...keptAside,
+      ]}
+    </div>
+  );
+}
+
 export function AgentsPage(): ReactNode {
   useDocumentTitle("Agents · Dispatch");
   const { agents, current, error, isError, isPending, refilling } = useAgents(true, true);
-  // One listener for the list, not one per row: every row's directory reads the same answer.
+  // Which side of Tailwind's `md` the page is on, read once for the list rather than once per
+  // row: it decides what each row's directory shows, and a list of two hundred rows is two
+  // hundred listeners otherwise.
   const mdViewport = useMediaQuery(MD_VIEWPORT_QUERY);
   const inbox = useQuery(inboxQuery());
   // Until `/auth/whoami` answers, no question is counted as the reader's.
   const viewer = useQuery(whoAmIQuery()).data?.login;
-  const readPinned = useCallback((stored: string | null): readonly string[] => {
-    try {
-      const parsed: unknown = stored === null ? [] : JSON.parse(stored);
-      return Array.isArray(parsed)
-        ? parsed.filter((value): value is string => typeof value === "string")
-        : [];
-    } catch {
-      return [];
-    }
-  }, []);
-  const [pinned, setPinned] = useUserPreference("agents.pinned", readPinned, (next) =>
-    JSON.stringify(next)
-  );
+  // The pins are the person's, not this browser's (INFRA-812): the Agents page reads them from
+  // the viewer's agent state and writes them to Dispatch, so a pin made here is in the rail and
+  // in the person's other browsers at once.
+  const pinned = usePinnedAgents();
+  const writePin = useAgentPinWrite();
+  // The viewer's own state for each session, which the rows already read for their unread
+  // badges: one query, one answer, and the replies they have not read are what put a session in
+  // Needs you beside the asks that wait on them.
+  const agentStates = useQuery(userAgentStateQuery()).data ?? {};
   // The first card number: the reader's own work with this session - a question whose next move
   // is a person's and which waits on them. One meaning for every count of what waits on
   // the reader, wherever it is shown.
@@ -1204,15 +1438,21 @@ export function AgentsPage(): ReactNode {
   // Every issue key an OPEN ask by each session names (`sessionIssueKeys`), for the search box's
   // "issue key" field.
   const issueKeysBySession = useMemo(() => sessionIssueKeys(inbox.data ?? []), [inbox.data]);
-  // The free-text query and the machine are the page's own `?q=` and `?machine=`, both owned by
-  // `agent-search.ts`; `role` stays plain component state.
+  // The free-text query and the machines are the page's own `?q=` and `?machine=`, both owned
+  // by `agent-search.ts`; the group and role selections stay plain component state, as the
+  // machine and role did before this box. A link in from the machines page of
+  // dispatch://INFRA-883 names one machine in `?machine=`, which is this filter with that one
+  // host ticked.
   const [search, setSearch] = useAgentSearch();
-  const [machine, setMachine] = useAgentMachine();
-  const [role, setRole] = useState("");
-  const filters: AgentFilters = { machine, role, search };
+  const [machines, setMachines] = useAgentMachines();
+  const [fieldFilters, setFieldFilters] = useState<Omit<AgentFilters, "machines" | "search">>({
+    groups: [],
+    roles: [],
+  });
+  const filters: AgentFilters = { ...fieldFilters, machines, search };
   const setFilters = (next: AgentFilters) => {
-    setRole(next.role);
-    if (next.machine !== machine) setMachine(next.machine);
+    setFieldFilters({ groups: next.groups, roles: next.roles });
+    if (next.machines !== machines) setMachines(next.machines);
     if (next.search !== search) setSearch(next.search);
   };
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -1240,31 +1480,31 @@ export function AgentsPage(): ReactNode {
     ? "Restore draft would replace the broadcast you have started. Send it, or clear its message and selection, first."
     : null;
   const showComposer = selected.size > 0 && agents.length > 0;
-  // Not memoised: the split is a function of the clock, and is recomputed on every render of
-  // this page. Every listed session is split, the ones the filters exclude included: their rows
-  // stay mounted, hidden, like a closed fold's.
-  const { active, quiet, inactive } = partitionAgents(
-    agents,
-    pinned,
-    needsYouBySession,
-    Date.now()
-  );
+  // Not memoised: the grouping is a function of the clock, and is recomputed on every render of
+  // this page. Every listed session is grouped, the ones the filters exclude included: their
+  // rows stay mounted, hidden, like a collapsed group's.
+  const grouped = groupAgents(agents, pinned, needsYouBySession, agentStates, Date.now());
   const words = searchWords(filters.search);
-  const matches = (agent: Agent) =>
-    matchesFilters(agent, filters, words, issueKeysBySession.get(agent.session_id) ?? []);
-  // The rows the filters match, in the order the page shows them - the open list, then each fold.
-  // Select-all ticks this set in order and the composer names the selection in tick order, so a
-  // set ordered any other way (the registry's own, say) would name the recipients in an order the
-  // reader never sees, and send them in it.
-  const matchingQuiet = quiet.filter(matches);
-  const matchingInactive = inactive.filter(matches);
-  const matching = [...active.filter(matches), ...matchingQuiet, ...matchingInactive];
-  /** The row a pin was made from while it held focus, until the render that moves it. A pin can
-   *  move a row between the open list and a fold: React moves its node, which can drop focus to
-   *  the document, or the row lands in a closed fold, hidden. Focus follows the row to where it
-   *  lands - or, when that is a closed fold, to the fold's toggle, as `IssueBoard`'s
-   *  `focusAfterMove` lands on a collapsed rail - so the next `j`/`k` go on from the reader's
-   *  place rather than from the top (`useAgentsKeymap` steps from a fold's toggle too). */
+  const matches = (agent: Agent, group: AgentGroup) =>
+    matchesFilters(agent, group, filters, words, issueKeysBySession.get(agent.session_id) ?? []);
+  // Each group's rows that the filters match: the heading's count, and what it hides.
+  const matchingIn: Record<AgentGroup, Agent[]> = {
+    active: grouped.active.filter((agent) => matches(agent, "active")),
+    idle: grouped.idle.filter((agent) => matches(agent, "idle")),
+    "needs-you": grouped["needs-you"].filter((agent) => matches(agent, "needs-you")),
+    quiet: grouped.quiet.filter((agent) => matches(agent, "quiet")),
+  };
+  // The rows the filters match, in the order the page shows them - group by group. Select-all
+  // ticks this set in order and the composer names the selection in tick order, so a set ordered
+  // any other way (the registry's own, say) would name the recipients in an order the reader
+  // never sees, and send them in it.
+  const matching = AGENT_GROUPS.flatMap((group) => matchingIn[group]);
+  /** The row a pin was made from while it held focus, until the render that moves it. A pin no
+   *  longer moves a row out of its group (D3), but it does move it within one - pinned rows
+   *  come first - and React moves its node, which can drop focus to the document. Focus follows
+   *  the row to where it lands, or to its group's heading when the row is hidden there, as
+   *  `IssueBoard`'s `focusAfterMove` lands on a collapsed rail, so the next `j`/`k` go on from
+   *  the reader's place rather than from the top (`useAgentsKeymap` steps from a heading too). */
   const focusAfterPin = useRef<string | null>(null);
   const togglePin = (sessionID: string) => {
     if (
@@ -1272,10 +1512,7 @@ export function AgentsPage(): ReactNode {
     ) {
       focusAfterPin.current = sessionID;
     }
-    const next = pinned.includes(sessionID)
-      ? pinned.filter((candidate) => candidate !== sessionID)
-      : [...pinned, sessionID];
-    setPinned(next);
+    writePin(sessionID, !pinned.includes(sessionID));
   };
   const select = (sessionID: string, next: boolean) => {
     setSelected((current) => {
@@ -1285,41 +1522,101 @@ export function AgentsPage(): ReactNode {
       return updated;
     });
   };
-  // Each fold is closed on every load and open only while this page stays mounted. A search opens
-  // both, since searching is how a reader finds a session they cannot see: while a query is
-  // present the folds read `searchFolds`, reset to open each time a search starts, and clearing
-  // the query hands them back to the reader's own state, untouched by the search.
-  const [quietOpen, setQuietOpen] = useState(false);
-  const [inactiveOpen, setInactiveOpen] = useState(false);
+  // Every group is open on every load and collapses only while this page stays mounted. A
+  // search opens them all, since searching is how a reader finds a session they cannot see:
+  // while a query is present the groups read `searchGroups`, reset to open each time a search
+  // starts, and clearing the query hands them back to the reader's own state, untouched by the
+  // search.
+  const [openGroups, setOpenGroups] = useState(everyGroupOpen);
   const searching = search.trim() !== "";
-  const [searchFolds, setSearchFolds] = useState({ inactive: true, quiet: true });
+  const [searchGroups, setSearchGroups] = useState(everyGroupOpen);
   const [wasSearching, setWasSearching] = useState(searching);
   if (searching !== wasSearching) {
     setWasSearching(searching);
-    if (searching) setSearchFolds({ inactive: true, quiet: true });
+    if (searching) setSearchGroups(everyGroupOpen);
   }
-  const quietShown = searching ? searchFolds.quiet : quietOpen;
-  const inactiveShown = searching ? searchFolds.inactive : inactiveOpen;
-  const toggleFold = (fold: "inactive" | "quiet") => {
-    if (searching) setSearchFolds((open) => ({ ...open, [fold]: !open[fold] }));
-    else if (fold === "quiet") setQuietOpen((open) => !open);
-    else setInactiveOpen((open) => !open);
+  const shown = searching ? searchGroups : openGroups;
+  const toggleGroup = (group: AgentGroup) => {
+    const set = searching ? setSearchGroups : setOpenGroups;
+    set((open) => ({ ...open, [group]: !open[group] }));
   };
   const listRef = useRef<HTMLElement>(null);
-  useAgentsKeymap(listRef, searchInputRef);
+  // Which rows are open, and which the reader has ever opened. The page holds both rather than
+  // each row: the window draws every opened row wherever it has scrolled to (D1), and a row
+  // that kept its own answer would have nothing to tell the window.
+  const [expandedRows, setExpandedRows] = useState<ReadonlySet<string>>(() => new Set());
+  const [openedRows, setOpenedRows] = useState<ReadonlySet<string>>(() => new Set());
+  const expandRow = (sessionID: string, open: boolean) => {
+    setExpandedRows((current) => {
+      const next = new Set(current);
+      if (open) next.add(sessionID);
+      else next.delete(sessionID);
+      return next;
+    });
+    if (open) {
+      setOpenedRows((current) =>
+        current.has(sessionID) ? current : new Set(current).add(sessionID)
+      );
+    }
+  };
+  /** The row that holds keyboard focus, which the window draws however far it has scrolled: a
+   *  row unmounted under the reader drops focus to the document body, which silently turns off
+   *  every binding that acts on the row in hand (`keyboard.ts`). */
+  const [focusedRow, setFocusedRow] = useState<string | null>(null);
+  /** A row `j` or `k` has asked for, until the render that draws it puts focus there. */
+  const focusWhenDrawn = useRef<string | null>(null);
+  // One list, keyed by session, with each group's heading as an item between the rows - the
+  // Inbox's pattern (`Inbox.tsx`) - of which the window draws a part. A row that moves from one
+  // group to another moves within the one parent, so React moves its node instead of remounting
+  // it: nothing a row holds is ever handed from one instance to another. One flat array, not one
+  // per group: each array in the children is a slot of its own, and a row changing slots would
+  // remount.
+  const items: ListItem[] = AGENT_GROUPS.flatMap((group) => [
+    { group, key: `group:${group}`, kind: "group" as const },
+    ...(shown[group] ? matchingIn[group] : []).map((agent) => ({
+      agent,
+      group,
+      key: agent.session_id,
+      kind: "row" as const,
+    })),
+  ]);
+  const kept = new Set(openedRows);
+  if (focusedRow !== null) kept.add(focusedRow);
+  useAgentsKeymap(
+    {
+      focusRow: (sessionID) => {
+        focusWhenDrawn.current = sessionID;
+        setFocusedRow(sessionID);
+      },
+      items: items.map((item) =>
+        item.kind === "group"
+          ? { group: item.group, kind: "fold" as const }
+          : { id: item.key, kind: "row" as const }
+      ),
+    },
+    searchInputRef
+  );
+  // A layout effect, so the frame that paints the row the keys moved to already has focus on it.
+  // The row is drawn because `kept` holds it, and it stays drawn because `focusedRow` does.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `focusedRow` is the trigger, not a read
+  useLayoutEffect(() => {
+    const sessionID = focusWhenDrawn.current;
+    if (sessionID === null) return;
+    focusWhenDrawn.current = null;
+    const row = rowNode(listRef.current, sessionID);
+    row?.scrollIntoView({ block: "nearest" });
+    row?.focus();
+  }, [focusedRow]);
   // A layout effect, so the frame the move paints already has focus where the row went.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `pinned` is the trigger, not a read
   useLayoutEffect(() => {
     const sessionID = focusAfterPin.current;
     if (sessionID === null) return;
     focusAfterPin.current = null;
-    const list = listRef.current;
-    const row = [...(list?.querySelectorAll<HTMLElement>(AGENT_ROW_SELECTOR) ?? [])].find(
-      (node) => node.dataset.agentRow === sessionID
-    );
-    if (row === undefined) return;
-    // A row the pin hides is in a closed fold: it held focus, so the filters match it, and a pin
-    // changes nothing they read.
+    const row = rowNode(listRef.current, sessionID);
+    if (row === null) return;
+    // A row the pin leaves hidden is in a collapsed group: it held focus, so the filters match
+    // it, and a pin changes neither what they read nor which group the row is in.
     const target = row.hidden ? foldToggleOf(row) : row;
     // Only the focus the move took is the page's to give back: still on the row, now hidden, or
     // dropped to the document.
@@ -1327,51 +1624,51 @@ export function AgentsPage(): ReactNode {
     if (focused !== row && !focusOnDocument()) return;
     if (focused !== target) target?.focus();
   }, [pinned]);
-  const rowIn = (section: AgentSection, foldOpen: boolean) => (agent: Agent) => (
+  const agentRow = (agent: Agent, group: AgentGroup, hidden: boolean) => (
     <AgentRow
       agent={agent}
-      hidden={!foldOpen || !matches(agent)}
+      expanded={expandedRows.has(agent.session_id)}
+      hidden={hidden}
       key={agent.session_id}
       liveAgents={current ? agents : undefined}
       mdViewport={mdViewport}
       needsYou={needsYouBySession.get(agent.session_id) ?? 0}
+      onExpand={(open) => expandRow(agent.session_id, open)}
       onPin={() => togglePin(agent.session_id)}
       onSelect={(next) => select(agent.session_id, next)}
+      opened={openedRows.has(agent.session_id)}
       pinned={pinned.includes(agent.session_id)}
-      section={section}
+      section={group}
       selected={selected.has(agent.session_id)}
+      unreadReplies={agentStates[agent.session_id]?.unread_replies ?? 0}
       waitingOnAgent={waitingOnAgentBySession.get(agent.session_id) ?? 0}
     />
   );
-  // One list, keyed by session, with each fold's toggle as an item between the rows - the Inbox's
-  // pattern (`Inbox.tsx`). A row that moves between the open list and a fold moves within the one
-  // parent, so React moves its node instead of remounting it, and a closed fold's rows stay
-  // mounted, hidden, as do the rows the filters exclude: nothing a row holds is ever handed from
-  // one instance to another. One flat array, not three: each array in the children is a slot of
-  // its own, and a row changing slots would remount.
-  const rows = [
-    ...active.map(rowIn("active", true)),
-    <FoldToggle
-      agents={matchingQuiet}
-      expanded={quietShown}
-      fold="quiet"
-      key="fold:quiet"
-      label="No Dispatch activity"
-      onToggle={() => toggleFold("quiet")}
-      selected={selected}
-    />,
-    ...quiet.map(rowIn("quiet", quietShown)),
-    <FoldToggle
-      agents={matchingInactive}
-      expanded={inactiveShown}
-      fold="inactive"
-      key="fold:inactive"
-      label="Inactive"
-      onToggle={() => toggleFold("inactive")}
-      selected={selected}
-    />,
-    ...inactive.map(rowIn("inactive", inactiveShown)),
-  ];
+  // A row the reader has opened that the list no longer holds - its group is closed, or the
+  // filters exclude it - stays mounted and hidden among the drawn items, in the same parent and
+  // under the same key, so a fold and a filter discard no draft, as a scroll discards none.
+  const keptAside = AGENT_GROUPS.flatMap((group) =>
+    grouped[group]
+      .filter((agent) => kept.has(agent.session_id) && !(shown[group] && matches(agent, group)))
+      .map((agent) => (
+        <div className="absolute inset-x-0" key={agent.session_id}>
+          {agentRow(agent, group, true)}
+        </div>
+      ))
+  );
+  // A heading or a row, which the windowed box draws at the place it measured for it.
+  const renderItem = (item: ListItem) =>
+    item.kind === "group" ? (
+      <GroupHeading
+        agents={matchingIn[item.group]}
+        expanded={shown[item.group]}
+        group={item.group}
+        onToggle={() => toggleGroup(item.group)}
+        selected={selected}
+      />
+    ) : (
+      agentRow(item.agent, item.group, false)
+    );
 
   if (isPending) return <LoadingSkeleton label="Loading agents" />;
   // A refresh that fails keeps the list it has: unmounting every row would throw away what each
@@ -1382,7 +1679,15 @@ export function AgentsPage(): ReactNode {
   }
 
   return (
-    <section aria-label="Agents" ref={listRef}>
+    <section
+      aria-label="Agents"
+      onFocus={(event) =>
+        setFocusedRow(
+          closestMatching(event.target, AGENT_ROW_SELECTOR)?.dataset.agentRow ?? focusedRow
+        )
+      }
+      ref={listRef}
+    >
       <header className={`mb-5 border-b pb-4 ${borderDefault}`}>
         <h1 className={`text-[22px] font-semibold tracking-tight ${textPrimaryOnCanvas}`}>
           Agents
@@ -1431,7 +1736,7 @@ export function AgentsPage(): ReactNode {
               message="No agent matches these filters."
             />
           ) : null}
-          <div className="flex flex-col gap-3">{rows}</div>
+          <WindowedList items={items} kept={kept} keptAside={keptAside} renderItem={renderItem} />
         </>
       )}
       {/* The sends sit outside the composer and outside the list, so a send's row outlives both:

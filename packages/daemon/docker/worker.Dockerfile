@@ -550,8 +550,8 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # script, a subagent's shell) need /usr/bin/jq. openssh-client is the one apt route to ssh-keygen and
 # also brings ssh, scp, sftp, ssh-agent and ssh-add, which reach no host that curl, wget, git, python3
 # and socat on this line could not already reach (git's ssh transport is what they make runnable; a
-# pod's git speaks https with its role's App token through gh): what a pod may reach is Legion's
-# ruling, the capability table's withheld `network` row
+# pod's git speaks https with its role's App token through gh): what a pod may reach is set by the
+# cited issue, the capability table's withheld `network` row
 # (packages/daemon/internal/capabilities/capabilities.go, dispatch://LEGION-5: the pod is the
 # boundary, except a workload a role starts where its deployment's cluster admits it and the
 # Service fronting it, docs/kubernetes.md "Running a workload in the cluster from a role"), a

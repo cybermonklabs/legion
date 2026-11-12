@@ -7,6 +7,9 @@ import { useEventFeed } from "./api/event-feed";
 import { useLiveSocketPill } from "./api/live-socket";
 import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
 import type { AuthenticatedUser } from "./api/types";
+import { useLiveViews } from "./features/agent-view/live-views";
+import { LiveViewRoute, MountedLiveViews } from "./features/agent-view/MountedLiveViews";
+import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/agents/pins";
 import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
@@ -29,6 +32,7 @@ import {
   ANSWERS_PATH,
   buildInboxPath,
   buildProjectPath,
+  liveViewSessionOf,
   parseIssuePath,
   parseProjectPath,
   routeFillsViewport,
@@ -63,7 +67,7 @@ import {
 } from "./features/shell/useDialog";
 import { useDocumentTitle } from "./features/shell/useDocumentTitle";
 import { useKeyboardFit } from "./features/shell/useKeyboardFit";
-import { useUserPreference } from "./features/shell/userPreference";
+import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userPreference";
 import { Sidebar } from "./features/sidebar/Sidebar";
 import "./features/writes/kinds";
 import { KeptWrites } from "./features/writes/KeptWrites";
@@ -127,12 +131,6 @@ const MachinesPage = lazy(() =>
 
 const MachinePage = lazy(() =>
   import("./features/machines/MachinePage").then((module) => ({ default: module.MachinePage }))
-);
-
-const AgentConversationPage = lazy(() =>
-  import("./features/agent-view/AgentConversationPage").then((module) => ({
-    default: module.AgentConversationPage,
-  }))
 );
 
 const AgentArtifactPage = lazy(() =>
@@ -488,6 +486,46 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const readingPaneShown = useMediaQuery(READING_PANE_QUERY);
   const fillsViewport =
     routeFillsViewport(location.pathname) || (routeIsInbox(location.pathname) && readingPaneShown);
+  // The session whose live view the address names, or `null` on every other page. The shell
+  // mounts that view and the one the person left (`MountedLiveViews`, below `<Routes>`), so it
+  // is the one thing about the live view the router still decides.
+  const frontLiveView = liveViewSessionOf(location.pathname) ?? null;
+  // The person's pins, which the shell owns rather than the rail: the registry keeps a sleeping
+  // pinned view and discards a sleeping unpinned one (`live-views.ts`, D8), and the rail is not
+  // on the page while the sidebar is collapsed or its sheet is closed.
+  const liveViews = useLiveViews();
+  const pinnedAgents = usePinnedAgents();
+  useEffect(() => {
+    liveViews.setPinned(pinnedAgents);
+  }, [liveViews, pinnedAgents]);
+  // The pins were this browser's until INFRA-812 made them the person's. At the first load
+  // after the change each id the old key holds is written as a pin, so this runs once per
+  // browser and Dispatch ends up holding the union of what each of the person's browsers had
+  // kept.
+  //
+  // One write at a time, in the order the key kept them, because Dispatch stamps each pin as it
+  // arrives and `pinned_at` is the order the rail draws; and the key is removed only once every
+  // one of them has landed, since a write Dispatch refuses is the reader's to retry or discard
+  // and a key removed before that would be the person's pins gone. A refusal stops the run and
+  // leaves the key whole, so the next load writes the lot again, in the same order. The key the
+  // run began under is held here rather than read back from storage, because the key outlives
+  // the first write now: an effect that runs again - React runs it twice under StrictMode -
+  // would otherwise write every id a second time.
+  const writePin = useAgentPinWrite();
+  const migrated = useRef<string | null>(null);
+  useEffect(() => {
+    const key = legacyPinnedAgentsKey(user.login);
+    if (migrated.current === key) return;
+    const kept = window.localStorage.getItem(key);
+    if (kept === null) return;
+    migrated.current = key;
+    void (async () => {
+      for (const sessionId of legacyPinnedIds(kept)) {
+        if (!(await writePin(sessionId, true))) return;
+      }
+      window.localStorage.removeItem(key);
+    })();
+  }, [user.login, writePin]);
   const connection = useLiveSocketPill();
   // One number for the Inbox, composed in one place (`useInboxCount.ts`): the work
   // waiting on the reader plus the threads they have not read.
@@ -888,7 +926,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                           <Route element={<AgentsPage />} path="/agents" />
                           <Route element={<BroadcastsPage />} path="/agents/broadcasts" />
                           <Route element={<BroadcastPage />} path="/agents/broadcasts/:id" />
-                          <Route element={<AgentConversationPage />} path={AGENT_LIVE_PATH} />
+                          <Route element={<LiveViewRoute />} path={AGENT_LIVE_PATH} />
                           <Route element={<AgentArtifactPage />} path={AGENT_ARTIFACT_PATH} />
                           <Route element={<MachinesPage />} path="/machines" />
                           <Route element={<MachinePage />} path="/machines/:machine" />
@@ -907,6 +945,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                         </Routes>
                       </Suspense>
                     </ErrorBoundary>
+                    {/* The live views the person has open, inside `<main>` so each takes the
+                        layout and the iOS keyboard fit the live route already has, and beside
+                        the routes rather than under them: a view outlives the address that
+                        opened it, so neither leaving the live route, nor another page's throw,
+                        nor a lazy page suspending may unmount it. The live route's own element
+                        renders nothing. */}
+                    <MountedLiveViews front={frontLiveView} />
                   </main>
                   <ErrorBoundary region="the margin" resetKey={location.pathname}>
                     <MarginColumn

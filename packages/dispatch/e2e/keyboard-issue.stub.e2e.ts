@@ -7,7 +7,7 @@
  *  and the ones that read the issue back to prove no write was made, stayed in
  *  `keyboard-issue.e2e.ts`.
  */
-import { expect } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 
 import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
 import { createIssue, createProject, patchIssue } from "./api";
@@ -80,6 +80,18 @@ const boardTest = stubbed(async () => {
   return { project: "CORE" };
 });
 
+/** Lets an opened issue page make its own reads before the row goes back: the recording answers
+ *  the page with them (its spec and read mark, coverage, decisions, subscribers), and going back
+ *  first leaves whichever had not started out of a re-recording, so timing would choose what the
+ *  recording holds. The heading says the page has mounted and its reads have begun; network idle
+ *  says they, and the read mark they lead to, have finished. */
+async function letTheIssuePageLoad(page: Page, title: string): Promise<void> {
+  await expect(
+    page.getByTestId("issue-header").getByRole("heading", { level: 1, name: title })
+  ).toBeVisible();
+  await page.waitForLoadState("networkidle");
+}
+
 listTest(
   "the project List view roves with j/k and opens the focused row with Enter and o @pr",
   async ({ page, scene }, testInfo) => {
@@ -103,6 +115,7 @@ listTest(
     });
     await page.keyboard.press("Enter");
     await expect(page).toHaveURL(new RegExp(`/issues/${scene.alpha}$`));
+    await letTheIssuePageLoad(page, "Alpha");
 
     // o opens the row the reader is on, not the first one.
     await page.goBack();
@@ -113,6 +126,7 @@ listTest(
     await expect(rows.nth(1)).toBeFocused();
     await page.keyboard.press("o");
     await expect(page).toHaveURL(new RegExp(`/issues/${scene.bravo}$`));
+    await letTheIssuePageLoad(page, "Bravo");
 
     await page.goBack();
     await expect(rows).toHaveText([/Alpha/, /Bravo/, /Charlie/]);
