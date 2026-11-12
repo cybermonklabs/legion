@@ -595,14 +595,75 @@ legion state --config legion.yaml --json | jq '.wakesWaiting'
 ```
 
 `legion state` prints the same as a `wakes waiting:` line, and prints no such line when nothing
-waits. Each entry names the `claim`, its `issue` and `role`, the `kind` of wake (`launch`, a role
-process about to start; `plugin-task`, the update task a stale-plugin round queues to a session
-that already runs; `catch-up`, the notice a start writes to an architect that is already running)
-and `dueAt`, the moment the pacing gave it, which is when it runs. An empty array says the wave has
-gone out; the last `dueAt` in it says when the last of the wave goes. A claim on that list needs
-nothing from you: its wake is reserved and it runs at the moment named. Your own requests are what
+waits.
+Each entry names the `claim`, its `issue` and `role`, the `kind` of wake (`launch`, a role
+process about to start; `plugin-refresh`, the relaunch of a session whose plugin speaks an
+earlier daemon contract, which the daemon replaces at that one wake and asks nothing of first;
+`catch-up`, the notice a start writes to an architect that is already running)
+and `dueAt`, the moment the pacing gave it, which is when it runs.
+An empty array says the wave has
+gone out; the last `dueAt` in it says when the last of the wave goes.
+A claim on that list needs
+nothing from you: its wake is reserved and it runs at the moment named.
+Your own requests are what
 drop it — a resume, a retry or a task you send that claim is run at once, taking the reserved wake
 back, so nothing you ask for waits for a turn.
+
+After a boot onto a new plugin contract, the wakes alone understate the wave: the stale-plugin
+lane holds at most one minute of the pacing at a time, so what it has reserved is a minute's
+worth and what it has left is `.claimsToRefresh` of the same body.
+
+```sh
+legion state --config legion.yaml --json | jq '.claimsToRefresh'
+```
+
+That is how many sessions are still on an earlier plugin and waiting for the lane to relaunch
+them, one paced wake each.
+It falls to 0 as the wave drains.
+A number that stands still over several minutes while no `plugin-refresh` wake waits is most often
+a stale claim whose relaunch waits for a turn to end: the lane cuts no turn, so such a claim keeps
+its place in the count and takes its one wake at the turn's end.
+Read the claim the count still names (`legion state --json | jq '.issues'`): a claim in `working`
+is that wait, and nothing is owed of you.
+Only a count that stands still while every claim it names is idle is the reading worth acting on:
+the daemon can relaunch no session onto a plugin at all, and its log says so once per claim at boot
+(`this daemon knows no plugin versions to relaunch it onto`), which under Kubernetes means
+`runtime.kubernetes.plugins` names no plugin pair.
+
+That reading has a second cause, and the daemon keeps no record of it.
+The lane's relaunch of a claim is refused for as long as the launch path refuses it — a tree
+lifecycle cleanup already reserved for the claim's tree, an epoch the claim has moved past, or a
+store that did not answer — and the sweep raises the relaunch again at each tick that has a credit
+of the refresh gate free for it, until the refusal clears.
+The claim keeps its place in the count through all of it, and it is handed no task either: a claim
+whose `legion` calls this daemon refuses is given its task only once the process its relaunch
+starts registers on this daemon's contract and reports ready, so the issue's phase waits for the
+whole of the refusal.
+
+Nothing the daemon keeps says that of one claim: the state carries no per-claim record of a
+refresh that is not finishing, and the `update-stalled` notice the project's controller gets is of
+a pod update round, never of a refresh.
+What is left is the count and three log lines.
+`claimsToRefresh` is the count for the class: it stands at what the lane has left to do, is 0 when
+it has nothing left, and names no claim.
+The lines name a claim, and each says less than the whole:
+
+- **`supervise: the process speaks another plugin contract; relaunching it onto the current
+  plugin`** at Warn, with `claim=`, is written once for each relaunch the lane starts, so a claim
+  whose relaunch is refused has no such line at all.
+
+- **`api: refused a call from a process on another plugin contract`** at Warn, with `claim=` and
+  `route=`, is what the stale process's own `legion` calls are answered with, so a process that is
+  idle writes none, and the line says the claim is stale rather than that it is stuck.
+
+- **`supervise: an event failed`** at Error, with `claim=`, `event=supervise.StalePlugin` and the
+  refusal under `error=`, is what each refused attempt leaves behind.
+  It is the nearest thing to a per-claim signal: it is written once per attempt rather than once
+  per claim, and only while something is refusing the relaunch.
+
+So read the two together: a `claimsToRefresh` that does not fall while every claim it names is
+idle, and, in the log, either the boot's one line per claim for the degraded daemon above or
+`supervise: an event failed` naming the claim whose relaunch keeps being refused.
 
 A restart re-adopts every process still running, but a claim with no process runs again only when
 something starts it. A worker is started by the workflow when its phase begins, and a tree's
@@ -1072,9 +1133,9 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   out of reach, say), or the message in hand does not finish. Search the daemon's log for
   `retryable intake processing failure` and the other warnings naming a `subject` of that
   consumer, whose `error` says what fails. A handler that does not finish writes none of those
-  while it holds: intake reports its message in progress, and the stall is all that shows until
-  the handler passes the intake handler limit and the daemon writes `an intake handler outran
-  its limit and was cut`, so search for that line too
+  lines while it holds ([a handling that outlives its window](#a-handling-that-outlives-its-window)).
+  The stall is all that shows until the handler passes the intake handler limit and the daemon
+  writes `an intake handler outran its limit and was cut`, so search for that line too
   ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)), whose entry
   says the limit this deployment runs with and where the daemon prints it. A consumer that
   stops is not a stall: it stops the daemon (`workflow intake stopped: …`).
@@ -1127,8 +1188,11 @@ notice comes once per handoff commit, from whichever pass finds it first.
 - **`intake: a durable consumer is behind its stream; every event it has not reached yet waits for
   it`** (a warning with `consumer`, `behindSeconds`, `pending` and `delivered`). The daemon is
   handling events JetStream stored more than five minutes before; it says so at most once a minute
-  per consumer. `pending` near zero with `delivered` above one is one event retried after
-  failures, not a backlog: a retried event keeps the time it was first stored.
+  per consumer. `pending` near zero with `delivered` above one is most often one event retried
+  after failures, not a backlog: a retried event keeps the time it was first stored. It can also
+  be a second delivery of one event, which raises `delivered` with no failure of its own ([a
+  handling that outlives its window](#a-handling-that-outlives-its-window)); the line `an intake
+  fact was delivered again and dropped as already applied` is what names one.
   Every event that consumer has not reached waits: on the GitHub consumer a pull request's opened
   or push, on the Dispatch consumer a status change. `legion state`'s `consumer` lines
   (`consumers` in `--json`) show how many wait and how old the oldest is now, and whether the
@@ -1142,12 +1206,13 @@ notice comes once per handoff commit, from whichever pass finds it first.
   handling's context and naked the message: nothing of that event was applied. Intake reports
   the message in progress only until the limit, and the handler returns once the step that is
   running honours the cancelled context, which every step does at once today; only then is
-  this warning written and the message naked. This consumer asks for one message at a time and
-  has none outstanding while the handler runs, so the event is sent again, and its `delivered`
-  count goes up by one, no sooner than that return: one nak delay (a second) after the nak, or
-  at the consumer's next pull where the step held the handler past about one acknowledgement
-  window after the limit, whichever the server takes first. A step that ignored the cancelled
-  context would hold the message, and this warning, for the whole of its own run. Between this
+  this warning written and the message naked. The event is sent again, and its `delivered` count
+  goes up by one, no sooner than that return: one nak delay (a second) after the nak, or at the
+  consumer's next pull where the step held the handler past about one acknowledgement window
+  after the limit ([a handling that outlives its window](#a-handling-that-outlives-its-window)).
+  The reports stop at the limit, so a handler cut there has had no report for whatever it ran
+  past the limit. A step that ignored the cancelled context would hold the message, and this
+  warning, for the whole of its own run. Between this
   warning and the nak the daemon writes one more line under the same `event_id`, naming the
   step that was running, with the error `context deadline exceeded`; this warning is the one
   that names the cut. Every step is a `pgx` call or a Dispatch or GitHub read that gives up on
@@ -1181,13 +1246,67 @@ notice comes once per handoff commit, from whichever pass finds it first.
   a rollout. The limit is one acknowledgement window for each of a review's three bounded reads
   and one more for the fact's transaction and its wait on the apply lock, never below ten
   minutes, so `worker_rpc_timeout_seconds` is the key that changes it.
-- **`an intake fact outlived its acknowledgement window and was held in progress while it ran`**
+- <a id="a-handling-that-outlives-its-window"></a>**`an intake fact outlived its acknowledgement window and was held in progress while it ran`**
   (an info line with `consumer`, `event_id`, `delivered` and `took`). The handling took longer
-  than the consumer's acknowledgement window (`worker_rpc_timeout_seconds`), and intake held the
-  delivery for `took` rather than let JetStream deliver the event a second time. The fact was
-  applied: this is a fact that is slow, not one that failed, and this is the only line that says
-  how long a fact took. One of them asks nothing of an operator; a `took` creeping towards the
-  handler limit, or many at once, names where to look for the slow read behind them.
+  than the consumer's acknowledgement window (`worker_rpc_timeout_seconds`), and intake reported
+  the delivery in progress for `took`. The fact was applied: this is a fact that is slow, not one
+  that failed, and this is the only line that says how long a fact took. One of them asks nothing
+  of an operator; a `took` creeping towards the handler limit, or many at once, names where to
+  look for the slow read behind them.
+
+  The three entries above link here rather than say this again. Four things decide whether a
+  second delivery of one event follows.
+
+  - Nothing reaches this consumer while a handler runs. It asks for one message at a time and has
+    no pull outstanding until that handler returns, except where the client reconnects and asks
+    again.
+  - The progress report keeps the message from falling due at all, while each report reaches the
+    server before the window lapses: each report starts the window again.
+  - A report that reaches the server late lets the message fall due while the handler still runs.
+    An acknowledgement that is late, which goes out only after the handler returns, lets it fall
+    due after that return.
+  - An event that fell due is delivered again, and that delivery races the acknowledgement or nak
+    the handler's return sends. Either side can win. Each measurement was made under one
+    condition: with no progress report at all, the second delivery reached the consumer in 12 runs
+    of 20; where a handler's step ran on after the cancelled context and held the message past the
+    window, the second delivery won all 15 runs on an idle machine and lost to the nak only under
+    load. Neither is the rate where the progress report reaches the server in time, nor where a
+    cut handler stops on its cancelled context while its reports and its nak all reach the server
+    inside the window: the event then never falls due, and the nak alone decides when it comes
+    back. Where the nak is worked first, it takes the event out of the redelivery queue and resets
+    its timer, so the event comes one nak delay later instead.
+
+  What says a second delivery happened is a second line under the same `stream_seq`, `an intake
+  fact was delivered again and dropped as already applied` with `delivered` one higher (the entry
+  below). This line's own `delivered` is that delivery's count: the handling that outlived the
+  window writes the line before its own acknowledgement.
+- **`an intake fact was delivered again and dropped as already applied`** (an info line with
+  `consumer`, `source`, `event_id`, `subject`, `stream_seq`, `delivery_seq` and `delivered`).
+  Intake was handed a fact it had already applied, so it ran no handler, wrote no record and
+  acknowledged the message. `delivered` and `subject` say where the second reading of the fact
+  came from, and there are five. A `delivered` above 1 is a JetStream redelivery of the same
+  message. A `delivered` of 1 is a second reading of one fact, in one of four ways: the
+  listener publishes a review or comment that mentions the trigger on each of its mention
+  topics beside its own, one fact under one dedupe key; a durable consumer created again at the
+  last message it applied is delivered that message once more (the `intake: a missing durable
+  consumer is created at the last message it applied` entry below); the listener publishes a
+  GitHub delivery again, which the fact's dedupe key drops, where the stream's own duplicate
+  window did not refuse it first, so either the redelivery was asked for more than 72 hours
+  after the delivery it repeats or the envelope carried no message id; and where
+  `repository_renames` has the daemon hear one repository under two names, the copy published
+  under the other name reaches the same durable, with the same fact and a subject of its own.
+  A `delivered` of 0 is no reading of a drop at all: the daemon's read of the message's
+  metadata failed, so the line carries five fields, with an empty `consumer` and no sequences.
+  The line asks nothing of an operator on its own. Two numbers are read from these lines. Their
+  total is this consumer's share of what `ApplyFact`'s order costs: every copy dropped here
+  took the fact lock before the deduplication found it applied, whichever reading it is, and
+  `ApplyFact`'s other callers drop duplicates the same way and write no line, so the total is
+  the intake consumer's part of what decides whether `processed_events` should be read before
+  the lock. The lines whose `delivered` is above 1 are the rate at which JetStream delivers again
+  a fact this consumer had already applied. The daemon writes a line only for a copy it finds
+  already applied, so that rate counts no redelivery of an event that carries no fact, and none of
+  an event not yet applied. A recreated consumer's replay reads 1 and stands outside the rate,
+  although JetStream did hand the fact over twice.
 - **`webhook App missing on <repo>: <reason>`** in `legion state` (`repositories.withoutWebhookApp`
   in `--json`). Dispatch's GitHub App, the Envoy App whose webhook carries GitHub's events, is not
   known to be installed on a repository the daemon serves. With `Dispatch's GitHub App is not

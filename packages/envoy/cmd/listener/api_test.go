@@ -3101,7 +3101,7 @@ func TestPublishHandler_RefusesAChosenKeyOnADispatchEnvelope(t *testing.T) {
 
 // The mutual-exclusion rule is publish's alone: send ignores dedupe_key as it
 // ignores any field it does not read, so a body carrying both keys is still a
-// send keyed by its idempotency_key (LEGION-108, architect ruling).
+// send keyed by its idempotency_key (LEGION-108, architect decision).
 func TestSendHandler_IgnoresDedupeKeyBesideIdempotencyKey(t *testing.T) {
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
