@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -227,14 +226,15 @@ func linkReason(waitsOn []string) string {
 // `held`, because `held` is a phase of the workflow, whose issues hold a slot and stand in
 // `admission.active`.
 //
-// Two fills, which are the two this record can answer: an issue waiting for its merge, which
-// waits for that and nothing else, and every other, which this build records no cause for. The
-// approved spec writes a third, for an issue whose recorded cause the record carries, and it
-// follows the field that records one: dispatch://INFRA-2964 writes it, and has not merged.
-func unlistedReason(issue record.Issue) string {
-	if issue.Phase == phase.AwaitingMerge {
-		return "It waits for its merge, and for nothing else."
-	}
+// One fill, which is the one this record can answer. The other this build had, an issue waiting
+// for its merge, went with the phase it read: on this contract the merger merges the head it
+// reads and the daemon closes the issue when it reads that merge, so no issue stands in
+// `awaiting_merge` and a root whose merge the rest of its tree still waits on stands in
+// `merging`, holding its slot and listed among the issues at work
+// (dispatch://INFRA-714 R2). The approved spec writes another, for an issue whose recorded cause
+// the record carries, and it follows the field that records one: dispatch://INFRA-2964 writes
+// it, and has not merged.
+func unlistedReason(record.Issue) string {
 	return "The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, " +
 		"so no slot has been offered to it. This build records no cause."
 }

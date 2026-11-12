@@ -279,10 +279,11 @@ func TestRecordingAnIssueOnAnUnmappedRepositoryHearsItInTheSamePass(t *testing.T
 	}
 }
 
-// The pass that repairs a lost pull_request.opened event lists the open pull requests of every
-// repository the daemon works, which is the mapping's and those of its live records, so a tree on
-// a repository no mapping names is repaired like any other (R5).
-func TestReadListingsReadsARepositoryOnlyARecordNames(t *testing.T) {
+// The read that repairs a lost pull_request.opened event looks the pull request up on the issue's
+// own repository, whatever the mapping names, so a tree on a repository no mapping names is
+// repaired like any other (R5). The read mints on that repository's owner account, which is what
+// lets it reach a repository the mapping never named.
+func TestThePerIssueReadLooksUpARepositoryOnlyARecordNames(t *testing.T) {
 	ctx := context.Background()
 	var listed []string
 	var mu atomic.Pointer[[]string]
@@ -302,18 +303,12 @@ func TestReadListingsReadsARepositoryOnlyARecordNames(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// The cache set is read again where the daemon reads the served set; a record written by a
-	// test's own hand is seen by that read, as the boot's is.
-	if _, err := w.heardAtBoot(ctx); err != nil {
+
+	if err := w.readIssuePullRequest(ctx, "LEGION-951"); err != nil {
 		t.Fatal(err)
 	}
-
-	w.readListings(ctx)
 	asked := *mu.Load()
-	slices.Sort(asked)
-	want := []string{"acme/widgets", unmappedNamed, "zeta/tools"}
-	slices.Sort(want)
-	if !slices.Equal(asked, want) {
-		t.Fatalf("the pass listed %v, want %v: the repositories the mapping names and those its records name", asked, want)
+	if want := []string{unmappedNamed}; !slices.Equal(asked, want) {
+		t.Fatalf("the read asked GitHub for %v, want %v: the repository the issue's own record names", asked, want)
 	}
 }

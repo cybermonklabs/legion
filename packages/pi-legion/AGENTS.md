@@ -94,7 +94,10 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 85's `why` and the
+number is the one `DaemonAPIVersion` declares, last bumped by contract 86 (dispatch://INFRA-714:
+the phase vocabulary loses `awaiting_merge`, a pull request carries `mergeState` in place of
+`checksVerdict`, a phase carries `pass`, every claim view carries `lastTurnStart` and
+`lastTurnEnd`, and `handoff_complete` takes no `ready`), after contract 85's `why` and the
 `waitingLine` fields beside it
 (INFRA-2554: each member of the line carries `part`, `kind`, `partPlace`, `partLength`,
 `holdsSlot`, `since` for a member whose work came back, `rootRank`, `ownRank` and `rootKey`
@@ -139,7 +142,8 @@ is in, and that call's argument length and fingerprint, never their text — and
 every pod's worker container is told `LEGION_STALL_CALL_BOUND_MS`, `LEGION_STALL_CALL_GRACE_MS`
 and `LEGION_STALL_STEP_MS` where the daemon's own environment holds them; a strict reader before
 57 refuses a state carrying `step`, so a caller from a pod below 57 is served the state without
-it), after contract 56's retired stranded state
+it),
+after contract 56's retired stranded state
 (a claim of `strandedClaims` on `GET /legion/v1/state` may be `retired`, an entry a caller from a
 pod below 56 is served without), after contract 55's design-gate steps
 (each root issue of `GET /legion/v1/state` carries `gatedSteps`, one entry for each step the
@@ -194,7 +198,7 @@ command (`legion controller start` ends the operator's Oh My Pi command line wit
 command, never from `session_start`; "The controller's start turn" below), after contract 40's
 `awaiting_person` phase and strict `waitingOn` issue view on `GET /legion/v1/state` (a root whose
 architect waits on a person, and what it waits on; such a root holds its admission slot, as every
-issue does from the moment the daemon starts it until it is done, leaves the workflow or waits only for its merge;
+issue does from the moment the daemon starts it until it is done or leaves the workflow;
 a 39 plugin rejects both), after contract 39's one-container issue pod (INFRA-208: a sandbox locator
 of an issue pod's role names container `roles`, and `settings` on `GET /legion/v1/state` gives
 `runtime.kubernetes.resources` as `{issue, controller}`), after contract 38's blocked issues on
@@ -585,9 +589,9 @@ record of the phase's word, read from the pane's Dispatch (the envoy.json its se
 refused — posting nothing — when the phase has none (write it, then complete again) or Dispatch
 does not answer (complete again once it does); the implementer's implementing round also reports
 the commit `legion/<issue>@origin` names, refused while `@-` is not on that branch (push it, then
-complete again); retro, the merger's READY and every other phase report the commit the workspace
+complete again); retro, the merger and every other phase report the commit the workspace
 stands on, `@-`. It then posts
-`POST /legion/v1/handoff/complete` (`summary`, `verdict`, `ready`, and `handoffId`,
+`POST /legion/v1/handoff/complete` (`summary`, `verdict`, and `handoffId`,
 `handoffVersion`, `commit` and `wakeAt` where they apply). A
 report on a look of a closed issue's production check is the one call that finds neither: the
 operation reads the daemon's state first, and a call on an issue in `done` whose
@@ -612,13 +616,9 @@ role named for its previous phase (`HANDOFF_NOT_NEW`); for the
 implementer's completion of implementing it reads the open pull request on `legion/<issue>` as the
 implement App, records one the webhook has not, and refuses `HANDOFF_NO_PULL_REQUEST` when there
 is none and the record holds none merged (naming a recorded pull request closed without merging,
-which is the architect's to decide), applying the completion unread when GitHub cannot be read;
-and for the merger's `ready: true` it reads the pull request's
-head on GitHub and refuses a packet the workflow must not take on, each refusal named in the
-merger's role prompt
-(`packages/daemon/internal/prompts/go/merger.md`); a refusal changed nothing, and the answer's
-`note` is the already-merged sentence, for a pull request merged before READY, or the by-hand note
-(`MANUAL_MERGE_REQUIRED:`) for a pull request a person merges. The
+which is the architect's to decide), applying the completion unread when GitHub cannot be read; a
+refusal changed nothing, and an accepted completion is answered with an empty object, since the
+merger merges and the daemon submits no merge. The
 operation mints its grant in-process and posts it with the request; nothing is written to the
 pane. A predecessor's handoff is read with `dispatch handoff-read`, at the version the task's
 `Handoff:` line names (`--version <n>`), except the plan.
@@ -691,10 +691,27 @@ head of the
 worker's last message under one idempotency key, minted at the first attempt and kept until the
 count resets, so a listener that holds no architect session yet is tried again by the next
 reminder. A reminder is dropped when the daemon's record says this role no longer works this phase
-(the `read_record` state, bounded at 5 s and failing open, since an unreachable daemon is exactly
-when a stalled worker must still be nudged). A worker the daemon relaunched into an open phase is
+or that the daemon has failed this role's claim (the `read_record` state, bounded at 5 s and
+failing open otherwise, since an unreachable daemon is exactly when a stalled worker must still be
+nudged). A worker the daemon relaunched into an open phase is
 reminded from a timer `LEGION_STALL_RESUME_MS` after its claim boots, since nothing else would
 wake it.
+
+A turn the provider refused earns no reminder at all, neither the continuation nor a timer's.
+`session_stop` classifies the settling message (`turnEndOf`): a reply Oh My Pi stopped at `error`
+is the provider refusing the turn, worded by the host's `errorMessage`, and it is an input of the
+machine of its own (`refused`) rather than a check on the reminder's answer. Reminding such a
+session only buys another refused turn, which is what left dispatch://INFRA-264's implementer
+reminded for ever. What ends it instead is the daemon: `src/turn-outcome.ts` reports every turn
+this pane's claim ends — clean or refused — to `POST /legion/v1/claims/turn-outcome` from
+`agent_end`, under a sequence this plugin counts itself, monotonic from 1 within the claim's
+launch generation. The daemon keys each outcome by `(generation, sequence)` and derives the
+trailing run of refusals, so a report that arrives late lands in its own place, a repeat writes
+the same cell, and the claim fails once the run reaches `launch_failure_limit`. A report that
+cannot be sent is retried only while the daemon is restarting and otherwise warned about once:
+a turn the daemon never hears of is counted neither way. The reporter runs for an architect's
+claim as well as a phase worker's, and for a `task` subagent, whose instance registers no claim,
+not at all.
 
 Four variables tune it, read from the worker's own environment (`@legion/pi-shared/stall-limits`;
 the daemon passes on whichever its own environment holds, to a pane and to a pod alike):
