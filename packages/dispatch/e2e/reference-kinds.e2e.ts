@@ -1,3 +1,4 @@
+import { agentFilter } from "./agents";
 import { baseUrl, createProjectDocument, userHeaders } from "./api";
 import { recordClipboard } from "./clipboard";
 import { commentField, refPicker } from "./ref-picker";
@@ -339,7 +340,9 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
     const again = await expandedComment(page, stored.id);
     await again.locator(`a[data-dispatch-ref="${ROLE_REFERENCE}"]`).click();
     await expect(page).toHaveURL(`/agents?role=${ROLE_TOKEN}`);
-    await expect(page.getByRole("combobox", { name: "Role" })).toHaveValue(ROLE_TOKEN);
+    // The filter is a multi-select (R7), so what says the role is picked is its trigger, which
+    // names how many options stand ticked (`agentFilter`).
+    await expect(agentFilter(page, "role")).toContainText("1");
 
     await page.goto(`/issues/${world.host.key}/conversation`);
     const third = await expandedComment(page, stored.id);
