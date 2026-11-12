@@ -45,7 +45,7 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 
 ## Issue status is yours to move
 
-Outside Legion, claim your issue (`dispatch claim`) and move it and your children: `in_progress` at implementation, `testing` on a production-like surface, `needs_review` while its PR waits, `done` with `--reason` once driven in production. Never write or route the status of a `legion`-labelled issue or one under it, and claim one only as a role of its tree.
+Outside Legion, claim your issue (`dispatch claim`) and move it and your children: `in_progress` at implementation, `testing` on a production-like surface, `needs_review` while its PR waits, `done` with `--reason` once driven in production. Never write or route the status of a `legion`-labelled issue or one under it, and claim one only as a role of its tree: an outside claim can take the tree out of the workflow. A status write is set back or stands.
 
 A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to release) brings a person's answers, comments and messages; `envoy_subscribe notifications.dispatch.issue.<KEY>.>` adds agents' activity, no quiet event.
 

@@ -93,21 +93,20 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // an operator's own proxy skill into `dispatch-writing-specs` and the research-before-you-ask
 // test into `dispatch-first`, which took those rules out of two other skills.
 //
-// It was raised to 2,307 on 2026-11-12, when dispatch://INFRA-2971 put one rule into
+// It was raised to 2,326 on 2026-11-12, when dispatch://INFRA-2971 put one rule into
 // skills/dispatch/SKILL.md for when an agent may move an issue to `backlog`, `icebox` or
 // `triage`: the two sentences it deleted sent a waiting issue and every issue past the third to
 // `backlog`, and the rule that replaces them holds such a move to one a person asked for, or to
 // work that is done, folded into another issue or no longer needed, cited in a comment on the
 // issue. The ledger, measured as this test counts words: the three bullets the section deleted
 // were 50 words, and the six that replace them are 200, so the section costs 150. The payments
-// below give 143 back. Each one cuts a reason beside its rule, words that another skill says, a
-// statement that instructs nothing, or the wording of a rule, and none cuts a rule.
+// below give 124 back. Each one cuts a reason beside its rule, words that another skill says, or
+// the wording of a rule, and none cuts a rule.
 //
 // - 8: skills/dispatch/SKILL.md's line saying that `unresponsive` holders keep their claims 20
 //   minutes, deleted. Its rule is `skill://envoy`'s, which every role reads.
 // - 2: "a `legion`-labelled issue or one under it" for "an issue with the `legion` label or under
 //   one", in the same skill's claim sentence.
-// - 11: that sentence's reason, "an outside claim can take the tree out of the workflow".
 // - 6: the same skill's defect bullet, which says "Never work around a hard-to-use command" for
 //   "A command hard to use ... is a defect to report, not work around".
 // - 5: "a document records", in the same skill's ask-block line. dispatch-first's blocker rule
@@ -133,8 +132,6 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 //   "end its document" for "End that document".
 // - 5: the same skill's plan row: "stored as the issue's `plan.md`", which
 //   dispatch-writing-specs' "The plan" says.
-// - 8: skills/dispatch/SKILL.md's status paragraph: "A status write is set back or stands.",
-//   which instructs nothing.
 // - 7: skills/dispatch-writing-specs/SKILL.md's measure bullet: the reason "A premise can go stale
 //   within the hour", and "No unmeasured number goes in a premise" for "no unmeasured number goes
 //   in one".
@@ -142,18 +139,21 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 //   that work already or hold a decision on it.", the reason for its first. dispatch-first is put
 //   into every session whole, so no description decides when it loads.
 //
-// The base total was 2,297, so 2,297 + 150 - 143 = 2,304, the measured total. The bound is 3
-// above it, as 2,300 was above 2,297. The 4 words over 2,300 are a raise and not a cut because,
+// The base total was 2,297, so 2,297 + 150 - 124 = 2,323, the measured total. The bound is 3
+// above it, as 2,300 was above 2,297. The 23 words over 2,300 are a raise and not a cut because,
 // measured on 2026-11-12 line by line, each cut left in the three skills deletes a rule or a fact
 // an agent needs to apply one: `BLOCKED_BY_OUTSIDE_PROJECT` and "board rank" in the stop-work
 // bullets are the words of INFRA-2971's R4, and "`todo` for an issue from the queue" is its
 // decision on R4; "one agent keeps each project's order" is R3's owner of the board, whom the
-// next sentence tells the agent to tell; "Each query word must match" is what makes "remove a
-// word before adding one" work; dispatch-writing-specs' "It replaces superpowers' brainstorming
-// there" is the rule that picks it over that skill; and "A spec is a conversation" states the
-// conversation rule. The new rule cannot live in another skill, because R1 and R4 name
-// skills/dispatch/SKILL.md, which every session with Dispatch reads.
-test("the three Dispatch skills total fewer than 2,307 words", () => {
+// next sentence tells the agent to tell; the claim sentence's "an outside claim can take the tree
+// out of the workflow" and "A status write is set back or stands" are the consequences #2608
+// added, because the bare prohibition was quoted to a person as that person's rule; "Each query
+// word must match" is what makes "remove a word before adding one" work; dispatch-writing-specs'
+// "It replaces superpowers' brainstorming there" is the rule that picks it over that skill; and
+// "A spec is a conversation" states the conversation rule. The new rule cannot live in another
+// skill, because R1 and R4 name skills/dispatch/SKILL.md, which every session with Dispatch
+// reads.
+test("the three Dispatch skills total fewer than 2,326 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
     .map(
@@ -163,7 +163,7 @@ test("the three Dispatch skills total fewer than 2,307 words", () => {
           .filter((token) => token !== "").length
     )
     .reduce((total, count) => total + count, 0);
-  expect(words).toBeLessThan(2_307);
+  expect(words).toBeLessThan(2_326);
 });
 
 test("the staged decisions rule separates material choices from spec details", () => {
