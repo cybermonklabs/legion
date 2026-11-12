@@ -23,6 +23,7 @@ import type {
   LiveClientFrame,
 } from "../../web/src/api/types";
 import type { ProbeCompareLine, ProbeHeld, ProbeLine } from "../delivery-live-probe";
+import { rowLimit, runBounded } from "./bounded-subprocess";
 
 // The probe runs as an agent runs it, a process of its own, against a stand-in for Dispatch that
 // replays the frames Dispatch's own diff writes (packages/contracts/fixtures/live): a
@@ -43,8 +44,6 @@ const view: DeliveryLiveView = {
   query: "repo=acme%2Fwidgets",
   window: { preset: 28 },
 };
-/** Each test starts a Bun process and loads the probe's imports; the box these run on is shared. */
-const PROCESS_TEST_MS = 30_000;
 
 interface Script {
   /** Answers the probe's `count`th subscribe (from 1) on `socket`, for its subscription `sub`. */
@@ -167,6 +166,32 @@ function runProbe(args: readonly string[]): Run {
       return promise;
     },
   };
+}
+
+/** What the probe did, for a row that waits for its exit and nothing else. */
+interface Ended {
+  /** The exit status. */
+  readonly code: number;
+  /** The probe's stdout: one JSON object per line, each read as the line it names. */
+  readonly lines: readonly ProbeLine[];
+  /** The probe's stderr, as the text it printed. */
+  readonly stderr: string;
+}
+
+/** The probe as the four rows that wait for its exit alone start it: a bounded child, read whole
+ *  once it has ended. No row drives this one, so its bound stops nothing a row is still using. */
+async function runProbeToEnd(args: readonly string[]): Promise<Ended> {
+  const { code, stderr, stdout } = await runBounded({
+    argv: [process.execPath, probe, ...args],
+    bound: "short",
+    cwd: dispatchPackage,
+    from: import.meta.url,
+  });
+  const lines = stdout
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => JSON.parse(line) as ProbeLine);
+  return { code, lines, stderr };
 }
 
 function args(
@@ -347,7 +372,11 @@ test(
       },
     ]);
   },
-  PROCESS_TEST_MS
+  {
+    // This row drives the probe: it waits for the error line, sends SIGINT, and then reads the
+    // body file the probe wrote. A bound at the child would kill a process this row still uses.
+    timeout: 30_000,
+  }
 );
 
 test(
@@ -398,7 +427,11 @@ test(
       { equal: true, measures: { differ: [], equal: true }, prs: null, runs: null },
     ]);
   },
-  PROCESS_TEST_MS
+  {
+    // This row drives the probe through --compare: it waits for the delta line and then sends
+    // SIGINT. A bound at the child would stop a process this row is still reading from.
+    timeout: 30_000,
+  }
 );
 
 // Dispatch's rotation (4001) is the one close the probe answers by opening again at once; its
@@ -440,7 +473,11 @@ for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
         })
       ).toEqual(["open null", "snapshot", "delta", `close ${code}`, `open ${change.seq}`]);
     },
-    PROCESS_TEST_MS
+    {
+      // This row drives the probe across a rotation close: it waits for the second subscribe
+      // and then sends SIGINT. A bound at the child would kill a process this row still uses.
+      timeout: 30_000,
+    }
   );
 }
 
@@ -478,19 +515,23 @@ test(
     const reopenedAt = Date.parse(run.lines[4]?.at ?? "");
     expect(reopenedAt - closedAt).toBeLessThan(RECONNECT_SPREAD_MS + 1_000);
   },
-  PROCESS_TEST_MS
+  {
+    // This row drives the probe across a restart close: it waits for the second subscribe,
+    // sends SIGINT, and reads the two open lines. A bound would stop a process it still uses.
+    timeout: 30_000,
+  }
 );
 
 test(
   "a refused upgrade ends the probe with exit 1, naming the refusal",
   async () => {
     const dispatch = probeDispatch({ onSubscribe() {} });
-    const run = runProbe(args(dispatch, "not-the-token"));
-    expect(await run.exited()).toBe(1);
+    const run = await runProbeToEnd(args(dispatch, "not-the-token"));
+    expect(run.code).toBe(1);
     expect(dispatch.upgrades).toEqual(["Bearer not-the-token"]);
-    expect(run.stderr.join("\n")).toContain("Dispatch refused the connection to ws://127.0.0.1:");
+    expect(run.stderr).toContain("Dispatch refused the connection to ws://127.0.0.1:");
   },
-  PROCESS_TEST_MS
+  rowLimit("short")
 );
 
 test(
@@ -508,13 +549,13 @@ test(
         );
       },
     });
-    const run = runProbe(args(dispatch));
-    expect(await run.exited()).toBe(1);
-    expect(run.stderr.join("\n")).toContain(
+    const run = await runProbeToEnd(args(dispatch));
+    expect(run.code).toBe(1);
+    expect(run.stderr).toContain(
       "Dispatch refused the view: INVALID_QUERY: window is wider than 84 days"
     );
   },
-  PROCESS_TEST_MS
+  rowLimit("short")
 );
 
 test(
@@ -524,22 +565,22 @@ test(
     const started = Date.now();
     // 0.01 minutes is 600 ms of the probe's own clock, in another process, which no fake timer
     // here reaches: the test waits for that process to end and checks it ended no sooner.
-    const run = runProbe(args(dispatch, TOKEN, "0.01"));
-    expect(await run.exited()).toBe(0);
+    const run = await runProbeToEnd(args(dispatch, TOKEN, "0.01"));
+    expect(run.code).toBe(0);
     expect(Date.now() - started).toBeGreaterThanOrEqual(600);
     expect(dispatch.received).toEqual([{ sub: "probe", type: "subscribe", view }]);
   },
-  PROCESS_TEST_MS
+  rowLimit("short")
 );
 
 test(
   "a missing flag is a usage error, exit 2",
   async () => {
     const dispatch = probeDispatch({ onSubscribe() {} });
-    const run = runProbe(args(dispatch).slice(0, 4));
-    expect(await run.exited()).toBe(2);
-    expect(run.stderr.join("\n")).toContain("--minutes is required");
+    const run = await runProbeToEnd(args(dispatch).slice(0, 4));
+    expect(run.code).toBe(2);
+    expect(run.stderr).toContain("--minutes is required");
     expect(dispatch.upgrades).toEqual([]);
   },
-  PROCESS_TEST_MS
+  rowLimit("short")
 );
