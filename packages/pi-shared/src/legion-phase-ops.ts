@@ -109,12 +109,19 @@ const operation = <Op extends PhaseOp, Shape extends z.ZodRawShape>(op: Op, shap
 export const PhaseOpArguments = z.discriminatedUnion(
   "op",
   [
-    operation("read_record", { issue: requiredString("read_record", "issue") }),
+    // The issue whose record it answers, the caller's own when the call names none: a worker
+    // reads the issue it works far more often than another, and its own key is one the daemon
+    // already told it (its claim), so making it say that key again only refused first calls.
+    operation("read_record", { issue: z.string().optional() }),
     operation("read_release_records", {
       since: windowStart,
     }),
     operation("handoff_complete", {
       summary: requiredString("handoff_complete", "summary"),
+      // A completion is always of the caller's own issue, which the claim names, so the call
+      // need not name it. One that names it anyway is taken; one that names another issue is
+      // refused in executePhaseOp, before any daemon request.
+      issue: z.string().optional(),
       verdict: z
         .enum(["pass", "pending", "fail"], {
           error: "handoff_complete's verdict is pass, pending or fail",
@@ -185,7 +192,8 @@ export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType>
  * `request_backward_move`, which a host whose tool states them passes as `before` and `after`
  * (`legionToolDescription`). */
 export const PHASE_OP_SENTENCES = {
-  readRecord: "read_record returns the record of `issue` from the daemon's state. ",
+  readRecord:
+    "read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. ",
   readReleaseRecords:
     "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
     "every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no " +
@@ -292,15 +300,16 @@ const ROOT_COMPLETION_REFUSAL =
   "handoff_complete is not available to a root architect session, which runs no phase";
 
 /**
- * Runs one phase op and answers its JSON result: `{ record }` for `read_record`, the window's
- * records and their counts for `read_release_records`, the daemon's answer for
- * `handoff_complete`, `{}` for `request_backward_move`, and `{}` for `ready_for_update`, or
- * `{ note }` when its branch-head lookup failed. A refusal throws before any write, minting
- * nothing and posting nothing: each problem `PhaseOpArguments` finds, joined by `; `, a field
- * the operation does not take named first, then a root architect's completion,
+ * Runs one phase op and answers its JSON result: `{ record }` for `read_record`, of the issue it
+ * names or of the claim's own when it names none, the window's records and their counts for
+ * `read_release_records`, the daemon's answer for `handoff_complete`, `{}` for
+ * `request_backward_move`, and `{}` for `ready_for_update`, or `{ note }` when its branch-head
+ * lookup failed. A refusal throws before any write, minting nothing and posting nothing: each
+ * problem `PhaseOpArguments` finds, joined by `; `, a field the operation does not take named
+ * first, then a root architect's completion,
  * then each problem with the operation's own fields in the order it takes them; then what the
  * record decides (a check report's verdict, its claim's role against the check's own, its
- * `wake_at`, `pending` or `wake_at` on a phase completion, the issue a move
+ * `wake_at`, `pending` or `wake_at` on a phase completion, the issue a completion or a move
  * names), then a refused handoff report (`findHandoffReport`). A daemon refusal throws its code
  * and sentence.
  *
@@ -340,11 +349,22 @@ export async function executePhaseOp(
   }
   const args = parsed.data;
   switch (args.op) {
-    case "read_record":
-      return { record: recordFrom(await daemon.state(), args.issue) };
+    case "read_record": {
+      const issue = args.issue !== undefined && args.issue.trim() !== "" ? args.issue : claim.issue;
+      return { record: recordFrom(await daemon.state(), issue) };
+    }
     case "read_release_records":
       return releaseRecords(runtime, args.since);
-    case "handoff_complete":
+    case "handoff_complete": {
+      // The claim names the one issue a completion reports, so an `issue` in the call is only
+      // checked against it and never sent: one naming another issue is refused here, before the
+      // record is read or a grant minted.
+      const named = args.issue?.trim() ?? "";
+      if (named !== "" && named !== claim.issue) {
+        throw new Error(
+          `handoff_complete reports this session's own issue ${claim.issue}; leave issue out, or name ${claim.issue}, not ${named}`
+        );
+      }
       // Retried whole while the daemon restarts: the record, the handoff report and a fresh grant
       // are read again on each attempt. A repeat never applies twice, but it cannot tell a landed
       // attempt from a refused one (the daemon records both under the completion's key), so its
@@ -354,6 +374,7 @@ export async function executePhaseOp(
         () => completeHandoff(runtime, args),
         runtime.restart
       );
+    }
     case "request_backward_move": {
       // An architect's grant serves its whole tree, so its move names the issue it returns from
       // accepting. A phase worker's grant names its own issue, the only one it may move, so its
