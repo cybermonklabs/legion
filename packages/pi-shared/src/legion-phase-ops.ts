@@ -90,6 +90,19 @@ const nextLook = rfc3339String(
   "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is"
 );
 
+/** The refusal of the fields `refused` that `op` does not take: each named, then once the fields
+ * `op` takes (`takes`), so the agent's next call can be right. The one wording every `legion`
+ * tool refuses an unknown field in, a phase op's and pi-legion's own operations' alike. */
+export const unknownFieldsRefusal = (
+  op: string,
+  refused: readonly string[],
+  takes: readonly string[]
+): string =>
+  [
+    ...refused.map((field) => `${op} does not accept field "${field}"`),
+    `it takes ${takes.length === 0 ? "none" : takes.join(", ")}`,
+  ].join("; ");
+
 /** One operation's arguments: `op` and `shape`, and nothing else. */
 const operation = <Op extends PhaseOp, Shape extends z.ZodRawShape>(op: Op, shape: Shape) =>
   z.strictObject(
@@ -97,7 +110,7 @@ const operation = <Op extends PhaseOp, Shape extends z.ZodRawShape>(op: Op, shap
     {
       error: (issue) =>
         issue.code === "unrecognized_keys"
-          ? issue.keys.map((key) => `${op} does not accept field "${key}"`).join("; ")
+          ? unknownFieldsRefusal(op, issue.keys, Object.keys(shape))
           : undefined,
     }
   );

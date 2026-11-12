@@ -307,9 +307,37 @@ test("a root architect's handoff_complete is refused as unavailable before its o
     await expect(executePhaseOp(root.ops, input)).rejects.toThrow(new Error(refusal));
   }
   await expect(executePhaseOp(root.ops, { op: "handoff_complete", phase: "plan" })).rejects.toThrow(
-    new Error(`handoff_complete does not accept field "phase"; ${refusal}`)
+    new Error(
+      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, ready, wake_at; ${refusal}`
+    )
   );
   expect(root.routes).toEqual([]);
+});
+
+// A refusal that named only the field refused left the agent to guess the call again: an
+// architect sent park_child a `reason` and a worker sent ready_for_update an `issue`, and each was
+// told no more than that the field is refused. A refusal names, once after every field it refuses,
+// the fields the operation takes.
+test("a field an op does not take is refused naming the fields the op takes", async () => {
+  const { ops, routes } = runtime();
+  const refusals = [
+    [
+      { op: "ready_for_update", round: "r1", issue: "LEGION-208" },
+      'ready_for_update does not accept field "issue"; it takes round',
+    ],
+    [
+      { op: "read_record", issue: "LEGION-208", reason: "why" },
+      'read_record does not accept field "reason"; it takes issue',
+    ],
+    [
+      { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
+      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"; it takes summary, issue, verdict, ready, wake_at',
+    ],
+  ] as const;
+  for (const [input, message] of refusals) {
+    await expect(executePhaseOp(ops, input)).rejects.toThrow(new Error(message));
+  }
+  expect(routes).toEqual([]);
 });
 
 /** LEGION-208 closed by its merge, its production check open on its second look, as the daemon's
@@ -1030,7 +1058,7 @@ test("ready_for_update answers for the round its task named, with the branch hea
       runtimeFor(async () => head),
       { op: "ready_for_update", round, head }
     )
-  ).rejects.toThrow(new Error('ready_for_update does not accept field "head"'));
+  ).rejects.toThrow(new Error('ready_for_update does not accept field "head"; it takes round'));
   expect(posted).toHaveLength(2);
 });
 
