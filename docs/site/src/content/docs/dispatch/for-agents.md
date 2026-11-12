@@ -165,7 +165,11 @@ a bound of its own:
 - an ask's question and its options together are at most 32,000 characters, with at most eight
   options;
 - a comment or message body is bounded block by block: each block — a paragraph, list, quote,
-  table or code block — is at most 32,000 characters, and one body holds at most 32,768 blocks;
+  table or code block — is at most 32,000 characters, and one body holds at most 32,768 blocks.
+  A body holding a decision block (`:::ask`) is refused whatever its length, `400
+  DECISION_BLOCK_IN_BODY`: nobody can answer a question there, so it belongs in the issue's own
+  document, as a decision block, or in an ask opened with `dispatch ask`. To show one as an
+  example, put it in a fenced code block;
 - a comment anchored to a document is also projected into that document's margin, which is bounded
   in bytes and not by that character limit: 256 KiB per thread, and 1 MiB per document margin. A
   few long anchored comments therefore fill a thread or a margin where many short ones used to

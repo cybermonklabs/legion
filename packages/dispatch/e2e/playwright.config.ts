@@ -348,7 +348,7 @@ const parallelProjects = [
   // Without a `testMatch` the project would see every spec in this directory, so it names the
   // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess or
   // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone. That ignore is
-  // what keeps the two clock-read files to the `-alone` projects at the end of this list and
+  // what keeps the three clock-read files to the `-alone` projects at the end of this list and
   // out of every project above them (sjawhar/legion#2612), here and in the three other projects
   // that name it.
   {
@@ -473,16 +473,19 @@ const parallelProjects = [
  * That field is also what keeps a file filter cheap, and it replaced something that did not.
  * Each of these projects named every project before it in `dependencies` until
  * dispatch://INFRA-1280: that ordered the run, and it also pulled the whole suite in behind any
- * command naming one of their two files, because a filter narrows a project it selects and
+ * command naming one of their three files, because a filter narrows a project it selects and
  * never a project selected to run before it. With no dependency and no place in the default
  * selection, such a command now selects nothing at all, so the configuration refuses it at the
  * top of this file and prints the command that runs the file.
  *
  * What gives these rows the quiet machine is no longer the order they run in: it is a run one
- * worker wide, and the row itself is what holds the run to that. The row's own guard in
- * `e2e/main-thread-hold.ts` fails a measuring row in a run of more than one worker rather than
- * letting it report a reading of what the other workers were running, so a reading that
- * survives was taken alone whatever project it was taken in.
+ * worker wide. For the rows that measure through `e2e/main-thread-hold.ts` the row itself holds
+ * the run to that: its guard fails a measuring row in a run of more than one worker rather than
+ * letting it report a reading of what the other workers were running, so such a reading survives
+ * only where it was taken alone, whatever project it was taken in. The rows of
+ * `agent-workspace-timing.e2e.ts` read a clock of their own and reach that guard nowhere, so
+ * what holds them to one worker is the command: the refusal at the top of this file prints
+ * `--workers=1`, and `bun run e2e:clock` names it too.
  *
  * Each still caps its own workers at one, which holds a project's own rows to one at a time
  * however wide the run is: the `workers: 1` below is this config's default, which a command
@@ -498,7 +501,10 @@ const parallelProjects = [
  *
  * Each engine keeps the rows it ran. `heavy-bodies.e2e.ts` ran in `chromium`, `firefox` and
  * `webkit`, for the reasons written above those projects, and runs here in all three;
- * `nested-directive.e2e.ts` ran in `chromium` alone and runs in `chromium-alone` alone.
+ * `nested-directive.e2e.ts` ran in `chromium` alone and runs in `chromium-alone` alone, as does
+ * `agent-workspace-timing.e2e.ts`, whose rows time the live view and the Agents page in the one
+ * engine the timed halves are claimed for (INFRA-812's D14; the untimed halves of those checks
+ * stay in `chromium` and `iphone`, in `agent-view-cost.e2e.ts` and `agents-window.e2e.ts`).
  *
  * These three select by `testMatch` alone, where `webkit` and `firefox` select by an engine tag:
  * their axis is the file, not a behaviour. Every row of a clock-read file runs here whatever it

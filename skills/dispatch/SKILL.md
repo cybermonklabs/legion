@@ -10,13 +10,13 @@ Dispatch is a record for the people who decide, never a log of your work.
 - Use the `dispatch` command; the HTTP API only for what no command does. `dispatch <command> --help` gives its rules and an example.
 - Put long text on stdin: `--<field>-file -` with a quoted here-document (`<<'EOF'`); give object and list fields as JSON.
 - Exit 1 is a refusal, 2 a usage error. A refusal lists every problem: fix all, call once.
-- A Dispatch command hard to use, or storing or losing something wrongly, is a defect to report, not work around: open an issue in the owning project's code and tell that project's controller; a Legion role tells its architect (`skill://legion-worker/references/findings.md`).
+- A command hard to use, or storing or losing something wrongly, is a defect to report, not work around: open an issue in the owning project's code and tell its controller; a Legion role tells its architect (`skill://legion-worker/references/findings.md`).
 
 ## Asks and ask blocks
 
 - An ask is a question for a person, never a request to another agent. Ask an agent by envoy_send or a comment on the issue.
 - An ask waits on the person it was handed to, else the issue's assignee, else the project's default assignee, so every ask reaches a person. No agent can hand one on.
-- A design question a document records is an ask block at the end of its section:
+- A design question a document records is an ask block ending its section:
 
 ```md
 :::ask{urgency="med"}
@@ -27,6 +27,7 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 :::
 ```
 
+- A decision block in a comment, message or close reason is refused: ask in the issue's document, or `dispatch ask`.
 - Never repeat an open ask in a message.
 - Change an open ask's block with `dispatch edit-ask` (its ask id), or `doc-edit`'s `replace` or `move` (its block id). An answered ask is fixed: ask anew. `dispatch read --ref` takes either id.
 - Reply on an open ask with `dispatch comment --reply-to-ask`; `--turn agent` (a progress note) needs it. An approval request a newer version moved needs `request-approval` again.
