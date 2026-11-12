@@ -1,7 +1,9 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"reflect"
 	"slices"
 	"strings"
@@ -453,4 +455,144 @@ func TestARetrysTaskNamesThePullRequest(t *testing.T) {
 	if !strings.Contains(task, "Pull request: #42.") {
 		t.Fatalf("task = %q, want it to name pull request #42", task)
 	}
+}
+
+// A todo written on a held root whose tree does not linger releases the hold, which is the
+// effect of its architect's retry_or_escalate with retry (R7): the issue returns to the phase
+// the hold came from, the hold is cleared, and that phase's role is started with its task,
+// carrying the daemon's own reason, which names the status write that made the release — no
+// caller of the status route names one. The release writes the Dispatch status of the phase the
+// issue ends in, as a phase transition writes it, so the board shows the phase the issue works
+// and a later todo on the same issue is a status change again. Nothing else moves: the
+// generation, the rounds, the conflict rounds, the backward moves, the cap count and the
+// admission slot all stand as they were.
+//
+// A person's move in the Dispatch dashboard and the daemon's own write — which the controller's
+// set_status and an operator's `legion status` both reach the record as — are the same event
+// here, so each is a row. Each row then fails the worker again, which holds the issue a second
+// time, and writes todo again: the second release runs as the first did, because the first
+// recorded the event it took with the recorded status kept rather than leaving the record to
+// say the issue is todo.
+func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
+	const root = "LEGION-208"
+	const reason = "Reason: the issue was set to todo while its phase was held."
+	for _, tc := range []struct {
+		name string
+		own  bool
+	}{
+		{name: "a person's move in the Dispatch dashboard"},
+		{name: "the daemon's own write", own: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			var logged bytes.Buffer
+			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logged, nil))))
+			seedIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION",
+				Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing}, Generation: 3, Status: "in_progress", DispatchStatus: "in_progress",
+				Rank: "U", HandedOver: true, LastDispatchSeq: 4})
+			seedSlot(t, pool, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)})
+			counted := record.PhaseRow{Issue: root, Role: claim.RoleImplementer, Rounds: 3, ConflictRounds: 1,
+				BackwardMoves: map[string]int{"testing-implementing": 2}, CapTold: 3}
+			seedPhase(t, pool, counted)
+			todo := func(seq int64, own bool) intake.DispatchIssue {
+				return intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: seq, Type: "issue.updated", Status: "todo",
+					Title: "root", Rank: "U", HandedOver: true, DaemonActor: own, StatusMove: own}
+			}
+
+			apply("todo", todo(5, tc.own))
+
+			released := storedIssue(t, pool, root)
+			if released.Phase != phase.Implementing || released.Hold != nil || released.Generation != 3 {
+				t.Fatalf("the root after the todo = %#v, want it back in implementing, its hold cleared and its generation 3", released)
+			}
+			// The record keeps the status of the phase it works while Dispatch shows the todo,
+			// which is what the queued write sets back.
+			if released.Status != "in_progress" || released.DispatchStatus != "todo" || released.LastDispatchSeq != 5 {
+				t.Fatalf("the root after the todo = %#v, want in_progress kept, Dispatch shown at todo and the event's sequence 5 recorded", released)
+			}
+			want := record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}
+			if got := statusWrites(t, pool, root); len(got) != 1 || got[0] != want {
+				t.Fatalf("status writes = %+v, want the one %+v: the status of the phase the issue ends in", got, want)
+			}
+			starts := superviseRowsOf(t, pool, root, "start")
+			if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Phase != phase.Implementing || !strings.Contains(starts[0].Task, reason) {
+				t.Fatalf("start rows = %+v, want one implementer start of implementing whose task carries %q", starts, reason)
+			}
+			if got := phaseCounts(t, pool, root, claim.RoleImplementer); !reflect.DeepEqual(got, counted) {
+				t.Fatalf("the implementer's counts after the release = %+v, want the %+v the hold left", got, counted)
+			}
+			if got := slotCount(t, pool, root); got != 1 {
+				t.Fatalf("%s holds %d slots, want the one it held while it was held", root, got)
+			}
+			if line := logged.String(); !strings.Contains(line, "workflow: a held phase is released") ||
+				!strings.Contains(line, "the issue was set to todo while its phase was held") {
+				t.Fatalf("the log of the release = %q, want the released line naming the daemon's own reason", line)
+			}
+
+			// The same issue held again and written to todo again: the second release runs as the
+			// first did. The second todo is the daemon's own write whichever way the first
+			// arrived, because the in_progress the first release queued has not echoed back from
+			// Dispatch — the record still shows Dispatch at todo — and a route's own write is a
+			// status move whatever the record last saw Dispatch show.
+			apply("worker-failed-again", intake.ClaimFailed{Issue: root, Role: claim.RoleImplementer})
+			if held := storedIssue(t, pool, root); held.Phase != phase.Held || held.Hold == nil || held.Hold.From != phase.Implementing {
+				t.Fatalf("the root after its worker failed again = %#v, want it held from implementing", held)
+			}
+
+			apply("todo-again", todo(6, true))
+
+			again := storedIssue(t, pool, root)
+			if again.Phase != phase.Implementing || again.Hold != nil || again.Generation != 3 || again.LastDispatchSeq != 6 {
+				t.Fatalf("the root after the second todo = %#v, want it back in implementing at generation 3, its hold cleared, the second event recorded", again)
+			}
+			if got := statusWrites(t, pool, root); len(got) != 2 || got[1] != want {
+				t.Fatalf("status writes after the second release = %+v, want a second %+v", got, want)
+			}
+			if got := startTask(t, pool, claim.RoleImplementer); !strings.Contains(got, reason) {
+				t.Fatalf("the implementer the second release started is told %q, want the daemon's own reason %q", got, reason)
+			}
+			if got := phaseCounts(t, pool, root, claim.RoleImplementer); !reflect.DeepEqual(got, counted) {
+				t.Fatalf("the implementer's counts after the second release = %+v, want the %+v the hold left", got, counted)
+			}
+		})
+	}
+}
+
+// storedIssue is the record of key.
+func storedIssue(t *testing.T, pool *pgxpool.Pool, key string) record.Issue {
+	t.Helper()
+	var got *record.Issue
+	if err := pgx.BeginFunc(t.Context(), pool, func(tx pgx.Tx) error {
+		var err error
+		got, err = record.NewStore().Issue(t.Context(), tx, key)
+		return err
+	}); err != nil {
+		t.Fatalf("read %s: %v", key, err)
+	}
+	if got == nil {
+		t.Fatalf("%s is not recorded", key)
+	}
+	return *got
+}
+
+// phaseCounts is role's phases row of issue with the counts alone: what a release must leave
+// where it found them.
+func phaseCounts(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) record.PhaseRow {
+	t.Helper()
+	got := record.PhaseRow{Issue: issue, Role: role}
+	if err := pool.QueryRow(t.Context(), "select rounds, conflict_rounds, backward_moves, cap_told from phases where issue = $1 and role = $2",
+		issue, string(role)).Scan(&got.Rounds, &got.ConflictRounds, &got.BackwardMoves, &got.CapTold); err != nil {
+		t.Fatalf("read the %s's phases row of %s: %v", role, issue, err)
+	}
+	return got
+}
+
+// slotCount is how many admission slots issue holds.
+func slotCount(t *testing.T, pool *pgxpool.Pool, issue string) int {
+	t.Helper()
+	var got int
+	if err := pool.QueryRow(t.Context(), "select count(*) from slots where issue = $1", issue).Scan(&got); err != nil {
+		t.Fatalf("count the slots of %s: %v", issue, err)
+	}
+	return got
 }

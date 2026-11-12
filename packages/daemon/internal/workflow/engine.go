@@ -281,7 +281,8 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// wrote, applied ahead of events the consumer has not delivered, so it is a move whatever the
 	// record last saw Dispatch show.
 	if fact.Status == issue.DispatchStatus && !fact.StatusMove {
-		return intake.Result{}, e.keepStatus(ctx, tx, *issue, fact)
+		_, err := e.keepStatus(ctx, tx, *issue, fact)
+		return intake.Result{}, err
 	}
 	if reasserted, err := e.sessionStatusWrite(ctx, tx, *issue, fact); err != nil || reasserted {
 		return intake.Result{}, err
@@ -295,11 +296,59 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 		}
 		return intake.Result{}, e.leave(ctx, tx, *issue, fact.Status)
 	}
+	// A todo written on a held root whose tree does not linger releases the hold
+	// (releaseHeldRoot). Its test is the complement of admission's own (admit's readmittable), so
+	// the two can never both fire: a root that lingers or stands done is re-admitted there at a
+	// new generation, and a root held from a phase stands at neither, which keeps the park and
+	// un-park of a lingering root on its new generation. A held child is untouched, and comes
+	// back through ReenterChild below.
+	if fact.Status == "todo" && claim.IsTreeRoot(issue.Key, issue.Tree) && issue.Phase == phase.Held && issue.Hold != nil && !issue.Lingers() {
+		return intake.Result{}, e.releaseHeldRoot(ctx, tx, *issue, fact)
+	}
 	if fact.Status == "todo" && !claim.IsTreeRoot(issue.Key, issue.Tree) {
 		return intake.Result{}, e.ReenterChild(ctx, tx, *issue, fact)
 	}
 	return intake.Result{}, nil
 }
+
+// releaseHeldRoot takes a todo written on a held root whose tree does not linger: the one status
+// a person's move in the Dispatch dashboard, the controller's set_status and an operator's
+// `legion status` all reach the record as (R7). The hold is cleared, the issue returns to the
+// phase the hold came from and that phase's role is started with its task, which is the effect
+// of the architect's retry_or_escalate with retry. Nothing else moves: no new generation, no
+// reset of the rounds, no new pod, and no change of place in the admission line.
+//
+// The observation is recorded first with the recorded status kept (keepStatus), so admission,
+// which runs after this handler, stops at its sequence fence and never writes `status: todo`
+// over the release. The retry is handed the value keepStatus wrote rather than the one this
+// handler read: the two write one row in this transaction, and the row the retry writes would
+// otherwise put the sequence fence and the Dispatch status back as they were.
+//
+// Where the release's own path already moved the issue — a standing red that sends it back to
+// implementing, a review round that settles — that move wrote its own status and the release
+// writes no second one. Otherwise the Dispatch status of the phase the issue ends in is queued,
+// as a phase transition queues it, so the board shows the phase the issue works and a later todo
+// on the same issue is a status change again. It is enqueued here rather than through
+// Engine.status, which writes nothing when the record's own status already holds the status
+// asked for: a hold changes no status, so the record still reads in_progress while Dispatch
+// reads todo. correctStatuses bypasses Engine.status for this same trap.
+func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
+	from := issue.Hold.From
+	released, err := e.keepStatus(ctx, tx, issue, fact)
+	if err != nil {
+		return err
+	}
+	moved, err := e.retryPhase(ctx, tx, released, from, releaseReason)
+	if err != nil || moved {
+		return err
+	}
+	return e.enqueue(ctx, tx, issue.Key, record.StatusWrite{Status: PhaseStatus(from), ObservedStatus: fact.Status})
+}
+
+// releaseReason is the daemon's own reason for that release, which the restarted role's task and
+// the log line of the release both carry: it names the status write that made it, since no caller
+// of the status route names a reason of its own (R7).
+const releaseReason = "the issue was set to todo while its phase was held"
 
 // sessionStatusWrite takes a lifecycle status change written by a session whose write the workflow
 // does not act on. A session holding a claim in the issue's tree is an agent, never a human move,
@@ -341,7 +390,7 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	}
 	e.logOnCommit(ctx, "workflow: a session wrote a lifecycle status; the daemon re-asserts its own", "issue", issue.Key,
 		"session", fact.ActorSession, "claims_tree", agent, "wrote", fact.Status, "status", issue.Status)
-	if err := e.keepStatus(ctx, tx, issue, fact); err != nil {
+	if _, err := e.keepStatus(ctx, tx, issue, fact); err != nil {
 		return false, err
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.StatusWrite{Status: issue.Status, ObservedStatus: fact.Status}); err != nil {
@@ -360,14 +409,18 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 // records none of that status: a live event stops at its sequence fence, and a boot listing the
 // engine applied this way keeps the recorded status (admit's applySummary), so neither frees the
 // slot nor re-admits on it.
-func (e *Engine) keepStatus(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
+//
+// It answers the issue as it wrote it, for a caller that writes the same row again in this
+// transaction: a second write from the value the handler read would put the sequence fence and
+// the status Dispatch showed back as they were (releaseHeldRoot).
+func (e *Engine) keepStatus(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (record.Issue, error) {
 	ancestry, err := e.Ancestry(ctx, tx, issue, fact.Ancestry)
 	if err != nil {
-		return err
+		return issue, err
 	}
 	issue.Title, issue.Rank, issue.Parent, issue.LastDispatchSeq = fact.Title, fact.Rank, record.ParentOf(fact.Parent), fact.Seq
 	issue.HandedOver, issue.DispatchStatus, issue.Ancestry = fact.HandedOver, fact.Status, ancestry
-	return e.store.PutIssue(ctx, tx, issue)
+	return issue, e.store.PutIssue(ctx, tx, issue)
 }
 
 // rejectStaleHandover consumes a daemon-authored todo that was written for a closed tree but
@@ -393,7 +446,7 @@ func (e *Engine) rejectStaleHandover(ctx context.Context, tx pgx.Tx, issue recor
 	if err := e.store.DeleteHandover(ctx, tx, issue.Key); err != nil {
 		return false, err
 	}
-	if err := e.keepStatus(ctx, tx, issue, fact); err != nil {
+	if _, err := e.keepStatus(ctx, tx, issue, fact); err != nil {
 		return false, err
 	}
 	if issue.Status != fact.Status {
@@ -801,7 +854,8 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 	}
 	// The architect's own words where it named any, which the restarted role's task and the log
 	// line for the release both carry; a decision that names none keeps the daemon's.
-	return intake.Result{}, e.retryPhase(ctx, tx, *issue, issue.Hold.From, cmp.Or(fact.Reason, "retry held phase"))
+	_, err = e.retryPhase(ctx, tx, *issue, issue.Hold.From, cmp.Or(fact.Reason, "retry held phase"))
+	return intake.Result{}, err
 }
 
 // restartPhase is the operator's retry of a phase worker whose issue stands in that worker's own
@@ -829,7 +883,8 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 	if lingers {
 		return refusedLingering(*issue, fmt.Sprintf("the operator's restart of the %s", fact.Role)), nil
 	}
-	return intake.Result{}, e.retryPhase(ctx, tx, *issue, working, "the operator retried this phase's worker")
+	_, err = e.retryPhase(ctx, tx, *issue, working, "the operator retried this phase's worker")
+	return intake.Result{}, err
 }
 
 // retryPhase gives issue the phase from back — a held issue leaves its hold — and starts that
@@ -855,10 +910,14 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 //
 // Its callers have established that the tree does not linger, which is what holds every member
 // where it stood.
-func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase, reason string) error {
+//
+// It answers whether one of those two paths moved the issue, which the caller that must write a
+// status of its own reads: the move wrote the status of the phase it took the issue to, and a
+// second one over it would say the issue works a phase it left (releaseHeldRoot).
+func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase, reason string) (bool, error) {
 	issue.Phase, issue.Hold = from, nil
 	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
-		return err
+		return false, err
 	}
 	// The daemon's own line for the release (R11), written whether or not a worker is started
 	// below: the hold is gone either way, and the reason is the one the restarted role's task
@@ -866,26 +925,26 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	e.logOnCommit(ctx, "workflow: a held phase is released", "issue", issue.Key, "phase", from, "reason", reason)
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if moved, err := e.standingRed(ctx, tx, issue, pr); err != nil || moved {
-		return err
+		return moved, err
 	}
 	if from == phase.Reviewing {
 		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 		if err != nil {
-			return err
+			return false, err
 		}
 		// The retry tells nothing of a stuck round: passed as its own before, it is stuck the same way.
 		r := e.reviewRound(issue, reviewer, pr)
 		if moved, err := e.settleRound(ctx, tx, issue, reviewer, pr, r, ""); err != nil || moved {
-			return err
+			return moved, err
 		}
 		if r.outcome == roundStuck {
 			reason += ": " + r.reason
 		}
 	}
-	return e.restart(ctx, tx, issue, RoleFor(from), task(issue, record.PhaseRow{}, pr, reason))
+	return false, e.restart(ctx, tx, issue, RoleFor(from), task(issue, record.PhaseRow{}, pr, reason))
 }
 
 func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMove) (intake.Result, error) {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -30,6 +31,9 @@ const (
 	// failureRetryRoot is the running root whose architect answers the holds of its two held
 	// children, one retry naming a reason and one naming none.
 	failureRetryRoot = "LEGION-222"
+	// failureStatusRoot is the held root of a tree of its own whose hold a todo written through
+	// the status route releases.
+	failureStatusRoot = "LEGION-225"
 )
 
 // failedWorker drives one phase worker's claim to a failure through the supervision's own
@@ -199,10 +203,10 @@ func startedTask(t *testing.T, h *harness, issue string, role claim.Role) string
 // A claim the daemon holds a cause for says why beside the sentence it already kept, on every
 // surface an agent reads, and a held issue says which phase its hold took it out of
 // (dispatch://INFRA-3083). This is the one test of that record over the routes: the rows below
-// read `GET /legion/v1/state`, the operator's claim list and the architect's retry, which
-// carries why the release was made, and the status route the rest of the issue adds has a row
-// of its own, so a build that serves the record on one surface and not another fails here
-// rather than passing on the surface its author happened to read.
+// read `GET /legion/v1/state`, the operator's claim list, the architect's retry, which carries
+// why the release was made, and the status route, whose todo on a held root releases it with a
+// reason of the daemon's own, so a build that serves the record on one surface and not another
+// fails here rather than passing on the surface its author happened to read.
 //
 // The record is driven through the supervision's own terminal path rather than written by hand:
 // a view built from a claim no failure wrote would pass whatever the daemon records.
@@ -386,6 +390,46 @@ func TestTheFailureRecordOverTheRoutes(t *testing.T) {
 					t.Errorf("the restarted implementer of %s is told %q, want the phase the hold took it out of", tc.issue, task)
 				}
 			})
+		}
+	})
+
+	// The status route releases a held root too: a todo the daemon writes for the controller's
+	// set_status or an operator's `legion status` ends the hold and starts the phase's worker
+	// again, which is the effect of the retry above. No caller of this route names a reason, so
+	// the release carries the daemon's own, which names the status write that made it (R7).
+	//
+	// Like the retry's row this one drives the route against the daemon's own workflow: the task
+	// it reads is the one the release wrote (workflow's releaseHeldRoot), not a fake's record of
+	// a fact.
+	t.Run("POST /legion/v1/issues/status", func(t *testing.T) {
+		statuses, _, _ := newWorkflowHarness(t, workflow.Config{Project: testProject, Repositories: testRepositories,
+			Steps: config.DesignGateRootIssues.Steps()})
+		statuses.recordIssue(record.Issue{Key: failureStatusRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+			Tree: failureStatusRoot, Project: testProject, Title: failureStatusRoot, Phase: phase.Held,
+			Hold: &record.Hold{From: phase.Implementing}, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
+			Rank: "U", HandedOver: true, LastDispatchSeq: 4})
+		statuses.handoffs.issues = map[string]dispatch.Issue{failureStatusRoot: {Key: failureStatusRoot, ResolvedRepo: "acme/widgets",
+			Title: failureStatusRoot, Status: "in_progress", Rank: "U", HandedOver: true, LastSeq: 4}}
+		grant := controllerGrant(t, statuses)
+
+		got := statuses.request(http.MethodPost, "/legion/v1/issues/status",
+			IssueStatusRequest{GrantID: grant.GrantID, Issue: failureStatusRoot, Status: "todo"}, nil)
+		if got.Code != http.StatusOK {
+			t.Fatalf("set %s to todo = %d, want 200; body %s", failureStatusRoot, got.Code, got.Body)
+		}
+		released := recordedChild(t, statuses, failureStatusRoot)
+		if released == nil || released.Phase != phase.Implementing || released.Hold != nil {
+			t.Fatalf("the held root once the status route answered = %#v, want it back in implementing with its hold cleared", released)
+		}
+		task := startedTask(t, statuses, failureStatusRoot, claim.RoleImplementer)
+		if task == "" {
+			t.Fatalf("the todo on %s started no implementer, so nothing carries the reason for its release", failureStatusRoot)
+		}
+		if want := "Reason: the issue was set to todo while its phase was held."; !strings.Contains(task, want) {
+			t.Errorf("the restarted implementer of %s is told %q, want it to carry the daemon's own reason %q", failureStatusRoot, task, want)
+		}
+		if !strings.Contains(task, "Phase: "+string(phase.Implementing)+".") {
+			t.Errorf("the restarted implementer of %s is told %q, want the phase the hold took it out of", failureStatusRoot, task)
 		}
 	})
 }
