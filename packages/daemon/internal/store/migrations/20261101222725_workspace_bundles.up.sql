@@ -6,7 +6,7 @@
 --
 -- issue is the key, so a second release of the same issue replaces the row rather than growing the
 -- table. bundle is the git bundle's bytes and size_bytes their length, which the release's
--- teardown reads on its own (store.WorkspaceBundleSize) to record how much work the release
+-- teardown reads on its own (store.WorkspaceBundleFacts) to record how much work the release
 -- saved, so a 40 MiB bundle is not carried back over the pool for its size alone; the 40 MiB
 -- bound is read off the bytes themselves, before they are written. at is when the shim took it.
 -- head is the commit id the working copy sat on, tips the commit ids of the heads the bundle

@@ -597,8 +597,8 @@ func TestACancelDeletesTheBundleItsReleaseSavedInTheSameTransaction(t *testing.T
 	if err != nil || !facts.Held {
 		t.Fatalf("after a cancel that failed the store holds the bundle = %t (%v), want it kept with the mark", facts.Held, err)
 	}
-	if _, held, err := st.RunningWorkspaceCopy(ctx, rootIssue); err != nil || !held {
-		t.Fatalf("after a cancel that failed the store holds the running copy = %t (%v), want it kept with the mark", held, err)
+	if copied, err := st.RunningWorkspaceCopy(ctx, rootIssue); err != nil || !copied.Held {
+		t.Fatalf("after a cancel that failed the store holds the running copy = %t (%v), want it kept with the mark", copied.Held, err)
 	}
 
 	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow); err != nil {
@@ -607,8 +607,8 @@ func TestACancelDeletesTheBundleItsReleaseSavedInTheSameTransaction(t *testing.T
 	if facts, err := st.WorkspaceBundleFacts(ctx, rootIssue); err != nil || facts.Held {
 		t.Fatalf("after the cancel the store holds the bundle = %t (%v), want it deleted with the mark", facts.Held, err)
 	}
-	if _, held, err := st.RunningWorkspaceCopy(ctx, rootIssue); err != nil || held {
-		t.Fatalf("after the cancel the store holds the running copy = %t (%v), want it deleted with the mark", held, err)
+	if copied, err := st.RunningWorkspaceCopy(ctx, rootIssue); err != nil || copied.Held {
+		t.Fatalf("after the cancel the store holds the running copy = %t (%v), want it deleted with the mark", copied.Held, err)
 	}
 }
 

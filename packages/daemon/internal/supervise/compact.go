@@ -399,12 +399,20 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 				return err
 			}
 			m.claim.State = run.back
-			return errors.Join(err, m.persist(ctx))
+			return errors.Join(err, m.durableWrite(ctx, run.back, m.persist))
 		}
 		return ErrCompactSuspended
 	}
 	m.claim.State = run.back
-	if err := m.persist(ctx); err != nil {
+	// The state the claim goes back to is reported to the daemon as a durable transition, as
+	// turnEnded reports the idle it writes (durableWrite, OnDurableState). A turn that ends while
+	// the session is being compacted is left working by turnEnded and reaches its idle here
+	// instead (run.back is Idle for it), and the daemon takes the copy of the issue's workspace
+	// that ends each turn from that report (internal/daemon's copyWorkspaceAtTurnEnd): without it
+	// the work of that turn is held by no copy until some later turn ends. The report follows the
+	// claim write, so a write the database did not take owes the report instead and makes it when
+	// the write lands (oweDurableState, makeOwedReports).
+	if err := m.durableWrite(ctx, run.back, m.persist); err != nil {
 		return err
 	}
 	return m.afterTurn(ctx)

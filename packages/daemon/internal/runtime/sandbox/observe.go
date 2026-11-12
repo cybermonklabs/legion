@@ -365,8 +365,17 @@ func (r *Runtime) prunePodEnds() {
 // An end the daemon's own record names is the daemon's own (takeIntendedEnd), whatever the cluster
 // made of it; otherwise what the cluster says ended the pod (disruption), and then a deletion
 // timestamp no act of the daemon's accounts for (deletedByAnother), are each an end from outside
-// the pod. An end of neither reading is kept nowhere and charged as it always was. Called with
-// r.mu held.
+// the pod.
+//
+// An end of neither reading is charged as it always was, and is recorded all the same, with an
+// empty reading: the record is what makes the first end event the one that decides. A pod whose
+// first end carries a reason outside the cluster's own — UnexpectedAdmissionError, a node
+// refusing the pod before it ran, which is exactly the end that must be charged — is followed by
+// another event for the same uid, the controller's delete, pod garbage collection or an
+// operator's own `kubectl delete pod`; with nothing recorded, that event's deletion timestamp
+// would read as deletedByAnother and every role of the pod would be continued uncharged. The
+// empty reading is answered to no caller (podEndOf), so it decides nothing it did not read.
+// Called with r.mu held.
 func (r *Runtime) capturePodEnd(pod *corev1.Pod, gone bool) {
 	uid := string(pod.UID)
 	if uid == "" || !podEnding(pod, gone) {
@@ -385,8 +394,6 @@ func (r *Runtime) capturePodEnd(pod *corev1.Pod, gone bool) {
 		end.reading, end.cause, end.reason = runtime.PodEndNotOurs, cause, reason
 	case pod.DeletionTimestamp != nil:
 		end.reading, end.cause = runtime.PodEndNotOurs, deletedByAnother
-	default:
-		return
 	}
 	r.prunePodEnds()
 	r.podEnds[uid] = end
@@ -410,8 +417,16 @@ const podEndLine = "sandbox runtime: read what ended a watched pod; the roles of
 
 // logPodEnd writes that line for end, the reading just made of pod's end: at warning level for an
 // end from outside the pod, which cost every role in it its turn through nothing of its own, and
-// at info level for one the daemon itself made, which is the daemon reporting its own act. Called
-// with r.mu held.
+// at info level for one the daemon itself made, which is the daemon reporting its own act, or for
+// an end read neither way, which is charged as it always was.
+//
+// A pod the runtime watches no claim of gets no line. The line is the record of the roles an end
+// continued, and a pod no claim of this runtime runs in continues none: the pods informer carries
+// the image probe's pod and each repository cache's pod beside the issue and controller pods, and
+// every one of those ends — a probe pod ends at every boot — would otherwise write, at warning
+// level, that the roles of a pod_end_not_ours end are continued uncharged, with roles=[]. The
+// reading itself is kept whether or not the line is written: a claim of the pod may be watched by
+// the time the end is evaluated. Called with r.mu held.
 func (r *Runtime) logPodEnd(pod *corev1.Pod, end podEnd) {
 	roles := make([]string, 0, len(r.watch))
 	for token, loc := range r.watch {
@@ -421,6 +436,9 @@ func (r *Runtime) logPodEnd(pod *corev1.Pod, end podEnd) {
 		if role, ok := token.Role(); ok {
 			roles = append(roles, string(role))
 		}
+	}
+	if len(roles) == 0 {
+		return
 	}
 	slices.Sort(roles)
 	write := r.log.Info
@@ -434,11 +452,16 @@ func (r *Runtime) logPodEnd(pod *corev1.Pod, end podEnd) {
 // podEndOf is what the daemon read about the end of the pod uid, and whether it read anything at
 // all: the reading capturePodEnd kept, unless it has outlived podEndRecordLife, which is answered
 // to no one.
+//
+// An end read neither way is answered to no one either. Its record exists so that the first end
+// event of a pod is the one that decides (capturePodEnd), and it holds no reading, so the claims
+// of that pod are evaluated exactly as they were before the reading existed: no value on the
+// observation and nothing added to its detail.
 func (r *Runtime) podEndOf(uid string) (podEnd, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	end, ok := r.podEnds[uid]
-	if !ok || r.now().Sub(end.at) >= podEndRecordLife {
+	if !ok || end.reading == "" || r.now().Sub(end.at) >= podEndRecordLife {
 		return podEnd{}, false
 	}
 	return end, true

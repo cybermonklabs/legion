@@ -26,19 +26,6 @@ import (
 // marked by a sign.
 const MinRunningWorkspaceCopyRestoreID int64 = 1 << 62
 
-// RunningWorkspaceCopyFacts is what an issue's running copy says of itself without its bytes: when
-// the shim took it and how large it is. The restore of a new pod reads it to tell the issue's two
-// copies apart by age before it takes either, and the cadence reads it to log what it stored; a
-// copy runs to tens of megabytes, so a caller that wants neither the bundle nor the attempt reads
-// this instead of the row.
-type RunningWorkspaceCopyFacts struct {
-	// At is when the shim took the copy, by the clock of the node its pod runs on
-	// (runtime.WorkspaceBundle.At).
-	At time.Time
-	// Size is the copy's length in bytes, as size_bytes holds it.
-	Size int
-}
-
 // PutRunningWorkspaceCopy saves the unpushed work of issue's workspace as the copy taken while its
 // pod runs, replacing whatever the issue's last copy left: one issue has one running copy, the
 // newest, and a copy of an older minute must never be restored in place of a newer one. The copy
@@ -191,22 +178,29 @@ func (s *Store) TakeRunningWorkspaceCopyForRestore(ctx context.Context, issue, p
 	return b, runtime.WorkspaceBundleSend, nil
 }
 
-// RunningWorkspaceCopy is the facts of issue's running copy without its bytes, and false when the
-// issue holds none. The restore of a new pod compares those facts with the issue's release bundle
-// to decide which of the two to take, and the cadence reads the size it stored to log it; a copy
-// runs to tens of megabytes, so reading at and size_bytes rather than the row keeps those bytes
-// out of the pool and out of the daemon's memory.
-func (s *Store) RunningWorkspaceCopy(ctx context.Context, issue string) (RunningWorkspaceCopyFacts, bool, error) {
-	var facts RunningWorkspaceCopyFacts
+// RunningWorkspaceCopy is the facts of issue's running copy without its bytes, Held false when
+// the issue holds none. The restore of a new pod compares those facts with the issue's release
+// bundle to decide which of the two to take, and the cadence reads the size it stored to log it;
+// a copy runs to tens of megabytes, so reading at and size_bytes rather than the row keeps those
+// bytes out of the pool and out of the daemon's memory.
+//
+// It answers the runtime's own shape (runtime.WorkspaceCopyFacts), as the release bundle's
+// reader does (WorkspaceBundleFacts): the two are compared against each other and handed to the
+// runtime as one pair (SavedWorkspaceCopies), which has no business knowing which table either
+// came off, and a struct of this package holding the same two facts would exist only to be
+// copied into that one.
+func (s *Store) RunningWorkspaceCopy(ctx context.Context, issue string) (runtime.WorkspaceCopyFacts, error) {
+	var facts runtime.WorkspaceCopyFacts
 	err := s.pool.QueryRow(ctx, `select at, size_bytes from workspace_running_copies where issue = $1`, issue).
 		Scan(&facts.At, &facts.Size)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return RunningWorkspaceCopyFacts{}, false, nil
+		return runtime.WorkspaceCopyFacts{}, nil
 	}
 	if err != nil {
-		return RunningWorkspaceCopyFacts{}, false, fmt.Errorf("read the running workspace copy of %s: %w", issue, err)
+		return runtime.WorkspaceCopyFacts{}, fmt.Errorf("read the running workspace copy of %s: %w", issue, err)
 	}
-	return facts, true, nil
+	facts.Held = true
+	return facts, nil
 }
 
 // DeleteRunningWorkspaceCopy drops issue's running copy whatever minute took it. It is the delete
@@ -238,6 +232,34 @@ func (s *Store) DeleteRestoredRunningWorkspaceCopy(ctx context.Context, restoreI
 	return nil
 }
 
+// DeleteRestoredWorkspaceCopy drops the copy of issue's workspace a pod's launcher reports it
+// restored, routing on the restore id alone. That id is all such a report carries that is
+// certain of the row: a launcher holds its report until some connection carries it
+// (internal/launcher's bundleRestore.owed), so one can reach a daemon that has restarted since
+// the send, with no memory of what it sent that pod.
+//
+// The id says which of the two tables the copy is in, because the two draw from disjoint spaces
+// and the schema keeps them so (MinRunningWorkspaceCopyRestoreID): an id at or above the
+// boundary is a running copy's, and that delete reads the id alone, since the issue's cadence may
+// have taken a newer copy since and that row must stay for the issue's next pod. An id below it
+// is the id of the release whose teardown saved the bundle, and that delete names the issue and
+// the release together, which is the same rule: a bundle a later release saved stays.
+//
+// The rule lives here, beside the two deletes it chooses between, because it is a statement about
+// which table an id names and about nothing else: the daemon wires this method straight onto the
+// runtime's report callback (runtime.WorkspaceBundleRestored), and the sandbox runtime's own
+// tests drive the report through it rather than through a copy of the branch.
+//
+// An id of either kind that no row holds deletes nothing, which is the ordinary end of a late
+// report, and the caller is told the delete succeeded, because it did: the row the report
+// confirmed is gone.
+func (s *Store) DeleteRestoredWorkspaceCopy(ctx context.Context, issue string, restoreID int64) error {
+	if restoreID >= MinRunningWorkspaceCopyRestoreID {
+		return s.DeleteRestoredRunningWorkspaceCopy(ctx, restoreID)
+	}
+	return s.DeleteRestoredWorkspaceBundle(ctx, issue, restoreID)
+}
+
 // SavedWorkspaceCopies is what both copies of issue's workspace say of themselves, neither
 // carrying its bytes: the bundle its last idle release saved (WorkspaceBundleFacts) and the copy
 // its cadence took while the pod ran (RunningWorkspaceCopy). It is the read the restore of a new
@@ -258,9 +280,8 @@ func (s *Store) SavedWorkspaceCopies(ctx context.Context, issue string) (bundle,
 	if bundle, err = s.WorkspaceBundleFacts(ctx, issue); err != nil {
 		return runtime.WorkspaceCopyFacts{}, runtime.WorkspaceCopyFacts{}, err
 	}
-	facts, held, err := s.RunningWorkspaceCopy(ctx, issue)
-	if err != nil {
+	if running, err = s.RunningWorkspaceCopy(ctx, issue); err != nil {
 		return runtime.WorkspaceCopyFacts{}, runtime.WorkspaceCopyFacts{}, err
 	}
-	return bundle, runtime.WorkspaceCopyFacts{Held: held, At: facts.At, Size: facts.Size}, nil
+	return bundle, running, nil
 }

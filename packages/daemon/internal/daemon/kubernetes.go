@@ -515,7 +515,9 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// copy again.
 		opts.SavedWorkspaceCopies = st.SavedWorkspaceCopies
 		opts.SavedWorkspaceBundle, opts.SavedRunningWorkspaceCopy = st.TakeWorkspaceBundleForRestore, st.TakeRunningWorkspaceCopyForRestore
-		opts.WorkspaceBundleRestored = restoredWorkspaceCopy(st)
+		// Which of the two tables a launcher's restore report names is read off its id, and that
+		// rule belongs to the store that owns both (store.DeleteRestoredWorkspaceCopy).
+		opts.WorkspaceBundleRestored = st.DeleteRestoredWorkspaceCopy
 		if apps != nil {
 			// One record per project, written by the two credentials and read by the directory
 			// set for the Apps of the pod it answers for, so no pod is replaced for a directory
@@ -534,31 +536,6 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		}
 		listener.SetLauncherResolver(rt.LauncherResolver())
 		return rt, nil
-	}
-}
-
-// restoredWorkspaceCopy drops the copy of an issue's workspace a pod's launcher reports it
-// restored, routing on the restore id alone. That id is all such a report carries that is
-// certain of the row: a launcher holds its report until some connection carries it
-// (internal/launcher's bundleRestore.owed), so one can reach a daemon that has restarted since
-// the send, with no memory of what it sent that pod.
-//
-// The id says which of the two tables the copy is in, because the two draw from disjoint spaces
-// and the schema keeps them so (store.MinRunningWorkspaceCopyRestoreID): an id at or above the
-// boundary is a running copy's, and the delete reads the id alone, since the issue's cadence may
-// have taken a newer copy since and that row must stay for the issue's next pod. An id below it
-// is the id of the release whose teardown saved the bundle, and that delete names the issue and
-// the release together, which is the same rule: a bundle a later release saved stays.
-//
-// An id of either kind that no row holds deletes nothing, which is the ordinary end of a late
-// report, and the runtime is told the delete succeeded, because it did: the row the report
-// confirmed is gone.
-func restoredWorkspaceCopy(st *store.Store) runtime.WorkspaceBundleRestored {
-	return func(ctx context.Context, issue string, restore int64) error {
-		if restore >= store.MinRunningWorkspaceCopyRestoreID {
-			return st.DeleteRestoredRunningWorkspaceCopy(ctx, restore)
-		}
-		return st.DeleteRestoredWorkspaceBundle(ctx, issue, restore)
 	}
 }
 

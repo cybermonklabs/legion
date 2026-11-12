@@ -49,11 +49,11 @@ func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authoriz
 	if s.Labels[labelProject] != r.project || s.Labels[labelIssue] != labelValue(issue) || s.Labels[labelTree] != labelValue(tree) {
 		return fmt.Errorf("suspend issue %s: Sandbox %s does not belong to this issue and tree", issue, s.Name)
 	}
-	// The pod the suspension ends is ended by the daemon, whether this call patches the Sandbox or
-	// finds it already suspended by a try of its own that got that far, so the end is recorded as
-	// the daemon's before either (meanToEndPod). The idle release's teardown comes through here
-	// too: both are this one effect on the issue's pod.
-	r.meanToEndPodOf(s, "the daemon suspended the pod's sandbox to close or release its issue")
+	// The pod the suspension ends is ended by the daemon, and the patch that ends it records that
+	// before it is sent (setMode, meanToEndPod), so the end reads as the daemon's own rather than
+	// as something outside the pod ending it. The idle release's teardown comes through here too:
+	// both are this one effect on the issue's pod. A Sandbox a try of its own already suspended
+	// is patched no second time, since that try made the record its patch needed.
 	if s.mode() != modeSuspended {
 		if err := r.setMode(ctx, s, modeSuspended); err != nil {
 			return fmt.Errorf("suspend issue %s: %w", issue, err)

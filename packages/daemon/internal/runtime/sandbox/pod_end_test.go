@@ -61,6 +61,23 @@ func (g *rig) podEndRead(uid string) podEnd {
 	return end
 }
 
+// podEndHeld is the record the runtime keeps for the pod uid, whatever reading it holds, waiting
+// for the informer event that makes it to be handled. It reads the map rather than podEndOf
+// because an end read neither way is kept with an empty reading and answered to no caller: that
+// record is what makes the first end event of a pod the one that decides.
+func (g *rig) podEndHeld(uid string) podEnd {
+	g.t.Helper()
+	var end podEnd
+	g.eventually("the runtime to record what ended pod "+uid, func() bool {
+		g.r.mu.Lock()
+		defer g.r.mu.Unlock()
+		read, ok := g.r.podEnds[uid]
+		end = read
+		return ok
+	})
+	return end
+}
+
 // intendedEnds is how many records of an end the daemon means to make the runtime holds now.
 func (g *rig) intendedEnds() int {
 	g.r.mu.Lock()
@@ -159,12 +176,43 @@ func TestAnEvictedPodsEndIsObservedFromItsConditionOrItsReason(t *testing.T) {
 // An end the daemon itself made reads as its own and is charged exactly as it was before the
 // reading existed: the record the daemon writes before the act names the pod, and that record is
 // what tells its own ends from an eviction's, since the daemon deletes no pod itself and every one
-// of its ends reaches the pod as a deletion timestamp it did not write. Both acts are driven here
-// as the daemon makes them — an issue's close or idle release through SuspendIssue, and a launch
+// of its ends reaches the pod as a deletion timestamp it did not write. Three acts are driven here
+// as the daemon makes them — an issue's close or idle release through SuspendIssue, a launch
 // that cannot use the pod it found through the relaunch that replaces it, whose roles are reported
-// displaced as they always were. The record is consumed by the end it was written for, so the
-// runtime holds none afterwards.
+// displaced as they always were, and the bare suspending patch every other suspension of the
+// daemon's makes (setMode): a launch whose pod is not live enough to displace, the suspension of a
+// failed launch and a repository cache's own all end their pod through that one patch, and the
+// record is written there so that none of them can end a pod without one. The record is consumed
+// by the end it was written for, so the runtime holds none afterwards.
 func TestTheDaemonsOwnEndOfAPodIsObservedAsItsOwn(t *testing.T) {
+	t.Run("a suspending patch of the sandbox", func(t *testing.T) {
+		g := runningIssuePod(t)
+		name := SandboxName(workerToken)
+
+		if err := g.r.setMode(g.ctx, g.sandbox(name), modeSuspended); err != nil {
+			t.Fatalf("suspend the sandbox: %v", err)
+		}
+		// The Agent Sandbox controller answers the patch by deleting the pod, which is how every
+		// end of the daemon's reaches it: a deletion timestamp the daemon did not write.
+		deleted := metav1.NewTime(rigNow)
+		g.update(g.pod(name), func(p *corev1.Pod) { p.DeletionTimestamp = &deleted })
+
+		if end := g.podEndRead(recorded); end.reading != runtime.PodEndOurs {
+			t.Fatalf("read %+v of the suspended sandbox's pod, want %s: a suspension with no record reads as an end from outside the pod",
+				end, runtime.PodEndOurs)
+		}
+		if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
+			t.Fatal(err)
+		}
+		g.eventually("the pod store to drop the deleted pod", func() bool { return g.r.storedPod(name) == nil })
+		obs := g.observed(rolesLocator(workerToken, recorded))
+		if obs.Kind != runtime.Gone || obs.PodEnd != runtime.PodEndOurs {
+			t.Fatalf("observed %s PodEnd=%q (%s), want Gone %s", obs.Kind, obs.PodEnd, obs.Detail, runtime.PodEndOurs)
+		}
+		if held := g.intendedEnds(); held != 0 {
+			t.Errorf("the runtime holds %d records of an intended end, want none: the record goes with the pod it names", held)
+		}
+	})
 	t.Run("an issue's close or idle release", func(t *testing.T) {
 		g := newRig(t, nil)
 		loc := g.spawn(workerSpec(t))
@@ -292,5 +340,65 @@ func TestOneLineNamesThePodTheReadingTheReasonAndEachRoleObserved(t *testing.T) 
 		if !strings.Contains(lines[0], want) {
 			t.Errorf("the pod's end line is %q, want %q in it", lines[0], want)
 		}
+	}
+}
+
+// A pod whose first end event is read neither way is remembered as such, so the next event for
+// the same pod cannot be read as something else. The end that must be charged is exactly this
+// one: a reason outside the cluster's own four — UnexpectedAdmissionError, a node refusing the
+// pod before it ran — which the roles of the next pod would meet again, and which an uncharged
+// continue would relaunch for ever. The event after it is the deletion the controller, pod
+// garbage collection or an operator makes, and with nothing recorded that deletion timestamp
+// would read as one no act of the daemon's accounts for and continue every role of the pod
+// uncharged.
+func TestAnEndReadNeitherWayIsRememberedSoALaterDeletionIsNotObservedAsOneFromOutsideThePod(t *testing.T) {
+	g := runningIssuePod(t)
+	name := SandboxName(workerToken)
+	g.update(g.pod(name), func(p *corev1.Pod) { p.Status = endedPodStatus("UnexpectedAdmissionError") })
+	if end := g.podEndHeld(recorded); end.reading != "" {
+		t.Fatalf("read %+v of the refused pod, want it recorded with no reading: it is neither the daemon's own end nor one the cluster says it made", end)
+	}
+	if _, answered := g.r.podEndOf(recorded); answered {
+		t.Fatal("an end read neither way is answered to a caller; it must read as nothing was read")
+	}
+
+	// The controller's own delete of the pod, the event that follows every end.
+	deleted := metav1.NewTime(rigNow)
+	g.update(g.pod(name), func(p *corev1.Pod) { p.DeletionTimestamp = &deleted })
+	if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
+		t.Fatal(err)
+	}
+	g.eventually("the pod store to drop the deleted pod", func() bool { return g.r.storedPod(name) == nil })
+
+	if end := g.podEndHeld(recorded); end.reading != "" {
+		t.Fatalf("the pod's end now reads %+v, want the first end event's reading of nothing: the delete that follows an end is no reading of its own", end)
+	}
+	obs := g.observed(rolesLocator(workerToken, recorded))
+	if obs.Kind != runtime.Gone || obs.PodEnd != "" {
+		t.Fatalf("observed %s PodEnd=%q (%s), want Gone read neither way, which the supervisor charges", obs.Kind, obs.PodEnd, obs.Detail)
+	}
+	if strings.Contains(obs.Detail, deletedByAnother) {
+		t.Errorf("the observation's detail is %q, want nothing of a deletion no act of the daemon's accounts for", obs.Detail)
+	}
+}
+
+// The line is the record of the roles an end continued, so a pod this runtime watches no claim of
+// gets none. The pods informer carries the image probe's pod and each repository cache's pod
+// beside the issue and controller pods, and a probe pod ends at every boot: with no such rule
+// every boot would write, at warning level, that the roles of a pod_end_not_ours end are
+// continued uncharged, with roles=[]. The reading itself is made all the same, since a claim of
+// the pod may be watched by the time the end is evaluated.
+func TestNoLineIsWrittenForTheEvictedPodNoWatchedClaimRunsIn(t *testing.T) {
+	logs := &lockedLog{}
+	g := runningIssuePod(t, withLog(logs))
+	name := SandboxName(workerToken)
+
+	g.update(g.pod(name), func(p *corev1.Pod) { p.Status = endedPodStatus("Evicted") })
+
+	if end := g.podEndRead(recorded); end.reading != runtime.PodEndNotOurs {
+		t.Fatalf("read %+v of the evicted pod, want %s: the reading is made whether or not a line is written", end, runtime.PodEndNotOurs)
+	}
+	if strings.Contains(logs.String(), podEndLine) {
+		t.Errorf("the end of a pod no watched claim runs in was logged as roles continued uncharged:\n%s", logs.String())
 	}
 }

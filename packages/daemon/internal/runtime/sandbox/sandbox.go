@@ -913,7 +913,22 @@ func (r *Runtime) stopFrame(generation uint64) shimwire.LauncherStop {
 
 // setMode sets the Sandbox's operating mode, fenced to the Sandbox read (a JSON patch whose first
 // operation tests the uid): a Sandbox replaced in between is never written.
+//
+// Suspending is the daemon ending the pod that Sandbox owns, so the record that the daemon means
+// to end that pod is written here, before the patch (meanToEndPod): this is the one place every
+// suspension of the daemon's goes through — an issue's close or idle release (SuspendIssue), a
+// launch that found a pod it cannot use and is not live enough to displace (relaunch), the
+// suspension of a failed launch (suspendFailedLaunch) and a repository cache's own
+// (reconcileCachePod) — and an end with no record reads as pod_end_not_ours, which continues
+// every claim of that pod uncharged. For a pod whose init container keeps failing that is the
+// relaunch-for-ever the initFailed reading exists to stop. A suspension that replaces a live pod
+// patches rather than coming through here and writes its own record with the annotation that
+// names the pod (suspendDisplacing), and the two deletes write theirs (deleteSandbox,
+// deleteFenced); a mode that is not Suspended ends nothing and records nothing.
 func (r *Runtime) setMode(ctx context.Context, s *sandbox, mode string) error {
+	if mode == modeSuspended {
+		r.meanToEndPodOf(s, "the daemon suspended the pod's sandbox")
+	}
 	_, err := r.patch(ctx, s, jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: mode})
 	return err
 }
@@ -1036,6 +1051,15 @@ var _ runtime.WorkspaceBundler = (*Runtime)(nil)
 // the role's process: the idle release's save is a row of its own ahead of its role stops
 // (record.IssueBundle, the daemon's idleReleaseRows), and asking after them refuses with "holds
 // no role process to bundle it".
+//
+// The shim is given the caller's own budget where that is the shorter one (workspaceBundleBound),
+// so the daemon's wait and the shim's build are one budget and never two. A caller that stopped
+// waiting while the shim went on building would leave that bundler holding the workspace into
+// the next ask for it, and two runs of it in one workspace share the ref prefix
+// `refs/legion-bundle/`, so one run's delete lands inside the other's `git bundle create`. The
+// copies the daemon takes while the pod runs are asked under a budget of four minutes
+// (internal/daemon's runningCopyBudget); the release's save passes no deadline of its own and
+// gets the whole of runtime.WorkspaceBundleTimeout, as it always did.
 func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceBundle, error) {
 	token, err := claim.NewToken(r.project, issue, role)
 	if err != nil {
@@ -1064,7 +1088,11 @@ func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.
 	if !ok {
 		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace: %s has no connection to ask over", issue, token)
 	}
-	bundle, err := conn.BundleWorkspace(ctx, issue, runtime.WorkspaceBundleTimeout)
+	bound := workspaceBundleBound(ctx)
+	if bound <= 0 {
+		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace over %s: %w", issue, token, context.DeadlineExceeded)
+	}
+	bundle, err := conn.BundleWorkspace(ctx, issue, bound)
 	if err != nil {
 		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace over %s: %w", issue, token, err)
 	}
@@ -1075,6 +1103,19 @@ func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.
 	// the running pod the claim's locator records.
 	bundle.PodUID = loc.Sandbox.PodUID
 	return bundle, nil
+}
+
+// workspaceBundleBound is how long the shim is given to build a workspace's bundle: the shorter
+// of runtime.WorkspaceBundleTimeout, the runtimes' own budget for the request, and what is left
+// of the caller's deadline. The far side then stops when the caller stops waiting, which is what
+// keeps one workspace from holding two runs of the bundler, and a caller with no deadline — the
+// idle release's save — is bounded by the request's budget alone.
+func workspaceBundleBound(ctx context.Context) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return runtime.WorkspaceBundleTimeout
+	}
+	return min(runtime.WorkspaceBundleTimeout, time.Until(deadline))
 }
 
 // RescueUnpushed has the claim's shim run the push check of its issue pod's disk over the claim's

@@ -77,16 +77,16 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 	if _, take, err := s.TakeRunningWorkspaceCopyForRestore(ctx, "INFRA-1117", "pod-0", replacement); err != nil || take != runtime.WorkspaceBundleNone {
 		t.Fatalf("an issue whose cadence has taken nothing reads %v, %v; want no copy", take, err)
 	}
-	if _, held, err := s.RunningWorkspaceCopy(ctx, "INFRA-1117"); err != nil || held {
-		t.Fatalf("an issue whose cadence has taken nothing holds a copy (held=%t, %v)", held, err)
+	if facts, err := s.RunningWorkspaceCopy(ctx, "INFRA-1117"); err != nil || facts.Held {
+		t.Fatalf("an issue whose cadence has taken nothing holds a copy (held=%t, %v)", facts.Held, err)
 	}
 	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", taken); err != nil {
 		t.Fatal(err)
 	}
-	facts, held, err := s.RunningWorkspaceCopy(ctx, "INFRA-1117")
-	if err != nil || !held || facts.Size != taken.Size() || !facts.At.Equal(at) {
+	facts, err := s.RunningWorkspaceCopy(ctx, "INFRA-1117")
+	if err != nil || !facts.Held || facts.Size != taken.Size() || !facts.At.Equal(at) {
 		t.Fatalf("the copy reads %d bytes taken at %s (held=%t, %v), want the %d saved at %s",
-			facts.Size, facts.At, held, err, taken.Size(), at)
+			facts.Size, facts.At, facts.Held, err, taken.Size(), at)
 	}
 	stored := storedRunningCopy(t, s, "INFRA-1117")
 	read, take, err := s.TakeRunningWorkspaceCopyForRestore(ctx, "INFRA-1117", "pod-1", replacement)
@@ -152,17 +152,17 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 			t.Fatal(err)
 		}
 	}
-	if _, held, err := s.RunningWorkspaceCopy(ctx, "INFRA-1117"); err != nil || !held {
-		t.Fatalf("a report of a copy the cadence replaced took the newer copy (held=%t, %v)", held, err)
+	if facts, err := s.RunningWorkspaceCopy(ctx, "INFRA-1117"); err != nil || !facts.Held {
+		t.Fatalf("a report of a copy the cadence replaced took the newer copy (held=%t, %v)", facts.Held, err)
 	}
-	if _, held, err := s.RunningWorkspaceCopy(ctx, "INFRA-2760"); err != nil || !held {
-		t.Fatalf("a report of one issue's copy took another issue's (held=%t, %v)", held, err)
+	if facts, err := s.RunningWorkspaceCopy(ctx, "INFRA-2760"); err != nil || !facts.Held {
+		t.Fatalf("a report of one issue's copy took another issue's (held=%t, %v)", facts.Held, err)
 	}
 	if err := s.DeleteRestoredRunningWorkspaceCopy(ctx, ids[1]); err != nil {
 		t.Fatal(err)
 	}
-	if _, held, err := s.RunningWorkspaceCopy(ctx, "INFRA-1117"); err != nil || held {
-		t.Fatalf("the copy the report named is still held (held=%t, %v)", held, err)
+	if facts, err := s.RunningWorkspaceCopy(ctx, "INFRA-1117"); err != nil || facts.Held {
+		t.Fatalf("the copy the report named is still held (held=%t, %v)", facts.Held, err)
 	}
 	// A report the daemon read twice finishes, and so does a delete of an issue holding nothing.
 	if err := s.DeleteRestoredRunningWorkspaceCopy(ctx, ids[1]); err != nil {
@@ -236,8 +236,8 @@ func TestARunningCopyLeavesTheIssueReleasableWhileItIsIdle(t *testing.T) {
 	if view := idleViewOf(t, st, rootIssue); view.BundleUnrestored {
 		t.Fatalf("view = %+v, want the confirmed release bundle gone from it", view)
 	}
-	if _, held, err := st.RunningWorkspaceCopy(ctx, rootIssue); err != nil || !held {
-		t.Fatalf("the running copy went with the release bundle's confirmation (held=%t, %v)", held, err)
+	if facts, err := st.RunningWorkspaceCopy(ctx, rootIssue); err != nil || !facts.Held {
+		t.Fatalf("the running copy went with the release bundle's confirmation (held=%t, %v)", facts.Held, err)
 	}
 }
 
@@ -310,9 +310,9 @@ func TestARunningCopyIsAnsweredToNeitherItsSourcePodNorAPodNoNewerThanTheBundle(
 		}
 	}
 	// The bytes stay, and they hold no pod: the next copy of the cadence replaces them.
-	facts, held, err := s.RunningWorkspaceCopy(ctx, "INFRA-1117")
-	if err != nil || !held || facts.Size != taken.Size() {
-		t.Fatalf("after the refusal the store holds %d bytes (held=%t, %v), want the %d taken kept", facts.Size, held, err, taken.Size())
+	facts, err := s.RunningWorkspaceCopy(ctx, "INFRA-1117")
+	if err != nil || !facts.Held || facts.Size != taken.Size() {
+		t.Fatalf("after the refusal the store holds %d bytes (held=%t, %v), want the %d taken kept", facts.Size, facts.Held, err, taken.Size())
 	}
 
 	// A pod's creationTimestamp has one-second resolution, so a pod created inside the copy's
@@ -357,9 +357,9 @@ func TestARunningCopyIsTakenForOneRestoreAttemptLikeAReleaseBundle(t *testing.T)
 		}
 	}
 	// The work is kept, and it holds no pod of the issue.
-	facts, held, err := s.RunningWorkspaceCopy(ctx, "INFRA-1117")
-	if err != nil || !held || facts.Size != taken.Size() {
-		t.Fatalf("after the attempt the store holds %d bytes (held=%t, %v), want the %d taken kept", facts.Size, held, err, taken.Size())
+	facts, err := s.RunningWorkspaceCopy(ctx, "INFRA-1117")
+	if err != nil || !facts.Held || facts.Size != taken.Size() {
+		t.Fatalf("after the attempt the store holds %d bytes (held=%t, %v), want the %d taken kept", facts.Size, facts.Held, err, taken.Size())
 	}
 	// The cadence's next copy is other work, so it has an attempt of its own.
 	newer := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of five minutes later"), Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9", At: at.Add(5 * time.Minute), PodUID: "pod-uid-3"}

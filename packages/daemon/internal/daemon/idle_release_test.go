@@ -251,11 +251,11 @@ func (r *idleRig) bundled(t *testing.T) bool {
 // release bundle drops with it.
 func (r *idleRig) copied(t *testing.T) bool {
 	t.Helper()
-	_, held, err := r.st.RunningWorkspaceCopy(context.Background(), r.issue.Key)
+	facts, err := r.st.RunningWorkspaceCopy(context.Background(), r.issue.Key)
 	if err != nil {
 		t.Fatalf("read the running copy: %v", err)
 	}
-	return held
+	return facts.Held
 }
 
 // copyWorkspace takes the copy the daemon takes while a pod runs, off the pod this rig's release
@@ -885,13 +885,15 @@ func TestTheWorkOfAFinishedIssueLeavesNoReleaseBundleAndNoRunningCopy(t *testing
 // That id is what the delete is routed on, and it says which of the two tables the copy is in:
 // the two draw from disjoint spaces (store.MinRunningWorkspaceCopyRestoreID). A report of one
 // kind must leave the other kind's row alone — the issue can hold both, and each is the only copy
-// of its own work.
+// of its own work. The routing is the store's own (store.DeleteRestoredWorkspaceCopy), which is
+// what the daemon hands the runtime (sandboxRuntime) and what the sandbox runtime's own restore
+// tests drive their reports through.
 func TestALateRestoreReportDropsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	st := outboxTreeStore(t, pool, "LEGION-208")
 	const issue, release = "LEGION-208", int64(11)
-	restored := restoredWorkspaceCopy(st)
+	restored := st.DeleteRestoredWorkspaceCopy
 
 	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the release saved"), Head: "abc",
 		At: time.Now().UTC(), PodUID: "pod-being-released"}
@@ -917,8 +919,8 @@ func TestALateRestoreReportDropsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 	if err := restored(ctx, issue, sent.Release); err != nil {
 		t.Fatalf("drop the restored running copy: %v", err)
 	}
-	if _, held, err := st.RunningWorkspaceCopy(ctx, issue); err != nil || held {
-		t.Fatalf("after the report of the running copy the store holds it = %t (%v), want it dropped", held, err)
+	if facts, err := st.RunningWorkspaceCopy(ctx, issue); err != nil || facts.Held {
+		t.Fatalf("after the report of the running copy the store holds it = %t (%v), want it dropped", facts.Held, err)
 	}
 	facts, err := st.WorkspaceBundleFacts(ctx, issue)
 	if err != nil || !facts.Held || facts.Size != len(saved.Bundle) {
@@ -937,8 +939,8 @@ func TestALateRestoreReportDropsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 	if facts, err := st.WorkspaceBundleFacts(ctx, issue); err != nil || facts.Held {
 		t.Fatalf("after the report of the release the store holds the bundle = %t (%v), want it dropped", facts.Held, err)
 	}
-	if _, held, err := st.RunningWorkspaceCopy(ctx, issue); err != nil || !held {
-		t.Fatalf("after the report of the release the store holds the running copy = %t (%v), want the newer copy kept", held, err)
+	if facts, err := st.RunningWorkspaceCopy(ctx, issue); err != nil || !facts.Held {
+		t.Fatalf("after the report of the release the store holds the running copy = %t (%v), want the newer copy kept", facts.Held, err)
 	}
 
 	// A report of either kind that no row holds — a copy its issue has saved over, a release
@@ -949,7 +951,7 @@ func TestALateRestoreReportDropsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 	if err := restored(ctx, issue, store.MinRunningWorkspaceCopyRestoreID); err != nil {
 		t.Fatalf("a report of a running copy the issue has replaced: %v", err)
 	}
-	if _, held, err := st.RunningWorkspaceCopy(ctx, issue); err != nil || !held {
-		t.Fatalf("after the reports of rows the store no longer holds the running copy = %t (%v), want it kept", held, err)
+	if facts, err := st.RunningWorkspaceCopy(ctx, issue); err != nil || !facts.Held {
+		t.Fatalf("after the reports of rows the store no longer holds the running copy = %t (%v), want it kept", facts.Held, err)
 	}
 }

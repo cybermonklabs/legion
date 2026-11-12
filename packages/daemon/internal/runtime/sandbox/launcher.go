@@ -542,8 +542,9 @@ func (d *launchers) closeOlderWorkspaceCopy(ctx context.Context, token claim.Tok
 // the issue's row on such a report would take work no pod holds any more. The id says both which
 // kind of copy it is and which row of that kind, because the two kinds draw their ids from
 // disjoint spaces (store.MinRunningWorkspaceCopyRestoreID); which of the two tables it names is
-// the daemon's to decide (runtime.WorkspaceBundleRestored), not this package's, and a report
-// naming a row either table has replaced deletes nothing.
+// read by the store that owns both (store.DeleteRestoredWorkspaceCopy, which the daemon hands
+// this package as runtime.WorkspaceBundleRestored), not here, and a report naming a row either
+// table has replaced deletes nothing.
 //
 // It runs on the launcher's own frame loop rather than in a goroutine of its own, so a pod whose
 // restore is confirmed has its copy gone before any later frame of that launcher is read; the

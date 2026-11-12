@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -142,20 +144,20 @@ func (r *copyRig) setClaimState(t *testing.T, state string) {
 }
 
 // facts is what the issue's running copy says of itself, and whether it holds one at all.
-func (r *copyRig) facts(t *testing.T) (store.RunningWorkspaceCopyFacts, bool) {
+func (r *copyRig) facts(t *testing.T) (runtime.WorkspaceCopyFacts, bool) {
 	t.Helper()
-	facts, held, err := r.st.RunningWorkspaceCopy(context.Background(), r.issue.Key)
+	facts, err := r.st.RunningWorkspaceCopy(context.Background(), r.issue.Key)
 	if err != nil {
 		t.Fatalf("read the issue's running copy: %v", err)
 	}
-	return facts, held
+	return facts, facts.Held
 }
 
 // awaitCopy waits for the issue to hold a copy of size bytes, which is how a test reads the end
 // of a copy the cadence took on a goroutine of its own.
-func (r *copyRig) awaitCopy(t *testing.T, size int) store.RunningWorkspaceCopyFacts {
+func (r *copyRig) awaitCopy(t *testing.T, size int) runtime.WorkspaceCopyFacts {
 	t.Helper()
-	var facts store.RunningWorkspaceCopyFacts
+	var facts runtime.WorkspaceCopyFacts
 	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
 		found, held := r.facts(t)
 		facts = found
@@ -193,7 +195,7 @@ func (r *copyRig) awaitQuiet(t *testing.T) {
 func (r *copyRig) wind(t *testing.T) {
 	t.Helper()
 	r.awaitQuiet(t)
-	r.w.copies.done(r.issue.Key, time.Now().Add(-r.w.runningCopyPeriod()))
+	r.w.copies.done(r.issue.Key, time.Now().Add(-r.w.runningCopyPeriod()), r.w.runningCopyPeriod())
 }
 
 // lines is every log record the daemon wrote under msg, as its attributes.
@@ -476,7 +478,7 @@ func TestEachFailedWorkspaceCopyIsLoggedByItsReasonAndLeavesTheIdleIssuesCopyAsI
 			}
 			tc.fail(t, rig)
 
-			rig.w.takeRunningCopy(ctx, rig.issue.Key)
+			rig.w.takeRunningCopy(ctx, rig.issue.Key, nil)
 
 			line := rig.awaitLine(t, runningCopyUnsavedLine)
 			if got := line["reason"]; got != tc.reason {
@@ -497,7 +499,7 @@ func TestEachFailedWorkspaceCopyIsLoggedByItsReasonAndLeavesTheIdleIssuesCopyAsI
 			taken := copyRigBundle
 			taken.Bundle, taken.Head, taken.Tips, taken.At = []byte("PACK the work the next period copied"), "f00d", []string{"f00d"}, time.Now().UTC()
 			rig.bundler.answers(taken, nil)
-			rig.w.takeRunningCopy(ctx, rig.issue.Key)
+			rig.w.takeRunningCopy(ctx, rig.issue.Key, nil)
 			if stored, held := rig.facts(t); !held || stored.Size != len(taken.Bundle) {
 				t.Fatalf("the copy of the next period = %+v (held %v), want the %d bytes it took", stored, held, len(taken.Bundle))
 			}
@@ -520,7 +522,7 @@ func TestAWorkspaceThatBundlesToNothingDropsTheIssuesRunningCopy(t *testing.T) {
 	empty.Bundle, empty.Head, empty.Tips, empty.At = nil, "", nil, time.Now().UTC()
 	rig.bundler.answers(empty, nil)
 
-	rig.w.takeRunningCopy(ctx, rig.issue.Key)
+	rig.w.takeRunningCopy(ctx, rig.issue.Key, nil)
 
 	if facts, held := rig.facts(t); held {
 		t.Fatalf("the issue still holds %+v, want the copy of work that has since been pushed dropped", facts)
@@ -543,6 +545,62 @@ func TestTheWorkspaceCopyIsBundledWithIdleReleaseOff(t *testing.T) {
 	rig.w.copyWorkingWorkspaces(context.Background())
 
 	rig.awaitCopy(t, len(copyRigBundle.Bundle))
+}
+
+// The Envoy listener's liveness gate is the idle release's and not the cadence's. A deployment
+// whose listener has not reported inside the window releases no pod, because a released pod is
+// woken by nothing; its pods go on working all the same, and the work of those pods is what a
+// copy holds against an eviction. So the pass takes its copy with the listener silent — the gate
+// would otherwise cost every in-turn copy of such a deployment while the copy each turn's end
+// takes went on running.
+func TestTheWorkspaceCopyIsBundledWhileTheEnvoyListenerIsSilent(t *testing.T) {
+	rig := newCopyRig(t)
+	recordListenerReady(t, rig.pool, time.Now().UTC().Add(-listenerReadyWindow-time.Minute))
+	if rig.w.listenerLive(context.Background()) {
+		t.Fatal("the listener still reads live; this case is about a deployment whose listener has gone quiet")
+	}
+	rig.turnStart(t)
+
+	rig.w.copyWorkingWorkspaces(context.Background())
+
+	rig.awaitCopy(t, len(copyRigBundle.Bundle))
+}
+
+// The cadence's own memory holds one entry per issue it has copied, and an entry whose copy is
+// not in flight and whose period has passed answers due exactly as a missing one does. Such an
+// entry is dropped where the map is written, so a daemon that runs for weeks holds entries for
+// the issues it is copying rather than for every issue it has ever copied.
+func TestTheCadenceForgetsAnIssueWhoseWorkspaceCopyPeriodHasPassed(t *testing.T) {
+	var copies runningCopies
+	const period = 5 * time.Minute
+	now := time.Now()
+	for _, issue := range []string{"INFRA-1", "INFRA-2"} {
+		if !copies.begin(issue) {
+			t.Fatalf("the cadence refused the first copy of %s", issue)
+		}
+		copies.done(issue, now.Add(-2*period), period)
+	}
+	if !copies.begin("INFRA-3") {
+		t.Fatal("the cadence refused the first copy of INFRA-3")
+	}
+
+	copies.done("INFRA-3", now, period)
+
+	copies.mu.Lock()
+	held := slices.Sorted(maps.Keys(copies.issues))
+	copies.mu.Unlock()
+	if want := []string{"INFRA-3"}; !slices.Equal(held, want) {
+		t.Fatalf("the cadence remembers %v, want %v: an entry whose period has passed is dropped where the map is written", held, want)
+	}
+	// The issues it forgot are due at once, which is what the entries it dropped said too.
+	for _, issue := range []string{"INFRA-1", "INFRA-2"} {
+		if !copies.due(issue, now, period) {
+			t.Fatalf("%s is not due though the cadence forgot it; a dropped entry must answer as a missing one", issue)
+		}
+	}
+	if copies.due("INFRA-3", now, period) {
+		t.Fatal("the copy that just ended is due again at once")
+	}
 }
 
 // What does turn the cadence off is having nothing to ask or nowhere to put the answer: a runtime

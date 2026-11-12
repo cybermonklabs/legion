@@ -22,27 +22,16 @@ const testRelease int64 = 11
 
 // withSavedWorkspace gives the rig's runtime the four halves of a restore over st: the facts of
 // the two copies an issue may hold, the take of each, and the delete the launcher's report runs,
-// routed on the restore id alone as the daemon routes it (daemon's restoredWorkspaceCopy, whose
-// own test lives there, since the daemon package is the one that may not be imported here).
+// routed on the restore id alone by the store that owns both tables
+// (store.DeleteRestoredWorkspaceCopy), which is the same method the daemon wires onto this
+// option in production (daemon's sandboxRuntime).
 func withSavedWorkspace(st *store.Store) rigOption {
 	return withOptions(func(o *Options) {
 		o.SavedWorkspaceCopies = st.SavedWorkspaceCopies
 		o.SavedWorkspaceBundle = st.TakeWorkspaceBundleForRestore
 		o.SavedRunningWorkspaceCopy = st.TakeRunningWorkspaceCopyForRestore
-		o.WorkspaceBundleRestored = restoredCopyOf(st)
+		o.WorkspaceBundleRestored = st.DeleteRestoredWorkspaceCopy
 	})
-}
-
-// restoredCopyOf is the daemon's routing of a restore report, as these tests need it: an id at or
-// above store.MinRunningWorkspaceCopyRestoreID names a running copy, one below it the bundle of
-// that release.
-func restoredCopyOf(st *store.Store) runtime.WorkspaceBundleRestored {
-	return func(ctx context.Context, issue string, restore int64) error {
-		if restore >= store.MinRunningWorkspaceCopyRestoreID {
-			return st.DeleteRestoredRunningWorkspaceCopy(ctx, restore)
-		}
-		return st.DeleteRestoredWorkspaceBundle(ctx, issue, restore)
-	}
 }
 
 // runningWorkspaceCopy is the copy of a live pod's workspace as the daemon's cadence takes it:
@@ -319,7 +308,7 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 	}
 
 	d := newLaunchers(st.SavedWorkspaceCopies, st.TakeWorkspaceBundleForRestore,
-		st.TakeRunningWorkspaceCopyForRestore, restoredCopyOf(st), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		st.TakeRunningWorkspaceCopyForRestore, st.DeleteRestoredWorkspaceCopy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	spec := workerSpec(t)
 	session := d.accept(spec.Claim, testTree, rigNow, shimwire.LauncherHello{LauncherID: "late", PodUID: "pod-uid"})
 	frames, err := bundleFrames(testTree, first)
@@ -540,8 +529,8 @@ func TestAPodWhoseIssueHoldsOnlyARunningWorkspaceCopyRestoresIt(t *testing.T) {
 	}
 	// The launcher reported the restore, and the report's id named the running copy: that row is
 	// gone and the issue holds nothing of either kind.
-	if _, held, err := st.RunningWorkspaceCopy(g.ctx, testTree); err != nil || held {
-		t.Fatalf("after the launcher reported its restore the store holds the running copy = %t (%v), want it dropped", held, err)
+	if facts, err := st.RunningWorkspaceCopy(g.ctx, testTree); err != nil || facts.Held {
+		t.Fatalf("after the launcher reported its restore the store holds the running copy = %t (%v), want it dropped", facts.Held, err)
 	}
 	if facts, err := st.WorkspaceBundleFacts(g.ctx, testTree); err != nil || facts.Held {
 		t.Fatalf("the store holds a release bundle = %t (%v), want none: the issue was never released", facts.Held, err)
@@ -603,8 +592,8 @@ func TestAPodWhoseIssueHoldsBothSavedCopiesRestoresTheNewerAndClosesTheOlder(t *
 	}
 	// The newer copy went back and its report dropped it, so the issue is left holding the one
 	// copy nothing restored.
-	if _, held, err := st.RunningWorkspaceCopy(g.ctx, testTree); err != nil || held {
-		t.Fatalf("after the launcher reported its restore the store holds the running copy = %t (%v), want it dropped", held, err)
+	if facts, err := st.RunningWorkspaceCopy(g.ctx, testTree); err != nil || facts.Held {
+		t.Fatalf("after the launcher reported its restore the store holds the running copy = %t (%v), want it dropped", facts.Held, err)
 	}
 }
 
@@ -636,10 +625,10 @@ func TestAFailedRestoreOfARunningWorkspaceCopyKeepsItAndHoldsNoPod(t *testing.T)
 			t.Fatalf("the failed restore logged %s, want it to carry %s", line, want)
 		}
 	}
-	facts, held, err := st.RunningWorkspaceCopy(g.ctx, testTree)
-	if err != nil || !held || facts.Size != len(taken.Bundle) {
+	facts, err := st.RunningWorkspaceCopy(g.ctx, testTree)
+	if err != nil || !facts.Held || facts.Size != len(taken.Bundle) {
 		t.Fatalf("after the failed restore the store holds %d bytes of the running copy (held=%t, %v), want its %d kept",
-			facts.Size, held, err, len(taken.Bundle))
+			facts.Size, facts.Held, err, len(taken.Bundle))
 	}
 	// That send was the copy's one attempt: the pod after this one is sent nothing of it.
 	after, take, err := st.TakeRunningWorkspaceCopyForRestore(g.ctx, testTree, "pod-after-the-failure", rigNow.Add(time.Hour))
