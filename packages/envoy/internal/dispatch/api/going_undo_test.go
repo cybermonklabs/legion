@@ -342,6 +342,60 @@ func TestGoingUndoRefusesAFieldAnotherWriterChangedAndUndoesTheRest(t *testing.T
 	}
 }
 
+// TestGoingUndoPutsARankBackBetweenItsOldNeighbours: an issue's rank is a field the undo writes
+// back, by naming the issues it stood between before the write; one another writer moved again
+// since is refused for its rank, naming where it stands now, while the turn's other fields are
+// undone.
+func TestGoingUndoPutsARankBackBetweenItsOldNeighbours(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	first := createInteractionIssue(t, rig.mux, "DEMO", "First in line", "The spec.\n").Key
+	second, third, moved := rig.issue(t, "Second in line"), rig.issue(t, "Third in line"), rig.issue(t, "Moved about")
+	rank := func(key string) string {
+		t.Helper()
+		return rig.issueRead(t, key).Rank
+	}
+	between := func(t *testing.T, key, after, before string) bool {
+		t.Helper()
+		at := rank(key)
+		return (after == "" || rank(after) < at) && (before == "" || at < rank(before))
+	}
+	if !between(t, moved, third, "") {
+		t.Fatalf("%s is not last in its project to begin with", moved)
+	}
+
+	t.Run("a move is undone between the old neighbours", func(t *testing.T) {
+		run, line := rig.runOne(t, "dispatch_issue_update", map[string]any{"issue": moved, "after": first, "before": second}, nil)
+		if !between(t, moved, first, second) || !strings.Contains(line.Field, "rank") {
+			t.Fatalf("the move answered %+v and did not put %s between %s and %s", line, moved, first, second)
+		}
+		oneLine(t, rig.undo(t, "alice", run, nil), true)
+		if !between(t, moved, third, "") {
+			t.Fatalf("after the undo %s stands at %s, want after %s (%s) again", moved, rank(moved), third, rank(third))
+		}
+	})
+
+	t.Run("a move another writer made since is refused for rank, the rest undone", func(t *testing.T) {
+		status := rig.issueRead(t, moved).Status
+		run, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{
+			"issue": moved, "status": "in_progress", "after": first, "before": second,
+		}, nil)
+		rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+moved, map[string]any{"rank": map[string]any{"after": second, "before": third}})
+		line := oneLine(t, rig.undo(t, "alice", run, nil), false)
+		fields := map[string]goingUndoField{}
+		for _, field := range line.Fields {
+			fields[field.Field] = field
+		}
+		if line.Outcome.Code != codeGoingUndoChanged || fields["rank"].OK || !fields["status"].OK ||
+			!strings.Contains(fields["rank"].Message, second) || !strings.Contains(fields["rank"].Message, third) {
+			t.Fatalf("the undo answered %+v, want rank refused naming where bob left it and status put back", line)
+		}
+		if !between(t, moved, second, third) || rig.issueRead(t, moved).Status != status {
+			t.Fatalf("after the undo %s is %s at %s, want bob's place kept and the status back to %s",
+				moved, rig.issueRead(t, moved).Status, rank(moved), status)
+		}
+	})
+}
+
 // TestGoingUndoTwoUndosOfOneRunTakeTurns: two undos of one run sent at once undo each write once:
 // the second waits for the first, reads what it recorded, and finds nothing left to undo.
 // (awaitResponse's two seconds are too short for an undo waiting out another's three writes.)

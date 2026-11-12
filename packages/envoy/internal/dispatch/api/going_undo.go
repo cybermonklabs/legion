@@ -119,7 +119,7 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 	if actor.Credential != nil {
 		undoer.session = actor.Credential.Session
 	}
-	undoer.observer = goingObserver{read: goingReader{doer: undoer.doer}}
+	undoer.observer = goingObserver{read: goingReader{doer: undoer.doer}, s: s}
 	settled := map[string]bool{}
 	for _, undo := range run.Undos {
 		if undo.Outcome.OK || undo.Settled {
@@ -261,27 +261,59 @@ func goingChanged(changes []string, restored []string) goingWriteOutcome {
 	return goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoChanged, Message: message}
 }
 
-// goingRank is the field an issue's rank is recorded under, which no write back can name: a rank
-// is written by naming the issue's neighbours, and the place it held is not one an update names.
+// goingRank is the field an issue's rank is recorded under. Its value is the issue's place
+// (goingRankPlace): its rank and the neighbours it stood between, since a rank is written by
+// naming neighbours.
 const goingRank = "rank"
 
 // issueFields writes back each field of the issue the write changed that still holds what the
-// write left, and names each one another writer changed since. An issue's rank is never written
-// back: a rank is written by naming the issue's neighbours, and the place it held is not one an
-// update names.
+// write left, and names each one another writer changed since. The rank is put back between the
+// neighbours the issue stood between before the write (rankRestore), while the issue's rank is
+// still the one the write left; a neighbour that is no longer an issue of the project is passed
+// over, and with neither left the rank is refused, naming why.
 func (u goingUndoer) issueFields(ctx context.Context, write goingRunWrite) (any, goingWriteOutcome, []goingUndoField) {
 	read := func(fields []string) (map[string]any, error) {
 		current, err := u.observer.issueFields(ctx, write.Target, fields)
 		now, _ := current.value.(map[string]any)
 		return now, err
 	}
-	unwritable := func(field string) string {
-		if field == goingRank {
-			return "rank: an issue's place is written by naming its neighbours, so the place it held cannot be written back"
+	restoreOf := func(field string, held, before, after json.RawMessage) (any, string) {
+		if field != goingRank {
+			if !goingSameJSON(held, after) {
+				return nil, goingChangedField(field, held)
+			}
+			return goingWriteBackValue(field, before), ""
 		}
-		return ""
+		var heldPlace, beforePlace, afterPlace goingRankPlace
+		if json.Unmarshal(held, &heldPlace) != nil || json.Unmarshal(before, &beforePlace) != nil || json.Unmarshal(after, &afterPlace) != nil {
+			return nil, "rank: the write's record holds no place to put the issue back in"
+		}
+		// Its neighbours move as other issues are ranked; only its own rank says whether another
+		// writer moved this issue.
+		if heldPlace.Rank != afterPlace.Rank {
+			return nil, fmt.Sprintf("rank: the issue was moved again since this write, between %s and %s",
+				goingNeighbourText(heldPlace.After), goingNeighbourText(heldPlace.Before))
+		}
+		restore, why := u.observer.rankRestore(ctx, write.Target, beforePlace)
+		if why != "" {
+			return nil, why
+		}
+		return restore, ""
 	}
-	return u.writeBack(ctx, write, read, goingIssuePath(write.Target), unwritable, goingWriteBackValue)
+	return u.writeBack(ctx, write, read, goingIssuePath(write.Target), restoreOf)
+}
+
+// goingNeighbourText names a rank neighbour, or says there is none.
+func goingNeighbourText(key *string) string {
+	if key == nil {
+		return "nothing"
+	}
+	return *key
+}
+
+// goingChangedField is the refusal of a field another writer changed since the write.
+func goingChangedField(field string, held json.RawMessage) string {
+	return fmt.Sprintf("%s holds %s now, which another write left", field, held)
 }
 
 // goingWriteBackValue is a field's value before a write as an update writes it back: a route the
@@ -301,18 +333,22 @@ func (u goingUndoer) askFields(ctx context.Context, write goingRunWrite) (any, g
 		now, _ := current.value.(map[string]any)
 		return now, err
 	}
-	writable := func(string) string { return "" }
-	asWritten := func(_ string, before json.RawMessage) any { return goingJSONOrNullRaw(before) }
-	return u.writeBack(ctx, write, read, goingAskPath(write.Target), writable, asWritten)
+	restoreOf := func(field string, held, before, after json.RawMessage) (any, string) {
+		if !goingSameJSON(held, after) {
+			return nil, goingChangedField(field, held)
+		}
+		return goingJSONOrNullRaw(before), ""
+	}
+	return u.writeBack(ctx, write, read, goingAskPath(write.Target), restoreOf)
 }
 
-// writeBack is a write back of the fields one write changed, by one PATCH to path: each field
-// that still holds what the write left gets the value it held before it (value), and each field
-// unwritable names, or another writer changed since, is left as it is and named, with what it
-// holds now. Every field's own outcome is answered beside the write's.
+// writeBack is a write back of the fields one write changed, by one PATCH to path: restoreOf says,
+// from what each field holds now, held before the write and was left by it, the value the PATCH
+// writes back, or why the field is left as it is - another writer changed it since. Every field's
+// own outcome is answered beside the write's.
 func (u goingUndoer) writeBack(
 	ctx context.Context, write goingRunWrite, read func([]string) (map[string]any, error), path string,
-	unwritable func(string) string, value func(string, json.RawMessage) any,
+	restoreOf func(field string, held, before, after json.RawMessage) (any, string),
 ) (any, goingWriteOutcome, []goingUndoField) {
 	var before, after map[string]json.RawMessage
 	if json.Unmarshal(write.Before, &before) != nil || json.Unmarshal(write.After, &after) != nil {
@@ -327,17 +363,13 @@ func (u goingUndoer) writeBack(
 	var changes, restored []string
 	outcomes := make([]goingUndoField, 0, len(fields))
 	for _, field := range fields {
-		held := goingJSONOrNull(now[field])
-		why := unwritable(field)
-		if why == "" && !goingSameJSON(held, after[field]) {
-			why = fmt.Sprintf("%s holds %s now, which another write left", field, held)
-		}
+		value, why := restoreOf(field, goingJSONOrNull(now[field]), goingJSONOrNullRaw(before[field]), after[field])
 		if why != "" {
 			changes = append(changes, why)
 			outcomes = append(outcomes, goingUndoField{Field: field, Message: why})
 			continue
 		}
-		restore[field] = value(field, before[field])
+		restore[field] = value
 		restored = append(restored, field)
 		outcomes = append(outcomes, goingUndoField{Field: field, OK: true})
 	}

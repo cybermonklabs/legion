@@ -254,7 +254,7 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		s.refuseGoingWrite(w, r, run.ID, caller.ID, write, goingObservation{}, err)
 		return
 	}
-	observer := goingObserver{read: performer.reader()}
+	observer := goingObserver{read: performer.reader(), s: s}
 	before, err := observer.observe(r.Context(), prepared, nil, goingObservation{})
 	if err != nil {
 		s.refuseGoingWrite(w, r, run.ID, caller.ID, write, before, err)
@@ -460,9 +460,11 @@ type goingObservation struct {
 }
 
 // goingObserver reads the value a write is about to change and the value it left (decision 6),
-// through the caller's own Doer.
+// through the caller's own Doer. An issue's place in its project's ranking is read from the
+// store (rankPlace), since no route answers an issue's neighbours in rank order.
 type goingObserver struct {
 	read goingReader
+	s    *server
 }
 
 // The field each write that names no field of its own changes.
@@ -658,9 +660,76 @@ func (o goingObserver) issueFields(ctx context.Context, key string, fields []str
 	key = cmp.Or(canonical, key)
 	values := make(map[string]any, len(fields))
 	for _, field := range fields {
+		if field == goingRank {
+			place, err := o.rankPlace(ctx, key)
+			if err != nil {
+				return goingObservation{target: key, field: strings.Join(fields, ", "), issue: key}, err
+			}
+			values[field] = place
+			continue
+		}
 		values[field] = goingIssueFieldValue(issue, field)
 	}
 	return goingObservation{target: key, field: strings.Join(fields, ", "), issue: key, value: values}, nil
+}
+
+// goingRankPlace is an issue's place in its project's ranking: its rank, and the issues just
+// before it (After, the rank route's `after`) and just after it (Before, its `before`) among every
+// issue of the project in rank order, the ordering the rank route places an issue in
+// (rankForInput). A neighbour is nil where the issue is first or last.
+type goingRankPlace struct {
+	Rank   string  `json:"rank"`
+	After  *string `json:"after"`
+	Before *string `json:"before"`
+}
+
+// rankPlace reads the issue's place in its project's ranking.
+func (o goingObserver) rankPlace(ctx context.Context, key string) (goingRankPlace, error) {
+	var place goingRankPlace
+	err := o.s.deps.Store.Pool.QueryRow(ctx, `
+		select i.rank,
+		  (select p.key from issues p where p.project_key = i.project_key and p.key <> i.key and p.rank < i.rank
+		     order by p.rank desc limit 1),
+		  (select n.key from issues n where n.project_key = i.project_key and n.key <> i.key and n.rank > i.rank
+		     order by n.rank limit 1)
+		from issues i where i.key = $1
+	`, key).Scan(&place.Rank, &place.After, &place.Before)
+	if err != nil {
+		return goingRankPlace{}, fmt.Errorf("read %s's place in its project's ranking: %w", key, err)
+	}
+	return place, nil
+}
+
+// rankRestore is how a write back puts an issue at the place it held: between the two neighbours
+// it had, those of them that are still issues of its project, or both where they still stand in
+// order, and why it cannot where neither is.
+func (o goingObserver) rankRestore(ctx context.Context, key string, place goingRankPlace) (map[string]any, string) {
+	ranks := map[string]string{}
+	for _, neighbour := range []*string{place.After, place.Before} {
+		if neighbour == nil {
+			continue
+		}
+		var rank string
+		if err := o.s.deps.Store.Pool.QueryRow(ctx, `
+			select n.rank from issues n join issues i on i.key = $2 and i.project_key = n.project_key
+			where n.key = $1
+		`, *neighbour, key).Scan(&rank); err == nil {
+			ranks[*neighbour] = rank
+		}
+	}
+	restore := map[string]any{}
+	if place.After != nil && ranks[*place.After] != "" {
+		restore["after"] = *place.After
+	}
+	if place.Before != nil && ranks[*place.Before] != "" {
+		if after, both := restore["after"].(string); !both || ranks[after] < ranks[*place.Before] {
+			restore["before"] = *place.Before
+		}
+	}
+	if len(restore) == 0 {
+		return nil, "rank: neither issue it stood between is an issue of its project now, so its place cannot be named back"
+	}
+	return restore, ""
 }
 
 // goingIssueFieldValue is one field of an issue's read as an update writes it.
