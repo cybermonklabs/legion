@@ -50,8 +50,8 @@ const (
 	// Lease names the lease one pass runs under. It is not what makes the pass safe to run twice
 	// -- every write it makes is a compare-and-swap that applies an observation GitHub already
 	// holds, so two passes at once write one record -- it is the GitHub budget: each pass reads
-	// every open pull request of every mapped repository, and N processes passing is N times those
-	// reads for one result.
+	// every open pull request of every repository a mapping or an issue names, and N processes
+	// passing is N times those reads for one result.
 	Lease = "ci-reconcile"
 
 	// RequestPace is the pause a running pass leaves between the requests it sends GitHub: two a
@@ -82,7 +82,8 @@ type Writer interface {
 // own. One Reconciler runs one pass at a time: it remembers between passes the ETags GitHub
 // answered with and the pages they belong to, and nothing guards that memory.
 type Reconciler struct {
-	// Pool reads repo_projects, the repositories Dispatch is mapped to.
+	// Pool reads repo_projects and issues: the repositories mapped to projects and the
+	// repositories issues name as their own, which are the repositories a pass reads.
 	Pool *store.Pool
 	// GitHub reads the repositories, their open pull requests and each head's check objects, as
 	// the App the listener's webhook is of (R5: no credential of its own).
@@ -208,11 +209,12 @@ func (r *Reconciler) Pass(ctx context.Context) {
 	r.report(&c, at, time.Since(started))
 }
 
-// reconcile is one pass over every mapped repository, and the stop that ended it early.
+// reconcile is one pass over every repository a mapping or an issue names, and the stop that ended
+// it early.
 func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *stop {
-	rows, err := r.mapped(ctx)
+	rows, err := r.repositories(ctx)
 	if err != nil {
-		r.Logger.Warn("ci reconcile read no repository mappings", "error", err)
+		r.Logger.Warn("ci reconcile read no repositories", "error", err)
 		return nil
 	}
 	seenRows := make(map[string]struct{}, len(rows))
@@ -315,36 +317,46 @@ func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *s
 	return nil
 }
 
-// mapped is every repository repo_projects maps to a project, each named as the repository is
-// called today: the row's own `owner/name`, lower-cased with any `.git` stripped, or, where the
-// row names a rename, what its renamed_to names. They are read in one order so two passes read
-// GitHub in the same order, and each distinct name comes back once, since two rows naming one
-// repository are one repository to read.
+// repositories is every repository a pass reads: each repository repo_projects maps to a project,
+// and each repository an issue names as its own, which need not be mapped to any project. Each is
+// named as the repository is called today: the stored `owner/name`, lower-cased with any `.git`
+// stripped, or, where a mapping of that name records a rename, what its renamed_to names. They are
+// read in one order so two passes read GitHub in the same order, and each distinct name comes back
+// once, since a mapping and an issue naming one repository, or two names of one renamed
+// repository, are one repository to read.
 //
-// The canonical name is read rather than the row's own because a pass must never ask GitHub
+// The issues are read as well as the mappings because a tree can work in a repository no project
+// maps, and a head there whose completion webhook was lost would otherwise never settle. Each
+// distinct issue repository is canonicalised once, not once per issue.
+//
+// The canonical name is read rather than the stored one because a pass must never ask GitHub
 // about a name a repository was renamed away from: GitHub answers 404 for that name's
 // installation, so RepositoryToken fails for it and the row is skipped with `ci reconcile
 // skipped a repository it holds no token for`, a WARN every pass would log for ever about a
 // name no one can read by design. The rule is the server's one renaming rule spliced in rather
 // than written again here (refs.CanonicalRepoSQL), so this read and every other reader of the
 // rule cannot come to different answers.
-func (r *Reconciler) mapped(ctx context.Context) ([]string, error) {
-	rows, err := r.Pool.Query(ctx, `select distinct `+refs.CanonicalRepoSQL("mapping.repo")+` as repository
-		from repo_projects mapping order by repository`)
+func (r *Reconciler) repositories(ctx context.Context) ([]string, error) {
+	rows, err := r.Pool.Query(ctx, `select `+refs.CanonicalRepoSQL("mapping.repo")+` as repository
+		from repo_projects mapping
+		union
+		select `+refs.CanonicalRepoSQL("issued.repo")+`
+		from (select distinct repo from issues where repo is not null) issued
+		order by repository`)
 	if err != nil {
-		return nil, fmt.Errorf("read the repositories mapped to projects: %w", err)
+		return nil, fmt.Errorf("read the repositories that mappings and issues name: %w", err)
 	}
 	defer rows.Close()
 	var repositories []string
 	for rows.Next() {
 		var repository string
 		if err := rows.Scan(&repository); err != nil {
-			return nil, fmt.Errorf("read a mapped repository: %w", err)
+			return nil, fmt.Errorf("read a repository: %w", err)
 		}
 		repositories = append(repositories, repository)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the repositories mapped to projects: %w", err)
+		return nil, fmt.Errorf("read the repositories that mappings and issues name: %w", err)
 	}
 	return repositories, nil
 }
