@@ -121,12 +121,6 @@ export const TARGETS: Readonly<Record<CaseKind, SliceTargets>> = {
   question: { fit: 20, report: 50, anchor: 12 },
 };
 
-/** The three slices every number of a round is read over, in the order they are printed. */
-export const SCORED_SLICES = ["fit", "report", "anchor"] as const;
-
-/** One of the three slices a round scores and a manifest is written for. */
-export type ScoredSlice = (typeof SCORED_SLICES)[number];
-
 /** The kinds of case, in the order every count of them is held and printed. */
 export const KINDS: readonly CaseKind[] = ["approval", "question"];
 

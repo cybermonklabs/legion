@@ -877,9 +877,9 @@ async function evidenceOf(
   caseId: string,
   corpus: Corpus
 ): Promise<{ documents: ReplayedDocument[]; issueTitle: string | null; neighbours: CaseRow[] }> {
-  const path = cachePath(round, caseId);
   const { cache, miss } = await readEvidenceCache(round, caseId);
   if (cache === null) {
+    const path = cachePath(round, caseId);
     throw new FreshError(
       miss === "no file"
         ? `${path} could not be read, so the case ${caseId} has no cached evidence: this reads ` +
@@ -892,7 +892,8 @@ async function evidenceOf(
     const row = corpus.byCaseId.get(one.caseId);
     if (row === undefined) {
       throw new FreshError(
-        `${path} names the neighbour ${one.caseId}, which this corpus does not hold`
+        `${cachePath(round, caseId)} names the neighbour ${one.caseId}, which this corpus ` +
+          "does not hold"
       );
     }
     neighbours.push(row);

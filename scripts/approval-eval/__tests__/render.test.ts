@@ -217,11 +217,12 @@ describe("assertNoLeak", () => {
   });
 
   /**
-   * The draw groups a case by `leadDocumentOf`, which takes the first document naming both an
-   * artifact and a version. The guard reads that same document, so a document naming a version
-   * and no artifact — one the draw never drew by — does not set the version guarded.
+   * The version rule is the lowest version the case asked about, over every document of it.
+   * A request's documents are asked about together, so an approval of the lower-numbered one
+   * is as much the answer as an approval of the lead document the draw recorded, and a
+   * document naming a version and no artifact is a document the request asked about.
    */
-  test("guards the version of the document the case is drawn by", () => {
+  test("guards the lowest version asked about, whichever document carries it", () => {
     const row = caseRow({
       approval: {
         documents: [
@@ -237,6 +238,59 @@ describe("assertNoLeak", () => {
     }).toThrow(/at or above the requested version 3/);
     expect(() => {
       assertNoLeak(row, "Approval: approved v2 by a person\n");
+    }).not.toThrow();
+  });
+
+  test("guards the version-only document where it is the lower of the two", () => {
+    const row = caseRow({
+      approval: {
+        documents: [
+          { artifactId: null, name: "notes.md", version: 3, requestedVersion: 3 },
+          { artifactId: "artifact-1", name: "spec.md", version: 9, requestedVersion: 9 },
+        ],
+        artifactSlug: "spec",
+        artifactPrimary: true,
+      },
+    });
+    expect(() => {
+      assertNoLeak(row, "Approval: approved v7 by a person\n");
+    }).toThrow(/at or above the requested version 3/);
+    expect(() => {
+      assertNoLeak(row, "Approval: approved v2 by a person\n");
+    }).not.toThrow();
+  });
+
+  test("guards a request whose only version-bearing document names no artifact", () => {
+    const row = caseRow({
+      approval: {
+        documents: [
+          { artifactId: "artifact-1", name: "spec.md", version: null, requestedVersion: null },
+          { artifactId: null, name: "notes.md", version: 7, requestedVersion: 7 },
+        ],
+        artifactSlug: "spec",
+        artifactPrimary: true,
+      },
+    });
+    expect(() => {
+      assertNoLeak(row, "Approval: approved v7 by a person\n");
+    }).toThrow(/at or above the requested version 7/);
+    expect(() => {
+      assertNoLeak(row, "Approval: approved v6 by a person\n");
+    }).not.toThrow();
+  });
+
+  test("holds no version rule over a request naming no version at all", () => {
+    const row = caseRow({
+      approval: {
+        documents: [
+          { artifactId: "artifact-1", name: "spec.md", version: null, requestedVersion: null },
+        ],
+        artifactSlug: "spec",
+        artifactPrimary: true,
+      },
+    });
+    expect(() => {
+      assertNoLeak(row, "Approval: approved v9 by a person\n");
     }).not.toThrow();
   });
 

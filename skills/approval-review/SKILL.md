@@ -134,14 +134,22 @@ case-level differences, and the interval is a paired bootstrap of 20,000 resampl
 differences under seed 7, **two-sided at 90 per cent**. The bootstrap holds the runs fixed, so it
 carries none of the 0.056 those four runs spread over. Quote it with that spread or not at all.
 
-**Every interval in this file is two-sided at 90 per cent, and nothing here turns on the level.**
-The arms table far above and the six runs just above state exact McNemar intervals, one run or
-one arm each; the pooled figures state bootstrap intervals. Read at 95 per cent off the same
-draw, the recorded number is +0.036 in [+0.005, +0.068], which still excludes zero. The two runs
-whose interval holds zero at 95 per cent are runs 2 and 5, which are the two the program already
-called failures at 90, so **no run's verdict and no number recorded here changes with the
-level**. `pool-runs.ts` prints both levels at every reading, drawn from one set of resamples
-under one seed, so the two differ by the level and by nothing else.
+**Every interval in this file is two-sided at 90 per cent, and the level is worth one paragraph
+because one run's verdict turns on it.** The arms table far above and the six runs just above
+state exact McNemar intervals, one arm or one run each; the pooled figures state bootstrap
+intervals. **The number this skill records is the same at either level**: read at 95 per cent off
+the same draw it is +0.036 in [+0.005, +0.068], which still excludes zero. Of the six runs, two
+hold zero at both levels — runs 2 and 5, the two the program already called failures at 90 — and
+**run 3 holds zero at 95 per cent and not at 90**: its interval is [+0.007, +0.082] at 90 and
+[−0.00002, +0.087] at 95, so at the stricter level the table would read three passes and three
+failures. Read that margin before you quote it: run 3 does not clear zero at 95 per cent by any
+distance a reader should weigh, it touches it, and "three and three" is a fact about the fourth
+decimal of one run. Which is the argument for the sentence above rather than against it — no
+single run's verdict is the finding, the recorded number is the pooled one, and it does not move.
+A paired bootstrap over the same six runs agrees with these intervals on every row but that one,
+which is the row sitting on the line rather than two instruments that disagree.
+`pool-runs.ts` prints both levels at every reading, drawn from one set of resamples under one
+seed, so the two differ by the level and by nothing else.
 
 **The other three numbers in the table, and what each of them is.** `586bb99f` and `abcffa20`
 were read by one run each, +0.080 in [+0.040, +0.109] and +0.048 in [+0.008, +0.080]. Those are

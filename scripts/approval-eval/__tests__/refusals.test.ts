@@ -390,6 +390,23 @@ describe("the root case the run drives", () => {
     });
   });
 
+  /**
+   * Two paths are looked in, and the first holding a file that is no draw may not take the
+   * second out of reach: the reading goes on and the run stands on the draw it finds there.
+   */
+  test("passes over a corrupt draw beside the corpus for the draw in the corpus", async () => {
+    const directory = await corpusWithDraw({ backlogLegionRoots: { issues: [ROOT_ISSUE] } });
+    await writeFile(join(directory, "slices", "draw.json"), "{not json", "utf8");
+    await writeFile(
+      join(directory, "draw.json"),
+      `${JSON.stringify({ backlogLegionRoots: { issues: [ROOT_ISSUE] } })}\n`,
+      "utf8"
+    );
+    const root = await rootCaseOf(directory);
+    expect(root.caseId).toBe("case-1");
+    expect(root.source).toContain(join(directory, "draw.json"));
+  });
+
   test("a draw that records no root's facts stops the run and names the key looked for", async () => {
     const directory = await corpusWithDraw({ parkedLegionRoots: { issues: [ROOT_ISSUE] } });
     await expect(rootCaseOf(directory)).rejects.toThrow(/`backlogLegionRoots`/);

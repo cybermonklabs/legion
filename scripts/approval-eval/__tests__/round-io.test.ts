@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   CACHE_VERSION,
   type CachedEvidence,
@@ -173,17 +173,18 @@ describe("readEvidenceCache", () => {
 
 describe("readEvidenceNeighbours", () => {
   test("reads a round with no cache at all as no entries", async () => {
-    expect(await readEvidenceNeighbours(await scratch())).toEqual([]);
+    expect(await readEvidenceNeighbours(await scratch())).toEqual({ cases: [], unreadable: 0 });
   });
 
-  test("reads the entries that are there and leaves out what is no entry", async () => {
+  test("reads the entries that are there and counts what is no entry", async () => {
     const round = await scratch();
     await mkdir(evidenceDirectory(round), { recursive: true });
     await writeFile(cachePath(round, "case-a"), `${JSON.stringify(cachedEvidence())}\n`, "utf8");
     await writeFile(join(evidenceDirectory(round), "broken.json"), "{not json", "utf8");
-    expect(await readEvidenceNeighbours(round)).toEqual([
-      { caseId: "case-a", neighbours: ["case-b"], excluded: 3 },
-    ]);
+    expect(await readEvidenceNeighbours(round)).toEqual({
+      cases: [{ caseId: "case-a", neighbours: ["case-b"], excluded: 3 }],
+      unreadable: 1,
+    });
   });
 
   /**
@@ -192,9 +193,10 @@ describe("readEvidenceNeighbours", () => {
    * case and counted it, with whatever fields it had. Over the recorded round nothing moved,
    * every entry of it being of this version and whole, so this is where the direction that did
    * move is held: an entry of an older version and an entry whose writing never reached the
-   * documents are each one case and its neighbours left out of the proof's counts.
+   * documents are each one case and its neighbours left out of the proof's counts, and each is
+   * counted so that the proof can say its numbers are not over the whole cache.
    */
-  test("leaves out an entry of an older version and one the writing never finished", async () => {
+  test("counts an entry of an older version and one the writing never finished", async () => {
     const round = await scratch();
     await mkdir(evidenceDirectory(round), { recursive: true });
     await writeFile(cachePath(round, "case-a"), `${JSON.stringify(cachedEvidence())}\n`, "utf8");
@@ -215,8 +217,30 @@ describe("readEvidenceNeighbours", () => {
       })}\n`,
       "utf8"
     );
-    expect(await readEvidenceNeighbours(round)).toEqual([
-      { caseId: "case-a", neighbours: ["case-b"], excluded: 3 },
-    ]);
+    expect(await readEvidenceNeighbours(round)).toEqual({
+      cases: [{ caseId: "case-a", neighbours: ["case-b"], excluded: 3 }],
+      unreadable: 2,
+    });
+  });
+
+  /** One file per case, read many at a time, and handed back in the order of their names. */
+  test("holds the order of the directory's own names, whatever order the reads answer in", async () => {
+    const round = await scratch();
+    await mkdir(evidenceDirectory(round), { recursive: true });
+    const ids = ["case-a", "case-b", "case-c", "case-d", "case-e"];
+    for (const caseId of ids) {
+      await writeFile(
+        cachePath(round, caseId),
+        `${JSON.stringify(cachedEvidence({ caseId }))}\n`,
+        "utf8"
+      );
+    }
+    const held = await readEvidenceNeighbours(round);
+    const byName = ids
+      .map((caseId) => ({ caseId, name: basename(cachePath(round, caseId)) }))
+      .sort((one, two) => (one.name < two.name ? -1 : 1))
+      .map((one) => one.caseId);
+    expect(held.cases.map((one) => one.caseId)).toEqual(byName);
+    expect(held.unreadable).toBe(0);
   });
 });

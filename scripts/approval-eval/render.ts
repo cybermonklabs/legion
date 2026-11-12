@@ -1,5 +1,5 @@
 import type { CaseRow } from "./build-corpus";
-import { CannotRunError, leadDocumentOf, recordOf, stringOf } from "./corpus-io";
+import { CannotRunError, recordOf, stringOf } from "./corpus-io";
 import { type DispatchConfig, DispatchRefusedError, readJson } from "./dispatch-read";
 import type { ReplayedDocument } from "./replay";
 
@@ -25,8 +25,8 @@ import type { ReplayedDocument } from "./replay";
  *    earlier than this case's own `answeredAt`. Otherwise its `answered_by`, `answered_at`,
  *    `selected` and `answer` attributes go and its `state` is written `open`.
  * 4. `assertNoLeak` refuses a rendered case that still carries an `answered_at` at or after the
- *    case's own answer, or an `Approval: approved v<n>` with `n` at or above the case's own lead
- *    `requestedVersion`.
+ *    case's own answer, or an `Approval: approved v<n>` with `n` at or above the lowest
+ *    `requestedVersion` the case asked about.
  *
  * The ask fence's syntax is measured, not guessed: document 68c5417b-68ac-4686-a530-a39188245b36
  * at version 45 carries, on one line,
@@ -178,10 +178,32 @@ export function renderCase(
 }
 
 /**
+ * The version a rendering of this case may not name as already approved: the lowest version
+ * any of its documents asked about, and null where no document names one.
+ *
+ * A request's documents are asked about together, so an approval of any one of them at the
+ * version asked about is the answer to this case. The lowest is therefore the one that holds:
+ * a guard taking one document's version lets through an approval of another document of the
+ * same request. `requestedVersion` is read off every document, naming an artifact or not,
+ * because `ApprovalDocument` carries the two fields apart and the corpus holds requests whose
+ * version-bearing document names no artifact; reading the version off the lead document alone
+ * would leave such a case with no version rule at all.
+ */
+function guardedVersionOf(row: CaseRow): number | null {
+  let lowest: number | null = null;
+  for (const document of row.approval?.documents ?? []) {
+    const version = document.requestedVersion;
+    if (version === null) continue;
+    if (lowest === null || version < lowest) lowest = version;
+  }
+  return lowest;
+}
+
+/**
  * Holds a rendered case to the two rules that can be read off the text itself, and throws
  * `LeakError` naming the case and the offending text when one is broken. The round refuses to
- * start on a case that fails this. The version rule reads `leadDocumentOf`, the document the
- * draw grouped the case by, so the version guarded is the version asked about.
+ * start on a case that fails this. The version rule is `guardedVersionOf`, the lowest version
+ * the case asked about, so no version the request put to the person may be named as approved.
  */
 export function assertNoLeak(row: CaseRow, text: string): void {
   const answeredAt = timeOf(row.answeredAt);
@@ -197,15 +219,15 @@ export function assertNoLeak(row: CaseRow, text: string): void {
       }
     }
   }
-  const lead = leadDocumentOf(row)?.requestedVersion ?? null;
-  if (lead === null) return;
+  const guarded = guardedVersionOf(row);
+  if (guarded === null) return;
   for (const match of text.matchAll(APPROVED_VERSION)) {
     const version = Number(match[1]);
-    if (Number.isFinite(version) && version >= lead) {
+    if (Number.isFinite(version) && version >= guarded) {
       throw new LeakError(
         row.caseId,
         match[0],
-        `an approval of version ${version}, at or above the requested version ${lead}`
+        `an approval of version ${version}, at or above the requested version ${guarded}`
       );
     }
   }

@@ -11,6 +11,7 @@ import {
   num,
   OutputPathError,
   signed,
+  signedBound,
   span,
   UsageError,
   whole,
@@ -100,7 +101,21 @@ describe("num", () => {
 
   test("is the precision signed and span print at", () => {
     expect(signed(0.012_3)).toBe(`+${num(0.012_3)}`);
-    expect(span({ lower: -0.01, upper: 0.02 })).toBe(`[${signed(-0.01)}, ${signed(0.02)}]`);
+    expect(span({ lower: -0.01, upper: 0.02 })).toBe(
+      `[${signedBound(-0.01)}, ${signedBound(0.02)}]`
+    );
+  });
+
+  /**
+   * An estimate and a bound round the same way and take their signs by different rules: two
+   * estimates equal at this precision may not read as a rise and a fall, while a bound below
+   * zero says the interval reaches below zero however small it is.
+   */
+  test("keeps the sign of a bound that rounds to zero, and not of such an estimate", () => {
+    expect(signed(-0.000_02)).toBe("+0.000");
+    expect(signedBound(-0.000_02)).toBe("−0.000");
+    expect(signedBound(0)).toBe("+0.000");
+    expect(span({ lower: -0.000_02, upper: 0.086_737 })).toBe("[−0.000, +0.087]");
   });
 });
 
@@ -211,9 +226,10 @@ describe("leadDocumentOf", () => {
   });
 
   /**
-   * The draw groups a case by this document and the leak guard holds the rendering to its
-   * version. A document naming a version but no artifact is one the draw never drew by, so the
-   * version it names is not the version guarded.
+   * `analyze.ts` counts distinct documents by this one, and `draw.ts` records it as the
+   * document and version a drawn case was about. A document naming a version but no artifact
+   * names no document to count by, so the lead passes over it. The leak guard of `render.ts`
+   * does not read this: it holds a rendering to the lowest version any document asked about.
    */
   test("passes over a document naming a version but no artifact", () => {
     const row = overDocuments([

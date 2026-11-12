@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CaseKind } from "./build-corpus";
-import { numberOf, recordOf, stringOf } from "./corpus-io";
+import { numberOf, pool, recordOf, stringOf } from "./corpus-io";
 import type { SliceName } from "./draw-io";
 import type { FaultKind } from "./models";
 import type { RecipeName } from "./recipes";
@@ -266,35 +266,55 @@ export interface CaseNeighbours {
   excluded: number;
 }
 
+/** What one walk of a round's evidence cache read, and what it could not read. */
+export interface EvidenceNeighbours {
+  /** One entry per cache file read, in the order the directory names them. */
+  cases: CaseNeighbours[];
+  /**
+   * The cache files the walk could not read as an entry of this version: a file of an older
+   * version, a truncated one, one holding no JSON, and one that could not be opened. Each is
+   * left out of `cases`, and this is what says how many were.
+   */
+  unreadable: number;
+}
+
+/** How many cache files are read at once, the cache holding one file per case. */
+const EVIDENCE_CONCURRENCY = 16;
+
 /**
  * The neighbours the round's evidence cache recorded, one entry per case it holds. A round
- * still running has written part of them, and a cache entry that is not readable is left out:
- * the proof reads what is there and prints how many cases that was.
+ * still running has written part of them, and an entry that is not readable is left out and
+ * counted: a reader of the proof is told how many cases its numbers are not over, so a cache
+ * the round could not finish writing cannot read as a cache it finished.
  */
-export async function readEvidenceNeighbours(round: string): Promise<CaseNeighbours[]> {
+export async function readEvidenceNeighbours(round: string): Promise<EvidenceNeighbours> {
   const directory = evidenceDirectory(round);
   let names: string[];
   try {
     names = await readdir(directory);
   } catch {
-    return [];
+    return { cases: [], unreadable: 0 };
   }
-  const read: CaseNeighbours[] = [];
-  for (const name of names.sort()) {
-    if (!name.endsWith(".json")) continue;
+  const files = names.filter((name) => name.endsWith(".json")).sort();
+  // Keyed by file, read in whatever order the reads come back, and taken in the order above.
+  const held = new Map<string, CaseNeighbours>();
+  await pool(files, EVIDENCE_CONCURRENCY, async (name) => {
     let text: string;
     try {
       text = await readFile(join(directory, name), "utf8");
     } catch {
-      continue;
+      return;
     }
     const cache = cachedEvidenceOf(text);
-    if (cache === null) continue;
-    read.push({
+    if (cache === null) return;
+    held.set(name, {
       caseId: cache.caseId,
       neighbours: (cache.nearest?.neighbours ?? []).map((one) => one.caseId),
       excluded: cache.nearest?.excluded ?? 0,
     });
-  }
-  return read;
+  });
+  const cases = files
+    .map((name) => held.get(name))
+    .filter((one): one is CaseNeighbours => one !== undefined);
+  return { cases, unreadable: files.length - cases.length };
 }

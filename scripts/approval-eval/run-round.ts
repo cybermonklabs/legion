@@ -18,12 +18,13 @@ import {
   whole,
 } from "./corpus-io";
 import { type DispatchConfig, dispatchConfig } from "./dispatch-read";
-import { SCORED_SLICES, type ScoredSlice } from "./draw";
 import {
   cutOf as cutOfDraw,
   drawPath,
   readDraw,
   readSlices,
+  SCORED_SLICES,
+  type ScoredSlice,
   type SliceName,
   slicesPath,
 } from "./draw-io";
@@ -1141,7 +1142,6 @@ async function cachedEvidenceOf(
   examples: number,
   config: DispatchConfig
 ): Promise<CaseEvidence> {
-  const path = cachePath(out, scored.row.caseId);
   const held = await readCache(out, scored.row.caseId, examples, corpus);
   if (held !== null) return held;
   const replayed = await replayCase(scored.row, config);
@@ -1175,7 +1175,7 @@ async function cachedEvidenceOf(
           },
   };
   await mkdir(evidenceDirectory(out), { recursive: true });
-  await writeFile(path, `${JSON.stringify(cache)}\n`, "utf8");
+  await writeFile(cachePath(out, scored.row.caseId), `${JSON.stringify(cache)}\n`, "utf8");
   return { documents: replayed.documents, issueTitle, nearest };
 }
 

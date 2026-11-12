@@ -373,6 +373,9 @@ export function sliceCaseIds(
  * That rule is `readRound` of `analyze.ts` and is not written again here: a subset of this
  * curve means what a coverage there means only while one rule reads both. This adds what the
  * curve needs of it — the cases of this slice alone, and the readings by arm and case.
+ *
+ * The arms are the ones `readRound` returns, each already naming the recipe and model its rows
+ * carry, so the slice's rows are walked for them once and not again here.
  */
 export function readingsOf(
   rows: readonly JudgementRow[],
@@ -381,15 +384,15 @@ export function readingsOf(
 ): { arms: ArmName[]; byArm: Map<string, Map<string, CaseReading>> } {
   const wanted = new Set(caseIds);
   const ofSlice = rows.filter((row) => wanted.has(row.caseId));
-  const names = new Map<string, ArmName>();
-  for (const row of ofSlice) {
-    names.set(row.arm, { name: row.arm, recipe: row.recipe, model: row.model });
-  }
   const byArm = new Map<string, Map<string, CaseReading>>();
+  const arms: ArmName[] = [];
   for (const arm of readRound(ofSlice, corpus).arms) {
     byArm.set(arm.name, new Map(arm.cases.map((one) => [one.caseId, one])));
+    // A reading widens the recipe its rows carry to a string, for an arm with no row at all;
+    // every arm here has one, and `JudgementRow` says what a recipe of one is.
+    arms.push({ name: arm.name, recipe: arm.recipe as RecipeName, model: arm.model });
   }
-  const arms = [...names.values()].sort((one, two) => one.name.localeCompare(two.name));
+  arms.sort((one, two) => one.name.localeCompare(two.name));
   return { arms, byArm };
 }
 

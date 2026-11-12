@@ -114,10 +114,12 @@ export function artifactsOf(row: CaseRow): Set<string> {
 }
 
 /**
- * The lead document of an approval request: the first it names an artifact and a version for.
- * The draw groups cases by this document and the leak guard holds a rendering to its version, so
- * both read the request by the same document and a case cannot be drawn by one and guarded by
- * another.
+ * The lead document of an approval request: the first it names both an artifact and a version
+ * for, and null where it names no such document. It is one document of the request, not the
+ * request: `analyze.ts` counts distinct documents by it, taking one case per lead document in
+ * the sensitivity readings, and `draw.ts` records it as the document and version a drawn case
+ * was about. What the draw groups by is the issue, which `draw.json` records under `groupKey`,
+ * and a reader of a case's document goes through this.
  */
 export function leadDocumentOf(
   row: CaseRow
@@ -311,18 +313,30 @@ export function num(value: number, places = 3): string {
 
 /**
  * A difference of two shares as these records print it, which always carries its sign so that
- * a fall reads as a fall. A value whose magnitude rounds away takes `+`, so that two numbers
- * equal at the precision printed are never printed with opposite signs, which is how a reading
- * that moved by nothing came to read as two.
+ * a fall reads as a fall. This is for an estimate: a value whose magnitude rounds away takes
+ * `+`, so that two estimates equal at the precision printed are never printed with opposite
+ * signs, which is how a reading that moved by nothing came to read as two. A bound takes the
+ * other rule and `signedBound` below, so a bound is never printed through this one.
  */
 export function signed(value: number): string {
   const magnitude = Math.abs(value).toFixed(3);
   return `${value < 0 && magnitude !== num(0) ? "−" : "+"}${magnitude}`;
 }
 
-/** An interval of such differences, as these records print it. */
+/**
+ * One bound of an interval as these records print it. A bound keeps the sign of a negative
+ * value whatever it rounds to: a lower bound of −0.000_02 says the interval reaches below zero,
+ * which is the verdict the bound is read for, and printing it `+0.000` beside a verdict saying
+ * the arm did not beat the control says the opposite of what was measured. The rule `signed`
+ * applies — a magnitude rounding away takes `+` — is about two estimates and is wrong here.
+ */
+export function signedBound(value: number): string {
+  return `${value < 0 ? "−" : "+"}${Math.abs(value).toFixed(3)}`;
+}
+
+/** An interval of such differences, as these records print it, bound by bound. */
 export function span(interval: Interval): string {
-  return `[${signed(interval.lower)}, ${signed(interval.upper)}]`;
+  return `[${signedBound(interval.lower)}, ${signedBound(interval.upper)}]`;
 }
 
 async function textOf(directory: string, name: string): Promise<string> {

@@ -9,6 +9,7 @@ import {
   type Corpus,
   CorpusError,
   count,
+  counted,
   leadDocumentOf,
   num,
   outDirectory,
@@ -20,7 +21,7 @@ import {
   UsageError,
   verdictOf,
 } from "./corpus-io";
-import { KINDS, SCORED_SLICES, type ScoredSlice, TARGETS } from "./draw";
+import { KINDS, TARGETS } from "./draw";
 import {
   corpusDrawPath,
   corpusSlicesPath,
@@ -28,10 +29,12 @@ import {
   groupKeyOf,
   readDraw,
   readSlices,
+  SCORED_SLICES,
+  type ScoredSlice,
   type SliceName,
 } from "./draw-io";
 import {
-  type CaseNeighbours,
+  type EvidenceNeighbours,
   type JudgementRow,
   readEvidenceNeighbours,
   readRows,
@@ -407,6 +410,12 @@ export interface RetrievalProof {
   /** The cases of the evidence cache this proof read, and the neighbours they recorded. */
   casesRead: number;
   neighbours: number;
+  /**
+   * The cache entries the reader refused, which are in none of the counts above. The field is
+   * absent where it refused none, so a round whose cache reads whole carries no count of a
+   * thing that did not happen, and the proof's line names it only where there is one to name.
+   */
+  casesUnreadable?: number;
   /** Neighbours naming the judged case's own document at any version, which must be none. */
   onOwnDocument: OwnDocumentNeighbour[];
   /** The rows of the cases that carry one, which is the count that must be zero. */
@@ -972,11 +981,13 @@ export function manifestsOf(
 /**
  * The proof that retrieval returned no neighbour on the judged case's own document: what the
  * rows say was dropped for sharing ground, and what the evidence cache recorded as returned.
- * The second count is over the cases the round scored, and must be zero.
+ * The second count is over the cases the round scored, and must be zero. What the cache reader
+ * could not read is carried through as well, since a count over a part of the cache that reads
+ * as a count over all of it is no proof.
  */
 export function retrievalProofOf(
   rows: readonly JudgementRow[],
-  evidence: readonly CaseNeighbours[],
+  evidence: EvidenceNeighbours,
   corpus: ReadonlyMap<string, CaseRow>
 ): RetrievalProof {
   const scored = new Set(rows.map((row) => row.caseId));
@@ -991,7 +1002,7 @@ export function retrievalProofOf(
   let neighbours = 0;
   const onOwnDocument: OwnDocumentNeighbour[] = [];
   const leaking = new Set<string>();
-  for (const one of evidence) {
+  for (const one of evidence.cases) {
     const row = corpus.get(one.caseId);
     if (row === undefined || !scored.has(one.caseId)) continue;
     casesRead += 1;
@@ -1016,6 +1027,7 @@ export function retrievalProofOf(
     neighbours,
     onOwnDocument,
     rowsOnOwnDocument: rows.filter((row) => leaking.has(row.caseId)).length,
+    ...(evidence.unreadable > 0 ? { casesUnreadable: evidence.unreadable } : {}),
   };
 }
 
@@ -1762,8 +1774,8 @@ export interface AnalysisInput {
   slices: Record<string, string[]> | null;
   /** What `draw.json` says the cases were grouped by, where it says. */
   groupKey: string | null;
-  /** The neighbours the round's evidence cache recorded, one entry per case it holds. */
-  evidence: readonly CaseNeighbours[];
+  /** What the round's evidence cache recorded, and what of it could not be read. */
+  evidence: EvidenceNeighbours;
   cut: string | null;
   confidenceTable: boolean;
   /** Which generative arm that table is read on, and null for the best-agreeing one. */
@@ -2192,6 +2204,9 @@ function spendLines(analysis: Analysis): string[] {
     )
   );
   const { retrieval } = analysis;
+  // Named only where there were some: a count of nothing beside a count of what was read says
+  // a thing happened, and over a cache that reads whole nothing did.
+  const unreadable = retrieval.casesUnreadable ?? 0;
   lines.push("");
   lines.push("### Retrieval returned no neighbour on the judged case's own document");
   lines.push("");
@@ -2202,8 +2217,12 @@ function spendLines(analysis: Analysis): string[] {
       "`rows.jsonl`), and " +
       `${count(retrieval.rowsOnOwnDocument)} rows carry a neighbour naming the judged case's ` +
       "own document at any version (the `nearest.neighbours` field of " +
-      `${count(retrieval.casesRead)} evidence cache entries, ` +
-      `${count(retrieval.neighbours)} neighbours in all, read against the ` +
+      `${count(retrieval.casesRead)} evidence cache entries` +
+      (unreadable > 0
+        ? `, beside ${counted(unreadable, "entry", "entries")} the reader could not read as ` +
+          "an entry of this version and left out of every count here"
+        : "") +
+      `, ${count(retrieval.neighbours)} neighbours in all, read against the ` +
       "`approval.documents` field of the corpus). The second count is zero where retrieval " +
       "held, and the cases are named where it did not."
   );

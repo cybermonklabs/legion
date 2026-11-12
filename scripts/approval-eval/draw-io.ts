@@ -23,7 +23,8 @@ import type { IssueFacts } from "./never-decide";
  * The types the records are built from come from `draw.ts`, which makes those values, and that
  * import is type-only: it is erased, so importing this module runs none of the draw. The names
  * of the slices are the other way about, and live here: they are what `slices.json` holds, and
- * a module reading that file may not import the draw itself to learn them.
+ * a module reading that file may not import the draw itself to learn them. The three a round
+ * scores are the same thing, so `run-round.ts` and `analyze.ts` take them from here as well.
  */
 
 /** One slice of the draw. */
@@ -31,6 +32,12 @@ export type SliceName = "fit" | "report" | "anchor" | "reserve";
 
 /** The four slices, in the order a group is offered to them. */
 export const SLICES: readonly SliceName[] = ["fit", "report", "anchor", "reserve"];
+
+/** The three slices every number of a round is read over, in the order they are printed. */
+export const SCORED_SLICES = ["fit", "report", "anchor"] as const;
+
+/** One of the three slices a round scores and a manifest is written for. */
+export type ScoredSlice = (typeof SCORED_SLICES)[number];
 
 /**
  * The roots carrying the `legion` label that stand on the backlog or in icebox, as `draw.json`

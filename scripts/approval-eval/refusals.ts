@@ -15,7 +15,7 @@ import {
   table,
   UsageError,
 } from "./corpus-io";
-import { corpusDrawPath, drawPath, readDraw, rootFactsOf } from "./draw-io";
+import { corpusDrawPath, type DrawRecord, drawPath, readDraw, rootFactsOf } from "./draw-io";
 import { askClaude, type ClaudeAsk, type FaultKind, type ModelAnswer } from "./models";
 import {
   DEFAULT_NEVER_DECIDE_MODEL,
@@ -530,13 +530,27 @@ function writtenRoot(why: string): RootCase {
 /** The key a draw writes its roots under, which is the key this reading looks for. */
 const ROOTS_KEY = "backlogLegionRoots";
 
-/** The issue facts a draw beside the corpus recorded, by issue key, and empty where it wrote none. */
+/**
+ * The issue facts a draw beside the corpus recorded, by issue key, and empty where it wrote
+ * none. Two paths are looked in, and a path that answers nothing is passed over for the next:
+ * a directory holding no `draw.json`, which `readDraw` reads as no draw, and a `draw.json` that
+ * is no draw, which it refuses with a `CorpusError`. A corrupt file at the first path may not
+ * put the draw at the second out of reach. What is not passed over is anything else `readDraw`
+ * throws, and the end of the list: where no path answered, the caller refuses the corpus and
+ * names both paths it looked in.
+ */
 async function factsOfDraw(
   corpus: string
 ): Promise<{ facts: Map<string, IssueFacts>; at: string; looked: string[] }> {
   const looked = [corpusDrawPath(corpus), drawPath(corpus)];
   for (const path of looked) {
-    const draw = await readDraw(path);
+    let draw: DrawRecord | null;
+    try {
+      draw = await readDraw(path);
+    } catch (error) {
+      if (!(error instanceof CorpusError)) throw error;
+      continue;
+    }
     if (draw === null) continue;
     return { facts: rootFactsOf(draw[ROOTS_KEY]), at: path, looked };
   }

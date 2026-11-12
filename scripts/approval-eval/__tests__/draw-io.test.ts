@@ -106,10 +106,10 @@ describe("readDraw", () => {
     const directory = await scratch();
     const path = drawPath(directory);
     await writeFile(path, "{not json", "utf8");
-    expect(readDraw(path)).rejects.toThrow(CorpusError);
-    expect(readDraw(path)).rejects.toThrow(`${path} is not JSON`);
+    await expect(readDraw(path)).rejects.toThrow(CorpusError);
+    await expect(readDraw(path)).rejects.toThrow(`${path} is not JSON`);
     await writeFile(path, "[]", "utf8");
-    expect(readDraw(path)).rejects.toThrow(`${path} is not a draw`);
+    await expect(readDraw(path)).rejects.toThrow(`${path} is not a draw`);
   });
 
   test("reads the record the draw wrote, under the corpus's own slices directory", async () => {
@@ -129,14 +129,16 @@ describe("readSlices", () => {
     const directory = await scratch();
     const path = slicesPath(directory);
     await writeFile(path, "{not json", "utf8");
-    expect(readSlices(path)).rejects.toThrow(CorpusError);
-    expect(readSlices(path)).rejects.toThrow(`${path} is not JSON`);
+    await expect(readSlices(path)).rejects.toThrow(CorpusError);
+    await expect(readSlices(path)).rejects.toThrow(`${path} is not JSON`);
     await writeFile(path, "[]", "utf8");
-    expect(readSlices(path)).rejects.toThrow(`${path} is not a draw's slices`);
+    await expect(readSlices(path)).rejects.toThrow(`${path} is not a draw's slices`);
     await writeFile(path, JSON.stringify({ fit: 3 }), "utf8");
-    expect(readSlices(path)).rejects.toThrow(`${path} holds no list of case ids in the fit slice`);
+    await expect(readSlices(path)).rejects.toThrow(
+      `${path} holds no list of case ids in the fit slice`
+    );
     await writeFile(path, JSON.stringify({ fit: ["case-a", 3] }), "utf8");
-    expect(readSlices(path)).rejects.toThrow(
+    await expect(readSlices(path)).rejects.toThrow(
       `${path} names a case that is no string in the fit slice`
     );
   });

@@ -266,6 +266,28 @@ describe("the paired difference and the verdict", () => {
     expect(won.difference).toBeCloseTo(0.5, 10);
     expect(verdictLineOf(won).passes).toBe(false);
   });
+
+  /**
+   * The pairs of run 3 of the recorded comparison, read at 95 per cent: 250 cases, 22 the
+   * skill arm alone won and 10 the control alone won, whose interval is
+   * [−0.000_019_86, +0.086_736_7]. The lower bound is below zero, which is why the check
+   * fails, and it must read below zero beside that verdict however small it rounds.
+   */
+  test("a lower bound below zero keeps its sign beside the verdict it explains", () => {
+    const paired = mcnemarExact(
+      [
+        ...Array.from({ length: 150 }, () => ({ armAgreed: true, otherAgreed: true })),
+        ...Array.from({ length: 22 }, () => ({ armAgreed: true, otherAgreed: false })),
+        ...Array.from({ length: 10 }, () => ({ armAgreed: false, otherAgreed: true })),
+        ...Array.from({ length: 68 }, () => ({ armAgreed: false, otherAgreed: false })),
+      ],
+      0.95
+    );
+    expect(paired.interval.lower).toBeCloseTo(-0.000_019_86, 8);
+    const verdict = verdictLineOf(paired);
+    expect(verdict.passes).toBe(false);
+    expect(verdict.line).toContain("+0.048 in [−0.000, +0.087]");
+  });
 });
 
 describe("an answer in no readable shape", () => {

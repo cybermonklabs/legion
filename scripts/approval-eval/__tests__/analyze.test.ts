@@ -352,7 +352,7 @@ describe("the threshold, fitted on the fit slice and applied to the report slice
     summary: null,
     slices: null,
     groupKey: null,
-    evidence: [],
+    evidence: { cases: [], unreadable: 0 },
     cut: null,
     confidenceTable: false,
     confidenceArm: null,
@@ -422,7 +422,7 @@ describe("an arm missing more than 5 percent of its judgements", () => {
     summary: null,
     slices: null,
     groupKey: null,
-    evidence: [],
+    evidence: { cases: [], unreadable: 0 },
     cut: null,
     confidenceTable: false,
     confidenceArm: null,
@@ -568,6 +568,8 @@ function analysisOf(options: {
   slices?: Record<string, string[]> | null;
   groupKey?: string | null;
   evidence?: CaseNeighbours[];
+  /** How many cache entries the reader refused, which the proof names where there were any. */
+  evidenceUnreadable?: number;
   confidenceTable?: boolean;
   confidenceArm?: string | null;
 }): Analysis {
@@ -580,7 +582,7 @@ function analysisOf(options: {
     summary: null,
     slices: options.slices ?? null,
     groupKey: options.groupKey ?? null,
-    evidence: options.evidence ?? [],
+    evidence: { cases: options.evidence ?? [], unreadable: options.evidenceUnreadable ?? 0 },
     cut: null,
     confidenceTable: options.confidenceTable ?? false,
     confidenceArm: options.confidenceArm ?? null,
@@ -794,6 +796,30 @@ describe("the proof that retrieval returned no neighbour on the judged case's ow
     ]);
     expect(analysis.retrieval.rowsOnOwnDocument).toBe(5);
     expect(renderReport(analysis).join("\n")).toContain("the document both name");
+  });
+
+  /**
+   * The entries the cache reader refuses are in none of the proof's counts, so the line says
+   * how many there were — and says nothing at all where there were none, which is every
+   * reading of a round whose cache reads whole.
+   */
+  test("names the entries the reader could not read, and only where there are some", () => {
+    const whole = renderReport(
+      analysisOf({ cases, rows, evidence: [{ caseId: "judged", neighbours: [], excluded: 0 }] })
+    ).join("\n");
+    expect(whole).toContain("the `nearest.neighbours` field of 1 evidence cache entries, 0 ");
+    expect(whole).not.toContain("could not read");
+    const short = analysisOf({
+      cases,
+      rows,
+      evidence: [{ caseId: "judged", neighbours: [], excluded: 0 }],
+      evidenceUnreadable: 2,
+    });
+    expect(short.retrieval.casesUnreadable).toBe(2);
+    expect(renderReport(short).join("\n")).toContain(
+      "1 evidence cache entries, beside 2 entries the reader could not read as an entry of " +
+        "this version and left out of every count here, 0 neighbours in all"
+    );
   });
 });
 
