@@ -15,6 +15,8 @@ import type {
   Ask,
   AskRead,
   CheckResultRecorded,
+  CheckResultRetraction,
+  CheckResultRetractionInput,
   ClaimedIssue,
   Comment,
   CommentRead,
@@ -51,6 +53,7 @@ import type {
   IssueSummary,
   IssueSummaryPage,
   ItemBlocks,
+  MarkdownRoundTripResponse,
   Message,
   MessageRead,
   MessageReplyInput,
@@ -957,6 +960,26 @@ export class DispatchClient {
     );
   }
 
+  /** `GET /api/v1/issues/{key}/artifacts`: every document and file the issue holds, each with
+   *  its versions, which is what `dispatch artifact` reads to refuse a name the issue already
+   *  holds. */
+  async listIssueArtifacts(issue: string): Promise<Artifact[]> {
+    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "artifacts"]);
+  }
+
+  /** `POST /api/v1/markdown/round-trip`: the markdown Dispatch would store for this text. The
+   *  route writes nothing: it parses the text and renders it again, as a document write does, so
+   *  a caller compares the answer with the text it holds and refuses a text the store would
+   *  change. */
+  async markdownRoundTrip(markdown: string): Promise<string> {
+    const answer: MarkdownRoundTripResponse = await this.#json(
+      "POST",
+      ["api", "v1", "markdown", "round-trip"],
+      { markdown }
+    );
+    return answer.markdown;
+  }
+
   async listProjectArtifacts(project: string, unlinked = false): Promise<Artifact[]> {
     return this.#json(
       "GET",
@@ -1352,9 +1375,30 @@ export class DispatchClient {
     );
   }
 
-  /** Each check of an issue's Verification document with every result recorded against it. */
-  async issueResults(issue: string): Promise<IssueCheckResults> {
-    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "results"]);
+  /** Each check of an issue's Verification document with every result recorded against it.
+   *  `at` pins every check to that one commit, which `GET .../results?at=` takes as 40 lowercase
+   *  hex characters, and Dispatch reads GitHub for none of it. */
+  async issueResults(issue: string, at?: string): Promise<IssueCheckResults> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "results"],
+      undefined,
+      at === undefined ? undefined : { at }
+    );
+  }
+
+  /**
+   * Records that one stored result is wrong, with the reason, and answers the retraction. The
+   * result itself is neither changed nor deleted: a reader of the results sees the result and
+   * its retraction together. The session that recorded the result, a session holding the
+   * Dispatch claim of the issue it was recorded on, and a caller whose credential carries a
+   * person may each retract it.
+   */
+  async retractResult(
+    resultID: string,
+    input: CheckResultRetractionInput
+  ): Promise<CheckResultRetraction> {
+    return this.#json("POST", ["api", "v1", "results", resultID, "retract"], input);
   }
 
   async editAsk(id: string, input: EditAskInput): Promise<Ask> {
@@ -1558,6 +1602,14 @@ export class DispatchClient {
     return version === undefined
       ? this.#json("GET", ["api", "v1", "artifacts", id, "text"])
       : this.#json("GET", ["api", "v1", "artifacts", id, "versions", String(version)]);
+  }
+
+  /** `GET /api/v1/artifacts/{id}/text?blocks=true`: the live document's markdown, its token, its
+   *  version and its blocks in one answer, every part of it rendered from the one tree, so a write
+   *  by another session between two reads cannot leave the blocks indexing markdown they were not
+   *  computed over. A Dispatch older than the parameter answers the text without `blocks`. */
+  async docReadWithBlocks(id: string): Promise<ArtifactText> {
+    return this.#json("GET", ["api", "v1", "artifacts", id, "text"], undefined, { blocks: true });
   }
 
   /** One version of an uploaded file as Dispatch stores it: `GET /artifacts/{id}/versions/{n}`

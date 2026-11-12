@@ -413,6 +413,11 @@ type server struct {
 	// builds leaves it, calls nothing. Only a test sets it, to hold a stage where production has
 	// only a slow query.
 	relatedSearchEntered func()
+	// beforeCrossProjectRead runs at the head of relatedOtherProjects, before it reads, and its
+	// error stands in for the read failing. Only a test sets it: it is how a case holds that one
+	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
+	// as it runs in production.
+	beforeCrossProjectRead func(ctx context.Context) error
 	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
 	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it
 	// (the forced create whose check does not answer), so a case's outcome is its own choice
@@ -525,13 +530,13 @@ type server struct {
 	// branches is what the results reads last learned about each repository's default branch
 	// (delivery.Branches), held across requests so the Verification tab's refetch on every
 	// result.recorded does not spend one GET /repos/{owner}/{repo} apiece. It answers about
-	// every branch a check is measured against, and caches the default branch alone, since what
+	// every branch a check is compared with, and caches the default branch alone, since what
 	// a named branch holds of a commit is kept in the database (branch_commits). The policy is
 	// delivery's; the server holds the one cache the process shares.
 	branches delivery.Branches
 	// commitPulls is the moment before which the results read will not read GitHub again for the
 	// pull requests of a commit it could answer for no other way (delivery.CommitPullReads,
-	// currencyReader.readThroughHead), held across requests so one commit costs at most one such
+	// comparisonReader.readThroughHead), held across requests so one commit costs at most one such
 	// read per delivery.CommitPullReadStaleAfter however often the tab refetches, and one per
 	// delivery.CommitPullSettledFor once GitHub has put that pull request's head elsewhere. The
 	// policy is delivery's; the server holds the one cache the process shares.

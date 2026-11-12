@@ -1120,7 +1120,7 @@ func TestEditAskOfAnEmptyQuestionNamesTheStep(t *testing.T) {
 			` (paragraph) reads "![a photo](/photo.png)"; no document edit writes a paragraph into a decision, ` +
 			`so none reaches this block - upload the document again as a new version ` +
 			`with the question written beside that paragraph (dispatch artifact --issue <KEY>, or ` +
-			`--project <KEY> for a project's document, --name <the document> --content-file -), or write the ` +
+			`--project <KEY> for a project's document, --name <the document> --content-file - --force), or write the ` +
 			`question beside it in the document editor; ` +
 			`either keeps what the paragraph holds`
 		if err == nil || err.Error() != want {

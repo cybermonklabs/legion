@@ -358,7 +358,9 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	} else if owner.ArtifactID != nil {
 		source.artifactID = *owner.ArtifactID
 	}
-	suggestions := s.relatedCheck(r.Context(), relatedInput{text: ask.Question, title: ask.Question, source: source, record: true})
+	suggestions := s.relatedCheck(r.Context(), relatedInput{
+		text: ask.Question, title: ask.Question, source: source, question: true, record: true,
+	})
 	WriteJSON(w, http.StatusCreated, withSuggestions(ask, advice, suggestions, nil))
 }
 

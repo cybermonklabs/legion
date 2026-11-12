@@ -24,9 +24,9 @@ var handoffPhasePattern = regexp.MustCompile(contracts.HandoffPhasePattern)
 // string, whose escaping can make each byte of the object up to six on the wire (a client that
 // writes < as \u003c, or a two-byte character as \u00e9), so a body at the cap must fit six times
 // over beside the actor; the cap itself is checked on the decoded body. It is the handoff write's
-// own row's BodyLimit, the one JSON row whose limit is not maxJSONRequestBytes (handoffWrite),
-// with errHandoffTooLarge the refusal past it, so the drain, the keyed layer and createHandoff
-// answer a body too large for it alike.
+// own row's BodyLimit, one of the two JSON rows whose limit is not maxJSONRequestBytes
+// (handoffWrite, markdownRoundTrip), with errHandoffTooLarge the refusal past it, so the drain,
+// the keyed layer and createHandoff answer a body too large for it alike.
 const handoffRequestLimit = 6*contracts.DispatchHandoffBodyMax + 4<<10
 
 var errHandoffTooLarge = errorf(http.StatusRequestEntityTooLarge, "CAP_EXCEEDED",

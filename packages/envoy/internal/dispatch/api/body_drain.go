@@ -221,8 +221,8 @@ func expectsContinue(r *http.Request) bool {
 }
 
 // errUploadTooLarge is an upload route's answer to a body past its limit, errHandoffTooLarge the
-// handoff write's, and errJSONTooLarge every other route's (apiRoute.bodyLimit, bodyTooLarge,
-// decodeJSON).
+// handoff write's, errMarkdownRoundTripTooLarge the markdown round trip's, and errJSONTooLarge
+// every other route's (apiRoute.bodyLimit, bodyTooLarge, decodeJSON).
 var (
 	errUploadTooLarge = errorf(http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "artifact blob exceeds 25 MB")
 	errJSONTooLarge   = errorf(http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "request body exceeds %d bytes", maxJSONRequestBytes)
@@ -230,14 +230,16 @@ var (
 
 // bodyTooLarge is the route's answer to a body past its limit: the one its handler gives on
 // reading past it, read from the limit the route's own row carries (apiRoute.BodyLimit, upload,
-// handoffWrite), so a route the table makes an upload, or gives a limit of its own, is answered
-// as that row says without naming it anywhere else.
+// handoffWrite, markdownRoundTrip), so a route the table makes an upload, or gives a limit of
+// its own, is answered as that row says without naming it anywhere else.
 func bodyTooLarge(route apiRoute) *apiError {
 	switch route.BodyLimit {
 	case maxUploadRequestBytes:
 		return errUploadTooLarge
 	case handoffRequestLimit:
 		return errHandoffTooLarge
+	case markdownRoundTripLimit:
+		return errMarkdownRoundTripTooLarge
 	default:
 		return errJSONTooLarge
 	}

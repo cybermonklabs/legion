@@ -6,7 +6,7 @@ body: |-
   and the document rooms' browser appends (8) each draw from a pool of their own. The lease pool
   holds a connection for each of its 16 lease names (the CI reconcile pass's and the embedding
   project-key fill's among them) and 2
-  spare, 18 where it held 15 with none spare; `duty.Exclusive` refuses a name
+  spare, 18 where it held 16 with none spare; `duty.Exclusive` refuses a name
   that is not on its list, and skips
   a pass that finds no lease connection free within 2 seconds until its next tick. Every
   connection names its pool in `application_name` (`dispatch-requests`, `dispatch-background`,

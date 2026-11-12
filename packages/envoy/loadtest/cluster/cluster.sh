@@ -3249,7 +3249,10 @@ pack_tar() {
   fi
   if [ -n "$issue" ] && [ ! -f "$up/$name.uploaded" ]; then
     for part in "$base"[0-9][0-9]; do
-      dispatch artifact --issue "$issue" --name "${part##*/}" --path "$part" >/dev/null ||
+      # --force, because a phase that packs again writes the same part names: the upload is
+      # refused for a name the issue already holds, and the repack above is what makes that
+      # second upload the one the reader wants.
+      dispatch artifact --issue "$issue" --name "${part##*/}" --path "$part" --force >/dev/null ||
         die "dispatch artifact of ${part##*/} to $issue failed"
     done
     : >"$up/$name.uploaded"

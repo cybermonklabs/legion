@@ -402,13 +402,13 @@ func TestAnEditHoldsNoMoreConnectionsThanItsRouteWeighs(t *testing.T) {
 }
 
 // Every one of an edit's blocks is checked whole, and each reads its items' ask states and
-// writes its record: every block whose question restates an answered ask is answered with that
-// decision, its ask state on the item, and every block's check is recorded. The checks ran at
-// once once, and on the request's one connection mark one check's open cursor had the pool
-// refuse another's ask-state read and record (store.ErrNestedAcquire), which dropped the state
-// and the row; they run one after another now (decisionBlockChecks), each on a mark of its own.
-// Every ask shares a word with every block and carries a long answer, so each check reads every
-// ask's state over several network reads.
+// writes its record: every block whose question restates an ask is offered that ask with its
+// state on the item, and every block's check is recorded. The checks ran at once once, and on
+// the request's one connection mark one check's open cursor had the pool refuse another's
+// ask-state read and record (store.ErrNestedAcquire), which dropped the state and the row; they
+// run one after another now (decisionBlockChecks), each on a mark of its own. Every ask shares
+// a word with every block and carries a long answer, so each check reads every ask's state over
+// several network reads.
 func TestDecisionBlockChecksEachReadTheirAskStatesAndRecord(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RACE")
@@ -453,11 +453,6 @@ func TestDecisionBlockChecksEachReadTheirAskStatesAndRecord(t *testing.T) {
 		block := blocks[index]
 		if check.BlockID != block.id || check.Suggestions == nil {
 			t.Fatalf("check %d = %+v, want block %s checked", index, check, block.id)
-		}
-		decision := check.Suggestions.Decision
-		if decision == nil || decision.ID != asks[block.id] || decision.Ask == nil || decision.Ask.State != "answered" {
-			t.Fatalf("block %s: decision = %+v (suggestions %+v), want the answered ask %s with its state",
-				block.id, decision, check.Suggestions, asks[block.id])
 		}
 		listed := false
 		for _, item := range check.Suggestions.Related {
