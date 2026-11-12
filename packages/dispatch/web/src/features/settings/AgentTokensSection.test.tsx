@@ -6,9 +6,14 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import {
+  answerAgentTokenMints,
+  answerAgentTokenRevokes,
+  answerAgentTokenScopes,
+} from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
-import type { AgentToken, DispatchScope } from "../../api/types";
+import type { AgentToken } from "../../api/types";
 import { AgentTokensSection } from "./AgentTokensSection";
 
 const token: AgentToken = {
@@ -24,13 +29,13 @@ const token: AgentToken = {
 test("Settings exposes a new personal token once, copies it, and revokes an existing token", async () => {
   const user = userEvent.setup();
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([token]);
-  const createAgentToken = spyOn(api, "createAgentToken").mockResolvedValue({
+  const createAgentToken = answerAgentTokenMints().mockResolvedValue({
     ...token,
     id: "22222222-2222-2222-2222-222222222222",
     name: "reviewer",
     token: "dsp_abcdefghijklmnopqrstuvwxyz0123456789-ABCDEFG",
   });
-  const revokeAgentToken = spyOn(api, "revokeAgentToken").mockResolvedValue();
+  const revokeAgentToken = answerAgentTokenRevokes().mockResolvedValue(undefined);
   const originalConfirm = window.confirm;
   const originalClipboard = navigator.clipboard;
   const writeText = spyOn({ writeText: async () => undefined }, "writeText");
@@ -75,7 +80,9 @@ test("Settings exposes a new personal token once, copies it, and revokes an exis
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(plaintext));
 
     await user.click(screen.getByRole("button", { name: "Revoke architect" }));
-    await waitFor(() => expect(revokeAgentToken).toHaveBeenCalledWith(token.id, keyedAttempt));
+    await waitFor(() =>
+      expect(revokeAgentToken).toHaveBeenCalledWith(token.id, undefined, keyedAttempt)
+    );
     await waitFor(() => expect(screen.getByText("Revoked")).toBeDefined());
     expect(screen.queryByRole("button", { name: "Revoke architect" })).not.toBeInTheDocument();
   } finally {
@@ -93,7 +100,7 @@ test("Settings copies a new token through the legacy clipboard fallback", async 
   const user = userEvent.setup();
   const plaintext = "dsp_abcdefghijklmnopqrstuvwxyz0123456789-ABCDEFG";
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
-  const createAgentToken = spyOn(api, "createAgentToken").mockResolvedValue({
+  const createAgentToken = answerAgentTokenMints().mockResolvedValue({
     ...token,
     id: "22222222-2222-2222-2222-222222222222",
     name: "reviewer",
@@ -145,8 +152,8 @@ test("a token's row shows the scopes it holds, and each change sends the whole s
   const user = userEvent.setup();
   const personOnly: AgentToken = { ...token, scopes: ["person"] };
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([personOnly]);
-  const setAgentTokenScopes = spyOn(api, "setAgentTokenScopes").mockImplementation(
-    async (id: string, scopes: DispatchScope[]) => ({ ...personOnly, id, scopes })
+  const setAgentTokenScopes = answerAgentTokenScopes().mockImplementation(
+    async (id: string, { scopes }: { scopes: string[] }) => ({ ...personOnly, id, scopes })
   );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
@@ -165,7 +172,7 @@ test("a token's row shows the scopes it holds, and each change sends the whole s
     await waitFor(() =>
       expect(setAgentTokenScopes).toHaveBeenCalledWith(
         personOnly.id,
-        ["person", "approve"],
+        { scopes: ["person", "approve"] },
         keyedAttempt
       )
     );
@@ -176,7 +183,11 @@ test("a token's row shows the scopes it holds, and each change sends the whole s
 
     await user.click(box("Act as you", "architect"));
     await waitFor(() =>
-      expect(setAgentTokenScopes).toHaveBeenLastCalledWith(personOnly.id, [], keyedAttempt)
+      expect(setAgentTokenScopes).toHaveBeenLastCalledWith(
+        personOnly.id,
+        { scopes: [] },
+        keyedAttempt
+      )
     );
     await waitFor(() => expect(box("Act as you", "architect").checked).toBe(false));
     expect(box("Approve and control credentials", "architect").checked).toBe(false);
@@ -193,7 +204,7 @@ test("a token's row shows the scopes it holds, and each change sends the whole s
 test("the mint form starts with both scopes and sends the set the reader chose", async () => {
   const user = userEvent.setup();
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
-  const createAgentToken = spyOn(api, "createAgentToken").mockResolvedValue({
+  const createAgentToken = answerAgentTokenMints().mockResolvedValue({
     ...token,
     id: "22222222-2222-2222-2222-222222222222",
     name: "reviewer",
@@ -248,10 +259,10 @@ async function mintLostWith(user: UserEvent, listed: AgentToken[], confirmAnswer
   const listAgentTokens = spyOn(api, "listAgentTokens")
     .mockResolvedValueOnce(listed.filter((made) => Date.parse(made.created_at) <= now))
     .mockResolvedValue(listed);
-  const createAgentToken = spyOn(api, "createAgentToken")
+  const createAgentToken = answerAgentTokenMints()
     .mockRejectedValueOnce(new ApiError(409, { code: "KEY_COMMITTED", error: "already made" }))
     .mockResolvedValue({ ...token, id: "replacement", name: "reviewer", token: "dsp_replacement" });
-  const revokeAgentToken = spyOn(api, "revokeAgentToken").mockResolvedValue();
+  const revokeAgentToken = answerAgentTokenRevokes().mockResolvedValue(undefined);
   const asked: string[] = [];
   const originalConfirm = window.confirm;
   window.confirm = (message?: string) => {
@@ -324,7 +335,9 @@ test("a mint answered KEY_COMMITTED offers the one token made since the press, c
     expect(page.revokeAgentToken).not.toHaveBeenCalled();
 
     await page.user.click(replace);
-    await waitFor(() => expect(page.revokeAgentToken).toHaveBeenCalledWith(lost.id, keyedAttempt));
+    await waitFor(() =>
+      expect(page.revokeAgentToken).toHaveBeenCalledWith(lost.id, undefined, keyedAttempt)
+    );
     await waitFor(() => expect(page.createAgentToken).toHaveBeenCalledTimes(2));
     // The replacement holds what the lost token held.
     expect(page.createAgentToken.mock.calls[1]?.[0]).toEqual({
@@ -391,7 +404,9 @@ test("a lost mint with several tokens made since the press lists them and revoke
 
     await page.user.click(picks[1] as HTMLElement);
     expect(page.asked).toEqual([confirmFor(first)]);
-    await waitFor(() => expect(page.revokeAgentToken).toHaveBeenCalledWith(first.id, keyedAttempt));
+    await waitFor(() =>
+      expect(page.revokeAgentToken).toHaveBeenCalledWith(first.id, undefined, keyedAttempt)
+    );
     await waitFor(() => expect(page.createAgentToken).toHaveBeenCalledTimes(2));
     expect(page.revokeAgentToken).toHaveBeenCalledTimes(1);
   } finally {

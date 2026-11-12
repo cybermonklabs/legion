@@ -12,6 +12,7 @@ import {
   documentSurfaceHandlers,
   renderProofDocument,
 } from "../../__tests__/proof-document";
+import { answerAskAnswers, answerIssueComments } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import type { Ask, IssueAskRow } from "../../api/types";
 
@@ -114,7 +115,7 @@ test("ProofDocument hands its decision blocks the indexed ask; the hosted card a
     route_status_reason: null,
     replies: [],
   });
-  const answerAsk = spyOn(api, "answerAsk").mockResolvedValue({
+  const answerAsk = answerAskAnswers().mockResolvedValue({
     ...blockAsk,
     answer: { at: new Date().toISOString(), selected: ["Ship"], text: "Go.", user: "alice" },
     state: "answered",
@@ -200,7 +201,7 @@ test("after Ask back on a decision block, the hosted card's turn label follows t
     route_status_reason: null,
     replies: [],
   });
-  const createComment = spyOn(api, "createComment").mockResolvedValue({
+  const createComment = answerIssueComments().mockResolvedValue({
     anchor: null,
     ask_id: "ask-1",
     author: { id: "alice", kind: "user" },
@@ -367,7 +368,7 @@ test("a pane's decision block hosts its answer form and tells its host which que
     route_status_reason: null,
     replies: [],
   });
-  const answerAsk = spyOn(api, "answerAsk").mockResolvedValue({
+  const answerAsk = answerAskAnswers().mockResolvedValue({
     ...blockAsk,
     answer: { at: new Date().toISOString(), selected: ["Ship"], text: null, user: "alice" },
     state: "answered",

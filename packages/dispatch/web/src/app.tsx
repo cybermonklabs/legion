@@ -581,6 +581,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     // A session that lapses while the sign-out is still out has ended as it asked: the sign-out
     // lands, and its landing discards (`Writes.signedIn`).
     endsWithSession: true,
+    unlined: "a sign-out ends the person's session and names no row",
     inline: true,
     label: () => "Sign out",
     // Refused or stopped, the sign-out discarded nothing: the person is still signed in, and every

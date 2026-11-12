@@ -59,7 +59,12 @@ export async function sendToAgent(
       { body: handoffBody(issue, block, words), delivery: "aside" },
       bounds
     );
-  const message = await press(writes, `“${words}” to the agent on ${issue}`, write);
+  const message = await press(
+    writes,
+    `“${words}” to the agent on ${issue}`,
+    "a send to a session names no row",
+    write
+  );
   const attempt = message?.deliveries?.at(-1);
   if (attempt === undefined || attempt.state !== "failed") {
     return undefined;

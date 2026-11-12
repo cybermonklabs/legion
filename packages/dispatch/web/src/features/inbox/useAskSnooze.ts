@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { api, askSnoozeRequest } from "../../api/client";
+import { askSnoozeRequest, askUnsnoozeRequest } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { InboxRow } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -33,12 +33,13 @@ export interface AskSnoozeWrite {
 export function useAskSnooze(askId: string): AskSnoozeWrite {
   const queryClient = useQueryClient();
   const inboxKey = inboxQuery().queryKey;
-  // The row says why its snooze was refused, where the reader pressed it.
+  // The row says why its snooze was refused, where the reader pressed it. A snooze and an
+  // un-snooze are writes of the ask, so they stand in that row's line (`ask:<id>`) with its
+  // answer, its decline, its hand-on and its clarification, rather than on a line of their own.
   const mutation = useKeyedWrite({
-    write: (until: string | null, bounds) =>
-      until === null
-        ? api.unsnoozeAsk(askId, bounds)
-        : api.snoozeAsk(askId, until, bounds).then(() => undefined),
+    request: (until: string | null) =>
+      until === null ? askUnsnoozeRequest(askId) : askSnoozeRequest(askId, until),
+    target: () => `ask:${askId}`,
     inline: true,
     label: (until) => (until === null ? "Ask brought back now" : "Ask snoozed"),
     onMutate: async (until) => {
@@ -125,7 +126,7 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
             label: "Ask snoozed",
             presentation: "indicator",
             request,
-            target: `ask-snooze:${id}`,
+            target: `ask:${id}`,
           })
         )
       );

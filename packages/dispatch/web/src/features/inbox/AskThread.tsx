@@ -113,6 +113,7 @@ export function AskReplyComposer({
     },
     inline: true,
     label: () => `Reply on “${ask.question}”`,
+    unlined: "a reply names no row until Dispatch makes the comment",
     mutationKey,
     onSuccess: (_comment, text) => {
       clearReplyDraft(ask.id, text);

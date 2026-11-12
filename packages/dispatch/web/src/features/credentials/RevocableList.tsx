@@ -82,6 +82,7 @@ export function RevocableList<Row>({
     label: (row: Row) => `${heading}: revoke ${rowKey(row)}`,
     onSettled: () => submitGuard.release(),
     onSuccess: onRevoked,
+    unlined: "a revoke ends the row it names; no second write of that row follows",
     write: revoke,
   });
   const press = (row: Row) => {

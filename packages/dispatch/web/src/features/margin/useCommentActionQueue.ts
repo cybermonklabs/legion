@@ -1,6 +1,13 @@
 import { useRef, useState } from "react";
 
-import { api, apiErrorCodeIn, apiErrorMessage, type WriteBounds } from "../../api/client";
+import {
+  apiErrorCodeIn,
+  apiErrorMessage,
+  commentAcceptRequest,
+  commentRejectRequest,
+  commentReopenRequest,
+  commentResolveRequest,
+} from "../../api/client";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
@@ -50,11 +57,13 @@ const ACTION_LABELS: Record<CommentAction, string> = {
   resolve: "Comment resolved",
 };
 
-function submitCommentAction({ id, kind }: CommentActionInput, bounds: WriteBounds) {
-  if (kind === "accept") return api.acceptComment(id, bounds);
-  if (kind === "reject") return api.rejectComment(id, bounds);
-  if (kind === "reopen") return api.reopenComment(id, bounds);
-  return api.resolveComment(id, bounds);
+/** The request one comment action makes: each is a write of that comment's own row, so each
+ *  stands in its line (`comment:<id>`). */
+function commentActionRequest({ id, kind }: CommentActionInput) {
+  if (kind === "accept") return commentAcceptRequest(id);
+  if (kind === "reject") return commentRejectRequest(id);
+  if (kind === "reopen") return commentReopenRequest(id);
+  return commentResolveRequest(id);
 }
 
 /**
@@ -76,7 +85,8 @@ export function useCommentActionQueue<TContext = undefined>({
     // The card that offered the action shows its refusal (`CommentActionFailure`).
     inline: true,
     label: ({ kind }) => ACTION_LABELS[kind],
-    write: submitCommentAction,
+    request: commentActionRequest,
+    target: ({ id }) => `comment:${id}`,
     onError,
     onMutate,
     onSettled: (_data, error, input) => {

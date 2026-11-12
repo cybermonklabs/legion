@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
-import type { WriteBounds } from "../../api/client";
+import type { WriteRequest } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { InboxRow } from "../../api/types";
 import { type KeyedWriteResult, useKeyedWrite } from "../writes/useKeyedWrite";
@@ -57,7 +57,9 @@ export interface OutstandingAnswerWriteOptions<TData, TVariables> {
   readonly askId: string;
   /** What the shell's pending-writes indicator names this write, in the reader's words. */
   readonly label: (variables: TVariables) => string;
-  readonly write: (variables: TVariables, bounds: WriteBounds) => Promise<TData>;
+  /** The request this write makes (`askAnswerRequest`, `askDeclineRequest`): what goes out, and
+   *  what a write waiting its turn in the ask's line is kept as for a reload. */
+  readonly request: (variables: TVariables) => WriteRequest<TData>;
   /** Whether this write takes the ask's row out of the Inbox and holds the ask: false for one
    *  that leaves both alone. Read once, as the write goes, so a refusal restores exactly what
    *  that press took out. Every write does by default. */
@@ -91,7 +93,7 @@ export function useOutstandingAnswerWrite<TData, TVariables>({
   onSettled,
   onSuccess,
   removesRow,
-  write,
+  request,
 }: OutstandingAnswerWriteOptions<TData, TVariables>): KeyedWriteResult<
   TData,
   TVariables,
@@ -101,7 +103,8 @@ export function useOutstandingAnswerWrite<TData, TVariables>({
   const mutation = useKeyedWrite<TData, TVariables, InboxRowsBefore>({
     inline: true,
     label,
-    write,
+    request,
+    target: () => `ask:${askId}`,
     onMutate: async () => {
       if (removesRow !== undefined && !removesRow()) return undefined;
       markAnswerOutstanding(askId, true);

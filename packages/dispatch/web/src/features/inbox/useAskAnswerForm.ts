@@ -1,16 +1,15 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 
-import { ApiError, api, apiErrorMessage, type WriteBounds } from "../../api/client";
+import {
+  ApiError,
+  apiErrorMessage,
+  artifactCommentRequest,
+  askAnswerRequest,
+  issueCommentRequest,
+} from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
-import type {
-  AnswerAskInput,
-  Ask,
-  AskAnswer,
-  AskRead,
-  Comment,
-  CreateCommentInput,
-} from "../../api/types";
+import type { AnswerAskInput, Ask, AskAnswer, AskRead } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -26,12 +25,6 @@ import { isQuestionShapedAnswer } from "./question-shaped-answer";
 
 interface UseAskAnswerFormOptions {
   ask: Ask;
-  answer: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>;
-  createReply: (
-    issueKey: string,
-    input: CreateCommentInput,
-    bounds: WriteBounds
-  ) => Promise<Comment>;
   getAskThread: (id: string) => Promise<AskRead>;
   /** Data the Inbox response already hydrated for this card's first render. */
   initialThread?: AskRead;
@@ -100,9 +93,7 @@ function answerFailure(error: Error): AskAnswerFailure {
 }
 
 export function useAskAnswerForm({
-  answer,
   ask,
-  createReply,
   getAskThread,
   initialThread,
   initialThreadUpdatedAt,
@@ -162,7 +153,7 @@ export function useAskAnswerForm({
   const mutation = useOutstandingAnswerWrite({
     askId: ask.id,
     label: () => `Answer to “${ask.question}”`,
-    write: (input: AnswerAskInput, bounds) => answer(ask.id, input, bounds),
+    request: (input: AnswerAskInput) => askAnswerRequest(ask.id, input),
     // A change to an answer the server has already recorded leaves the Inbox alone: the ask has
     // no open row there to take out.
     removesRow: () => replacing.current === undefined,
@@ -220,19 +211,17 @@ export function useAskAnswerForm({
       invalidateOwnerReads(queryClient, ask);
     },
   });
+  // A clarification hands the ask's turn back, so it stands in that row's line (`ask:<id>`) with
+  // the answer, the decline, the hand-on and the snooze, however it is written: a comment on the
+  // ask's issue, or on the document an ask with no issue belongs to.
   const clarification = useKeyedWrite({
     inline: true,
     label: () => `Question back on “${ask.question}”`,
-    write: (text: string, bounds) => {
-      if (ask.issue_key === null) {
-        return api.createArtifactComment(
-          askArtifactId(ask),
-          { ask_id: ask.id, body: text },
-          bounds
-        );
-      }
-      return createReply(ask.issue_key, { ask_id: ask.id, body: text }, bounds);
-    },
+    request: (text: string) =>
+      ask.issue_key === null
+        ? artifactCommentRequest(askArtifactId(ask), { ask_id: ask.id, body: text })
+        : issueCommentRequest(ask.issue_key, { ask_id: ask.id, body: text }),
+    target: () => `ask:${ask.id}`,
     onSettled: () => {
       submitGuard.release();
     },

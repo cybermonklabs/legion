@@ -15,7 +15,10 @@ import {
   api,
   apiErrorCodeIn,
   apiErrorMessage,
+  issueClaimReleaseRequest,
   issuePatchRequest,
+  issueStateRequest,
+  issueUnsubscribeRequest,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { projectsQuery, userStateQuery } from "../../api/queries";
@@ -166,10 +169,13 @@ export function IssueHeader({
   const subscriberList = subscribers.isError ? [] : (subscribers.data ?? []);
   // The count is a claim about who is subscribed, so only a read that answered makes it.
   const subscribersCounted = !subscribers.isError && subscribers.data !== undefined;
-  // Every write here names `write` first: its answer and its variables are what the callbacks
-  // below read.
+  // The unsubscribe and the claim release go in the issue's line (`issue:<key>`), as its fields
+  // do, each made from its request alone; a reload keeps their order and drops them unsent, since
+  // a `DELETE` carries no idempotency key and a repeat could undo what another person did
+  // meanwhile (`Writes.resume`).
   const unsubscribe = useKeyedWrite({
-    write: (sessionId: string, bounds) => api.unsubscribeIssueSession(issue.key, sessionId, bounds),
+    request: (sessionId: string) => issueUnsubscribeRequest(issue.key, sessionId),
+    target: () => `issue:${issue.key}`,
     inline: true,
     label: (sessionId) =>
       `${agentText.sessionText(sessionId, subscriberList.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${issue.key}`,
@@ -178,7 +184,8 @@ export function IssueHeader({
     },
   });
   const releaseClaim = useKeyedWrite({
-    write: (_variables, bounds) => api.releaseIssueClaim(issue.key, bounds),
+    request: () => issueClaimReleaseRequest(issue.key),
+    target: () => `issue:${issue.key}`,
     inline: true,
     label: () => `Claim on ${issue.key} released`,
     onSuccess: (next) => {
@@ -284,9 +291,12 @@ export function IssueHeader({
     documentArtifact?.approval !== undefined &&
     (documentArtifact.approval.state !== "draft" || approvalRequestOpen);
   const pinGuard = useSubmitGuard();
+  // The header's pin writes the same row as the Conversation's and the Activity tab's pins, so it
+  // goes in that row's line (`pin:<key>`, `features/issue/pin-write.ts`): one row, one line.
   const updateState = useKeyedWrite({
     label: (pinned: boolean) => `${issue.key} ${pinned ? "pinned" : "unpinned"}`,
-    write: (pinned: boolean, bounds) => api.putIssueState(issue.key, { pinned }, bounds),
+    request: (pinned: boolean) => issueStateRequest(issue.key, { pinned }),
+    target: () => `pin:${issue.key}`,
     onSettled: () => {
       pinGuard.release();
       void queryClient.invalidateQueries({ queryKey: userStateQuery().queryKey });

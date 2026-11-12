@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { answerAskAnswers, answerAskSnoozes } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import type { InboxRow } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -121,7 +122,7 @@ test("Snooze inside the drawer folds the row into Later, same as the Inbox page"
   const user = userEvent.setup();
   let served: InboxRow[] = [issueAsk()];
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
-  const snoozeAsk = spyOn(api, "snoozeAsk").mockImplementation(async (id, until) => {
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
     served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
     return { snoozed_until: until };
   });
@@ -157,7 +158,7 @@ test("Answering an ask inside the drawer submits and removes it from the list, s
   let served = [withOptions];
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
   const getAsk = mockAskReads([withOptions]);
-  const answerAsk = spyOn(api, "answerAsk").mockImplementation(async () => {
+  const answerAsk = answerAskAnswers().mockImplementation(async () => {
     served = [];
     return {
       ...withOptions,

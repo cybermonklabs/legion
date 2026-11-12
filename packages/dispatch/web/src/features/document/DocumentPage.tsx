@@ -52,6 +52,7 @@ export function DocumentPage(): ReactNode {
   const unsubscribe = useKeyedWrite({
     label: (sessionId: string) =>
       `${agentText.sessionText(sessionId, subscribers.data?.find((row) => row.session_id === sessionId)?.title)} unsubscribed from this document`,
+    unlined: "one row per session: a repeat of this unsubscribe is the same DELETE",
     write: (sessionId: string, bounds) => {
       if (artifact.data === undefined) {
         throw new Error("Document unsubscribe requires an artifact.");

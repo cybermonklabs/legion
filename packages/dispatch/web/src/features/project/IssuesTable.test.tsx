@@ -4,7 +4,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
-import { answerIssuePatches } from "../../__tests__/send-answers";
+import { answerIssueCreates, answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api, issuePatchRequest } from "../../api/client";
 import { projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
@@ -248,10 +248,10 @@ test("a table rank write is held by the durable store on the issue's write line"
 
 test("an epic creation committed without an answer never sends parent writes to an unknown issue", async () => {
   const user = userEvent.setup();
-  const create = spyOn(api, "createIssue").mockRejectedValue(
+  const create = answerIssueCreates().mockRejectedValue(
     new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
   );
-  const send = spyOn(api, "send").mockRejectedValue(new Error("Unexpected parent write"));
+  const send = answerIssuePatches().mockRejectedValue(new Error("Unexpected parent write"));
   const named = nameTheEpic(user, "Made once");
   table([issue("CORE-1")]);
   restores.push(() => {
@@ -275,7 +275,7 @@ test("an epic creation committed without an answer never sends parent writes to 
 test("a possible duplicate offers an explicit force choice rather than forcing the first create", async () => {
   const user = userEvent.setup();
   const calls: CreateIssueInput[] = [];
-  const create = spyOn(api, "createIssue").mockImplementation(async (input) => {
+  const create = answerIssueCreates().mockImplementation(async (input) => {
     calls.push(input);
     if (!input.force)
       throw new ApiError(409, {
@@ -284,7 +284,7 @@ test("a possible duplicate offers an explicit force choice rather than forcing t
       });
     return savedIssue("CORE-9");
   });
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1"));
+  const send = answerIssuePatches().mockResolvedValue(savedIssue("CORE-1"));
   const named = nameTheEpic(user, "Existing epic");
   table([issue("CORE-1")]);
   restores.push(() => {
@@ -310,9 +310,8 @@ test("a stopped epic creation retries its committed request under the same key",
   const created = new Map<string, Issue>();
   const keys: string[] = [];
   let stopped = false;
-  const create = spyOn(api, "createIssue").mockImplementation(async (input, bounds) => {
+  const create = answerIssueCreates().mockImplementation(async (_input, bounds) => {
     keys.push(bounds.key);
-    bounds.sent?.({ method: "POST", path: "/api/v1/issues", body: input });
     if (!created.has(bounds.key)) {
       const epic = savedIssue("CORE-9");
       created.set(bounds.key, epic);
@@ -324,10 +323,10 @@ test("a stopped epic creation retries its committed request under the same key",
     }
     return created.get(bounds.key) as Issue;
   });
-  const send = spyOn(api, "send").mockImplementation(async (request) => {
-    const row = rows.find((value) => request.path.endsWith(value.key));
+  const send = answerIssuePatches().mockImplementation(async (key, body) => {
+    const row = rows.find((value) => value.key === key);
     if (!row) throw new Error("Missing issue");
-    Object.assign(row, request.body);
+    Object.assign(row, body);
     return { ...savedIssue(row.key), ...row } as never;
   });
   const named = nameTheEpic(user, "Committed once");
@@ -604,8 +603,8 @@ test("a late Done listing applies the requested URL page instead of clamping it 
 
 test("parent-changing actions skip closed selections and New epic refuses an all-closed selection", async () => {
   const user = userEvent.setup();
-  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1"));
-  const create = spyOn(api, "createIssue").mockRejectedValue(new Error("Unexpected create"));
+  const send = answerIssuePatches().mockResolvedValue(savedIssue("CORE-1"));
+  const create = answerIssueCreates().mockRejectedValue(new Error("Unexpected create"));
   restores.push(() => {
     send.mockRestore();
     create.mockRestore();
@@ -615,7 +614,7 @@ test("parent-changing actions skip closed selections and New epic refuses an all
   await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
   await user.click(screen.getByRole("button", { name: "Take out of epic" }));
   await screen.findByText(/Skipped 1 closed issue/);
-  expect(send.mock.calls.map(([request]) => request.path)).toEqual(["/api/v1/issues/CORE-1"]);
+  expect(send.mock.calls.map(([key]) => key)).toEqual(["CORE-1"]);
   await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
   await user.click(screen.getByRole("button", { name: "New epic from these" }));
   expect((await screen.findByRole("alert")).textContent).toContain(

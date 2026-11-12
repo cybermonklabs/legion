@@ -11,8 +11,8 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { answerThreadReads } from "../../__tests__/send-answers";
-import { ApiError, api } from "../../api/client";
+import { answerAskHandOns, answerRoute, answerThreadReads } from "../../__tests__/send-answers";
+import { ApiError, api, type WriteBounds } from "../../api/client";
 import { myRepliesOwnerQuery } from "../../api/queries";
 import type { AnswerAskInput, Ask, AskAnswer, AskRead, Comment } from "../../api/types";
 import { userPreferenceStorageKey } from "../shell/userPreference";
@@ -124,16 +124,15 @@ test("the answerer can change an answer and sees both answers immediately", asyn
     threadReads += 1;
     return refreshed.promise;
   };
+  answerRoute<(id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>>(
+    "POST",
+    "/api/v1/asks/*/answer"
+  ).mockImplementation(async (_id, input) => {
+    sent.push(input);
+    return after;
+  });
   const { view } = renderCard(
-    <AskCard
-      answerAsk={async (_id, input) => {
-        sent.push(input);
-        return after;
-      }}
-      ask={before}
-      getAskThread={getAskThread}
-      initialThread={thread(before)}
-    />
+    <AskCard ask={before} getAskThread={getAskThread} initialThread={thread(before)} />
   );
 
   try {
@@ -202,15 +201,10 @@ test("a stale change says the answer changed", async () => {
   // The refusal sends the card back to the server for the answer of record, which is the one it
   // was already showing.
   const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(before));
-  const { view } = renderCard(
-    <AskCard
-      answerAsk={async () => {
-        throw new ApiError(409, { code: "ASK_ANSWER_CHANGED", error: "answer changed" });
-      }}
-      ask={before}
-      initialThread={thread(before)}
-    />
-  );
+  answerRoute("POST", "/api/v1/asks/*/answer").mockImplementation(async () => {
+    throw new ApiError(409, { code: "ASK_ANSWER_CHANGED", error: "answer changed" });
+  });
+  const { view } = renderCard(<AskCard ask={before} initialThread={thread(before)} />);
 
   try {
     await user.click(await view.findByRole("button", { name: "Change answer" }));
@@ -235,15 +229,10 @@ for (const [code, message] of [
     const before = answeredAsk();
     // The refusal sends the card back to the server for the answer of record.
     const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(before));
-    const { view } = renderCard(
-      <AskCard
-        answerAsk={async () => {
-          throw new ApiError(409, { code, error: "refused" });
-        }}
-        ask={before}
-        initialThread={thread(before)}
-      />
-    );
+    answerRoute("POST", "/api/v1/asks/*/answer").mockImplementation(async () => {
+      throw new ApiError(409, { code, error: "refused" });
+    });
+    const { view } = renderCard(<AskCard ask={before} initialThread={thread(before)} />);
     try {
       await user.click(await view.findByRole("button", { name: "Change answer" }));
       await user.click(view.getByRole("radio", { name: "Hold" }));
@@ -705,7 +694,7 @@ test("a hand-on reads the ask's thread again, so a card reading that thread foll
     threadReads += 1;
     return thread(handed ? handedOn : open, []);
   });
-  const handAskTo = spyOn(api, "handAskTo").mockImplementation(async () => {
+  const handAskTo = answerAskHandOns().mockImplementation(async () => {
     handed = true;
     return handedOn;
   });

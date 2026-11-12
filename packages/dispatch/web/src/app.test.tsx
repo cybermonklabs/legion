@@ -107,6 +107,7 @@ function aliceWrite(
       kind: plainWrite,
       label: refuse ? "CORE-2 set to done" : "CORE-1 set to done",
       presentation: "indicator",
+      unlined: "a test write that names no row",
       write: (bounds) => {
         attempts.push(bounds.login ?? "nobody");
         bounds.sent?.({ body: { status: "done" }, method: "PATCH", path: "/api/v1/issues/CORE-1" });
@@ -258,6 +259,7 @@ test("a lapsed session keeps every write, and the same person's sign-in resumes 
       kind: plainWrite,
       label: "CORE-1 set to done",
       presentation: "indicator",
+      unlined: "a test write that names no row",
       write: (bounds) => {
         keys.push(bounds.key);
         bounds.sent?.({ body: { status: "done" }, method: "PATCH", path: "/api/v1/issues/CORE-1" });

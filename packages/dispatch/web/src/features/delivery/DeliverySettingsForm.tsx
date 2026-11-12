@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 
-import { api, apiErrorMessage } from "../../api/client";
+import { apiErrorMessage, deliverySettingsRequest } from "../../api/client";
 import { deliverySettingsQuery } from "../../api/queries";
 import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySettings, DeliverySettingsInput } from "../../api/types";
@@ -155,9 +155,11 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
     staging_apply_job_name: record?.staging_apply_job_name ?? "",
     staging_e2e_job_name: record?.staging_e2e_job_name ?? "",
   }));
-  // The form shows its own refusal, under the fields it was refused over.
+  // The form shows its own refusal, under the fields it was refused over. The instance has one
+  // delivery-settings row, so every save of it stands in that row's line (`settings:delivery`).
   const save = useKeyedWrite({
-    write: (input: DeliverySettingsInput, bounds) => api.putDeliverySettings(input, bounds),
+    request: (input: DeliverySettingsInput) => deliverySettingsRequest(input),
+    target: () => "settings:delivery",
     inline: true,
     label: () => "Delivery settings saved",
     onSettled: () => submitGuard.release(),

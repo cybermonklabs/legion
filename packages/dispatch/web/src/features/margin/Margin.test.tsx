@@ -8,6 +8,7 @@ import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { answerAskAnswers } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { Ask, AskRead, Comment, IssueAskRow, IssueDetails } from "../../api/types";
 import type { RetypeOutcome } from "../doc/editor";
@@ -493,7 +494,7 @@ test("Margin puts an unanchored open ask under Needs you and sends its answer", 
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
-  const answerAsk = spyOn(api, "answerAsk").mockResolvedValue(answeredAsk);
+  const answerAsk = answerAskAnswers().mockResolvedValue(answeredAsk);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={queryClient}>
@@ -563,7 +564,7 @@ test("Margin moves an answered anchored ask out of Needs you in place, without t
   queryClient.setQueryData(["asks", issue.key], [anchoredAsk]);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
-  const answerAsk = spyOn(api, "answerAsk").mockResolvedValue(answeredAsk);
+  const answerAsk = answerAskAnswers().mockResolvedValue(answeredAsk);
   const refetched = Promise.withResolvers<IssueAskRow[]>();
   const getAsk = answerAskThreads(anchoredAsk);
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
@@ -633,7 +634,7 @@ test("a reply typed into an answered ask's thread survives leaving the Comments 
   queryClient.setQueryData(["asks", issue.key], [anchoredAsk]);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
-  const answerAsk = spyOn(api, "answerAsk").mockResolvedValue(answeredAsk);
+  const answerAsk = answerAskAnswers().mockResolvedValue(answeredAsk);
   const getAsk = spyOn(api, "getAsk").mockResolvedValue({
     ask: anchoredAsk,
     answers: [],

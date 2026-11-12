@@ -8,6 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { answerAskHandOns, answerAskSnoozes } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type {
   Anchor,
@@ -890,7 +891,7 @@ test("a question in no document is today's card", async () => {
 test("the head's Snooze registers its write, so the list keeps the row the column is on", async () => {
   const user = userEvent.setup();
   const held = Promise.withResolvers<AskSnooze>();
-  const snoozeAsk = spyOn(api, "snoozeAsk").mockImplementation(() => held.promise);
+  const snoozeAsk = answerAskSnoozes().mockImplementation(() => held.promise);
   const { snoozeLiveness, view } = renderPane({ ask: issueAsk() });
 
   try {
@@ -916,7 +917,7 @@ test("the column's card registers its hand-on, so the list keeps the row the col
     issue: { assignee: "bob", key: "CORE-1", title: "Bob's issue" },
   });
   const held = Promise.withResolvers<InboxRow>();
-  const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => held.promise);
+  const handAskTo = answerAskHandOns().mockImplementation(() => held.promise);
   // The control reads the people as the reader reaches for it, bob among them.
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([
     { login: "alice" },

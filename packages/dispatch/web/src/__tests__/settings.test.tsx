@@ -13,6 +13,7 @@ import { App } from "../app";
 // for, so the module is loaded here, with the test file, and no wait measures that load.
 import "../features/settings/SettingsPage";
 import { keyedAttempt } from "./keyed-attempt";
+import { answerRepoProjectRemovals, answerRepoProjects } from "./send-answers";
 
 /** The mapping routes' server state as the Settings page reaches it: a read answers what the writes
  *  have left, and a write follows the server's default rules (the body's default, else the
@@ -104,10 +105,12 @@ test("human users manage repository project mappings from the settings route", a
       gated_steps: [],
     },
   ]);
-  const putRepoProject = spyOn(api, "putRepoProject").mockImplementation(async (repo, input) =>
-    server.put(repo, input)
+  const putRepoProject = answerRepoProjects().mockImplementation(async (owner, repo, input) =>
+    server.put(`${owner}/${repo}`, input)
   );
-  const deleteRepoProject = spyOn(api, "deleteRepoProject").mockImplementation(server.remove);
+  const deleteRepoProject = answerRepoProjectRemovals().mockImplementation(async (owner, repo) =>
+    server.remove(`${owner}/${repo}`)
+  );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
   try {
@@ -135,7 +138,8 @@ test("human users manage repository project mappings from the settings route", a
     await user.click(radio("owner/repo"));
     await waitFor(() =>
       expect(putRepoProject).toHaveBeenLastCalledWith(
-        "owner/repo",
+        "owner",
+        "repo",
         {
           project: "CORE",
           default: true,
@@ -153,7 +157,8 @@ test("human users manage repository project mappings from the settings route", a
     await user.click(screen.getByRole("button", { name: "Add mapping" }));
     await waitFor(() =>
       expect(putRepoProject).toHaveBeenLastCalledWith(
-        "owner/repo",
+        "owner",
+        "repo",
         { project: "CORE" },
         keyedAttempt
       )
@@ -179,7 +184,7 @@ test("human users manage repository project mappings from the settings route", a
 
     await user.click(screen.getByRole("button", { name: "Delete mapping for owner/repo" }));
     await waitFor(() =>
-      expect(deleteRepoProject).toHaveBeenLastCalledWith("owner/repo", keyedAttempt)
+      expect(deleteRepoProject).toHaveBeenLastCalledWith("owner", "repo", undefined, keyedAttempt)
     );
     await waitFor(() =>
       expect(screen.queryByRole("cell", { name: "owner/repo" })).not.toBeInTheDocument()
@@ -244,8 +249,8 @@ test("a delayed mapping response does not undo a newer default the page has read
   ]);
   // The server saves the pick at once; its answer reaches the page only when the test says.
   let answer: (() => void) | undefined;
-  const putRepoProject = spyOn(api, "putRepoProject").mockImplementation((repo, input) => {
-    const saved = server.put(repo, input);
+  const putRepoProject = answerRepoProjects().mockImplementation((owner, repo, input) => {
+    const saved = server.put(`${owner}/${repo}`, input);
     return new Promise<RepoProject>((resolve) => {
       answer = () => resolve(saved);
     });

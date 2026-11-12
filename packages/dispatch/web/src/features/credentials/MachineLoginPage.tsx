@@ -74,6 +74,7 @@ export function MachineLoginPage(): ReactNode {
     inline: true,
     label: () => "Lookup of a machine login code",
     onSettled: () => submitGuard.release(),
+    unlined: "a lookup reads the code the person typed and names no row",
     write: (lookupCode: string, bounds) => api.lookupMachineCredential(lookupCode, bounds),
   });
   // A lookup Dispatch answered with nothing it kept shows nothing until it is looked up again.
@@ -86,6 +87,7 @@ export function MachineLoginPage(): ReactNode {
     write: (_variables, bounds) =>
       api.approveCredentialRecord(record?.record_id ?? "", { code: lookedUpCode }, bounds),
     inline: true,
+    unlined: "one decision ends the record this page looked up; no second write of it follows",
     label: () => "Approval of a machine login",
     onSettled: () => submitGuard.release(),
     onSuccess: (decided) => {
@@ -98,6 +100,7 @@ export function MachineLoginPage(): ReactNode {
   const deny = useKeyedWrite<StateResponse>({
     write: (_variables, bounds) =>
       api.denyCredentialRecord(record?.record_id ?? "", { code: lookedUpCode }, bounds),
+    unlined: "one decision ends the record this page looked up; no second write of it follows",
     inline: true,
     label: () => "Denial of a machine login",
     onSettled: () => submitGuard.release(),

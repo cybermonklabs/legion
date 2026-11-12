@@ -86,6 +86,7 @@ function BroadcastRecipientRow({
   const retry = useKeyedWrite({
     label: (mode: MessageDeliveryMode) => `Delivery to ${label} again, as ${MODE_LABELS[mode]}`,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["broadcast"] }),
+    unlined: "a delivery sends a message to one session again and names no row",
     write: (mode, bounds) => api.createMessageDelivery(recipient.message.id, mode, bounds),
   });
   // The row shows the recipient's whole thread, so its replies are read. Only these: the

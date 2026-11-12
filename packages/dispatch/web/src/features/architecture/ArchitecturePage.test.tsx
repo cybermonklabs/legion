@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { answerIssuePatches } from "../../__tests__/send-answers";
+import { answerArchitectureSourceSyncs, answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type {
   ArchitectureTree,
@@ -141,7 +141,7 @@ function LocationProbe() {
 
 function renderPane(tree: ArchitectureTree, search = "") {
   const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(tree);
-  const syncArchitectureSource = spyOn(api, "syncArchitectureSource");
+  const syncArchitectureSource = answerArchitectureSourceSyncs();
   const patchIssue = answerIssuePatches();
   const getIssue = spyOn(api, "getIssue");
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -414,7 +414,9 @@ test("never synced: the source line says so and an empty model shows the Refresh
     await waitFor(() =>
       expect(pane.syncArchitectureSource).toHaveBeenCalledWith(
         "CORE",
-        "legion/legion",
+        "legion",
+        "legion",
+        undefined,
         keyedAttempt
       )
     );
@@ -552,7 +554,13 @@ test("the header has one line per source, each with its own commit, check time a
     pane.syncArchitectureSource.mockImplementation(() => Promise.withResolvers<never>().promise);
     await user.click(screen.getByRole("button", { name: "Refresh acme/infra" }));
     await waitFor(() =>
-      expect(pane.syncArchitectureSource).toHaveBeenCalledWith("CORE", "acme/infra", keyedAttempt)
+      expect(pane.syncArchitectureSource).toHaveBeenCalledWith(
+        "CORE",
+        "acme",
+        "infra",
+        undefined,
+        keyedAttempt
+      )
     );
     expect(pane.syncArchitectureSource).toHaveBeenCalledTimes(1);
     // Only the source being refreshed says so.

@@ -1,7 +1,7 @@
-import { api } from "../../api/client";
+import { api, issueCreateRequest, issuePatchRequest } from "../../api/client";
 import type { Issue, NewIssueSettings } from "../../api/types";
-import type { Attempt, Writes } from "../writes/write-store";
-import { press, refusalText } from "./offer";
+import type { Writes } from "../writes/write-store";
+import { press, pressOn, refusalText } from "./offer";
 
 /**
  * The whole content of the Verification document a new issue from the bar gets: the words the
@@ -49,14 +49,12 @@ export interface FiledIssue {
  * could not make an issue it has made, and offering to make it a second time, which is the
  * husk R14 (dispatch://INFRA-1042/spec#b-r14) exists to stop.
  */
-async function writeOnto<T>(
-  writes: Writes,
+async function writeOnto(
   what: string,
-  label: string,
-  write: Attempt<T>
+  run: () => Promise<unknown>
 ): Promise<RefusedWrite | undefined> {
   try {
-    await press(writes, label, write);
+    await run();
     return undefined;
   } catch (error) {
     return { what, why: refusalText(error, "the write did not reach Dispatch.") };
@@ -82,11 +80,15 @@ export async function fileNewIssue(
   writes: Writes,
   { project, settings, words }: NewIssueWrite
 ): Promise<FiledIssue | undefined> {
-  const issue = await press(writes, `New issue “${words}”`, (bounds) =>
-    api.createIssue(
-      { project, title: words, ...(settings.label === "" ? {} : { labels: [settings.label] }) },
-      bounds
-    )
+  const issue = await pressOn(
+    writes,
+    `New issue “${words}”`,
+    `project:${project}`,
+    issueCreateRequest({
+      project,
+      title: words,
+      ...(settings.label === "" ? {} : { labels: [settings.label] }),
+    })
   );
   if (issue === null) {
     return undefined;
@@ -96,33 +98,42 @@ export async function fileNewIssue(
     refused,
     session: settings.session,
   });
-  const criterion = await writeOnto(
-    writes,
-    "its first criterion",
-    `The first criterion of ${issue.key}`,
-    (bounds) =>
-      api.uploadArtifact(
-        { issue: issue.key },
-        { content: firstCriterion(words), name: "verification.md" },
-        bounds
-      )
+  const criterion = await writeOnto("its first criterion", () =>
+    press(
+      writes,
+      `The first criterion of ${issue.key}`,
+      "an upload names no row until Dispatch stores the file",
+      (bounds) =>
+        api.uploadArtifact(
+          { issue: issue.key },
+          { content: firstCriterion(words), name: "verification.md" },
+          bounds
+        )
+    )
   );
   if (criterion !== undefined || settings.session === "") {
     return filed(criterion);
   }
   const target = `session:${settings.session}`;
-  const route = await writeOnto(
-    writes,
-    `its route to the session ${settings.session}`,
-    `${issue.key} to ${settings.session}`,
-    (bounds) => api.patchIssue(issue.key, { route: target }, bounds)
+  const route = await writeOnto(`its route to the session ${settings.session}`, () =>
+    pressOn(
+      writes,
+      `${issue.key} to ${settings.session}`,
+      `issue:${issue.key}`,
+      issuePatchRequest(issue.key, { route: target })
+    )
   );
   if (route !== undefined) {
     return filed(route);
   }
   return filed(
-    await writeOnto(writes, "its first message", `The first message on ${issue.key}`, (bounds) =>
-      api.createMessage(issue.key, { body: words, delivery: "aside", target }, bounds)
+    await writeOnto("its first message", () =>
+      press(
+        writes,
+        `The first message on ${issue.key}`,
+        "a message to a session names no row",
+        (bounds) => api.createMessage(issue.key, { body: words, delivery: "aside", target }, bounds)
+      )
     )
   );
 }

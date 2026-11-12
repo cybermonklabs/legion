@@ -1,15 +1,27 @@
 import { type Mock, mock, spyOn } from "bun:test";
 
-import { api, type WriteBounds, type WriteMethod, type WriteRequest } from "../api/client";
+import {
+  api,
+  type DeclineAskInput,
+  type WriteBounds,
+  type WriteMethod,
+  type WriteRequest,
+} from "../api/client";
 import type {
+  AnswerAskInput,
+  Ask,
   AskSnooze,
+  Comment,
   CreateAgentMessageInput,
+  CreateCommentInput,
+  CreateIssueInput,
   InboxDismissRequest,
   InboxDismissResponse,
   InboxReadRequest,
   InboxReadResponse,
   Issue,
   Message,
+  RepoProject,
   UpdateIssueInput,
   UserAgentState,
   UserAgentStateInput,
@@ -129,6 +141,109 @@ export const answerIssuePatches = () =>
     "/api/v1/issues/*"
   );
 
+/** `POST /api/v1/issues` (`issueCreateRequest`). */
+export const answerIssueCreates = () =>
+  answerRoute<(input: CreateIssueInput, bounds: WriteBounds) => Promise<Issue>>(
+    "POST",
+    "/api/v1/issues"
+  );
+
+/** `PUT /api/v1/settings/repo-projects/{owner}/{repo}` (`repoProjectRequest`): called with the
+ *  owner and the repository as two segments, the body and the bounds. */
+export const answerRepoProjects = () =>
+  answerRoute<
+    (
+      owner: string,
+      repo: string,
+      input: { project: string; default?: boolean },
+      bounds: WriteBounds
+    ) => Promise<RepoProject>
+  >("PUT", "/api/v1/settings/repo-projects/*/*");
+
+/** `DELETE /api/v1/settings/repo-projects/{owner}/{repo}` (`repoProjectDeleteRequest`). */
+export const answerRepoProjectRemovals = () =>
+  answerRoute<
+    (owner: string, repo: string, body: undefined, bounds: WriteBounds) => Promise<unknown>
+  >("DELETE", "/api/v1/settings/repo-projects/*/*");
+
+/** `POST /api/v1/artifacts/{id}/blocks/{block_id}/keep` (`decisionKeepRequest`): called with the
+ *  document, the block and the body the keep carries. */
+export const answerDecisionKeeps = () =>
+  answerRoute<
+    (
+      id: string,
+      blockID: string,
+      body: { text_sha256: string },
+      bounds: WriteBounds
+    ) => Promise<unknown>
+  >("POST", "/api/v1/artifacts/*/blocks/*/keep");
+
+/** `POST /api/v1/me/agent-tokens` (`agentTokenCreateRequest`). */
+export const answerAgentTokenMints = () =>
+  answerRoute<
+    (input: { name: string; scopes?: string[] }, bounds: WriteBounds) => Promise<unknown>
+  >("POST", "/api/v1/me/agent-tokens");
+
+/** `PATCH /api/v1/me/agent-tokens/{id}` (`agentTokenScopesRequest`). */
+export const answerAgentTokenScopes = () =>
+  answerRoute<(id: string, body: { scopes: string[] }, bounds: WriteBounds) => Promise<unknown>>(
+    "PATCH",
+    "/api/v1/me/agent-tokens/*"
+  );
+
+/** `DELETE /api/v1/me/agent-tokens/{id}` (`agentTokenRevokeRequest`). */
+export const answerAgentTokenRevokes = () =>
+  answerRoute<(id: string, body: undefined, bounds: WriteBounds) => Promise<unknown>>(
+    "DELETE",
+    "/api/v1/me/agent-tokens/*"
+  );
+
+/** `PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}`
+ *  (`architectureSourceRequest`): called with the project, the owner and the repository. */
+export const answerArchitectureSources = () =>
+  answerRoute<
+    (
+      project: string,
+      owner: string,
+      repo: string,
+      input: { branch: string },
+      bounds: WriteBounds
+    ) => Promise<unknown>
+  >("PUT", "/api/v1/projects/*/architecture-sources/*/*");
+
+/** `POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync`
+ *  (`architectureSourceSyncRequest`). */
+export const answerArchitectureSourceSyncs = () =>
+  answerRoute<
+    (
+      project: string,
+      owner: string,
+      repo: string,
+      body: undefined,
+      bounds: WriteBounds
+    ) => Promise<unknown>
+  >("POST", "/api/v1/projects/*/architecture-sources/*/*/sync");
+
+/** `DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}`
+ *  (`architectureSourceDeleteRequest`). */
+export const answerArchitectureSourceRemovals = () =>
+  answerRoute<
+    (
+      project: string,
+      owner: string,
+      repo: string,
+      body: undefined,
+      bounds: WriteBounds
+    ) => Promise<unknown>
+  >("DELETE", "/api/v1/projects/*/architecture-sources/*/*");
+
+/** `PUT /api/v1/settings/delivery` (`deliverySettingsRequest`). */
+export const answerDeliverySettings = () =>
+  answerRoute<(input: Record<string, unknown>, bounds: WriteBounds) => Promise<unknown>>(
+    "PUT",
+    "/api/v1/settings/delivery"
+  );
+
 /** `PUT /api/v1/me/issues/{key}/state` (`issueStateRequest`). */
 export const answerIssueStates = () =>
   answerRoute<
@@ -168,6 +283,57 @@ export const answerAskSnoozes = () =>
   answerRoute<
     (id: string, body: { snoozed_until: string }, bounds: WriteBounds) => Promise<AskSnooze>
   >("PUT", "/api/v1/me/asks/*/snooze");
+
+/** `DELETE /api/v1/me/asks/{id}/snooze` (`askUnsnoozeRequest`). */
+export const answerAskUnsnoozes = () =>
+  answerRoute<(id: string, body: undefined, bounds: WriteBounds) => Promise<unknown>>(
+    "DELETE",
+    "/api/v1/me/asks/*/snooze"
+  );
+
+/** `POST /api/v1/asks/{id}/answer` (`askAnswerRequest`). */
+export const answerAskAnswers = () =>
+  answerRoute<(id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>>(
+    "POST",
+    "/api/v1/asks/*/answer"
+  );
+
+/** `POST /api/v1/asks/{id}/decline` (`askDeclineRequest`). */
+export const answerAskDeclines = () =>
+  answerRoute<(id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>>(
+    "POST",
+    "/api/v1/asks/*/decline"
+  );
+
+/** `PUT /api/v1/asks/{id}/asked-of` (`askHandOnRequest`): the ask handed on, called with the
+ *  body the route takes rather than the login alone. */
+export const answerAskHandOns = () =>
+  answerRoute<(id: string, body: { asked_of: string }, bounds: WriteBounds) => Promise<Ask>>(
+    "PUT",
+    "/api/v1/asks/*/asked-of"
+  );
+
+/** `POST /api/v1/issues/{key}/comments` (`issueCommentRequest`). */
+export const answerIssueComments = () =>
+  answerRoute<(key: string, input: CreateCommentInput, bounds: WriteBounds) => Promise<Comment>>(
+    "POST",
+    "/api/v1/issues/*/comments"
+  );
+
+/** `POST /api/v1/artifacts/{id}/comments` (`artifactCommentRequest`). */
+export const answerArtifactComments = () =>
+  answerRoute<(id: string, input: CreateCommentInput, bounds: WriteBounds) => Promise<Comment>>(
+    "POST",
+    "/api/v1/artifacts/*/comments"
+  );
+
+/** One comment action: `POST /api/v1/comments/{id}/<kind>` (`commentResolveRequest` and its
+ *  kin), called with the comment's id and the attempt's bounds. */
+export const answerCommentActions = (kind: "accept" | "reject" | "reopen" | "resolve") =>
+  answerRoute<(id: string, body: unknown, bounds: WriteBounds) => Promise<Comment>>(
+    "POST",
+    `/api/v1/comments/*/${kind}`
+  );
 
 /** `POST /api/v1/agents/{session}/messages` (`agentMessageRequest`). */
 export const answerAgentMessages = () =>

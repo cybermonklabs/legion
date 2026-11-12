@@ -5,6 +5,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
+import { answerDeliverySettings } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { DeliverySettings } from "../../api/types";
 import { DeliverySettingsForm } from "./DeliverySettingsForm";
@@ -104,7 +105,7 @@ test("with no record the fields are empty and their placeholders say what each h
 test("Save sends the fields trimmed and each list split into its entries", async () => {
   const user = userEvent.setup();
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
-  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue(record);
+  const putDeliverySettings = answerDeliverySettings().mockResolvedValue(record);
 
   try {
     const queryClient = renderForm();
@@ -163,7 +164,7 @@ test("the three optional pipeline job names round-trip, and an emptied one saves
     staging_e2e_job_name: "staging-e2e / run",
   };
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(stored);
-  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue(stored);
+  const putDeliverySettings = answerDeliverySettings().mockResolvedValue(stored);
 
   try {
     renderForm();
@@ -204,7 +205,7 @@ test("the production apply step round-trips trimmed and an empty value saves nul
     production_apply_step_name: "Run ./.github/actions/apply",
   };
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(stored);
-  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue(stored);
+  const putDeliverySettings = answerDeliverySettings().mockResolvedValue(stored);
 
   try {
     renderForm();
@@ -233,7 +234,7 @@ test("the production apply step round-trips trimmed and an empty value saves nul
 test("a required field holding only whitespace is empty, so Save is refused before any request", async () => {
   const user = userEvent.setup();
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
-  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue(record);
+  const putDeliverySettings = answerDeliverySettings().mockResolvedValue(record);
   const filled: [string, string][] = [
     ["Deploy repository", "acme/widgets"],
     ["Deploy workflow", ".github/workflows/deploy.yml"],
@@ -281,7 +282,7 @@ test("a refused save shows the server's message as it wrote it, and the draft st
   const message =
     "the GitHub App is not installed on acme/widgets: its token cannot read acme/widgets";
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
-  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockRejectedValue(
+  const putDeliverySettings = answerDeliverySettings().mockRejectedValue(
     new ApiError(409, { code: "DELIVERY_SETTINGS_ACCESS", error: message })
   );
 

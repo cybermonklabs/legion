@@ -1,4 +1,4 @@
-import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the answer form's own submit, which user-event has no form for
 import { fireEvent, render, waitFor, within } from "@testing-library/react";
@@ -7,8 +7,13 @@ import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { api } from "../../api/client";
-import type { Ask, AskRead, Comment } from "../../api/types";
+import {
+  answerArtifactComments,
+  answerAskAnswers,
+  answerIssueComments,
+} from "../../__tests__/send-answers";
+import { api, type WriteBounds } from "../../api/client";
+import type { AnswerAskInput, Ask, AskRead, Comment, CreateCommentInput } from "../../api/types";
 import { AskBlockCard } from "./AskBlockCard";
 import type { AskBlockHost } from "./typed-block-drawing";
 
@@ -135,29 +140,34 @@ function threadRead(of: Ask, replies: Comment[] = []): AskRead {
   };
 }
 
-// The block reaches the API only through the shared card; each test says what the server answers.
-// Every test file shares one process and one `api`, so these spies are put back once the file is
-// done: a spy left on `api.getAsk` answers every later file's card, and a later `spyOn` of the
-// same method hands back this spy with those calls already counted.
-const answerAsk = spyOn(api, "answerAsk");
+// The block reads the ask through the shared card, and writes through the one write path: its
+// answer and its clarification are made from their requests alone, so each test answers them on
+// their routes (`answerRoute`, let go after every test). Every test file shares one process and
+// one `api`, so the read spy is put back once the file is done: a spy left on `api.getAsk`
+// answers every later file's card.
 const getAsk = spyOn(api, "getAsk");
-const createComment = spyOn(api, "createComment");
-const createArtifactComment = spyOn(api, "createArtifactComment");
+let answerAsk: Mock<(id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>>;
+let createComment: Mock<
+  (key: string, input: CreateCommentInput, bounds: WriteBounds) => Promise<Comment>
+>;
+let createArtifactComment: Mock<
+  (id: string, input: CreateCommentInput, bounds: WriteBounds) => Promise<Comment>
+>;
 /** The bounds every write the card makes carries: its press's key, which a retry reuses. */
 const keyedAttempt = expect.objectContaining({ key: expect.any(String) });
 
+beforeEach(() => {
+  answerAsk = answerAskAnswers();
+  createComment = answerIssueComments();
+  createArtifactComment = answerArtifactComments();
+});
+
 afterEach(() => {
-  answerAsk.mockReset();
   getAsk.mockReset();
-  createComment.mockReset();
-  createArtifactComment.mockReset();
 });
 
 afterAll(() => {
-  answerAsk.mockRestore();
   getAsk.mockRestore();
-  createComment.mockRestore();
-  createArtifactComment.mockRestore();
 });
 
 function renderCard({

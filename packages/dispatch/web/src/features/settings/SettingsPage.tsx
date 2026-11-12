@@ -2,7 +2,12 @@ import { canonicalRepo } from "@legion/contracts/repo";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
-import { api, apiErrorMessage } from "../../api/client";
+import {
+  api,
+  apiErrorMessage,
+  repoProjectDeleteRequest,
+  repoProjectRequest,
+} from "../../api/client";
 import { projectsQuery } from "../../api/queries";
 import type { RepoProject } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -75,13 +80,16 @@ export function SettingsPage(): ReactNode {
   const projects = useQuery(projectsQuery());
   // `null` is a Dispatch with no secrets broker, where Live grants has nothing to list.
   const credentialsAvailable = useQuery(credentialPendingQuery());
-  // Both mapping writes show their refusal on the row they changed.
+  // Both mapping writes show their refusal on the row they changed, and both stand in that
+  // row's line (`repo-mapping:<owner/repo>`), so a save and a removal of one mapping go out in
+  // press order.
   const putMapping = useKeyedWrite<
     RepoProject,
     MappingInput,
     { previous: RepoProject[] | undefined }
   >({
-    write: ({ repo, ...input }, bounds) => api.putRepoProject(repo, input, bounds),
+    request: ({ repo, ...input }) => repoProjectRequest(repo, input),
+    target: ({ repo }) => `repo-mapping:${repo}`,
     inline: true,
     label: ({ repo, project: mapped }) => `${repo} mapped to ${mapped}`,
     onError: (error, variables, context) => {
@@ -133,7 +141,8 @@ export function SettingsPage(): ReactNode {
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["repo-projects"] }),
   });
   const deleteMapping = useKeyedWrite<void, string, { previous: RepoProject[] | undefined }>({
-    write: (repo: string, bounds) => api.deleteRepoProject(repo, bounds),
+    request: (repo: string) => repoProjectDeleteRequest(repo),
+    target: (repo) => `repo-mapping:${repo}`,
     inline: true,
     label: (repo) => `${repo}'s mapping removed`,
     onError: (error, repo, context) => {

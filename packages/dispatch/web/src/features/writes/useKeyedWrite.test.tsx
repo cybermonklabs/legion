@@ -25,6 +25,7 @@ function renderAnswerWrite() {
       useKeyedWrite({
         inline: true,
         label: () => "Answer to “Ship?”",
+        unlined: "a test write that names no row",
         write: (input: { selected: string[] }, bounds) =>
           api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
       }),
@@ -100,6 +101,7 @@ test("a write answered KEY_COMMITTED succeeds with null: no error and no rollbac
           rolledBack += 1;
         },
         onSuccess: (data) => succeeded.push(data),
+        unlined: "a test write that names no row",
         write: (input: { selected: string[] }, bounds) =>
           api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
       }),

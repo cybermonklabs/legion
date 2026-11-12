@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 
-import { api } from "../../api/client";
+import { askHandOnRequest } from "../../api/client";
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { Ask, InboxRow } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -36,9 +36,11 @@ export interface AskHandOnWrite {
 export function useAskHandOn(ask: Ask): AskHandOnWrite {
   const queryClient = useQueryClient();
   const inboxKey = inboxQuery().queryKey;
-  // The card says why its hand-on was refused, where the reader pressed it.
+  // The card says why its hand-on was refused, where the reader pressed it. It writes the ask,
+  // so it stands in that row's line (`ask:<id>`).
   const mutation = useKeyedWrite({
-    write: (askedOf: string, bounds) => api.handAskTo(ask.id, askedOf, bounds),
+    request: (askedOf: string) => askHandOnRequest(ask.id, askedOf),
+    target: () => `ask:${ask.id}`,
     inline: true,
     label: (askedOf) => `Ask handed to ${askedOf}`,
     onMutate: async (askedOf) => {

@@ -180,10 +180,35 @@ export const plainWrite = defineWriteKind<null>({
   name: "write",
 });
 
-/** One write to make: its kind and record, what the indicator names it, where it shows, the
- *  target it is ordered on, and how it is made - from its request alone, or by an attempt of its
+/** The line a write is ordered on, or the reason it is on none: a write names the row it writes
+ *  (`target`) or says, in its own value, why it names none (`unlined`). One of the two is
+ *  required, so a write written later cannot leave the line out in silence, and `Writes.run`
+ *  refuses one carrying neither (a page bug a `.js` caller could still reach). */
+export type WriteLine =
+  | {
+      /** The row this write writes, as `<row type>:<row id>` - `issue:<KEY>`, `pin:<KEY>`,
+       *  `comment:<id>`, `ask:<id>`, `project:<KEY>` for a write that adds a row to a project -
+       *  or, for a read mark, `read:` and that row's own name. Writes to one target go out in
+       *  press order: a later one waits while an earlier one is still being tried. A write of a
+       *  kind that is made again from its request (no `resume`) is made from its `request` alone
+       *  when it names a target. The sends that name no row (`broadcast`, `session:<id>`,
+       *  `role:<role>`) carry their own names here. */
+      readonly target: string;
+      readonly unlined?: undefined;
+    }
+  | {
+      readonly target?: undefined;
+      /** Why this write is on no line, in the words of whoever wrote it: it names no row (a
+       *  sign-out, a lookup, a send to a session), or the row it writes is one Dispatch names
+       *  as it makes it. */
+      readonly unlined: string;
+    };
+
+/** One write to make: its kind and record, what the indicator names it, where it shows, the line
+ *  it is ordered on, and how it is made - from its request alone, or by an attempt of its
  *  own. */
 export type WriteSpec<T, D, K> = WriteSpecBase<D, K> &
+  WriteLine &
   (
     | {
         /** The request the write makes, as its press names it: every attempt of the write is
@@ -209,10 +234,6 @@ interface WriteSpecBase<D, K> {
   readonly label: string;
   readonly presentation: Presentation;
   readonly inline?: boolean;
-  /** Writes to one target go out in press order: a later one waits while an earlier one is still
-   *  being tried. A write of a kind that is made again from its request (no `resume`) is made
-   *  from its `request` alone when it names a target. */
-  readonly target?: string;
   /** The key of a write the surface makes again after it ended without Dispatch's verdict (the
    *  reader stopped it): that write's own, so Dispatch answers it with what the first did. Left
    *  out, the press gets a key of its own. */
@@ -442,19 +463,27 @@ export class Writes {
   /** Makes `spec`'s write, stamped with the person signed in now, and answers with Dispatch's 2xx,
    *  `null` for a write that landed with no answer to give, or rejects with its refusal - or
    *  `SendStoppedError` once the reader stops it. A write that names its request is made from it
-   *  alone (`api.send`). A write on a line of a kind made again from its request that names none
-   *  is a page bug, refused at once: waiting its turn, it could not be kept for a reload without
+   *  alone (`api.send`). A write that names neither the row it writes (`target`) nor a reason it
+   *  names none (`unlined`) is a page bug, refused at once with nothing sent: the types ask every
+   *  write for one of the two, so a write of a row cannot reach Dispatch outside a line without
+   *  someone saying why. A write on a line of a kind made again from its request that names no
+   *  request is a page bug too: waiting its turn, it could not be kept for a reload without
    *  running an attempt, and the request kept could differ from the one sent. A sign-out
    *  (`endsWithSession`) holds every other write of its person until Dispatch answers it, as
    *  another tab's does (`holdFor`): refused, they go on; landed, they wait for the page to let
    *  them go (`clear`). */
   run<T, D, K>(spec: WriteSpec<T, D, K>): Promise<T | null> {
-    const { request } = spec;
-    if (spec.target !== undefined && request === undefined && spec.kind.resume === undefined) {
+    const { label, request } = spec;
+    if (spec.target === undefined && spec.unlined === undefined) {
       return Promise.reject(
         new TypeError(
-          `${spec.label}: a write on a line is made from its request (WriteSpec.request)`
+          `${label}: a write names the row it writes (WriteSpec.target) or why it names none (WriteSpec.unlined)`
         )
+      );
+    }
+    if (spec.target !== undefined && request === undefined && spec.kind.resume === undefined) {
+      return Promise.reject(
+        new TypeError(`${label}: a write on a line is made from its request (WriteSpec.request)`)
       );
     }
     const press = Promise.withResolvers<unknown>();
@@ -834,7 +863,9 @@ export class Writes {
     const request = kept.request === null ? null : (requestFrom(kept.request, file) ?? null);
     let attempt: Attempt<unknown> | undefined;
     if (kind.resume !== undefined) attempt = kind.resume(detail, request);
-    else if (request !== null) attempt = (bounds) => api.send(request, bounds);
+    else if (request !== null && !droppedOnReload(kept.target, request.method)) {
+      attempt = (bounds) => api.send(request, bounds);
+    }
     const out = kept.state.status !== "refused";
     const onItsOwn = out && resumesOnItsOwn(kept.pressedAt, now);
     if (attempt === undefined || (kept.presentation === "quiet" && !onItsOwn)) {
@@ -1259,6 +1290,16 @@ export class Writes {
 function resumedFrom(state: KeptState): From {
   if (state.status === "late") return state.stopping ? "stopping" : "late";
   return "sending";
+}
+
+/** Whether a kept write a reload takes up is dropped rather than made again: a `DELETE` on a
+ *  line - the claim release, the session unsubscribe - which was kept for its order while the
+ *  page lived and ends with that page. Such a route carries no idempotency key (`goesUnderKey`
+ *  sends one on a `POST` and a `PATCH` alone), so a repeat could undo what another person did
+ *  in between. A `PUT` carries no key either and is made again, as the pin is, because it names
+ *  the state it wants rather than a change to it. */
+function droppedOnReload(target: string | null, method: WriteMethod): boolean {
+  return target !== null && method === "DELETE";
 }
 
 /** How `write`'s state is kept, or `undefined` for one that is made and so kept no longer. */

@@ -16,7 +16,7 @@ import {
   artifactRecordHandler,
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
-import { answerIssuePatches } from "../../__tests__/send-answers";
+import { answerIssuePatches, answerIssueStates, answerRoute } from "../../__tests__/send-answers";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type {
   Agent,
@@ -835,10 +835,13 @@ test("IssuePage unsubscribes an agent after confirming the dialog", async () => 
   let currentSubscribers = [subscriber("0123456789abcdef", "Planner (live)")];
   api.getIssueSubscribers = async () => currentSubscribers;
   const unsubscribeCalls: [string, string][] = [];
-  api.unsubscribeIssueSession = async (key, sessionId) => {
+  answerRoute<(key: string, sessionId: string) => Promise<void>>(
+    "DELETE",
+    "/api/v1/issues/*/subscribers/*"
+  ).mockImplementation(async (key, sessionId) => {
     unsubscribeCalls.push([key, sessionId]);
     currentSubscribers = [];
-  };
+  });
   const view = renderIssuePage();
 
   try {
@@ -2120,7 +2123,7 @@ test("IssuePage's pin refreshes the sidebar's pinned list once the pin is saved"
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const saved = { dismissed: [], last_read_seq: 0, pinned: true, seq: 1 };
-  const putIssueState = spyOn(api, "putIssueState").mockResolvedValue(saved);
+  const putIssueState = answerIssueStates().mockResolvedValue(saved);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });

@@ -11,6 +11,7 @@ import {
   installFakeLiveSockets,
   snapshotFrame,
 } from "../../__tests__/live-socket-harness";
+import { answerDeliverySettings } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import type {
   DeliveryLiveView,
@@ -219,7 +220,7 @@ test("an unconfigured timeline shows the setup form in its place, reading no set
     updated_by: { id: "alice@example.com", kind: "user" },
   };
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
-  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue(saved);
+  const putDeliverySettings = answerDeliverySettings().mockResolvedValue(saved);
 
   try {
     const queryClient = renderPage();

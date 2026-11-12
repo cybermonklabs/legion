@@ -79,6 +79,10 @@ const put: WriteRequest = {
   path: "/api/v1/me/state/CORE-1",
 };
 
+/** What a write of this file that names no row says it is: the reason every unlined write
+ *  carries in its own value (`WriteSpec.unlined`). */
+const offLine = "a test write that names no row";
+
 /** The answers of this file's writes made from their request alone: a test's own spy on
  *  `api.send` takes over from it for that test. */
 let sends: SendAnswers;
@@ -101,7 +105,7 @@ function statusWrite(
     presentation: "indicator",
   } as const;
   return fields.target === undefined
-    ? writes.run({ ...press, write: attemptOf(patch, answer) })
+    ? writes.run({ ...press, unlined: offLine, write: attemptOf(patch, answer) })
     : writes.run({ ...press, request: sends.answer({ ...patch }, answer), target: fields.target });
 }
 
@@ -121,6 +125,7 @@ function uploadWrite(writes: Writes, file: File, answer: () => Promise<unknown>)
     kind: plainWrite,
     label: `Upload of ${file.name}`,
     presentation: "indicator",
+    unlined: offLine,
     write: attemptOf(uploadOf(file), answer),
   });
 }
@@ -174,12 +179,13 @@ const row = (writes: Writes, index = 0): Write | undefined => writes.rows()[inde
 
 /** A page that has just resumed one write on CORE-1, kept in `tab` under `key` as it stood
  *  (`state`) when the page that pressed it went away, as the request it last went out as: a
- *  status pick unless a row names another. */
+ *  status pick unless a row names another, on `target`'s line unless a row names none. */
 function resuming(
   tab: KeptTab,
   key: string,
   state: KeptState,
-  request: WriteRequest = patch
+  request: WriteRequest = patch,
+  target: string | null = null
 ): Writes {
   tab.storage.setItem(
     `dispatch.write:${key}`,
@@ -194,7 +200,7 @@ function resuming(
       request,
       sent: true,
       state,
-      target: null,
+      target,
       version: 1,
     })
   );
@@ -225,6 +231,7 @@ test("one key per press, reused by every attempt the store makes", async () => {
       kind: plainWrite,
       label: "CORE-1 set to done",
       presentation: "indicator",
+      unlined: offLine,
       write: (bounds) => {
         keys.push(bounds.key);
         bounds.sent?.(patch);
@@ -289,6 +296,7 @@ test("Stop trying ends a late write, and Retry keeps its key until Dispatch has 
         kind: plainWrite,
         label: "CORE-1 set to done",
         presentation: "indicator",
+        unlined: offLine,
         write: (bounds) => {
           keys.push(bounds.key);
           bounds.sent?.(patch);
@@ -342,6 +350,7 @@ test("a write survives a reload and resumes once, PUT included, and an old one c
           kind: plainWrite,
           label: "Ask snoozed",
           presentation: "indicator",
+          unlined: offLine,
           write: attemptOf(put, hang),
         })
         .catch(() => {});
@@ -725,6 +734,7 @@ async function lapsedWrites() {
       kind: plainWrite,
       label: "Upload of spec.md",
       presentation: "indicator",
+      unlined: offLine,
       write: attemptOf(patch, () => {
         attempts += 1;
         return up ? Promise.resolve({ ok: true }) : Promise.reject(dropped());
@@ -737,6 +747,7 @@ async function lapsedWrites() {
       kind: draftWrite,
       label: "Message",
       presentation: "composer",
+      unlined: offLine,
       write: attemptOf(patch, () => Promise.reject(verdict)),
     })
     .catch(() => {});
@@ -830,6 +841,7 @@ test("a write answered 401 is asked again under its key, and whoami is read agai
       kind: plainWrite,
       label: "CORE-1 set to done",
       presentation: "indicator",
+      unlined: offLine,
       write: (bounds) => {
         keys.push(bounds.key);
         answers += 1;
@@ -896,6 +908,7 @@ test("a sign-out still out lands when the session lapses", async () => {
         kind: plainWrite,
         label: "Sign out",
         presentation: "indicator",
+        unlined: offLine,
         write: () => {
           attempts += 1;
           return Promise.reject(dropped("/auth/logout"));
@@ -929,6 +942,7 @@ test("LOGIN_CHANGED drops every write of its login and reads whoami again", asyn
         kind: plainWrite,
         label: "CORE-1 set to done",
         presentation: "indicator",
+        unlined: offLine,
         write: (bounds) => {
           sentLogin = bounds.login;
           return Promise.reject(
@@ -1009,6 +1023,7 @@ test("a sign-out out holds its person's writes until Dispatch answers it", async
           kind: plainWrite,
           label: "Sign out",
           presentation: "indicator",
+          unlined: offLine,
           write: () => answer,
         })
         .catch((error: unknown) => error);
@@ -1130,6 +1145,7 @@ test("a quiet write is never shown refused and is let go after five minutes", as
           kind: plainWrite,
           label: "Read mark",
           presentation: "quiet",
+          unlined: offLine,
           write: attemptOf(patch, answer),
         })
         .catch((error: unknown) => error);
@@ -1223,6 +1239,7 @@ test("a resent DELETE answered 404 lands", async () => {
       kind: plainWrite,
       label: "Source removed",
       presentation: "indicator",
+      unlined: offLine,
       write: attemptOf(remove, () => {
         attempts += 1;
         return Promise.reject(
@@ -1459,6 +1476,7 @@ test("a route that keeps failing at the connection backs off to its cap while ot
           kind: plainWrite,
           label: "CORE-1 set to done",
           presentation: "indicator",
+          unlined: offLine,
           write: (bounds) => api.send(patch, bounds),
         })
         .catch(() => {});
@@ -1568,6 +1586,7 @@ test("a plain write on a line goes out as the very request it is kept as", async
       kind: plainWrite,
       label: "CORE-2 set to done",
       presentation: "indicator",
+      unlined: offLine,
       write: (bounds) => {
         attempts += 1;
         if (attempts === 1) return attemptOf(patch, () => Promise.reject(dropped()))(bounds);
@@ -1846,6 +1865,91 @@ test("an entry kept with no carried loads, and reads as what it sent", async () 
       expect(resumed?.status === "refused" && resumed.refusal).toBeInstanceOf(SendExpiredError);
       expect(send).not.toHaveBeenCalled();
       expect(tab.kept(spent)).toMatchObject({ carried: "PATCH", sent: true, version: 1 });
+    } finally {
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// R6. A write of a row cannot reach Dispatch outside a line, and cannot be written without
+// saying so: the types ask every press for the row it writes (`target`) or the reason it names
+// none (`unlined`), and a press that carries neither - what a caller no type checks could still
+// write - is refused at once, with nothing sent.
+test("a write that names neither a row nor a reason is refused with nothing sent", async () => {
+  await onFakeClock(async () => {
+    const { writes } = storeOf();
+    let attempts = 0;
+    const press = writes.run({
+      detail: null,
+      kind: plainWrite,
+      label: "CORE-1 set to done",
+      presentation: "indicator",
+      write: (bounds: WriteBounds) => {
+        attempts += 1;
+        return attemptOf(patch, async () => ({}))(bounds);
+      },
+    } as unknown as Parameters<Writes["run"]>[0]);
+    const refusal = await press.catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(TypeError);
+    expect((refusal as TypeError).message).toContain("CORE-1 set to done");
+    expect(attempts).toBe(0);
+    expect(writes.rows()).toEqual([]);
+  });
+});
+
+// R6. A reload keeps a lined write and sends it again - under its key for a `POST` or a `PATCH`,
+// which Dispatch answers with what the first did, and as the state it names for a `PUT`, which
+// is what the pin does - except a `DELETE`, which is kept for its order while the page lives and
+// dropped rather than made again: such a route carries no idempotency key, and a repeat could
+// undo what another person did in between.
+test("a reload sends a lined PATCH and PUT again and drops a lined DELETE", async () => {
+  await onFakeClock(async () => {
+    const remove: WriteRequest = { method: "DELETE", path: "/api/v1/issues/CORE-1/claim" };
+    const sent: { method: string; key: string }[] = [];
+    const send = spyOn(api, "send").mockImplementation(async (request, bounds) => {
+      sent.push({ key: bounds.key, method: request.method });
+      return {} as never;
+    });
+    const tabs = [keptTab(), keptTab(), keptTab()];
+    try {
+      const [patched, pinned, released] = tabs;
+      if (patched === undefined || pinned === undefined || released === undefined) return;
+      resuming(patched, "key-patch", { status: "sending" }, patch, "issue:CORE-1");
+      resuming(pinned, "key-pin", { status: "sending" }, put, "pin:CORE-1");
+      const dropped = resuming(
+        released,
+        "key-claim",
+        { status: "sending" },
+        remove,
+        "issue:CORE-1"
+      );
+      await settle();
+      expect(sent).toEqual([
+        { key: "key-patch", method: "PATCH" },
+        { key: "key-pin", method: "PUT" },
+      ]);
+      // Dropped as the page that kept it went: nothing of it is shown, and nothing is kept.
+      expect(dropped.rows()).toEqual([]);
+      expect(released.kept("key-claim")).toBeUndefined();
+    } finally {
+      send.mockRestore();
+      for (const tab of tabs) tab.close();
+    }
+  });
+});
+
+// The same `DELETE` off every line is made again: the rule reads the line, since only a write
+// that waits its turn on one is kept for its order rather than for its answer.
+test("a reload sends an unlined DELETE again", async () => {
+  await onFakeClock(async () => {
+    const remove: WriteRequest = { method: "DELETE", path: "/api/v1/me/agent-tokens/token-1" };
+    const send = spyOn(api, "send").mockResolvedValue({} as never);
+    const tab = keptTab();
+    try {
+      resuming(tab, "key-revoke", { status: "sending" }, remove);
+      await settle();
+      expect(send).toHaveBeenCalledTimes(1);
     } finally {
       send.mockRestore();
       tab.close();

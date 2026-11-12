@@ -201,6 +201,27 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   converted, to what that release decided by (`sent` and the kept request): past it the field is
   always there, absence means only "written before the field existed", and the deploy drops none
   of a person's unresumed writes.
+  Every write names the row it writes or says why it names none: `WriteSpec` and
+  `useKeyedWrite`'s options take a `target` or an `unlined` mark carrying its reason in its own
+  value (`WriteLine`), so a write written later cannot leave its line out in silence, and
+  `Writes.run` refuses one that carries neither at once (a `TypeError`, for a caller no type
+  checks). A line is `<row type>:<row id>` - `issue:<KEY>`, `pin:<KEY>` (the header's pin and the
+  Conversation's and Activity tab's, one row on one line), `comment:<id>` (its actions and the
+  composer's edit send), `ask:<id>` (its answer, decline, hand-on, clarification and snooze),
+  `document:<id>` (the decisions writes), `project:<KEY>` for a write that adds a row to a
+  project (the issue create), `agent-token:<id>` and `agent-tokens:me`, `repo-mapping:<repo>`,
+  `architecture-source:<project>/<repo>` (`sourceLine`), `settings:delivery` - or, for a read
+  mark, `read:` and then the row's own name; the sends that name no row (`broadcast`,
+  `session:<id>`, `role:<role>`) carry those names. `features/writes/write-lines.test.ts` reads
+  every `writes.run`, `useKeyedWrite` and `useSendMarkOnce` call the app ships, names any that
+  carries neither, and holds the lines they name to that grammar.
+  A write on a line is made from its request alone, so each has a builder beside its client
+  method (`api/client.ts`, `api/write-requests.test.ts`), and a reload makes it again - under its
+  key for a `POST` or a `PATCH`, and as the state it names for a `PUT`, as the pin is - except a
+  `DELETE` on a line (the claim release, the session unsubscribe), which is kept for its order
+  while the page lives and dropped rather than sent again (`droppedOnReload`): such a route
+  carries no idempotency key (`goesUnderKey`), so a repeat could undo what another person did in
+  between.
 - `POST /auth/logout` is the one page `POST` outside that content-write path: it carries no
   `Idempotency-Key`, because ending the current session cannot create content twice. `PUT` and
   `DELETE` use the store but carry no key, because repeating either applies the same change.

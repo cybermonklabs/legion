@@ -1,6 +1,12 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { ApiError, api, issuePatchRequest, type WriteRequest } from "../../api/client";
+import {
+  ApiError,
+  api,
+  issueCreateRequest,
+  issuePatchRequest,
+  type WriteRequest,
+} from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
@@ -295,11 +301,13 @@ export function useIssueTableActions({
           key,
           label: `Create epic “${title}”`,
           presentation: "indicator",
-          write: (bounds) =>
-            api.createIssue(
-              { project, title, labels: ["epic"], ...(force ? { force: true } : {}) },
-              bounds
-            ),
+          request: issueCreateRequest({
+            project,
+            title,
+            labels: ["epic"],
+            ...(force ? { force: true } : {}),
+          }),
+          target: `project:${project}`,
         });
         recovery.watch(key, `Create epic “${title}”`);
         const epic = await creation;

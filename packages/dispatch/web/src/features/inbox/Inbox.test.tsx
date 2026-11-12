@@ -10,7 +10,14 @@ import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-rou
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
+import {
+  answerAskAnswers,
+  answerAskHandOns,
+  answerAskSnoozes,
+  answerAskUnsnoozes,
+  answerIssueComments,
+  answerIssuePatches,
+} from "../../__tests__/send-answers";
 import { wholeText } from "../../__tests__/whole-text";
 import { ApiError, api } from "../../api/client";
 import type {
@@ -994,7 +1001,7 @@ test("the reader's own Ask back keeps the row under Waiting on you, unscrolled, 
   }));
   // The server records the clarification: the turn is the agent's, and the inbox says so on
   // the next refetch.
-  const createComment = spyOn(api, "createComment").mockImplementation(async (issueKey, input) => {
+  const createComment = answerIssueComments().mockImplementation(async (issueKey, input) => {
     const reply: Comment = {
       anchor: null,
       ask_id: input.ask_id ?? null,
@@ -1183,7 +1190,7 @@ test("the reader's own answer leaves the Inbox at once, even though their focus 
     route_status_reason: null,
     replies: [],
   }));
-  const answerAsk = spyOn(api, "answerAsk").mockImplementation(async () => {
+  const answerAsk = answerAskAnswers().mockImplementation(async () => {
     inboxRows = [askA];
     return {
       ...askB,
@@ -1246,7 +1253,7 @@ test("after the reader's own answer fails, an answer from elsewhere still holds 
     route_status_reason: null,
     replies: [],
   }));
-  const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(new Error("offline"));
+  const answerAsk = answerAskAnswers().mockRejectedValue(new Error("offline"));
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -1826,7 +1833,7 @@ test("a refused hand-on keeps its row in the reader's own list, with the reason 
   const firstHandOn = Promise.withResolvers<InboxRow>();
   let attempts = 0;
   const handedBack = { ...mine, asked_of: null, waiting_on_person: "bob" };
-  const handAskTo = spyOn(api, "handAskTo").mockImplementation(async () => {
+  const handAskTo = answerAskHandOns().mockImplementation(async () => {
     attempts += 1;
     return attempts === 1 ? firstHandOn.promise : handedBack;
   });
@@ -1837,7 +1844,9 @@ test("a refused hand-on keeps its row in the reader's own list, with the reason 
       within(rowOf("ask-mine")).getByLabelText("Hand this question to"),
       "bob"
     );
-    await waitFor(() => expect(handAskTo).toHaveBeenCalledWith("ask-mine", "bob", keyedAttempt));
+    await waitFor(() =>
+      expect(handAskTo).toHaveBeenCalledWith("ask-mine", { asked_of: "bob" }, keyedAttempt)
+    );
     // Handed on optimistically, the row waits on somebody else - and stays.
     await waitFor(() => expect(screen.getByText("Handing on…")).toBeTruthy());
     expect(rowIds()).toEqual(["ask-mine"]);
@@ -2006,7 +2015,7 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
     served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
     return { snoozed_until: until };
   });
-  const unsnoozeAsk = spyOn(api, "unsnoozeAsk").mockImplementation(async (id) => {
+  const unsnoozeAsk = answerAskUnsnoozes().mockImplementation(async (id) => {
     served = served.map((row) => (row.id === id ? { ...row, snoozed_until: null } : row));
   });
   const getAsk = mockAskReads([askA, askB]);
@@ -2039,7 +2048,7 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
       within(later as HTMLElement).getByRole("button", { name: "Un-snooze CORE-2: Which format?" })
     );
     await waitFor(() => expect(headings()).toEqual(["Waiting on you (2)"]));
-    expect(unsnoozeAsk).toHaveBeenCalledWith("ask-b", keyedAttempt);
+    expect(unsnoozeAsk).toHaveBeenCalledWith("ask-b", undefined, keyedAttempt);
     expect(rowIds()).toEqual(["ask-a", "ask-b"]);
     expect(screen.getByText(/Blocked on you: 2 items/)).toBeTruthy();
   } finally {
@@ -2605,7 +2614,7 @@ test("the reader's own answer takes its row off the list and selects the next on
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
   const getAsk = mockAskReads([first, second]);
   const getIssue = mockIssueReads();
-  const answerAsk = spyOn(api, "answerAsk").mockImplementation(async () => {
+  const answerAsk = answerAskAnswers().mockImplementation(async () => {
     served = [second];
     return {
       ...first,
@@ -2651,7 +2660,7 @@ test("an answer the server refuses keeps its question in the column, and a retry
   const getAsk = mockAskReads([first, second]);
   const getIssue = mockIssueReads();
   const refusal = Promise.withResolvers<never>();
-  const answerAsk = spyOn(api, "answerAsk").mockImplementation(() => refusal.promise);
+  const answerAsk = answerAskAnswers().mockImplementation(() => refusal.promise);
   const { unmount } = renderInbox();
 
   try {
@@ -3611,7 +3620,7 @@ test("an answer given from the column drops the record: Escape lands on the ques
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
-  const answerAsk = spyOn(api, "answerAsk").mockImplementation(async () => {
+  const answerAsk = answerAskAnswers().mockImplementation(async () => {
     served = rows.filter((row) => row.id !== "ask-b");
     return {
       ...second,
@@ -4346,7 +4355,7 @@ test("a refused hand-on from the column's decision block keeps the row, with the
     rows.map((row) => ({ ...row, last_reply: null }))
   );
   const handOn = Promise.withResolvers<InboxRow>();
-  const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => handOn.promise);
+  const handAskTo = answerAskHandOns().mockImplementation(() => handOn.promise);
   const { unmount } = renderInbox("/?item=ask-mine", { runtime: fake.runtime });
 
   try {
@@ -4368,7 +4377,9 @@ test("a refused hand-on from the column's decision block keeps the row, with the
     const card = await within(pane).findByTestId("ask-ask-mine");
 
     await user.selectOptions(within(card).getByLabelText("Hand this question to"), "bob");
-    await waitFor(() => expect(handAskTo).toHaveBeenCalledWith("ask-mine", "bob", keyedAttempt));
+    await waitFor(() =>
+      expect(handAskTo).toHaveBeenCalledWith("ask-mine", { asked_of: "bob" }, keyedAttempt)
+    );
     // Handed on optimistically, the row waits on somebody else - and the column keeps the card
     // the reader pressed, which is the only surface the server's answer can reach.
     await waitFor(() => expect(within(card).getByText("Handing on…")).toBeTruthy());
@@ -4440,7 +4451,7 @@ test("a refused hand-on from a Reply-thread card leaves the reader's own list as
     total: 1,
   });
   const handOn = Promise.withResolvers<InboxRow>();
-  const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => handOn.promise);
+  const handAskTo = answerAskHandOns().mockImplementation(() => handOn.promise);
   const { unmount } = renderInbox("/");
   try {
     const row = await waitFor(() => {
@@ -4454,7 +4465,7 @@ test("a refused hand-on from a Reply-thread card leaves the reader's own list as
     // Handed back to the assignee of its own issue, from the thread card.
     await user.selectOptions(control, "carol");
     await waitFor(() =>
-      expect(handAskTo).toHaveBeenCalledWith("ask-theirs", "carol", keyedAttempt)
+      expect(handAskTo).toHaveBeenCalledWith("ask-theirs", { asked_of: "carol" }, keyedAttempt)
     );
     await waitFor(() => expect(within(row).getByText("Handing on…")).toBeTruthy());
     expect(rowIds()).toEqual(["reply:ask-theirs"]);

@@ -416,30 +416,43 @@ export class HeldSends {
   /** Sends `request` under `mutationKey` and holds it until it lands - unless a send under that
    *  name is out already, which refuses this one: a composer holds one draft. A refused send's
    *  entry gives way to the new one, its Retry, which is no Discard (`Writes.supersede`): a
-   *  margin compose's mark stays in the document for it. */
+   *  margin compose's mark stays in the document for it. An edit writes the comment it saves, so
+   *  it stands in that row's line (`comment:<id>`) with the actions on it; a send to one session
+   *  stands in that session's (`session:<id>`); and a new comment, ask or message names no row
+   *  until Dispatch makes it. */
   send(mutationKey: MutationKey, request: SentRequest): boolean {
     const held = this.get(mutationKey);
     if (held !== undefined && held.status !== "refused") return false;
     if (held !== undefined) this.#writes.supersede(held.id);
-    const { owner } = request;
-    this.#writes
-      .run({
-        detail: {
-          draft: { ask: request.ask, draft: request.draft },
-          mutationKey: sendName(mutationKey),
-          request,
-        },
-        key: request.sendKey,
-        kind: composerSend,
-        label: "Message",
-        presentation: "composer",
-        target:
-          owner.kind === "session" && request.edit === undefined
-            ? `session:${owner.sessionId}`
-            : undefined,
-        write: sendAttempt(request),
-      })
-      .catch(() => {});
+    const { edit, owner } = request;
+    const press = {
+      detail: {
+        draft: { ask: request.ask, draft: request.draft },
+        mutationKey: sendName(mutationKey),
+        request,
+      },
+      key: request.sendKey,
+      kind: composerSend,
+      label: "Message",
+      presentation: "composer",
+      write: sendAttempt(request),
+    } as const;
+    const line =
+      edit !== undefined
+        ? `comment:${edit.id}`
+        : owner.kind === "session"
+          ? `session:${owner.sessionId}`
+          : undefined;
+    if (line === undefined) {
+      this.#writes
+        .run({
+          ...press,
+          unlined: "a new comment, ask or message names no row until Dispatch makes it",
+        })
+        .catch(() => {});
+    } else {
+      this.#writes.run({ ...press, target: line }).catch(() => {});
+    }
     return true;
   }
 

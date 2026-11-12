@@ -265,9 +265,12 @@ export function AskRecipients({
   const counted = !subscribersQuery.isError;
   const [confirming, setConfirming] = useState<Confirming | undefined>(undefined);
   const [open, setOpen] = useState(false);
+  // A follower row and a subscriber row are each one session's own: a repeat of either is the
+  // same DELETE, and the ask's line is for the writes of the ask itself.
   const unfollow = useKeyedWrite({
     write: (sessionId: string, bounds) => removeFollower(askId, sessionId, bounds),
     label: (sessionId) => `${text.sessionText(sessionId, undefined)} taken off this ask`,
+    unlined: "one row per session: a repeat of this unfollow is the same DELETE",
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["ask-thread", askId] }),
   });
   const unsubscribe = useKeyedWrite({
@@ -277,6 +280,7 @@ export function AskRecipients({
       }
       return subscription.remove(sessionId, bounds);
     },
+    unlined: "one row per session: a repeat of this unsubscribe is the same DELETE",
     label: (sessionId) =>
       `${text.sessionText(sessionId, subscribers.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${subscription?.label ?? "this ask"}`,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["subscribers", subscription?.id] }),

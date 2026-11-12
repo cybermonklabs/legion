@@ -178,6 +178,7 @@ export function SessionGroupsEditor({
         predicate: (query) => !isLiveQuery(query),
       });
     },
+    unlined: "a group create, change or removal is this dialog's only write of its row",
     write: (change, bounds) => change.run(bounds),
   });
 

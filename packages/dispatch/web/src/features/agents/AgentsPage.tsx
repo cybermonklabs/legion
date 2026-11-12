@@ -207,6 +207,7 @@ function AgentExchangeReply({
       void queryClient.invalidateQueries({
         queryKey: agentMessagesQuery(agent.session_id).queryKey,
       }),
+    unlined: "a delivery sends a message to one session again and names no row",
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
   const replies = read.replies ?? [];
@@ -284,6 +285,7 @@ function AgentTargetedMessage({
       void queryClient.invalidateQueries({
         queryKey: agentMessagesQuery(agent.session_id).queryKey,
       }),
+    unlined: "a delivery sends a message to one session again and names no row",
     write: (delivery, bounds) => api.createMessageDelivery(read.message.id, delivery, bounds),
   });
   const replies = read.replies ?? [];
@@ -399,6 +401,7 @@ function AgentMessageList({
   const clear = useKeyedWrite({
     write: (cutoff: string, bounds) =>
       api.putAgentState(agent.session_id, { cleared_before: cutoff }, bounds),
+    unlined: "Clear hides what this viewer saw of one session, and nothing else writes it",
     label: () => `Conversation with ${label} cleared`,
     // A landing with no answer to give has the store read every query again.
     onSuccess: (next) => {

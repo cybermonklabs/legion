@@ -42,6 +42,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
   const session = read.kind === "agent" ? read.session.id : undefined;
   const markRead = useKeyedWrite<UserAgentState | undefined>({
     label: () => "Thread marked read",
+    unlined: "a read mark of this row, pressed from a button held while it is out",
     // An Agent row is read by id, as every read of one is: its session's own read mark covers
     // replies in the live conversation and in its other threads, which this press has not
     // shown. Every other row carries a thread mark, which this moves to its newest write.

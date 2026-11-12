@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { useState } from "react";
 
+import type { WriteRequest } from "../../api/client";
 import { textMutedOnSurface } from "../../theme/classes";
 import { type Attempt, plainWrite, type Writes } from "../writes/write-store";
 
@@ -47,14 +48,39 @@ export const barNoteClassName = `shrink-0 px-3 py-2 text-xs ${textMutedOnSurface
  *  indicator while it is out. A filing is four of these rather than one, because one write
  *  makes one request (`OneRequestPerWriteError`): Dispatch would refuse a second request under a
  *  key it has already decided. `inline` because the bar says a refusal itself. */
-export function press<T>(writes: Writes, label: string, write: Attempt<T>): Promise<T | null> {
+export function press<T>(
+  writes: Writes,
+  label: string,
+  unlined: string,
+  write: Attempt<T>
+): Promise<T | null> {
   return writes.run({
     detail: null,
     inline: true,
     kind: plainWrite,
     label,
     presentation: "indicator",
+    unlined,
     write,
+  });
+}
+
+/** The same press for a write that names a row: made from its request alone, so it waits its
+ *  turn in that row's line and a reload makes it again (`WriteSpec.request`). */
+export function pressOn<T>(
+  writes: Writes,
+  label: string,
+  target: string,
+  request: WriteRequest<T>
+): Promise<T | null> {
+  return writes.run({
+    detail: null,
+    inline: true,
+    kind: plainWrite,
+    label,
+    presentation: "indicator",
+    request,
+    target,
   });
 }
 

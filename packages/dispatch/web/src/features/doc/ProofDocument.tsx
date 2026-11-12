@@ -391,6 +391,7 @@ export function ProofDocument({
     // `write` comes first: `onSuccess` reads its answer.
     write: (summary: string, bounds) => api.createArtifactVersion(artifact.id, { summary }, bounds),
     inline: true,
+    unlined: "a version names no row until Dispatch makes it",
     label: () => `New version of ${artifact.name}`,
     onSuccess: (created) => {
       // Made either way, so the dialog closes and a second press names nothing twice; with no
@@ -413,6 +414,7 @@ export function ProofDocument({
   const rebuild = useKeyedWrite({
     inline: true,
     label: () => `Rebuild of ${artifact.name}`,
+    unlined: "a rebuild is this button's only write of the document it rebuilds",
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
     },

@@ -2,7 +2,12 @@ import { DISPATCH_SCOPES } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
-import { api } from "../../api/client";
+import {
+  agentTokenCreateRequest,
+  agentTokenRevokeRequest,
+  agentTokenScopesRequest,
+  api,
+} from "../../api/client";
 import type { AgentToken, CreatedAgentToken, DispatchScope } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
@@ -163,13 +168,23 @@ export function AgentTokensSection(): ReactNode {
   const [rereadAt, setRereadAt] = useState<number | undefined>(undefined);
   const { copy, reset: resetCopyStatus, status: copyStatus } = useCopyFeedback();
   const tokens = useQuery({ queryKey: agentTokensQueryKey, queryFn: () => api.listAgentTokens() });
-  // The form shows a refused mint beside the name it was refused over.
+  // The form shows a refused mint beside the name it was refused over. A mint names no token
+  // until Dispatch answers it, so it stands in the line of the list it adds a row to
+  // (`agent-tokens:me`), where a change to what a token may do and a revoke stand in that
+  // token's own (`agent-token:<id>`).
   const createToken = useKeyedWrite({
     inline: true,
     label: (input: { name: string; before: readonly string[]; scopes: readonly DispatchScope[] }) =>
       `New agent token ${input.name}`,
-    write: ({ name: label, scopes }, bounds) =>
-      api.createAgentToken({ name: label, scopes: [...scopes] }, bounds),
+    request: ({
+      name: label,
+      scopes,
+    }: {
+      name: string;
+      before: readonly string[];
+      scopes: readonly DispatchScope[];
+    }) => agentTokenCreateRequest({ name: label, scopes: [...scopes] }),
+    target: () => "agent-tokens:me",
     onSuccess: (created) => {
       setName("");
       setNewScopes(BOTH_SCOPES);
@@ -194,7 +209,8 @@ export function AgentTokensSection(): ReactNode {
   });
   const revokeToken = useKeyedWrite({
     label: (id: string) => `Agent token ${id} revoked`,
-    write: (id: string, bounds) => api.revokeAgentToken(id, bounds),
+    request: (id: string) => agentTokenRevokeRequest(id),
+    target: (id) => `agent-token:${id}`,
     onSuccess: (_result, id) => {
       queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>
         current.map((token) =>
@@ -208,7 +224,9 @@ export function AgentTokensSection(): ReactNode {
   const setTokenScopes = useKeyedWrite({
     label: (input: { id: string; name: string; scopes: DispatchScope[] }) =>
       `What agent token ${input.name} may do`,
-    write: (input, bounds) => api.setAgentTokenScopes(input.id, input.scopes, bounds),
+    request: (input: { id: string; name: string; scopes: DispatchScope[] }) =>
+      agentTokenScopesRequest(input.id, input.scopes),
+    target: (input) => `agent-token:${input.id}`,
     onSuccess: (updated, input) => {
       queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>
         current.map((token) =>

@@ -255,6 +255,7 @@ export function ApprovalChip({
     label: (input: CreateArtifactReviewInput) =>
       `${input.state === "approved" ? "Approval" : "Change request"} on ${artifact.name}`,
     onSettled: () => submitGuard.release(),
+    unlined: "a review names no row until Dispatch makes it",
     write: (input, bounds) => api.createArtifactReview(artifact.id, input, bounds),
     onSuccess: () => {
       setRequestChangesOpen(false);

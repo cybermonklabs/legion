@@ -157,6 +157,7 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
       result: await uploadFile(owner, file, {}, bounds),
     }),
     file: ({ file }) => file,
+    unlined: "an upload names no row until Dispatch stores the file",
     inline: true,
     label: ({ file }) => `Upload of ${file.name || "a file"}`,
     onMutate: () => setPending((count) => count + 1),
@@ -277,6 +278,7 @@ export function useArtifactUpload(
         bounds
       ),
     file: (file) => file,
+    unlined: "an upload names no row until Dispatch stores the file",
     inline: true,
     label: (file) => `Upload of ${file.name || "a file"}`,
     onSuccess: (result) => {

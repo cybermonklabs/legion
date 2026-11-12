@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { api, architectureSourceSyncRequest } from "../../api/client";
 import { architectureSourcesQuery } from "../../api/queries";
 import type {
   ArchitectureTree,
@@ -36,6 +36,7 @@ import {
   trustWarningBorder,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
+import { sourceLine } from "../settings/ArchitectureSourcesSection";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, roveFocus } from "../shell/roving";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -123,7 +124,8 @@ export function ArchitecturePage({ project }: { project: string }): ReactNode {
   // every other write's (`PendingWritesIndicator`).
   const refresh = useKeyedWrite({
     label: (repo: string) => `Refresh of ${project}'s architecture source ${repo}`,
-    write: (repo, bounds) => api.syncArchitectureSource(project, repo, bounds),
+    request: (repo: string) => architectureSourceSyncRequest(project, repo),
+    target: (repo) => sourceLine({ project, repo }),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["architecture", project] });
       // Its key prefixes the project's own list, so both refresh.

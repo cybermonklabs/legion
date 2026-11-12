@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { api, decisionKeepRequest, issueCommentRequest } from "../../api/client";
 import type {
   Artifact,
   Decision,
@@ -126,18 +126,20 @@ function ChangeComposer({
 }): ReactNode {
   const [body, setBody] = useState("");
   const fieldId = useId();
+  // Both decisions writes stand in the line of the document they are about (`document:<id>`,
+  // the issue's decisions.md), so a Keep and a Change of it go out in press order. The decisions
+  // document belongs to an issue, and a comment on an issue's document is the issue's own write:
+  // the artifact route refuses it, naming the issue route (`send-request.ts` follows the same
+  // rule for a thread's replies).
   const send = useKeyedWrite({
     inline: true,
     label: () => `Change to ${decision.heading}`,
-    // The decisions document belongs to an issue, and a comment on an issue's document is the
-    // issue's own write: the artifact route refuses it, naming the issue route (`send-request.ts`
-    // follows the same rule for a thread's replies).
-    write: (input: { body: string; quote: string }, bounds) =>
-      api.createComment(
-        issueKey,
-        { anchor: { artifact: documentId, quote: input.quote }, body: input.body },
-        bounds
-      ),
+    request: (input: { body: string; quote: string }) =>
+      issueCommentRequest(issueKey, {
+        anchor: { artifact: documentId, quote: input.quote },
+        body: input.body,
+      }),
+    target: () => `document:${documentId}`,
     onSuccess: () => {
       setBody("");
       onDone();
@@ -262,8 +264,8 @@ function WaitingDecision({
     label: () => `Keep ${decision.heading}`,
     // The sum of the text this card showed: a decision the agent changed since is refused
     // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
-    write: (id: string, bounds) =>
-      api.keepDecision(id, decision.block_id, decision.text_sha256, bounds),
+    request: (id: string) => decisionKeepRequest(id, decision.block_id, decision.text_sha256),
+    target: (id) => `document:${id}`,
     onSuccess: (kept) => {
       if (kept === null) {
         void queryClient.invalidateQueries({ exact: true, queryKey: ["decisions", issueKey] });

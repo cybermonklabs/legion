@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { answerRoute } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { CreateIssueInput, Issue } from "../../api/types";
@@ -48,7 +49,8 @@ function CurrentRoute(): ReactNode {
   return <output data-testid="current-route">{location.pathname}</output>;
 }
 
-/** The dialog, its project list and its related-item check answered here. */
+/** The dialog, its project list and its related-item check answered here; `create` answers the
+ *  one request the dialog sends (`issueCreateRequest`), on its route. */
 function renderDialog(
   user: UserEvent,
   create: (input: CreateIssueInput) => Promise<Issue>,
@@ -63,6 +65,10 @@ function renderDialog(
     related: [],
     search: "keywords_only",
   });
+  answerRoute<(input: CreateIssueInput) => Promise<Issue>>(
+    "POST",
+    "/api/v1/issues"
+  ).mockImplementation(create);
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -71,7 +77,7 @@ function renderDialog(
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
           <CurrentRoute />
-          <CreateIssueDialog createIssue={create} onClose={onClose} />
+          <CreateIssueDialog onClose={onClose} />
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>

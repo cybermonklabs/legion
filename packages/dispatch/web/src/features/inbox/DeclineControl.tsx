@@ -2,7 +2,7 @@ import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
 
-import { apiErrorMessage, type DeclineAskInput, type WriteBounds } from "../../api/client";
+import { apiErrorMessage, askDeclineRequest, type DeclineAskInput } from "../../api/client";
 import type { Ask, AskRead } from "../../api/types";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -150,11 +150,9 @@ function DeclineDialog({
  */
 export function DeclineControl({
   ask,
-  decline,
   onDeclined,
 }: {
   ask: Ask;
-  decline: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
   /** Called once the server has recorded the decline, as an answer from this card calls it. */
   onDeclined?: (id: string) => void;
 }): ReactNode {
@@ -166,7 +164,7 @@ export function DeclineControl({
   const write = useOutstandingAnswerWrite({
     askId: ask.id,
     label: () => `Decline of “${ask.question}”`,
-    write: (input: DeclineAskInput, bounds) => decline(ask.id, input, bounds),
+    request: (input: DeclineAskInput) => askDeclineRequest(ask.id, input),
     onSettled: () => submitGuard.release(),
     onSuccess: (declined) => {
       setOpen(false);

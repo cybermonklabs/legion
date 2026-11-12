@@ -22,7 +22,7 @@ import {
   userStateQuery,
 } from "../api/queries";
 import { refreshQueries } from "../api/query-refresh";
-import type { Ask, AskRead, DispatchEvent, EventType, InboxRow } from "../api/types";
+import type { AskRead, DispatchEvent, EventType, InboxRow } from "../api/types";
 import { hasPendingAskThreadInvalidation } from "../features/inbox/ask-thread-freshness";
 import { issueAsk } from "../features/inbox/inbox-fixture";
 import { useAskAnswerForm } from "../features/inbox/useAskAnswerForm";
@@ -1435,11 +1435,7 @@ test("a claim that moves while the Inbox is in flight sends that issue's later c
     renderHook(
       () =>
         useAskAnswerForm({
-          answer: async () => row as Ask,
           ask: row,
-          createReply: async () => {
-            throw new Error("no reply in this test");
-          },
           getAskThread,
           initialThread: threadOf(row),
           initialThreadUpdatedAt: Date.now(),

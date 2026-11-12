@@ -120,6 +120,7 @@ export function DocumentList({ project }: { project: string }): ReactNode {
   const create = useKeyedWrite({
     inline: true,
     label: (name: string) => `New document ${name}`,
+    unlined: "a create names no row until Dispatch makes the document",
     write: (name: string, bounds) =>
       api.uploadArtifact({ project }, { content: `# ${name}\n`, name }, bounds),
     onSettled: () => submitGuard.release(),

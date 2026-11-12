@@ -1,7 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
-import { api, apiErrorMessage } from "../../api/client";
+import {
+  apiErrorMessage,
+  architectureSourceDeleteRequest,
+  architectureSourceRequest,
+  architectureSourceSyncRequest,
+} from "../../api/client";
 import { architectureSourcesQuery, projectsQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -32,9 +37,15 @@ import {
 import { ProjectSelect } from "./ProjectSelect";
 
 /** A source's address: a project and one of its repositories. */
-interface SourceKey {
+export interface SourceKey {
   readonly project: string;
   readonly repo: string;
+}
+
+/** The line every write of one architecture source stands in: its save, its removal and the
+ *  refresh the project's own page offers (`features/architecture/ArchitecturePage.tsx`). */
+export function sourceLine({ project, repo }: SourceKey): string {
+  return `architecture-source:${project}/${repo}`;
 }
 
 /** A project's architecture sources, one row per repository: the branch its architecture
@@ -50,13 +61,16 @@ export function ArchitectureSourcesSection(): ReactNode {
   const submitGuard = useSubmitGuard();
   const sources = useQuery(architectureSourcesQuery());
   const projects = useQuery(projectsQuery());
-  // The form shows a refused save beside the repository it was refused over.
+  // The form shows a refused save beside the repository it was refused over. Every write of one
+  // source - its save, its removal and its refresh - stands in that row's line
+  // (`architecture-source:<project>/<owner/repo>`), so they go out in press order.
   const saveSource = useKeyedWrite({
     inline: true,
     label: (input: { project: string; repo: string; branch: string }) =>
       `${input.project}'s architecture source ${input.repo}`,
-    write: (input, bounds) =>
-      api.putArchitectureSource(input.project, input.repo, { branch: input.branch }, bounds),
+    request: (input: { project: string; repo: string; branch: string }) =>
+      architectureSourceRequest(input.project, input.repo, { branch: input.branch }),
+    target: (input) => sourceLine(input),
     onSettled: () => submitGuard.release(),
     onSuccess: () => {
       // The settings list's key prefixes every project's own list, so both refresh.
@@ -68,7 +82,8 @@ export function ArchitectureSourcesSection(): ReactNode {
   });
   const deleteSource = useKeyedWrite({
     label: (source: SourceKey) => `${source.project}'s architecture source ${source.repo} removed`,
-    write: (source, bounds) => api.deleteArchitectureSource(source.project, source.repo, bounds),
+    request: (source: SourceKey) => architectureSourceDeleteRequest(source.project, source.repo),
+    target: sourceLine,
     onSuccess: () =>
       void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
   });
@@ -78,7 +93,8 @@ export function ArchitectureSourcesSection(): ReactNode {
   const refreshSource = useKeyedWrite({
     label: (source: SourceKey) =>
       `Refresh of ${source.project}'s architecture source ${source.repo}`,
-    write: (source, bounds) => api.syncArchitectureSource(source.project, source.repo, bounds),
+    request: (source: SourceKey) => architectureSourceSyncRequest(source.project, source.repo),
+    target: sourceLine,
     onSettled: () =>
       void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
   });

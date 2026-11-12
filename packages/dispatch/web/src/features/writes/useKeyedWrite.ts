@@ -33,22 +33,29 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
   readonly endsWithSession?: boolean;
 } & KeyedWriteMade<TData, TVariables>;
 
-/** How a write is made: by an attempt of its own (`write`, under the bounds the store gives it:
- *  its key, its login and its deadline), or, on a line, from its request alone. Writes to one
- *  target - one issue's fields - go out in press order, so an older one never lands after a newer
- *  one; each names the request its client method's builder makes (`issuePatchRequest`), which is
- *  what goes out (`api.send`) and what a write waiting its turn is kept as for a reload, so the
- *  two can never differ, and nothing of it runs until its turn comes (`WriteSpec.request`). */
+/** How a write is made, and the line it is ordered on: by an attempt of its own (`write`, under
+ *  the bounds the store gives it: its key, its login and its deadline), which then says why it is
+ *  on no line (`unlined`), or, on a line, from its request alone. Writes to one target - one
+ *  issue's fields - go out in press order, so an older one never lands after a newer one; each
+ *  names the request its client method's builder makes (`issuePatchRequest`), which is what goes
+ *  out (`api.send`) and what a write waiting its turn is kept as for a reload, so the two can
+ *  never differ, and nothing of it runs until its turn comes (`WriteSpec.request`). One of
+ *  `target` and `unlined` is always named, so a write written later cannot leave its line out in
+ *  silence. */
 export type KeyedWriteMade<TData, TVariables> =
   | {
       readonly write: (variables: TVariables, bounds: WriteBounds) => Promise<TData>;
       readonly target?: undefined;
       readonly request?: undefined;
+      /** Why this write is on no line, in the words of whoever wrote it (`WriteSpec.unlined`). */
+      readonly unlined: string;
     }
   | {
       readonly write?: undefined;
-      readonly target: (variables: TVariables) => string | undefined;
+      /** The row this write writes, as `<row type>:<row id>` (`WriteSpec.target`). */
+      readonly target: (variables: TVariables) => string;
       readonly request: (variables: TVariables) => WriteRequest<TData>;
+      readonly unlined?: undefined;
     };
 
 /** Whether `a` and `b` are the same variables: one value, or two that serialise alike (a form
@@ -103,6 +110,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   label,
   request,
   target,
+  unlined,
   write,
   ...options
 }: KeyedWriteOptions<TData, TVariables, TContext>): KeyedWriteResult<TData, TVariables, TContext> {
@@ -136,7 +144,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
       return (
         write === undefined
           ? writes.run({ ...press, request: request(variables), target: target(variables) })
-          : writes.run({ ...press, write: (bounds) => write(variables, bounds) })
+          : writes.run({ ...press, unlined, write: (bounds) => write(variables, bounds) })
       ).then(
         (answer) => {
           if (answer === null) setUnanswered({ at: Date.now(), variables });

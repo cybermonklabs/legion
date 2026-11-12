@@ -21,7 +21,14 @@ function indicatorWrite(
   write: (bounds: WriteBounds) => Promise<unknown>
 ): void {
   void writes
-    .run({ detail: null, kind: plainWrite, label, presentation: "indicator", write })
+    .run({
+      detail: null,
+      kind: plainWrite,
+      label,
+      presentation: "indicator",
+      unlined: "a test write that names no row",
+      write,
+    })
     .catch(() => undefined);
 }
 
@@ -272,6 +279,7 @@ test("a write whose key has run out says a Retry saves it again, with Retry and 
         kind: plainWrite,
         label: "CORE-1 set to done",
         presentation: "indicator",
+        unlined: "a test write that names no row",
         write: (bounds) => {
           attempts += 1;
           bounds.sent?.({

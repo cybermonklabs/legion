@@ -15,7 +15,11 @@ import {
   type Placement,
 } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { answerIssueStates, answerThreadReads } from "../../__tests__/send-answers";
+import {
+  answerCommentActions,
+  answerIssueStates,
+  answerThreadReads,
+} from "../../__tests__/send-answers";
 import { wholeText } from "../../__tests__/whole-text";
 import type { WriteBounds } from "../../api/client";
 import { ApiError, api } from "../../api/client";
@@ -1186,7 +1190,7 @@ test("a refused Resolve keeps the thread and its reply, and the one that lands c
   const queryClient = newQueryClient();
   let refuse = true;
   const resolves: string[] = [];
-  const resolveComment = spyOn(api, "resolveComment").mockImplementation(async (id) => {
+  const resolveComment = answerCommentActions("resolve").mockImplementation(async (id) => {
     resolves.push(id);
     if (refuse) throw new ApiError(409, { error: "the server is down" });
     return { ...root, resolved: true };
@@ -1227,14 +1231,12 @@ function ownResolveOverAReply() {
   const resolution = Promise.withResolvers<void>();
   const reply = Promise.withResolvers<Comment>();
   const listComments = api.listComments as Mock<typeof api.listComments>;
-  const spies = [
-    spyOn(api, "createComment").mockImplementation(() => reply.promise),
-    spyOn(api, "resolveComment").mockImplementation(async () => {
-      await resolution.promise;
-      stub.lists.comments = [{ ...root, resolved: true }];
-      return { ...root, resolved: true };
-    }),
-  ];
+  const resolveComment = answerCommentActions("resolve").mockImplementation(async () => {
+    await resolution.promise;
+    stub.lists.comments = [{ ...root, resolved: true }];
+    return { ...root, resolved: true };
+  });
+  const spies = [spyOn(api, "createComment").mockImplementation(() => reply.promise)];
   const queryClient = newQueryClient();
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
   return {
@@ -1253,6 +1255,7 @@ function ownResolveOverAReply() {
         await reply.promise.catch(() => {});
       });
     },
+    resolveComment,
     restore: () => {
       view.unmount();
       for (const spy of spies) spy.mockRestore();
@@ -1320,7 +1323,7 @@ test("on a phone, a thread reply refused while the reader's Resolve is out outli
     await user.click(within(dialog).getByRole("button", { name: "Send" }));
     await waitFor(() => expect(api.createComment).toHaveBeenCalledTimes(1));
     await user.click(within(dialog).getByRole("button", { name: "Resolve" }));
-    await waitFor(() => expect(api.resolveComment).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(resolve.resolveComment).toHaveBeenCalledTimes(1));
     await resolve.refuse();
     await within(dialog).findByText(refusedText);
 

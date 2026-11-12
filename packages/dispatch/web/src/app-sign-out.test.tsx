@@ -105,6 +105,7 @@ function aliceWrite(
       kind: plainWrite,
       label,
       presentation: "indicator",
+      unlined: "a test write that names no row",
       write: (bounds) => {
         attempts.push(label);
         bounds.sent?.({ body: { status: "done" }, method: "PATCH", path: "/api/v1/issues/CORE-1" });

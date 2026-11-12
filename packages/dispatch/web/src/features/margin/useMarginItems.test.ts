@@ -8,6 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { answerCommentActions } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type {
   Artifact,
@@ -540,7 +541,7 @@ function actionState(): { error: string | null; pending: string[] } {
 test("two accepts in one tick reach the server one after the other, in click order", async () => {
   const user = userEvent.setup();
   const saves: PendingSave[] = [];
-  const acceptComment = spyOn(api, "acceptComment").mockImplementation(() => {
+  const acceptComment = answerCommentActions("accept").mockImplementation(() => {
     const save = Promise.withResolvers<AcceptSuggestionResponse>();
     saves.push(save);
     return save.promise;
@@ -552,7 +553,7 @@ test("two accepts in one tick reach the server one after the other, in click ord
     // A second press of the same button before its answer is one request, not two.
     await user.click(screen.getByRole("button", { name: "Accept A" }));
     await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(1));
-    expect(acceptComment).toHaveBeenLastCalledWith("A", keyedAttempt);
+    expect(acceptComment).toHaveBeenLastCalledWith("A", {}, keyedAttempt);
     await waitFor(() => expect(actionState().pending).toEqual(["A", "B"]));
 
     await act(async () => {
@@ -560,7 +561,7 @@ test("two accepts in one tick reach the server one after the other, in click ord
       await saves[0]?.promise;
     });
     await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(2));
-    expect(acceptComment).toHaveBeenLastCalledWith("B", keyedAttempt);
+    expect(acceptComment).toHaveBeenLastCalledWith("B", {}, keyedAttempt);
     await waitFor(() => expect(actionState().pending).toEqual(["B"]));
 
     await act(async () => {
@@ -579,7 +580,7 @@ test("two accepts in one tick reach the server one after the other, in click ord
 test("a failed action drops the clicks queued behind it and shows its error", async () => {
   const user = userEvent.setup();
   const saves: PendingSave[] = [];
-  const acceptComment = spyOn(api, "acceptComment").mockImplementation(() => {
+  const acceptComment = answerCommentActions("accept").mockImplementation(() => {
     const save = Promise.withResolvers<AcceptSuggestionResponse>();
     saves.push(save);
     return save.promise;
@@ -601,7 +602,7 @@ test("a failed action drops the clicks queued behind it and shows its error", as
     // The queue is gone, not stuck: the next click goes straight out.
     await user.click(screen.getByRole("button", { name: "Accept C" }));
     await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(2));
-    expect(acceptComment).toHaveBeenLastCalledWith("C", keyedAttempt);
+    expect(acceptComment).toHaveBeenLastCalledWith("C", {}, keyedAttempt);
   } finally {
     unmount();
     acceptComment.mockRestore();
@@ -612,7 +613,7 @@ test("a failed action drops the clicks queued behind it and shows its error", as
 test("a chained action that fails refetches the comments its predecessor's success could not", async () => {
   const user = userEvent.setup();
   const saves: PendingSave[] = [];
-  const acceptComment = spyOn(api, "acceptComment").mockImplementation(() => {
+  const acceptComment = answerCommentActions("accept").mockImplementation(() => {
     const save = Promise.withResolvers<AcceptSuggestionResponse>();
     saves.push(save);
     return save.promise;
@@ -704,7 +705,7 @@ test("a failed action carries the API's reason, and a refusal of what it writes 
       want: { message: "Could not save this action.", retryable: true },
     },
   ]) {
-    const acceptComment = spyOn(api, "acceptComment").mockRejectedValue(error);
+    const acceptComment = answerCommentActions("accept").mockRejectedValue(error);
     const { listComments, unmount } = renderActionButtons();
     try {
       await user.click(screen.getByRole("button", { name: "Accept A" }));
@@ -716,7 +717,7 @@ test("a failed action carries the API's reason, and a refusal of what it writes 
     }
   }
 
-  const acceptComment = spyOn(api, "acceptComment")
+  const acceptComment = answerCommentActions("accept")
     .mockRejectedValueOnce(
       new ApiError(503, { code: "DOC_SERVICE_UNAVAILABLE", error: "document service unavailable" })
     )
@@ -726,7 +727,7 @@ test("a failed action carries the API's reason, and a refusal of what it writes 
     await user.click(screen.getByRole("button", { name: "Accept A" }));
     await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(2));
     expect(actionFailureShown()).toBeNull();
-    const [first, again] = acceptComment.mock.calls.map(([, bounds]) => bounds.key);
+    const [first, again] = acceptComment.mock.calls.map(([, , bounds]) => bounds.key);
     expect(again).toBe(first);
   } finally {
     unmount();
