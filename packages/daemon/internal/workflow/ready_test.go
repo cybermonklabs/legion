@@ -128,9 +128,8 @@ func readyMerges(t *testing.T, pool *pgxpool.Pool) []record.ReadyMerge {
 }
 
 // sameReadyMerge says whether two ready_merge payloads are the same payload. A ReadyMerge
-// carries the merge hold its line on the issue was posted for (record.ReadyMerge.HeldPosted),
-// whose path patterns are a slice, so the payload is not comparable and slices.Equal cannot be
-// asked for a list of them.
+// carries the merge hold it has told of (record.ReadyMerge.HeldTold), whose path patterns are a
+// slice, so the payload is not comparable and slices.Equal cannot be asked for a list of them.
 func sameReadyMerge(a, b record.ReadyMerge) bool { return reflect.DeepEqual(a, b) }
 
 // A pull request closed while its READY awaits the merge ends that READY's merge row once the close

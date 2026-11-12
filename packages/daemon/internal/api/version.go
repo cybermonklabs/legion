@@ -1163,12 +1163,13 @@ package api
 // and they are named here because this number is what a reader asks when a post is refused.
 // This change ships two store migrations, `20261110235352_merge_marks.up.sql` (the marks, the
 // hold list and the jump records) and `20261111124500_merge_jump_outcome.up.sql` (the jump
-// record's outcome column), and four new `record.ReadyMerge` payload fields, `held`,
-// `heldSince`, `heldTold` and `heldPosted`, which say that a hold caught this merge, when it
-// first caught it, that the architect was told and which hold the issue's own line named. A
-// rollback is not free: an older daemon's payload decoder is strict, so it refuses those four
-// fields on every retry of every ready_merge row this daemon wrote, and that daemon's reader
-// knows neither of the two new notice kinds, `merge-held` and `merge-jump-refused`.
+// record's outcome column), and three new `record.ReadyMerge` payload fields, `held`,
+// `heldSince` and `heldTold`, which say how long one of the project's merge holds has held this
+// merge, when the open held stretch began, and which hold the issue's line and the architect's
+// notice were written for. A rollback is not free: an older daemon's payload decoder is strict,
+// so it refuses those three fields on every retry of every ready_merge row this daemon wrote,
+// and that daemon's reader knows neither of the two new notice kinds, `merge-held` and
+// `merge-jump-refused`.
 // (Every number below that this branch does not own is written here as a
 // dated event rather than as a present state, because a sentence saying what main carries now
 // goes stale with nobody touching the file, and twice on 2026-11-11 one did. This branch was cut

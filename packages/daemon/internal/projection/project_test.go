@@ -41,7 +41,7 @@ type projectionStore struct {
 	gates      map[string]map[record.DesignStep]record.DesignGate
 	owed       []record.OwedStart
 	// The controller's merge marks as Project reads them: the project's jump marks, its live
-	// holds, the issues whose merge a hold is keeping back, and the newest jump of each
+	// holds, the issues a hold caught when their merge row last ran, and the newest jump of each
 	// repository. Each is empty in the tests that are about another part of the state.
 	mergeJumps       []record.MergeJump
 	mergeHolds       []record.MergeHold
@@ -861,9 +861,10 @@ func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 }
 
 // The state carries the controller's merge marks as the record holds them: the live jump marks,
-// the live holds in the list's own order, the issues whose merge a hold is keeping back, and the
-// newest jump of each repository with the queue it asked to go ahead of. A project with no mark at all
-// carries four empty lists and never a nil one, since the wire writes each key on every body.
+// the live holds in the list's own order, the issues a hold caught when their merge row last
+// ran, and the newest jump of each repository with the queue it asked to go ahead of. A project
+// with no mark at all carries four empty lists and never a nil one, since the wire writes each
+// key on every body.
 func TestProjectAnswersTheControllersMergeMarks(t *testing.T) {
 	setAt := projectedAt.Add(-time.Hour)
 	store := projectionStore{

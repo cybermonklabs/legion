@@ -25,8 +25,8 @@ const mergeJumpRecordColumns = `repository, issue, number, head, at, reason, ent
 // stretch (ReadyMerge.HeldSince), which is what makes the row one a merge hold caught: a run
 // that finds a hold writes the moment, and the first run that finds none clears it again
 // (daemon's readyMergeMarks.holdAndTell and the close above the submission's arms). Both reads of
-// the rows a hold is keeping back share it (MergeHeldIssues and HeldReadyMerges), so the two
-// cannot drift apart, as mergeJumpColumns keeps the two reads of the jump marks together.
+// the rows a hold caught when they last ran share it (MergeHeldIssues and HeldReadyMerges), so
+// the two cannot drift apart, as mergeJumpColumns keeps the two reads of the jump marks together.
 const mergeHeldPayload = `payload ? 'heldSince' and payload->>'heldSince' <> ''`
 
 // SetMergeJump writes issue's jump mark, and lands only while the issue's own record is still

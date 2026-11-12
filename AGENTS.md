@@ -1174,7 +1174,8 @@ The second ends nothing: a merge the daemon submitted that GitHub has not comple
 a required check that never ran or failed, a review only a person can give, a merge queue that has not landed it.
 A hold is Legion's own decision not to submit, so none of the time it held the submission is GitHub taking long over the merge.
 A merge hold of the project, which the controller sets, stops a submission whose pull request changes a file one of that hold's paths matches.
-The daemon tells the issue's architect once (`merge-held`), naming the pull request, READY's head, the hold's paths, when the hold ends, the session that set it and its reason, and posts the same on the Dispatch issue.
+The daemon tells the issue's architect once for each hold that holds that merge (`merge-held`), naming the pull request, READY's head, the hold's paths, when the hold ends, the session that set it and its reason, and posts the same on the Dispatch issue.
+A replacement that puts another hold in the first one's place tells again, with that hold's own paths, reason, owner and end time, since none of the first telling's facts is true of it.
 Nothing is anyone's to do: the issue stays in `awaiting_merge`, and the daemon submits the merge when the hold ends.
 A reopen at READY's head reuses that row, starts it over as though nothing had been armed, and takes it from any worker still holding it, so the merge is never lost.
 A refusal GitHub would repeat on a retry ends the row and is told to the architect once (`merge-refused`).

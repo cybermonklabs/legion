@@ -15,7 +15,8 @@ body: |-
   `clear_merge_jump` (issue) takes a mark off before its merge is submitted. `set_merge_holds`
   (holds) replaces the project's whole merge hold list: while a hold stands, the daemon submits
   no merge whose pull request changes a file one of that hold's paths matches, and the issue
-  waits in `awaiting_merge` with its architect told once (`merge-held`). The daemon refuses an
+  waits in `awaiting_merge` with its architect told once for each hold that holds it
+  (`merge-held`). The daemon refuses an
   issue it does not record (`ISSUE_NOT_RECORDED`), an issue of another project
   (`ISSUE_OUTSIDE_PROJECT`), a jump mark on an issue that has left the workflow (`ISSUE_LEFT_WORKFLOW`,
   which also answers an issue whose departure commits while the request is in flight, leaving no
@@ -28,12 +29,12 @@ body: |-
   The plugin declares daemon API contract 84, whose state carries `mergeJumps`, `mergeHolds`,
   `mergeHeld` and `mergeJumpRecords`.
 
-  Rolling back to the release before this one is not free. The older daemon refuses the four
+  Rolling back to the release before this one is not free. The older daemon refuses the three
   new `ready_merge` payload fields on every retry of every such row this daemon wrote, which
   stops those merges, and its reader knows neither of the two new notice kinds, which holds
   every waiting notice of the project behind them. Two statements clear both, with `<KEY>` the
   Dispatch project key:
-  `update outbox set payload = payload - 'held' - 'heldSince' - 'heldTold' - 'heldPosted' where kind = 'ready_merge' and (payload ? 'held' or payload ? 'heldSince' or payload ? 'heldTold' or payload ? 'heldPosted') and split_part(issue, '-', 1) = '<KEY>';`
+  `update outbox set payload = payload - 'held' - 'heldSince' - 'heldTold' where kind = 'ready_merge' and (payload ? 'held' or payload ? 'heldSince' or payload ? 'heldTold') and split_part(issue, '-', 1) = '<KEY>';`
   and
   `delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' in ('merge-held', 'merge-jump-refused') and split_part(issue, '-', 1) = '<KEY>';`.
   The notices are deleted rather than rewritten, because an older kind would tell an architect

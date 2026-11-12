@@ -256,8 +256,9 @@ reviewing until you finish.
   queue that has not landed it — and asks a person for what no worker can do. A merge hold of the
   project that matches a file the pull request changes keeps the daemon from submitting that merge
   at all: the issue waits in `awaiting_merge`, the daemon says so on the issue and tells the
-  issue's architect once (`merge-held`), naming the hold's paths, when the hold ends, the session
-  that set it and its reason, and the daemon submits the merge when the hold ends. A reopen at
+  issue's architect once for each hold that holds it (`merge-held`), naming the hold's paths, when
+  the hold ends, the session that set it and its reason, and the daemon submits the merge when
+  that hold ends. A reopen at
   READY's head reuses the row, starts it over as though nothing had been armed, and takes it from a
   run that read the record before the reopen. Any other failure retries.
   No role runs `gh pr merge`. When the answer's `note` begins `MANUAL_MERGE_REQUIRED:` (the pull

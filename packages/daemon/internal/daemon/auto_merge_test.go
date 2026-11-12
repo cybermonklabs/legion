@@ -2310,7 +2310,8 @@ func TestAMergePayloadWriteEnqueuesEveryToldRowUnderTheRowsLease(t *testing.T) {
 	}
 	row.LeaseToken = leaseOutboxRow(t, pool, row.ID)
 
-	held := record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now, HeldSince: now, HeldTold: true}
+	held := record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now, HeldSince: now,
+		HeldTold: record.MergeHoldTold(windowHold(now.Add(time.Hour), heldPattern))}
 	message := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "A merge hold holds this merge back."}, now)
 	notice := mustOutboxRow(t, "LEGION-208", record.Notice{Kind: "merge-held", Role: claim.RoleArchitect, Reason: "a merge hold holds the merge back"}, now)
 	replaced, err := runner.replacePayload(ctx, row, held, message, notice)
@@ -2321,7 +2322,7 @@ func TestAMergePayloadWriteEnqueuesEveryToldRowUnderTheRowsLease(t *testing.T) {
 		t.Fatalf("the told rows are %q, want the message and the notice in the order they were given", kinds)
 	}
 	var toldMark bool
-	if err := pool.QueryRow(ctx, `select coalesce((payload->>'heldTold')::boolean, false) from outbox where kind = 'ready_merge'`).Scan(&toldMark); err != nil {
+	if err := pool.QueryRow(ctx, `select coalesce(payload ? 'heldTold', false) from outbox where kind = 'ready_merge'`).Scan(&toldMark); err != nil {
 		t.Fatalf("read the replaced payload: %v", err)
 	}
 	if !toldMark {
@@ -2341,7 +2342,7 @@ func TestAMergePayloadWriteEnqueuesEveryToldRowUnderTheRowsLease(t *testing.T) {
 	if kinds := toldRowKinds(t, pool); kinds != "dispatch_message,notice" {
 		t.Fatalf("the told rows are %q, want the two the owning lease wrote and no more", kinds)
 	}
-	if err := pool.QueryRow(ctx, `select coalesce((payload->>'heldTold')::boolean, false) from outbox where kind = 'ready_merge'`).Scan(&toldMark); err != nil {
+	if err := pool.QueryRow(ctx, `select coalesce(payload ? 'heldTold', false) from outbox where kind = 'ready_merge'`).Scan(&toldMark); err != nil {
 		t.Fatalf("read the payload the replacement left alone: %v", err)
 	}
 	if !toldMark {
@@ -3816,7 +3817,7 @@ func heldMarks(t *testing.T, pool *pgxpool.Pool) (held time.Duration, since time
 	var nanoseconds *int64
 	var at *string
 	if err := pool.QueryRow(context.Background(),
-		`select (payload->>'held')::bigint, payload->>'heldSince', coalesce((payload->>'heldTold')::boolean, false) from outbox where kind = 'ready_merge'`).
+		`select (payload->>'held')::bigint, payload->>'heldSince', coalesce(payload ? 'heldTold', false) from outbox where kind = 'ready_merge'`).
 		Scan(&nanoseconds, &at, &told); err != nil {
 		t.Fatalf("read the ready_merge row's held marks: %v", err)
 	}

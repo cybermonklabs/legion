@@ -865,8 +865,9 @@ const legionMergeJumpOutcome = z.enum(["asked", "accepted", "refused", "unknown"
  * `entriesTotal` and `entriesUnknown` are both here because `entries` alone cannot be read: it may
  * hold less of the queue than the queue had, and an empty `entries` is a queue of nothing only
  * when `entriesUnknown` is false. `entriesUnknown` is the daemon having no reading of that queue:
- * GitHub refused the read, or GitHub answered that the branch has no merge queue at all. A queue
- * GitHub answered empty was read and found empty, so it leaves `entriesUnknown` false.
+ * the read failed — GitHub refused it, it ran out of time, or its body would not read — or
+ * GitHub answered that the branch has no merge queue at all. A queue GitHub answered empty was
+ * read and found empty, so it leaves `entriesUnknown` false.
  *
  * `outcome` is one of four and never empty (`legionMergeJumpOutcome`), so no reader has to tell
  * what became of a jump from a field nobody wrote: a record that carried a flag set only on

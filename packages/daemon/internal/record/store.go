@@ -2298,11 +2298,11 @@ func (s *Postgres) WaitingNotices(ctx context.Context, tx pgx.Tx, project string
 // since each caller names its own rows.
 //
 // Two reads are this one query: the notices a project's issues are waiting on (WaitingNotices
-// above) and the merges a hold is keeping back (HeldReadyMerges, in merge_marks_store.go, which
-// is where its condition lives, beside the other read that asks for a held row). They differ in
-// nothing but the kind they ask for, that condition and the sentence they fail with, so the body
-// lives here once, beside outboxColumns and scanOutbox, which is where a reader of either method
-// looks for what reads an outbox row.
+// above) and the merges a hold caught when their rows last ran (HeldReadyMerges, in
+// merge_marks_store.go, which is where its condition lives, beside the other read that asks for
+// a held row). They differ in nothing but the kind they ask for, that condition and the sentence
+// they fail with, so the body lives here once, beside outboxColumns and scanOutbox, which is
+// where a reader of either method looks for what reads an outbox row.
 func waitingRowsOfKind(ctx context.Context, tx pgx.Tx, kind OutboxKind, project string, now time.Time, condition, what string) ([]OutboxRow, error) {
 	query := `select ` + outboxColumns + ` from outbox
 		where kind = $1 and next_at > $2 and split_part(issue, '-', 1) = $3`

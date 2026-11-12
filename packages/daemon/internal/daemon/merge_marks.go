@@ -211,14 +211,13 @@ func heldPaths(hold record.MergeHold, paths []string) bool {
 // commits first and the replacement's own scan finds a row carrying a held moment and a next_at
 // ahead of now, and expedites it.
 //
-// What each telling is once for differs, and the payload keeps the three apart. The held moment
-// is written where the row carries none and stands across consecutive holds, because the merge
-// has been held for the whole of it (record.ReadyMerge.HeldSince). The architect's notice is
-// written once per submission (HeldTold): it says a merge hold holds this issue's merge, which
-// a second hold leaves as true as it was. The line on the issue is written once per hold
-// (HeldPosted): it names the hold's paths, its reason, the session that set it and when it ends,
-// and a second hold catching the same merge makes every one of those false, so it posts a line
-// of its own (requirement R8).
+// What each telling is once for differs, and the payload keeps the two apart. The held moment is
+// written where the row carries none and stands across consecutive holds, because the merge has
+// been held for the whole of it (record.ReadyMerge.HeldSince). The line on the issue and the
+// architect's notice are written once per hold (HeldTold), under the one key and in this one
+// transaction: each names the hold's paths, its reason, the session that set it and when it
+// ends, and a second hold catching the same merge makes every one of those false, so that hold
+// is told of as the first was (requirement R8).
 //
 // A replacement that did not take — the row's lease gone to another worker — writes nothing at
 // all, the deferral included, and nothing of it is kept on the run's own payload either; that
@@ -251,22 +250,18 @@ func (m *readyMergeMarks) holdAndTell(ctx context.Context, paths []string, cut b
 		if payload.HeldSince.IsZero() {
 			payload.HeldSince = now
 		}
-		if !payload.HeldPosted.Tells(hold) {
-			payload.HeldPosted = record.MergeHoldTold(hold)
+		if !payload.HeldTold.Tells(hold) {
+			payload.HeldTold = record.MergeHoldTold(hold)
 			post, err := record.NewOutboxRow(m.row.Issue, readyMergeHeldPost(payload, hold), now)
 			if err != nil {
 				return err
 			}
-			told = append(told, post)
-		}
-		if !payload.HeldTold {
-			payload.HeldTold = true
 			notice, err := record.NewOutboxRow(m.row.Issue, record.Notice{Kind: "merge-held", Role: claim.RoleArchitect,
 				Reason: readyMergeHeldReason(payload, hold)}, now)
 			if err != nil {
 				return err
 			}
-			told = append(told, notice)
+			told = append(told, post, notice)
 		}
 		if replaced, err = r.records.ReplaceOutboxPayload(scoped, tx, m.row.ID, m.row.LeaseToken, payload); err != nil || !replaced {
 			return err
@@ -287,7 +282,7 @@ func (m *readyMergeMarks) holdAndTell(ctx context.Context, paths []string, cut b
 	}
 	*m.payload = payload
 	if len(told) > 0 {
-		r.log.Info("outbox READY merge is held by one of the project's merge holds; the issue is told of this hold and its architect once for the submission",
+		r.log.Info("outbox READY merge is held by one of the project's merge holds; the issue and its architect are told of this hold once",
 			"row", m.row.ID, "issue", m.row.Issue, "number", payload.Number, "head", payload.Head,
 			"paths", hold.Paths, "reason", hold.Reason, "session", hold.Session, "ends", hold.EndsAt.UTC().Format(time.RFC3339))
 	}
@@ -324,8 +319,9 @@ func (m *readyMergeMarks) closeHeld(ctx context.Context, err error) error {
 //
 // Nothing of GitHub is read for an issue with no mark. With one, the queue the jump asks to go
 // ahead of is read before anything is sent (ghautomerge.QueueEntries, bounded by jumpQueueRead),
-// because once the enqueue lands the queue as it stood is gone; a read GitHub refused, and a
-// branch GitHub answers no merge queue for, are each no failure of the jump (queueBefore).
+// because once the enqueue lands the queue as it stood is gone; a read that failed — GitHub
+// refused it, it ran out of time, or its body would not read — and a branch GitHub answers no
+// merge queue for are each no failure of the jump (queueBefore).
 //
 // The mark is spent for the submission the run is about to make and never ahead of one
 // (requirement R2): one transaction fenced on the row's lease clears the mark, writes the record
@@ -545,7 +541,8 @@ func (m *readyMergeMarks) jumpNotTaken(ctx context.Context, ended record.MergeJu
 // queueBefore is the merge queue of branch as GitHub answered it just before this jump's
 // request, as the record keeps it (record.MergeQueueEntryRecord), GitHub's own count of the
 // whole queue, and whether this daemon has no reading of that queue at all. Two answers leave it
-// with none: a read GitHub refused, and a branch GitHub answers no merge queue for
+// with none: a read that failed, whether GitHub refused it, it ran out of time or its body would
+// not read, and a branch GitHub answers no merge queue for
 // (ghautomerge.ErrNoMergeQueue), which is its answer for a base branch that keeps no queue and
 // for the empty branch a pull request with no base ref gives. Neither is a failure of the jump
 // (requirement R3): the record says its entries are unknown, every other field of it stands, and
@@ -620,10 +617,12 @@ func (m *readyMergeMarks) markWrite(ctx context.Context, write func(context.Cont
 // merged" is asked, and it names the owner and the end time so that the answer needs no second
 // reader: the hold is nobody's to undo on the issue, and the merge goes out when it ends.
 //
-// It is posted once for each hold that holds this merge and never again for that one hold
-// (record.ReadyMerge.HeldPosted). Every fact in it is the hold's own, so a second hold catching
-// the same merge — the controller replaced the list while the merge waited — leaves this line
-// saying nothing true about the wait the issue is now in, and the second hold posts its own.
+// It is posted once for each hold that holds this merge, and not again while that hold still
+// holds it (record.ReadyMerge.HeldTold). Every fact in it is the hold's own, so a second hold
+// catching the same merge — the controller replaced the list while the merge waited — leaves
+// this line saying nothing true about the wait the issue is now in, and the second hold posts
+// its own. A list that goes back to a hold told of before the one holding the merge now posts
+// that hold's line a second time, which is the wait the issue is in said once more.
 //
 // The hold's own words are the controller's and reach a Dispatch block from an outbox payload, so
 // each of them is cut once here (ghautomerge.CutLine), as GitHub's are everywhere else in the
@@ -633,11 +632,16 @@ func readyMergeHeldPost(payload record.ReadyMerge, hold record.MergeHold) record
 		payload.Number, payload.Head, heldPathsNamed(hold), markSession(hold.Session), ghautomerge.CutLine(hold.Reason), hold.EndsAt.UTC().Format(time.RFC3339))}
 }
 
-// readyMergeHeldReason is the merge-held notice's reason, the architect's one telling that a merge
+// readyMergeHeldReason is the merge-held notice's reason, the architect's telling that a merge
 // hold holds this issue's merge (readyMergeMarks.holdAndTell): the same facts the issue's own
-// carries, in one sentence, since a notice is read in a list of notices. The architect is told
-// because the issue stands still and its architect is the one who would otherwise look for a
-// reason on GitHub; the controller set the hold and needs no telling.
+// line carries, in one sentence, since a notice is read in a list of notices. The architect is
+// told because the issue stands still and its architect is the one who would otherwise look for
+// a reason on GitHub; the controller set the hold and needs no telling.
+//
+// It is sent once for each hold that holds this merge, under the key the line is posted under
+// and in that same transaction (record.ReadyMerge.HeldTold): the notice names the hold, so a
+// second hold catching the same merge is told of on its own, with that hold's paths, reason,
+// owner and end time.
 func readyMergeHeldReason(payload record.ReadyMerge, hold record.MergeHold) string {
 	return fmt.Sprintf("Legion has not submitted the merge of pull request #%d at READY's head %s: a merge hold of this project covers %s until %s (%s set it for %q). The issue stays in awaiting_merge and the merge is submitted when the hold ends.",
 		payload.Number, payload.Head, heldPathsNamed(hold), hold.EndsAt.UTC().Format(time.RFC3339), markSession(hold.Session), ghautomerge.CutLine(hold.Reason))

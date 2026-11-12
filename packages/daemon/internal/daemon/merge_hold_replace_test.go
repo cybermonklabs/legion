@@ -142,13 +142,14 @@ func TestAHoldListReplacedWhileAMergeRunDecidesLeavesNoMergeAsleep(t *testing.T)
 	})
 }
 
-// Each hold that holds one merge posts its own line on the issue, and the architect's merge-held
-// notice is one for the submission. A line names the hold holding the merge — its paths, the
-// reason the controller set it for, the session that set it and when it ends — so the line a
-// first hold posted says nothing true once a second hold is what the merge waits on, and the
-// second hold posts its own. What is told once per hold is told once only: a further run under
-// the hold already posted about posts nothing at all.
-func TestASecondMergeHoldPostsItsOwnLineAndTellsTheArchitectOnce(t *testing.T) {
+// Each hold that holds one merge is told of once, and both tellings are that hold's own: the
+// line on the Dispatch issue and the architect's merge-held notice name its paths, the reason
+// the controller set it for, the session that set it and when it ends. So neither says anything
+// true once a second hold is what the merge waits on — the controller replaced the list while
+// the merge waited — and both are written again, carrying the second hold's facts. What is told
+// once per hold is told once only: a further run under the hold already told of writes neither
+// row, which is what keeps a merge held for a week from telling its architect every run.
+func TestASecondMergeHoldTellsTheIssueAndTheArchitectAgain(t *testing.T) {
 	github := newQueueGitHub(t, "CLEAN")
 	github.set(func(g *armableGitHub) { g.changedFiles = []string{heldFile} })
 	pool := isolatedOutboxPool(t)
@@ -168,6 +169,7 @@ func TestASecondMergeHoldPostsItsOwnLineAndTellsTheArchitectOnce(t *testing.T) {
 		}
 		clock = clock.Add(time.Minute)
 	}
+	firstEnds := first.EndsAt.UTC().Format(time.RFC3339)
 
 	run("the first run under the first hold")
 	run("a second run under the same hold")
@@ -179,10 +181,15 @@ func TestASecondMergeHoldPostsItsOwnLineAndTellsTheArchitectOnce(t *testing.T) {
 	if !strings.Contains(posts[0], first.Reason) {
 		t.Fatalf("the first line %q, want it naming the hold that held the merge, %q", posts[0], first.Reason)
 	}
-	assertMergeRows(t, pool, 1, "merge-held", 1)
+	reasons := assertMergeRows(t, pool, 1, "merge-held", 1)
+	if !strings.Contains(reasons[0], first.Reason) {
+		t.Fatalf("the merge-held notice %q, want the hold that held the merge, %q: a second run under the hold already told of tells the architect nothing",
+			reasons[0], first.Reason)
+	}
 
 	second := record.MergeHold{Paths: []string{"packages/cli/", heldPattern}, Reason: "the migration lands by hand",
 		EndsAt: now.Add(2 * time.Hour), Session: "ses_controller_two", SetAt: clock}
+	secondEnds := second.EndsAt.UTC().Format(time.RFC3339)
 	setMergeHolds(t, pool, records, second)
 	run("the run the second hold catches")
 
@@ -190,14 +197,20 @@ func TestASecondMergeHoldPostsItsOwnLineAndTellsTheArchitectOnce(t *testing.T) {
 	if len(posts) != 2 {
 		t.Fatalf("Dispatch messages %q, want a second line: the merge waits on a second hold, and nothing the first line says is true of it", posts)
 	}
-	for _, named := range []string{"packages/cli/", second.Reason, second.Session, second.EndsAt.UTC().Format(time.RFC3339)} {
+	for _, named := range []string{"packages/cli/", second.Reason, second.Session, secondEnds} {
 		if !strings.Contains(posts[1], named) {
 			t.Fatalf("the second line %q, want it naming %q of the hold that now holds the merge", posts[1], named)
 		}
 	}
-	reasons := assertMergeRows(t, pool, 1, "merge-held", 1)
-	if !strings.Contains(reasons[0], first.Reason) {
-		t.Fatalf("the merge-held notice %q, want the one the submission's first hold wrote: the notice is one per submission", reasons[0])
+	reasons = assertMergeRows(t, pool, 1, "merge-held", 2)
+	if !strings.Contains(reasons[1], secondEnds) || strings.Contains(reasons[1], firstEnds) {
+		t.Fatalf("the second merge-held notice %q, want it naming the second hold's end %s and not the first's %s: the architect is told of the hold that holds the merge now",
+			reasons[1], secondEnds, firstEnds)
+	}
+	for _, named := range []string{"packages/cli/", second.Reason, second.Session} {
+		if !strings.Contains(reasons[1], named) {
+			t.Fatalf("the second merge-held notice %q, want it naming %q of the hold that now holds the merge", reasons[1], named)
+		}
 	}
 
 	run("a second run under the second hold")
@@ -205,7 +218,7 @@ func TestASecondMergeHoldPostsItsOwnLineAndTellsTheArchitectOnce(t *testing.T) {
 	if posts := messagePosts(t, pool); len(posts) != 2 {
 		t.Fatalf("Dispatch messages %q, want the two lines the two holds posted: a run under the hold already told of posts nothing", posts)
 	}
-	assertMergeRows(t, pool, 1, "merge-held", 1)
+	assertMergeRows(t, pool, 1, "merge-held", 2)
 	if nextAt, _, _, _ := readyMergeState(t, pool); !nextAt.Equal(second.EndsAt) {
 		t.Fatalf("the held row runs again at %s, want the second hold's end %s", nextAt, second.EndsAt)
 	}

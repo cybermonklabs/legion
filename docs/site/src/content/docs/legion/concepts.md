@@ -445,9 +445,11 @@ GitHub: a required check that never ran or failed, a review only a person can gi
 that has not landed it.
 A merge hold of the project, which the controller sets, stops the submission of a merge whose
 pull request changes a file one of that hold's paths matches: the daemon posts that on the
-Dispatch issue and tells the issue's architect once (`merge-held`), naming the hold's paths, when
+Dispatch issue and tells the issue's architect (`merge-held`), naming the hold's paths, when
 the hold ends, the session that set it and its reason, and it submits the merge when the hold
 ends.
+It tells once for each hold that holds the merge, so a list the controller replaces while the
+merge waits tells again, with the new hold's own paths, reason, owner and end time.
 A reopen at the `READY` head takes the submission back from a
 run that read the record before the reopen, so it is never lost. A refusal GitHub would repeat on a
 retry ends the submission and is told to the architect too. GitHub checks the expected head only when

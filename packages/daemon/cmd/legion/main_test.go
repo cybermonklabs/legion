@@ -1624,12 +1624,12 @@ func TestPlainStateSummarizesTheHeldLifecycleRows(t *testing.T) {
 }
 
 // An operator reading plain `legion state` is told which paths the controller is holding still
-// and what those holds are costing: each hold with its paths, its repository, its reason, the
-// session that set the list and when it ends, then the issues whose merge is waiting on one,
-// each with the moment its row runs again. A hold of no named repository holds every repository
-// the project serves, and says so. With no hold and no held merge the line says so; a held merge
-// outliving the hold that caught it is a real moment, so the line names it rather than reading
-// as nothing held.
+// and what those holds have caught: each hold with its paths, its repository, its reason, the
+// session that set the list and when it ends, then the issues a hold held when their merge row
+// last ran, each with the moment that row runs again. A hold of no named repository holds every
+// repository the project serves, and says so. With no hold and no held merge the line says so; a
+// held merge outliving the hold that caught it is a real moment, so the line names it rather
+// than reading as nothing held.
 func TestPlainStateNamesTheMergeHoldsAndWhatTheyHold(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
@@ -1641,12 +1641,12 @@ func TestPlainStateNamesTheMergeHoldsAndWhatTheyHold(t *testing.T) {
 		name, holds, held, want string
 	}{
 		{
-			name:  "two holds and the merge they are holding",
+			name:  "two holds and the merge one of them caught",
 			holds: `[` + window + `,` + migration + `]`,
 			held:  `[{"issue":"LEGION-211","dueAt":"2026-11-10T18:01:00Z"}]`,
 			want: `merge holds: 2 — "packages/daemon/" in acme/widgets, "the release window", set by controller-2 until 2026-11-10T18:00:00Z; ` +
 				`"migrations/" "db/" in every repository, "the migration lands by hand", set by controller-2 until 2026-11-10T19:00:00Z; ` +
-				"holding 1: LEGION-211 due 2026-11-10T18:01:00Z\n",
+				"held at their last run 1: LEGION-211 due 2026-11-10T18:01:00Z\n",
 		},
 		{
 			name:  "a hold that has caught nothing",
@@ -1659,7 +1659,7 @@ func TestPlainStateNamesTheMergeHoldsAndWhatTheyHold(t *testing.T) {
 			name:  "a held merge whose hold has ended",
 			holds: `[]`,
 			held:  `[{"issue":"LEGION-211","dueAt":"2026-11-10T18:01:00Z"}]`,
-			want:  "merge holds: none set; holding 1: LEGION-211 due 2026-11-10T18:01:00Z\n",
+			want:  "merge holds: none set; held at their last run 1: LEGION-211 due 2026-11-10T18:01:00Z\n",
 		},
 		{name: "none", holds: `[]`, held: `[]`, want: "merge holds: none\n"},
 	} {

@@ -15,10 +15,10 @@ import (
 )
 
 // mergeHoldsSummary is the one line an operator reads for the paths the controller is holding
-// still (api.State.MergeHolds) and the merges those holds are costing (api.State.MergeHeld):
-// how many holds stand, each with its paths, the repository it holds them in, its reason, the
-// controller session that set the list and when it stops holding; then the issues whose merge
-// is waiting on one of them, each with the moment its row runs again.
+// still (api.State.MergeHolds) and the merges a hold caught when their rows last ran
+// (api.State.MergeHeld): how many holds stand, each with its paths, the repository it holds
+// them in, its reason, the controller session that set the list and when it stops holding; then
+// the issues a hold held at that last run, each with the moment its row runs again.
 //
 // The two are one line because neither answers the operator's question alone: a hold with no
 // merge behind it is costing nothing, and a held merge with no hold named would read as a merge
@@ -55,7 +55,7 @@ func mergeHoldsSummary(holds []api.MergeHoldView, held []api.MergeHeldView) stri
 	for i, issue := range held {
 		waiting[i] = issue.Issue + " due " + issue.DueAt.UTC().Format(time.RFC3339)
 	}
-	return fmt.Sprintf("merge holds: %s; holding %d: %s", standing, len(held), strings.Join(waiting, ", "))
+	return fmt.Sprintf("merge holds: %s; held at their last run %d: %s", standing, len(held), strings.Join(waiting, ", "))
 }
 
 // mergeJumpsSummary is the one line an operator reads for the merge queue the controller has

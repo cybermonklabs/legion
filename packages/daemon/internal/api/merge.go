@@ -155,7 +155,7 @@ func (s *server) mergeJumpClear(w http.ResponseWriter, r *http.Request) {
 }
 
 // mergeHolds replaces the project's whole merge hold list, and then makes every merge a hold of
-// the project is still keeping back due at once.
+// the project caught when its row last ran due at once.
 //
 // The replacement and the expediting are one transaction because they are one decision: a
 // controller that takes a hold off, or shortens one, has said that the merges it was keeping back
@@ -523,8 +523,9 @@ type MergeQueueEntryView = record.MergeQueueEntryRecord
 // EntriesTotal and EntriesUnknown are both here because Entries alone cannot be read: it may
 // hold less of the queue than the queue had, and an empty Entries is a queue of nothing only
 // when EntriesUnknown is false. EntriesUnknown is the daemon having no reading of that queue:
-// GitHub refused the read, or GitHub answered that the branch has no merge queue at all. A
-// queue GitHub answered empty was read and found empty, so it leaves EntriesUnknown false.
+// the read failed — GitHub refused it, it ran out of time, or its body would not read — or
+// GitHub answered that the branch has no merge queue at all. A queue GitHub answered empty was
+// read and found empty, so it leaves EntriesUnknown false.
 //
 // Outcome is one of the four record.MergeJumpOutcome values and is never empty, so no reader
 // has to tell an outcome from a field nobody wrote: `asked` is the daemon having asked and not

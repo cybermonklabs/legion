@@ -74,15 +74,19 @@ whoever unblocks it. Never bypass a rule.
 ## `merge-held`
 
 Its `reason` names the pull request, READY's head, the hold's paths, when the hold ends, the
-session that set it and the reason it was set for. One of the project's merge holds matches a file
-the pull request changes, so the daemon has not submitted that merge at all. Nothing has been
-withdrawn and nothing has failed: the issue stays in `awaiting_merge`, and the daemon submits the
-merge when the hold ends. The time a hold holds a submission back counts toward no `merge-waiting`
-hour, because a hold is Legion's own decision not to submit. You are told once for that
-submission, however many times the daemon reads it under the hold, and the daemon posts the same
-on the Dispatch issue. There is nothing for you to do and nothing to ask a person for: the hold
-ends by itself at the time the reason names, and only the controller, which set it, takes it off
-earlier.
+session that set it and the reason it was set for.
+One of the project's merge holds matches a file the pull request changes, so the daemon has not
+submitted that merge at all.
+Nothing has been withdrawn and nothing has failed: the issue stays in `awaiting_merge`, and the
+daemon submits the merge when the hold ends.
+The time a hold holds a submission back counts toward no `merge-waiting` hour, because a hold is
+Legion's own decision not to submit.
+You are told once for each hold that holds this merge, however many times the daemon reads it
+under that hold, and the daemon posts the same on the Dispatch issue.
+A replacement that puts another hold in its place tells you again, with that hold's own paths,
+reason, owner and end time, because nothing the first notice said is true of the new wait.
+There is nothing for you to do and nothing to ask a person for: the hold ends by itself at the
+time the reason names, and only the controller, which set it, takes it off earlier.
 
 ## `message-refused`
 
