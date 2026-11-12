@@ -209,7 +209,8 @@ check "the four attempts a retry follows said what they withheld and printed non
   "$(is "$(grep -c "wrote $refusing_bytes bytes to standard output; none of it is printed" <<<"$refusing_err" || true)" 4)"
 # The last attempt is the diagnosis: nothing retries after it, so its body is printed - on
 # standard error, where it cannot reach a caller capturing this call's value. An apt outage read
-# `677 bytes, none printed` five times in this repository's own CI and said nothing about which
+# `677 bytes, none printed` on every one of fifteen attempts across three jobs of this
+# repository's own CI and said nothing about which
 # host or error (dispatch://INFRA-1545).
 check "the last attempt's bytes are printed, on standard error" \
   "$(is "$(contains "$refusing_err" 'LEAKED-MARKER')" true)"
@@ -224,8 +225,11 @@ check "standard output still carries nothing of them" \
 # guessed: a body writing `::add-mask::` or `::error::` of its own is text between these lines.
 refusing_stop=$(sed -n 's/^::stop-commands::\(.*\)$/\1/p' <<<"$refusing_err")
 check "the copy is wrapped in a stop-commands token" "$(is "$(grep -c . <<<"$refusing_stop")" 1)"
-check "the token is not a guessable constant" \
-  "$(is "$(grep -cE '^[0-9a-f]{32}$' <<<"$refusing_stop" || true)" 1)"
+# Not a pattern: a hard-coded token would match any shape this names. The token is the buffer's
+# own `mktemp` name, so what makes it unguessable is that it differs per call, and the case below
+# drives a second call to read a second one.
+check "the token carries the random part mktemp chose" \
+  "$(is "$(grep -cE '^ci-retry\.[A-Za-z0-9]{6}$' <<<"$refusing_stop" || true)" 1)"
 check "and the block is closed again with that same token" \
   "$(contains "$refusing_err" "^::$refusing_stop::\$")"
 check "the body sits inside that block" \
@@ -233,6 +237,64 @@ check "the body sits inside that block" \
 check "it returns the last attempt's status" "$(is "$refusing_status" 1)"
 check "and its last line is still the exhaustion annotation" \
   "$(is "$(tail -n 1 <<<"$refusing_err")" '::error::the refusing tool failed to download after 5 attempts (last exit 1)')"
+
+echo "case: a hostile body stays inside the stop block, under each caller's own shell options"
+# Round 22 of dispatch://INFRA-1545 caught a branch that passed when driven bare and KILLED THE
+# CALLER when driven under the flags a caller really sets, so this case drives the helper under
+# both: `bash --noprofile --norc -eo pipefail`, which is GitHub's `shell: bash` for every
+# composite action, and `dash -eu`, which scripts/go-third-party-notices.sh uses. `sleep` is
+# stubbed on PATH, so five attempts cost no seconds and this case adds nothing to the suite's
+# 362 s.
+mkdir -p "$work/stub"
+cat > "$work/stub/sleep" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$work/stub/sleep"
+# A body of exactly the lines the runner would act on, and no final newline.
+cat > "$work/hostile" <<'HOSTILE'
+#!/usr/bin/env bash
+printf '::add-mask::x\n::error::x\n::stop-commands::deadbeef\n::::\n::deadbeef::\nHOSTILE-END'
+exit 1
+HOSTILE
+chmod +x "$work/hostile"
+for caller_shell in "bash --noprofile --norc -eo pipefail" "dash -eu"; do
+  caller_name=${caller_shell%% *}
+  if ! command -v "$caller_name" > /dev/null; then
+    echo "  $caller_name is not on PATH, so that half is not driven"
+    continue
+  fi
+  # `set +e` as the cases above do: this call is meant to fail, and a bare failing command would
+  # end this harness before it could read what the call printed.
+  set +e
+  PATH="$work/stub:$PATH" $caller_shell -c '
+    . "$1/ci-retry.sh"
+    retry_fetch "the hostile tool" 5 -- "$2"
+  ' _ "$script_dir" "$work/hostile" > "$work/hostile.out" 2> "$work/hostile.err"
+  hostile_status=$?
+  set -e
+  hostile_err=$(cat "$work/hostile.err")
+  hostile_stop=$(sed -n 's/^::stop-commands::\(ci-retry\..*\)$/\1/p' <<<"$hostile_err")
+  check "$caller_name: it returns the command's own status rather than a helper's" \
+    "$(is "$hostile_status" 1)"
+  check "$caller_name: the exhaustion annotation is still printed" \
+    "$(is "$(tail -n 1 <<<"$hostile_err")" '::error::the hostile tool failed to download after 5 attempts (last exit 1)')"
+  check "$caller_name: the token is the buffer's own name" \
+    "$(is "$(grep -cE '^ci-retry\.[A-Za-z0-9]{6}$' <<<"$hostile_stop" || true)" 1)"
+  check "$caller_name: and it is not the token the case above read" \
+    "$(is "$([ "$hostile_stop" = "$refusing_stop" ] && echo same || echo different)" different)"
+  # Every line the runner would act on sits between the two markers, the body's own
+  # `::deadbeef::` included, and the close is on a line of its own although the body ended
+  # without a newline.
+  check "$caller_name: each workflow command of the body is inside the block" \
+    "$(is "$(awk -v s="::stop-commands::$hostile_stop" -v e="::$hostile_stop::" 'index($0, s) == 1 && length($0) == length(s) {i = 1; next} index($0, e) == 1 && length($0) == length(e) {i = 0; next} i && /^::/ {n++} END {print n + 0}' "$work/hostile.err")" 5)"
+  check "$caller_name: the close stands on its own line after a body with no final newline" \
+    "$(contains "$hostile_err" "^::$hostile_stop::\$")"
+  check "$caller_name: the helper's own annotation is outside the block" \
+    "$(is "$(awk -v e="::$hostile_stop::" 'index($0, e) == 1 && length($0) == length(e) {after = 1; next} after && /^::error::/ {n++} END {print n + 0}' "$work/hostile.err")" 1)"
+  check "$caller_name: and nothing of it reached standard output" \
+    "$(is "$(cat "$work/hostile.out")" '')"
+done
 
 echo "case: a first attempt that succeeds has its output copied byte for byte"
 # The buffer must add nothing and drop nothing, a trailing newline the command did not write

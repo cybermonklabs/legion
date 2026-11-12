@@ -10,16 +10,16 @@
 # no option is set, no variable is left behind, nothing is printed. From a workflow `run:`, whose
 # working directory is the repository root:
 #
-# A CALLER WHOSE COMMAND CAN WRITE A CREDENTIAL TO STANDARD OUTPUT MUST NOT GO THROUGH THIS
-# FUNCTION, because a failed last attempt's standard output reaches the step log. No caller does
-# today: the `gh` ones pass their token in the environment, the leak engine writes with
-# `--output`, crane prints digests and configuration, and the registry pull token goes through
-# `ci_tools_curl` (review round 21 of dispatch://INFRA-1545 read every one of them). A fetch of a
-# minted token is the shape to keep out: a body that times out part way is printed here, and no
-# mask covers bytes the runner has never seen.
-#
 #     . .github/scripts/ci-retry.sh
 #     retry_fetch "the Bun toolchain" 180 -- bun install --frozen-lockfile
+#
+# A CALLER WHOSE COMMAND CAN WRITE A CREDENTIAL TO STANDARD OUTPUT MUST NOT GO THROUGH THIS
+# FUNCTION, because a failed last attempt's standard output reaches the step log. No caller does
+# today: the `gh` ones pass their token in the environment, the leak engine and render-nats write
+# with `--output` and `-o`, crane prints digests and configuration, and the registry pull token
+# goes through `ci_tools_curl` (review rounds 21 and 22 of dispatch://INFRA-1545 read every one
+# of them). A fetch of a minted token is the shape to keep out: a body that times out part way is
+# printed here, and no mask covers bytes the runner has never seen.
 #
 # From a composite action, whose `run:` also starts at the caller's workspace rather than at the
 # action's own directory, so the path to this file goes through $GITHUB_ACTION_PATH:
@@ -201,10 +201,14 @@ retry_fetch() {
       # So the copy is wrapped in a stop token the body cannot have guessed: between the two
       # lines below the runner treats every line as text (review round 21 of
       # dispatch://INFRA-1545, which found no exploit path and asked for the door shut anyway).
-      stop_commands=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
-      # A machine with no /dev/urandom still gets a token rather than an empty one, which would
-      # end the stop block at the first `::::` a body wrote.
-      [ -n "$stop_commands" ] || stop_commands="ci-retry-$$-$RANDOM-$RANDOM"
+      # The token is this attempt's own buffer name, which `mktemp` made of the six random
+      # characters it chose above and which the body never sees. It needs no command of its own
+      # and no fallback: the buffer is non-empty by the time this line runs, because a `mktemp`
+      # that failed returned 2 from this function long before it (review round 22, which caught
+      # a `/dev/urandom` read whose pipeline status, under a caller that has errexit and pipefail
+      # on, WAS the assignment's status - so that caller died here, losing the `::error::` line
+      # and the command's own exit status, and the line meant to cover it was unreachable).
+      stop_commands=${buffer##*/}
       echo "::stop-commands::$stop_commands" >&2
       # `|| true`: a read of this file that fails must not end a caller that has errexit on, and
       # the status this call returns is the command's own rather than this report's.

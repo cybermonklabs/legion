@@ -2551,7 +2551,7 @@ jobs:
     # the head's own `install-crane`, which measured 64 s at the 60 s bound this branch replaced
     # and which the 120 s one prices at 120 + 64 + 60 = 244 s, written as 247 s for the seconds a
     # second's rounding in each term can add - the ceiling the fetch helper ci-tools.sh derives
-    # in its block on that option, since curl decides whether to
+    # in its own block on `--retry-max-time`, since curl decides whether to
     # retry when an attempt ends and a decision taken just under 120 s still sleeps its last
     # 64 s and starts one more attempt (5), the other steps whose primary the fault or a dead port holds, each now about
     # a second because the stand-in shortens them: job 129874475871 made 65 fetches through the
@@ -4027,9 +4027,10 @@ jobs:
     # the retry helper's test, 362 s measured, which spends 310 s of that waiting out the two
     # things it proves — the 120 s floor, and five failed attempts, of which the four a retry
     # follows have their output withheld and the last has its own printed on standard error and
-    # cut — and the fault proxy's test, 10 s measured. That is 4943 s, above both the
+    # cut — and the fault proxy's test, 15 s measured (job 130805958692, 21:49:09Z to 21:49:24Z).
+    # That is 4948 s, above both the
     # 4800 s of the 80 minutes this job carried before this branch and the job's 1924 s measured
-    # maximum, so 4943 s is the unretried term of the budget below.
+    # maximum, so 4948 s is the unretried term of the budget below.
     #
     # The retried step this job's budget adds is its slowest alone (ci-budgets.md's Budgets note):
     # install-jj, whose two `ci_tools_fetch` calls and whose `mise install` of the jj release
@@ -4038,7 +4039,7 @@ jobs:
     # is this job's slowest retried step now. setup-bun's two calls come to 1482 s, the
     # workspace install to 1050 s, install-changie's one call to 741 s, install-uv's one call to
     # 741 s, install-omp's `mise install` to 450 s and the ci-ok report to 600 s, and none of
-    # those is larger. So 4943 + 1932 = 6875 s -> 115 min.
+    # those is larger. So 4948 + 1932 = 6880 s -> 115 min.
     timeout-minutes: 115
     services:
       postgres:
