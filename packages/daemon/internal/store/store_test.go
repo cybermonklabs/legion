@@ -2,40 +2,77 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
+	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// emptyStore opens a store on a database of its own, so "an empty database" in a
-// test means one, and tests never see each other's rows. Without the devbox and CI Postgres
-// LEGION_TEST_PG_DSN names the test is skipped, with internal/testpg/testdb's own message: the
-// store has no in-memory mode by design, so there is nothing to test against.
+// testDSN is the devbox and CI Postgres the store tests run against. Without it
+// there is nothing to test: the store has no in-memory mode by design.
 //
-// The fixture these tests take is internal/testpg/testdb rather than internal/testpg, which holds
-// the half of it that clones a migrated template: that half migrates the template through this
-// package, so it imports this one, and an import of it here would be a cycle in this package's
-// test binary. testdb is the half that needs no schema and so imports nothing of this module,
-// which is why it is a package apart (its package doc).
+// These tests name no internal/testpg helper, and the file imports that package nowhere: testpg
+// imports this one, to migrate the template its Clone copies, so an import of it here would be a
+// cycle in this package's test binary. internal/testpg's own skip message holds the pinned
+// Postgres image to start, and testdb.Drop, which waits an autovacuum worker out, is the one
+// copy of that wait: internal/testpg/testdb imports nothing of this module, so this package's own
+// tests can take it where they cannot take internal/testpg.
+func testDSN(t *testing.T) string {
+	t.Helper()
+	dsn := os.Getenv("LEGION_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("LEGION_TEST_PG_DSN is unset, so there is no Postgres to test against: start one and set it as internal/testpg's own skip message says, which holds the whole recipe and the image to run.")
+	}
+	return dsn
+}
+
+// emptyStore opens a store on a database of its own, so "an empty database" in a
+// test means one, and tests never see each other's rows.
 func emptyStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := Open(context.Background(), testdb.Database(t, "legion_store_test"))
+	ctx := context.Background()
+
+	base, err := url.Parse(testDSN(t))
 	if err != nil {
-		t.Fatalf("open the test database: %v", err)
+		t.Fatalf("parse LEGION_TEST_PG_DSN: %v", err)
+	}
+	adminURL := *base
+	adminURL.Path = "/postgres"
+	admin, err := pgxpool.New(ctx, adminURL.String())
+	if err != nil {
+		t.Fatalf("connect to the admin database: %v", err)
+	}
+	t.Cleanup(admin.Close)
+
+	name := "legion_store_test_" + randomSuffix(t)
+	// A file copy of template1 (docs/testing.md, "A database a Go test creates").
+	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
+		t.Fatalf("create %s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		if err := testdb.Drop(context.Background(), admin, name); err != nil {
+			t.Errorf("drop %s: %v", name, err)
+		}
+	})
+
+	testURL := *base
+	testURL.Path = "/" + name
+	store, err := Open(ctx, testURL.String())
+	if err != nil {
+		t.Fatalf("open %s: %v", name, err)
 	}
 	t.Cleanup(store.Close)
 	return store
@@ -49,6 +86,15 @@ func migratedStore(t *testing.T) *Store {
 		t.Fatalf("migrate: %v", err)
 	}
 	return store
+}
+
+func randomSuffix(t *testing.T) string {
+	t.Helper()
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		t.Fatalf("random suffix: %v", err)
+	}
+	return hex.EncodeToString(b[:])
 }
 
 func TestOpenNamesTheUnreachableAddressAndNotThePassword(t *testing.T) {
@@ -624,8 +670,31 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 	}
 }
 
+// thisRelease is the version of every migration this branch adds, and idleRelease the newest
+// version of the release it merged (main's `20261101222956_issue_idle_release`). Together they
+// build the database shapes a deployment really has: one that recorded the other release's
+// versions and none of this one's. The list is what
+// `jj diff --from main@origin --to @ --name-only packages/daemon/internal/store/migrations`
+// names, so a migration this branch adds later belongs in it; one left out makes the cases below
+// weaker, never red, which is why the comment says where it comes from.
+var thisRelease = map[int]bool{
+	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
+	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
+	20261029120900: true, 20261029121000: true, 20261029121100: true, 20261029121200: true,
+	20261102003600: true, 20261105081500: true, 20261105183200: true, 20261107095842: true,
+	20261108152000: true, 20261108190000: true, 20261109130413: true, 20261111181500: true,
+}
+
+const idleRelease = 20261101222956
+
+// retiredOutboxKinds are the kinds no lane holds any more: the three of the merge the daemon no
+// longer submits, which 20261029120800 deletes. A database of a release that still queued them is
+// upgraded with such a row pending, so the seeds below offer them too and keep the ones the
+// schema being upgraded takes.
+var retiredOutboxKinds = []record.OutboxKind{"ready_merge", "auto_merge_disable", "merge_queue_publish"}
+
 // Every outbox kind the daemon writes is one the schema's check admits, on a fresh database and on
-// databases that applied a lower migration late. 0016 (merge_queue_publish) and 0020
+// databases that applied a lower migration late. 0016 (the READY packet's publish) and 0020
 // (controller_notice) would each redefine the check with the other's kind missing, and a database
 // past 0020 applies the lower 0016 late, where a check without controller_notice would refuse the
 // queued row and the upgrade: neither sets the list, 0021 does, after both. In the same way
@@ -639,9 +708,13 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	kinds := []record.OutboxKind{record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage, record.OutboxKindNotice, record.OutboxKindControllerNotice,
-		record.OutboxKindSupervise, record.OutboxKindGateSeed, record.OutboxKindLingerClose, record.OutboxKindWorkspaceRemove, record.OutboxKindMergeQueuePublish,
-		record.OutboxKindIssueSuspend, record.OutboxKindIssueBranch, record.OutboxKindAutoMergeDisable, record.OutboxKindReadyMerge}
+	// Every kind the daemon runs, read from the lanes rather than listed here: a kind added to a
+	// lane and forgotten in a hand-kept list is exactly the omission this case exists to catch,
+	// and it is how phase_ended came to be missing from two of this release's rewrites.
+	var kinds []record.OutboxKind
+	for _, lane := range []record.OutboxLane{record.LaneLifecycle, record.LaneBoard, record.LaneRoleMessage} {
+		kinds = append(kinds, record.LaneKinds(lane)...)
+	}
 	insert := "insert into outbox (kind, issue, payload, attempts, next_at, last_error) values ($1, 'LEGION-208', '{}', 0, now(), '')"
 	for _, tc := range []struct {
 		name  string
@@ -650,6 +723,22 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 		{"a fresh database", func(migrations.Migration) bool { return false }},
 		{"a database that ran 0020 before 0016", func(m migrations.Migration) bool { return m.Version <= 20 && m.Version != 16 }},
 		{"a database that ran 0031 through 0038 before 0029 and 0030", func(m migrations.Migration) bool { return m.Version <= 28 || (m.Version >= 31 && m.Version <= 38) }},
+		// A database the release this branch merged had already migrated, which is every
+		// deployment running main: it recorded main's versions, so this branch's binary applies
+		// only the versions it adds, and each of main's is skipped for ever. That is the shape
+		// `Store.apply` makes possible at all — it asks whether each migration's own version is
+		// recorded rather than comparing against the highest — and it is the one a filter on a
+		// version number cannot build, because the versions this release adds are spread on
+		// either side of main's newest. A rewrite of a CHECK also validates the rows the table
+		// holds, so a release whose list forgets a kind another release queues cannot be applied
+		// at all: the daemon fails its boot on every restart until someone deletes the row. That
+		// is what this case holds, and the seeds below are what make it bite.
+		{"a database main migrated", func(m migrations.Migration) bool { return !thisRelease[m.Version] }},
+		// The same database one release earlier, at the idle release's own newest migration: this
+		// release's binary then applies its own versions and main's later ones together.
+		{"a database at the idle release", func(m migrations.Migration) bool {
+			return !thisRelease[m.Version] && m.Version <= idleRelease
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -666,19 +755,35 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 			if err != nil {
 				t.Fatalf("read the schema version: %v", err)
 			}
-			for _, queued := range []struct {
-				since int
-				kind  record.OutboxKind
-			}{{20, record.OutboxKindControllerNotice}, {34, record.OutboxKindIssueSuspend}} {
-				if version < queued.since {
-					continue
+			// Every kind the schema admits where this database stands, seeded before the upgrade
+			// runs. A row waits in the outbox until it finishes, so a deployment is upgraded with
+			// whatever its own release had queued, and `ADD CONSTRAINT … CHECK` validates the
+			// rows the table holds: a migration of this release whose list forgets a kind the
+			// other release queues fails the upgrade itself, and the daemon then fails to boot on
+			// every restart until someone deletes the row by hand. Which kinds those are is asked
+			// of the schema rather than listed here, by trying each and keeping the ones it
+			// takes — a kind a release adds to its own list is seeded by that alone, with no
+			// version to keep in step — and each failed insert is its own statement, so nothing
+			// it leaves behind reaches the next.
+			seeded := 0
+			for _, kind := range append(kinds, retiredOutboxKinds...) {
+				if _, err := store.pool.Exec(ctx, insert, string(kind)); err == nil {
+					seeded++
 				}
-				if _, err := store.pool.Exec(ctx, insert, string(queued.kind)); err != nil {
-					t.Fatalf("queue a %s row at schema %d: %v", queued.kind, version, err)
-				}
+			}
+			if version > 0 && seeded == 0 {
+				t.Fatalf("the schema at %d admitted no kind at all, so this case seeds nothing", version)
 			}
 			if _, err := store.Migrate(ctx); err != nil {
 				t.Fatalf("migrate: %v", err)
+			}
+			// The seeded rows have done their work — the upgrade validated every rewritten CHECK
+			// over them — and they go before the final insert, because one kind holds a unique
+			// index of its own: gated_steps_publish is one row per project
+			// (20261106041346_gated_steps_publish), so a second row of it would be refused for
+			// that index rather than for the kind this case is asking about.
+			if _, err := store.pool.Exec(ctx, "delete from outbox"); err != nil {
+				t.Fatalf("clear the seeded rows: %v", err)
 			}
 			for _, kind := range kinds {
 				if _, err := store.pool.Exec(ctx, insert, string(kind)); err != nil {
@@ -686,40 +791,6 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 				}
 			}
 		})
-	}
-}
-
-// A database can have ready_merge rows from 0043 when 0044 arrives. Its dedup index must migrate
-// those rows instead of refusing the upgrade: it keeps the earliest unleased next_at, breaking a
-// tie on id, and drops any leased duplicate when an unleased row exists.
-func TestReadyMergeDedupMigrationCollapsesExistingRows(t *testing.T) {
-	ctx := context.Background()
-	store := emptyStore(t)
-	migrateThrough(t, store, 43)
-	now := time.Now().UTC()
-	insert := `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token, lease_until)
-		values ('ready_merge', 'LEGION-208', '{"number":42,"head":"ready-head"}', 0, $1, '', $2, $3) returning id`
-	var later, earliest, leased int64
-	if err := store.pool.QueryRow(ctx, insert, now.Add(2*time.Minute), "", nil).Scan(&later); err != nil {
-		t.Fatalf("insert later row: %v", err)
-	}
-	if err := store.pool.QueryRow(ctx, insert, now.Add(time.Minute), "", nil).Scan(&earliest); err != nil {
-		t.Fatalf("insert earliest row: %v", err)
-	}
-	if err := store.pool.QueryRow(ctx, insert, now, "mid-lease", now.Add(time.Hour)).Scan(&leased); err != nil {
-		t.Fatalf("insert leased row: %v", err)
-	}
-	if _, err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate through ready-merge dedup: %v", err)
-	}
-	var id int64
-	var nextAt time.Time
-	if err := store.pool.QueryRow(ctx, `select id, next_at from outbox where kind = 'ready_merge'`).Scan(&id, &nextAt); err != nil {
-		t.Fatalf("read surviving READY merge: %v", err)
-	}
-	wantNext := now.Add(time.Minute).Truncate(time.Microsecond)
-	if id != earliest || !nextAt.Equal(wantNext) {
-		t.Fatalf("surviving READY merge = id %d at %s, want unleased earliest id %d at %s (later %d leased %d)", id, nextAt, earliest, wantNext, later, leased)
 	}
 }
 
@@ -762,308 +833,5 @@ func TestTheIssueSuspendMigrationStripsTheReleaseKeyFromQueuedRows(t *testing.T)
 		if got != want.payload {
 			t.Fatalf("row %d decodes as %#v, want %#v", want.id, got, want.payload)
 		}
-	}
-}
-
-// 0044 can run while a daemon still on 0043 works the outbox. A ready_merge row that daemon commits
-// while the dedup waits would be one the dedup's snapshot never saw, and would fail the unique index
-// and with it the upgrade. A worker claiming the duplicate the dedup deletes locks it and then
-// writes its lease (record's ClaimDue), and a lock that let the dedup start between the two would
-// leave the lease write waiting on the migration while the migration waits on the worker's row. The
-// migration locks the outbox before its dedup so that the worker's claim finishes, the writer waits
-// for the index and meets it (unique_violation), and the upgrade succeeds.
-func TestReadyMergeDedupMigrationHoldsOffAConcurrentEnqueue(t *testing.T) {
-	ctx := context.Background()
-	store := emptyStore(t)
-	migrateThrough(t, store, 43)
-	insert := `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
-		values ('ready_merge', 'LEGION-208', '{"number":42,"head":"ready-head"}', 0, $1, '', '') -- concurrent enqueue`
-	now := time.Now().UTC()
-	var duplicate int64
-	if _, err := store.pool.Exec(ctx, insert, now); err != nil {
-		t.Fatalf("insert the row the dedup keeps: %v", err)
-	}
-	if err := store.pool.QueryRow(ctx, insert+"\nreturning id", now.Add(time.Minute)).Scan(&duplicate); err != nil {
-		t.Fatalf("insert the duplicate the dedup deletes: %v", err)
-	}
-	// A worker claims the duplicate as ClaimDue does: it locks the row, and writes its lease later.
-	worker, err := store.pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the worker: %v", err)
-	}
-	defer func() { _ = worker.Rollback(ctx) }()
-	if _, err := worker.Exec(ctx, "select id from outbox where id = $1 for update", duplicate); err != nil {
-		t.Fatalf("lock the duplicate: %v", err)
-	}
-	migrated := make(chan error, 1)
-	go func() {
-		_, err := store.Migrate(ctx)
-		migrated <- err
-	}()
-	// pg_stat_activity keeps a statement's first kilobyte, so the migration is matched by its name.
-	waitForALockWait(t, store, "0044_ready_merge_dedup", nil)
-	enqueued := make(chan error, 1)
-	go func() {
-		_, err := store.pool.Exec(ctx, insert, now.Add(2*time.Minute))
-		enqueued <- err
-	}()
-	enqueue := waitForALockWait(t, store, "-- concurrent enqueue", enqueued)
-	if _, err := worker.Exec(ctx, "update outbox set lease_token = $2, lease_until = $3 where id = $1", duplicate, "worker", now.Add(30*time.Second)); err != nil {
-		t.Fatalf("write the worker's lease while the migration waits: %v", err)
-	}
-	if err := worker.Commit(ctx); err != nil {
-		t.Fatalf("finish the worker's claim: %v", err)
-	}
-	if err := <-migrated; err != nil {
-		t.Fatalf("migrate while a writer enqueues: %v", err)
-	}
-	if enqueue == nil {
-		enqueue = <-enqueued
-	}
-	var refused *pgconn.PgError
-	if !errors.As(enqueue, &refused) || refused.Code != "23505" {
-		t.Fatalf("the concurrent enqueue = %v, want it held off until the unique index refuses it", enqueue)
-	}
-	var rows int
-	if err := store.pool.QueryRow(ctx, `select count(*) from outbox where kind = 'ready_merge'`).Scan(&rows); err != nil {
-		t.Fatalf("count ready_merge rows: %v", err)
-	}
-	if rows != 1 {
-		t.Fatalf("ready_merge rows %d, want one", rows)
-	}
-}
-
-// An issue already awaiting its merge when the daemon is upgraded to the release that submits READY
-// merges reached awaiting_merge before any ready_merge row existed, and the workflow queues one only
-// as an issue reaches awaiting_merge or its pull request reopens. The upgrade queues it once: for
-// each issue awaiting its merge at its merger's READY head, in the workflow, on an open pull
-// request, in a tree that does not linger, and with no ready_merge row already. A READY a person
-// merges (its by-hand note), a closed pull request, an issue that left the workflow, a lingering
-// tree and an issue in another phase get none, and an existing row is kept as it is.
-func TestTheUpgradeQueuesTheMergeOfAREADYAlreadyAwaitingIt(t *testing.T) {
-	seed := func(t *testing.T, store *Store) {
-		t.Helper()
-		ctx := context.Background()
-		until, root := time.Now().Add(time.Hour), "LEGION-212"
-		awaiting := func(key, status string) record.Issue {
-			return record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: key, Project: "LEGION", Title: key, Phase: phase.AwaitingMerge, Generation: 1, Status: status, Rank: "U"}
-		}
-		lingering := awaiting("LEGION-213", "retro")
-		lingering.Tree, lingering.Parent = root, &root
-		merging := awaiting("LEGION-214", "retro")
-		merging.Phase = phase.Merging
-		if err := pgx.BeginFunc(ctx, store.pool, func(tx pgx.Tx) error {
-			for _, seeded := range []struct {
-				issue     record.Issue
-				mergeNote string
-				pr        record.PullRequestState
-			}{
-				{awaiting("LEGION-208", "retro"), "", record.PullRequestOpen},
-				{awaiting("LEGION-209", "retro"), "MANUAL_MERGE_REQUIRED: pull request #43 matches a by_hand merge rule; do not auto-arm it", record.PullRequestOpen},
-				{awaiting("LEGION-210", "retro"), "", record.PullRequestClosed},
-				{awaiting("LEGION-211", "done"), "", record.PullRequestOpen},
-				{record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 1, Status: "done", Rank: "T", LingerUntil: &until}, "", ""},
-				{lingering, "", record.PullRequestOpen},
-				{merging, "", record.PullRequestOpen},
-			} {
-				// The seed runs at a schema before 0047, which the record store's PutIssue writes
-				// beyond, so it writes the columns that schema has.
-				if _, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, linger_until, last_dispatch_seq)
-					values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)`,
-					seeded.issue.Key, seeded.issue.Tree, seeded.issue.Project, seeded.issue.Title, seeded.issue.Parent, string(seeded.issue.Phase),
-					int64(seeded.issue.Generation), seeded.issue.Status, seeded.issue.Rank, seeded.issue.LingerUntil); err != nil {
-					return err
-				}
-				if seeded.pr == "" {
-					continue
-				}
-				// The merger's phase row is written as the schema under test holds it, for the same
-				// reason: the record store's PutPhase writes columns later migrations add (the phase
-				// entry's three columns, and the handoff_records migration's handoff_record and
-				// handoff_version).
-				if _, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, rounds, verdict, summary, merge_note)
-					values ($1, $2, 'merge-claim', 'ready-head', 0, '', '', $3)`,
-					seeded.issue.Key, string(claim.RoleMerger), seeded.mergeNote); err != nil {
-					return err
-				}
-				// The pull request is written as the schema under test holds it, not through the
-				// store, whose row has columns later migrations add (0049's merge_sha).
-				number, _ := strconv.Atoi(strings.TrimPrefix(seeded.issue.Key, "LEGION-"))
-				if _, err := tx.Exec(ctx, `insert into pull_requests (issue, repo, number, branch, head_sha, head_updated_at, failing,
-					fix_attempts, blocked_attempts, check_runs, generation, snapshot, head_counted, state)
-					values ($1, 'acme/widgets', $2, $3, 'ready-head', now(), '[]', 0, 0, '[]', 0, '', '', $4)`,
-					seeded.issue.Key, number, "legion/"+seeded.issue.Key, string(seeded.pr)); err != nil {
-					return err
-				}
-			}
-			return nil
-		}); err != nil {
-			t.Fatalf("seed the issues: %v", err)
-		}
-	}
-	readyMerges := func(t *testing.T, store *Store) []string {
-		t.Helper()
-		rows, err := store.pool.Query(context.Background(), `select id, issue, payload->>'number', payload->>'head', attempts from outbox where kind = 'ready_merge' order by id`)
-		if err != nil {
-			t.Fatalf("read ready_merge rows: %v", err)
-		}
-		defer rows.Close()
-		var got []string
-		for rows.Next() {
-			var id int64
-			var issue, number, head string
-			var attempts int
-			if err := rows.Scan(&id, &issue, &number, &head, &attempts); err != nil {
-				t.Fatalf("scan a ready_merge row: %v", err)
-			}
-			got = append(got, fmt.Sprintf("row %d %s #%s at %s attempts %d", id, issue, number, head, attempts))
-		}
-		return got
-	}
-	t.Run("from schema 42", func(t *testing.T) {
-		store := emptyStore(t)
-		migrateThrough(t, store, 42)
-		seed(t, store)
-		if _, err := store.Migrate(context.Background()); err != nil {
-			t.Fatalf("migrate: %v", err)
-		}
-		got := readyMerges(t, store)
-		if len(got) != 1 || !strings.HasSuffix(got[0], " LEGION-208 #208 at ready-head attempts 0") {
-			t.Fatalf("READY merges after the upgrade %q, want LEGION-208's alone", got)
-		}
-	})
-	t.Run("an existing row is kept", func(t *testing.T) {
-		store := emptyStore(t)
-		migrateThrough(t, store, 44)
-		seed(t, store)
-		if _, err := store.pool.Exec(context.Background(), `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
-			values ('ready_merge', 'LEGION-208', '{"number":208,"head":"ready-head"}', 3, now(), 'waiting', '')`); err != nil {
-			t.Fatalf("queue the existing row: %v", err)
-		}
-		before := readyMerges(t, store)
-		if _, err := store.Migrate(context.Background()); err != nil {
-			t.Fatalf("migrate: %v", err)
-		}
-		if got := readyMerges(t, store); !slices.Equal(got, before) {
-			t.Fatalf("READY merges after the upgrade %q, want the existing row alone, unchanged: %q", got, before)
-		}
-	})
-	// A daemon still on 0043 or 0044 can enqueue the same READY merge while 0045 runs. Its row, not
-	// committed yet, is one the backfill's check for an existing row cannot see, so the backfill's
-	// insert waits on it at the unique index; once the writer commits, the backfill keeps the
-	// writer's row and inserts nothing, and the upgrade succeeds.
-	t.Run("a live writer's uncommitted row", func(t *testing.T) {
-		ctx := context.Background()
-		store := emptyStore(t)
-		migrateThrough(t, store, 44)
-		seed(t, store)
-		writer, err := store.pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin the writer: %v", err)
-		}
-		defer func() { _ = writer.Rollback(ctx) }()
-		row, err := record.NewOutboxRow("LEGION-208", record.ReadyMerge{Number: 208, Head: "ready-head"}, time.Now())
-		if err != nil {
-			t.Fatal(err)
-		}
-		row.Attempts = 2
-		if err := record.NewStore().Enqueue(ctx, writer, row); err != nil {
-			t.Fatalf("the writer's enqueue: %v", err)
-		}
-		migrated := make(chan error, 1)
-		go func() {
-			_, err := store.Migrate(ctx)
-			migrated <- err
-		}()
-		// pg_stat_activity keeps a statement's first kilobyte, so the migration is matched by its name.
-		if err := waitForALockWait(t, store, "0045_ready_merge_backfill", migrated); err != nil {
-			t.Fatalf("the backfill did not wait on the writer's row: %v", err)
-		}
-		if err := writer.Commit(ctx); err != nil {
-			t.Fatalf("commit the writer's row: %v", err)
-		}
-		if err := <-migrated; err != nil {
-			t.Fatalf("migrate while a writer enqueues: %v", err)
-		}
-		if got := readyMerges(t, store); len(got) != 1 || !strings.HasSuffix(got[0], " LEGION-208 #208 at ready-head attempts 2") {
-			t.Fatalf("READY merges after the upgrade %q, want the writer's row alone", got)
-		}
-	})
-}
-
-// waitForALockWait waits until another backend running a statement that contains marker waits on a
-// lock, and returns nil; or, when done reports that statement's end first, returns its error.
-func waitForALockWait(t *testing.T, store *Store, marker string, done <-chan error) error {
-	t.Helper()
-	var ended error
-	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
-		select {
-		case err := <-done:
-			ended = err
-			if ended == nil {
-				ended = errors.New("finished without waiting on a lock")
-			}
-			return true
-		default:
-		}
-		var waiting bool
-		if err := store.pool.QueryRow(context.Background(), `select exists (select 1 from pg_stat_activity
-			where pid <> pg_backend_pid() and wait_event_type = 'Lock' and strpos(query, $1) > 0)`, marker).Scan(&waiting); err != nil {
-			t.Fatalf("read pg_stat_activity: %v", err)
-		}
-		return waiting
-	}) {
-		t.Fatalf("no statement containing %q waited on a lock", marker)
-	}
-	return ended
-}
-
-// A duplicate ready_merge enqueue (a reopen at READY's head) reuses the durable row. It keeps the
-// row's next_at, so a reopen never pulls the row forward past GitHub's rate-limit deadline, and
-// restarts its attempts. A row a worker holds is taken from that worker: its lease token no longer
-// matches, so the worker, which read the record before the reopen, can neither finish nor retry it,
-// and the row decides again once the lease expires. A row no worker holds stays unleased.
-func TestReadyMergeEnqueueReusesTheRowAndTakesItFromItsWorker(t *testing.T) {
-	for _, leased := range []bool{false, true} {
-		t.Run(fmt.Sprintf("leased %t", leased), func(t *testing.T) {
-			ctx := context.Background()
-			store := emptyStore(t)
-			if _, err := store.Migrate(ctx); err != nil {
-				t.Fatalf("migrate: %v", err)
-			}
-			now := time.Now().UTC()
-			row, err := record.NewOutboxRow("LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head"}, now.Add(3*time.Minute))
-			if err != nil {
-				t.Fatal(err)
-			}
-			row.Attempts, row.LastError = 7, "GitHub GraphQL: API rate limit exceeded"
-			if err := pgx.BeginFunc(ctx, store.pool, func(tx pgx.Tx) error { return record.NewStore().Enqueue(ctx, tx, row) }); err != nil {
-				t.Fatalf("enqueue rate-limited row: %v", err)
-			}
-			if leased {
-				if _, err := store.pool.Exec(ctx, `update outbox set lease_token = 'worker', lease_until = $1 where kind = 'ready_merge'`, now.Add(30*time.Second)); err != nil {
-					t.Fatalf("lease the row: %v", err)
-				}
-			}
-			reopened, err := record.NewOutboxRow("LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head"}, now)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := pgx.BeginFunc(ctx, store.pool, func(tx pgx.Tx) error { return record.NewStore().Enqueue(ctx, tx, reopened) }); err != nil {
-				t.Fatalf("enqueue reopen: %v", err)
-			}
-			var rows, attempts int
-			var nextAt time.Time
-			var token string
-			if err := store.pool.QueryRow(ctx, `select count(*), max(attempts), max(next_at), max(lease_token) from outbox where kind = 'ready_merge'`).Scan(&rows, &attempts, &nextAt, &token); err != nil {
-				t.Fatalf("read ready merge: %v", err)
-			}
-			if want := row.NextAt.Truncate(time.Microsecond); rows != 1 || attempts != 0 || !nextAt.Equal(want) {
-				t.Fatalf("reopened READY merge rows %d, attempts %d, next_at %s; want one row, attempts 0, the rate-limit deadline %s kept", rows, attempts, nextAt, want)
-			}
-			if leased == (token == "") || token == "worker" {
-				t.Fatalf("reopened READY merge lease token %q; leased %t wants it taken from the worker", token, leased)
-			}
-		})
 	}
 }

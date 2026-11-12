@@ -43,9 +43,6 @@ type convergeRow struct {
 	// lingers records the root as a park left it: phase done at a status that is not todo, with
 	// a linger deadline ahead.
 	lingers bool
-	// readyPending gives the member the READY a closed design gate holds, which is what makes an
-	// issue in merging one no worker of it has work in (record.AtWork).
-	readyPending bool
 	// unslotted leaves the member holding none of the cap's slots.
 	unslotted bool
 	// claimed records a claim of the role, in state and suspended by suspendedBy. A row without
@@ -125,10 +122,14 @@ func convergeRows() []convergeRow {
 			why: "this row changes the root's own record alone, to the one a park left: nothing of a tree that has left the workflow is started again until its re-admission",
 		},
 		{
-			name: "an issue that is not at work", root: "LEGION-940", key: "LEGION-941", stands: phase.Merging,
-			flipRoot: "LEGION-942", flipKey: "LEGION-943", flip: func(r *convergeRow) { r.readyPending, r.started = false, true },
-			readyPending: true, claimed: true, state: supervise.StateWorking, given: seededEntry - 1,
-			why: "this row changes the READY the member holds alone: a merger waiting on a person's approval of a closed design gate has no work to be sent (record.AtWork)",
+			// The one holder record.AtWork answered false for was a merger whose READY a closed
+			// design gate held, and that state is gone with READY: the merger merges the head it
+			// read, so merging is a worker's phase and every role this pass reaches is at work.
+			// The row stays as the backstop that keeps record.AtWork the one statement of what
+			// work is, read here in the phase that used to be the exception.
+			name: "a member in merging, the phase that was the exception", root: "LEGION-940", key: "LEGION-941", stands: phase.Merging,
+			claimed: true, state: supervise.StateWorking, given: seededEntry - 1, started: true,
+			why: "merging is a worker's phase on this release, so its merger is sent the work of the entry its row names as any other phase worker is (record.AtWork)",
 		},
 		{
 			name: "an architect's role", root: "LEGION-944", key: "LEGION-945", stands: phase.Accepting,
@@ -198,9 +199,6 @@ func seedConvergeRow(t *testing.T, pool *pgxpool.Pool, row convergeRow) {
 	t.Helper()
 	ctx := context.Background()
 	seedTreeAndMember(t, pool, row.root, row.key, row.stands, convergeGeneration, row.lingers)
-	if row.readyPending {
-		holdReady(t, pool, row.key)
-	}
 	if !row.unslotted {
 		takeSlot(t, pool, row.key)
 	}
@@ -231,24 +229,6 @@ func seedConvergeRow(t *testing.T, pool *pgxpool.Pool, row convergeRow) {
 		if err := record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: row.key, Role: role, Claim: token,
 			Entry: seededEntry, EntryTask: seededEntryTask(row.key), EntryRaisedAt: fixedNow}); err != nil {
 			t.Fatalf("record the %s's phases row of %s: %v", role, row.key, err)
-		}
-	})
-}
-
-// holdReady gives key the READY a closed design gate holds, which is what says a merger of it
-// waits on a person rather than works (record.ReadyPending, record.AtWork).
-func holdReady(t *testing.T, pool *pgxpool.Pool, key string) {
-	t.Helper()
-	ctx := context.Background()
-	inTx(t, pool, func(tx pgx.Tx) {
-		records := record.NewStore()
-		stored, err := records.Issue(ctx, tx, key)
-		if err != nil || stored == nil {
-			t.Fatalf("read %s to hold its READY: %+v, %v", key, stored, err)
-		}
-		stored.ReadyPending = &record.ReadyPending{Step: record.DesignStepSpec, Version: 1}
-		if err := records.PutIssue(ctx, tx, *stored); err != nil {
-			t.Fatalf("hold the READY of %s: %v", key, err)
 		}
 	})
 }

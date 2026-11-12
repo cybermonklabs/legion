@@ -165,13 +165,23 @@ func TestATaskGivenBeforeReadyWaitsForReady(t *testing.T) {
 	}
 }
 
-// A second delivery is refused for the delivery the claim already holds, whatever its state: the
-// refusal is ErrDeliveryPending, and it says so rather than naming the state.
+// A second delivery is refused for an untaken delivery the claim already holds, whatever its
+// state: that task has reached nobody, so accepting over it would lose a task. The refusal is
+// ErrDeliveryPending, and it says so rather than naming the state.
+//
+// This test read StateWorking until dispatch://INFRA-714 — the state where the claim's own task
+// has been taken by a turn — and so pinned the refusal this change ends
+// (TestANewerTaskTakesThePlaceOfOneATurnHasTaken, below). It reaches ready with a task queued and
+// unsent instead, which is the untaken state itself.
 func TestASecondDeliveryWhileOneIsPendingIsRefused(t *testing.T) {
 	h := newHarness(t)
-	h.reach(StateWorking)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", ID: "row-1"})
+	if !h.pending().ConfirmedAt.IsZero() {
+		t.Fatalf("the pending delivery at ready is confirmed %+v, want the untaken task this test is about", h.pending())
+	}
 
-	err := h.handle(RequestDeliver{Claim: testToken, Task: "another"})
+	err := h.handle(RequestDeliver{Claim: testToken, Task: "another", ID: "row-2"})
 
 	var refused *RefusedError
 	if !errors.As(err, &refused) || !errors.Is(err, ErrDeliveryPending) || err.Error() != "deliver refused: a delivery is already pending" {
@@ -179,6 +189,38 @@ func TestASecondDeliveryWhileOneIsPendingIsRefused(t *testing.T) {
 	}
 	if h.pending().Task != "implement the plan" {
 		t.Errorf("pending %+v, want the first task kept", h.pending())
+	}
+}
+
+// A delivery whose task a turn has taken holds nothing back: the worker read it, and what the
+// delivery records is the turn in flight. A newer task takes its place — the phase's own next
+// start, which the daemon queues while that turn runs — and it is sent at the next point a turn
+// may take it, not into the running one. Refusing it instead left three supervise rows of the
+// live daemon answered "a delivery is already pending" with nothing ever sent and the phase
+// waiting on a worker that had finished (dispatch://INFRA-1352, INFRA-1443, INFRA-1519).
+func TestANewerTaskTakesThePlaceOfOneATurnHasTaken(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateWorking)
+	if h.pending().ConfirmedAt.IsZero() {
+		t.Fatalf("the pending delivery at working is %+v, want the task this turn took", h.pending())
+	}
+	sentBefore := len(h.prompts())
+
+	h.must(RequestDeliver{Claim: testToken, Task: "the newer phase start", ID: "row-2", Generation: 8})
+
+	if got := h.pending(); got.Task != "the newer phase start" || got.Generation != 8 {
+		t.Fatalf("pending %+v, want the newer task in the taken one's place", got)
+	}
+	if sent := len(h.prompts()); sent != sentBefore {
+		t.Fatalf("%d prompts while the turn runs, want the %d sent before it: the newer task waits for a turn that can take it",
+			sent, sentBefore)
+	}
+
+	h.must(StreamTurnEnd{Claim: testToken})
+
+	sent := h.prompts()
+	if len(sent) != sentBefore+1 || sent[len(sent)-1].Message != "the newer phase start" {
+		t.Fatalf("prompts %+v, want the newer task sent once at the turn's end", sent)
 	}
 }
 
@@ -345,6 +387,48 @@ func TestABusyAgentsRefusalOfTheSendIsChargedNothingAndItsTurnsEndSendsTheTask(t
 	h.wantBudgets(Budgets{})
 	h.wantCalls("Suspend", 0)
 	h.wantState(StateIdle)
+}
+
+// A claim registered while the agent's own turn was already running never sees that turn start:
+// the daemon's only stream event of it is its end, and until this release a turn end in ready
+// matched no row at all (table.go's onTurnEnd), so the task the busy refusal left unread waited
+// for a turn start that had already happened. Three workers sat idle holding their phase task for
+// 35 to 75 minutes that way, and each completion from the blind turn was refused HANDOFF_NO_RUN
+// (dispatch://INFRA-1691, INFRA-1545, INFRA-722, A9). The end sends it now, and nothing goes into
+// the turn itself.
+//
+// The busy-refusal test above drives the same refusal with a turn start before each end, which is
+// why this never showed: that is the agent whose turn the daemon watched begin.
+func TestATurnEndTheDaemonNeverSawBeginSendsTheTaskItHolds(t *testing.T) {
+	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
+	h := newHarness(t)
+	h.reach(StateReady)
+	base := len(h.prompts())
+
+	h.must(RequestDeliver{Claim: testToken, Task: "the phase task", Generation: 7})
+	sent := h.pending().ID
+	h.wantPrompts(base + 1)
+
+	// The prompt is acknowledged and then refused: a turn of the agent's own is running, one that
+	// began before this claim was registered. The refusal takes the task back under a new id.
+	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: sent, Error: busy})
+	if p := h.pending(); p.Task != "the phase task" || !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
+		t.Fatalf("after the busy refusal the task is %+v, want it waiting unread", p)
+	}
+	h.wantPrompts(base + 1)
+	h.wantState(StateReady)
+
+	// The blind turn ends. This is the only stream event of it the daemon ever gets.
+	h.must(StreamTurnEnd{Claim: testToken})
+
+	if prompt := h.wantPrompts(base + 2)[base+1]; prompt.DeliveryID != h.pending().ID {
+		t.Fatalf("the send after the blind turn went under %s, want the task's %s", prompt.DeliveryID, h.pending().ID)
+	}
+	h.must(StreamTurnStart{Claim: testToken})
+	if run := h.claim().ServingRun(); run != 7 {
+		t.Fatalf("during the task's own turn the claim serves run %d, want the task's 7: a completion from it would be refused HANDOFF_NO_RUN", run)
+	}
+	h.wantBudgets(Budgets{})
 }
 
 // The notice's turn usually starts while the task's send is still in flight, so its agent_start

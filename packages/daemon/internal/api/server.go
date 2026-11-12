@@ -159,12 +159,10 @@ type Options struct {
 	Memory     config.Memory
 	MemoryCoin func() (bool, error)
 	Now        func() time.Time
-	// GitHubAPI is GitHub's REST root, which the handoff route reads an issue branch's head, its
-	// handoff file and READY's checks under; empty, in production, is https://api.github.com, and a
+	// GitHubAPI is GitHub's REST root, which the daemon's own reads of a pull request and its
+	// compares go under; empty, in production, is https://api.github.com, and a
 	// test points it at a stand-in.
 	GitHubAPI string
-	// MergeRules is the merge policy an issue's project configures. Nil has no special policy.
-	MergeRules func(project string) config.MergeRules
 	// Grants mints and redeems the daemon-local one-command credential handles.
 	Grants   *credential.Grants
 	Pool     *pgxpool.Pool
@@ -199,6 +197,13 @@ type Options struct {
 	// no one. Nil tells no one. It is called before the route answers the agent, so it returns
 	// at once.
 	ClaimReady func(c supervise.Claim)
+	// HandoffCompleted is told of the issue of each phase completion the workflow recorded, once
+	// the fact has committed: the daemon reads that issue's pull request from GitHub then, as the
+	// backstop for a webhook that never arrived (the daemon's readIssuePullRequest). A completion
+	// the route or the workflow refused, and a production check report, tell no one. Nil tells no
+	// one. It is called before the route answers the agent, so it returns at once, and this
+	// package reads no GitHub for it.
+	HandoffCompleted func(issue string)
 	// PromptAgents is the sorted names of every task agent the role prompts dispatch
 	// (prompts.RoleReferences), which the registration answers so a session's capability report
 	// measures the agents its role is told to run (LEGION-663). Nil or empty answers an empty list.
@@ -284,12 +289,11 @@ type server struct {
 	// serving is Options.Serving, the daemon's one rule for the repository GitHub holds a
 	// recorded one under now, never nil here: NewServer serves a recorded repository under its
 	// own name where the caller hands none.
-	serving    func(recorded ghrepo.Repository) ghrepo.Repository
-	githubAPI  string
-	mergeRules func(project string) config.MergeRules
-	grants     *credential.Grants
-	releaser   store.TreeReleaser
-	trees      TreeLifecycles
+	serving   func(recorded ghrepo.Repository) ghrepo.Repository
+	githubAPI string
+	grants    *credential.Grants
+	releaser  store.TreeReleaser
+	trees     TreeLifecycles
 	// memory, coin and now are Options.Memory, Options.MemoryCoin and Options.Now: what the
 	// spawn's own draw of a tree it opens for the first time reads (drawMemory).
 	memory     config.Memory
@@ -304,6 +308,8 @@ type server struct {
 	records    record.Store
 	dispatch   dispatch.Client
 	claimReady func(c supervise.Claim)
+	// handoffCompleted is Options.HandoffCompleted.
+	handoffCompleted func(issue string)
 	// promptAgents and capabilityReported are Options.PromptAgents and Options.CapabilityReported,
 	// releaseRecordStore Options.ReleaseRecords and claimActivity Options.ClaimActivity.
 	promptAgents       []string
@@ -353,7 +359,6 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		renames:            opts.RepositoryRenames,
 		serving:            serving,
 		githubAPI:          opts.GitHubAPI,
-		mergeRules:         opts.MergeRules,
 		releaser:           opts.Releaser,
 		trees:              opts.Trees,
 		memory:             opts.Memory,
@@ -369,6 +374,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		records:            opts.Record,
 		dispatch:           opts.Dispatch,
 		claimReady:         opts.ClaimReady,
+		handoffCompleted:   opts.HandoffCompleted,
 		promptAgents:       opts.PromptAgents,
 		capabilityReported: opts.CapabilityReported,
 		releaseRecordStore: opts.ReleaseRecords,
@@ -416,6 +422,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	mux.HandleFunc("POST /legion/v1/claims/ready", s.ready)
 	mux.HandleFunc("POST /legion/v1/claims/ready-for-update", s.readyForUpdate)
 	mux.HandleFunc("POST /legion/v1/claims/exit", s.exit)
+	mux.HandleFunc("POST /legion/v1/claims/turn-outcome", s.turnOutcome)
 	mux.HandleFunc("POST /legion/v1/claims/activity", s.activity)
 	mux.HandleFunc("POST /legion/v1/claims/release-records", s.releaseRecords)
 	mux.HandleFunc("POST /legion/v1/grants", s.grant)
@@ -869,13 +876,13 @@ const whyAndLineFieldsContract = 85
 
 // phaseEntriesContract is the daemon contract that added each issue's `phaseEntry` and
 // `givenEntry`, the entry the role of its current phase stands on and the entry that role was
-// given (version.go's 86). A plugin before it is served the state without the two keys: one
+// given (version.go's 93). A plugin before it is served the state without the two keys: one
 // built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
 // for a key it does not name, and one built after strips the keys instead, so the strip is what
 // keeps the numbers from a caller that did not ask for them rather than what keeps such a caller
 // reading at all. It is the highest of the thirteen bands, this daemon's own contract, so the
 // only caller served the two keys is one at it.
-const phaseEntriesContract = 86
+const phaseEntriesContract = 93
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

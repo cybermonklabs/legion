@@ -29,7 +29,6 @@ const (
 	Accepting      Phase = "accepting"
 	Retro          Phase = "retro"
 	Merging        Phase = "merging"
-	AwaitingMerge  Phase = "awaiting_merge"
 	Done           Phase = "done"
 	Held           Phase = "held"
 )
@@ -37,12 +36,12 @@ const (
 // All is every phase, in the transition table's order.
 var All = []Phase{
 	Admitted, AwaitingPerson, Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging,
-	AwaitingMerge, Done, Held,
+	Done, Held,
 }
 
 // Order is the line an issue walks forward, and the only phases a move back is read against. It
 // differs from All: All is every phase the daemon writes, admitted, awaiting_person, done and
-// held among them, while Order holds the eight working phases alone, in the order the workflow
+// held among them, while Order holds the seven working phases alone, in the order the workflow
 // advances them. A phase outside Order has no place in that line, so no move into it and no move
 // out of it is a move back: an issue put on held, or closed as done, went nowhere backward, and
 // MovesBack answers false for it.
@@ -56,7 +55,7 @@ var All = []Phase{
 // the workflow test binary. The edge this package needs is already there and stays small:
 // `go list -deps ./internal/config/` names internal/phase, and `go list -deps ./internal/phase/`
 // names one package of this repository, internal/claim.
-var Order = []Phase{Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging, AwaitingMerge}
+var Order = []Phase{Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging}
 
 // MovesBack says whether to is a workflow phase before from. Both must stand in Order: a phase
 // outside it is no part of the forward line, so nothing moves back into or out of it.
@@ -75,8 +74,9 @@ func BackwardPairs() []string {
 
 // ParsePair reads one "<from>-<to>" pair and answers ok only for a pair BackwardPairs holds. The
 // check is against that set, not against MovesBack alone, because the set is the smaller of the
-// two: MovesBack is true for pairs such as awaiting_merge-merging that no backward row and no
-// count know. Phase words hold "_" and never "-", so the one "-" of a pair in the set splits it.
+// two: MovesBack answers for the whole triangle over Order, where a row and a count know only the
+// pairs the workflow carries. Phase words hold "_" and never "-", so the one "-" of a pair in the
+// set splits it.
 func ParsePair(text string) (from, to Phase, ok bool) {
 	if !backwardPairSet[text] {
 		return "", "", false
@@ -93,25 +93,24 @@ func Pair(from, to Phase) string {
 	return string(from) + "-" + string(to)
 }
 
-// backwardPairs is built once, in the order the workflow's backward rows are generated: each of
-// the first seven phases of Order paired with every phase before it, 21 pairs, and then the one
-// move back AwaitingMerge makes, which the workflow table carries as a row of its own.
+// backwardPairs is built once, in the order the workflow's backward rows are generated: each
+// phase of Order paired with every phase before it, 21 pairs. There is no pair beyond them,
+// since the merger merges the head it read and the daemon closes the issue from the merged pull
+// request: no phase of this workflow waits for a merge somebody else makes
+// (dispatch://INFRA-714).
 var backwardPairs = buildBackwardPairs()
 
 // backwardPairSet is backwardPairs keyed for the lookup ParsePair makes.
 var backwardPairSet = buildBackwardPairSet()
 
 func buildBackwardPairs() []string {
-	// AwaitingMerge is last in Order and moves back to Implementing alone: an issue whose pull
-	// request waits on the merge queue goes back to the work, not to a phase it already passed.
-	forward := Order[:len(Order)-1]
-	pairs := make([]string, 0, len(forward)*(len(forward)-1)/2+1)
-	for fromIndex, from := range forward {
-		for _, to := range forward[:fromIndex] {
+	pairs := make([]string, 0, len(Order)*(len(Order)-1)/2)
+	for fromIndex, from := range Order {
+		for _, to := range Order[:fromIndex] {
 			pairs = append(pairs, Pair(from, to))
 		}
 	}
-	return append(pairs, Pair(AwaitingMerge, Implementing))
+	return pairs
 }
 
 func buildBackwardPairSet() map[string]bool {
@@ -127,9 +126,9 @@ func buildBackwardPairSet() map[string]bool {
 // tester's, and the reviewer's, each under the word its role's prompt spells
 // (internal/prompts/roles/*.md), the phase of the record whose newest version the `legion` tool's
 // `handoff_complete` reads and names (packages/pi-shared/src/handoff-record.ts). The writer is the
-// role the workflow starts on the phase (RoleFor, whose tests tie the two). Retro and the
-// merger's READY write none, and report the commit they stand on; accepting is the architect's
-// sign-off, no handoff at all.
+// role the workflow starts on the phase (RoleFor, whose tests tie the two). Retro and merging
+// write none, and report the commit they stand on; accepting is the architect's sign-off, no
+// handoff at all.
 func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 	switch p {
 	case Planning:
@@ -148,7 +147,7 @@ func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 // RoleFor is the role that works a phase: the one a transition starts, and the one whose handoff
 // record the `legion` tool's `handoff_complete` reads for a phase with a handoff (Handoff, whose
 // writer a test holds to this; packages/pi-shared/src/handoff-record.ts). A phase no role works —
-// awaiting_person, awaiting_merge, done, held — has none. Accepting is the tree architect's, a
+// awaiting_person, done, held — has none. Accepting is the tree architect's, a
 // claim per tree that no row starts: every site that starts, resumes or reports a phase's worker
 // skips it (workflow's start, admit's startMidPhaseMembers, workflow's booted and Stranded).
 //

@@ -49,15 +49,17 @@ import (
 // because a row says the daemon has started that one issue and nothing about the tree: a root
 // that arrived from another tree carries one while the tree of its own has still to be opened
 // (record.KeepsSlot).
+// A phase its own terminating fact has already met is given no owner either (PhaseFinished): a
+// merged root stands in merging for as long as the rest of its tree runs, and resuming its merger
+// there would hand it the same phase again at every boot, for days.
 // Accepting's owner is the tree's architect, which admission starts with the tree, so no issue
 // there is given one. Each owner is given the start admission gives a re-admitted tree's
 // mid-phase child, built where every start of a phase worker is built (Engine.started) and so
 // written through the outbox's start like every other (StartOrOwe): one row that resumes the
-// claim by rule and carries the task that takes its phase on (ResumePhaseTask, the merger's
-// with the head its round approved), which the outbox does not deliver to a claim still holding
-// its phase's task, and which waits for the issue's admission slot as every start of a phase
-// worker does. A role a start already covers (StartFor) gets no second. The sweep runs first so
-// the resume reads the trees it closed as lingering.
+// claim by rule and carries the task that takes its phase on (ResumePhaseTask), which the outbox
+// does not deliver to a claim still holding its phase's task, and which waits for the issue's
+// admission slot as every start of a phase worker does. A role a start already covers (StartFor)
+// gets no second. The sweep runs first so the resume reads the trees it closed as lingering.
 func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (intake.Result, error) {
 	if err := e.sweepMerged(ctx, tx); err != nil {
 		return intake.Result{}, err
@@ -99,6 +101,13 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 		if _, runs := running[root.Key]; !runs {
 			continue
 		}
+		finished, err := e.phaseFinished(ctx, tx, issue)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if finished {
+			continue
+		}
 		project, err := claim.ProjectToken(issue.Project)
 		if err != nil {
 			return intake.Result{}, err
@@ -116,15 +125,11 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 			!StartFor(run, root, issue.Generation, issue.Phase) {
 			continue
 		}
-		task, err := ResumeTask(ctx, e.store, tx, issue, role)
-		if err != nil {
-			return intake.Result{}, err
-		}
 		// The entry is 0: this start hands the role the work it is already on rather than a new
 		// entry, so it raises none and moves no phases row (Engine.enter). The ruleResume mark is
 		// what tells the outbox to finish the row rather than retry a claim that spends its
 		// launch budget resuming (record.SuperviseRequest.RuleResume).
-		if err := e.started(ctx, tx, issue, role, task, 0, startMarks{resumeTask: true, ruleResume: true}); err != nil {
+		if err := e.started(ctx, tx, issue, role, ResumePhaseTask(issue), 0, startMarks{resumeTask: true, ruleResume: true}); err != nil {
 			return intake.Result{}, err
 		}
 		e.logOnCommit(ctx, "workflow: the boot starts a suspended claim that owns its issue's phase", "issue", issue.Key, "role", role,

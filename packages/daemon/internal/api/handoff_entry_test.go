@@ -19,9 +19,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// A tester's turn outlives its phase: the daemon ends no turn when a phase ends, so when CI goes
-// red the implementer starts at once and the tester goes on working. Its issue comes back to
-// testing on the implementer's round, where a second testing entry hands the tester a second
+// A tester's turn outlives its phase: the daemon ends no turn when a phase ends, so when the
+// head starts conflicting with its base the implementer starts at once and the tester goes on
+// working. Its issue comes back to
+// testing on the implementer's pass, where a second testing entry hands the tester a second
 // task — and the completion the first task's turn reports is of work the issue has moved past. The
 // run cannot tell the two apart, since the issue never left run 1, and neither can the phase, which
 // is testing both times. The entry can: the tester's claim still serves the first task's, because
@@ -36,7 +37,7 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
 	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
-			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}, Required: []string{"pytest"}})
+			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
 	}); err != nil {
 		t.Fatalf("record the pull request: %v", err)
 	}
@@ -49,13 +50,12 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 	firstTesting := takeStart(t, h, tester.token, "LEGION-208", claim.RoleTester)
 
-	// CI goes red at the head while the tester works. The issue goes back to implementing, the
-	// implementer starts at once, and the tester's turn, its process and its claim are untouched:
-	// its delivery is still pending and confirmed.
-	if result, err := intake.ApplyFact(ctx, h.store.Pool(), "github", "red", intake.PullRequestChecks{Repo: "acme/widgets", Number: 42,
-		HeadSHA: "head", CheckRuns: []record.AttemptRun{{Name: "pytest", ID: 7}}, Generation: 1, Snapshot: "red-head",
-		Failing: []string{"pytest"}}, engine); err != nil || result.Refusal != nil {
-		t.Fatalf("apply the red settlement = %+v, %v", result.Refusal, err)
+	// The head starts conflicting with its base while the tester works. The issue goes back to
+	// implementing, the implementer starts at once, and the tester's turn, its process and its
+	// claim are untouched: its delivery is still pending and confirmed.
+	if result, err := intake.ApplyFact(ctx, h.store.Pool(), "github", "conflict", intake.PullRequestMergeability{Repo: "acme/widgets", Number: 42,
+		HeadSHA: "head", Base: "main", Mergeable: record.MergeabilityConflicting}, engine); err != nil || result.Refusal != nil {
+		t.Fatalf("apply the conflicting head = %+v, %v", result.Refusal, err)
 	}
 	assertIssuePhase(t, h, phase.Implementing)
 	testerMachine, ok := h.supervisor.Machine(tester.token)
@@ -63,13 +63,13 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 		t.Fatal("no machine for the tester")
 	}
 	if p := testerMachine.Claim().Pending; p == nil || p.ConfirmedAt.IsZero() || p.Entry != firstTesting {
-		t.Fatalf("the tester's delivery after the red is %+v, want the task of its first entry still confirmed and pending", p)
+		t.Fatalf("the tester's delivery after the conflict is %+v, want the task of its first entry still confirmed and pending", p)
 	}
 
 	// The implementer's second round ends and the issue is in testing again: the tester's second
 	// entry, which its first task's turn knows nothing of.
 	takeStart(t, h, implementer.token, "LEGION-208", claim.RoleImplementer)
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "fixed the red", Commit: "handoff-2",
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "merged the base forward", Commit: "handoff-2",
 		HandoffID: implementer.writeHandoff("implement", 2), HandoffVersion: 2}))
 	assertIssuePhase(t, h, phase.Testing)
 	_, secondStart := queuedStart(t, h, "LEGION-208", claim.RoleTester)
@@ -266,7 +266,7 @@ func TestAHeldPhasesRetryKeepsTheEntryItsWorkerStillServes(t *testing.T) {
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
 	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
-			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}, Required: []string{"pytest"}})
+			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
 	}); err != nil {
 		t.Fatalf("record the pull request: %v", err)
 	}

@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -37,8 +36,8 @@ var seededRaisedAt = time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
 // the work of that entry and the moment it was raised on the role's phases row, and carries the
 // number on the start's payload, all in the transition's own transaction. The issue's run cannot
 // do this work: one run holds every phase entry, so the testing phase the tester is given after a
-// red and an implementing round has to be told from the testing phase before it by something the
-// run does not carry (api/handoff.go).
+// failed round and an implementing pass has to be told from the testing phase before it by
+// something the run does not carry (api/handoff.go).
 //
 // Entering one phase twice is the case that proves the number is raised rather than set: the
 // implementer is started in implementing, completes, and is started there again, which leaves its
@@ -49,8 +48,9 @@ func TestEveryPhaseStartRaisesTheRolesEntryAndWritesItsTask(t *testing.T) {
 	seedIssue(t, pool, record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
 		Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: entryIssue, Repo: "sjawhar/legion", Number: 42,
-		Branch: "legion/" + entryIssue, HeadSHA: "head", CheckedHead: "head", Failing: []string{}, Required: []string{"pytest"}})
+		Branch: "legion/" + entryIssue, HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
 	seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleImplementer, Claim: "implement-claim"})
+	seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleTester, Claim: "test-claim"})
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := func(eventID string, fact intake.Fact) {
 		t.Helper()
@@ -62,15 +62,11 @@ func TestEveryPhaseStartRaisesTheRolesEntryAndWritesItsTask(t *testing.T) {
 			t.Fatalf("ApplyFact %s refused: %+v", eventID, *result.Refusal)
 		}
 	}
-	red := func(eventID, head string) {
-		t.Helper()
-		apply(eventID, intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: head,
-			CheckRuns: []record.AttemptRun{{Name: "pytest", ID: 7}}, Generation: 1, Snapshot: eventID, Failing: []string{"pytest"}})
-	}
 
-	// The red ends testing and starts the implementer, which is the first start of this test and
-	// the first entry of that role's record.
-	red("red-1", "head")
+	// The tester's failed verdict ends testing and starts the implementer, which is the first
+	// start of this test and the first entry of that role's record.
+	apply("test-0", intake.HandoffComplete{Generation: 1, Issue: entryIssue, Role: claim.RoleTester, Claim: "test-claim", Verdict: "fail",
+		HandoffRecord: "test-0", HandoffVersion: 1})
 	assertPhase(t, pool, phase.Implementing)
 	if got := entryOfStart(t, pool, claim.RoleImplementer, engine.now()); got != 1 {
 		t.Fatalf("the implementer's first start is of entry %d, want 1: the role had been handed no work on this issue", got)
@@ -92,11 +88,12 @@ func TestEveryPhaseStartRaisesTheRolesEntryAndWritesItsTask(t *testing.T) {
 			row.Entry, row.EntryTask, firstTask)
 	}
 
-	// The tester fails this round and the issue goes back to implementing, the second entry of
+	// The tester fails this round too and the issue goes back to implementing, the second entry of
 	// that role: the number is raised again and the row carries the work of this entry, not of
-	// the one before it.
+	// the one before it. The verdict is the tester's second record, so the two tasks differ in
+	// the handoff they name as well as in the entry they are of.
 	apply("test-1", intake.HandoffComplete{Generation: 1, Issue: entryIssue, Role: claim.RoleTester, Claim: "test-claim", Verdict: "fail",
-		HandoffRecord: "test-1", HandoffVersion: 1})
+		HandoffRecord: "test-1", HandoffVersion: 2})
 	assertPhase(t, pool, phase.Implementing)
 	if got := entryOfStart(t, pool, claim.RoleImplementer, engine.now()); got != 2 {
 		t.Fatalf("the implementer's second start is of entry %d, want 2: nothing else tells the two implementing phases apart", got)
@@ -249,14 +246,12 @@ func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 // A claim behind its role's entry is sent the work that entry names, at that entry and with no
 // entry raised: the task the record holds for it where it holds one, and the phase's resume task
 // where it holds none, which is the row the upgrade to the entry left and the row a re-admission
-// reset. The merger reads both halves, because its task carries the head its review round
-// approved and that head may be named exactly once: the recorded task already carries it, since
-// the transition wrote the text it sent, and the resume task appends it itself.
+// reset. The merger reads both halves, and no task of either names a head: the merger reads the
+// head it merges on GitHub itself.
 func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
-	const head = "approved-head"
 	issue := record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
 		Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 1, Status: "in_progress", Rank: "U"}
-	recorded := ResumePhaseTask(issue) + " " + approvedHeadLabel + ": " + head + "."
+	recorded := ResumePhaseTask(issue) + " Reason: the review approved."
 	for _, tc := range []struct {
 		name string
 		// held is the work the merger's phases row names, "" for a row that names none.
@@ -264,14 +259,13 @@ func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 		want string
 	}{
 		{name: "a row that names the work of its entry", held: recorded, want: recorded},
-		{name: "a row an upgrade or a re-admission left with none", want: recorded},
+		{name: "a row an upgrade or a re-admission left with none", want: ResumePhaseTask(issue)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedIssue(t, pool, issue)
 			seedTreeLifecycle(t, pool, entryIssue)
-			seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleReviewer, Claim: "review-claim",
-				Decision: &record.ReviewDecision{State: "approved", Head: head}})
+			seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleReviewer, Claim: "review-claim"})
 			merger := record.PhaseRow{Issue: entryIssue, Role: claim.RoleMerger, Claim: "merge-claim",
 				Entry: seededEntry, EntryTask: tc.held, EntryRaisedAt: seededRaisedAt}
 			seedPhase(t, pool, merger)
@@ -289,10 +283,6 @@ func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 			if start.Entry != seededEntry || start.Task != tc.want {
 				t.Fatalf("the start sent = entry %d carrying %q, want entry %d carrying %q: a claim behind the entry is owed that entry's own work",
 					start.Entry, start.Task, seededEntry, tc.want)
-			}
-			if got := strings.Count(start.Task, approvedHeadLabel); got != 1 {
-				t.Fatalf("the task names %q %d times, want once: the recorded task already carries the head, and the resume task appends it itself",
-					approvedHeadLabel, got)
 			}
 			row := entryRow(t, pool, claim.RoleMerger)
 			if row.Entry != seededEntry || row.EntryTask != tc.held || !row.EntryRaisedAt.Equal(seededRaisedAt) {

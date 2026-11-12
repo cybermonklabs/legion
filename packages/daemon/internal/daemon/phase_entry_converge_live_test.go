@@ -20,9 +20,10 @@
 // burst, so the daemon's wake pacing has not yet let the next role's launch run and that role's
 // start waits for it. The implementer's completion hands testing to the tester, whose phases row
 // is raised to entry 1 with that entry's own task, and whose claim is queued that task while its
-// launch waits. The issue's phase then changes twice while the start waits: CI goes red at the
-// first head, which sends the issue back to implementing, and the implementer's fix at a second
-// head hands testing out again, which raises the tester's row to entry 2 and writes that entry's
+// launch waits. The issue's phase then changes twice while the start waits: the head starts
+// conflicting with its base, which sends the issue back to implementing, and the implementer's
+// merge forward at a second head hands testing out again, which raises the tester's row to entry
+// 2 and writes that entry's
 // own task. The daemon then lets the launch run: the tester comes up on its own worker-stream
 // connection and is sent the task it was queued, entry 1's, because the claim held it throughout
 // (supervise's queue refuses a second delivery while one is pending); the completion the tester
@@ -34,8 +35,9 @@
 //
 // Run two. The same rig deletes a start row from the outbox before any lane runs it: the driver
 // holds the advisory lock a lane takes before it claims a lifecycle row of the issue
-// (record.Postgres.ClaimRow's `legion.outbox.lifecycle:<issue>`), publishes the red that raises
-// the implementer's entry and writes that entry's start row, deletes that row, and lets the lock
+// (record.Postgres.ClaimRow's `legion.outbox.lifecycle:<issue>`), drives the conflicting head
+// that raises the implementer's entry and writes that entry's start row, deletes that row, and
+// lets the lock
 // go, so the row's work exists only in the record. With no fact of the project arriving after it,
 // the daemon's own entry sweep (intake.EntrySweep, workflowRuntime.tickEntrySweep) sends the
 // entry's own task to the implementer's live connection. The sweep's period is a Go constant with
@@ -84,17 +86,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// convergeCheck is the one check the pull request's base branch requires, and so the only one a
-// red verdict can stand on; convergeBase is that base branch, the repository's default.
-const (
-	convergeCheck = "ci"
-	convergeBase  = "main"
-)
+// convergeBase is the pull request's base branch, the repository's default: a head that
+// conflicts with it is the one answer of a pull request that still moves an issue (workflow's
+// mergeability), and this proof's two phase changes back to implementing are that answer.
+const convergeBase = "main"
 
-// The two heads the proof drives: the implementer's seeded head, which run one's red settles, and
-// the fix it pushes for the second testing entry, which run two's red settles. Each red is at a
-// head of its own, since a settlement that replays to the judgement already recorded changes
-// nothing (classify.ApplyCheckSettlement).
+// The two heads the proof drives: the implementer's seeded head, which run one's conflict stands
+// at, and the merge forward it pushes for the second testing entry, which run two's conflict
+// stands at.
 const (
 	convergeFirstHead  = "pe1"
 	convergeSecondHead = "pe2"
@@ -137,8 +136,9 @@ type phaseEntryConvergeLive struct {
 	// names a pull request by its repository and number.
 	key    string
 	number int
-	// imp and test are the implementer and the tester as their agents reach the daemon.
-	imp, test *convergeClaimant
+	// imp, test and rev are the implementer, the tester and the reviewer as their agents reach
+	// the daemon.
+	imp, test, rev *convergeClaimant
 	// seq numbers each settlement, so no two are the same report (classify.sameSettlement).
 	seq int64
 }
@@ -212,7 +212,7 @@ func (r *phaseEntryConvergeLive) seed() {
 		}
 		if err := r.records.PutPullRequest(ctx, tx, record.PullRequest{
 			State: record.PullRequestOpen, Issue: r.key, Repo: liveRepo, Number: r.number, Branch: "legion/" + r.key,
-			HeadSHA: convergeFirstHead, Required: []string{convergeCheck}, Failing: []string{},
+			HeadSHA: convergeFirstHead, Base: convergeBase, Failing: []string{},
 		}); err != nil {
 			return err
 		}
@@ -233,8 +233,8 @@ func (r *phaseEntryConvergeLive) seed() {
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer} {
 		writePrompt(t, r.cfg, r.token(role))
 	}
-	r.note("seeded: %s implementing on pull request #%d at %s, base %s requiring [%s], its implementer mid-launch serving run 1",
-		r.key, r.number, convergeFirstHead, convergeBase, convergeCheck)
+	r.note("seeded: %s implementing on pull request #%d at %s, base %s, its implementer mid-launch serving run 1",
+		r.key, r.number, convergeFirstHead, convergeBase)
 }
 
 // write runs body in one transaction against the daemon's own database, failing the test with what
@@ -551,6 +551,13 @@ func (r *phaseEntryConvergeLive) phaseChangesWhileTheStartWaits() {
 	r.imp = r.claimant(claim.RoleImplementer, "ses_implementer")
 	r.note("the implementer is registered and ready on the launch this boot made for the claim the fixture left mid-launch; that launch spent the burst of %d wake(s) a minute in bursts of %d",
 		convergeWakeRate, convergeWakeBurst)
+	// The conflict is armed before this completion, and the read that completion queues is held
+	// at the stand-in while this check reads the state the completion left (armConflict,
+	// convergeGitHub.pause): the read is where an issue in testing learns its head conflicts,
+	// and held, it cannot land between the completion and the reads below it.
+	releaseRead := r.github.pause()
+	defer releaseRead()
+	r.armConflict()
 	r.imp.startOwnTurn()
 	if status, failure := r.imp.complete("implemented it", convergeFirstHead, "", r.imp.handoff("implement")); status != http.StatusOK {
 		t.Fatalf("the implementer's completion = %d %s %s, want 200", status, failure.Code, failure.Error)
@@ -590,23 +597,26 @@ func (r *phaseEntryConvergeLive) phaseChangesWhileTheStartWaits() {
 	r.note("read back: the tester's claim holds delivery %s, the %s phase's task, with phaseEntry %d and givenEntry %d; its launch is due at %s and no process has been started for it",
 		queued.ID, queued.Phase, phaseEntry, givenEntry, waiting.DueAt.UTC().Format(time.RFC3339Nano))
 
-	// The first phase change inside that wait: CI red at the head sends the issue back to
-	// implementing, and the implementer, which is live, is prompted its fix task at once.
-	r.publishSettlement(convergeFirstHead, true)
+	// The first phase change inside that wait: the held read runs and answers the head
+	// conflicting with its base, which sends the issue back to implementing, and the
+	// implementer, which is live, is prompted its merge-forward task at once.
+	releaseRead()
 	r.waitFor("the issue back in implementing", func(got api.Issue) bool { return got.Phase == phase.Implementing })
-	fix := r.imp.awaitPrompt("the implementer's fix task after the red", convergeOwedBound)
-	r.note("drove CI's settlement of %s at %s with %s failed: %s is in implementing and the implementer was prompted its fix task (%s)",
-		r.key, convergeFirstHead, convergeCheck, r.key, firstLine(fix.Message))
+	fix := r.imp.awaitPrompt("the implementer's merge-forward task after the conflict", convergeOwedBound)
+	r.note("let the held read of #%d run, with GitHub answering %s conflicting with %s: %s is in implementing and the implementer was prompted its merge-forward task (%s)",
+		r.number, convergeFirstHead, convergeBase, r.key, firstLine(fix.Message))
 
-	// The second: the implementer's fix at a head of its own hands testing out again, which raises
-	// the tester's row to entry 2 and writes that entry's own task.
+	// The second: the implementer's merge forward at a head of its own hands testing out again,
+	// which raises the tester's row to entry 2 and writes that entry's own task. GitHub answers
+	// the new head mergeable, as it does once the base is merged forward into it.
+	r.github.conflicts(false)
 	r.github.head(convergeSecondHead)
 	r.publishPush(convergeFirstHead, convergeSecondHead)
 	r.publishSynchronize(convergeSecondHead)
 	r.waitFor("the pull request at the pushed head", func(got api.Issue) bool {
 		return got.PullRequest != nil && got.PullRequest.Head == convergeSecondHead
 	})
-	if status, failure := r.imp.complete("fixed the red", convergeSecondHead, "", r.imp.handoff("implement")); status != http.StatusOK {
+	if status, failure := r.imp.complete("merged the base forward", convergeSecondHead, "", r.imp.handoff("implement")); status != http.StatusOK {
 		t.Fatalf("the implementer's second completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.imp.endTurn()
@@ -696,7 +706,11 @@ func (r *phaseEntryConvergeLive) theLaunchRunsAndTheEntryIsWorked() {
 //
 // The row is held unclaimable while the driver deletes it: a lane takes an advisory lock keyed by
 // the issue before it claims a lifecycle row (record.Postgres.ClaimRow), and this step holds that
-// lock across the red that writes the row, so no lane can have run it. With the row gone, the
+// lock across the conflict that writes the row, so no lane can have run it. The conflict reaches
+// the issue as it reaches any issue short of an approval standing in reviewing: the daemon's own
+// read of the pull request after a worker's completion (armConflict), which here is the
+// reviewer's completion of the round the issue is in. The reviewer is brought up before the lock
+// is taken, since no start of this issue runs while that lock is held. With the row gone, the
 // implementer's phases row names an entry its claim was never given, and no queued start carries
 // it — which is what the daemon reads as work owed (workflow.OwedEntry) — and no fact of the
 // project arrives after the delete. The entry sweep is what sends it: on its own period the daemon
@@ -712,9 +726,15 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 			before.State, before.Pending)
 	}
 
+	// The reviewer, on the start the move to reviewing wrote. Its completion is what asks the
+	// daemon to read the pull request, and that read is what carries the conflicting head.
+	r.rev = r.claimant(claim.RoleReviewer, "ses_reviewer")
+	r.rev.awaitPrompt("the reviewer's task", convergeOwedBound)
+	r.note("the reviewer came up on the start the move to reviewing wrote, before the lock below")
+
 	// The lane's own lock, held on a connection of the driver's: while this transaction lives, no
-	// lane of this daemon can claim a lifecycle row of the issue, so the row the red writes below
-	// is a row no lane has run.
+	// lane of this daemon can claim a lifecycle row of the issue, so the row the conflict writes
+	// below is a row no lane has run.
 	lock, err := r.st.Pool().Begin(ctx)
 	if err != nil {
 		t.Fatalf("take the lane's lock: %v", err)
@@ -728,9 +748,14 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 	if _, err := lock.Exec(ctx, "select pg_advisory_xact_lock(hashtext('legion.outbox.lifecycle:' || $1::text))", r.key); err != nil {
 		t.Fatalf("take the lane's lock on %s: %v", r.key, err)
 	}
-	r.note("holding the advisory lock a lane takes before it claims a lifecycle row of %s, so the start row the red writes cannot be run", r.key)
+	r.note("holding the advisory lock a lane takes before it claims a lifecycle row of %s, so the start row the conflict writes cannot be run", r.key)
 
-	r.publishSettlement(convergeSecondHead, true)
+	r.armConflict()
+	r.rev.startOwnTurn()
+	if status, failure := r.rev.complete("reviewed the fix", "", "", r.rev.handoff("review")); status != http.StatusOK {
+		t.Fatalf("the reviewer's completion = %d %s %s, want 200: it is what asks the daemon to read the pull request", status, failure.Code, failure.Error)
+	}
+	r.rev.endTurn()
 	r.waitFor("the issue back in implementing", func(got api.Issue) bool { return got.Phase == phase.Implementing })
 	var starts []convergeStart
 	testwait.Eventually(t, "the start row of the implementer's new entry", func() bool {
@@ -746,8 +771,8 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 		t.Fatalf("let the lane's lock go: %v", err)
 	}
 	locked = false
-	r.note("drove CI's settlement of %s at %s with %s failed, and deleted the start row it wrote (#%d, entry %d, %d attempt(s)) before any lane ran it; the state reads phaseEntry %d, givenEntry %d",
-		r.key, convergeSecondHead, convergeCheck, deleted.id, deleted.entry, deleted.attempts, phaseEntry, givenEntry)
+	r.note("drove the base of %s past %s and the reviewer's completion, whose read of #%d answers the head conflicting, and deleted the start row that move wrote (#%d, entry %d, %d attempt(s)) before any lane ran it; the state reads phaseEntry %d, givenEntry %d",
+		r.key, convergeSecondHead, r.number, deleted.id, deleted.entry, deleted.attempts, phaseEntry, givenEntry)
 	if deleted.attempts != 0 || phaseEntry != deleted.entry || givenEntry >= phaseEntry {
 		t.Fatalf("the deleted row %+v left the state at phaseEntry %d, givenEntry %d, want an untried row of the entry the phase is on with the claim behind it",
 			deleted, phaseEntry, givenEntry)
@@ -759,8 +784,8 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 	// Nothing of the project is published from here on: what sends the entry's work is the
 	// daemon's own sweep.
 	task := r.imp.awaitPrompt("the work of the entry the implementer's phases row names", convergeOwedBound)
-	if !strings.Contains(task.Message, "CI is red at "+convergeSecondHead) {
-		t.Fatalf("the implementer was sent %q, want the task entry %d names, which the red at %s wrote", task.Message, deleted.entry, convergeSecondHead)
+	if !strings.Contains(task.Message, "the head conflicts with "+convergeBase) {
+		t.Fatalf("the implementer was sent %q, want the task entry %d names, which the conflict at %s wrote", task.Message, deleted.entry, convergeSecondHead)
 	}
 	testwait.Eventually(t, "the implementer given the entry its phases row names", func() bool {
 		phaseEntry, givenEntry = r.entries()
@@ -804,29 +829,34 @@ func (r *phaseEntryConvergeLive) stateCarriesBothNumbers() {
 	r.note("read back from GET /legion/v1/state: %s carries phaseEntry %s and givenEntry %s", r.key, phaseEntry, givenEntry)
 }
 
-// publishSettlement publishes CI's settlement of head on the pull request with the one check ci,
-// failed or passed, as Envoy relays one (intake's decodeChecks reads it).
-func (r *phaseEntryConvergeLive) publishSettlement(head string, failed bool) {
+// armConflict makes GitHub answer the pull request's head as conflicting with its base, and
+// publishes the push onto that base that a live daemon sees first: the push records that the
+// base moved (workflow's basePush), which is what makes the daemon's next read of the pull
+// request apply its answer even where that answer only confirms what is stored (daemon's
+// applyMergeability).
+//
+// What delivers the conflict is the read, not the push, and an issue short of an approval
+// standing in reviewing has one source for that read: the one the daemon makes after a worker's
+// completion (the API's handoffCompleted, daemon's readHandedOff, readIssuePullRequest). No
+// GitHub envelope carries mergeability at all (intake's decode), and the base push asks for a
+// merge-state read only for an approved issue in reviewing (workflow's askMergeStateFor,
+// reviewRound's waitsOnMergeState), which is why every caller here arms the answer before the
+// completion whose read is to carry it rather than after it.
+func (r *phaseEntryConvergeLive) armConflict() {
 	r.t.Helper()
-	group := func(checks ...string) map[string]any {
-		return map[string]any{"count": len(checks), "checks": append([]string{}, checks...)}
-	}
-	failedGroup, passedGroup := group(), group(convergeCheck)
-	if failed {
-		failedGroup, passedGroup = passedGroup, failedGroup
-	}
+	r.github.conflicts(true)
 	r.seq++
-	payload, err := json.Marshal(map[string]any{
-		"kind": "checks", "repo": liveRepo, "number": strconv.Itoa(r.number), "sha": head,
-		"check_runs": []map[string]any{{"name": convergeCheck, "id": r.seq}}, "generation": 1,
-		"snapshot": fmt.Sprintf("%s-%s-%d", r.key, head, r.seq), "settled_at": time.Now().UnixMilli(),
-		"failed": failedGroup, "passed": passedGroup, "running": group(), "queued": group(), "cancelled": group(), "skipped": group(),
+	payload, err := json.Marshal(map[string]string{
+		"kind": "push", "repo": liveRepo, "ref": "refs/heads/" + convergeBase,
+		"before": fmt.Sprintf("base-%d", r.seq-1), "after": fmt.Sprintf("base-%d", r.seq),
+		"changed_paths": "src/widget.go", "changed_paths_truncated": "false", "forced": "false",
+		"pusher": "someone-else", "commit_count": "1", "head_subject": "another pull request merged",
 	})
 	if err != nil {
-		r.t.Fatalf("encode the settlement payload: %v", err)
+		r.t.Fatalf("encode the base push payload: %v", err)
 	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d.checks", r.subjectRepo(), r.number)
-	r.publish(subject, "github", fmt.Sprintf("checks-%d-%s-%d", r.number, head, r.seq), string(payload))
+	subject := fmt.Sprintf("notifications.github.%s.push.branch.%s", r.subjectRepo(), convergeBase)
+	r.publish(subject, "github", fmt.Sprintf("base-push-%d-%d", r.number, r.seq), string(payload))
 }
 
 // publishPush publishes the implementer's push of to onto from on the issue's branch, changing
@@ -864,9 +894,8 @@ func (r *phaseEntryConvergeLive) publishSynchronize(head string) {
 
 // convergeGitHub is GitHub's REST API for acme/widgets as this proof's daemon reads it: the one
 // pull request at the head the driver last pushed, with its base and `mergeable: true`
-// (readPullRequest), its reviews as none (readReviews), the base branch's rulesets requiring ci
-// (requiredchecks.Required's /rules/branches/<base>) and the branch itself as unprotected (its
-// /branches/<base>, which a 404 would make an error that keeps the set last read). It also answers
+// (readPullRequest, whose `mergeable` is what the daemon's merge-state read judges), and its
+// reviews as none (readReviews). It also answers
 // what a launch and a disarm read: any repository, with default branch main, and a GraphQL root
 // that knows no pull request. Anything else is answered 404, which the daemon's own reads take as
 // GitHub being unreadable — the implementer's completion is applied unread on that answer
@@ -879,6 +908,12 @@ type convergeGitHub struct {
 	mu     sync.Mutex
 	// sha is the pull request's head on GitHub, which a push moves.
 	sha string
+	// conflicting is what GitHub's lazily computed `mergeable` answers: false once the base has
+	// moved past the head, which is the one answer of a pull request that moves an issue.
+	conflicting bool
+	// held holds every read of the pull request while a check means that read to land later
+	// (pause); nil holds none.
+	held chan struct{}
 }
 
 func newConvergeGitHub(t *testing.T, key string, number int) *convergeGitHub {
@@ -895,7 +930,55 @@ func (g *convergeGitHub) head(sha string) {
 	g.sha = sha
 }
 
+// conflicts makes GitHub answer `mergeable: false` for the head, as it does once the base has
+// moved past it, and answer it mergeable again once the implementer has merged the base forward.
+func (g *convergeGitHub) conflicts(yes bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.conflicting = yes
+}
+
+// pause holds every read of the pull request itself at this stand-in until the function it
+// answers with is called, which is how a check reads the state a completion left before the read
+// that completion queued lands: the read is the one place an issue short of reviewing learns its
+// head conflicts (armConflict), so the proof arms the answer, drives the completion, reads, and
+// then lets the read run. It holds nothing else GitHub answers, and the release may be called
+// twice — a check defers it and calls it where it means the read to land.
+func (g *convergeGitHub) pause() func() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	held := make(chan struct{})
+	g.held = held
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			g.mu.Lock()
+			if g.held == held {
+				g.held = nil
+			}
+			g.mu.Unlock()
+			close(held)
+		})
+	}
+}
+
+// waitForRelease holds a read of the pull request while pause holds one, and holds nothing else.
+// It runs before the lock below, since a handler waiting under that lock would stop every other
+// answer this stand-in gives.
+func (g *convergeGitHub) waitForRelease(path string) {
+	if !strings.HasSuffix(path, fmt.Sprintf("/pulls/%d", g.number)) {
+		return
+	}
+	g.mu.Lock()
+	held := g.held
+	g.mu.Unlock()
+	if held != nil {
+		<-held
+	}
+}
+
 func (g *convergeGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	g.waitForRelease(req.URL.Path)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if req.Method == http.MethodPost && req.URL.Path == "/graphql" {
@@ -924,20 +1007,11 @@ func (g *convergeGitHub) answer(w http.ResponseWriter, path string) bool {
 	switch {
 	case rest == "":
 		g.write(w, map[string]any{"full_name": liveRepo, "default_branch": convergeBase})
-	case rest == "/rules/branches/"+convergeBase:
-		g.write(w, []map[string]any{
-			{"type": "pull_request"},
-			{"type": "required_status_checks", "parameters": map[string]any{
-				"required_status_checks": []map[string]string{{"context": convergeCheck}},
-			}},
-		})
-	case rest == "/branches/"+convergeBase:
-		g.write(w, map[string]any{"name": convergeBase, "protected": false})
 	case rest == fmt.Sprintf("/pulls/%d/reviews", g.number):
 		g.write(w, []any{})
 	case rest == fmt.Sprintf("/pulls/%d", g.number):
 		g.write(w, map[string]any{
-			"number": g.number, "state": "open", "mergeable": true,
+			"number": g.number, "state": "open", "mergeable": !g.conflicting,
 			"base": map[string]string{"ref": convergeBase},
 			"head": map[string]string{"ref": "legion/" + g.key, "sha": g.sha},
 		})

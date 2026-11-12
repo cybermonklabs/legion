@@ -220,7 +220,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// the nine keys of the decided record are served too, and each issue's answer with the
 		// line's own fields and the two entry numbers are held back.
 		{name: "a pod at recordFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true},
-		// The band at 85 alone, from whyAndLineFieldsContract to below phaseEntriesContract, the
+		// The band at 85 and 86, from whyAndLineFieldsContract to below phaseEntriesContract, the
 		// last band under the declared contract: each issue's answer and the line's own fields
 		// are served too, and the two entry numbers are the keys held back.
 		{name: "a pod at whyAndLineFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(whyAndLineFieldsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true},
