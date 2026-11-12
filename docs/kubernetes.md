@@ -2116,7 +2116,8 @@ Every row already there takes each column's default, and nothing is backfilled.
 The same migration widens the check on a bundle's restore attempt to a third outcome, `refused_repository`, which the daemon records for a bundle of a repository the issue has left.
 
 To roll this release back to contract 68, re-pin the earlier image.
-There is no `legion.yaml` key to put back, no SQL to run and no column to drop:
+Before that image is pinned, take the work of every bundle this release refused for its repository off the database and delete those rows (`delete from workspace_bundles where attempt_outcome = 'refused_repository'`), or the earlier release holds each of those issues' pods for ever: its idle rule counts every row of an issue where this one skips a refused row, and such a row is never deleted and never taken again, so it reads there as work no pod restored (`workflow.IdleHoldBundleUnrestored`).
+There is no `legion.yaml` key to put back and no column to drop:
 the earlier release names every column it reads and writes, so it boots with the five in place, reads none of them and writes none of them.
 What the rollback costs is the correction itself.
 That release carries the write-once guard this one removes, so it refuses a changed repository as it always did, and a person's change in Dispatch reaches no running tree until this release is pinned again.

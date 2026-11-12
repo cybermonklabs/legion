@@ -1496,23 +1496,24 @@ func (w *workflowRuntime) issueRepository(ctx context.Context, key string) (ghre
 	return repo, issue.DefaultBranch, nil
 }
 
-// issueRepoCorrection is the repository issue's record held before the newest correction of its
-// repository and the moment the daemon applied that correction (record.Issue.RepoBefore and
-// record.Issue.RepoCorrectedAt): what every launch of the issue's claims names beside the
-// repository it works now (specs.repoCorrection, AddressingFragment). It answers "" and nil for
-// an issue no correction has reached and for an issue the workflow does not record, which is the
-// same answer, since neither has a repository the issue left.
+// issueRepoCorrection is what a correction of issue's repository left on its record: the
+// repository it held before the newest correction and the moment the daemon applied that
+// correction (record.Issue.RepoBefore and record.Issue.RepoCorrectedAt), which every launch of
+// the issue's claims names beside the repository it works now (specs.repoCorrection,
+// AddressingFragment). It answers nil for an issue no correction has reached and for an issue
+// the workflow does not record, which is the same answer, since neither has a repository the
+// issue left.
 //
 // It reads the record a second time rather than widening issueRepository, which reads the same
 // record for the same question: that one is handed on as a function value to the specs, to the
 // runtime factory and to a claim's adopted identity (plan.repository), and each of the three
 // wants the repository and its default branch alone.
-func (w *workflowRuntime) issueRepoCorrection(ctx context.Context, key string) (string, *time.Time, error) {
+func (w *workflowRuntime) issueRepoCorrection(ctx context.Context, key string) (*RepositoryCorrection, error) {
 	issue, err := w.recordOf(ctx, key)
-	if err != nil || issue == nil {
-		return "", nil, err
+	if err != nil || issue == nil || issue.RepoBefore == "" || issue.RepoCorrectedAt == nil {
+		return nil, err
 	}
-	return issue.RepoBefore, issue.RepoCorrectedAt, nil
+	return &RepositoryCorrection{RepoBefore: issue.RepoBefore, At: *issue.RepoCorrectedAt}, nil
 }
 
 // recordOf is key's issue record, nil when the workflow does not record it.
@@ -1725,13 +1726,22 @@ func (w *workflowRuntime) prepareRecorded(ctx context.Context, issue intake.Disp
 	if refusal != "" {
 		return issue, nil
 	}
-	if w.repositories.kept(mapped.Repo.String()) {
-		if _, read := w.defaultBranches.Kept(mapped.Repo.String()); read {
-			return issue, nil
+	return issue, w.readDefaultBranch(ctx, mapped.Repo)
+}
+
+// readDefaultBranch reads repo's default branch from GitHub for a preparation that needs it
+// (prepareRecorded, prepareUnrecorded), and answers what the read refused. A served repository
+// Legion keeps on its last answer (repositories.kept) whose default branch that answer holds is
+// read no further: that answer is the last read of it, so a preparation on it waits for no GitHub
+// read that is failing.
+func (w *workflowRuntime) readDefaultBranch(ctx context.Context, repo ghrepo.Repository) error {
+	if w.repositories.kept(repo.String()) {
+		if _, read := w.defaultBranches.Kept(repo.String()); read {
+			return nil
 		}
 	}
-	_, err := w.defaultBranches.Named(ctx, mapped.Repo)
-	return issue, err
+	_, err := w.defaultBranches.Named(ctx, repo)
+	return err
 }
 
 // listingAncestry is what reconcile's boot prepares its listing from: every record, by key, read
@@ -1893,13 +1903,7 @@ func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.Di
 	if refusal != "" {
 		return issue, nil
 	}
-	if w.repositories.kept(mapped.Repo.String()) {
-		if _, read := w.defaultBranches.Kept(mapped.Repo.String()); read {
-			return issue, nil
-		}
-	}
-	_, err := w.defaultBranches.Named(ctx, mapped.Repo)
-	return issue, err
+	return issue, w.readDefaultBranch(ctx, mapped.Repo)
 }
 
 // ResolveRepository answers the workflow (workflow.Repositories) from memory: the served

@@ -185,9 +185,8 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		cfg: config.Config{Project: "LEGION", Runtime: config.Runtime{Name: "kubernetes"},
 			PodUpdateRetask: podUpdateRetask, PodUpdateNotice: podUpdateNotice},
 		log:     slog.New(slog.NewJSONHandler(logs, nil)),
-		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
+		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval, enqueue: workflow.enqueueOutbox},
 		runtime: rt, supervisor: sup,
-		enqueue:            workflow.enqueueOutbox,
 		recordedRepository: recordedRepositoryOf(workflow.recordedIssue),
 	}
 	sup.deps = supervise.Deps{
@@ -1441,7 +1440,7 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 	next := &podUpdateRig{t: r.t, ctx: r.ctx, sup: sup, rt: rt, pool: r.pool, records: r.records, clock: r.clock,
 		conns: conns, workers: workers, tokens: r.tokens}
 	next.s = &supervision{
-		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup, enqueue: r.s.enqueue,
+		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup,
 	}
 	return next
 }

@@ -817,9 +817,10 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		}
 		fact := intake.ListedIssue(summary)
 		labelledTriageRoot := fact.LabelledTriageRoot()
-		// The records are what says which arm a summary takes, so the walk they are read with is
-		// read here, once for the whole listing and only for a listing that holds a summary to
-		// prepare at all.
+		// The records are what say which arm a summary takes, so the walk they are read with is
+		// read here, once for the whole listing and for any listing that carries a summary this
+		// pass keeps. That is what the read costs now: before, only a listing holding a todo or a
+		// labelled triage root paid for the records.
 		if walk == nil {
 			if records, walk, err = w.listingAncestry(ctx, issues); err != nil {
 				return err
@@ -971,7 +972,6 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.repositories, supervision.plan.tools, w.log)
 	w.outboxWake.Store(w.outbox)
 	supervision.supervisor.OnDurableState(w.claimDurableState)
-	supervision.enqueue = w.enqueueOutbox
 	supervision.recordedRepository = recordedRepositoryOf(w.recordedIssue)
 	w.attachIdleRelease(supervision)
 }

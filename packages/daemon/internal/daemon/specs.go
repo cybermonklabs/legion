@@ -76,15 +76,14 @@ type specs struct {
 	// workflow does not record); nil for a daemon with no workflow, whose launches work no
 	// repository.
 	repository func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
-	// repoCorrection is the repository an issue's record held before the newest correction of its
-	// repository and the moment the daemon applied that correction
-	// (workflowRuntime.issueRepoCorrection, over record.Issue.RepoBefore and
-	// record.Issue.RepoCorrectedAt); "" and nil for an issue no correction has reached, and for
-	// one the record does not hold. It is a function, as repository is, because the specs hold no
-	// record reader: threading the workflow's record store into every launch to read two columns
-	// would tie the launch to the workflow. Nil for a daemon with no workflow, whose launches are
-	// told of no correction, as a nil recordedRepository adds no pod drift reason.
-	repoCorrection func(ctx context.Context, issue string) (string, *time.Time, error)
+	// repoCorrection is what a correction of an issue's repository left on its record
+	// (workflowRuntime.issueRepoCorrection, over RepositoryCorrection); nil for an issue no
+	// correction has reached, and for one the record does not hold. It is a function, as
+	// repository is, because the specs hold no record reader: threading the workflow's record
+	// store into every launch to read two columns would tie the launch to the workflow. Nil for
+	// a daemon with no workflow, whose launches are told of no correction, as a nil
+	// recordedRepository adds no pod drift reason.
+	repoCorrection func(ctx context.Context, issue string) (*RepositoryCorrection, error)
 	// repositories is the project's repository mapping as the daemon serves it (repositories.view),
 	// in the daemon's own order: what a worker's addressing names beside its own issue's
 	// repository and the controller's names after its design gate steps (RepositoriesClause). The
@@ -209,15 +208,14 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	// and the launch goes on. The default logger is the daemon's own (cmd/legion's
 	// slog.SetDefault), as it is for every other part of the daemon that holds none
 	// (admit.New, agentsecrets).
-	var repoBefore string
-	var repoCorrectedAt *time.Time
+	var corrected *RepositoryCorrection
 	if s.repoCorrection != nil {
-		if repoBefore, repoCorrectedAt, err = s.repoCorrection(ctx, c.Issue); err != nil {
+		if corrected, err = s.repoCorrection(ctx, c.Issue); err != nil {
 			slog.Default().Error("launch: read the correction of this issue's repository", "issue", c.Issue, "claim", c.Token, "error", err)
-			repoBefore, repoCorrectedAt = "", nil
+			corrected = nil
 		}
 	}
-	addressing, err := AddressingFragment(s.project, c, spec.Repository, spec.DefaultBranch, s.repositories(), repoBefore, repoCorrectedAt)
+	addressing, err := AddressingFragment(s.project, c, spec.Repository, spec.DefaultBranch, s.repositories(), corrected)
 	if err != nil {
 		return runtime.SpawnSpec{}, err
 	}
@@ -433,9 +431,8 @@ func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 // `projects.<KEY>.merge_queue_role` itself (workflow.Engine.ready). It is exported for the rigs
 // under packages/pi-legion/scripts, which tell a worker what a pane is told.
 //
-// repoBefore and correctedAt are the record's correction of the issue's repository
-// (record.Issue.RepoBefore and record.Issue.RepoCorrectedAt), "" and nil for an issue no
-// correction has reached. When the record holds both, the issue's own repository sentence is
+// corrected is what a correction of the issue's repository left on its record, and nil for an
+// issue no correction has reached. Where there is one, the issue's own repository sentence is
 // followed by the correction's three: that the daemon changed the repository, and when; that the
 // issue's branch, its pull request and any rescue branch of the old pod stay on the repository
 // the issue left; and that the work is on the new repository now. They are rendered at every
@@ -443,7 +440,7 @@ func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 // the issue, and no claim turns them off: the branch, the pull request and the rescue branch of
 // that issue are on the old repository for ever.
 func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repository, defaultBranch string, repositories api.RepositoriesView,
-	repoBefore string, correctedAt *time.Time) (string, error) {
+	corrected *RepositoryCorrection) (string, error) {
 	architect, err := claim.NewToken(project, c.Tree, claim.RoleArchitect)
 	if err != nil {
 		return "", fmt.Errorf("the addressing of %s: %w", c.Token, err)
@@ -456,13 +453,29 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 	}
 	fragment += " " + fmt.Sprintf("Your issue's repository is %s (default branch %s); %s",
 		repo.String(), defaultBranch, RepositoriesClause(repositories))
-	if repoBefore == "" || correctedAt == nil {
+	// Two reads of the record stand behind one launch, the repository (specs.repository) and the
+	// correction (specs.repoCorrection), so a correction that commits between them is read beside
+	// the repository the issue has just left: the record's new repository is what the correction
+	// says the issue left, and the three sentences would read "changed your issue's repository
+	// from X … Your work on this issue is on X now." Nothing is rendered for that pair; the next
+	// launch, whose two reads are both after the correction, names both repositories.
+	if corrected == nil || corrected.RepoBefore == repo.String() {
 		return fragment, nil
 	}
 	return fragment + " " + fmt.Sprintf("The daemon changed your issue's repository from %s at %s. "+
 		"Your issue's branch, your issue's pull request and any rescue branch of the old pod are on %s. "+
 		"Your work on this issue is on %s now.",
-		repoBefore, correctedAt.UTC().Format(time.RFC3339), repoBefore, repo.String()), nil
+		corrected.RepoBefore, corrected.At.UTC().Format(time.RFC3339), corrected.RepoBefore, repo.String()), nil
+}
+
+// RepositoryCorrection is what a correction of an issue's repository left on its record: the
+// repository the issue left (record.Issue.RepoBefore) and the moment the daemon applied that
+// correction (record.Issue.RepoCorrectedAt). The two are one value because neither of them says
+// anything alone — the record writes them together and a launch names both or neither — so a
+// caller holds a correction or nil, and nil is an issue no correction has reached.
+type RepositoryCorrection struct {
+	RepoBefore string
+	At         time.Time
 }
 
 // RepositoriesClause tells an agent which repositories the project maps, as a clause that ends in

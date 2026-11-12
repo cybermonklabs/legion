@@ -67,13 +67,17 @@ func TestTheStateShowsARepositoryCorrectionAndAChangeStillToBeApplied(t *testing
 
 // A pod whose plugin is older than the four keys is served the issues without them: a plugin
 // before sjawhar/legion#2788 reads the state with a strict schema and refuses the whole body for
-// a key it does not name, which is every `read_record` of every worker in that pod. The number
-// the strip reads is the one DaemonAPIVersion takes at the bump these keys force, written into
-// version.go at the push: it is this daemon's own contract once that bump landed, and the one
-// above it until then. Any other distance is a constant that drifted from the daemon it gates.
-func TestTheRepositoryCorrectionContractIsTheOneThisDaemonTakesForTheKeys(t *testing.T) {
-	if repositoryCorrectionContract != DaemonAPIVersion && repositoryCorrectionContract != DaemonAPIVersion+1 {
-		t.Fatalf("repositoryCorrectionContract = %d, want DaemonAPIVersion %d or the number above it, the one the bump these keys force takes",
+// a key it does not name, which is every `read_record` of every worker in that pod.
+// repositoryCorrectionContract is the contract whose entry in version.go added the four keys, and
+// this daemon's own contract is never below it: a caller at this contract is served them.
+func TestTheRepositoryCorrectionContractIsTheContractThatAddedTheKeys(t *testing.T) {
+	const addedRepositoryCorrection = 79
+	if repositoryCorrectionContract != addedRepositoryCorrection {
+		t.Fatalf("repositoryCorrectionContract = %d, want %d, the contract whose entry in version.go added what a correction of an issue's repository left on its record",
+			repositoryCorrectionContract, addedRepositoryCorrection)
+	}
+	if repositoryCorrectionContract > DaemonAPIVersion {
+		t.Fatalf("repositoryCorrectionContract = %d, above DaemonAPIVersion %d: no caller could be served the four keys",
 			repositoryCorrectionContract, DaemonAPIVersion)
 	}
 	behind := stateFrom(t, populatedState(t), statePodAddr+":41000", podClaims(repositoryCorrectionContract-1))

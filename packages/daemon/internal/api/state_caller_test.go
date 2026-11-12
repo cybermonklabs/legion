@@ -165,17 +165,14 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// above is served the record and a pod still running an older plugin is not.
 		stall bool
 		// correction is whether the caller is served what a correction of an issue's repository
-		// left on its record (repositoryCorrectionContract). That contract is this daemon's own
-		// once the bump these four keys force is written at the push, and the one above it until
-		// then, so a pod at this daemon's contract is served them only from that bump on.
+		// left on its record, the four keys repositoryCorrectionContract added. That contract is
+		// this daemon's own, so a pod at it is served them and a pod still running an older
+		// plugin is not.
 		correction bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
-		{
-			name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion),
-			rounds: true, wakes: true, stall: true, correction: DaemonAPIVersion >= repositoryCorrectionContract,
-		},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, correction: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, correction: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, correction: true},
 	} {

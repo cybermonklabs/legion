@@ -774,14 +774,9 @@ const backwardMovesContract = 62
 // A plugin before it is served the issues without the four: one built before sjawhar/legion#2788
 // reads the state with a strict schema and would refuse the whole body for a key it does not
 // name, and one built after strips the key instead, so the strip is what keeps the four from a
-// caller that did not ask for them rather than what keeps such a caller reading at all.
-//
-// Its number is the one DaemonAPIVersion takes at the bump these four keys force, read at the
-// push on 2026-11-12 from this file at refs/pull/<n>/head for each of the fourteen open pull
-// requests of this repository that change it: they declare 37, 60, 61, 69 (#2731 and #3519), 70,
-// 71, 72, 73, 74, 75, 76, 77 and 78, and the base carries 68, so this change takes 79, which no
-// open head declares. Read the base's own number and every open head again at a renumber rather
-// than from this line.
+// caller that did not ask for them rather than what keeps such a caller reading at all. The
+// number is the one DaemonAPIVersion takes for these four keys, and version.go's entry for it
+// records how that number was chosen.
 const repositoryCorrectionContract = 79
 
 // carriesRepositoryCorrection is whether any issue of state carries one of the four keys

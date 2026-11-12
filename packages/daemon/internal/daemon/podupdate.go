@@ -1196,7 +1196,7 @@ func (s *supervision) tellUpdateStalled(ctx context.Context, stall updateStall) 
 	if roundTold(stall.group, stall.round) {
 		return
 	}
-	if s.enqueue == nil {
+	if s.plan.enqueue == nil {
 		s.log.Warn("supervise: an update round is stalled, and this deployment has no workflow to tell the operator's side through",
 			"issue", stall.issue, "round", stall.round, "reason", stall.reason)
 		return
@@ -1206,7 +1206,7 @@ func (s *supervision) tellUpdateStalled(ctx context.Context, stall updateStall) 
 		Reason: stall.reason,
 		Update: &record.UpdateStalled{Round: stall.round, Pod: stall.pod, Reasons: stall.reasons, Waiting: stall.waiting},
 	}}
-	if err := s.enqueue(ctx, stall.issue, rows...); err != nil {
+	if err := s.plan.enqueue(ctx, stall.issue, rows...); err != nil {
 		if ctx.Err() == nil {
 			s.log.Error("supervise: tell the operator's side that an update round is stalled; telling again at the next sweep",
 				"issue", stall.issue, "round", stall.round, "error", err)
@@ -1236,12 +1236,11 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 	}
 }
 
-// writeOnIssue posts one message on the issue, through the outbox's Dispatch message row.
+// writeOnIssue posts one message on the issue, through the outbox's Dispatch message row that
+// the plan's enqueue writes (daemon.go's writeOnIssue), which is the enqueue the workflow filled
+// before supervision was built.
 func (s *supervision) writeOnIssue(ctx context.Context, issue, body string) error {
-	if s.enqueue == nil {
-		return fmt.Errorf("write on %s: this deployment has no workflow to write through", issue)
-	}
-	return s.enqueue(ctx, issue, record.MessagePost{Body: body})
+	return writeOnIssue(ctx, s.plan.enqueue, issue, body)
 }
 
 // endPodUpdates ends the round on every claim of the group that is in one. A round ends only

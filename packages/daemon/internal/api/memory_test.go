@@ -88,12 +88,9 @@ var contract46Issue = []string{
 // the step records and the places; a pod at 56 the retired entries too, and still neither a
 // step record nor a place; a pod at 57 the step records too, and still no place; a pod from 62
 // the counts of the moves back too, and still nothing of a repository correction; a pod below
-// 46 none of the ten; and a pod whose claims record none and a caller in
+// 46 none of the ten; and a pod at this contract, a pod whose claims record none and a caller in
 // no pod — the operator's `legion state`, whose memory line reads the draws, whose queue line
-// reads the wakes and whose tool-call line reads the step records — are served all of them. A
-// pod at this contract is served every one of them the bump these four repository keys force
-// has reached: the keys themselves only once DaemonAPIVersion stands at
-// repositoryCorrectionContract, which the push writes.
+// reads the wakes and whose tool-call line reads the step records — are served all of them.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
@@ -127,9 +124,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// has made (backwardMovesContract), this daemon's own contract.
 		moves bool
 		// correction is whether the caller is served what a correction of an issue's repository
-		// left on its record (repositoryCorrectionContract), the contract above this branch's
-		// DaemonAPIVersion until the bump these four keys force is written at the push: until
-		// then no pod is served them and every caller the daemon cannot place in a pod is.
+		// left on its record (repositoryCorrectionContract), this daemon's own contract.
 		correction bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
@@ -166,11 +161,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// The band from backwardMovesContract to below repositoryCorrectionContract: the counts
 		// of the moves back are served too, and the four repository keys are the ones held back.
 		{name: "a pod at backwardMovesContract", remote: statePodAddr + ":41000", claims: podClaims(backwardMovesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true},
-		{
-			name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion),
-			memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true,
-			correction: DaemonAPIVersion >= repositoryCorrectionContract,
-		},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, correction: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, correction: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, correction: true},
 	} {

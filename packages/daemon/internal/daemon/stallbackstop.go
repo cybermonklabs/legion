@@ -152,7 +152,7 @@ func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Clai
 			"claim", c.Token, "role", c.Role, "record", found)
 		return true
 	}
-	if s.enqueue == nil {
+	if s.plan.enqueue == nil {
 		s.log.Warn("supervise: the daemon's stall backstop acted on a stalled turn, and this deployment has no workflow to tell the owner through",
 			"claim", c.Token, "issue", c.Issue, "record", found)
 		return true
@@ -181,7 +181,7 @@ func (s *supervision) enqueueStallNotice(ctx context.Context, c supervise.Claim,
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
 		rows = append(rows, record.ControllerNotice(notice))
 	}
-	return s.enqueue(ctx, c.Issue, rows...)
+	return s.plan.enqueue(ctx, c.Issue, rows...)
 }
 
 // stallBackstopNotice is the kind of the notice above (record's validNoticeKind), beside

@@ -28,9 +28,11 @@ import (
 // repository any more, and nothing in the daemon can ever put the work back. A log line reaches
 // an operator who reads the daemon's logs. The message reaches the agent that did the work.
 //
-// write is the plan's own (plan.writeOnIssue), which refuses the write in a deployment with no
-// workflow: such a daemon has no Dispatch issue to write on, and the refusal is logged with what
-// the message would have said.
+// write is the plan's own (plan.writeOnIssue) wherever a daemon builds this: a method value that
+// is never nil, and one that answers an error in a deployment with no workflow, which has no
+// outbox to write through and no Dispatch issue to write on. Such a deployment therefore takes
+// the error arm below, where the error is logged and the work stays in the database. A nil write
+// is a rig's (controller_sweep_kind_test.go), and it is logged as what it is.
 func tellBundleRepositoryRefused(take runtime.SavedWorkspaceBundle,
 	write func(ctx context.Context, issue, body string) error, log *slog.Logger) runtime.SavedWorkspaceBundle {
 	if log == nil {
@@ -41,13 +43,12 @@ func tellBundleRepositoryRefused(take runtime.SavedWorkspaceBundle,
 		if err != nil || outcome != runtime.WorkspaceBundleRefusedRepository {
 			return bundle, outcome, err
 		}
-		body := bundleRepositoryMessage(bundle)
 		if write == nil {
 			log.Warn("launcher bundle: the saved workspace bundle is of a repository this issue has left, and this deployment has no workflow to tell the issue through",
 				"issue", issue, "pod", podUID, "bundleRepository", bundle.Repo, "head", bundle.Head, "saved", bundle.At)
 			return bundle, outcome, nil
 		}
-		if err := write(ctx, issue, body); err != nil {
+		if err := write(ctx, issue, bundleRepositoryMessage(bundle)); err != nil {
 			if ctx.Err() == nil {
 				log.Error("supervise: write on the issue that its saved workspace bundle is of the repository it has left; the work stays in the database and nothing tells the issue again",
 					"issue", issue, "pod", podUID, "bundleRepository", bundle.Repo, "head", bundle.Head, "saved", bundle.At, "error", err)

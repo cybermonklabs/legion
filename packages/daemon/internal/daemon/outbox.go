@@ -1783,13 +1783,25 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 	// replaces this one names the release whose work it put back (store.PutWorkspaceBundle), and
 	// under the repository the record holds for the issue at this moment, which is the
 	// repository the released pod's workspace was a clone of: a restore into a pod of another
-	// repository is refused by it (store.TakeWorkspaceBundleForRestore). The record is read
-	// here, where the release already holds it, rather than inside the save's own statement.
-	issue, err := r.issue(ctx, row.Issue)
-	if err != nil {
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
+	// repository is refused by it (store.TakeWorkspaceBundleForRestore). The record is read in
+	// the release's own pass rather than inside the save's own statement, and an issue the
+	// workflow does not record saves under the empty repository, which the take reads as a
+	// bundle that refuses no pod: the save stores the work whatever the record holds, as it did
+	// before this column, and only a read that failed for a reason of its own cancels the
+	// release.
+	var repo string
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		issue, err := r.records.Issue(ctx, tx, row.Issue)
+		if err != nil || issue == nil {
+			return err
+		}
+		repo = issue.Repo
+		return nil
+	}); err != nil {
+		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave,
+			fmt.Sprintf("read workflow issue %s: %v", row.Issue, err))
 	}
-	if err := r.trees.PutWorkspaceBundle(ctx, row.Issue, decision.Release, issue.Repo, bundle); err != nil {
+	if err := r.trees.PutWorkspaceBundle(ctx, row.Issue, decision.Release, repo, bundle); err != nil {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
 	}
 	return nil

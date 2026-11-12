@@ -38,7 +38,13 @@
 -- its issue reads and its bundle writes name the columns it knows, and the new ones take their
 -- defaults. It still carries the write-once guard, so it refuses a corrected repository as it
 -- always did, and a correction this release applied stands under it with repo_before and
--- repo_corrected_at untouched for the roll forward.
+-- repo_corrected_at untouched for the roll forward. One statement goes with that roll back,
+-- though: before an earlier image is pinned again, the work of every bundle this release refused
+-- for its repository is taken off the database and the rows are deleted (delete from
+-- workspace_bundles where attempt_outcome = 'refused_repository'), because the earlier release's
+-- idle rule counts every row of an issue where this one skips a refused row, and such a row is
+-- never deleted and never taken again, so it reads there as work no pod restored and holds that
+-- issue's pod for ever (workflow.IdleHoldBundleUnrestored).
 --
 -- `refused_repository` is the third thing one restore attempt can do, beside the `sent` and the
 -- `refused_older` the attempt column was written with (20261103214558_workspace_bundle_pod_binding):

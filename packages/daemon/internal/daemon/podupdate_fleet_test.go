@@ -189,9 +189,9 @@ func newFleetRig(t *testing.T, issues ...fleetIssue) *fleetRig {
 		tokens: tokens, pods: pods, noPod: map[string]bool{}}
 	rig.s = &supervision{
 		cfg: config.Config{Project: "LEGION", PodUpdateRetask: podUpdateRetask, PodUpdateNotice: podUpdateNotice},
-		log: quietLogger(), plan: plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
+		log: quietLogger(), plan: plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval,
+			enqueue: (&workflowRuntime{pool: pool, records: records, log: quietLogger()}).enqueueOutbox},
 		runtime: rt, supervisor: sup,
-		enqueue: (&workflowRuntime{pool: pool, records: records, log: quietLogger()}).enqueueOutbox,
 	}
 	engine := workflow.New(records, workflow.Config{Project: podUpdateProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	rig.api = api.NewServer("127.0.0.1", 0, api.Options{
@@ -272,7 +272,7 @@ func (r *fleetRig) restart() *fleetRig {
 	next := &fleetRig{t: r.t, ctx: r.ctx, sup: sup, rt: rt, pool: r.pool, records: r.records, clock: r.clock,
 		grants: r.grants, handoffs: r.handoffs, tokens: r.tokens, pods: r.pods, noPod: maps.Clone(r.noPod)}
 	next.s = &supervision{
-		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup, enqueue: r.s.enqueue,
+		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup,
 	}
 	engine := workflow.New(r.records, workflow.Config{Project: podUpdateProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	next.api = api.NewServer("127.0.0.1", 0, api.Options{

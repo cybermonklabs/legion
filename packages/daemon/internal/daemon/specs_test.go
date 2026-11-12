@@ -269,8 +269,10 @@ func TestAWorkersAddressingNamesItsRepositoryAndTheProjects(t *testing.T) {
 // pull request and the old pod's rescue branch stayed, since those never move, and it is
 // rendered at every launch from then on rather than once: no claim turns it off. An issue no
 // correction has reached is told none of it, a daemon with no reader (repoCorrection nil) tells
-// none either, and a reader that cannot answer costs the launch nothing but the sentence: one
-// line of a system prompt never refuses a launch.
+// none either, a reader that cannot answer costs the launch nothing but the sentence — one line
+// of a system prompt never refuses a launch — and a correction that commits between the launch's
+// two reads of the record, whose repository the issue left is the repository the launch works,
+// is told as nothing rather than as a move from a repository to itself.
 func TestAWorkersAddressingNamesARepositoryCorrection(t *testing.T) {
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
@@ -302,7 +304,9 @@ func TestAWorkersAddressingNamesARepositoryCorrection(t *testing.T) {
 		"Your issue's branch, your issue's pull request and any rescue branch of the old pod are on acme/widgets. " +
 		"Your work on this issue is on zeta/tools now."
 
-	s.repoCorrection = func(context.Context, string) (string, *time.Time, error) { return "acme/widgets", &correctedAt, nil }
+	s.repoCorrection = func(context.Context, string) (*RepositoryCorrection, error) {
+		return &RepositoryCorrection{RepoBefore: "acme/widgets", At: correctedAt}, nil
+	}
 	corrected := launch()
 	if !strings.HasSuffix(corrected, " "+sentences) {
 		t.Fatalf("the addressing of a corrected issue = %q, want it to end with %q", corrected, sentences)
@@ -318,12 +322,18 @@ func TestAWorkersAddressingNamesARepositoryCorrection(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		read func(context.Context, string) (string, *time.Time, error)
+		read func(context.Context, string) (*RepositoryCorrection, error)
 	}{
-		{"an issue no correction has reached", func(context.Context, string) (string, *time.Time, error) { return "", nil, nil }},
+		{"an issue no correction has reached", func(context.Context, string) (*RepositoryCorrection, error) { return nil, nil }},
 		{"a daemon with no reader", nil},
-		{"a reader that cannot answer", func(context.Context, string) (string, *time.Time, error) {
-			return "", nil, errors.New("read the record of S1-2: the store is closed")
+		{"a reader that cannot answer", func(context.Context, string) (*RepositoryCorrection, error) {
+			return nil, errors.New("read the record of S1-2: the store is closed")
+		}},
+		// The repository read (specs.repository) ran before the correction committed and the
+		// correction read after it, so the repository the issue left is the one this launch
+		// works: the three sentences would name zeta/tools as both.
+		{"a correction that commits between the launch's two record reads", func(context.Context, string) (*RepositoryCorrection, error) {
+			return &RepositoryCorrection{RepoBefore: "zeta/tools", At: correctedAt}, nil
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
