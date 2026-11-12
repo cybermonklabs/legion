@@ -7,6 +7,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -36,7 +37,7 @@ import (
 // bundled work back is the next wake for its role, not a daemon restart, so a boot that started it
 // would raise a pod nothing asked for.
 //
-// The phase's owner is the role that works the issue's phase (RoleFor) on an issue in the
+// The phase's owner is the role that works the issue's phase (phase.RoleFor) on an issue in the
 // workflow whose tree is running — this generation of it, by the one rule every reader of that
 // question asks (record.RunningRoots, record.TreeRuns): its lifecycle stands open under the
 // workflow, its root does not linger, and its root is not itself waiting in the line for the
@@ -81,7 +82,7 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 		return intake.Result{}, err
 	}
 	for _, issue := range issues {
-		role := RoleFor(issue.Phase)
+		role := phase.RoleFor(issue.Phase)
 		if issue.Project != e.cfg.Project || role == "" || role == claim.RoleArchitect || record.OutOfWorkflow(issue.Status) {
 			continue
 		}

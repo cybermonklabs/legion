@@ -16,35 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// RoleFor is the role that works a phase: the one a transition starts, and the one whose handoff
-// record the `legion` tool's `handoff_complete` reads for a phase with a handoff (phase.Handoff,
-// whose writer a test holds to this; packages/pi-shared/src/handoff-record.ts). A phase no role
-// works — awaiting_person, awaiting_merge, done, held —
-// has none. Accepting is the tree architect's, a claim per tree that no row starts: every site
-// that starts, resumes or reports a phase's worker skips it (start, admit's startMidPhaseMembers,
-// booted, Stranded).
-//
-// It is exported for admission too, which starts the mid-phase children of a tree it re-admits
-// and needs each child's own phase's role to start it on.
-func RoleFor(p phase.Phase) claim.Role {
-	switch p {
-	case phase.Planning:
-		return claim.RolePlanner
-	case phase.Implementing, phase.Retro:
-		return claim.RoleImplementer
-	case phase.Testing:
-		return claim.RoleTester
-	case phase.Reviewing:
-		return claim.RoleReviewer
-	case phase.Accepting:
-		return claim.RoleArchitect
-	case phase.Merging:
-		return claim.RoleMerger
-	default:
-		return ""
-	}
-}
-
 // ResumePhase is the phase a re-admitted tree resumes its mid-phase child in: the child's own,
 // except that a child left awaiting its merge resumes in merging. The tree's linger disarmed its
 // pull request (beginLinger), and re-admission clears its merger's READY with the rest of the old
@@ -58,9 +29,9 @@ func ResumePhase(child record.Issue) phase.Phase {
 }
 
 // workingPhase is the phase issue's worker works: its phase, or, while it is held, the phase its
-// hold left, the one whose worker's claim failed. RoleFor(workingPhase(issue)) is the role whose
-// failure holds the issue (claimFailed), and the one whose claim Stranded names when nothing will
-// wake it.
+// hold left, the one whose worker's claim failed. phase.RoleFor(workingPhase(issue)) is the role
+// whose failure holds the issue (claimFailed), and the one whose claim Stranded names when
+// nothing will wake it.
 func workingPhase(issue record.Issue) phase.Phase {
 	if issue.Hold != nil {
 		return issue.Hold.From
@@ -132,7 +103,7 @@ func StartFor(run record.RoleRun, root record.Issue, generation uint64, current 
 // is that number (record.PhaseRow.Entry), run the role's queued rows and claim for the issue's
 // generation, and root the issue's tree root as recorded, which StopActs reads for a tree close.
 // Admission asks it of every role of an issue at work and sends the ones it answers true for the
-// work of that entry (admit's resumeSlottedWorkers, SendOwedEntry).
+// work of that entry (admit's owedEntryRoles and resumeSlottedWorkers, SendOwedEntry).
 //
 // It answers true when the entry the claim was given — record.RoleClaim.GivenEntry, and 0 for a
 // role the daemon holds no claim row of at all, which was given nothing — is below entry, and no
@@ -146,9 +117,9 @@ func StartFor(run record.RoleRun, root record.Issue, generation uint64, current 
 //
 // Two tests the caller holds are deliberately not here, because each is about the issue rather
 // than about the role's entry: that the role is the one the issue's current phase names
-// (RoleFor), and that a worker of the issue has work where it stands (record.AtWork).
-// resumeSlottedWorkers answers both from the records it has already read for the whole pass, and
-// asking them here would mean reading the issue again per role.
+// (phase.RoleFor), and that a worker of the issue has work where it stands (record.AtWork).
+// admit's owedEntryRoles answers both from the records it has already read for the whole pass,
+// and asking them here would mean reading the issue again per role.
 //
 // Where StartFor asks what a re-admitted tree's promotion must start, and so weighs whether the
 // claim may already have a process, this reads nothing of the claim's state: a registered, ready
@@ -353,7 +324,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, task, entry, false)
+	return e.started(ctx, tx, issue, role, task, entry, startMarks{})
 }
 
 // restart starts the phase worker of a phase entry the issue never left: the architect's or the
@@ -384,13 +355,13 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, task, row.Entry, true)
+	return e.started(ctx, tx, issue, role, task, row.Entry, startMarks{resend: true})
 }
 
 // SendOwedEntry sends role the work the entry of its phases row names, at that entry, for a claim
 // that is behind it. row is that row, read by the caller: the admission pass weighs the claim
 // against the entry it names and hands it here, so the row the rule was weighed against is the
-// row whose work is sent and the rows are read once (admit's resumeSlottedWorkers, phaseRow).
+// row whose work is sent and the rows are read once (admit's owedEntryRoles).
 //
 // The row's EntryTask is that work: the text the transition composed and wrote in the same
 // transaction as the number it raised, the merger's approved head already on it (enter), so it is
@@ -413,7 +384,7 @@ func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 			return err
 		}
 	}
-	return e.started(ctx, tx, issue, role, task, row.Entry, false)
+	return e.started(ctx, tx, issue, role, task, row.Entry, startMarks{})
 }
 
 // StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
@@ -423,8 +394,9 @@ func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // It raises the entry, where the promotion's other role starts raise none: the promotion is
 // handing that role its work again, and the re-admission cleared the task its entry named with
 // the rest of the generation (record.Store.ClearTreeGeneration), so the entry the record now
-// holds names work nothing would send. The start keeps ResumeTask, so the outbox still hands no
-// second prompt to a claim that holds its phase's task (record.SuperviseRequest.ResumeTask).
+// holds names work nothing would send. The start is marked a resume task, so the outbox still
+// hands no second prompt to a claim that holds its phase's task
+// (record.SuperviseRequest.ResumeTask).
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	task, err := ResumeTask(ctx, e.store, tx, issue, role)
 	if err != nil {
@@ -434,23 +406,37 @@ func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue recor
 	if err != nil {
 		return err
 	}
-	return StartOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
-		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResumeTask: true}, e.now())
+	return e.started(ctx, tx, issue, role, task, entry, startMarks{resumeTask: true})
 }
 
-// started enqueues the start its three callers make, each of which has held role to one that
-// works a phase and composed the task itself, at the entry that task is of. It goes through
-// StartOrOwe, so the worker comes back on the one row that carries its new task, and that row
-// waits for the issue's admission slot: a transition's start puts a worker to work, which is
-// exactly what the cap counts.
-//
-// resend says the start hands the role the work of the entry its phases row already names rather
-// than a new entry, so the claim's given entry does not decline the task
-// (record.SuperviseRequest.ResendEntry). Only restart sets it: start raises an entry of its own,
-// and SendOwedEntry sends an entry the claim is behind.
-func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, entry int64, resend bool) error {
+// startMarks are the marks a start's request carries beside its entry, which tell the outbox and
+// the claim's machine how to read that entry and that task (record.SuperviseRequest). The zero
+// value marks neither, which is a start of the work of an entry the claim is behind.
+type startMarks struct {
+	// resend says the start hands the role the work of the entry its phases row already names
+	// rather than a new entry, so the claim's given entry does not decline the task
+	// (record.SuperviseRequest.ResendEntry). The held phase's retry sets it (restart), because
+	// the claim it reaches may hold that very entry as its given one; SendOwedEntry sends the
+	// entry its row names too and sets it not, because the claim it reaches is behind that entry
+	// and the entry test passes the task on its own.
+	resend bool
+	// resumeTask says the task is the phase's resume task (ResumePhaseTask), so a claim that
+	// already holds a task of this generation and phase is given it once it is ready and the
+	// start delivers none (record.SuperviseRequest.ResumeTask). The promotion's start of a
+	// mid-phase worker sets it (StartPromotedWorker).
+	resumeTask bool
+}
+
+// started enqueues the start each of its four callers makes, each of which has held role to one
+// that works a phase and composed the task itself, at the entry that task is of, and each of
+// which names its own marks. It is the one place a start of a phase worker is built, so a reader
+// asking what such a row carries reads this request and no other. It goes through StartOrOwe, so
+// the worker comes back on the one row that carries its new task, and that row waits for the
+// issue's admission slot: a transition's start puts a worker to work, which is exactly what the
+// cap counts.
+func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, entry int64, marks startMarks) error {
 	return StartOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
-		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: resend}, e.now())
+		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask}, e.now())
 }
 
 // StartOrOwe writes the start of a phase worker as one outbox row in the caller's own
@@ -509,10 +495,13 @@ func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // still serves the earlier entry (the machine refuses a second delivery while one is pending), and
 // the row already names this one.
 //
-// Only a start that hands a role work it was not already on raises one. A resume of the work an
-// entry already names (SendOwedEntry), a production check's look and a held phase's retry
-// (restart) raise none, so none of them moves the row and a worker's in-flight completion is never
-// refused for an entry it was never given.
+// Two starts raise one, each handing its role work it was not already on: a transition's start of
+// the phase the issue has moved into (start), and the promotion's start of a mid-phase worker a
+// re-admitted tree brings back (StartPromotedWorker). Every other start carries the entry its
+// role's phases row already names — the send of an owed entry (SendOwedEntry), the held phase's
+// retry (restart) — or no entry at all — the boot's resume by rule (booted), a production check's
+// look, the pod wake, the resume of a cancelled idle release — so none of them moves the row and
+// a worker's in-flight completion is never refused for an entry it was never given.
 //
 // The number counts the entries this role has been handed on this issue, which is why it is raised
 // here: this is the one place a role is handed work it was not on. It needs to be unique among
@@ -628,7 +617,7 @@ func ResumeTask(ctx context.Context, store record.Store, tx pgx.Tx, issue record
 // tells a carried root's own architect with it, since the hold's first notice went to the
 // architect of the tree the root was handed over from.
 func HeldNotice(issue record.Issue) record.Notice {
-	return record.Notice{Kind: "held", Role: RoleFor(issue.Hold.From), Phase: issue.Hold.From, Reason: string(issue.Hold.Reason)}
+	return record.Notice{Kind: "held", Role: phase.RoleFor(issue.Hold.From), Phase: issue.Hold.From, Reason: string(issue.Hold.Reason)}
 }
 
 // ChildReenteredNotice is the notice a re-entered child's tree architect is told, whichever path

@@ -588,8 +588,14 @@ type SuperviseRequest struct {
 	// phases row in its own transaction (record.PhaseRow.Entry). It travels to the claim's
 	// delivery and, once a confirmed delivery is retired, onto the claim, so a completion can be
 	// held to the entry the turn reporting it was given (api/handoff.go) rather than to the run
-	// alone, whose value every phase entry of one run shares. Zero for a start that hands no new
-	// task — a resume, a production check's look — and for every other operation.
+	// alone, whose value every phase entry of one run shares. Two starts raise the entry they
+	// carry: a transition's start of the phase the issue has moved into, and the promotion's
+	// start of a mid-phase worker a re-admitted tree brings back (workflow's start and
+	// StartPromotedWorker). Two more carry the entry the role's row already names without raising
+	// it: the send of an owed entry (workflow's SendOwedEntry) and the held phase's retry, which
+	// marks it with ResendEntry below. It is zero for every start that hands no entry's work at
+	// all — the tree architect's start, the boot's resume by rule, a production check's look, the
+	// pod wake, the resume of a cancelled idle release — and for every other operation.
 	Entry int64 `json:"entry,omitempty"`
 	// ResendEntry marks a start that hands the role the work of the entry its phases row already
 	// names rather than a new entry, so the claim's given entry does not decline the task

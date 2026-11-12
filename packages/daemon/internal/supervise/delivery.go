@@ -68,8 +68,11 @@ type Delivery struct {
 	// transition raised on the role's phases row when that entry handed this role work, which
 	// stands on the row beside the task itself. It is what tells one phase entry from the next
 	// within a run, so a turn that outlived its phase cannot complete the phase's next entry
-	// (api/handoff.go). Zero for a task of no entry: an operator's own, a resume, a production
-	// check's look, and every task queued before the daemon was upgraded to number them.
+	// (api/handoff.go). Zero for a task of no entry: an operator's own, the tree architect's
+	// start, the boot's resume by rule, a production check's look, the pod wake, the resume of a
+	// cancelled idle release, and every task queued before the daemon was upgraded to number
+	// them. The promotion's resume of a mid-phase worker is no such task: it carries the entry
+	// it raised (workflow.Engine.StartPromotedWorker).
 	Entry int64
 	// CheckLook is the look of a closed issue's production check this task is of, from the start
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). It is what says a
@@ -262,10 +265,11 @@ func pendingID(p *Delivery) string {
 // A request that carries no entry is decided by the outbox row it came from: a row the claim has
 // already queued a task from (Claim.DeliveredRows) is accepted and queues nothing, for the same
 // reason, and a request from a row no task came from writes the row with its delivery, in that
-// same transaction. Four kinds of delivery carry no entry and rest on that rule — the tree
+// same transaction. Five kinds of delivery carry no entry and rest on that rule — the tree
 // architect's start, which carries a person's recorded decisions, a production check's look, the
-// pod wake, and the resume of a cancelled idle release — so the row-id guard is what keeps one
-// of those reaching one claim once, rather than a leftover of what the entry replaced.
+// pod wake, the boot's resume by rule, and the resume of a cancelled idle release — so the
+// row-id guard is what keeps one of those reaching one claim once, rather than a leftover of
+// what the entry replaced.
 // Only that row's own retry is refused this way: the supervise rows of one issue do not run in
 // row order (record's outboxInOrder), so an older row the claim has never heard from still gives
 // its task.
@@ -702,13 +706,13 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 // starts, with no delivery of its own — and its completion belongs to that run, that entry and
 // that look. Only a delivery whose turn actually ran moves them, so a confirmation taken back by
 // a busy refusal never does, and only a task that carries them: an operator's task carries no
-// generation, no entry and no look, a resume and a production check's look no entry,
-// and a phase task no look, and each leaves what the claim is serving alone. Every retire of a
-// confirmed task of a run writes the row, the second task of one run included: the write is
-// unconditional on the value, not a diff. Which value each takes is the claim's own accessors,
-// read here off the claim this delivery is still pending on, so what the claim is left serving
-// is by construction what ServingRun, ServingEntry and ServingCheck answered while that
-// delivery was pending.
+// generation, no entry and no look, a resume that raised no entry and a production check's look
+// no entry, and a phase task no look, and each leaves what the claim is serving alone. Every
+// retire of a confirmed task of a run writes the row, the second task of one run included: the
+// write is unconditional on the value, not a diff. Which value each takes is the claim's own
+// accessors, read here off the claim this delivery is still pending on, so what the claim is
+// left serving is by construction what ServingRun, ServingEntry and ServingCheck answered while
+// that delivery was pending.
 //
 // A task of an entry the worker never confirmed goes the other way: Claim.GivenEntry is put back
 // to Claim.ServedEntry, so the entry stands above what this claim was given again, the admission

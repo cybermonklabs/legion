@@ -104,7 +104,7 @@ func midPhaseChild(t *testing.T, pool *pgxpool.Pool, root, key string, stands ph
 	parent := root
 	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
 		Title: key, Tree: root, Parent: &parent, Phase: stands, Generation: 1, Status: status, DispatchStatus: status, Rank: key, LastDispatchSeq: 1})
-	role := workflow.RoleFor(stands)
+	role := phase.RoleFor(stands)
 	project, err := claim.ProjectToken(testProject)
 	if err != nil {
 		t.Fatal(err)
@@ -251,7 +251,7 @@ func assertMidPhaseChildrenAreNotStranded(t *testing.T, pool *pgxpool.Pool, root
 	var claims []supervise.Claim
 	for child, token := range workers {
 		stands := issue(t, pool, child)
-		c := supervise.Claim{Token: token, Project: project, Tree: root, Issue: child, Role: workflow.RoleFor(stands.Phase),
+		c := supervise.Claim{Token: token, Project: project, Tree: root, Issue: child, Role: phase.RoleFor(stands.Phase),
 			Generation: 1, State: supervise.StateSuspended}
 		claims = append(claims, c)
 	}

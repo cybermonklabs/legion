@@ -556,12 +556,12 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		return refused("HANDOFF_STALE_GENERATION", fmt.Sprintf("%s is on generation %d and this completion is generation %d's; the run it reports is over",
 			issue.Key, issue.Generation, fact.Generation)), nil
 	}
-	// RoleFor(accepting) is the architect, which accepts with sign_off: no completion of its own
+	// phase.RoleFor(accepting) is the architect, which accepts with sign_off: no completion of its own
 	// moves an issue, so an architect's is refused before the phase gate would pass it.
 	if fact.Role == claim.RoleArchitect {
 		return refused("ACCEPTANCE_IS_SIGN_OFF", fmt.Sprintf("the architect accepts %s with sign_off, not handoff_complete; this completion changed nothing", issue.Key)), nil
 	}
-	if RoleFor(issue.Phase) != fact.Role {
+	if phase.RoleFor(issue.Phase) != fact.Role {
 		return refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf("the %s does not run phase %s of %s; this completion changed nothing", fact.Role, issue.Phase, issue.Key)), nil
 	}
 	// A worker still in its turn when its tree's root closed can yet complete; linger holds the
@@ -727,7 +727,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, err
 	}
 	working := workingPhase(*issue)
-	if RoleFor(working) != fact.Role {
+	if phase.RoleFor(working) != fact.Role {
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase,
 			Reason: fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working)})
 	}
@@ -782,7 +782,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 		return intake.Result{}, err
 	}
 	working := workingPhase(*issue)
-	if !record.InWorkflow(*issue) || RoleFor(working) != fact.Role {
+	if !record.InWorkflow(*issue) || phase.RoleFor(working) != fact.Role {
 		return refused("PHASE_NOT_RESTARTED", fmt.Sprintf("the %s does not work %s's phase %s, so nothing restarted it",
 			fact.Role, issue.Key, working)), nil
 	}
@@ -842,7 +842,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			reason += ": " + r.reason
 		}
 	}
-	return e.restart(ctx, tx, issue, RoleFor(from), task(issue, record.PhaseRow{}, pr, reason))
+	return e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reason))
 }
 
 func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMove) (intake.Result, error) {
@@ -853,7 +853,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	// The table is the guard: a move no backward row serves - to awaiting_merge, which no worker
 	// holds, or to anything but an earlier phase - is refused rather than answered as if it moved.
 	// An empty target is refused first, since the row lookup takes it to match any row.
-	if _, ok := e.row(issue.Phase, TriggerBackward, fact.To, Snapshot{Phase: issue.Phase}); fact.To == "" || !ok || RoleFor(issue.Phase) != fact.Requester {
+	if _, ok := e.row(issue.Phase, TriggerBackward, fact.To, Snapshot{Phase: issue.Phase}); fact.To == "" || !ok || phase.RoleFor(issue.Phase) != fact.Requester {
 		return refused("BACKWARD_REFUSED", fmt.Sprintf("a backward move needs the role running %s of %s and an earlier phase a backward move reaches from it; the %s's move to %s changed nothing",
 			issue.Phase, issue.Key, fact.Requester, fact.To)), nil
 	}
@@ -968,7 +968,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: phase changed", "issue", issue.Key, "tree", issue.Tree, "from", from, "to", row.To, "trigger", trigger, "status", issue.Status)
-	if err := e.clearHandoff(ctx, tx, issue.Key, RoleFor(row.To)); err != nil {
+	if err := e.clearHandoff(ctx, tx, issue.Key, phase.RoleFor(row.To)); err != nil {
 		return err
 	}
 	// No transition stops a worker: the role whose phase this ends keeps its process, claim and
@@ -985,7 +985,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// red while the tester tested, the reviewer reviewed a round it had not completed, or the merger
 	// worked toward READY - starts the next role the same way: that role keeps its turn, its jobs,
 	// its process and its session, and the start waits for none of them.
-	starting := RoleFor(row.To)
+	starting := phase.RoleFor(row.To)
 	if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason)); err != nil {
 		return err
 	}
@@ -1030,23 +1030,23 @@ func noticeFor(trigger TriggerKind, from phase.Phase, handoff record.PhaseRow, r
 	case TriggerSignOff, TriggerPullRequestMerged:
 		return record.Notice{}
 	}
-	return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
+	return record.Notice{Kind: "phase-finished", Role: phase.RoleFor(from), Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
 }
 
 // phaseEnded tells the role a CI-red transition out of from leaves with no phase that its phase
 // ended, which phase the issue is in now and why (record.PhaseEnded), on that role's own Envoy
 // topic. Only a red sends such a message: every other move out of a phase is the working role's own
 // completion or backward move, which that role made and so already knows of. The recipient is
-// RoleFor(from) whenever that is a role other than the architect, read from the transition alone
-// rather than from what the role had done: the tester in testing, the reviewer in reviewing whether
-// or not it completed its round, the merger in merging, and the implementer in retro, which is also
-// the role starting, told that its task for the new phase follows. Accepting sends none — its role
-// is the architect, which the checks-red notice tells (noticeFor) — and neither does awaiting_merge,
-// a phase no role works. Without the message nothing tells that role: no transition stops a worker,
-// and the daemon's next task for a role is delivered only once that role's turn ends, while this
-// message reaches its session at its next model turn and ends a wait.
+// phase.RoleFor(from) whenever that is a role other than the architect, read from the transition
+// alone rather than from what the role had done: the tester in testing, the reviewer in reviewing
+// whether or not it completed its round, the merger in merging, and the implementer in retro,
+// which is also the role starting, told that its task for the new phase follows. Accepting sends
+// none — its role is the architect, which the checks-red notice tells (noticeFor) — and neither
+// does awaiting_merge, a phase no role works. Without the message nothing tells that role: no
+// transition stops a worker, and the daemon's next task for a role is delivered only once that
+// role's turn ends, while this message reaches its session at its next model turn and ends a wait.
 func (e *Engine) phaseEnded(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, from, to phase.Phase, starting claim.Role, reason string) error {
-	ended := RoleFor(from)
+	ended := phase.RoleFor(from)
 	if trigger != TriggerChecksRed || ended == "" || ended == claim.RoleArchitect {
 		return nil
 	}

@@ -97,8 +97,8 @@ func TestNoCountGatesTheWork(t *testing.T) {
 				move, kind, written, mark)
 		}
 		mark = written
-		if start.role != RoleFor(to) || start.stands != to || start.task == "" {
-			t.Fatalf("move %d, %s, wrote the start %+v, want the %s's, carrying a task and naming the %s phase it is for", move, kind, start, RoleFor(to), to)
+		if start.role != phase.RoleFor(to) || start.stands != to || start.task == "" {
+			t.Fatalf("move %d, %s, wrote the start %+v, want the %s's, carrying a task and naming the %s phase it is for", move, kind, start, phase.RoleFor(to), to)
 		}
 		if !start.claimable {
 			t.Fatalf("move %d, %s, wrote a start no lane may run: %+v. The issue holds its admission slot, so there is nothing left for its start to wait for",

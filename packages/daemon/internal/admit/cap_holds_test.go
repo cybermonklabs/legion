@@ -49,7 +49,7 @@ func oweMemberStart(t *testing.T, pool *pgxpool.Pool, root, key string, stands p
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), key, record.SuperviseRequest{Op: "start",
-			Tree: root, Role: workflow.RoleFor(stands), Generation: 1, Phase: stands, Task: "Continue " + key + ".",
+			Tree: root, Role: phase.RoleFor(stands), Generation: 1, Phase: stands, Task: "Continue " + key + ".",
 			Entry: 1}, fixedNow); err != nil {
 			t.Fatalf("owe %s a start: %v", key, err)
 		}

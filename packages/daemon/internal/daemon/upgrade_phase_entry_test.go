@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -40,7 +41,7 @@ const phaseEntryMigration = 20261111225552
 
 // upgradeProject is the Dispatch project of the tree the upgrade is read on, and upgradeRoot its
 // root. Each shape is a member of that one tree, standing in testing, so the role every shape is
-// read on is the tester (workflow.RoleFor).
+// read on is the tester (phase.RoleFor).
 const (
 	upgradeProject = "UPGRADE"
 	upgradeRoot    = "UPGRADE-800"
@@ -153,21 +154,30 @@ type upgradeShape struct {
 //  6. A role the daemon holds no claim row of was given nothing at all, and is sent that entry's
 //     work.
 //  7. A role whose start row was still owed at the upgrade — a supervise start marked needsSlot,
-//     the row a stopped tree waits on — is sent that row's own task, which the migration took from
-//     the row's payload into phases.entry_task. The other four are sent the line the daemon
-//     composes for a worker already in its phase (workflow.ResumePhaseTask), since the release
-//     before this one recorded no task of the entry it was handed.
+//     the row a stopped tree waits on — is sent nothing, and the row it already owes is what
+//     starts it: the fill stamps entry 1 into that row's own payload, so the sweep reads the
+//     entry as already carried and writes no second start of the same work (workflow.OwedEntry).
+//     That row then runs here, through the daemon's own outbox executor, and the delivery it
+//     makes records entry 1 as given, after which a further sweep still sends nothing. Without
+//     the stamp the row would deliver with no entry, the claim would stand at 0 under a row at
+//     entry 1, and that sweep would hand the work a second time to a worker already doing it.
+//     The three roles the sweep does send are sent the line the daemon composes for a worker
+//     already in its phase (workflow.ResumePhaseTask), since the release before this one recorded
+//     no task of the entry it was handed.
 //
-// The sweep then runs again on its period and writes nothing more: the start it wrote carries the
-// entry, so every later pass reads that entry as already carried (workflow.OwedEntry).
+// The sweep then runs again on its period and writes nothing more: the start each role holds
+// carries the entry, so every later pass reads that entry as already carried (workflow.OwedEntry).
 //
-// The second half is the way back the migration's header names. The three recovery statements run,
-// and then the record is read as the release before this one reads it — its own claim read, its
-// phases read and the pending delivery its claim read joins, as literal SQL taken from that
-// release — and each answers, with the assignment columns at the empty string the recovery's
-// default leaves on every row. That is the whole of what a test without the old binary can show:
-// it cannot show that daemon running, so what the recovery costs that daemon — a fence that
-// compares nothing and mints a fresh token at each role's next start — is not asserted here.
+// The second half is the way back the migration's header names. Its four recovery statements run
+// — the three that add the assignment columns back and the one that strips this release's own
+// payload keys — and then the record is read as the release before this one reads it: its own
+// claim read, its phases read and the pending delivery its claim read joins, as literal SQL taken
+// from that release, each answering with the assignment columns at the empty string the
+// recovery's default leaves on every row; and every supervise payload left in the outbox decoded
+// as that release decodes one, strictly, against a copy of its own request shape. That is the
+// whole of what a test without the old binary can show: it cannot show that daemon running, so
+// what the recovery costs that daemon — a fence that compares nothing and mints a fresh token at
+// each role's next start — is not asserted here.
 func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *testing.T) {
 	ctx := context.Background()
 	st := preEntryStore(t)
@@ -318,6 +328,20 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 			t.Fatalf("the phases row of %s (%s) = entry %d carrying %q, want entry 1 carrying %q: a role that release handed work is at entry 1, with the task of the start it still owes",
 				shape.key, shape.title, entry, entryTask, shape.owedTask)
 		}
+		// The start row the issue still owes that role is the start of entry 1, and carries that
+		// number: the delivery it makes is what records the entry as given to the claim, and one
+		// carrying no entry would leave the claim at 0 under this row at entry 1.
+		if owed, owes := owedRows[shape.key]; owes {
+			var carried int64
+			if err := pool.QueryRow(ctx, "select coalesce((payload->>'entry')::bigint, 0) from outbox where id = $1",
+				owed).Scan(&carried); err != nil {
+				t.Fatalf("read the start %s still owes its tester after the upgrade: %v", shape.key, err)
+			}
+			if carried != 1 {
+				t.Fatalf("the start row %d %s (%s) still owes its tester carries entry %d, want 1: the row the issue owes is the start of entry 1, and the delivery it makes is what records that entry as given",
+					owed, shape.key, shape.title, carried)
+			}
+		}
 		if !shape.claimed {
 			continue
 		}
@@ -348,16 +372,22 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 		return n
 	}
 
-	// The sweep's own period is what this waits on rather than the rows it writes: three sweeps
-	// have run, each writing in the transaction that recorded it, so what the record holds
-	// afterwards is every row the sweep means to write and no row a later one adds. A shape the
-	// sweep sent nothing then fails below under its own name.
+	// The sweep's own fact is what this waits on rather than the rows it writes: the sweep that
+	// applied it wrote in the transaction that recorded it, so what the record holds afterwards
+	// is every row that sweep means to write. A shape the sweep sent nothing then fails below
+	// under its own name. Three more sweeps are driven by hand with the ticker stopped, because
+	// every role that pass sent work now carries that entry and the gate applies no further fact
+	// on its own period: they are what reads a later sweep as adding nothing.
 	sweeping, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() { w.tickEntrySweep(sweeping); close(done) }()
-	testwait.Eventually(t, "three entry sweeps applied", func() bool { return swept() >= 3 })
+	testwait.Eventually(t, "the entry sweep's fact applied", func() bool { return swept() >= 1 })
 	stop()
 	<-done
+	sweeps := swept()
+	for i := range 3 {
+		w.applyEntrySweep(ctx, time.Now().Add(time.Duration(i+1)*time.Second))
+	}
 
 	for i, shape := range shapes {
 		if shape.wantResume {
@@ -383,13 +413,18 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 			t.Fatalf("the start the sweep sent %s (%s) = %+v, want %+v: the upgrade put that role at entry 1 with that work",
 				shape.key, shape.title, starts[0], want)
 		}
-		if owed, ok := owedRows[shape.key]; ok && starts[0].id == owed {
-			t.Fatalf("the start the sweep sent %s is row %d, the row the issue already owed: a start of an entry is a row of its own (record.Store.EnqueueStart)",
-				shape.key, owed)
+		// A shape whose issue already owed a start is started by that very row, and the sweep adds
+		// none: the fill stamped the row with entry 1, so every pass reads the entry as carried
+		// (workflow.OwedEntry). A sweep that did write one would have written over the owed row
+		// (record.Store.EnqueueStart), leaving the same single row under a new id, which is why
+		// the row is named here and not merely counted.
+		if owed, owes := owedRows[shape.key]; owes && starts[0].id != owed {
+			t.Fatalf("the start %s holds is row %d, not the row %d its issue already owed: the row owed is the start of entry 1, so the sweep writes no second one",
+				shape.key, starts[0].id, owed)
 		}
 	}
-	if n := swept(); n < 3 {
-		t.Fatalf("sweeps applied = %d, want at least 3: a later sweep must be read as writing nothing more", n)
+	if n := swept(); n != sweeps {
+		t.Fatalf("sweeps applied = %d, want the %d the ticker applied: a later sweep must be read as writing nothing more, and one owed nothing takes no fact", n, sweeps)
 	}
 
 	// The two suspensions the sweep told apart, read back as the rules that decide them read them:
@@ -403,6 +438,21 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	if c := held[tokens["UPGRADE-805"]]; !c.Released() || !c.RuleMayResume() {
 		t.Fatalf("the claim of UPGRADE-805 = state %q suspended by %q, want the idle release's suspension: the start the sweep wrote resumes its pod",
 			c.State, c.SuspendedBy)
+	}
+
+	// The start UPGRADE-807 still owed runs, as the outbox runs it, and the entry its payload
+	// carries becomes the entry its claim was given. The sweeps that follow are driven by hand
+	// with the ticker stopped, as the ones above are, and they send that role nothing, where a
+	// delivery made with no entry would have left the claim at 0 under a row at entry 1 and had
+	// them hand the same work to a worker already doing it. What those passes do for the roles
+	// still behind is the block above's to say; what is read here is the one role whose start ran.
+	upgradeOwedStartGivesItsEntry(t, st, issues["UPGRADE-807"], held[tokens["UPGRADE-807"]], owedRows["UPGRADE-807"])
+	for i := range 2 {
+		w.applyEntrySweep(ctx, time.Now().Add(time.Duration(i+5)*time.Second))
+	}
+	if starts := sweptStarts(t, pool, "UPGRADE-807"); len(starts) != 1 || starts[0].id != owedRows["UPGRADE-807"] {
+		t.Fatalf("the start rows of UPGRADE-807 once the row it owed had run = %+v, want that one row %d: its claim was given that entry, so the sweep sends no second task",
+			starts, owedRows["UPGRADE-807"])
 	}
 
 	upgradeCompletionAccepted(t, st, engine, issues["UPGRADE-803"], held[tokens["UPGRADE-803"]])
@@ -422,6 +472,76 @@ func claimsByToken(t *testing.T, st *store.Store) map[claim.Token]supervise.Clai
 		held[c.Token] = c
 	}
 	return held
+}
+
+// upgradeOwedStartGivesItsEntry runs the start row the issue still owed at the upgrade, on the
+// claim the upgrade left, and reads the entry the record then holds that claim as given.
+//
+// The row runs through the daemon's own executor (the outbox's supervise case), so what carries
+// the entry from the row's payload to the claim is the daemon's own path and not the test's: the
+// start delivers its task with the entry the payload names, and the write that stores the
+// delivery stores the given entry with it (supervise's queue, store's putClaimAndDelivery). The
+// supervisor is built on the store under test rather than the outbox tests' fake one, since the
+// number this reads back is the one the sweep above weighs each role against.
+//
+// The claim is ready with a session, so the row spawns nothing and resumes nothing: it has only
+// its task to give (the runtime and connections are fakes, as every start case in this package
+// uses).
+func upgradeOwedStartGivesItsEntry(t *testing.T, st *store.Store, issue record.Issue, held supervise.Claim, owed int64) {
+	t.Helper()
+	ctx := context.Background()
+	pool := st.Pool()
+	var payload []byte
+	if err := pool.QueryRow(ctx, "select payload from outbox where id = $1", owed).Scan(&payload); err != nil {
+		t.Fatalf("read the start row %d %s still owes its tester: %v", owed, issue.Key, err)
+	}
+	row := record.OutboxRow{ID: owed, Kind: record.OutboxKindSupervise, Issue: issue.Key,
+		Payload: json.RawMessage(payload), NextAt: time.Now()}
+	decoded, err := record.DecodeOutboxPayload(row)
+	if err != nil {
+		t.Fatalf("decode the start row %d %s still owes its tester: %v", owed, issue.Key, err)
+	}
+	request, ok := decoded.(record.SuperviseRequest)
+	if !ok || request.Entry != 1 {
+		t.Fatalf("the start row %d %s still owes its tester = %+v, want a supervise start of entry 1: the fill stamps the entry the row's delivery records",
+			owed, issue.Key, decoded)
+	}
+
+	project, err := claim.ProjectToken(upgradeProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sup := newSupervisor(ctx, st, project, t.TempDir(), quietLogger())
+	sup.deps = supervise.Deps{
+		Runtime: fake.NewRuntime(), Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
+		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		PluginContract: 24,
+	}
+	t.Cleanup(sup.stop)
+	machine, _, err := sup.Create(ctx, held, "")
+	if err != nil {
+		t.Fatalf("supervise the claim the upgrade left on %s: %v", issue.Key, err)
+	}
+	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: upgradeProject, records: record.NewStore(),
+		supervisor: sup, trees: st, tokens: outboxTokens{}, project: project, stateDir: t.TempDir(),
+		now: time.Now}
+	if err := runner.execute(ctx, row); err != nil {
+		t.Fatalf("run the start row %d %s still owed its tester: %v", owed, issue.Key, err)
+	}
+	machine.Wait()
+
+	if pending := machine.Claim().Pending; pending == nil || pending.Task != request.Task || pending.Entry != 1 {
+		t.Fatalf("the delivery the owed start made = %+v, want its own task at entry 1: the row carries the entry to the claim", pending)
+	}
+	var given int64
+	if err := pool.QueryRow(ctx, "select given_entry from claims where token = $1", string(held.Token)).Scan(&given); err != nil {
+		t.Fatalf("read the entry the record holds %s's tester as given: %v", issue.Key, err)
+	}
+	if given != 1 {
+		t.Fatalf("the claim of %s was given entry %d once the start it owed ran, want 1: a claim at its role's entry is holding that entry's work, and the sweep sends it nothing",
+			issue.Key, given)
+	}
 }
 
 // upgradeCompletionAccepted posts the completion of the third shape's turn through the daemon's own
@@ -478,7 +598,7 @@ func upgradeCompletionAccepted(t *testing.T, st *store.Store, engine *workflow.E
 }
 
 // upgradeRecoveryReadsAnswer is the way back the migration's header names, as far as a test
-// without the old binary can take it: the three recovery statements run with the daemon stopped,
+// without the old binary can take it: the four recovery statements run with the daemon stopped,
 // and then the record is read as the release before this one reads it.
 //
 // The three reads are that release's own, as literal SQL at commit e90c078559: its claim read
@@ -489,8 +609,18 @@ func upgradeCompletionAccepted(t *testing.T, st *store.Store, engine *workflow.E
 // leaves, which is the whole reason the header can say the older daemon's fence compares nothing
 // and refuses none of the completions in flight.
 //
+// The fourth statement is the strip of this release's own payload keys, and what it leaves is
+// read the same way: every supervise payload still in the outbox is decoded as that release
+// decodes one — strictly, with DisallowUnknownFields, which is the decoder
+// record.DecodeOutboxPayload builds — against preEntrySuperviseRequest, that release's own
+// request shape at the same commit. A key it does not know refuses the row, and its
+// record.Postgres.RoleRuns decodes every supervise row of the issues an admission pass reads, so
+// one such row would retry for ever and fail every pass of its issue besides.
+//
 // What this cannot show is that daemon running: no binary of it is here to boot against the
-// recovered schema, so that it then mints a fresh token at each role's next start is not asserted.
+// recovered schema, so that it then mints a fresh token at each role's next start is not
+// asserted, and neither is the decode this copies — what the copy shows is that the payloads the
+// strip leaves carry no key outside that release's shape.
 func upgradeRecoveryReadsAnswer(t *testing.T, pool *pgxpool.Pool, token claim.Token, issue string) {
 	t.Helper()
 	ctx := context.Background()
@@ -498,6 +628,8 @@ func upgradeRecoveryReadsAnswer(t *testing.T, pool *pgxpool.Pool, token claim.To
 		"alter table phases add column assignment text not null default '';",
 		"alter table claims add column serving_assignment text not null default '';",
 		"alter table pending_task_deliveries add column assignment text not null default '';",
+		`update outbox set payload = payload - 'entry' - 'resendEntry'
+			where kind = 'supervise' and (payload ? 'entry' or payload ? 'resendEntry');`,
 	} {
 		if _, err := pool.Exec(ctx, statement); err != nil {
 			t.Fatalf("run the recovery statement %q: %v", statement, err)
@@ -563,6 +695,64 @@ func upgradeRecoveryReadsAnswer(t *testing.T, pool *pgxpool.Pool, token claim.To
 			}
 		}
 	}
+
+	// Every supervise payload the strip left, decoded as the release before this one decodes one.
+	// A row it refuses is a row that retries for ever on that release, and an admission pass of
+	// its issue that fails with it, so each must decode and the outbox must hold rows to decode:
+	// the starts the sweep wrote and the start UPGRADE-807 owed, which ran but was never finished.
+	rows, err := pool.Query(ctx, "select id, payload from outbox where kind = 'supervise' order by id")
+	if err != nil {
+		t.Fatalf("read the supervise rows the recovery left: %v", err)
+	}
+	payloads, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (struct {
+		id      int64
+		payload []byte
+	}, error) {
+		var held struct {
+			id      int64
+			payload []byte
+		}
+		err := row.Scan(&held.id, &held.payload)
+		return held, err
+	})
+	if err != nil {
+		t.Fatalf("read the supervise rows the recovery left: %v", err)
+	}
+	if len(payloads) == 0 {
+		t.Fatal("the record holds no supervise row after the recovery, want the starts of the upgrade's own shapes: a decode of nothing shows nothing")
+	}
+	for _, held := range payloads {
+		decoder := json.NewDecoder(bytes.NewReader(held.payload))
+		decoder.DisallowUnknownFields()
+		var request preEntrySuperviseRequest
+		if err := decoder.Decode(&request); err != nil {
+			t.Fatalf("the release before this one decodes outbox row %d, %s, as %v; want it decoded: a payload it refuses is a row that retries for ever, and every admission pass of its issue fails with it (record.Postgres.RoleRuns)",
+				held.id, held.payload, err)
+		}
+	}
+}
+
+// preEntrySuperviseRequest is record.SuperviseRequest as the release before this one declares it,
+// at commit e90c078559: every field of this release's shape but the two it adds, Entry and
+// ResendEntry. It is a copy because that release's own type is gone from the tree, and the
+// recovery above is judged on exactly what that release would make of the payloads left behind.
+type preEntrySuperviseRequest struct {
+	Op            record.SuperviseOp    `json:"op"`
+	Tree          string                `json:"tree"`
+	Role          claim.Role            `json:"role"`
+	Task          string                `json:"task,omitempty"`
+	Kept          *record.KeptDecisions `json:"kept,omitempty"`
+	Generation    uint64                `json:"generation"`
+	Phase         phase.Phase           `json:"phase,omitempty"`
+	Assignment    string                `json:"assignment,omitempty"`
+	ResumeTask    bool                  `json:"resumeTask,omitempty"`
+	RuleResume    bool                  `json:"ruleResume,omitempty"`
+	NeedsSlot     bool                  `json:"needsSlot,omitempty"`
+	Relaunch      bool                  `json:"relaunch,omitempty"`
+	Linger        uint64                `json:"linger,omitempty"`
+	Reason        string                `json:"reason,omitempty"`
+	CheckLook     int                   `json:"checkLook,omitempty"`
+	CheckOpenedAt time.Time             `json:"checkOpenedAt,omitzero"`
 }
 
 // columnOf is the value of the named column of one read row, as a string, and false where the read

@@ -15,7 +15,7 @@ import (
 // such a role that entry's work on every admission pass and on a sweep of its own each minute, so
 // the line is what an operator reads to see a difference the passes are not closing.
 //
-// The role is the one the issue's current phase names (workflow.RoleFor), which is the role the
+// The role is the one the issue's current phase names (phase.RoleFor), which is the role the
 // two numbers are of: an issue whose phase names no phase worker role carries neither number, so
 // the line never names one.
 func TestPlainStateNamesTheRolesNotGivenTheirPhaseEntry(t *testing.T) {

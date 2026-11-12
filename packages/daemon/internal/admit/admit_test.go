@@ -233,7 +233,7 @@ func TestApplyFactReadmitsLingeringRootAndIgnoresOwnStatusEcho(t *testing.T) {
 // A tree that closed retired every member's claim, so a re-admitted root's children sit mid-phase
 // with nothing running: the architect cannot release a child already in the workflow, and only a
 // worker's own handoff moves it. Admission starts each mid-phase child's role with its architect,
-// whichever mid-phase that is — retro included, whose role is the implementer's (workflow.RoleFor)
+// whichever mid-phase that is — retro included, whose role is the implementer's (phase.RoleFor)
 // — and tells it to carry that phase on: the run whose handoff began the phase is over, and a start
 // with no task leaves the resumed agent holding its old transcript with nothing asked of it.
 //
@@ -1077,7 +1077,7 @@ func TestCapturedDispatchTodoEventAdmitsAndProjectsActiveSlot(t *testing.T) {
 			return false
 		}
 		defer tx.Rollback(context.Background())
-		state, err := projection.Project(context.Background(), tx, record.NewStore(), "CAPTURE", nil, nil, nil, workflow.RoleFor, time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))
+		state, err := projection.Project(context.Background(), tx, record.NewStore(), "CAPTURE", nil, nil, nil, time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))
 		if err != nil {
 			return false
 		}

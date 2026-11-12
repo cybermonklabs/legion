@@ -127,7 +127,7 @@ func buildBackwardPairSet() map[string]bool {
 // tester's, and the reviewer's, each under the word its role's prompt spells
 // (internal/prompts/roles/*.md), the phase of the record whose newest version the `legion` tool's
 // `handoff_complete` reads and names (packages/pi-shared/src/handoff-record.ts). The writer is the
-// role the workflow starts on the phase (workflow.RoleFor, whose tests tie the two). Retro and the
+// role the workflow starts on the phase (RoleFor, whose tests tie the two). Retro and the
 // merger's READY write none, and report the commit they stand on; accepting is the architect's
 // sign-off, no handoff at all.
 func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
@@ -142,5 +142,37 @@ func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 		return "review", claim.RoleReviewer, true
 	default:
 		return "", "", false
+	}
+}
+
+// RoleFor is the role that works a phase: the one a transition starts, and the one whose handoff
+// record the `legion` tool's `handoff_complete` reads for a phase with a handoff (Handoff, whose
+// writer a test holds to this; packages/pi-shared/src/handoff-record.ts). A phase no role works —
+// awaiting_person, awaiting_merge, done, held — has none. Accepting is the tree architect's, a
+// claim per tree that no row starts: every site that starts, resumes or reports a phase's worker
+// skips it (workflow's start, admit's startMidPhaseMembers, workflow's booted and Stranded).
+//
+// It stands in this package, with the phase vocabulary it reads, rather than in internal/workflow,
+// which starts the roles: the state projection names the role each issue's entry numbers are of
+// (projection.Project), admission starts the mid-phase children of a tree it re-admits on each
+// child's own phase's role, and `legion state` reads the same role back for its line
+// (cmd/legion's entriesBehind). internal/workflow's own tests import internal/projection, so the
+// projection cannot reach a workflow function at all.
+func RoleFor(p Phase) claim.Role {
+	switch p {
+	case Planning:
+		return claim.RolePlanner
+	case Implementing, Retro:
+		return claim.RoleImplementer
+	case Testing:
+		return claim.RoleTester
+	case Reviewing:
+		return claim.RoleReviewer
+	case Accepting:
+		return claim.RoleArchitect
+	case Merging:
+		return claim.RoleMerger
+	default:
+		return ""
 	}
 }

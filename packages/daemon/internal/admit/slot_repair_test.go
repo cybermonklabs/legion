@@ -184,7 +184,7 @@ type slotRepairRow struct {
 	// root and key are the tree's root and the member holding the slot.
 	root, key string
 	// stands is the phase the member is in, which names the role that works it
-	// (workflow.RoleFor).
+	// (phase.RoleFor).
 	stands phase.Phase
 	// generation is the member's, which the start names and the claim's task is read against.
 	generation uint64
@@ -220,7 +220,7 @@ func seedSlotRepairRow(t *testing.T, pool *pgxpool.Pool, row slotRepairRow) {
 	t.Helper()
 	seedTreeAndMember(t, pool, row.root, row.key, row.stands, row.generation, row.lingers)
 	takeSlot(t, pool, row.key)
-	role := workflow.RoleFor(row.stands)
+	role := phase.RoleFor(row.stands)
 	token := putWorkerClaim(t, pool, row.root, row.key, role, row.generation, row.state, row.suspendedBy)
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: row.key, Role: role,
@@ -277,7 +277,7 @@ type owedRepairRow struct {
 func seedOwedRepairRow(t *testing.T, pool *pgxpool.Pool, row owedRepairRow) {
 	t.Helper()
 	seedTreeAndMember(t, pool, row.root, row.key, row.stands, 1, false)
-	role := workflow.RoleFor(row.stands)
+	role := phase.RoleFor(row.stands)
 	token := putWorkerClaim(t, pool, row.root, row.key, role, 1, row.state, row.suspendedBy)
 	if row.holdsTask {
 		putWorkerTask(t, pool, token, 1, row.stands, false)
@@ -416,7 +416,7 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 						row.key, got, row.why)
 				}
 				tasked := got
-				role := workflow.RoleFor(row.stands)
+				role := phase.RoleFor(row.stands)
 				if tasked[0].role != role || !tasked[0].needsSlot {
 					t.Fatalf("the start %s carries a task on after the pass = %+v, want the %s's, held for the issue's own slot: the repair starts the worker of the phase the issue stands in, and its task waits for the slot as every phase worker's start does",
 						row.key, tasked[0], role)
@@ -579,7 +579,7 @@ func TestTheRetryOfAStoppedWorkerKeepsTheStartItWrote(t *testing.T) {
 
 	// The retry's own write, before any pass. It is of the entry the role's phases row already
 	// names, as restart is, and carries the task of the phase the worker is to work.
-	retry := record.SuperviseRequest{Op: "start", Tree: row.root, Role: workflow.RoleFor(row.stands),
+	retry := record.SuperviseRequest{Op: "start", Tree: row.root, Role: phase.RoleFor(row.stands),
 		Generation: 1, Phase: row.stands, Task: retriedTask, Entry: seededEntry}
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), row.key, retry, fixedNow); err != nil {

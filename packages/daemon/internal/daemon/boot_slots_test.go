@@ -74,7 +74,7 @@ func readBootAdmission(t *testing.T, pool *pgxpool.Pool) bootAdmission {
 		if got.owed, err = records.OwedStarts(ctx, tx, bootProject); err != nil {
 			return err
 		}
-		state, err := projection.Project(ctx, tx, records, bootProject, nil, nil, nil, phaseRole, time.Now().UTC())
+		state, err := projection.Project(ctx, tx, records, bootProject, nil, nil, nil, time.Now().UTC())
 		if err != nil {
 			return err
 		}

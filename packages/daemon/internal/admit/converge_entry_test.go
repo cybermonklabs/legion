@@ -12,7 +12,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // convergeGeneration is the generation every tree of this file runs at. One is enough: what the
@@ -39,7 +38,7 @@ type convergeRow struct {
 	// required of a row that is not started and is never set on one that is.
 	flip func(*convergeRow)
 	// stands is the phase the member is in, which names the role that works it
-	// (workflow.RoleFor).
+	// (phase.RoleFor).
 	stands phase.Phase
 	// lingers records the root as a park left it: phase done at a status that is not todo, with
 	// a linger deadline ahead.
@@ -168,7 +167,7 @@ func seedConvergeRows(t *testing.T, pool *pgxpool.Pool, rows []convergeRow) ([]c
 		if !row.unslotted {
 			slots++
 		}
-		cases = append(cases, convergeCase{key: row.key, role: workflow.RoleFor(row.stands), started: row.started, why: row.why})
+		cases = append(cases, convergeCase{key: row.key, role: phase.RoleFor(row.stands), started: row.started, why: row.why})
 	}
 	for _, row := range rows {
 		if row.started != (row.flip == nil) {
@@ -205,7 +204,7 @@ func seedConvergeRow(t *testing.T, pool *pgxpool.Pool, row convergeRow) {
 	if !row.unslotted {
 		takeSlot(t, pool, row.key)
 	}
-	role := workflow.RoleFor(row.stands)
+	role := phase.RoleFor(row.stands)
 	if role == "" {
 		t.Fatalf("the phase %s of %s names no role, and every row of this table stands in a phase one works", row.stands, row.key)
 	}

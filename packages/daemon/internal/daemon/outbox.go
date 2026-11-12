@@ -1443,13 +1443,32 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if (payload.ResumeTask || state == supervise.StateFailed) && keepsStartTask(held, payload) {
 			r.log.Info("outbox start of a claim that holds its phase's task; not delivered again", "row", row.ID, "issue", issue.Key,
 				"role", payload.Role, "phase", payload.Phase, "held", held.Pending.ID)
-			// The task the claim holds is this entry's work, so the entry was given and is
-			// recorded on the claim here, where no delivery of it records it
-			// (supervise.Machine.EntryGiven): the difference between the entry the role's phases
-			// row names and the entry its claim was given closes without a second task reaching
-			// the worker. The gave flag below stays false, since what it answers is whether the
+			// Which entry the claim is recorded as given here is the entry of the task it is
+			// holding, never the entry this row carried, and the two differ.
+			//
+			// A start of the entry whose work the claim holds records that entry
+			// (supervise.Machine.EntryGiven): the claim was given that work, so the difference
+			// between the entry the role's phases row names and the entry its claim was given
+			// closes without a second task reaching the worker. Where the delivery that queued
+			// that task recorded the entry already — supervise's queue writes Claim.GivenEntry in
+			// the transaction that writes the delivery — EntryGiven leaves the number where it
+			// stands, since it only rises.
+			//
+			// A start of a later entry, whose task the claim is still working, records nothing.
+			// That claim was given the earlier entry's work and no other, and recording this row's
+			// entry on it is the defect the entry exists to close, rebuilt here: the claim would
+			// read level with its phases row, workflow.OwedEntry would answer false, nothing would
+			// send the row's own task, and every completion of the task the worker actually holds
+			// would be refused as behind. Recording nothing leaves no worker with nothing to do.
+			// The worker finishes the turn it is in; its completion of the earlier entry is
+			// refused 409 with nothing recorded, which is right, since the phase was entered
+			// again; and the admission pass sends the row's own entry's task on the first pass
+			// after that task is retired, since it passes over a claim whose pending delivery is
+			// still worked (admit's resumeSlottedWorkers, workflow's SendOwedEntry).
+			//
+			// The gave flag below stays false either way, since what it answers is whether the
 			// task was handed over (settleKept), not whether the entry was recorded.
-			if payload.Entry > 0 {
+			if payload.Entry > 0 && held.Pending.Entry == payload.Entry {
 				if err := machine.EntryGiven(ctx, payload.Entry); err != nil {
 					return fmt.Errorf("record entry %d as given to claim %s: %w", payload.Entry, token, err)
 				}

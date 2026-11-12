@@ -24,7 +24,10 @@
 -- entry 1; a claim whose serving_assignment is that same token took that work, so it was given it
 -- and served it; a delivery carrying that token is that work in flight, so the claim was given it
 -- even where nothing is served yet; and the task of entry 1 is the task of the start row the
--- issue still owes that role, which is exactly the work a stopped tree is waiting for.
+-- issue still owes that role, which is exactly the work a stopped tree is waiting for. That row
+-- is the start of entry 1, so the fill stamps the number into its payload as well: it is the row
+-- that will deliver that work, and a delivery carrying no entry would leave the claim at entry 0
+-- under a phases row at entry 1.
 --
 -- Every statement of the fill excludes the empty assignment. All three assignment columns are
 -- text not null default '', so an equality alone holds between two empty values: a claim that was
@@ -37,19 +40,38 @@
 -- at all: its own claim read names serving_assignment (packages/daemon/internal/store/claims.go,
 -- claimSelect), so every claim read fails and the supervisor loads nothing. Rolling the image
 -- back therefore needs the three columns back first. This directory keeps no down migrations —
--- migrations here are forward-only and no .down.sql file exists — so the way back is these three
+-- migrations here are forward-only and no .down.sql file exists — so the way back is these four
 -- statements, to run with the daemon stopped:
 --
 --   alter table phases add column assignment text not null default '';
 --   alter table claims add column serving_assignment text not null default '';
 --   alter table pending_task_deliveries add column assignment text not null default '';
+--   update outbox set payload = payload - 'entry' - 'resendEntry'
+--     where kind = 'supervise' and (payload ? 'entry' or payload ? 'resendEntry');
 --
--- That recovery costs nothing beyond the statements. The older daemon's fence compares the two
--- sides only when both name an assignment (internal/api/handoff.go, the stale-assignment fence),
--- and the columns come back empty on every row, so it reads nothing to compare: it accepts the
--- completions in flight rather than refusing them, and mints a fresh token at each role's next
--- start, which stamps both sides in one transaction. The entry columns are left standing by that
--- recovery and are read by nothing in the older daemon.
+-- The first three statements are the columns that daemon reads; the fourth is the two payload
+-- keys this release writes, taken back out, and it is run with the daemon stopped beside them.
+-- This release writes entry into a supervise start's payload and resendEntry onto a retry's
+-- (record.SuperviseRequest.Entry and ResendEntry); the release before it knows neither key and
+-- decodes an outbox payload strictly (record.DecodeOutboxPayload, DisallowUnknownFields), and
+-- its record.Postgres.RoleRuns decodes every supervise row of every issue an admission pass
+-- reads. A row carrying either key left in the table therefore fails to decode for ever — the
+-- runner retries it on its backoff and every admission pass of its issue fails with it — which
+-- is why the recovery is four statements and not three.
+--
+-- assignment is not stripped with them. record.SuperviseRequest.Assignment is kept in this
+-- release as a field nothing writes, because a rollback is followed by a roll-forward: the older
+-- daemon mints that token again at each role's next start, so rows carrying assignment are
+-- written after any strip of the key has run, and this release's decoder would refuse them had
+-- the field been deleted. The release after this one may delete the field, and a strip of the
+-- key belongs there, beside it.
+--
+-- What the recovery costs the older daemon is nothing beyond those statements. Its fence compares
+-- the two sides only when both name an assignment (internal/api/handoff.go, the stale-assignment
+-- fence), and the columns come back empty on every row, so it reads nothing to compare: it
+-- accepts the completions in flight rather than refusing them, and mints a fresh token at each
+-- role's next start, which stamps both sides in one transaction. The entry columns are left
+-- standing by that recovery and are read by nothing in the older daemon.
 alter table phases add column entry bigint not null default 0;
 alter table phases add column entry_task text not null default '';
 alter table phases add column entry_raised_at timestamptz;
@@ -98,6 +120,20 @@ from (
   order by o.issue, o.payload->>'role', o.created_at, o.id
 ) owed
 where p.issue = owed.issue and p.role = owed.role and p.assignment <> '';
+
+-- The start row the issue still owes that role is the start of entry 1, so it carries that
+-- number. The payload the release before this one wrote names no entry, and the delivery that row
+-- makes would leave the claim's given_entry at 0 under a phases row at entry 1: a role read as
+-- behind work its worker already holds, which admission and the daemon's own entry sweep close by
+-- sending that same work a second time (workflow.OwedEntry, Engine.SendOwedEntry). The row is
+-- matched on the token its payload carries, as every statement of the fill is, so a start row
+-- carrying any other token — the work of an entry the role has left — takes no entry and stands
+-- as it stood.
+update outbox o set payload = jsonb_set(o.payload, '{entry}', '1'::jsonb)
+from phases p
+where o.kind = 'supervise' and o.payload->>'op' = 'start'
+  and p.issue = o.issue and p.role = o.payload->>'role'
+  and p.assignment <> '' and o.payload->>'assignment' = p.assignment;
 
 alter table phases drop column assignment;
 alter table claims drop column serving_assignment;

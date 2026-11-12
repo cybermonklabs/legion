@@ -279,7 +279,7 @@ func projectedHold(t *testing.T, pool *pgxpool.Pool, key string) (phase.Phase, s
 	var state api.State
 	if err := pgx.BeginFunc(t.Context(), pool, func(tx pgx.Tx) error {
 		var err error
-		state, err = projection.Project(t.Context(), tx, record.NewStore(), "LEGION", nil, nil, nil, RoleFor, time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))
+		state, err = projection.Project(t.Context(), tx, record.NewStore(), "LEGION", nil, nil, nil, time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))
 		return err
 	}); err != nil {
 		t.Fatalf("project the state: %v", err)
@@ -330,7 +330,7 @@ func TestARetrysTaskNamesThePullRequest(t *testing.T) {
 	if _, err := intake.ApplyFact(ctx, pool, "architect", "retry", intake.RetryOrEscalate{Issue: "LEGION-208", Decision: intake.RetryDecision}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
-	task := startTask(t, pool, RoleFor(phase.Implementing))
+	task := startTask(t, pool, phase.RoleFor(phase.Implementing))
 	if !strings.Contains(task, "Pull request: #42.") {
 		t.Fatalf("task = %q, want it to name pull request #42", task)
 	}

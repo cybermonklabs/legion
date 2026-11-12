@@ -27,10 +27,10 @@ import (
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 const (
@@ -969,7 +969,7 @@ func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) str
 }
 
 // entryBehind is one issue whose role has not been given the work its phase entry names: the
-// issue, the role of its current phase (workflow.RoleFor, the role the state's two numbers are
+// issue, the role of its current phase (phase.RoleFor, the role the state's two numbers are
 // of), the entry that role's phases row stands on and the entry it was given.
 type entryBehind struct {
 	issue string
@@ -981,7 +981,7 @@ type entryBehind struct {
 // entriesBehind is every issue of the state whose two entry numbers differ
 // (api.Issue.PhaseEntry and GivenEntry), by issue key. An issue whose current phase names no
 // phase worker role carries neither number, so it is never named here: the projection writes
-// them only where workflow.RoleFor names a role, and that is the role this reads back for the
+// them only where phase.RoleFor names a role, and that is the role this reads back for the
 // line.
 func entriesBehind(issues map[string]api.Issue) []entryBehind {
 	var behind []entryBehind
@@ -990,19 +990,22 @@ func entriesBehind(issues map[string]api.Issue) []entryBehind {
 		if issue.PhaseEntry == issue.GivenEntry {
 			continue
 		}
-		behind = append(behind, entryBehind{issue: key, role: workflow.RoleFor(issue.Phase),
+		behind = append(behind, entryBehind{issue: key, role: phase.RoleFor(issue.Phase),
 			entry: issue.PhaseEntry, given: issue.GivenEntry})
 	}
 	return behind
 }
 
 // entrySummary is the one line an operator reads for the roles that have not been given the work
-// their phase entry names: how many, and each by issue and role with the two numbers. The daemon
-// sends that entry's work to such a role on every admission pass and on a sweep of its own each
-// minute (admit's resumeSlottedWorkers), so a difference here is one of two things: an entry
-// raised seconds ago, which the next pass closes, or a role the passes are passing over, which
-// the daemon's own "a role was behind the entry its phases row names" log line names each time
-// it sends the work again.
+// their phase entry names: how many, and each by issue and role with the two numbers. A
+// difference here is one of three things. An entry raised seconds ago, which the next pass
+// closes: the daemon sends that entry's work on every admission pass and on a sweep of its own
+// each minute (admit's resumeSlottedWorkers). An issue waiting for its admission slot, whose
+// start row the outbox holds unclaimable until the slot comes (workflow.StartOrOwe) and which
+// the pass passes over, since it reads the slotted issues alone — every issue in the waiting
+// line is named here, and its difference stands for as long as it waits, which is hours on a
+// full cap. Or a role the passes are passing over, which the daemon's own "a role was behind the
+// entry its phases row names" log line names each time it sends the work again.
 func entrySummary(issues map[string]api.Issue) string {
 	behind := entriesBehind(issues)
 	if len(behind) == 0 {

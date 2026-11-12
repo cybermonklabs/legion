@@ -27,13 +27,11 @@ import (
 // root's view answers its own state of; the empty list gates none. reports is each claim's latest
 // capability report, by claim (LEGION-663): a claim with one shows it whatever its incarnation —
 // the view carries the reporting process's, for a reader to compare with the locator's — and a
-// claim with none shows no capabilities. Nil is no reports. roleFor is the role that works a
-// phase, and every caller hands in the daemon's own workflow.RoleFor: it is a parameter rather
-// than a call because internal/workflow's own tests import this package, which an import of it
-// here would make a cycle. It names the role whose phase entry and given entry each issue's view
-// carries, and it is required. now is the instant the held rows are read at
-// (record.Store.HeldRows) and their waits are measured from.
-func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, claims []supervise.Claim, reports map[claim.Token]capabilities.Report, roleFor func(phase.Phase) claim.Role, now time.Time) (api.State, error) {
+// claim with none shows no capabilities. Nil is no reports. The role whose phase entry and given
+// entry each issue's view carries is the role that works its current phase (phase.RoleFor). now
+// is the instant the held rows are read at (record.Store.HeldRows) and their waits are measured
+// from.
+func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, claims []supervise.Claim, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
 	issues, err := s.Issues(ctx, tx)
 	if err != nil {
 		return api.State{}, err
@@ -188,12 +186,17 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		// given: the pair a reader tells a role holding the work its row names from one the daemon
 		// has still to send that work to (api.Issue.PhaseEntry). A phase that names no phase worker
 		// role carries neither number — a root at admitted whose design gate has never opened is at
-		// work (record.AtWork) and roleFor names no role for that phase, so the admission pass
-		// passes it over and a difference written for it would stand for ever — and no row of a
-		// role the issue has moved past is read, since that role keeps its entry and is sent
+		// work (record.AtWork) and phase.RoleFor names no role for that phase, so the admission
+		// pass passes it over and a difference written for it would stand for ever — and no row of
+		// a role the issue has moved past is read, since that role keeps its entry and is sent
 		// nothing.
-		if role := roleFor(issue.Phase); role != "" {
-			view.PhaseEntry, view.GivenEntry = entryOf(phases, role), givenEntries[issueRole{issue: issue.Key, role: role}]
+		// The entry is 0 where the rows hold none of that role (record.PhaseRowOf), a role no
+		// transition has ever handed work on, and it is read with the same call admit's
+		// owedEntryRoles reads for the same role from the same rows, so the state shows what the
+		// admission pass weighs a claim against.
+		if role := phase.RoleFor(issue.Phase); role != "" {
+			view.PhaseEntry = record.PhaseRowOf(phases, role).Entry
+			view.GivenEntry = givenEntries[issueRole{issue: issue.Key, role: role}]
 		}
 
 		pr, err := s.PullRequest(ctx, tx, issue.Key)
@@ -365,14 +368,6 @@ type memoryDraw struct {
 type issueRole struct {
 	issue string
 	role  claim.Role
-}
-
-// entryOf is the entry role's row among rows names (record.PhaseRow.Entry), and 0 where rows
-// hold no row of that role: a role no transition has ever handed work on, which stands on no
-// entry (record.PhaseRowOf). It is the number admit's resumeSlottedWorkers reads for the same
-// role from the same rows, so the state shows what the admission pass weighs a claim against.
-func entryOf(rows []record.PhaseRow, role claim.Role) int64 {
-	return record.PhaseRowOf(rows, role).Entry
 }
 
 // checkView is an open production check as the state shows it (api.CheckView): the role the check

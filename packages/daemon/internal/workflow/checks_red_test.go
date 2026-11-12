@@ -210,7 +210,7 @@ func TestARedTellsTheRoleWhosePhaseItEnded(t *testing.T) {
 			got := phaseEndedMessages(t, pool, "LEGION-208")
 			if tc.want == (record.PhaseEnded{}) {
 				if len(got) != 0 {
-					t.Fatalf("the red out of %s told %+v, want nobody: its role is %q", tc.from, got, RoleFor(tc.from))
+					t.Fatalf("the red out of %s told %+v, want nobody: its role is %q", tc.from, got, phase.RoleFor(tc.from))
 				}
 				return
 			}

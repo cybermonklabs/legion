@@ -9,7 +9,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // Each issue carries the entry the role of its current phase stands on and the entry that role
@@ -62,7 +61,7 @@ func TestProjectShowsThePhaseEntryAndTheEntryTheRoleWasGiven(t *testing.T) {
 			Session: "ses_implementer_60", GivenEntry: 5},
 	}
 
-	got, err := Project(context.Background(), nil, store, project, nil, claims, nil, workflow.RoleFor, projectedAt)
+	got, err := Project(context.Background(), nil, store, project, nil, claims, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -75,7 +74,7 @@ func TestProjectShowsThePhaseEntryAndTheEntryTheRoleWasGiven(t *testing.T) {
 		// nothing, which is the zero the wire leaves out.
 		"LEGION-40": {PhaseEntry: 2, GivenEntry: 1},
 		"LEGION-50": {PhaseEntry: 1, GivenEntry: 0},
-		// Held names no phase worker role (workflow.RoleFor), so neither number is written,
+		// Held names no phase worker role (phase.RoleFor), so neither number is written,
 		// however far behind the claim of its last phase stands.
 		"LEGION-60": {PhaseEntry: 0, GivenEntry: 0},
 	} {
@@ -107,12 +106,12 @@ func TestProjectWritesNoPhaseEntryForAPhaseNoWorkerRoleWorks(t *testing.T) {
 	got, err := Project(context.Background(), nil, store, project, nil, []supervise.Claim{
 		{Token: "legion-70-architect", Issue: "LEGION-70", Role: claim.RoleArchitect, State: supervise.StateReady,
 			Session: "ses_architect_70", GivenEntry: 1},
-	}, nil, workflow.RoleFor, projectedAt)
+	}, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
 	if view := got.Issues["LEGION-70"]; view.PhaseEntry != 0 || view.GivenEntry != 0 {
-		t.Fatalf("the admitted root is projected with entry %d given %d, want neither: workflow.RoleFor names no phase worker role for admitted",
+		t.Fatalf("the admitted root is projected with entry %d given %d, want neither: phase.RoleFor names no phase worker role for admitted",
 			view.PhaseEntry, view.GivenEntry)
 	}
 }

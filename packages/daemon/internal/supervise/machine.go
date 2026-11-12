@@ -173,8 +173,9 @@ type Claim struct {
 	// written with its delivery, in the same transaction, so a row's task is known queued no later
 	// than it is: a retry of that row is never queued again, whether its delivery is still pending
 	// or the claim has since retired it. That is what a delivery carrying no entry is held to —
-	// the tree architect's start, a production check's look, the pod wake, the resume of a
-	// cancelled idle release — where one carrying an entry is held to GivenEntry instead (queue).
+	// the tree architect's start, a production check's look, the pod wake, the boot's resume by
+	// rule, the resume of a cancelled idle release — where one carrying an entry is held to
+	// GivenEntry instead (queue).
 	// The rows of one issue do not run in row order (record's outboxInOrder), so the set is kept
 	// rather than a high-water mark: an older row still to deliver after a newer one has is given
 	// its task, and only a row that gave this claim a task is read as given. It is also what says
@@ -1301,12 +1302,14 @@ func (c Claim) ServingRun() uint64 {
 // ServingEntry is the phase entry of the task this claim's worker took, and 0 for a claim that
 // has taken none that carried one. It is the finer of the two: every phase entry of one run
 // carries that run, where each entry that hands this role a task carries a number of its own.
-// A task of no entry answers for none of them: an operator's own, a resume, a production
-// check's look, and every task a daemon older than the entry delivered — so a resumed worker's
-// in-flight completion is never refused for an entry it was never given. The older work an
-// unread task's entry could be mistaken for is an entry this claim was left serving, and
-// nothing else: a worker whose last task carried none — a resume, a look, a pre-entry daemon's
-// delivery — is on its first entry still, and the fallback is what lets it complete.
+// A task of no entry answers for none of them: an operator's own, the tree architect's start,
+// the boot's resume by rule, a production check's look, the pod wake, the resume of a cancelled
+// idle release, and every task a daemon older than the entry delivered — so a worker resumed by
+// one of those is never refused an in-flight completion for an entry it was never given. The
+// older work an unread task's entry could be mistaken for is an entry this claim was left
+// serving, and nothing else: a worker whose last task carried none — one of those resumes, a
+// look, a pre-entry daemon's delivery — is on its first entry still, and the fallback is what
+// lets it complete.
 func (c Claim) ServingEntry() int64 {
 	return serving(c.Pending, deliveredEntry, c.ServedEntry, c.ServedEntry != 0)
 }

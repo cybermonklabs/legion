@@ -1471,31 +1471,39 @@ func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
 
 // applyEntrySweep applies one sweep, when one is owed. The fact itself reads nothing before it:
 // every handler decides inside the fact's own transaction, and what the sweep judges is the
-// daemon's own record. What runs before it is the gate — one read-only query, in a transaction
-// of its own and outside the fact lock, asking whether any role of this project is behind the
-// entry its phases row names (record.Store.AnyRoleBehindItsEntry). Without it a quiet project
-// takes the fact's lock and writes a row of processed_events, which nothing prunes, once a
-// minute for as long as the daemon runs; with it the sweep applies a fact only when there is a
-// difference to close. The gate over-approximates — the pass the fact makes applies the
-// at-work, slot and claim-state rules itself — and never under-approximates, so no role waits
-// for its work. A query that fails applies nothing and is logged: the next run asks again.
+// daemon's own record. What runs before it is the gate — the very selection the sweep's pass
+// makes (admit's OwedEntryRoles, which admit's resumeSlottedWorkers sends the work of), in a
+// read-only transaction of its own and outside the fact lock, asking whether any role of this
+// project is owed the work of the entry its phases row names. The fact takes the one lock every
+// fact takes and writes a row of processed_events, which nothing prunes, so the daemon asks
+// before it applies one; and it asks the question only one piece of code answers, so no gate of
+// its own can disagree with the pass and apply a fact a minute for work that pass would never
+// do. A read that fails applies nothing and is logged: the next run asks again.
 func (w *workflowRuntime) applyEntrySweep(ctx context.Context, at time.Time) {
-	var behind bool
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
-		var err error
-		behind, err = w.records.AnyRoleBehindItsEntry(ctx, tx, w.dispatchProject)
-		return err
-	}); err != nil {
-		w.log.Warn("read whether a role is behind its phase entry failed", "error", err)
+	owed, err := w.owedEntryRoles(ctx)
+	if err != nil {
+		w.log.Warn("read which roles are owed the work of their phase entry failed", "error", err)
 		return
 	}
-	if !behind {
+	if len(owed) == 0 {
 		return
 	}
 	eventID := fmt.Sprintf("entry-sweep:%s:%s:%d", w.dispatchProject, w.bootID, at.UnixNano())
 	if _, err := intake.ApplyFact(ctx, w.pool, "entry-sweep", eventID, intake.EntrySweep{}, w.handlers...); err != nil {
 		w.log.Warn("apply the entry sweep failed", "error", err)
 	}
+}
+
+// owedEntryRoles is the sweep's gate read, in one short read-only transaction: admission's own
+// selection of the roles owed the work of the entry their phases rows name, run over the
+// project exactly as the pass the fact would make runs it.
+func (w *workflowRuntime) owedEntryRoles(ctx context.Context) ([]admit.OwedEntryRole, error) {
+	tx, err := w.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	return w.admission.OwedEntryRoles(ctx, tx)
 }
 
 // promoteAfterHoldClears applies one synthetic DispatchConsumerPosition fact, its event id never

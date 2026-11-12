@@ -1901,11 +1901,6 @@ func (s *supervision) stop() {
 	})
 }
 
-// phaseRole is the role that works a phase (workflow.RoleFor), which the operator's retry of a
-// held phase checks (api.Options.RoleFor). It is named at package level because serve's own
-// workflow parameter hides the package there.
-var phaseRole = workflow.RoleFor
-
 // serve runs the API on the listener the daemon already took until ctx is done or the server
 // fails, and returns once it is closed: one goroutine serves, the other shuts down, and the
 // shutdown runs on a context of its own so a cancelled ctx still drains the connections it has.
@@ -1979,7 +1974,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		PrepareRepository:  prepare,
 		RepositoryUnread:   unread,
 		AwaitRecovery:      await,
-		RoleFor:            phaseRole,
+		RoleFor:            phase.RoleFor,
 		Record:             records,
 		Dispatch:           client,
 		Tokens:             tokens,
@@ -2258,7 +2253,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	claims = ofProject(claims, s.projectToken)
 	records := projectRecords{Store: s.records, project: s.project}
 	now := time.Now().UTC()
-	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, s.reports(), phaseRole, now)
+	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, s.reports(), now)
 	if err != nil {
 		return api.State{}, nil, err
 	}

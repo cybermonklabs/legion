@@ -1983,7 +1983,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		}
 		// Accepting's role is the tree's architect, which promotion already started: nothing of
 		// that phase is resumed here.
-		owner := workflow.RoleFor(member.Phase)
+		owner := phase.RoleFor(member.Phase)
 		if owner == claim.RoleArchitect {
 			owner = ""
 		}
@@ -2054,42 +2054,58 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 	return nil
 }
 
-// resumeSlottedWorkers sends every role of an issue at work that is behind the entry its phases
-// row names the work of that entry (workflow.OwedEntry, workflow's SendOwedEntry): the task that
-// entry was raised with, at that entry, so no completion in flight is refused for an entry the
-// worker was never given, and the phase's resume task where the record holds no task of that
-// entry.
+// OwedEntryRole is one role the entry work is owed to: the issue whose current phase it is the
+// role of, the phases row the work and the entry are read from, and the entry that role's claim
+// was last given, which only the log line of the send reads.
+type OwedEntryRole struct {
+	Issue record.Issue
+	Role  claim.Role
+	Row   record.PhaseRow
+	Given int64
+}
+
+// OwedEntryRoles is owedEntryRoles over the project read as every admission pass reads it
+// (reread): the one answer to which roles are owed the work of the entry their phases rows
+// name. It reads and writes nothing else, so the entry sweep's gate (internal/daemon's
+// applyEntrySweep) asks it in a read-only transaction of its own, before any fact, to learn
+// whether the sweep's own pass would send anything.
+func (a *Admission) OwedEntryRoles(ctx context.Context, tx pgx.Tx) ([]OwedEntryRole, error) {
+	issues, slots, facts, err := a.reread(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	return a.owedEntryRoles(ctx, tx, issues, slots, facts)
+}
+
+// owedEntryRoles is every role of an issue at work that is behind the entry its phases row names
+// (workflow.OwedEntry), in the order the slots are read. It is the selection half of the repair
+// resumeSlottedWorkers sends, and the only statement of which roles are owed that work: a reader
+// asking whether anything is owed asks this rather than restating it, so no second statement can
+// disagree with the pass.
 //
-// The difference it closes is the one the record carries on its own: the transition raises the
-// entry and writes its work in its own transaction, the outbox records the entry as given when
-// it queues the task, and between the two nothing else reads the two numbers. So this repairs
-// the slot whose worker has no task it was written for — a start row finished without acting
-// while the slot stayed, one the outbox fenced out, one finishFencedStarts ended earlier in this
-// pass — and, by the same rule and without asking why, every other role whose claim never got
-// the work its entry names, whatever state that claim is in.
+// Only the role of each slotted issue's current phase is read (phase.RoleFor), so a role the
+// issue's phase has left is no part of the answer: its phases row keeps the entry it was last
+// handed work on, and nothing here would ever send that work again.
 //
-// It runs after the cap loop on every pass admission makes, and on the entry sweep's own fact
-// (convergeEntries), over at most the cap's worth of slotted issues, through one batched RoleRuns
+// It reads over at most the cap's worth of slotted issues, through one batched record.RoleRuns
 // read rather than a read per slot, and one read of the phase rows of each holder the three
-// skips that read the claim alone leave standing. Running after the
-// fence repair rather than before it is what repairs a slot whose start row the fences rejected
-// on the pass that rejected it, instead of a pass later.
+// skips that read the claim alone leave standing.
 //
 // A slot no longer says a worker of its issue has work: an issue keeps its row through phases
 // no worker of it works (record.KeepsSlot), so a holder record.AtWork answers false for is
-// passed over, at the skip the loop below states. The pass hands this its own facts, so the
-// gate AtWork is asked with is the issue's real one and the call stays honest against its
-// contract, at one map lookup a holder.
-func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
+// passed over, at the skip the loop below states. The caller hands this the facts of its own
+// pass, so the gate AtWork is asked with is the issue's real one and the call stays honest
+// against its contract, at one map lookup a holder.
+func (a *Admission) owedEntryRoles(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
 	facts record.LineFacts,
-) error {
+) ([]OwedEntryRole, error) {
 	byKey := make(map[string]record.Issue, len(issues))
 	for _, issue := range issues {
 		byKey[issue.Key] = issue
 	}
 	project, err := claim.ProjectToken(a.project)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	type holder struct {
 		issue record.Issue
@@ -2104,7 +2120,7 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 		if !recorded || issue.Project != a.project {
 			continue
 		}
-		role := workflow.RoleFor(issue.Phase)
+		role := phase.RoleFor(issue.Phase)
 		if role == "" || role == claim.RoleArchitect {
 			continue
 		}
@@ -2113,7 +2129,7 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 		// merging whose merge request a closed design gate holds (record.ReadyPending), whose
 		// role is the merger, where a second task would ask for a READY a person has still to
 		// approve. Every other phase the rule keeps a row for has no worker role of its own —
-		// workflow.RoleFor answers the architect for accepting, which the skip above passes
+		// phase.RoleFor answers the architect for accepting, which the skip above passes
 		// over, and the empty role for held, awaiting_person, admitted, awaiting_merge and
 		// done. So the gate decides nothing here either: AtWork reads it in the phase.Admitted
 		// arm alone, and no issue at admitted reaches this line.
@@ -2135,12 +2151,13 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 		keys = append(keys, record.RoleRunKey{Token: token, Issue: issue.Key, Role: role, Generation: issue.Generation})
 	}
 	if len(keys) == 0 {
-		return nil
+		return nil, nil
 	}
 	runs, err := a.store.RoleRuns(ctx, tx, keys)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var owed []OwedEntryRole
 	for _, held := range holders {
 		run := runs[held.token]
 		if c := run.Claim; c != nil && c.Pending != nil && c.Pending.StillWorked(held.issue.Generation, held.issue.Phase, c.State) {
@@ -2180,41 +2197,60 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 		}
 		// The role's phases row is read here, below the three skips above, so a holder one of
 		// them passes over costs no query: each of those reads run.Claim alone. The whole row is
-		// read rather than its entry, and the send is given it, so the row the rule is weighed
-		// against is the row whose work is sent, read once per owed role.
-		row, err := a.phaseRow(ctx, tx, held.issue.Key, held.role)
+		// read rather than its entry, and it is carried out of here, so the row the rule is
+		// weighed against is the row whose work is sent, read once per owed role. The record
+		// holding no row of that role is a role no transition has ever handed work on, which
+		// record.PhaseRowOf answers with the zero row: it stands on entry 0 and is owed nothing.
+		rows, err := a.store.Phases(ctx, tx, held.issue.Key)
 		if err != nil {
-			return err
+			return nil, fmt.Errorf("read the phase rows of %s: %w", held.issue.Key, err)
 		}
+		row := record.PhaseRowOf(rows, held.role)
 		if !workflow.OwedEntry(run, held.root, row.Entry) {
 			continue
-		}
-		if err := a.engine.SendOwedEntry(ctx, tx, held.issue, held.role, row); err != nil {
-			return fmt.Errorf("start the worker of slotted issue %s again: %w", held.issue.Key, err)
 		}
 		var given int64
 		if c := run.Claim; c != nil {
 			given = c.GivenEntry
 		}
+		owed = append(owed, OwedEntryRole{Issue: held.issue, Role: held.role, Row: row, Given: given})
+	}
+	return owed, nil
+}
+
+// resumeSlottedWorkers sends every role owedEntryRoles names the work of the entry its phases
+// row names (workflow's SendOwedEntry): the task that entry was raised with, at that entry, so
+// no completion in flight is refused for an entry the worker was never given, and the phase's
+// resume task where the record holds no task of that entry.
+//
+// The difference it closes is the one the record carries on its own: the transition raises the
+// entry and writes its work in its own transaction, the outbox records the entry as given when
+// it queues the task, and between the two nothing else reads the two numbers. So this repairs
+// the slot whose worker has no task it was written for — a start row finished without acting
+// while the slot stayed, one the outbox fenced out, one finishFencedStarts ended earlier in this
+// pass — and, by the same rule and without asking why, every other role whose claim never got
+// the work its entry names, whatever state that claim is in.
+//
+// It runs after the cap loop on every pass admission makes, and on the entry sweep's own fact
+// (convergeEntries). Running after the fence repair rather than before it is what repairs a slot
+// whose start row the fences rejected on the pass that rejected it, instead of a pass later.
+func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
+	facts record.LineFacts,
+) error {
+	owed, err := a.owedEntryRoles(ctx, tx, issues, slots, facts)
+	if err != nil {
+		return err
+	}
+	for _, role := range owed {
+		if err := a.engine.SendOwedEntry(ctx, tx, role.Issue, role.Role, role.Row); err != nil {
+			return fmt.Errorf("start the worker of slotted issue %s again: %w", role.Issue.Key, err)
+		}
 		intake.OnCommit(ctx, func() {
 			a.log.Warn("admission: a role was behind the entry its phases row names, so that entry's work is sent again",
-				"issue", held.issue.Key, "role", held.role, "phase", held.issue.Phase, "entry", row.Entry, "given", given)
+				"issue", role.Issue.Key, "role", role.Role, "phase", role.Issue.Phase, "entry", role.Row.Entry, "given", role.Given)
 		})
 	}
 	return nil
-}
-
-// phaseRow is role's phases row of issue (record.PhaseRowOf), and the zero row where the record
-// holds no row of that role — a role no transition has ever handed work on, which stands on
-// entry 0 and is owed nothing. resumeSlottedWorkers weighs a claim against the entry it names
-// and hands the row itself to workflow's SendOwedEntry, so the row the rule was weighed against
-// is the row whose work is sent and the rows are read once.
-func (a *Admission) phaseRow(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (record.PhaseRow, error) {
-	rows, err := a.store.Phases(ctx, tx, issue)
-	if err != nil {
-		return record.PhaseRow{}, fmt.Errorf("read the phase rows of %s: %w", issue, err)
-	}
-	return record.PhaseRowOf(rows, role), nil
 }
 
 // convergeEntries is the entry sweep's whole work (intake.EntrySweep, the fact the daemon's own
