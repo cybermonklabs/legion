@@ -58,18 +58,18 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 ## The last round
 
 A parent's own pull request proves each of its checks, so sign off a parent with children only
-on an approved head carrying the merges of every child those checks need. Each needs a current
-passing result at that head, or, for one in another repository, at a commit on the branch that
+on an approved head carrying the merges of every child those checks need. Each needs a passing
+result at that head, or, for one in another repository, at a commit on the branch that
 issue's pull request merged into or on that repository's default branch — that default branch
 alone where Dispatch knows of no merge of the issue — and, for a `default_branch` check, on that
 default branch whatever branch the pull request merged into. A child records no result that
-proves a parent's check: a child's pull
-request never makes a parent check's result current, and a child carrying part of a parent's
+proves a parent's check: such a result was recorded at the child's head and not at the parent's,
+and a child carrying part of a parent's
 requirement proves it with a check on its own Verification document whose `serves` names that
 requirement. Nothing in the tree builds on the parent's own merge, which comes last: a child
 that waits for it waits forever, so work another child builds on is a child of its own, in a
 repository of its own or with a deploy of its own. While the approved head does not carry those
-merges, or the result of a check in another repository is older than the close of a child it
+merges, or a check in another repository has no pass standing since the close of a child it
 needs, leave the issue in `accepting` until each has closed (`child-closed`) or been parked for
 good (`child-status`). Move a parked child's criterion to the root's own pull request or a
 released, open child first; never downgrade it. A root's requirement stays the root's, pending

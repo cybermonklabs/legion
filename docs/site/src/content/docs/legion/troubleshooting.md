@@ -450,7 +450,8 @@ turn of the owed task ends with no provider error.
 error, 400 to 499, that is none of 401, 403, 408 and 429. A malformed request is
 the case it exists for. The claim fails with `why` reading `a provider error that cannot clear
 ended this claim's turn: <cause>`, where the cause names that status, and the hold is the
-architect's to retry or escalate as any held phase is.
+architect's to retry or escalate as any held phase is. The claim's own record carries that
+failure under the cause word `provider_error`, with the same sentence as its `detail`.
 
 **After six turns of one claim in a row have ended in a provider error**, the project's controller
 is told once, as `provider-errors on <KEY>`, with the run, the model and the cause
@@ -467,13 +468,24 @@ reaches six is told.
 
 When an agent's budget runs out (launches that failed, deaths with work outstanding, prompts it
 never took a turn on) the daemon stops relaunching it and holds the issue. The daemon logs JSON
-lines; the one to look for is the error whose `msg` is `supervise: claim failed`, and its `why`
+lines, and the one to look for is the error whose `msg` is `supervise: claim failed`, whose `why`
 says which budget ran out (`launch failures ran out`, `deaths with work outstanding ran out`,
 `prompt retirements ran out`):
 
 ```text
 {"level":"ERROR","msg":"supervise: claim failed","why":"launch failures ran out","launchFailures":3,"deaths":0,…}
 ```
+
+The log is no longer the only place that cause lives. The daemon keeps it on the claim itself, as
+`failure`. Its `cause` is one word out of `launch_refused`, `died`, `never_registered`,
+`stale_plugin`, `prompt_retires_exhausted`, `provider_error` and `unrecorded`, the last for a
+claim that failed before this release. Beside it stand `detail`, the sentence the log line wrote,
+`at`, the moment it failed, and `attempts`, the four counts. A claim carries the record from its
+failure until it is given another run. The issue's architect reads it with the `legion` tool's
+`read_record`, the project's controller with `read_state`, and an operator with
+`legion claims list`, which prints the cause word after the claim's state word and `-` for a
+claim the daemon holds no cause and sentence for, or with `legion claims list --json` for the
+whole record.
 
 Before it come `supervise: launch failed` or `supervise: process died` warnings, one per attempt,
 each but the last followed by `supervise: waiting before the next launch`: the tries are spaced by
@@ -485,11 +497,12 @@ and the launch fails only when the server is still overloaded at the launch's ow
 state shows it too:
 
 ```sh
-legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {phase, holdReason, architect, workers}'
+legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {phase, holdReason, heldFrom, architect, workers}'
 ```
 
-`phase` is `held` and the failed claim's `state` is `failed`. A held phase worker is its
-architect's to retry or escalate; `holdReason: "escalated"` means it went to the controller. An
+`phase` is `held`, `heldFrom` names the phase the hold took the issue out of, and the failed
+claim's `state` is `failed` with its `failure` beside it. A held phase worker is its architect's
+to retry or escalate, and `holdReason: "escalated"` means it went to the controller. An
 architect that failed (`architect.state` is `failed`) leaves its tree with nobody to act inside it,
 and the controller is woken to re-admit the tree. What brings the architect back depends on where
 its tree stands:
@@ -521,6 +534,15 @@ that leaves the issue held, as a lingering tree's does, is refused naming the is
 prints each one it retried, and exits 1 naming each it refused: run it once the cause of a run of
 failed launches is gone (a host moved onto tmux, a broken key replaced). It passes over a stopped
 claim, which is retired rather than failed, so name that one with `--claim`.
+
+A held issue has one more release, and it costs nothing. `legion status <KEY> todo` on the tree's
+own root releases the hold: the issue returns to the phase `heldFrom` names, that phase's worker
+starts with its task, and the generation, the review rounds, the pod and the issue's place in the
+admission line stay as they were. A person's move of the root to `todo` in the Dispatch dashboard
+and the controller's own `set_status` do the same, since all three write the one status the
+daemon reads. It reaches a root alone: a held child set to `todo` comes back at a new generation
+of its own, and a root whose tree lingers or stands at `phase: done` is re-admitted at a new
+generation, which is what the park and the admission above do.
 
 `legion claims compact --claim <token>` is the first recovery for a claim whose session a
 provider keeps refusing: the daemon has Oh My Pi write a text summary of that session and then
@@ -595,14 +617,75 @@ legion state --config legion.yaml --json | jq '.wakesWaiting'
 ```
 
 `legion state` prints the same as a `wakes waiting:` line, and prints no such line when nothing
-waits. Each entry names the `claim`, its `issue` and `role`, the `kind` of wake (`launch`, a role
-process about to start; `plugin-task`, the update task a stale-plugin round queues to a session
-that already runs; `catch-up`, the notice a start writes to an architect that is already running)
-and `dueAt`, the moment the pacing gave it, which is when it runs. An empty array says the wave has
-gone out; the last `dueAt` in it says when the last of the wave goes. A claim on that list needs
-nothing from you: its wake is reserved and it runs at the moment named. Your own requests are what
+waits.
+Each entry names the `claim`, its `issue` and `role`, the `kind` of wake (`launch`, a role
+process about to start; `plugin-refresh`, the relaunch of a session whose plugin speaks an
+earlier daemon contract, which the daemon replaces at that one wake and asks nothing of first;
+`catch-up`, the notice a start writes to an architect that is already running)
+and `dueAt`, the moment the pacing gave it, which is when it runs.
+An empty array says the wave has
+gone out; the last `dueAt` in it says when the last of the wave goes.
+A claim on that list needs
+nothing from you: its wake is reserved and it runs at the moment named.
+Your own requests are what
 drop it — a resume, a retry or a task you send that claim is run at once, taking the reserved wake
 back, so nothing you ask for waits for a turn.
+
+After a boot onto a new plugin contract, the wakes alone understate the wave: the stale-plugin
+lane holds at most one minute of the pacing at a time, so what it has reserved is a minute's
+worth and what it has left is `.claimsToRefresh` of the same body.
+
+```sh
+legion state --config legion.yaml --json | jq '.claimsToRefresh'
+```
+
+That is how many sessions are still on an earlier plugin and waiting for the lane to relaunch
+them, one paced wake each.
+It falls to 0 as the wave drains.
+A number that stands still over several minutes while no `plugin-refresh` wake waits is most often
+a stale claim whose relaunch waits for a turn to end: the lane cuts no turn, so such a claim keeps
+its place in the count and takes its one wake at the turn's end.
+Read the claim the count still names (`legion state --json | jq '.issues'`): a claim in `working`
+is that wait, and nothing is owed of you.
+Only a count that stands still while every claim it names is idle is the reading worth acting on:
+the daemon can relaunch no session onto a plugin at all, and its log says so once per claim at boot
+(`this daemon knows no plugin versions to relaunch it onto`), which under Kubernetes means
+`runtime.kubernetes.plugins` names no plugin pair.
+
+That reading has a second cause, and the daemon keeps no record of it.
+The lane's relaunch of a claim is refused for as long as the launch path refuses it — a tree
+lifecycle cleanup already reserved for the claim's tree, an epoch the claim has moved past, or a
+store that did not answer — and the sweep raises the relaunch again at each tick that has a credit
+of the refresh gate free for it, until the refusal clears.
+The claim keeps its place in the count through all of it, and it is handed no task either: a claim
+whose `legion` calls this daemon refuses is given its task only once the process its relaunch
+starts registers on this daemon's contract and reports ready, so the issue's phase waits for the
+whole of the refusal.
+
+Nothing the daemon keeps says that of one claim: the state carries no per-claim record of a
+refresh that is not finishing, and the `update-stalled` notice the project's controller gets is of
+a pod update round, never of a refresh.
+What is left is the count and three log lines.
+`claimsToRefresh` is the count for the class: it stands at what the lane has left to do, is 0 when
+it has nothing left, and names no claim.
+The lines name a claim, and each says less than the whole:
+
+- **`supervise: the process speaks another plugin contract; relaunching it onto the current
+  plugin`** at Warn, with `claim=`, is written once for each relaunch the lane starts, so a claim
+  whose relaunch is refused has no such line at all.
+
+- **`api: refused a call from a process on another plugin contract`** at Warn, with `claim=` and
+  `route=`, is what the stale process's own `legion` calls are answered with, so a process that is
+  idle writes none, and the line says the claim is stale rather than that it is stuck.
+
+- **`supervise: an event failed`** at Error, with `claim=`, `event=supervise.StalePlugin` and the
+  refusal under `error=`, is what each refused attempt leaves behind.
+  It is the nearest thing to a per-claim signal: it is written once per attempt rather than once
+  per claim, and only while something is refusing the relaunch.
+
+So read the two together: a `claimsToRefresh` that does not fall while every claim it names is
+idle, and, in the log, either the boot's one line per claim for the degraded daemon above or
+`supervise: an event failed` naming the claim whose relaunch keeps being refused.
 
 A restart re-adopts every process still running, but a claim with no process runs again only when
 something starts it. A worker is started by the workflow when its phase begins, and a tree's
@@ -691,7 +774,8 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
 - **`needsWorkflowStart`** (a failed phase worker, or a claim a close or a stop retired while its
   tree runs, whatever its role): a failed worker's issue is held
   ([An issue is held](#an-issue-is-held)), and its tree's architect retries the phase or escalates
-  it to the controller; `legion claims retry` applies the same retry when the architect cannot. A
+  it to the controller; `legion claims retry` applies the same retry when the architect cannot, and
+  a `todo` on a held root releases the hold without either of them. A
   failed claim ignores `legion claims resume` and `legion claims deliver`.
   A retired claim ignores those two as well, and `legion claims retry` refuses it because it has
   not failed, so what relaunches it on the session it kept is a start of the phase it owns — its
