@@ -6,11 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/netip"
 	"slices"
-	"strconv"
 	"sync"
 	"time"
 
@@ -320,15 +318,15 @@ type server struct {
 	beforeForgetSessionHandle func()
 }
 
-// NewServer builds the daemon's HTTP server on bind:port, the configured address: every interface
-// only when bind is 0.0.0.0 or ::, as a daemon that runs as a pod binds. The caller owns its
-// lifecycle (ListenAndServe, Shutdown).
+// NewServer builds the daemon's routes. The caller serves them on the listener it already has
+// (Answering.Routes): one *http.Server per listener, built where the listener first appeared, is
+// what lets the start handler answer on it until these routes replace it.
 //
 // Three audiences, three kinds of route: the state everyone reads; the claim lifecycle an agent's
 // plugin drives (register, ready, exit), authenticated by its pane's boot token and then by the
 // secret its registration was issued; and the operator's spawn surface, authenticated by the
 // operator bearer.
-func NewServer(bind string, port int, opts Options) *http.Server {
+func NewServer(opts Options) http.Handler {
 	serving := opts.Serving
 	if serving == nil {
 		serving = func(recorded ghrepo.Repository) ghrepo.Repository { return recorded }
@@ -453,11 +451,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no route"})
 	})
 
-	return &http.Server{
-		Addr:              net.JoinHostPort(bind, strconv.Itoa(port)),
-		Handler:           mux,
-		ReadHeaderTimeout: readHeaderTimeout,
-	}
+	return mux
 }
 
 // decision is the context a route runs a decision of token's claim on. It outlives the request,

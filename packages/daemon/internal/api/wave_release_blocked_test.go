@@ -49,13 +49,13 @@ func releaseHarness(t *testing.T, open bool) (*harness, *statusRecorder) {
 	// The server is given both names of the one project, and they differ: the claims it reads are
 	// filed under the claim token, the issues and the mirror under the Dispatch key, and a route
 	// that confuses them reads an empty mirror here.
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
 		OperatorToken: testOperatorToken,
 		Controller:    h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
 		Handlers: releaseHandlers(), Dispatch: statuses,
-	}).Handler
+	})
 	h.recordIssue(record.Issue{Key: releaseRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: releaseRoot,
 		Project: testDispatchProject, Title: releaseRoot, Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true})
 	gate := record.DesignGate{Issue: releaseRoot, ArtifactID: "7d1e3a5c-9b2f-4c6e-8a40-3f5d7b9e1c26", LatestVersion: 1}
@@ -458,7 +458,7 @@ func TestWaveReleaseStandsWhenTheRecordDoesNotTakeALandedWrite(t *testing.T) {
 	h, statuses := releaseHarness(t, true)
 	child := "LEGION-209"
 	statuses.issues[child] = backlogChild(child)
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
 		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(),
@@ -466,7 +466,7 @@ func TestWaveReleaseStandsWhenTheRecordDoesNotTakeALandedWrite(t *testing.T) {
 		PrepareRepository: func(context.Context, intake.DispatchIssue) (intake.DispatchIssue, error) {
 			return intake.DispatchIssue{}, errors.New("GitHub did not answer the default branch read")
 		},
-	}).Handler
+	})
 	architect := newLiveClaim(t, h, releaseRoot, claim.RoleArchitect)
 
 	response, _ := releaseWave(t, h, architect, child)

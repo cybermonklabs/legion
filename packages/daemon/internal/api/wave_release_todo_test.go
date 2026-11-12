@@ -38,12 +38,12 @@ func TestWaveReleaseRecordsAndStartsAChildDispatchAlreadyShowsTodo(t *testing.T)
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	statuses := &statusRecorder{}
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
 		Handlers: []intake.Handler{engine, admit.New(records, engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: statuses,
-	}).Handler
+	})
 	root, child := "LEGION-208", "LEGION-209"
 	approved := 1
 	h.recordIssue(record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true})
@@ -110,7 +110,7 @@ func TestWaveReleaseNamesTheRepositoryReadThatFailed(t *testing.T) {
 			records := record.NewStore()
 			engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateOff.Steps()}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			statuses := &statusRecorder{}
-			h.handler = NewServer("127.0.0.1", 8437, Options{
+			h.handler = NewServer(Options{
 				Steps:      config.DesignGateRootIssues.Steps(),
 				Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 				Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
@@ -118,7 +118,7 @@ func TestWaveReleaseNamesTheRepositoryReadThatFailed(t *testing.T) {
 				PrepareRepository: func(_ context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error) {
 					return issue, tc.failure
 				},
-			}).Handler
+			})
 			root, child := "LEGION-208", "LEGION-209"
 			h.recordIssue(record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true})
 			if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
@@ -182,7 +182,7 @@ func newUnreadRelease(t *testing.T, issues ...dispatch.Issue) *unreadRelease {
 	u := &unreadRelease{h: newHarness(t), records: record.NewStore(), statuses: &statusRecorder{}, unread: &atomic.Bool{}}
 	u.unread.Store(true)
 	u.engine = workflow.New(u.records, workflow.Config{Project: testProject, Repositories: unreadRepositories{u.unread}, Steps: config.DesignGateOff.Steps()}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	u.h.handler = NewServer("127.0.0.1", 8437, Options{
+	u.h.handler = NewServer(Options{
 		Steps:      config.DesignGateOff.Steps(),
 		Supervisor: u.h.supervisor, BootTokens: u.h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: u.h.store, Grants: credential.New(nil), Pool: u.h.store.Pool(), Record: u.records,
@@ -191,7 +191,7 @@ func newUnreadRelease(t *testing.T, issues ...dispatch.Issue) *unreadRelease {
 		AwaitRecovery: func(repo, tree, child, _ string) {
 			u.awaited = append(u.awaited, repo+" "+tree+" "+child)
 		},
-	}).Handler
+	})
 	u.h.recordIssue(record.Issue{Key: unreadRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: unreadRoot, Project: testProject, Title: unreadRoot, Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true})
 	if err := u.h.store.Tx(context.Background(), func(tx pgx.Tx) error {
 		return u.records.PutSlot(context.Background(), tx, record.Slot{Issue: unreadRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)})
@@ -415,12 +415,12 @@ func TestWaveReleaseRecordsATodoChildOfAChildTheSameWaveReleases(t *testing.T) {
 			records := record.NewStore()
 			engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			statuses := &statusRecorder{}
-			h.handler = NewServer("127.0.0.1", 8437, Options{
+			h.handler = NewServer(Options{
 				Steps:      config.DesignGateRootIssues.Steps(),
 				Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 				Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
 				Handlers: []intake.Handler{engine, admit.New(records, engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: statuses,
-			}).Handler
+			})
 			h.recordIssue(record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true})
 			if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
 				return records.PutSlot(context.Background(), tx, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)})
@@ -460,12 +460,12 @@ func TestWaveReleaseBoundsAnUnrecordedChildRetryAndNotifiesTheArchitect(t *testi
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	statuses := &statusRecorder{}
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
 		Handlers: []intake.Handler{engine, admit.New(records, engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: statuses,
-	}).Handler
+	})
 	root, parent, child := "LEGION-208", "LEGION-209", "LEGION-210"
 	h.recordIssue(record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true})
 	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {

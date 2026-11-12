@@ -198,12 +198,12 @@ func (f fixedStateSource) State(context.Context, pgx.Tx) (api.State, []supervise
 func newControllerDaemonWithOptions(t *testing.T, opts controllerDaemonOptions) *controllerDaemon {
 	t.Helper()
 	d := &controllerDaemon{t: t, controller: &memoryController{}, dispatch: &statusWrites{}}
-	handler := api.NewServer("127.0.0.1", 0, api.Options{
+	handler := api.NewServer(api.Options{
 		Project: controllerProject, OperatorToken: controllerOperatorToken, Controller: d.controller,
 		Steps: opts.steps, Dispatch: d.dispatch, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Tokens: opts.tokens, GitHubRepositories: func() []ghrepo.Repository { return opts.repos },
 		State: fixedStateSource{repositories: opts.repositories}, StateTransactions: fixedStateTransactions{},
-	}).Handler
+	})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {

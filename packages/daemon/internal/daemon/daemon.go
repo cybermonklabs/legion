@@ -12,7 +12,6 @@ import (
 	"maps"
 	"math/rand/v2"
 	"net"
-	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -133,8 +132,8 @@ const (
 	cleanSessionStopBudget = 5 * time.Second
 )
 
-// overrides are the parts of a daemon a test replaces, and the listener `legion start` inherited;
-// the zero value is the real daemon binding its own address.
+// overrides are the parts of a daemon a test replaces, and the API `legion start` already serves
+// on the socket it inherited; the zero value is the real daemon binding its own address.
 type overrides struct {
 	// runtime builds the runtime over the worker stream in place of the configured one; nil is the
 	// configured runtime.
@@ -174,9 +173,12 @@ type overrides struct {
 	// required-checks reads and its issue branches' creates); empty, in production, is
 	// https://api.github.com.
 	githubAPI string
-	// listen takes the API listener for cfg's bind and port; nil binds them with net.Listen. Run's
-	// serves the socket `legion start` inherited from LEGION_LISTEN_FD (handed); a test's hands
-	// over a listener it holds.
+	// answering is the API already serving on a listener this process holds — the socket `legion
+	// start` inherited (Run's parameter), or a test's own: the daemon serves its routes on it and
+	// binds nothing. Nil binds cfg's bind and port and builds one there.
+	answering *api.Answering
+	// listen takes the API listener for cfg's bind and port, when the daemon binds one of its own;
+	// nil binds them with net.Listen. A test's hands over a listener it holds.
 	listen func(network, address string) (net.Listener, error)
 	// strandedReported runs once the boot's report of the claims nothing will wake has finished,
 	// whether it logged or not (reportStranded); nil, in production, is nothing. The report runs
@@ -218,21 +220,13 @@ type overrides struct {
 // mint, or the image probe waits ends the daemon there, cleanly: it has served nothing and records
 // nothing.
 //
-// listener, when not nil, is the API listener the daemon serves on in place of binding cfg's bind
-// and port: the socket `legion start` inherited (LEGION_LISTEN_FD), which it checked names both.
-// Run closes it once it stops serving, as it closes a listener it binds; a refusal before the
-// listener is taken leaves it to the caller to close.
-func Run(ctx context.Context, cfg config.Config, log *slog.Logger, listener net.Listener) error {
-	return run(ctx, cfg, log, overrides{listen: handed(listener)})
-}
-
-// handed is the listen of a daemon handed listener: it takes listener, whatever address it is
-// asked for, and binds nothing. A nil listener hands nothing, and the daemon binds its own address.
-func handed(listener net.Listener) func(network, address string) (net.Listener, error) {
-	if listener == nil {
-		return nil
-	}
-	return func(string, string) (net.Listener, error) { return listener, nil }
+// answering, when not nil, is the API `legion start` is already serving on the socket it
+// inherited (LEGION_LISTEN_FD, api.NewAnswering), which it checked cfg's bind and port name: the
+// daemon serves its routes on it in place of binding an address of its own, and stops it once it
+// stops serving, as it stops the one it builds at a bind of its own. A refusal before the daemon
+// takes it over leaves it to the caller to stop.
+func Run(ctx context.Context, cfg config.Config, log *slog.Logger, answering *api.Answering) error {
+	return run(ctx, cfg, log, overrides{answering: answering})
 }
 
 func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) error {
@@ -357,17 +351,25 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 			log.Info("legion workflow boot stage", "stage", "launcher")
 		}
 	}
-	// The API serves on the socket it was handed (Run's listener) or binds cfg's address here.
-	address := net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port))
-	listen := net.Listen
-	if o.listen != nil {
-		listen = o.listen
-	}
-	listener, err := listen("tcp", address)
-	if err != nil {
-		workflow.stop()
-		st.Close()
-		return fmt.Errorf("listen on %s: %w", address, err)
+	// The API is already serving on the socket `legion start` handed over (o.answering), or binds
+	// cfg's address here and serves the start handler on it from that moment: a registration that
+	// arrives between this bind and the daemon's routes is answered the daemon's start rather than
+	// left with no answer at all (dispatch://INFRA-2883 R5). Every refusal from here to the serve
+	// stops it, which closes this process's copy of the socket.
+	answering := o.answering
+	if answering == nil {
+		address := net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port))
+		listen := net.Listen
+		if o.listen != nil {
+			listen = o.listen
+		}
+		listener, err := listen("tcp", address)
+		if err != nil {
+			workflow.stop()
+			st.Close()
+			return fmt.Errorf("listen on %s: %w", address, err)
+		}
+		answering = api.NewAnswering(listener, log)
 	}
 
 	var apps appauth.Tokens
@@ -376,7 +378,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	}
 	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake)
 	if err != nil {
-		listener.Close()
+		answering.Stop()
 		workflow.stop()
 		st.Close()
 		return err
@@ -385,7 +387,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		report, err := plan.probe(ctx, s.runtime)
 		if err != nil {
 			s.stop()
-			listener.Close()
+			answering.Stop()
 			workflow.stop()
 			st.Close()
 			if ctx.Err() != nil {
@@ -443,7 +445,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 		if err != nil {
 			s.stop()
-			listener.Close()
+			answering.Stop()
 			workflow.stop()
 			st.Close()
 			if ctx.Err() != nil {
@@ -466,7 +468,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	bootID, err := st.RecordBoot(boot, cfg.Project, startedAt)
 	if err != nil {
 		s.stop()
-		listener.Close()
+		answering.Stop()
 		workflow.stop()
 		st.Close()
 		return err
@@ -499,11 +501,11 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 			// daemon is stopping, not failing to start, and it never started.
 			log.Info("legion daemon stopped its boot short", "project", cfg.Project, "boot", bootID, "error", err)
 			err = nil
-			listener.Close()
+			answering.Stop()
 		case err == nil:
 			log.Info("legion daemon started",
 				"project", cfg.Project,
-				"address", listener.Addr().String(),
+				"address", answering.Addr().String(),
 				"workerStream", s.stream.Addr(),
 				"runtime", cfg.Runtime.Name,
 				"admissionCap", cfg.AdmissionCap,
@@ -514,11 +516,11 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 			if workflow != nil {
 				log.Info("legion workflow boot stage", "stage", "api")
 			}
-			err = serve(ctx, cfg, st, startedAt, bootID, listener, s, plan, workflow)
+			err = serve(ctx, cfg, st, startedAt, bootID, answering, s, plan, workflow)
 		default:
 			failed <- err
 			s.halt(err)
-			listener.Close()
+			answering.Stop()
 		}
 		s.stop()
 		workflow.stop()
@@ -1902,14 +1904,15 @@ func (s *supervision) stop() {
 // workflow parameter hides the package there.
 var phaseRole = workflow.RoleFor
 
-// serve runs the API on the listener the daemon already took until ctx is done or the server
-// fails, and returns once it is closed: one goroutine serves, the other shuts down, and the
+// serve gives the daemon's own routes to the API already answering on this process's listener
+// (api.Answering, serving the start handler since the listener appeared) and waits until ctx is
+// done or the server fails: one goroutine waits out the serve, the other shuts it down, and the
 // shutdown runs on a context of its own so a cancelled ctx still drains the connections it has.
 // The moment serving ends is the moment the daemon's stop begins: it halts supervision before
 // anything waits — the workflow's outbox and the controller keeper would otherwise wait on a
 // machine whose relaunch holds it, and the stop on them — and then drains the API until drainBy,
 // letting the decisions its routes asked for finish, and ends them when the drain does (endDrain).
-func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt time.Time, bootID int64, listener net.Listener, s *supervision, p plan, workflow *workflowRuntime) error {
+func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt time.Time, bootID int64, answering *api.Answering, s *supervision, p plan, workflow *workflowRuntime) error {
 	records := record.Store(record.NewStore())
 	var handlers []intake.Handler
 	var client dispatch.Client
@@ -1933,7 +1936,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	if cfg.ControllerLaunch == config.ControllerLaunchDaemon {
 		keeper = newControllerKeeper(s.supervisor.ctx, s.supervisor, p.project, p.controllerRetry, s.log)
 	}
-	server := api.NewServer(cfg.Bind, cfg.Port, api.Options{
+	answering.Routes(api.NewServer(api.Options{
 		State: &source{
 			store:        st,
 			records:      records,
@@ -1993,24 +1996,17 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		CapabilityReported: s.capabilityReported,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
-	})
+	}))
 
 	group, serving := errgroup.WithContext(ctx)
-	serverStarted := make(chan struct{})
-	group.Go(func() error {
-		close(serverStarted)
-		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return fmt.Errorf("serve the API on %s: %w", server.Addr, err)
-		}
-		return nil
-	})
+	group.Go(answering.Wait)
 	// The report is advisory: its transaction must never sit in the path from restored claims to a
-	// serving API. Start it only after the server goroutine has begun and bound its store read; a
-	// lock or unavailable connection is a report error, not a failed or unhealthy boot.
+	// serving API. It runs beside the server, which has answered on this listener since the
+	// listener appeared and answers the daemon's own routes from the line above, so nothing waits
+	// for it to start; a lock or unavailable connection is a report error, not a failed or
+	// unhealthy boot.
 	group.Go(func() error {
-		select {
-		case <-serverStarted:
-		case <-serving.Done():
+		if serving.Err() != nil {
 			return nil
 		}
 		report, cancel := context.WithTimeout(serving, strandedReportTimeout)
@@ -2026,7 +2022,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		s.halt(context.Cause(serving))
 		drain, cancel := context.WithDeadline(context.WithoutCancel(ctx), s.drainBy)
 		defer cancel()
-		err := server.Shutdown(drain)
+		err := answering.Drain(drain)
 		s.endDrain()
 		if errors.Is(err, context.DeadlineExceeded) {
 			// The drain's bound is the stop's, not a failure: what still ran ends now (endDrain).

@@ -36,7 +36,7 @@ var contract45ClaimView = []string{"session", "state", "locator", "capabilities"
 // statePodUID and whose state snapshot holds claims.
 func stateServer(t *testing.T, state State, claims []supervise.Claim) http.Handler {
 	t.Helper()
-	return NewServer("127.0.0.1", 8437, Options{
+	return NewServer(Options{
 		Steps: config.DesignGateRootIssues.Steps(),
 		State: fakeSource{state: state, claims: claims}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
 		CallerPod: func(addr netip.Addr) (string, bool) {
@@ -45,7 +45,7 @@ func stateServer(t *testing.T, state State, claims []supervise.Claim) http.Handl
 			}
 			return "", false
 		},
-	}).Handler
+	})
 }
 
 // stateAsked is GET /legion/v1/state on handler, asked from remote.

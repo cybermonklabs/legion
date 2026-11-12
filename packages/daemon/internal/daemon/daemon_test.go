@@ -450,10 +450,11 @@ func TestRunServesTheSocketItIsHandedAndLogsItsAddress(t *testing.T) {
 	}
 	cfg.Port = socket.Addr().Port
 	cfg.DaemonURL = "http://" + address
-	// Run's listen: the handed socket in place of any bind. The socket still holds cfg's address, so
-	// a daemon that bound it rather than serve the socket would be refused, and never answer.
+	// What Run is handed: the API already serving the inherited socket, in place of any bind. The
+	// socket still holds cfg's address, so a daemon that bound it rather than serve the socket
+	// would be refused, and never answer.
 	o := fakeRuntime(fake.NewRuntime(), &built{})
-	o.listen = handed(inherited)
+	o.answering = api.NewAnswering(inherited, quietLogger())
 	logs := &syncBuffer{}
 
 	startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(logs, nil)))

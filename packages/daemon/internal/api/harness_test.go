@@ -251,7 +251,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 		reportedContextErr: reportedContextErr,
 		podUpdateRounds:    rounds,
 	}
-	server := NewServer("127.0.0.1", 8437, Options{
+	handler := NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: sup, BootTokens: tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: st, Log: quiet,
 		Pool: st.Pool(), Record: record.NewStore(), Releaser: rt, Trees: st, ReleaseRecords: st, ClaimActivity: st,
@@ -264,7 +264,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 			*reportedContextErr = append(*reportedContextErr, ctx.Err())
 		},
 	})
-	h.handler = server.Handler
+	h.handler = handler
 	return h
 }
 

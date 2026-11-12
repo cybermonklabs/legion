@@ -41,9 +41,9 @@ func serve(t *testing.T, src StateSource, method, target string) *httptest.Respo
 
 func serveWithTransactions(t *testing.T, src StateSource, txs *fakeStateTransactions, method, target string) *httptest.ResponseRecorder {
 	t.Helper()
-	server := NewServer("127.0.0.1", 8437, Options{State: src, StateTransactions: txs, Steps: config.DesignGateRootIssues.Steps()})
+	handler := NewServer(Options{State: src, StateTransactions: txs, Steps: config.DesignGateRootIssues.Steps()})
 	recorder := httptest.NewRecorder()
-	server.Handler.ServeHTTP(recorder, httptest.NewRequest(method, target, nil))
+	handler.ServeHTTP(recorder, httptest.NewRequest(method, target, nil))
 	return recorder
 }
 
@@ -87,16 +87,6 @@ func (*fakeTx) Query(context.Context, string, ...any) (pgx.Rows, error) {
 }
 func (*fakeTx) QueryRow(context.Context, string, ...any) pgx.Row { return nil }
 func (*fakeTx) Conn() *pgx.Conn                                  { return nil }
-
-func TestServerBindsTheConfiguredAddressOnly(t *testing.T) {
-	server := NewServer("127.0.0.1", 8437, Options{State: fakeSource{}, Steps: config.DesignGateRootIssues.Steps()})
-	if server.Addr != "127.0.0.1:8437" {
-		t.Fatalf("addr = %q, want 127.0.0.1:8437", server.Addr)
-	}
-	if server.ReadHeaderTimeout == 0 {
-		t.Fatal("ReadHeaderTimeout is unset: a slow-header client would hold the daemon's listener")
-	}
-}
 
 func TestStateRouteServesTheRecord(t *testing.T) {
 	src := fakeSource{state: State{
@@ -156,7 +146,7 @@ func TestStateRouteServesTheConsumersLagReadAfterTheCommit(t *testing.T) {
 	handled := time.Date(2026, 10, 28, 9, 14, 2, 0, time.UTC)
 	oldest := time.Date(2026, 10, 28, 9, 2, 26, 0, time.UTC)
 	committedAtRead := false
-	server := NewServer("127.0.0.1", 8437, Options{
+	handler := NewServer(Options{
 		Steps: config.DesignGateRootIssues.Steps(),
 		State: fakeSource{}, StateTransactions: &fakeStateTransactions{tx: tx},
 		ConsumerLag: func(context.Context) []intake.ConsumerLag {
@@ -170,7 +160,7 @@ func TestStateRouteServesTheConsumersLagReadAfterTheCommit(t *testing.T) {
 		},
 	})
 	recorder := httptest.NewRecorder()
-	server.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/legion/v1/state", nil))
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/legion/v1/state", nil))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body %s", recorder.Code, recorder.Body)

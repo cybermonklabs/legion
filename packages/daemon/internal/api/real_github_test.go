@@ -41,7 +41,7 @@ func TestRealGitHubCredentialSurface(t *testing.T) {
 
 	h := newHarness(t)
 	tokens := appauth.New(apps, appauth.Options{})
-	h.handler = NewServer("127.0.0.1", 0, Options{
+	h.handler = NewServer(Options{
 		Steps:              config.DesignGateRootIssues.Steps(),
 		Supervisor:         h.supervisor,
 		BootTokens:         h.tokens,
@@ -51,7 +51,7 @@ func TestRealGitHubCredentialSurface(t *testing.T) {
 		Grants:             credential.New(nil),
 		Pool:               h.store.Pool(),
 		Record:             record.NewStore(),
-	}).Handler
+	})
 	gh := realGh(t)
 
 	// The implement App's lease, rendered as the role's gh files, is whose login the real gh

@@ -235,7 +235,7 @@ func newArchitectHarnessGating(t *testing.T, steps []record.DesignStep, grants *
 	// Dispatch shows the tree root LEGION-208 at event sequence 7, which register_gate reads before
 	// the approval; a test that reads other issues replaces the map.
 	facts, statuses := &factRecorder{refusal: refusal}, &statusRecorder{issues: map[string]dispatch.Issue{"LEGION-208": {Key: "LEGION-208", LastSeq: 7}}}
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Supervisor:    h.supervisor,
 		BootTokens:    h.tokens,
 		Project:       testProject,
@@ -247,7 +247,7 @@ func newArchitectHarnessGating(t *testing.T, steps []record.DesignStep, grants *
 		Record:        record.NewStore(),
 		Handlers:      []intake.Handler{facts},
 		Dispatch:      statuses,
-	}).Handler
+	})
 	return h, facts, statuses
 }
 

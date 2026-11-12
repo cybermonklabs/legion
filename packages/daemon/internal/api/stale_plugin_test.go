@@ -25,14 +25,14 @@ func newStaleHarness(t *testing.T) (*harness, *bytes.Buffer) {
 	t.Helper()
 	h := newHarness(t)
 	logs := &bytes.Buffer{}
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
 		PromptAgents: testPromptAgents, PluginRelaunchable: true,
 		State: fakeSource{}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
 		Log: slog.New(slog.NewJSONHandler(logs, nil)),
-	}).Handler
+	})
 	return h, logs
 }
 
@@ -42,14 +42,14 @@ func newStaleHarness(t *testing.T) (*harness, *bytes.Buffer) {
 func newNoInstallHarness(t *testing.T, noInstall func(supervise.Claim) bool) *harness {
 	t.Helper()
 	h := newHarness(t)
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
 		PromptAgents: testPromptAgents, PluginRelaunchable: true, NoPluginInstall: noInstall,
 		State: fakeSource{}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
 		Log: slog.New(slog.NewJSONHandler(io.Discard, nil)),
-	}).Handler
+	})
 	return h
 }
 

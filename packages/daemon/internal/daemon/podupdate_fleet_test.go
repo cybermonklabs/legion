@@ -194,12 +194,12 @@ func newFleetRig(t *testing.T, issues ...fleetIssue) *fleetRig {
 		enqueue: (&workflowRuntime{pool: pool, records: records, log: quietLogger()}).enqueueOutbox,
 	}
 	engine := workflow.New(records, workflow.Config{Project: podUpdateProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-	rig.api = api.NewServer("127.0.0.1", 0, api.Options{
+	rig.api = api.NewServer(api.Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: sup, Project: podUpdateProject, DispatchProject: "LEGION", PluginRelaunchable: true,
 		Pool: pool, Handlers: []intake.Handler{engine}, Record: records, Grants: rig.grants, Log: quietLogger(),
 		Dispatch: rig.handoffs,
-	}).Handler
+	})
 	return rig
 }
 
@@ -275,12 +275,12 @@ func (r *fleetRig) restart() *fleetRig {
 		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup, enqueue: r.s.enqueue,
 	}
 	engine := workflow.New(r.records, workflow.Config{Project: podUpdateProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-	next.api = api.NewServer("127.0.0.1", 0, api.Options{
+	next.api = api.NewServer(api.Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: sup, Project: podUpdateProject, DispatchProject: "LEGION", PluginRelaunchable: true,
 		Pool: r.pool, Handlers: []intake.Handler{engine}, Record: r.records, Grants: next.grants, Log: quietLogger(),
 		Dispatch: next.handoffs,
-	}).Handler
+	})
 	return next
 }
 

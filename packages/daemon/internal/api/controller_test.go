@@ -37,11 +37,11 @@ func newControllerHarness(t *testing.T, launched bool) *harness {
 // tokens, whose daemon launches the project's controller itself when controllerLaunched is true.
 func (h *harness) serve(controllerLaunched bool) {
 	h.t.Helper()
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), ControllerLaunched: controllerLaunched,
-	}).Handler
+	})
 }
 
 // restartAPI is a daemon restart as the routes see it: boot tokens that know only what the store
@@ -125,14 +125,14 @@ func (h *harness) controllerSessionGrant(session, secret string) *httptest.Respo
 func newControllerCredentialHarness(t *testing.T, tokens appauth.Tokens, launched bool) *harness {
 	t.Helper()
 	h := newHarness(t)
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), ControllerLaunched: launched,
 		Tokens: tokens, GitHubRepositories: func() []ghrepo.Repository {
 			return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")}
 		},
-	}).Handler
+	})
 	return h
 }
 
@@ -513,11 +513,11 @@ func TestControllerGitHubCredential(t *testing.T) {
 // legion controller start reads as a daemon with nothing to act as.
 func TestControllerGitHubCredentialWithoutAnOwner(t *testing.T) {
 	h := newHarness(t)
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Tokens: handoffTokens{}, GitHubRepositories: func() []ghrepo.Repository { return nil },
-	}).Handler
+	})
 	secret := h.mintedSecret()
 	wantFailure(t, h.controllerGitHubCredential(secret), http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED")
 }
@@ -551,10 +551,10 @@ func TestControllerGitHubCredentialWhenTheMintFails(t *testing.T) {
 // steps, which is what the controller secret route answers.
 func (h *harness) serveSteps(steps []record.DesignStep) {
 	h.t.Helper()
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	h.handler = NewServer(Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Steps: steps,
-	}).Handler
+	})
 }
 
 // The controller secret route answers the design-gate steps the deployment gates, in the order

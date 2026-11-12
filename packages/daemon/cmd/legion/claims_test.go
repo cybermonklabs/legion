@@ -222,10 +222,10 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 		},
 		PluginContract: api.DaemonAPIVersion,
 	}
-	handler := api.NewServer("127.0.0.1", 0, api.Options{
+	handler := api.NewServer(api.Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: claims, Trees: claims, Releaser: rt, BootTokens: tokens, Project: claimsProject, OperatorToken: claimsOperatorToken, Log: quiet,
-	}).Handler
+	})
 
 	d := &operatorDaemon{t: t, runtime: rt, conns: conns, claimSupervisor: claims, tokenFile: writeFile(t, "operator-token", claimsOperatorToken+"\n")}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
