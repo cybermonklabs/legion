@@ -525,10 +525,11 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // mutation did not come back accepted: the issue, its pull request, the head the jump was asked
 // for, and what came back — GitHub's own answer where one decided it, and the failure's own
 // words where nothing did. It is the controller's and no architect's because the jump was the
-// controller's instruction and the mark is gone — the daemon falls back to the plain submission
-// in the same attempt, so the merge itself is on its way and nothing of the issue's own work
-// changed. The controller reads it to decide whether to mark the issue again (MergeJumpRecord,
-// whose Outcome is MergeJumpRefused or MergeJumpUnknown and whose Answer carries the same words).
+// controller's instruction and the mark is gone — the daemon submits the plain merge in the
+// same attempt, and a refusal of that submission is told on its own, so nothing of the issue's
+// own work changed. The controller reads it to decide whether to mark the issue again
+// (MergeJumpRecord, whose Outcome is MergeJumpRefused or MergeJumpUnknown and whose Answer
+// carries the same words).
 const (
 	TriageNotice           NoticeKind = "triage"
 	SlotFreeNotice         NoticeKind = "slot-free"

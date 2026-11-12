@@ -981,9 +981,10 @@ package api
 // and `mergeJumpRecords`, the newest jump of each repository that has had one (the repository,
 // the issue, the pull request's number and head, the time, the reason, the entries GitHub's
 // queue held just before the request — each with its number, position, jump, state and when
-// GitHub enqueued it — the queue's total count, whether the entries are unknown, and whether a
-// refusal was recorded, with its words; the record is what Legion asked GitHub for and never
-// where a merge stands). None of the four is ever null, so a plugin built before this refuses the
+// GitHub enqueued it — the queue's total count, whether the entries are unknown, and what became
+// of the request: `outcome`, one of `asked`, `accepted`, `refused` and `unknown`, with the words
+// that came with it in `answer`; the record is what Legion asked GitHub for and never where a
+// merge stands). None of the four is ever null, so a plugin built before this refuses the
 // state over them: the route serves a caller whose pod's claims record a contract below 72 the
 // state with none of the four keys at all (api's stateFor, withoutMergeMarks), as it serves a
 // caller below 58 one with no `waitingLine`, one below 57 one with no `step`, one below 56 the

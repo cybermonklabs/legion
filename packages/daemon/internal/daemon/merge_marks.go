@@ -37,7 +37,7 @@ import (
 //
 // It is one value per run of one row because every answer it gives is about that run: the hold
 // decision is cached for the run (holding), the payload it writes is the run's own copy, and the
-// jump record it builds is what a refusal of that jump updates (jumped). runner, row and payload
+// jump record it builds is what the end of that jump updates (jumped). runner, row and payload
 // are the row as readyMerge holds it — payload is readyMerge's own variable, so a field this
 // writes is read by every arm of the run that follows. github is the GraphQL client the
 // submission is made with, which the queue read before a jump reuses, and rest is the
@@ -450,11 +450,11 @@ func (m *readyMergeMarks) jumpNotTaken(ctx context.Context, ended record.MergeJu
 		return true, nil
 	})
 	if err != nil {
-		return fmt.Errorf("record the jump outbox row %d made and GitHub did not take: %w", m.row.ID, err)
+		return fmt.Errorf("record how the jump outbox row %d made ended: %w", m.row.ID, err)
 	}
 	if wrote {
 		m.jumped = ended
-		r.log.Warn("outbox asked GitHub to send READY's merge to the head of the merge queue and the jump did not take; the plain submission follows in this attempt",
+		r.log.Warn("outbox asked GitHub to send READY's merge to the head of the merge queue and the jump did not come back accepted; the plain submission follows in this attempt",
 			"row", m.row.ID, "issue", m.row.Issue, "number", ended.Number, "head", ended.Head,
 			"outcome", string(ended.Outcome), "answer", ended.Answer, "recorded", recorded)
 	}
@@ -586,10 +586,18 @@ func readyMergeJumpedPost(jumped record.MergeJumpRecord, mark record.MergeJump) 
 
 // readyMergeJumpEndedPost is the message posted on the issue when the jump's own request did not
 // come back accepted (readyMergeMarks.jumpNotTaken): what Legion asked for, what came back, and
-// what followed. The mark is spent either way, and the plain submission goes out in the same
-// attempt, so the message says both: a reader of the issue must not take a jump that did not
-// take for a merge that went ahead of the queue, nor for a merge that was never submitted. It
-// says nothing about where the merge now stands in the queue, which GitHub alone knows.
+// what Legion does next. The mark is spent either way, and the plain submission is sent in the
+// same attempt, so the message says both: a reader of the issue must not take a jump that did
+// not take for a merge that went ahead of the queue, nor for a merge nobody submitted. It says
+// nothing about where the merge then stands in the queue, which GitHub alone knows.
+//
+// The submission is named as the thing Legion is about to do, never as one already made: this
+// row is enqueued inside the transaction that ends the jump, and Submit tells JumpEnded before
+// it sends the submission it chose, so at the moment these words are written the plain
+// submission has not gone out. Where GitHub then refuses it, the row ends and the issue's
+// architect is told of that refusal on its own (readyMergeEnded's merge-refused), which is why
+// this message can leave the submission's own end to that notice and say only that the jump is
+// what is in question.
 //
 // An answer is quoted as GitHub's own word only where GitHub's answer decided the request
 // (record.MergeJumpRefused): its GraphQL refusal, and the 4xx it decided the request itself
@@ -608,7 +616,7 @@ func readyMergeJumpEndedPost(ended record.MergeJumpRecord) record.MessagePost {
 		lead = fmt.Sprintf("Legion asked GitHub to send the merge of pull request #%d at READY's head %s to the head of %s's merge queue, and GitHub answered: %s.",
 			ended.Number, ended.Head, ended.Repository, ended.Answer)
 	}
-	return record.MessagePost{Body: lead + " Legion then submitted the merge as it does without a mark, in the same attempt: the merge was submitted, and the jump alone is what is in question. The jump mark is spent: the controller marks the issue again if the merge is still to jump."}
+	return record.MessagePost{Body: lead + " Legion submits the merge without the jump in this same attempt; that submission is told on its own if GitHub does not take it. The jump alone is in question. The jump mark is spent: the controller marks the issue again if the merge is still to jump."}
 }
 
 // readyMergeJumpEndedReason is the merge-jump-refused controller notice's reason: the issue, its
@@ -620,14 +628,14 @@ func readyMergeJumpEndedPost(ended record.MergeJumpRecord) record.MessagePost {
 // GitHub's own rules settled.
 //
 // It names neither where the merge now stands nor who refused the jump. The daemon knows what it
-// asked, what came back and that it then submitted the plain merge, and a controller told more
-// than that would act on a reading of GitHub's queue nobody made.
+// asked, what came back and that it is about to submit the plain merge, and a controller told
+// more than that would act on a reading of GitHub's queue nobody made.
 func readyMergeJumpEndedReason(ended record.MergeJumpRecord) string {
 	if ended.Outcome == record.MergeJumpRefused {
-		return fmt.Sprintf("Legion spent %s's jump mark and asked GitHub to send the merge of pull request #%d of %s at READY's head %s to the head of the merge queue. GitHub answered: %s. Legion then submitted the merge without the jump in the same attempt, and the mark is spent.",
+		return fmt.Sprintf("Legion spent %s's jump mark and asked GitHub to send the merge of pull request #%d of %s at READY's head %s to the head of the merge queue. GitHub answered: %s. Legion submits the merge without the jump in this same attempt; that submission is told on its own if GitHub does not take it. The mark is spent.",
 			ended.Issue, ended.Number, ended.Repository, ended.Head, ended.Answer)
 	}
-	return fmt.Sprintf("Legion spent %s's jump mark and asked GitHub to send the merge of pull request #%d of %s at READY's head %s to the head of the merge queue. Legion does not know whether GitHub took the request: %s. Legion then submitted the merge without the jump in the same attempt, and the mark is spent.",
+	return fmt.Sprintf("Legion spent %s's jump mark and asked GitHub to send the merge of pull request #%d of %s at READY's head %s to the head of the merge queue. Legion does not know whether GitHub took the request: %s. Legion submits the merge without the jump in this same attempt; that submission is told on its own if GitHub does not take it. The mark is spent.",
 		ended.Issue, ended.Number, ended.Repository, ended.Head, ended.Answer)
 }
 

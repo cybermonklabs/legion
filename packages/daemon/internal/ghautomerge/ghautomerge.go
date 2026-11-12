@@ -149,12 +149,13 @@ type Marks interface {
 // JumpUnknown is everything else, which is two things the caller writes down the same way. An
 // answer came back and decided nothing: the 500 or 502 GitHub's own edge sends for an API of
 // its that decided nothing, and the 2xx that carried no data at all
-// (githubrest.ErrGraphQLNoData). Or nothing came back at all: a dial that failed, a timeout, a
-// connection closed before any status arrived, so what became of the mutation is what nobody
-// knows. The answer's own words tell the two apart — GitHub's status and words where GitHub
-// sent any, and a sentence naming the failure to deliver where it did not — and no reader
-// branches on the difference, because what may be said of either is the one thing: Legion asked,
-// and what GitHub did with the request is not known.
+// (githubrest.ErrGraphQLNoData). Or no answer Legion could read came back at all: a dial that
+// failed, a timeout, a body that would not read, a connection closed before any status
+// arrived, so what became of the mutation is what nobody knows. The answer's own words tell the
+// two apart — GitHub's status and words where GitHub sent any, and a sentence saying no answer
+// could be read where it did not — and no reader branches on the difference, because what may
+// be said of either is the one thing: Legion asked, and what GitHub did with the request is not
+// known.
 //
 // Every outcome but JumpAccepted falls back to the submission Submit chose, in the same attempt,
 // and the mark is spent either way.
@@ -173,9 +174,13 @@ const (
 // An answer whose text already names GitHub's own status is handed on as it stands, because the
 // account that quotes it has to read as the answer GitHub gave: a 502 renders as "GitHub
 // answered POST /graphql with 502", and calling that a request nothing came back for would
-// disagree with the very words it quotes. What is left is the client with no answer to read at
-// all, and its words say so outright, since that is the one thing that keeps a dial that failed
-// apart from GitHub's own 5xx once both are the one outcome.
+// disagree with the very words it quotes. What is left is every failure that left the client no
+// answer to read: a dial that failed, a timeout after the request was written, a connection
+// reset, a body that would not read once the status had arrived (githubrest's GraphQL), a 2xx
+// whose body is not JSON. Its sentence says that and no more — the request may well have
+// reached GitHub, and where the status arrived first GitHub did answer — so it claims no
+// failure to deliver, and it is still what keeps these apart from GitHub's own 5xx once both
+// are the one outcome.
 func jumpEnded(failure error) (JumpOutcome, string) {
 	var refusal *githubrest.GraphQLError
 	var answer *githubrest.Answer
@@ -190,7 +195,7 @@ func jumpEnded(failure error) (JumpOutcome, string) {
 	case errors.Is(failure, githubrest.ErrGraphQLNoData):
 		return JumpUnknown, failure.Error()
 	}
-	return JumpUnknown, "Legion could not deliver the jump to GitHub: " + failure.Error()
+	return JumpUnknown, "No answer Legion could read came back from GitHub: " + failure.Error()
 }
 
 // NoMarks is the Marks of a caller that has none: it holds nothing and jumps nothing, and every

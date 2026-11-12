@@ -1723,7 +1723,7 @@ func TestPlainStateNamesTheMergeJumps(t *testing.T) {
 	// keeps one outcome for both, so the line reads the words rather than asserting who refused.
 	undelivered := `{"repository":"zeta/tools","issue":"LEGION-210","number":78,"head":"facade1","at":"2026-11-10T08:45:00Z",` +
 		`"reason":"the second hotfix","entries":[],"entriesTotal":0,"entriesUnknown":true,"outcome":"unknown",` +
-		`"answer":"Legion could not deliver the jump to GitHub: Post \"https://api.github.com/graphql\": dial tcp: i/o timeout"}`
+		`"answer":"No answer Legion could read came back from GitHub: Post \"https://api.github.com/graphql\": dial tcp: i/o timeout"}`
 	for _, tc := range []struct {
 		name, jumps, records, want string
 	}{
@@ -1748,7 +1748,7 @@ func TestPlainStateNamesTheMergeJumps(t *testing.T) {
 			records: `[` + undelivered + `]`,
 			want: `merge jumps: no issue is marked; the newest of each repository: ` +
 				`zeta/tools LEGION-210 #78 at 2026-11-10T08:45:00Z "the second hotfix", asked to go ahead of a queue GitHub did not answer, and what became of the request is unknown: ` +
-				`"Legion could not deliver the jump to GitHub: Post \"https://api.github.com/graphql\": dial tcp: i/o timeout"` + "\n",
+				`"No answer Legion could read came back from GitHub: Post \"https://api.github.com/graphql\": dial tcp: i/o timeout"` + "\n",
 		},
 		{
 			name:    "a jump whose queue GitHub did not answer",
@@ -1816,10 +1816,11 @@ func TestPlainStateDoesNotCallAJumpGitHubNeverAnsweredARefusal(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
 	// The record a jump GitHub never answered leaves: the outcome `unknown`, and an answer
-	// naming the failure to deliver rather than anything GitHub said (`ghautomerge.jumpEnded`).
+	// saying no answer of GitHub's could be read rather than quoting anything GitHub said
+	// (`ghautomerge.jumpEnded`).
 	undelivered := `{"repository":"zeta/tools","issue":"LEGION-209","number":77,"head":"deadbee","at":"2026-11-10T08:30:00Z",` +
 		`"reason":"the hotfix","entries":[],"entriesTotal":0,"entriesUnknown":true,"outcome":"unknown",` +
-		`"answer":"Legion could not deliver the jump to GitHub: Post \"https://api.github.com/graphql\": dial tcp: i/o timeout"}`
+		`"answer":"No answer Legion could read came back from GitHub: Post \"https://api.github.com/graphql\": dial tcp: i/o timeout"}`
 	served := "{" + daemon + `,"mergeJumps":[],"mergeJumpRecords":[` + undelivered + `]}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1840,7 +1841,7 @@ func TestPlainStateDoesNotCallAJumpGitHubNeverAnsweredARefusal(t *testing.T) {
 	}
 	// The answer's own words still reach the operator, so the line says what happened; only the
 	// assertion of who refused is gone.
-	if !strings.Contains(printed, "Legion could not deliver the jump to GitHub") {
+	if !strings.Contains(printed, "No answer Legion could read came back from GitHub") {
 		t.Fatalf("legion state printed %q, want the answer's own words, which are what tell the two apart", printed)
 	}
 }

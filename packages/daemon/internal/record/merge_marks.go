@@ -92,9 +92,17 @@ const (
 	MergeJumpUnknown  MergeJumpOutcome = "unknown"
 )
 
-// MergeJumpOutcomes is the four outcomes, in the order a jump moves through them. The column's
-// check constraint, every reader that renders all four and the tests that write each one read
-// this list, so a fifth value is added in one place.
+// MergeJumpOutcomes is the four outcomes, in the order a jump moves through them, for a reader
+// that has to cover every one: the store's round-trip test writes and reads each of them by it
+// (merge_marks_test.go's TestEveryJumpOutcomeIsWrittenAndReadBack).
+//
+// It is not the one place a fifth value would be added, and nothing is written as though it
+// were. The column's check constraint (the 20261111124500 migration) and the plugin's enum
+// (legionMergeJumpOutcome, packages/contracts/src/legion-api.ts) are not Go and cannot read
+// this list, and the two switches that map an outcome — the daemon's jumpOutcomeRecorded and
+// legion state's jumpOutcomeTold — give each value words or a mapping of its own and answer a
+// value they do not know deliberately, which no loop over this list would do. A fifth outcome
+// is written into each of those as well as here.
 var MergeJumpOutcomes = []MergeJumpOutcome{MergeJumpAsked, MergeJumpAccepted, MergeJumpRefused, MergeJumpUnknown}
 
 // MergeJumpRecord is the account of the newest jump of one repository: the jump the daemon asked

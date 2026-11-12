@@ -1846,7 +1846,7 @@ func serveArmable(t *testing.T, g *armableGitHub) *armableGitHub {
 // connection over (http.Hijacker) and closes it without writing a status line, so the client is
 // left with a transport error and no answer of GitHub's to read. It is the one shape a request
 // nothing came back for has in a test; a 5xx would not do, since GitHub answering 502 is still
-// GitHub answering (ghautomerge's jumpAnswered).
+// GitHub answering (ghautomerge's jumpEnded).
 func closeWithoutAnswering(t *testing.T, w http.ResponseWriter) {
 	t.Helper()
 	hijacker, ok := w.(http.Hijacker)
@@ -2877,9 +2877,9 @@ func TestAJumpRefusedByGitHubFallsBackAndTellsTheController(t *testing.T) {
 	if len(posts) != 2 {
 		t.Fatalf("Dispatch messages %q, want the jump's and the failure's", posts)
 	}
-	for _, said := range []string{"Legion asked GitHub to send the merge", "GitHub answered: ", refusal, "Legion then submitted the merge"} {
+	for _, said := range []string{"Legion asked GitHub to send the merge", "GitHub answered: ", refusal, "Legion submits the merge without the jump in this same attempt"} {
 		if !strings.Contains(posts[1], said) {
-			t.Fatalf("the failure posted on the issue %q, want it to say %q: what Legion asked, what came back, and that the plain merge went out", posts[1], said)
+			t.Fatalf("the failure posted on the issue %q, want it to say %q: what Legion asked, what came back, and what Legion does next", posts[1], said)
 		}
 	}
 	notices := controllerNotices(t, pool)
@@ -2914,7 +2914,7 @@ func TestAJumpRefusedByGitHubFallsBackAndTellsTheController(t *testing.T) {
 // under record.MergeJumpUnknown, which is what came back deciding nothing. A controller told
 // GitHub refused would read the repository's merge-queue rules for a failure of the network, and
 // one told where the merge stands would be reading a queue nobody looked at.
-func TestAJumpGitHubNeverAnsweredFallsBackAndReadsAsAFailureToDeliver(t *testing.T) {
+func TestAJumpGitHubNeverAnsweredFallsBackAndReadsAsNoAnswerLegionCouldRead(t *testing.T) {
 	github := newQueueGitHub(t, "CLEAN")
 	github.set(func(g *armableGitHub) {
 		g.enqueueUnanswered = true
@@ -2932,8 +2932,8 @@ func TestAJumpGitHubNeverAnsweredFallsBackAndReadsAsAFailureToDeliver(t *testing
 	switch {
 	case jumped.Outcome != record.MergeJumpUnknown:
 		t.Fatalf("the jump record ended %s, want it unknown: nothing of GitHub's came back to decide it", jumped.Outcome)
-	case !strings.Contains(jumped.Answer, "could not deliver the jump to GitHub") || !strings.Contains(jumped.Answer, "/graphql"):
-		t.Fatalf("the jump record carries %q, want the failure named as one Legion could not deliver", jumped.Answer)
+	case !strings.Contains(jumped.Answer, "No answer Legion could read came back from GitHub") || !strings.Contains(jumped.Answer, "/graphql"):
+		t.Fatalf("the jump record carries %q, want the failure named as one no answer came back for", jumped.Answer)
 	case len(jumped.Entries) != 1 || jumped.Entries[0].Number != 11:
 		t.Fatalf("the record of the undelivered jump holds %v, want the entries it had asked to go ahead of", jumped.Entries)
 	}
@@ -2941,9 +2941,9 @@ func TestAJumpGitHubNeverAnsweredFallsBackAndReadsAsAFailureToDeliver(t *testing
 	if len(posts) != 2 {
 		t.Fatalf("Dispatch messages %q, want the jump's and the failure's", posts)
 	}
-	for _, said := range []string{"Legion asked GitHub to send the merge", "does not know whether GitHub took the request", "Legion then submitted the merge"} {
+	for _, said := range []string{"Legion asked GitHub to send the merge", "does not know whether GitHub took the request", "Legion submits the merge without the jump in this same attempt"} {
 		if !strings.Contains(posts[1], said) {
-			t.Fatalf("the failure posted on the issue %q, want it to say %q: what Legion asked, that nothing came back, and that the plain merge went out", posts[1], said)
+			t.Fatalf("the failure posted on the issue %q, want it to say %q: what Legion asked, that nothing came back, and what Legion does next", posts[1], said)
 		}
 	}
 	notices := controllerNotices(t, pool)
@@ -3013,8 +3013,8 @@ func TestAJumpGitHubAnsweredWithAnHTTPStatusIsRefusedByA4xxAndUnknownByA5xx(t *t
 			switch {
 			case jumped.Outcome != tc.outcome || !strings.Contains(jumped.Answer, named):
 				t.Fatalf("the jump record ended %s with %q, want %s carrying GitHub's own %s", jumped.Outcome, jumped.Answer, tc.outcome, named)
-			case strings.Contains(jumped.Answer, "could not deliver"):
-				t.Fatalf("the jump record carries %q, want GitHub's answer and not a failure to deliver", jumped.Answer)
+			case strings.Contains(jumped.Answer, "No answer Legion could read"):
+				t.Fatalf("the jump record carries %q, want GitHub's answer and not the words of one nothing came back for", jumped.Answer)
 			case len(jumped.Entries) != 1 || jumped.Entries[0].Number != 11:
 				t.Fatalf("the jump record holds %v, want the entries it had asked to go ahead of", jumped.Entries)
 			}
@@ -3074,8 +3074,8 @@ func TestAJumpGitHubAnsweredWithoutDataLeavesTheOutcomeUnknown(t *testing.T) {
 		t.Fatalf("the jump record ended %s, want it unknown: GitHub answered and said nothing of the mutation", jumped.Outcome)
 	case !strings.Contains(jumped.Answer, "without data"):
 		t.Fatalf("the jump record carries %q, want GitHub's own words for an answer that held no data", jumped.Answer)
-	case strings.Contains(jumped.Answer, "could not deliver"):
-		t.Fatalf("the jump record carries %q, want GitHub's answer and not a failure to deliver: GitHub answered this one", jumped.Answer)
+	case strings.Contains(jumped.Answer, "No answer Legion could read"):
+		t.Fatalf("the jump record carries %q, want GitHub's answer and not the words of one nothing came back for: GitHub answered this one", jumped.Answer)
 	}
 	notices := controllerNotices(t, pool)
 	if len(notices) != 1 || notices[0].kind != string(record.MergeJumpRefusedNotice) {

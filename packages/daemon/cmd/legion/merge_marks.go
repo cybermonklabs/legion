@@ -126,9 +126,9 @@ func jumpQueueAsked(jump api.MergeJumpRecordView) string {
 // four values the record carries (record.MergeJumpOutcome). Each says what the daemon learned
 // and stops there: `asked` is a request whose end Legion never learned, not a jump that went
 // through; `accepted` is GitHub taking the request, which is no place in the queue; and the two
-// that did not take print the words that came back and add no verdict of their own, since
-// "refused by GitHub" over a request GitHub never saw sends an operator to the repository's
-// merge-queue settings for a fault in the network.
+// that did not come back accepted print the words that came back and add no verdict of their
+// own, since "refused by GitHub" over a request GitHub never saw sends an operator to the
+// repository's merge-queue settings for a fault in the network.
 //
 // A value this build does not know is printed as itself rather than read as any of the four: a
 // daemon one release ahead of this command would otherwise have its outcome rendered as the

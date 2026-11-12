@@ -446,7 +446,7 @@ func TestEveryJumpOutcomeIsWrittenAndReadBack(t *testing.T) {
 	// quote, as the daemon writes them.
 	answers := map[MergeJumpOutcome]string{
 		MergeJumpRefused: "GitHub answered POST /graphql with 403: the token may not jump this queue",
-		MergeJumpUnknown: "Legion could not deliver the jump to GitHub: dial tcp: i/o timeout",
+		MergeJumpUnknown: "No answer Legion could read came back from GitHub: dial tcp: i/o timeout",
 	}
 	for _, outcome := range MergeJumpOutcomes {
 		t.Run(string(outcome), func(t *testing.T) {

@@ -216,8 +216,9 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "workflow, which submits no merge to mark (ISSUE_LEFT_WORKFLOW, which also answers an issue whose departure " +
   "commits while the call is in flight, leaving no mark written), and a call that leaves the reason out. A " +
   "jump that does not go through does not stop the merge: the daemon submits it without the jump in the same " +
-  "attempt and records whether GitHub answered the request, whatever status that answer carried, or nothing " +
-  "came back at all. " +
+  "attempt and records what became of the jump's own request — refused where GitHub's answer decided it, " +
+  "unknown where what came back decided nothing and where nothing came back at all — with the words that came " +
+  "back either way. " +
   "clear_merge_jump (issue) takes an issue's mark off before the merge it was about is submitted. It answers the " +
   "same whether a mark went or no mark was there, and the daemon refuses an issue it does not record " +
   "(ISSUE_NOT_RECORDED) or an issue of another project (ISSUE_OUTSIDE_PROJECT). A mark on an issue that has " +

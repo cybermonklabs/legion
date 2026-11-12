@@ -19,8 +19,12 @@ const mergeJumpOutcomeVersion = 20261111124500
 //
 // The mapping it is held to:
 //
-//   - refused = true becomes outcome 'refused', with its words carried into answer as they
-//     stand, since that row recorded an answer that decided the jump.
+//   - refused = true becomes outcome 'unknown', with its words carried into answer as they
+//     stand. It is not 'refused': the old true was written for every way the jump's own
+//     mutation failed, GitHub's GraphQL refusal and its 4xx as much as the 5xx of GitHub's
+//     edge, the 2xx that carried no data and every transport failure, and nothing in the row
+//     tells those apart. 'unknown' asserts nothing of such a row, and its words reach answer
+//     either way.
 //   - refused = false becomes outcome 'asked'. It is not 'accepted' and not 'unknown': the old
 //     false meant no more than "no refusal recorded" and covered Legion asking and never
 //     learning, GitHub accepting, and a worker dying before it wrote what happened, with nothing
@@ -28,13 +32,13 @@ const mergeJumpOutcomeVersion = 20261111124500
 //
 // The check constraint is read here too, by the value it has to refuse: a fifth word in the
 // column would put a reader back to guessing what it meant.
-func TestJumpRecordsPredating20261111124500MigrateToAskedAndRefused(t *testing.T) {
+func TestJumpRecordsPredating20261111124500MigrateToAskedAndUnknown(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, mergeJumpOutcomeVersion-1)
 
 	// Two rows of the old shape, as the daemon of 20261110235352 wrote them: one whose jump
-	// GitHub refused with words, and one the daemon never wrote again after the mutation.
+	// failed with words of GitHub's, and one the daemon never wrote again after the mutation.
 	const old = `insert into merge_jump_records (project, repository, issue, number, head, at, reason,
 		entries, entries_total, entries_unknown, refused, refusal)
 		values ($1, $2, $3, $4, $5, now(), 'the release waits on it', '[]', 0, true, $6, $7)`
@@ -59,7 +63,7 @@ func TestJumpRecordsPredating20261111124500MigrateToAskedAndRefused(t *testing.T
 	for _, want := range []struct {
 		repository, outcome, answer string
 	}{
-		{repository: "acme/widgets", outcome: "refused",
+		{repository: "acme/widgets", outcome: "unknown",
 			answer: "GitHub refused the jump: the merge queue of acme/widgets takes no jump"},
 		{repository: "acme/other", outcome: "asked", answer: ""},
 	} {
@@ -69,7 +73,7 @@ func TestJumpRecordsPredating20261111124500MigrateToAskedAndRefused(t *testing.T
 			t.Fatalf("read the migrated record of %s: %v", want.repository, err)
 		}
 		if outcome != want.outcome || answer != want.answer {
-			t.Fatalf("the migrated record of %s reads %s with %q, want %s with %q: a row that recorded no refusal supports no outcome but asked",
+			t.Fatalf("the migrated record of %s reads %s with %q, want %s with %q: an old row's refused flag decides no outcome of the four, and its words are kept as they stand",
 				want.repository, outcome, answer, want.outcome, want.answer)
 		}
 	}

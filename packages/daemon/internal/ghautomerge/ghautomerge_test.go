@@ -50,7 +50,7 @@ import (
 // request itself — a 403 the token is refused by as much as the 502 GitHub's edge sends — and
 // jumpUnanswered leaves it with no answer at all: the fake takes the connection over and closes
 // it, so the client is left with a transport error and nothing of GitHub's to read
-// (jumpAnswered). jumpNoData answers that same enqueue 200 with `{"data":null}` and no errors,
+// (jumpEnded). jumpNoData answers that same enqueue 200 with `{"data":null}` and no errors,
 // the shape githubrest reads as ErrGraphQLNoData: GitHub answered and the answer says nothing of
 // the mutation, which is an answer all the same. queueEntries is the merge queue the
 // fake answers for baseBranch, oldest entry first, and queueTotal is GitHub's totalCount for it,
@@ -489,7 +489,7 @@ func (g *github) serve(t *testing.T) string {
 // connection over (http.Hijacker) and closes it without writing a status line, so the client is
 // left with a transport error and no *githubrest.Answer to read. It is the one shape a request
 // nothing came back for has in a test; a 5xx would not do, since GitHub answering 502 is still
-// GitHub answering (jumpAnswered).
+// GitHub answering (jumpEnded).
 func closeWithoutAnswering(t *testing.T, w http.ResponseWriter) {
 	t.Helper()
 	hijacker, ok := w.(http.Hijacker)
@@ -1095,8 +1095,8 @@ func TestAJumpMarkSendsTheEnqueueOnlyWhereTheSubmissionIsAnEnqueue(t *testing.T)
 // JumpUnknown: the 502 GitHub's own edge sends for an API that decided nothing, the 200 that
 // carried no data in the document at all, and a request the client got no answer to, here a
 // connection closed before any status arrived. Those last two are one outcome and the answer's
-// own words keep them apart, since only a request nothing came back for says Legion could not
-// deliver it.
+// own words keep them apart, since only a request the client got no answer to says no answer
+// Legion could read came back.
 //
 // The jump's own failure never becomes a *Refused and never ends the row: the fallback decides
 // how the submission ends, as it does without a mark at all. A fallback GitHub accepts is the
@@ -1109,9 +1109,9 @@ func TestAJumpGitHubRefusesFallsBackToTheSubmissionItChose(t *testing.T) {
 		refusedBy string
 		// outcome is what the caller is told became of the jump (JumpOutcome).
 		outcome JumpOutcome
-		// undelivered says nothing of GitHub's came back at all, which the answer's own words
+		// unanswered says nothing of GitHub's came back at all, which the answer's own words
 		// are what say, since the outcome does not.
-		undelivered bool
+		unanswered bool
 		// ended says the fallback's own refusal ends the submission (*Refused).
 		ended bool
 	}{
@@ -1120,7 +1120,7 @@ func TestAJumpGitHubRefusesFallsBackToTheSubmissionItChose(t *testing.T) {
 			refusedBy: "API rate limit exceeded", outcome: JumpRefused},
 		{name: "a refusal GitHub gives the fallback too", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, refuseSubmit: refusal}, refusedBy: refusal, outcome: JumpRefused, ended: true},
 		{name: "a mutation nothing came back for", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, jumpUnanswered: true},
-			refusedBy: "/graphql", outcome: JumpUnknown, undelivered: true},
+			refusedBy: "/graphql", outcome: JumpUnknown, unanswered: true},
 		{name: "GitHub's own 502, an answer that decides nothing", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, jumpStatus: http.StatusBadGateway},
 			refusedBy: "502", outcome: JumpUnknown},
 		{name: "an HTTP refusal GitHub answered the request with", g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, jumpStatus: http.StatusForbidden},
@@ -1146,10 +1146,10 @@ func TestAJumpGitHubRefusesFallsBackToTheSubmissionItChose(t *testing.T) {
 				t.Fatalf("JumpEnded told %d times, last %s carrying %q; want once, %s carrying %q",
 					m.ends, m.outcome, m.answer, tc.outcome, tc.refusedBy)
 			}
-			const delivery = "could not deliver the jump to GitHub"
-			if strings.Contains(m.answer, delivery) != tc.undelivered {
-				t.Fatalf("the answer %q names a failure to deliver %t, want %t: that is what tells a request nothing came back for from an answer that decided nothing",
-					m.answer, !tc.undelivered, tc.undelivered)
+			const unread = "No answer Legion could read came back from GitHub"
+			if strings.Contains(m.answer, unread) != tc.unanswered {
+				t.Fatalf("the answer %q says no answer came back %t, want %t: that is what tells a request nothing came back for from an answer that decided nothing",
+					m.answer, !tc.unanswered, tc.unanswered)
 			}
 			tc.g.mu.Lock()
 			defer tc.g.mu.Unlock()

@@ -32,20 +32,29 @@
 -- what changes the table is here.
 --
 -- The mapping of a row such a database already holds:
---   refused = true  -> outcome 'refused', its words carried into answer as they stand
+--   refused = true  -> outcome 'unknown', its words carried into answer as they stand
 --   refused = false -> outcome 'asked'
--- Not 'accepted' and not 'unknown'. The old false meant no more than "no refusal recorded" and
--- covered asked, accepted and a worker that died before it wrote what happened, with nothing in
--- the row telling them apart, so 'asked' is the only value such a row supports: Legion asked and
--- never learned. Mapping it to 'accepted' would make, inside the migration written to end this
--- defect, the very inference the defect is.
+-- Neither is 'accepted' and neither is 'refused'. The old true was written for every way the
+-- jump's own mutation failed: GitHub's own GraphQL refusal and its 4xx, which the new scheme
+-- calls 'refused', but also the 5xx of GitHub's edge, the 2xx that carried no data and every
+-- transport failure, which it calls 'unknown'. Nothing in the row tells those apart, so
+-- 'refused' over all of them would assert "an answer that decides it" of rows that hold no such
+-- answer — the same inference this migration refuses for false -> 'accepted'. 'unknown'
+-- asserts nothing, and the row's own words survive into answer either way, so a reader still
+-- has what GitHub said where GitHub said anything.
+--
+-- The old false meant no more than "no refusal recorded" and covered asked, accepted and a
+-- worker that died before it wrote what happened, with nothing in the row telling them apart,
+-- so 'asked' is the only value such a row supports: Legion asked and never learned. Mapping it
+-- to 'accepted' would make, inside the migration written to end this defect, the very
+-- inference the defect is.
 --
 -- There is no down file: migrations here are forward-only, as 20261110235352's own note says.
 alter table merge_jump_records
   add column outcome text not null default 'asked',
   add column answer text not null default '';
 
-update merge_jump_records set outcome = 'refused', answer = refusal where refused;
+update merge_jump_records set outcome = 'unknown', answer = refusal where refused;
 
 alter table merge_jump_records
   alter column outcome drop default,

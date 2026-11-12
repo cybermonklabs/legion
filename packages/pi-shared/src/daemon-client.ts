@@ -163,9 +163,10 @@ export interface LegionDaemonClient {
   readonly childRerun: (
     input: z.input<typeof LegionChildRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
-  /** The controller's jump mark on one issue: the next merge the daemon submits for it goes in
-   * at the head of GitHub's merge queue, with `reason` the account the jump record keeps after
-   * the mark is spent. A second set of the same issue replaces the first. */
+  /** The controller's jump mark on one issue: the daemon asks GitHub to put the next merge it
+   * submits for that issue at the head of GitHub's merge queue, with `reason` the account the
+   * jump record keeps after the mark is spent. A second set of the same issue replaces the
+   * first. */
   readonly mergeJump: (
     input: z.input<typeof LegionMergeJumpRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;

@@ -118,10 +118,10 @@ func (e *GraphQLError) NotFoundAt(path ...string) bool {
 // ErrGraphQLNoData is GitHub answering a GraphQL request 2xx with no `data` of its own: an empty
 // document, or one whose `data` is `null` and whose `errors` is empty or absent. GitHub answered
 // the request, and nothing of what it did with the operation is in the answer, so a caller that
-// tells GitHub's own answer from a request nothing came back for (ghautomerge's jumpAnswered)
-// matches this rather than reading it as a transport failure. It is a sentinel because that is
-// the only way such a caller can tell it from one: the answer carries no status and no GraphQL
-// failure to read it off.
+// sorts a failure by what it decides (ghautomerge's jumpEnded) matches this and reads it as an
+// answer that decides nothing rather than as a transport failure. It is a sentinel because that
+// is the only way such a caller can tell it from one: the answer carries no status and no
+// GraphQL failure to read it off.
 var ErrGraphQLNoData = errors.New("GitHub GraphQL answered without data")
 
 // GraphQL sends query and variables to the client's API, and reads the answer's data into into when

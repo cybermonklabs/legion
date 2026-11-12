@@ -67,9 +67,9 @@ const mergeWaitWarn = time.Hour
 //
 // Five seconds is a bound off the row's own autoMergeTimeout, thirty seconds, which still has to
 // pay for the submission's read of the pull request, the enqueue mutation, the plain submission
-// GitHub's refusal of a jump falls back to, and the one transaction that spends the mark. A read
-// this bound cuts short leaves the jump as it would have been with no queue at all, so the mark
-// is never held back by a slow read.
+// every jump that does not come back accepted falls back to, and the one transaction that spends
+// the mark. A read this bound cuts short leaves the jump as it would have been with no queue at
+// all, so the mark is never held back by a slow read.
 const jumpQueueRead = 5 * time.Second
 
 // queueConflictBound is how long GitHub's merge queue must keep reporting a ready_merge row's
