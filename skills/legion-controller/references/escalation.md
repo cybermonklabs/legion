@@ -20,6 +20,37 @@ open a finding ask when the deployment needs a larger cap.
 For a conflict between trees, read both roots in `read_state` and Dispatch, publish what you read
 to both architects' roles, and open a finding ask when the two need a person's decision.
 
+## An escalated hold
+
+A `held` wake carrying `reason: "escalated"` is an architect's hand-over of an issue whose worker
+failed. The architect has decided against its own retry, so the issue stays at `phase: held` until
+you release it. Read the record, then choose the release.
+
+1. **What failed.** Read the issue with `read_state`. `heldFrom` names the phase the hold took it
+   out of, and `holdReason` reads `escalated`. Read the claim of that phase's role: its `failure`
+   carries `cause`, one cause word of seven, `detail`, the sentence the daemon wrote beside it,
+   `at`, when it failed, and `attempts`, the four counts. The `held` wake lists the seven words
+   (`skill://legion-controller/references/wakes.md`).
+2. **Which budget ran out.** Read each count against its limit, which the state's `settings` hold:
+   `launch_failure_limit` bounds `launchFailures` and `deaths` both, `prompt_failure_limit` bounds
+   `promptFailures`, and `prompt_retire_limit` bounds `promptRetires`. The count that reached its
+   limit is the budget that ran out, and the cause word says what spent it. The architect reads
+   the same `failure` in its own record and reads these limits nowhere, so name the limit when you
+   answer it.
+3. **The release.** The `held` wake gives each release its price. On a root whose tree does not
+   linger, `set_status` to `todo` releases the hold and costs nothing: the issue returns to the
+   phase `heldFrom` names, that phase's role starts with its task, and the generation, the review
+   rounds, the pod and the place in the admission line stay as they were. Take it when the cause
+   is gone — a launch the runtime refused (`launch_refused`), a process that died (`died`), an
+   agent that never came up (`never_registered`) — and when you fixed what the `detail` names. On
+   a child, the same `todo` brings it back at `admitted` with a new generation of its own, since
+   the free release reaches a root alone. Where the claim's own session is what the provider keeps
+   refusing (`provider_error`, and `prompt_retires_exhausted` for an agent that takes no turn),
+   `compact` the session first and use `fresh_session` only when the claim is still refused after
+   that: the claim starts the held phase again in a new session and loses everything the old one
+   held. Where the cause stands, park the tree as the `held` wake says, and mark the park with its
+   comment.
+
 ## A child that looks independent
 
 Check the child and its parent against `read_state` and Dispatch. When it still looks independent,
@@ -59,7 +90,8 @@ that worker's answer at every plugin contract, so a worker whose `legion` tool h
 `ready_for_update` operation needs nothing of you: a round over one finishes by itself, and no
 drain is asked of anybody. A `failed` claim is never in a pod round's `waiting`: it runs no turn
 on the pod, so the round does not wait for it. Its retry is the architect's or the operator's as
-for any failed role, and a retried claim is asked like any other.
+for any failed role, and yours once the architect escalates the hold
+([An escalated hold](#an-escalated-hold)). A retried claim is asked like any other.
 
 Before it replaces the pod, the daemon checks every workspace on the pod's disk for work the
 remote lacks, a failed claim's included, and pushes what it finds to a rescue branch of its own,

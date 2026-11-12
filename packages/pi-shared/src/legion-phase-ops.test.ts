@@ -109,7 +109,7 @@ test("the description sets the host's sentences before and after handoff_complet
   expect(bare).not.toContain("request_backward_move");
   expect(bare.endsWith("role topic with envoy_publish.")).toBe(true);
   expect(placed).toContain(
-    "this tool cannot spawn workers. read_record returns the record of `issue` from the daemon's state. handoff_complete (phase workers"
+    "this tool cannot spawn workers. read_record returns the record of `issue` from the daemon's state. A held issue names in `heldFrom` the phase the hold took it out of. A failed claim carries `failure`: the `cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and `attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts that phase again, as the architect's retry_or_escalate with retry does. handoff_complete (phase workers"
   );
   // Every host states `ready_for_update`, so its sentences are the template's own, between
   // handoff_complete's contract and the host's `after`.
