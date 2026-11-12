@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 // The directory handles every read of the trimmer goes through, and the one rule they keep: a
@@ -67,6 +68,15 @@ func handleOf(file *os.File, path string) (*dirHandle, error) {
 		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
 	}
 	return &dirHandle{file: file, root: root, path: path}, nil
+}
+
+// descriptorPath is one descriptor of this process in its own /proc, which is how a Root is made
+// over a descriptor already open (rootOverDescriptor) and how the sweep's deleter opens the
+// directories the listing passed it (removeOneRequest, volumedelete.go). It is here rather than
+// beside the opens because the deleter is built for every platform this binary is, and refuses
+// off Linux before it reads a request (containDeletions).
+func descriptorPath(fd int) string {
+	return "/proc/self/fd/" + strconv.Itoa(fd)
 }
 
 // Close closes both descriptors of the handle.

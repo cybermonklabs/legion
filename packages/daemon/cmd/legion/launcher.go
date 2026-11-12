@@ -108,12 +108,12 @@ const roleInitUsage = "usage: legion launcher role-init --roles-dir <dir> --role
 // launcher.RoleInitSetupFailedExit, the one status the launcher reports as a setup failure.
 func runRoleInit(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := newFlags("launcher role-init", roleInitUsage, stderr)
-	rolesDir := flags.String("roles-dir", "", "the container-level per-role root")
+	// The cover this role's namespace is built over, registered from the one table the deleter's
+	// own flags are registered from too (launcher.RoleCoverFlags), so neither command can be
+	// given a directory the other is not.
+	cover := launcher.RoleCoverFlags(flags)
 	role := flags.String("role", "", "the role whose namespaces this process is the init of")
 	generation := flags.Uint64("generation", 0, "the generation this role-init runs, which names its own overlay work directory")
-	home := flags.String("home", launcher.RoleHome(), "the home directory the role's own layer covers")
-	homeMounts := flags.String("home-mounts", launcher.RoleHomeMounts(), "where the container mounts every volume that belongs under the home, at the same relative path")
-	fixedRoot := flags.String("fixed-root", launcher.RoleFixedRoot(), "the root the role's own directories are bound back under")
 	statusFD := flags.Int("status-fd", 0, "the descriptor to report the shim's own wait status on")
 	// A role-init the launcher started with flags it cannot read failed before its shim as much as
 	// one whose mounts failed, so it exits the same status; only --help, which nothing runs, exits 0.
@@ -128,7 +128,7 @@ func runRoleInit(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		return launcher.RoleInitSetupFailedExit
 	}
 	if err := launcher.RoleInit(ctx, launcher.RoleInitConfig{
-		RolesDir: *rolesDir, Role: *role, Generation: *generation, Home: *home, HomeMounts: *homeMounts, FixedRoot: *fixedRoot, StatusFD: *statusFD,
+		RoleCover: cover(), Role: *role, Generation: *generation, StatusFD: *statusFD,
 		Argv: flags.Args(), Stdout: stdout, Stderr: stderr,
 	}); err != nil {
 		fmt.Fprintln(stderr, err)
@@ -137,16 +137,16 @@ func runRoleInit(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	return 0
 }
 
-const volumeTrimDeleteUsage = "usage: legion launcher volume-trim-delete --roles-dir <dir> [--home <dir>] [--home-mounts <dir>] (the cache trimmer's own deleter: the daemon's launcher runs it, never a person)"
+const volumeTrimDeleteUsage = "usage: legion launcher volume-trim-delete --roles-dir <dir> [--home <dir>] [--home-mounts <dir>] [--fixed-root <dir>] (the cache trimmer's own deleter: the daemon's launcher runs it, never a person)"
 
 // runVolumeTrimDelete is `legion launcher volume-trim-delete`, the launcher's second hidden
 // subcommand: the process one sweep of the pod's cache trimmer makes every one of its removals
-// through, in a user, mount, PID and IPC namespace of its own with the three directories a role
-// sees nothing of — the roles directory, the home and the directory the container mounts the
-// home's volumes under — each covered by an empty filesystem. The trimmer starts it and hands
-// it the descriptor of every directory the sweep listed; it reads one request per line on its
-// standard input and answers one line on its standard output, and `legion launcher --help` does
-// not offer it.
+// through, in a user, mount, PID and IPC namespace of its own, built over the same cover a role's
+// namespace is built over: every path a role is given something of its own at is an empty
+// filesystem of the deleter's, and /legion, where the deletions are made, is left as the
+// container mounted it. The trimmer starts it and hands it the descriptor of every directory the
+// sweep listed; it reads one request per line on its standard input and answers one line on its
+// standard output, and `legion launcher --help` does not offer it.
 //
 // Nothing a person runs reaches it: run by hand it holds no descriptor of the volume and is not
 // the init of a PID namespace of its own, and it refuses rather than sitting there reading
@@ -154,9 +154,8 @@ const volumeTrimDeleteUsage = "usage: legion launcher volume-trim-delete --roles
 // ends it by closing the requests, and kills it if it outlives the grace.
 func runVolumeTrimDelete(args []string, stdout, stderr io.Writer) int {
 	flags := newFlags("launcher volume-trim-delete", volumeTrimDeleteUsage, stderr)
-	rolesDir := flags.String("roles-dir", "", "the container-level per-role root this deleter covers before it removes anything")
-	home := flags.String("home", launcher.RoleHome(), "the home the roles share, which this deleter covers before it removes anything")
-	homeMounts := flags.String("home-mounts", launcher.RoleHomeMounts(), "where the container mounts every volume that belongs under the home, which this deleter covers before it removes anything")
+	// The same registration role-init makes, so the deleter is told the cover whole.
+	cover := launcher.RoleCoverFlags(flags)
 	if code, ok := parseFlags(flags, args); !ok {
 		return code
 	}
@@ -164,7 +163,7 @@ func runVolumeTrimDelete(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, volumeTrimDeleteUsage)
 		return 1
 	}
-	if err := launcher.VolumeTrimDelete(*rolesDir, *homeMounts, *home, os.Stdin, stdout); err != nil {
+	if err := launcher.VolumeTrimDelete(cover(), os.Stdin, stdout); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}

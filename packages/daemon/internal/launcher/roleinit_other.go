@@ -19,4 +19,4 @@ func roleInit(context.Context, RoleInitConfig) error { return errRoleNamespacesN
 
 // The deletions' own namespace is the same machinery, so it refuses the same way: a sweep that
 // cannot contain its deletions deletes nothing (volumedelete.go).
-func containDeletions(roleCover) error { return errRoleNamespacesNeedLinux }
+func containDeletions(RoleCover) error { return errRoleNamespacesNeedLinux }

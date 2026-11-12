@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 
@@ -118,9 +117,4 @@ func openRetrying(open func() (int, error)) (int, error) {
 // (volumedir.go says why it goes through /proc/self/fd and what that costs).
 func rootOverDescriptor(file *os.File) (*os.Root, error) {
 	return os.OpenRoot(descriptorPath(int(file.Fd())))
-}
-
-// descriptorPath is one descriptor of this process in its own /proc.
-func descriptorPath(fd int) string {
-	return "/proc/self/fd/" + strconv.Itoa(fd)
 }

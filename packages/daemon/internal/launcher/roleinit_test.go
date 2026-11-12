@@ -496,8 +496,11 @@ func runGeneration(plan stagePlan, layout agentPlan, generation uint64, label st
 		return err
 	}
 	process, err := newRoleProcess(RoleInitConfig{
-		RolesDir: layout.RolesDir, Role: plan.Role, Generation: generation, Home: layout.Home,
-		HomeMounts: layout.HomeMounts, FixedRoot: layout.FixedRoot,
+		RoleCover: RoleCover{
+			RolesDir: layout.RolesDir, Home: layout.Home,
+			HomeMounts: layout.HomeMounts, FixedRoot: layout.FixedRoot,
+		},
+		Role: plan.Role, Generation: generation,
 		Argv: []string{plan.Self, "-test.run=^TestRoleInitAgentHelper$"},
 	}, append(os.Environ(), roleInitAgentEnv+"="+string(agent)), os.Stdout, os.Stderr)
 	if err != nil {
@@ -1183,10 +1186,13 @@ func TestARefusedRoleHomeLayerNamesTheOptionsItTried(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := RoleInitConfig{
-		RolesDir: filepath.Join(dir, "roles"), Role: "a", Generation: 1, Home: home,
-		HomeMounts: filepath.Join(dir, "home-mounts"), FixedRoot: filepath.Join(dir, "fixed"),
+		RoleCover: RoleCover{
+			RolesDir: filepath.Join(dir, "roles"), Home: home,
+			HomeMounts: filepath.Join(dir, "home-mounts"), FixedRoot: filepath.Join(dir, "fixed"),
+		},
+		Role: "a", Generation: 1,
 	}
-	err := privateHome(cfg, homes, work)
+	err := privateHome(cfg, home, homes, work)
 	if err == nil {
 		t.Fatalf("the role's home layer over the regular file %s went on, want the mount refused", home)
 	}

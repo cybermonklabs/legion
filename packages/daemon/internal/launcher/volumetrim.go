@@ -171,11 +171,11 @@ type trimmer struct {
 	ticks func(time.Duration) (<-chan time.Time, func())
 	logf  func(format string, args ...any)
 	// volumeRoot, procRoot, cover, self and roots are the machine, each an argument so a test
-	// drives a tree of its own: VolumeRoot, "/proc", the directories each sweep's deleter
-	// covers (roleCoverFor of the launcher's --roles-dir), os.Getpid() and ReclaimableRoots in
-	// the pod.
+	// drives a tree of its own: VolumeRoot, "/proc", the cover each sweep's deleter builds its
+	// own namespace over (roleCoverFor of the launcher's --roles-dir), os.Getpid() and
+	// ReclaimableRoots in the pod.
 	volumeRoot, procRoot string
-	cover                roleCover
+	cover                RoleCover
 	self                 int
 	roots                []ReclaimableRoot
 	// measure is one directory of the size walk, the seam a test blocks to drive the walk's
@@ -190,7 +190,7 @@ type trimmer struct {
 	// that a case about something other than containment can give the sweep a remover that
 	// deletes in the test process, as the machine above is a field; the pod never replaces it,
 	// and a sweep whose deleter will not start deletes nothing at all (sweep).
-	removals func(cover roleCover, dirs []*sweepDir) (entryRemover, error)
+	removals func(cover RoleCover, dirs []*sweepDir) (entryRemover, error)
 
 	// Everything below is the trimmer's own state across intervals. run is one goroutine and
 	// nothing else reads these, so they carry no lock: the launcher's connection goroutine
@@ -227,7 +227,7 @@ func newTrimmer(
 	trimming func() bool,
 	send func(shimwire.LauncherVolumeReport) error,
 	logf func(format string, args ...any),
-	cover roleCover,
+	cover RoleCover,
 ) *trimmer {
 	return &trimmer{
 		id:         randomID(),

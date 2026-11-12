@@ -114,16 +114,16 @@ type trimFixture struct {
 	proc  string // the /proc the trimmer reads: a fixture, or the container's own
 	self  int
 	roots []ReclaimableRoot
-	// coverRoot holds the three directories each sweep's deleter covers before it removes
-	// anything (roleCover, volumedelete.go): the pod's per-role root, the directory the roles
-	// container mounts the home's volumes under, and the home. They sit under one directory of
-	// the case's own, where the pod has /var/run/legion/roles, /var/run/legion/home and
-	// /home/legion, so that one link can aim a sweep at every one of them at once
-	// (TestASubdirectorySwappedForALinkWhileARemovalRecursesReachesNoOtherRolesFiles). A case
-	// of this file deletes in its own process and covers none of them, so each is an empty
+	// coverRoot holds every directory of the cover each sweep's deleter is built over (RoleCover,
+	// volumedelete.go): the pod's per-role root, the directory the roles container mounts the
+	// home's volumes under, the home and the fixed root. They sit under one directory of the
+	// case's own, where the pod has /var/run/legion/roles, /var/run/legion/home, /home/legion and
+	// /var/run/legion, so that one link can aim a sweep at every one of them at once
+	// (TestASubdirectorySwappedForALinkWhileARemovalRecursesReachesNoOtherRolesFiles). A case of
+	// this file deletes in its own process and covers none of them, so each is an empty
 	// directory: the cases that drive the covers are volumedelete_test.go's.
-	coverRoot                  string
-	rolesDir, homeMounts, home string
+	coverRoot string
+	cover     RoleCover
 
 	protected  []fixtureFile
 	entries    []*fixtureEntry
@@ -153,22 +153,17 @@ func newTrimFixture(t *testing.T, perRoot int) *trimFixture {
 	root := t.TempDir()
 	cover := t.TempDir()
 	f := &trimFixture{
-		t:          t,
-		root:       root,
-		self:       os.Getpid(),
-		roots:      rebasedRoots(root),
-		coverRoot:  cover,
-		rolesDir:   filepath.Join(cover, "roles"),
-		homeMounts: filepath.Join(cover, "home-mounts"),
-		home:       filepath.Join(cover, "home"),
-		clock:      newFakeClock(),
-		ticks:      &fakeTicks{},
+		t:         t,
+		root:      root,
+		self:      os.Getpid(),
+		roots:     rebasedRoots(root),
+		coverRoot: cover,
+		cover:     coverUnder(t, cover),
+		clock:     newFakeClock(),
+		ticks:     &fakeTicks{},
 		reading: func(int) volumeUsage {
 			return volumeUsage{UsedBytes: percentBytes(50), AvailableBytes: fixtureVolumeBytes - percentBytes(50)}
 		},
-	}
-	for _, dir := range []string{f.rolesDir, f.homeMounts, f.home} {
-		mkdirFixture(t, dir)
 	}
 	f.proc = writeProcFixture(t)
 	f.buildProtected()
@@ -176,10 +171,26 @@ func newTrimFixture(t *testing.T, perRoot int) *trimFixture {
 	return f
 }
 
-// cover is the three directories the deleter of this fixture's sweeps covers, as the pod's
-// trimmer is given them (roleCoverFor, which a test's own layout replaces).
-func (f *trimFixture) cover() roleCover {
-	return roleCover{RolesDir: f.rolesDir, HomeMounts: f.homeMounts, Home: f.home}
+// coverUnder is a cover of a case's own: one directory under root for each the pod's layout
+// names, made from the one table that names them (roleCoverFlags), and every path under those a
+// namespace built over the cover must replace (RoleCover.replaced), which the worker image lays
+// out for a role and a case lays out here. So a directory added to the cover is a directory every
+// case of these files is given without a second edit.
+func coverUnder(t *testing.T, root string) RoleCover {
+	t.Helper()
+	var cover RoleCover
+	for _, named := range roleCoverFlags {
+		*named.at(&cover) = filepath.Join(root, named.flag)
+	}
+	for _, dir := range cover.dirs() {
+		mkdirFixture(t, dir)
+	}
+	for _, replaced := range cover.replaced() {
+		if !replaced.optional && strings.HasPrefix(replaced.path, root+string(filepath.Separator)) {
+			mkdirFixture(t, replaced.path)
+		}
+	}
+	return cover
 }
 
 // rebase is a path of the pod's volume on a case's own tree.
@@ -542,7 +553,7 @@ func (f *trimFixture) assertPrefixed() {
 // anything at all without it, are volumedelete_test.go's cases, which give the trimmer the
 // deleter the pod runs (entryRemover, volumedelete.go).
 func (f *trimFixture) trimmer() *trimmer {
-	tr := newTrimmer(f.settings, f.trimming, f.send, f.log, f.cover())
+	tr := newTrimmer(f.settings, f.trimming, f.send, f.log, f.cover)
 	tr.volumeRoot, tr.procRoot, tr.self, tr.roots = f.root, f.proc, f.self, f.roots
 	tr.now, tr.ticks = f.clock.now, f.ticks.make
 	tr.removals = inProcessRemovals
@@ -2961,9 +2972,12 @@ func TestAPanicIsRecoveredAndThreeInARowSwitchTheTrimmerOff(t *testing.T) {
 			t.Fatalf("the trimmer switched itself off after %d recovered panics in a row, want it to go on until %d: an interval that panicked once is an interval passed over and not a pod left unguarded", at+1, faultLimit)
 		}
 	}
-	if f.logged("off for the life of this launcher process") != 1 {
-		t.Errorf("the trimmer did not log that it is off for good; it wrote %q", f.linesWritten())
-	}
+	// Waited for rather than read at once: the tick above returns when the third fault line is
+	// written, and the trimmer's own goroutine writes this one after it, so a bare read here is
+	// a race the case loses about once in thirty runs (measured 2026-11-12).
+	testwait.Eventually(t, "the trimmer to log that it is off for good", func() bool {
+		return f.logged("off for the life of this launcher process") == 1
+	})
 	for _, line := range f.linesWritten() {
 		if strings.Contains(line, "recovered a panic") && !strings.Contains(line, "volumetrim.go") {
 			t.Errorf("the fault line %q carries no stack, want the stack of the panic", line)

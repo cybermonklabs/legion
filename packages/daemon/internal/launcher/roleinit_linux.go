@@ -72,9 +72,11 @@ func roleInit(stop context.Context, cfg RoleInitConfig) error {
 }
 
 // prepareRoleNamespace is everything the role's mount namespace holds that the container's does
-// not. Its order matters: every mount whose source is under the roles directory is made before
-// the cover goes over it, and the role's own /proc last, so the role sees its own processes
-// alone from the moment it starts.
+// not: the role's own layers under the roles directory, and then what the role is given at every
+// path its namespace replaces, in the order the one list both this and the deletions' namespace
+// are built from names them (RoleCover.replaced, roleinit.go). That order matters: every mount
+// whose source is under the roles directory is made before the cover goes over it, and the
+// role's own /proc last, so the role sees its own processes alone from the moment it starts.
 func prepareRoleNamespace(cfg RoleInitConfig) error {
 	role := filepath.Join(cfg.RolesDir, cfg.Role)
 	homes := filepath.Join(cfg.RolesDir, RoleHomesDir, cfg.Role)
@@ -111,124 +113,111 @@ func prepareRoleNamespace(cfg RoleInitConfig) error {
 			roleLogf(cfg, "role-init: clear an earlier generation's overlay work directory: %v", err)
 		}
 	}
-	// The role's own directories at the fixed paths every role is told, so neither the shim nor
-	// the agent learns a path of its own. Its launcher token is bound nowhere: no role can read
-	// any launcher token, its own included. The agent-secrets directory is there only when the
-	// pod is enrolled with the secrets broker.
-	for _, bind := range []struct {
-		source, target string
-		optional       bool
-	}{
-		{filepath.Join(role, RoleGHDir), filepath.Join(cfg.FixedRoot, RoleGHDir), false},
-		{filepath.Join(role, RolePrivateDir), filepath.Join(cfg.FixedRoot, RolePrivateDir), false},
-		{filepath.Join(role, RoleStateDir), filepath.Join(cfg.FixedRoot, RoleStateDir), false},
-		{filepath.Join(role, RoleAgentSecretsDir), filepath.Join(cfg.FixedRoot, RoleAgentSecretsDir), true},
-	} {
-		if _, err := os.Stat(bind.source); err != nil {
-			if bind.optional && errors.Is(err, fs.ErrNotExist) {
-				continue
+	// Everything the role's namespace holds that the container's does not, in the order the one
+	// list both namespaces are built from names it (RoleCover.replaced, roleinit.go): the role's
+	// own directories at the fixed paths every role is told, so neither the shim nor the agent
+	// learns a path of its own and its launcher token is bound nowhere; its own layer over the
+	// home; its own temporary directories, on the pod's disk as a container filesystem is; its
+	// own small memory filesystems where the image has one for the whole container; its own
+	// pseudo-terminals and message queues; the covers; and its own /proc.
+	cleared := false
+	return eachReplaced(cfg.RoleCover, func(replaced roleReplacement, path string) error {
+		place := func(mount func() error) error {
+			if !replaced.carried {
+				return mount()
 			}
-			return fmt.Errorf("the role's %s directory: %w", filepath.Base(bind.source), err)
+			return carryOver(cfg, path, stage, mount)
 		}
-		if err := bindMount(bind.source, bind.target); err != nil {
-			return fmt.Errorf("bind %s at %s: %w", bind.source, bind.target, err)
+		switch replaced.kind {
+		case roleBound:
+			source := replaced.from(role, homes)
+			if _, err := os.Stat(source); err != nil {
+				if replaced.optional && errors.Is(err, fs.ErrNotExist) {
+					return nil
+				}
+				return fmt.Errorf("the role's %s directory: %w", filepath.Base(source), err)
+			}
+			if err := place(func() error { return bindMount(source, path) }); err != nil {
+				return fmt.Errorf("bind %s at %s: %w", source, path, err)
+			}
+		case roleOverlaid:
+			return privateHome(cfg, path, homes, work)
+		case roleMemory:
+			if err := place(func() error { return mountTmpfs(path, "size=64m") }); err != nil {
+				return fmt.Errorf("give the role its own %s: %w", path, err)
+			}
+		case roleTerminals:
+			return privateTerminals(path)
+		case roleQueues:
+			return privateQueues(path)
+		case roleHidden:
+			// The covers are the last mounts made from under them: every role's directories go
+			// behind an empty filesystem, this role's launcher token with them, and so does the
+			// container's view of the home's volumes, which the role now sees at their own paths
+			// alone. The stage's stand-ins are cleared first, since the stage lives under the
+			// roles directory this hides.
+			if !cleared {
+				cleared = true
+				if err := os.RemoveAll(stage); err != nil {
+					return fmt.Errorf("clear the role's stage: %w", err)
+				}
+			}
+			if err := mountTmpfs(path, "size=1m,mode=0755"); err != nil {
+				return fmt.Errorf("cover %s: %w", path, err)
+			}
+		case roleProc:
+			if err := mountProc(path); err != nil {
+				return fmt.Errorf("mount the role's own %s: %w", path, err)
+			}
 		}
+		return nil
+	})
+}
+
+// privateTerminals gives the role its own pseudo-terminals where the image's /dev has them, at
+// the pts directory the one list names (RoleCover.replaced). A new devpts instance there: the
+// container's lists, and lets the opener of a sibling's terminal read and write it, every
+// terminal of every role, all the same user outside their namespaces; the new one holds only
+// those the role opens, with the image's ptmx opening into it (bound over a ptmx that is a node;
+// a link to pts/ptmx already resolves there). Linux lets the owner of a user namespace mount
+// devpts, and gVisor registers it as mountable there (runsc/boot/vfs.go: devpts AllowUserMount,
+// which takes newinstance). ptmxmode 0666 is what container runtimes give /dev/ptmx, so the
+// role's unprivileged agent can open it.
+func privateTerminals(pts string) error {
+	if err := unix.Mount("devpts", pts, "devpts", unix.MS_NOSUID|unix.MS_NOEXEC, "newinstance,ptmxmode=0666"); err != nil {
+		return fmt.Errorf("give the role its own %s: %w", pts, err)
 	}
-	if err := privateHome(cfg, homes, work); err != nil {
-		return err
-	}
-	// The role's own temporary directories, on the pod's disk as a container filesystem is.
-	for _, bind := range [][2]string{
-		{filepath.Join(homes, "tmp"), "/tmp"},
-		{filepath.Join(homes, "var-tmp"), "/var/tmp"},
-	} {
-		if err := carryOver(cfg, bind[1], stage, func() error { return bindMount(bind[0], bind[1]) }); err != nil {
-			return fmt.Errorf("give the role its own %s: %w", bind[1], err)
+	ptmx := systemPath("dev/ptmx")
+	info, err := os.Lstat(ptmx)
+	switch {
+	case errors.Is(err, fs.ErrNotExist), err == nil && info.Mode()&fs.ModeSymlink != 0:
+	case err != nil:
+		return fmt.Errorf("give the role its own %s: %w", ptmx, err)
+	default:
+		if err := unix.Mount(filepath.Join(pts, "ptmx"), ptmx, "", unix.MS_BIND, ""); err != nil {
+			return fmt.Errorf("give the role its own %s: %w", ptmx, err)
 		}
-	}
-	// The role's own small memory filesystems where the image has one for the whole container:
-	// the lock directories and POSIX shared memory. A path the image does not have is skipped,
-	// and a path that is another's link (the image's /var/lock) is covered once; any other
-	// failure to read the path is a refusal, since the role would otherwise share the
-	// container's with its siblings.
-	covered := map[string]bool{}
-	for _, path := range []string{"/run/lock", "/var/lock", "/dev/shm"} {
-		resolved, err := filepath.EvalSymlinks(path)
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			continue
-		case err != nil:
-			return fmt.Errorf("give the role its own %s: %w", path, err)
-		case covered[resolved]:
-			continue
-		}
-		covered[resolved] = true
-		if err := carryOver(cfg, resolved, stage, func() error { return mountTmpfs(resolved, "size=64m") }); err != nil {
-			return fmt.Errorf("give the role its own %s: %w", path, err)
-		}
-	}
-	if err := privateDevices(); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(stage); err != nil {
-		return fmt.Errorf("clear the role's stage: %w", err)
-	}
-	// The covers, last of the mounts made from under them: every role's directories go behind an
-	// empty filesystem, this role's launcher token with them, and so does the container's view of
-	// the home's volumes, which the role now sees at their own paths alone. The list is the one
-	// the trimmer's deleter covers from too (roleCover.covered), so a directory added to it is
-	// hidden from a role and from the deletions alike.
-	for _, dir := range cfg.cover().covered() {
-		if err := mountTmpfs(dir, "size=1m,mode=0755"); err != nil {
-			return fmt.Errorf("cover %s: %w", dir, err)
-		}
-	}
-	if err := unix.Mount("proc", "/proc", "proc", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); err != nil {
-		return fmt.Errorf("mount the role's own /proc: %w", err)
 	}
 	return nil
 }
 
-// privateDevices gives the role its own pseudo-terminals and its own view of POSIX message queues
-// where the image's /dev has them. A new devpts instance at /dev/pts: the container's lists, and
-// lets the opener of a sibling's terminal read and write it, every terminal of every role, all
-// the same user outside their namespaces; the new one holds only those the role opens, with
-// /dev/ptmx opening into it (bound over a /dev/ptmx that is a node; a link to pts/ptmx already
-// resolves there). The mqueue filesystem mounted at /dev/mqueue from inside the role's own IPC
-// namespace shows that namespace's queues alone, where the container's mount showed — and let a
-// role create — queues of the container's IPC namespace, a channel every sibling could read.
-// Linux lets the owner of a user namespace mount both, and gVisor registers both as mountable
-// there (runsc/boot/vfs.go: devpts and mqfs AllowUserMount; devpts takes newinstance, and a new
-// IPC namespace gets its own POSIX queue registry, task_clone.go). ptmxmode 0666 is what container
-// runtimes give /dev/ptmx, so the role's unprivileged agent can open it. A path the image does not
-// have is skipped; any other failure is a refusal, since the role would otherwise share the
-// container's with its siblings.
-func privateDevices() error {
-	if _, err := os.Stat("/dev/pts"); err == nil {
-		if err := unix.Mount("devpts", "/dev/pts", "devpts", unix.MS_NOSUID|unix.MS_NOEXEC, "newinstance,ptmxmode=0666"); err != nil {
-			return fmt.Errorf("give the role its own /dev/pts: %w", err)
-		}
-		info, err := os.Lstat("/dev/ptmx")
-		switch {
-		case errors.Is(err, fs.ErrNotExist), err == nil && info.Mode()&fs.ModeSymlink != 0:
-		case err != nil:
-			return fmt.Errorf("give the role its own /dev/ptmx: %w", err)
-		default:
-			if err := unix.Mount("/dev/pts/ptmx", "/dev/ptmx", "", unix.MS_BIND, ""); err != nil {
-				return fmt.Errorf("give the role its own /dev/ptmx: %w", err)
-			}
-		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("give the role its own /dev/pts: %w", err)
-	}
-	if _, err := os.Stat("/dev/mqueue"); err == nil {
-		if err := unix.Mount("mqueue", "/dev/mqueue", "mqueue", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); err != nil {
-			return fmt.Errorf("give the role its own /dev/mqueue: %w", err)
-		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("give the role its own /dev/mqueue: %w", err)
+// privateQueues gives the role its own view of POSIX message queues where the image's /dev has
+// them. The mqueue filesystem mounted from inside the role's own IPC namespace shows that
+// namespace's queues alone, where the container's mount showed — and let a role create — queues
+// of the container's IPC namespace, a channel every sibling could read. Linux lets the owner of a
+// user namespace mount it, and gVisor registers mqfs as mountable there (runsc/boot/vfs.go), a
+// new IPC namespace getting its own POSIX queue registry (task_clone.go).
+func privateQueues(mqueue string) error {
+	if err := unix.Mount("mqueue", mqueue, "mqueue", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); err != nil {
+		return fmt.Errorf("give the role its own %s: %w", mqueue, err)
 	}
 	return nil
+}
+
+// mountProc puts a procfs of this namespace's own PID namespace at path, so the processes it
+// shows are its own and none of the container's.
+func mountProc(path string) error {
+	return unix.Mount("proc", path, "proc", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, "")
 }
 
 // privateHome gives the role a writable layer of its own over the image's home, then puts every
@@ -243,16 +232,16 @@ func privateDevices() error {
 // without following a link the role left there (makeLike). The pod's shared config home is the
 // one volume not bound back: the role's own config home goes at its path instead (ownConfigHome),
 // and a mount under the shared one is bound back on top of the role's.
-func privateHome(cfg RoleInitConfig, homes, work string) error {
-	if _, carried, err := mountsUnder(cfg.Home); err != nil {
+func privateHome(cfg RoleInitConfig, home, homes, work string) error {
+	if _, carried, err := mountsUnder(home); err != nil {
 		return err
 	} else if len(carried) > 0 {
 		return fmt.Errorf("the home %s carries mounts (%s): the container mounts what belongs under the home under %s instead",
-			cfg.Home, strings.Join(carried, ", "), cfg.HomeMounts)
+			home, strings.Join(carried, ", "), cfg.HomeMounts)
 	}
-	options := homeOverlayOptions(cfg.Home, filepath.Join(homes, "upper"), work)
-	if err := unix.Mount("overlay", cfg.Home, "overlay", 0, options); err != nil {
-		return fmt.Errorf("give the role its own layer over %s with %s: %w", cfg.Home, options, err)
+	options := homeOverlayOptions(home, filepath.Join(homes, "upper"), work)
+	if err := unix.Mount("overlay", home, "overlay", 0, options); err != nil {
+		return fmt.Errorf("give the role its own layer over %s with %s: %w", home, options, err)
 	}
 	// The image reaches the home mounts directory through a link (its /var/run is /run), and
 	// mountinfo names each mount by the path the link resolves to, so each is placed relative to
@@ -272,14 +261,14 @@ func privateHome(cfg RoleInitConfig, homes, work string) error {
 		if err != nil {
 			return err
 		}
-		target := filepath.Join(cfg.Home, rel)
+		target := filepath.Join(home, rel)
 		source := mount
 		if rel == ConfigHomeDir {
 			if source, err = ownConfigHome(mount, filepath.Join(homes, RoleConfigHomeDir), mounts); err != nil {
 				return fmt.Errorf("give the role its own config home: %w", err)
 			}
 		}
-		if err := makeLike(cfg, source, cfg.Home, target); err != nil {
+		if err := makeLike(cfg, source, home, target); err != nil {
 			return fmt.Errorf("make %s's place in the role's home: %w", target, err)
 		}
 		if err := bindMount(source, target); err != nil {
@@ -710,30 +699,52 @@ func privateMounts() error {
 }
 
 // containDeletions is the cache trimmer's deleter put where it sees no more than a role sees:
-// this process's mounts held to itself, then an empty filesystem over every directory a role's
-// own namespace hides, with /legion left as the container mounted it. It is the same clone
-// flags (roleNamespaceAttr) the role generations run under and the same cover list
-// prepareRoleNamespace mounts for a role (roleCover.covered), made for a process that only
-// deletes: a link the kernel follows inside Root.RemoveAll then reaches nothing of another
-// role's credentials and nothing of the home every role starts from, since nothing of either is
-// there to reach (volumedelete.go, which says what that bounds and what it does not).
+// this process's mounts held to itself, then an empty filesystem over every path a role's own
+// namespace replaces, a procfs of its own PID namespace where a role is given one, and its
+// working directory at the root of its own namespace. /legion is left as the container mounted
+// it, since the deletions are made there.
 //
-// The home is covered here where a role is given a writable layer over it (privateHome): a role
-// reads the image's home and writes under it, and what it deletes there is a whiteout of its own
-// that leaves the image's file standing, while this process reads nothing anywhere and an empty
-// filesystem takes the whole of its reach.
+// It is built from the one list a role's namespace is built from (RoleCover.replaced, which says
+// what is in it and what is not) under the same clone flags the role generations run under
+// (roleNamespaceAttr), made for a process that only deletes: a link the kernel follows inside
+// Root.RemoveAll reaches, at every path of that list, an empty filesystem of this process's own
+// (volumedelete.go, which says what that bounds and what it does not).
 //
-// A directory that cannot be covered is a refusal rather than a deletion made uncovered: the
-// deleter holds descriptors on the pod's cache directories, and the whole of what it is for is
-// that what it follows out of them reaches only the role's own.
-func containDeletions(cover roleCover) error {
+// Where a role is given something of its own — its temporary directories, its memory
+// filesystems, its devices, a writable layer over the home — this process is given an empty
+// filesystem instead: a role reads what the image lays out there and writes under it, while this
+// process reads nothing anywhere, so the whole of its reach at such a path is what it would put
+// there itself. The one path it needs rather than hides is its own /proc, through which it opens
+// the descriptors the listing passed it (rootOverDescriptor, volumedir.go).
+//
+// The working directory is the launcher's until this chdir: a child inherits it, and an inherited
+// directory is a handle the cover over its path does not take away, which /proc/self/cwd names.
+// At the root of the namespace it names what a link to `/` names, which no cover of a process
+// that must reach /legion could take away either.
+//
+// A path that cannot be covered is a refusal rather than a deletion made uncovered: the deleter
+// holds descriptors on the pod's cache directories, and the whole of what it is for is that what
+// it follows out of them reaches only the role's own.
+func containDeletions(cover RoleCover) error {
 	if err := privateMounts(); err != nil {
 		return fmt.Errorf("hold the deletions' mounts to themselves: %w", err)
 	}
-	for _, dir := range append(cover.covered(), cover.Home) {
-		if err := mountTmpfs(dir, "size=1m,mode=0755"); err != nil {
-			return fmt.Errorf("cover %s: %w", dir, err)
+	if err := eachReplaced(cover, func(replaced roleReplacement, path string) error {
+		if replaced.kind == roleProc {
+			if err := mountProc(path); err != nil {
+				return fmt.Errorf("mount the deletions' own %s: %w", path, err)
+			}
+			return nil
 		}
+		if err := mountTmpfs(path, "size=1m,mode=0755"); err != nil {
+			return fmt.Errorf("cover %s: %w", path, err)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := os.Chdir("/"); err != nil {
+		return fmt.Errorf("stand the deletions at the root of their own namespace: %w", err)
 	}
 	return nil
 }

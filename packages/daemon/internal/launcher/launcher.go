@@ -172,13 +172,15 @@ func Run(ctx context.Context, cfg Config) error {
 // the trimmer waiting for settings to come back, which is the whole of the trimmer's life in
 // this process (trimmer.run).
 //
-// It is given the directories each sweep's deleter covers with an empty filesystem in a mount
-// namespace of its own before it removes anything: this launcher's roles directory, under which
-// every role's private, state and agent-secrets directories and launcher token live, and the
-// home and the home mounts directory role-init is given, which hold the home every role starts
-// from and the pod's shared config home. The deleter is the one thing that keeps a link a role
-// left in a cache out of them (roleCover, volumedelete.go). Only an issue pod's container
-// reaches here, and that is the launcher that names a roles directory.
+// It is given the cover each sweep's deleter builds its own mount namespace over before it
+// removes anything, the one role-init is given (roleCoverFor): this launcher's roles directory,
+// under which every role's private, state and agent-secrets directories and launcher token live,
+// and the home, the home mounts directory and the fixed root, which hold the home every role
+// starts from, the pod's shared config home and the mount points a role's own directories are
+// bound at. Every path a role's namespace replaces is an empty filesystem in that namespace, and
+// the deleter is the one thing that keeps a link a role left in a cache out of them (RoleCover,
+// volumedelete.go). Only an issue pod's container reaches here, and that is the launcher that
+// names a roles directory.
 func serveVolumeTrim(ctx context.Context, m *manager) <-chan struct{} {
 	trim := newTrimmer(m.volumeTrim, m.volumeTrimming, m.sendVolumeReport, m.logf, roleCoverFor(m.cfg.RolesDir))
 	done := make(chan struct{})
@@ -751,8 +753,7 @@ func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProc
 	if m.namespaced {
 		stdout, stderr := m.log.writers(m.role)
 		process, err := newRoleProcess(RoleInitConfig{
-			RolesDir: m.cfg.RolesDir, Role: m.role, Generation: start.Generation, Home: roleHome,
-			HomeMounts: roleHomeMounts, FixedRoot: roleFixedRoot, Argv: start.Argv,
+			RoleCover: roleCoverFor(m.cfg.RolesDir), Role: m.role, Generation: start.Generation, Argv: start.Argv,
 		}, env, stdout, stderr)
 		if err != nil {
 			return nil, err

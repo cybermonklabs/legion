@@ -30,12 +30,14 @@ import (
 // them deleted a file of another role's private directory
 // (TestASubdirectorySwappedForALinkWhileARemovalRecursesReachesNoOtherRolesFiles).
 //
-// So the deletions are made in a mount namespace of their own, with every directory a role's
-// own namespace shows it nothing of the container's at covered by an empty filesystem — the
-// roles directory, the directory the roles container mounts the home's volumes under and the
-// home, which the trimmer passes to the child as role-init is given them (roleCover,
-// roleinit.go) — and /legion as the container mounted it. A link the recursion follows then
-// reaches only what the role that left it could delete itself, as the same uid.
+// So the deletions are made in a mount namespace of their own, built by the same code that
+// builds a role's: every path a role's own namespace replaces with something of the role's is
+// an empty filesystem of this child's instead, from the one list both are walked from
+// (RoleCover.replaced, roleinit.go), with a procfs of the child's own PID namespace where a
+// role is given one and the child's working directory at the root of its own namespace
+// (containDeletions). /legion is left as the container mounted it, since that is where the
+// deletions are made. A link the recursion follows then reaches only what the role that left it
+// could delete itself, as the same uid.
 //
 // What that bounds, exactly. All six roles of an issue pod run as one uid — the worker image's
 // unprivileged user, roleUID — so a role can already delete anything of /legion it can reach by
@@ -46,25 +48,51 @@ import (
 // role's work.
 //
 // What it removes is the reach into what the container holds for the roles and no role holds
-// itself, which is two things:
+// itself. Every directory where a role's own view differs from the container's is covered here,
+// so what a link reaches in this child is what the role that left it reaches by that path, or
+// nothing at all:
 //
 //   - Another role's credentials: its private, state and agent-secrets directories and its
-//     launcher token, which live under /var/run/legion/roles.
+//     launcher token, which live under /var/run/legion/roles, and the fixed root's own mount
+//     points, where a role's are bound.
 //   - What every role starts from: the pod's shared config home, which the container mounts
 //     under /var/run/legion/home and which each role's own config home is copied from at that
 //     role's first start in the pod (ownConfigHome), and /home/legion, the lower layer of every
-//     role's home overlay. Measured against the cover of the roles directory alone on
-//     2026-11-12 with the swap below: the swap landed and both of the pod's jj configuration
-//     files were deleted, in three trials of three (INFRA-2009, review 8).
+//     role's home overlay.
+//   - What the container keeps at every path a role is given its own of: its /tmp and /var/tmp,
+//     its lock directories and POSIX shared memory, its pseudo-terminals and message queues,
+//     and its /proc.
 //
-// Those are the three directories the cover covers and all it covers. What a role's namespace
-// gives it of its own rather than hiding — its /tmp, /var/tmp, /run/lock, /dev/shm and /proc —
-// this child still sees as the container's: the container's temporary directories hold nothing
-// a role is given (a role's own are bound from under the roles directory, prepareRoleNamespace),
-// and /proc is no reach on this kernel, where an open of another namespace's /proc/<pid>/root
-// from the child answered EACCES (measured by review 8). This says nothing about paths outside
-// these that no one has looked for: it is the class the cover covers, not a proof that the
-// cover is the only thing worth covering.
+// Six of those paths were measured reached, each with the swap case below run against a cover
+// with that one path taken out of the list and nothing else changed: it landed in four trials of
+// four and deleted the bait under that path in each, on 2026-11-12, kernel 4.19.0-gvisor, under
+// go1.27.3 — the roles directory, the home mounts directory, the home, the fixed root's private
+// mount point, the container's /tmp and its /proc
+// (TestASubdirectorySwappedForALinkWhileARemovalRecursesReachesNoOtherRolesFiles, where the
+// image's own paths are a tree of the case's own, since nothing can plant a file in the
+// machine's /proc). The rest are covered because a role's namespace replaces them and not
+// because anyone has driven a link into one: that case plants a bait under every path of the
+// list and reads each back, so a cover dropped from the list is a bait deleted and named.
+//
+// Two were measured against the deleter before this change rather than against a cover of its
+// own: the container's /tmp, and the launcher's working directory reached through
+// /proc/self/cwd, each in one trial of one (INFRA-2009, review 9, on 2026-11-12). The second is
+// what the chdir in containDeletions ends, and the same swap with that chdir taken out deleted
+// the bait under the launcher's working directory in four trials of four, on the same day and
+// kernel (TestTheDeletersInheritedWorkingDirectoryIsNoWayPastACover).
+//
+// What the child is given as the container holds it, and what that leaves:
+//
+//   - /legion, which is what the sweep deletes in. A link to it reaches what the role that left
+//     it reaches there, which is the bound above and nothing narrower.
+//   - Every path a role's namespace leaves as the container's too — the image's own files, the
+//     directories the covered paths sit in, /sys, the rest of /dev and /run. The child reads
+//     none of them, and what a link to one of them reaches is again what the role that left it
+//     reaches by the same path: the child holds no capability outside its own user namespace,
+//     so what it can unlink anywhere is what the role uid can unlink.
+//   - A name that is not a directory, the image's /dev/ptmx among them: Root.RemoveAll unlinks
+//     such a name as the name it is and never recurses through it, so a link to one costs the
+//     link and nothing else.
 //
 // The shape: one child per sweep, started once the listing has opened every directory it will
 // delete out of and ended with the sweep. A child per entry would be a fork and an exec per
@@ -110,7 +138,7 @@ var errRemoverGone = errors.New("the sweep's deleter is gone")
 // startRemover is what the pod's trimmer takes for every sweep (trimmer.removals): the contained
 // deleter, answered as the interface the sweep holds it by. A sweep is given no other, and a
 // start that fails is a sweep that deletes nothing (sweep, volumetrim.go).
-func startRemover(cover roleCover, dirs []*sweepDir) (entryRemover, error) {
+func startRemover(cover RoleCover, dirs []*sweepDir) (entryRemover, error) {
 	return startContainedRemover(cover, dirs)
 }
 
@@ -118,18 +146,15 @@ func startRemover(cover roleCover, dirs []*sweepDir) (entryRemover, error) {
 // this binary's own hidden subcommand, as roleInitLaunch runs role-init. A test replaces it with
 // its re-entrant helper, since a test binary is not `legion`.
 //
-// The three directories the child covers go on the command line as role-init's own do, from the
-// one list the trimmer was given them in (roleCover), so the deleter is told what a role's
-// namespace hides rather than a part of it.
-var trimDeleteLaunch = func(cover roleCover) (argv, env []string, err error) {
+// The cover goes on the command line as role-init's own does and from the one table that writes
+// both (RoleCover.flags), so the deleter is told the whole of what the trimmer was given rather
+// than a part of it, and a directory added to the cover reaches this command line with it.
+var trimDeleteLaunch = func(cover RoleCover) (argv, env []string, err error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, nil, fmt.Errorf("find this binary: %w", err)
 	}
-	return []string{
-		self, "launcher", VolumeTrimDeleteSubcommand,
-		"--roles-dir", cover.RolesDir, "--home-mounts", cover.HomeMounts, "--home", cover.Home,
-	}, nil, nil
+	return append([]string{self, "launcher", VolumeTrimDeleteSubcommand}, cover.flags()...), nil, nil
 }
 
 // containedRemover is one sweep's deleter: the child process, the pipe its requests go down, the
@@ -149,7 +174,7 @@ type containedRemover struct {
 // startContainedRemover starts the deleter for one sweep: the child in its own user, mount, PID
 // and IPC namespaces (roleNamespaceAttr, the same clone a role generation is started with),
 // holding the descriptor of every directory the listing opened and nothing else of the volume.
-func startContainedRemover(cover roleCover, dirs []*sweepDir) (*containedRemover, error) {
+func startContainedRemover(cover RoleCover, dirs []*sweepDir) (*containedRemover, error) {
 	attr, err := roleNamespaceAttr()
 	if err != nil {
 		return nil, err
@@ -246,25 +271,17 @@ func (r *containedRemover) close() {
 //
 // Every directory it removes from is a descriptor it was handed at the exec, and every request
 // names one by its number among them and an entry by its own name in it: it resolves no path of
-// the volume at all, and the only paths it reads are the three it covers. It refuses to run
-// anywhere but as the init of a PID namespace of its own, which is what the trimmer starts it
-// as: run by hand it holds no descriptor of the volume, and the refusal says so rather than
-// leaving a process that has covered nothing reading requests.
+// the volume at all. The paths it does resolve are the ones its namespace replaces and its own
+// /proc/self/fd, where a descriptor it was handed becomes the Root a removal is made through
+// (removeOneRequest). It refuses to run anywhere but as the init of a PID namespace of its own,
+// which is what the trimmer starts it as: run by hand it holds no descriptor of the volume, and
+// the refusal says so rather than leaving a process that has covered nothing reading requests.
 //
-// The three are the roles directory, the directory the roles container mounts the home's volumes
-// under and the home, which are what a role's own namespace hides from it (roleCover): the
-// trimmer passes them as role-init is given them, so that a role cannot have the deletions reach
-// what no role reaches.
-func VolumeTrimDelete(rolesDir, homeMounts, home string, requests io.Reader, replies io.Writer) error {
-	cover := roleCover{RolesDir: rolesDir, HomeMounts: homeMounts, Home: home}
-	for _, named := range []struct{ what, path string }{
-		{"roles directory", cover.RolesDir},
-		{"home mounts directory", cover.HomeMounts},
-		{"home", cover.Home},
-	} {
-		if !filepath.IsAbs(named.path) {
-			return fmt.Errorf("volume-trim-delete: %s %q is not absolute", named.what, named.path)
-		}
+// The cover it is given is the one role-init is given, whole (RoleCover): the trimmer passes it
+// as the launcher built it, so that a role cannot have the deletions reach what no role reaches.
+func VolumeTrimDelete(cover RoleCover, requests io.Reader, replies io.Writer) error {
+	if err := cover.validate("volume-trim-delete"); err != nil {
+		return err
 	}
 	if os.Getpid() != 1 {
 		return errors.New("volume-trim-delete: not the init of a PID namespace of its own")
@@ -272,16 +289,14 @@ func VolumeTrimDelete(rolesDir, homeMounts, home string, requests io.Reader, rep
 	if err := containDeletions(cover); err != nil {
 		return fmt.Errorf("volume-trim-delete: %w", err)
 	}
-	// One open directory per descriptor, made at the first request that names it: a sweep
-	// deletes many entries out of one directory, and each Root is a descriptor of its own. The
-	// Roots this process opened are closed when the requests end; the descriptors the trimmer
-	// passed are not, and go with this process, which ends with the sweep (deleteDir).
-	dirs := map[int]deleteDir{}
+	// One open Root per descriptor, made at the first request that names it: a sweep deletes
+	// many entries out of one directory, and each Root is a descriptor of its own. The Roots
+	// this process opened are closed when the requests end; the descriptors the trimmer passed
+	// are not, and go with this process, which ends with the sweep (removeOneRequest).
+	dirs := map[int]*os.Root{}
 	defer func() {
-		for _, dir := range dirs {
-			if dir.root != nil {
-				_ = dir.root.Close()
-			}
+		for _, root := range dirs {
+			_ = root.Close()
 		}
 	}()
 	reader := bufio.NewReader(requests)
@@ -303,19 +318,8 @@ func VolumeTrimDelete(rolesDir, homeMounts, home string, requests io.Reader, rep
 	}
 }
 
-// deleteDir is one directory the trimmer handed this process: the descriptor itself, the Root
-// the removals out of it are made through, and the failure to open that Root where there was
-// one. The file is held for the life of this process — never closed here, and never made twice
-// over one descriptor — because a descriptor of the listing's closed and recycled is a
-// directory this process would remove out of in place of the one the listing opened.
-type deleteDir struct {
-	file *os.File
-	root *os.Root
-	err  error // the Root over the descriptor could not be opened, which every request answers
-}
-
 // removeOneRequest removes the entry one request names, out of the descriptor it names.
-func removeOneRequest(dirs map[int]deleteDir, request string) error {
+func removeOneRequest(dirs map[int]*os.Root, request string) error {
 	number, quoted, found := strings.Cut(request, " ")
 	if !found {
 		return fmt.Errorf("the request %q names no entry", request)
@@ -331,7 +335,7 @@ func removeOneRequest(dirs map[int]deleteDir, request string) error {
 	if name == "" || name == "." || name == ".." || strings.Contains(name, "/") {
 		return fmt.Errorf("%q is not one name in one directory", name)
 	}
-	dir, held := dirs[at]
+	root, held := dirs[at]
 	if !held {
 		// The descriptors the trimmer passed begin after the standard three, in the order the
 		// listing opened the directories.
@@ -341,17 +345,15 @@ func removeOneRequest(dirs map[int]deleteDir, request string) error {
 		}
 		// The same /proc/self/fd open the listing's own handles are made over
 		// (rootOverDescriptor, volumedir.go): the descriptor names the directory the listing
-		// opened, whatever has happened to its path since.
-		dir.file = os.NewFile(uintptr(fd), fmt.Sprintf("the directory at descriptor %d", fd))
-		if dir.root, err = rootOverDescriptor(dir.file); err != nil {
-			dir.err = fmt.Errorf("the directory at descriptor %d: %w", fd, err)
+		// opened, whatever has happened to its path since. It is the path that is opened and
+		// never the descriptor itself, so nothing here holds the trimmer's descriptor as a file
+		// that could be closed under this process and recycled onto another directory.
+		if root, err = os.OpenRoot(descriptorPath(fd)); err != nil {
+			return fmt.Errorf("the directory at descriptor %d: %w", fd, err)
 		}
-		dirs[at] = dir
+		dirs[at] = root
 	}
-	if dir.err != nil {
-		return dir.err
-	}
-	return dir.root.RemoveAll(name)
+	return root.RemoveAll(name)
 }
 
 // volumeDeleteFirstFD is where the directories the listing opened begin in the deleter's own

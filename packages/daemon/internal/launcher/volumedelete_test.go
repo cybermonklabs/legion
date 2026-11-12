@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -29,10 +31,12 @@ import (
 // zero before it reads either, so that a sweep which deleted nothing at all, or a fixture which
 // staged no bait, fails rather than passes.
 
-// volumeTrimDeleteEnv carries the three directories the deleter covers (roleCover) to the test
-// binary re-entered as `legion launcher volume-trim-delete` (TestVolumeTrimDeleteHelper), as
-// JSON, as roleInitEnv carries role-init's own flags to its helper. It registers its marker so
-// TestMain runs no fixtureenv.Guard in such a child (helperChildVariables, main_test.go).
+// volumeTrimDeleteEnv carries what the deleter is built over to the test binary re-entered as
+// `legion launcher volume-trim-delete` (TestVolumeTrimDeleteHelper), as JSON, as roleInitEnv
+// carries role-init's own flags to its helper: the cover it would have been given on the command
+// line (RoleCover), and the root of the image's own paths it replaces, which a case points at a
+// tree of its own (roleSystemRoot). It registers its marker so TestMain runs no fixtureenv.Guard
+// in such a child (helperChildVariables, main_test.go).
 const volumeTrimDeleteEnv = "LEGION_LAUNCHER_VOLUME_TRIM_DELETE"
 
 func init() {
@@ -43,9 +47,9 @@ func init() {
 // own included (trimFixture.trimmer): the removal is made through the descriptor the listing
 // opened, in this process, which is where the sweep's removals were made before the deleter and
 // which inode they reach either way. What it does not bound is where the kernel goes inside that
-// removal, which is the whole of the contained deleter's work and is driven by the one case that
-// starts one.
-func inProcessRemovals(roleCover, []*sweepDir) (entryRemover, error) {
+// removal, which is the whole of the contained deleter's work and is driven by the cases that
+// start one.
+func inProcessRemovals(RoleCover, []*sweepDir) (entryRemover, error) {
 	return inProcessRemover{}, nil
 }
 
@@ -57,6 +61,14 @@ func (inProcessRemover) removeAll(dir *sweepDir, name string) error {
 
 func (inProcessRemover) close() {}
 
+// trimDeleteHelperPlan is what the deleter of a case is built over: the cover the trimmer passes
+// it, and the root the image's own paths are taken from, which the child must be told since it
+// is a process of its own.
+type trimDeleteHelperPlan struct {
+	Cover      RoleCover `json:"cover"`
+	SystemRoot string    `json:"systemRoot"`
+}
+
 // useContainedDeleter has the sweeps of a case run the deleter the pod runs, with the test binary
 // re-entered as the subcommand since a test binary is not `legion`, as the role namespace cases
 // re-enter it as role-init (roleInitHelperLaunch).
@@ -67,8 +79,8 @@ func useContainedDeleter(t *testing.T) {
 		t.Fatal(err)
 	}
 	previous := trimDeleteLaunch
-	trimDeleteLaunch = func(cover roleCover) ([]string, []string, error) {
-		body, err := json.Marshal(cover)
+	trimDeleteLaunch = func(cover RoleCover) ([]string, []string, error) {
+		body, err := json.Marshal(trimDeleteHelperPlan{Cover: cover, SystemRoot: roleSystemRoot})
 		if err != nil {
 			return nil, nil, err
 		}
@@ -81,22 +93,44 @@ func useContainedDeleter(t *testing.T) {
 	t.Cleanup(func() { trimDeleteLaunch = previous })
 }
 
+// useRoleSystemRoot points the image's own paths a namespace replaces — the temporary
+// directories, the lock directories, the devices and /proc — at a tree of the case's own, in this
+// process and in every deleter it starts (useContainedDeleter). A case that reads back what the
+// deleter covers must plant a file under each of them, which it can do in a tree of its own and
+// not in the machine's /proc or /dev/pts, and must not do in the machine's /tmp.
+func useRoleSystemRoot(t *testing.T, root string) {
+	t.Helper()
+	previous := roleSystemRoot
+	roleSystemRoot = root
+	t.Cleanup(func() { roleSystemRoot = previous })
+	// The image's own paths, under the case's root: a namespace built over the cover refuses a
+	// path it must replace and cannot find (eachReplaced), and the worker image has every one of
+	// them. The paths it may do without are the case's to make, which a bait planted under one
+	// does (plantReplacedBait).
+	for _, replaced := range podCover().replaced() {
+		if !replaced.optional && strings.HasPrefix(replaced.path, root+string(filepath.Separator)) {
+			mkdirFixture(t, replaced.path)
+		}
+	}
+}
+
 // TestVolumeTrimDeleteHelper is the deleter itself, as `legion launcher volume-trim-delete` runs
 // it: the sweep clones it into namespaces of its own with the listing's descriptors, and it reads
-// the directories it would have been given on the command line from its environment. It exits
-// rather than returning, so nothing of the test framework is written on the standard output the
-// replies go down.
+// what it would have been given on the command line from its environment. It exits rather than
+// returning, so nothing of the test framework is written on the standard output the replies go
+// down.
 func TestVolumeTrimDeleteHelper(t *testing.T) {
 	body := os.Getenv(volumeTrimDeleteEnv)
 	if body == "" {
 		return
 	}
-	var cover roleCover
-	if err := json.Unmarshal([]byte(body), &cover); err != nil {
-		fmt.Fprintln(os.Stderr, "volume-trim-delete: the cover this deleter was given:", err)
+	var plan trimDeleteHelperPlan
+	if err := json.Unmarshal([]byte(body), &plan); err != nil {
+		fmt.Fprintln(os.Stderr, "volume-trim-delete: what this deleter was given:", err)
 		os.Exit(2)
 	}
-	if err := VolumeTrimDelete(cover.RolesDir, cover.HomeMounts, cover.Home, os.Stdin, os.Stdout); err != nil {
+	roleSystemRoot = plan.SystemRoot
+	if err := VolumeTrimDelete(plan.Cover, os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "volume-trim-delete:", err)
 		os.Exit(2)
 	}
@@ -551,6 +585,62 @@ func swapLanded(sub string) bool {
 	return err == nil && len(left) > 0
 }
 
+// replacedBait is one path a role's own mount namespace replaces, with what this file plants
+// under it and what a reader is told when the bait is gone.
+type replacedBait struct {
+	what  string
+	dir   string
+	files []string
+}
+
+// roleReplacedBait is every path a role's own mount namespace replaces, written out with its
+// bait. It is written out here rather than taken from the list the code holds
+// (RoleCover.replaced): a path dropped from that list is a bait this file still plants and the
+// deleter no longer covers, which the swap case below goes red by name for, and a path added to
+// that list with no bait here is TestTheCoverNamesEveryPathARolesNamespaceReplaces gone red by
+// name.
+//
+// The image's own paths are under system, which a case points at a tree of its own
+// (useRoleSystemRoot), since nothing can plant a file in the machine's /proc or /dev/pts and
+// nothing of this package may plant one in the machine's /tmp.
+func roleReplacedBait(cover RoleCover, system string) []replacedBait {
+	return []replacedBait{
+		{"the fixed root's gh mount point, where the role's own bundle is bound", filepath.Join(cover.FixedRoot, RoleGHDir), []string{"hosts.yml"}},
+		{"the fixed root's private mount point, where the role's own credentials are bound", filepath.Join(cover.FixedRoot, RolePrivateDir), []string{"BOOT_TOKEN"}},
+		{"the fixed root's state mount point", filepath.Join(cover.FixedRoot, RoleStateDir), []string{filepath.Join("omp", "profile.json")}},
+		{"the fixed root's agent-secrets mount point", filepath.Join(cover.FixedRoot, RoleAgentSecretsDir), []string{"ANTHROPIC_API_KEY"}},
+		{"the home, which is the lower layer of every role's own", cover.Home, []string{filepath.Join(ConfigHomeDir, "jj", "config.toml"), ".bashrc"}},
+		{"the container's /tmp, where a role has its own", filepath.Join(system, "tmp"), []string{"notes.md"}},
+		{"the container's /var/tmp, where a role has its own", filepath.Join(system, "var", "tmp"), []string{"notes.md"}},
+		{"the container's /run/lock", filepath.Join(system, "run", "lock"), []string{"held.lock"}},
+		{"the container's /var/lock", filepath.Join(system, "var", "lock"), []string{"held.lock"}},
+		{"the container's /dev/shm, where a role has its own", filepath.Join(system, "dev", "shm"), []string{"shared"}},
+		{"the container's pseudo-terminals", filepath.Join(system, "dev", "pts"), []string{"0"}},
+		{"the container's POSIX message queues", filepath.Join(system, "dev", "mqueue"), []string{"queue"}},
+		{"the roles directory, where another role's own credentials are", cover.RolesDir, []string{
+			filepath.Join("tester", RolePrivateDir, "notes.md"),
+			filepath.Join("tester", RoleStateDir, "omp", "profile.json"),
+			filepath.Join("tester", RoleAgentSecretsDir, "ANTHROPIC_API_KEY"),
+			filepath.Join("tester", RoleLauncherDir, LauncherTokenFile),
+		}},
+		{"the home mounts directory, where the pod's shared config home is mounted", cover.HomeMounts, []string{
+			filepath.Join(ConfigHomeDir, "jj", "config.toml"),
+		}},
+		{"the container's /proc, where a role has its own", filepath.Join(system, "proc"), []string{"cmdline"}},
+	}
+}
+
+// plantReplacedBait plants one bait under every path of that list and answers them by what each
+// path is, so a case that reads them back names the cover that let a deletion through.
+func plantReplacedBait(t *testing.T, cover RoleCover, system string, at time.Time) map[string][]baitFile {
+	t.Helper()
+	planted := map[string][]baitFile{}
+	for _, under := range roleReplacedBait(cover, system) {
+		planted[under.what] = plantBait(t, under.dir, at, under.files...)
+	}
+	return planted
+}
+
 // The one escape no handle of the sweep's can bound: the kernel's own walk inside a removal the
 // sweep makes once and does not drive. Root.RemoveAll unlinks a name, and on EISDIR opens it
 // again with the raw `openat(O_NOFOLLOW|O_DIRECTORY)` this kernel follows a link under, and
@@ -559,54 +649,40 @@ func swapLanded(sub string) bool {
 // recursion delete the link's target, and a role can name any absolute path in a link it
 // leaves.
 //
-// So the target this case gives it is the directory the three the deleter covers sit under
-// (roleCover): the roles directory, which holds another role's private, state and
-// agent-secrets directories and its launcher token; the home mounts directory, where the
-// container mounts the pod's shared config home that each role's own config home is copied
-// from; and the home, which is the lower layer of every role's home overlay. The container's
-// mount namespace shows the launcher all three and a role's own namespace shows it none of
-// them, which is what containment takes away (volumedelete.go). They are one directory apart
-// here where the pod has /var/run/legion/roles, /var/run/legion/home and /home/legion
-// (trimFixture.coverRoot), so that one swap drives every cover rather than one of them.
+// So the target this case gives it is the directory every path a role's own namespace replaces
+// sits under: the cover the launcher passes — the roles directory, which holds another role's
+// private, state and agent-secrets directories and its launcher token; the home mounts
+// directory, where the container mounts the pod's shared config home that each role's own config
+// home is copied from; the home, which is the lower layer of every role's home overlay; and the
+// fixed root's own mount points — and the image's own paths, which this case points at a tree of
+// its own (useRoleSystemRoot). The container's mount namespace shows the launcher all of them as
+// the container holds them and a role's own namespace shows it none of them, which is what
+// containment takes away (volumedelete.go). They are one directory apart here where the pod has
+// /var/run/legion, /home/legion and the root of its filesystem (trimFixture.coverRoot), so that
+// one swap drives every cover rather than one of them.
 //
-// There is a bait under each, and a cover left out of the deleter's list is that cover's bait
-// deleted and named. Measured on 2026-11-12, kernel 4.19.0-gvisor, under go1.27.3, each cover
-// taken out on its own: the swap landed in four trials of four and that cover's bait alone was
-// gone in every one of them — the shared config home's jj configuration with the home mounts
-// directory out of roleCover.covered, the home's with the home out of containDeletions, and
-// the four files of another role's directories with the roles directory out of covered.
+// There is a bait under each (roleReplacedBait), and a cover left out of the deleter's list is
+// that cover's bait deleted and named.
 //
-// So this is the one case that runs the deleter the pod runs: every removal of the sweep is made
-// by a child in a user, mount, PID and IPC namespace of its own with those three covered by an
-// empty filesystem, and a link the recursion follows lands in the cover.
+// So this is the case that runs the deleter the pod runs: every removal of the sweep is made by
+// a child in a user, mount, PID and IPC namespace of its own with every one of those paths an
+// empty filesystem of the child's, and a link the recursion follows lands in the cover.
 //
 // It is a trial at a time because the window is the kernel's, not the case's. Each trial prints
 // nothing on its own; the case prints how many of them landed, so a reader sees what it drove,
 // and fails when none did rather than passing on a window that never opened.
 func TestASubdirectorySwappedForALinkWhileARemovalRecursesReachesNoOtherRolesFiles(t *testing.T) {
 	requireRoleNamespaces(t)
-	useContainedDeleter(t)
 	f := newTrimFixture(t, 1)
+	system := filepath.Join(f.coverRoot, "system")
+	useRoleSystemRoot(t, system)
+	useContainedDeleter(t)
 	at := f.clock.at.Add(-2 * time.Hour)
 	// What the roles container holds for the roles and no role holds itself, one bait under
-	// each directory the deleter covers: what a sweep that followed the link would delete, as
-	// review 6 found it deleting another role's files and review 8 the pod's shared config
-	// home.
-	planted := map[string][]baitFile{
-		"the roles directory, where another role's own credentials are": plantBait(t, f.rolesDir, at,
-			filepath.Join("tester", RolePrivateDir, "notes.md"),
-			filepath.Join("tester", RoleStateDir, "omp", "profile.json"),
-			filepath.Join("tester", RoleAgentSecretsDir, "ANTHROPIC_API_KEY"),
-			filepath.Join("tester", RoleLauncherDir, LauncherTokenFile),
-		),
-		"the home mounts directory, where the pod's shared config home is mounted": plantBait(t, f.homeMounts, at,
-			filepath.Join(ConfigHomeDir, "jj", "config.toml"),
-		),
-		"the home, which is the lower layer of every role's own": plantBait(t, f.home, at,
-			filepath.Join(ConfigHomeDir, "jj", "config.toml"),
-			".bashrc",
-		),
-	}
+	// every path the deleter covers: what a sweep that followed the link would delete, as
+	// review 6 found it deleting another role's files, review 8 the pod's shared config home
+	// and review 9 what the container holds at a role's own /tmp.
+	planted := plantReplacedBait(t, f.cover, system, at)
 	target := f.coverRoot
 
 	victim := filepath.Join(f.roots[3].Path, "racer-victim")
@@ -655,38 +731,191 @@ func TestASubdirectorySwappedForALinkWhileARemovalRecursesReachesNoOtherRolesFil
 	f.assertProtected()
 }
 
-// Every directory the deleter covers reaches it on its command line. The case above drives the
+// The working directory is the one way into a covered directory that no mount closes: a child
+// inherits the launcher's, and an inherited directory is a handle, which /proc/self/cwd names
+// whatever the path it was opened through holds now. Measured by review 9 against the deleter
+// before this change, which set none: the swap reached the launcher's own working directory
+// through /proc/self/cwd, in one trial of one.
+//
+// So the deleter stands at the root of its own namespace before it reads a request
+// (containDeletions), and this case puts the launcher's working directory inside a covered
+// directory and aims the swap at a name under /proc/self/cwd. It is a name under it and not the
+// directory itself because /proc/self/cwd of a deleter standing at the root of its namespace
+// names `/`, which no cover of a process that must reach /legion takes away and which this case
+// has no business driving a removal of: what it reads back is that the inherited directory is
+// not a way past a cover.
+func TestTheDeletersInheritedWorkingDirectoryIsNoWayPastACover(t *testing.T) {
+	requireRoleNamespaces(t)
+	f := newTrimFixture(t, 1)
+	useRoleSystemRoot(t, filepath.Join(f.coverRoot, "system"))
+	useContainedDeleter(t)
+	at := f.clock.at.Add(-2 * time.Hour)
+	// Another role's own files, under a name of the roles directory the deleter covers.
+	const inside = "tester"
+	planted := plantBait(t, f.cover.RolesDir, at,
+		filepath.Join(inside, RolePrivateDir, "notes.md"),
+		filepath.Join(inside, RoleStateDir, "omp", "profile.json"),
+		filepath.Join(inside, RoleLauncherDir, LauncherTokenFile),
+	)
+	// The launcher's working directory, which its child inherits where nothing sets one.
+	t.Chdir(f.cover.RolesDir)
+	target := filepath.Join("/proc/self/cwd", inside)
+
+	victim := filepath.Join(f.roots[3].Path, "racer-victim")
+	sub := filepath.Join(victim, "sub")
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+
+	landed, trials, deletions := 0, 0, 0
+	deadline := time.Now().Add(testwait.Bounded(t, 2*time.Minute, 10*time.Second))
+	for trials < 4 && time.Now().Before(deadline) {
+		trials++
+		buildRacedEntry(t, victim, sub, at)
+		swapped := make(chan bool, 1)
+		go raceTheSwap(sub, target, time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second)), swapped)
+
+		tr := f.trimmer()
+		tr.removals = startRemover
+		out := tr.sweep(context.Background(), *trimSettings(), steady(90)(0))
+		deletions += out.deletions
+
+		if <-swapped && swapLanded(sub) {
+			landed++
+		}
+		assertBaitHeld(t, planted, "a removal recursed through a link a role left where a subdirectory of the entry stood, into the working directory the deleter inherited")
+		for _, left := range []string{victim, sub + ".real"} {
+			if err := os.RemoveAll(left); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	t.Logf("the swap landed inside the removal's re-open in %d of %d trials", landed, trials)
+	if landed == 0 {
+		t.Fatalf("the swap landed in none of %d trials: the window this case drives never opened, so it shows nothing", trials)
+	}
+	if deletions == 0 {
+		t.Fatal("the sweeps deleted nothing at all, so the containment the case reads back was never asked to delete anything")
+	}
+	f.assertProtected()
+}
+
+// The deleter the pod runs, over the image's own paths rather than a tree of a case's own: it
+// covers the container's /tmp, /var/tmp, lock directories, shared memory, terminals and message
+// queues where they are, mounts a procfs of its own PID namespace over the container's /proc,
+// and still deletes what the sweep lists — through the descriptors the trimmer passed it, which
+// it opens in that procfs of its own (descriptorPath, volumedir.go). The two cases above point
+// those paths at a tree of their own, since nothing can plant a bait in the machine's /proc, so
+// neither says whether the deletions still work when the paths covered are the image's.
+//
+// The cover is laid out outside the machine's temporary directory, because a cover under /tmp
+// is a cover this deleter hides from itself (namespaceScratch, as the role namespace cases do
+// it). The volume the sweep deletes in needs no such thing: every removal is made through a
+// descriptor the listing opened and passed, and no path of the volume is resolved in the child.
+func TestTheDeleterOverTheImagesOwnPathsDeletesWhatTheSweepLists(t *testing.T) {
+	requireRoleNamespaces(t)
+	useContainedDeleter(t)
+	f := newTrimFixture(t, 4)
+	f.cover = coverUnder(t, namespaceScratch(t))
+	f.useVolume(steady(90))
+	f.setSettings(trimSettings())
+	tr := f.trimmer()
+	tr.removals = startRemover // the deleter the pod runs, and no fallback behind it
+	out := tr.sweep(context.Background(), *trimSettings(), steady(90)(0))
+
+	if out.deletions != len(f.entries) {
+		t.Errorf("the sweep deleted %d of the %d entries the fixture staged: %s", out.deletions, len(f.entries), out.reason)
+	}
+	if left := len(f.entries) - len(f.gone()); left != 0 {
+		t.Errorf("%d of the %d entries the fixture staged are still there, want them deleted by a deleter built over the image's own paths", left, len(f.entries))
+	}
+	// Nothing of the pod's log is read back here: a sweep that deleted everything it listed
+	// through a deleter that started and answered writes no line at all (trimFixture.logged is
+	// where a case about the log reads one).
+	f.assertProtected()
+}
+
+// Every path a role's own mount namespace replaces, written out, against the one list the code
+// holds (RoleCover.replaced): the swap case plants a bait under each of these, so a path dropped
+// from that list is this case naming the path that left and that case naming the bait that went,
+// and a path added to it is this case naming the path that arrived with no bait planted under
+// it. The cover is the pod's own, written out as the worker image lays it out, with the
+// launcher's own construction of it read back beside it (roleCoverFor).
+func TestTheCoverNamesEveryPathARolesNamespaceReplaces(t *testing.T) {
+	cover := podCover()
+	if built := roleCoverFor(cover.RolesDir); built != cover {
+		t.Errorf("the launcher builds the cover %+v for an issue pod, want the layout of the worker image, %+v", built, cover)
+	}
+	want := roleReplacedBait(cover, "/")
+	replaced := cover.replaced()
+	if len(replaced) != len(want) {
+		t.Fatalf("a role's namespace replaces %d paths and this file plants a bait under %d: %v against %v",
+			len(replaced), len(want), pathsReplaced(replaced), baitPaths(want))
+	}
+	for at, path := range pathsReplaced(replaced) {
+		if path != want[at].dir {
+			t.Errorf("a role's namespace replaces %s where this file plants its bait under %s: every path replaced is a path the deleter covers and this file baits\n%v\nagainst\n%v",
+				path, want[at].dir, pathsReplaced(replaced), baitPaths(want))
+		}
+	}
+}
+
+// podCover is the cover of a pod whose roles container is laid out as the worker image is,
+// written out (layout.go).
+func podCover() RoleCover {
+	return RoleCover{
+		RolesDir: "/var/run/legion/roles", Home: "/home/legion",
+		HomeMounts: "/var/run/legion/home", FixedRoot: "/var/run/legion",
+	}
+}
+
+// pathsReplaced is the path of each replacement, in the order the list holds them.
+func pathsReplaced(replaced []roleReplacement) []string {
+	paths := make([]string, 0, len(replaced))
+	for _, one := range replaced {
+		paths = append(paths, one.path)
+	}
+	return paths
+}
+
+// baitPaths is the directory each bait of this file is planted under.
+func baitPaths(bait []replacedBait) []string {
+	paths := make([]string, 0, len(bait))
+	for _, one := range bait {
+		paths = append(paths, one.dir)
+	}
+	return paths
+}
+
+// Every directory of the cover reaches the deleter on its command line, read back the way
+// `legion launcher volume-trim-delete` reads it: through the flags that command registers
+// (RoleCoverFlags), which is the one registration role-init makes too. The swap case drives the
 // covers end to end through this test binary re-entered, which carries them in its environment
 // since a test binary is not `legion` (useContainedDeleter), so this is what holds the argv of
-// the real `legion launcher volume-trim-delete` to the whole of the cover: a directory of
-// roleCover the trimmer does not pass is a directory the pod's child never covers.
+// the real command to the whole of the cover: a directory of RoleCover the trimmer does not pass
+// is a directory the pod's child never covers.
 func TestTheDeletersCommandLineNamesEveryDirectoryItCovers(t *testing.T) {
-	cover := roleCover{RolesDir: "/var/run/legion/roles", HomeMounts: "/var/run/legion/home", Home: "/home/legion"}
+	cover := podCover()
 	argv, _, err := trimDeleteLaunch(cover)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(argv, VolumeTrimDeleteSubcommand) {
+	at := slices.Index(argv, VolumeTrimDeleteSubcommand)
+	if at < 0 {
 		t.Fatalf("the deleter is run as %v, want this binary's own %s subcommand", argv, VolumeTrimDeleteSubcommand)
 	}
-	flags := map[string]string{}
-	for i := 0; i+1 < len(argv); i++ {
-		if strings.HasPrefix(argv[i], "--") {
-			flags[argv[i]] = argv[i+1]
-		}
+	flags := flag.NewFlagSet("launcher "+VolumeTrimDeleteSubcommand, flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	read := RoleCoverFlags(flags)
+	if err := flags.Parse(argv[at+1:]); err != nil {
+		t.Fatalf("the deleter is run as %v, which its own flags refuse: %v", argv, err)
 	}
-	for _, named := range []struct{ flag, dir string }{
-		{"--roles-dir", cover.RolesDir},
-		{"--home-mounts", cover.HomeMounts},
-		{"--home", cover.Home},
-	} {
-		if flags[named.flag] != named.dir {
-			t.Errorf("the deleter is run with %s %q, want %q: %v", named.flag, flags[named.flag], named.dir, argv)
-		}
+	if got := read(); got != cover {
+		t.Errorf("the deleter is run as %v, which its own flags read back as %+v, want %+v", argv, got, cover)
 	}
-	// The whole list and not the three named above: a directory added to roleCover.covered is
-	// one more the child must be told, and a flag carrying it is the only way it is.
-	for _, dir := range append(cover.covered(), cover.Home) {
+	// Every directory and not the ones a reader of this case could name: a directory added to
+	// RoleCover is one more the child must be told, and a flag carrying it is the only way it is.
+	for _, dir := range cover.dirs() {
 		if !slices.Contains(argv, dir) {
 			t.Errorf("the deleter is run as %v, which names %s nowhere: a directory it is not told is a directory it does not cover", argv, dir)
 		}
@@ -705,12 +934,12 @@ func TestASweepWhoseDeleterCannotStartDeletesNothingAndSaysSo(t *testing.T) {
 	f.setSettings(trimSettings())
 	tr := f.trimmer()
 	asked := 0
-	tr.removals = func(cover roleCover, dirs []*sweepDir) (entryRemover, error) {
+	tr.removals = func(cover RoleCover, dirs []*sweepDir) (entryRemover, error) {
 		asked++
 		// Every directory the deleter covers, and not the roles directory alone: a cover the
-		// sweep does not pass is a cover the child cannot mount (roleCover).
-		if cover != f.cover() {
-			t.Errorf("the sweep asked for a deleter covering %+v, want the three this launcher was given, %+v", cover, f.cover())
+		// sweep does not pass is a cover the child cannot mount (RoleCover).
+		if cover != f.cover {
+			t.Errorf("the sweep asked for a deleter covering %+v, want the cover this launcher was given, %+v", cover, f.cover)
 		}
 		if len(dirs) == 0 {
 			t.Error("the sweep asked for a deleter holding no directory of the listing, want every directory it will delete out of")
@@ -750,7 +979,7 @@ func TestASweepWhoseDeleterDiesKeepsWhatItDeletedAndStops(t *testing.T) {
 	tr := f.trimmer()
 	died := fmt.Errorf("%w: read its answer: EOF", errRemoverGone)
 	closed := 0
-	tr.removals = func(roleCover, []*sweepDir) (entryRemover, error) {
+	tr.removals = func(RoleCover, []*sweepDir) (entryRemover, error) {
 		return &dyingRemover{after: before, err: died, closed: &closed}, nil
 	}
 	out := tr.sweep(context.Background(), *trimSettings(), steady(90)(0))
@@ -825,7 +1054,7 @@ func TestASweepClosesItsDeleterHoweverItEnded(t *testing.T) {
 			})
 			tr := f.trimmer()
 			started, closed := 0, 0
-			tr.removals = func(roleCover, []*sweepDir) (entryRemover, error) {
+			tr.removals = func(RoleCover, []*sweepDir) (entryRemover, error) {
 				started++
 				return &countingRemover{closed: &closed}, nil
 			}
