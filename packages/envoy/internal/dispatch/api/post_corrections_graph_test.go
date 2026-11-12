@@ -72,6 +72,6 @@ func TestTheGraphNodeOfADeletedPostSaysItIsDeleted(t *testing.T) {
 	row, _ := rows[0].(map[string]any)
 	other, _ := row["node"].(map[string]any)
 	if _, marked := deletedMarkOf(other); !marked {
-		t.Fatalf("the edge row naming the deleted comment = %#v, want the delete mark beside its empty excerpt", row)
+		t.Fatalf("the edge row naming the deleted comment = %#v, want the delete mark and no excerpt", row)
 	}
 }

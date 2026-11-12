@@ -372,8 +372,9 @@ func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref t
 // current text with N's, or "removed" with the revision that removed it (RemovedVersion), as a
 // node with no text or changed revision whose facts are a removed block's
 // (refs.RemovedItemBlockNode). A pin past the item's current revision, or to one that did not
-// hold the block, answers 404, each saying which. A message never changes, so no reference pins
-// a message's block (parseReferencesQuery refuses one).
+// hold the block, answers 404, each saying which. A message records no revisions, not even for an
+// edit of its body, so there is no revision to pin a message's block to and no reference pins one
+// (parseReferencesQuery refuses one).
 //
 // A block of a post its author deleted is gone with the body (refs.TombstoneItem), so the two
 // 404s that answer for it name the deletion as well (itemBlockNotFound): every read of a

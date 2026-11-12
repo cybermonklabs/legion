@@ -755,20 +755,23 @@ function messageIdOf(value: string): string | undefined {
   return id === undefined ? undefined : normalizeUUID(id);
 }
 
-/** What `dispatch read --message` and the two message corrections say of a value that names no
- *  message. The corrections take a prefix inside a reference as well, which the reference's
- *  own issue resolves; a bare id is always the whole uuid, since nothing says which issue to
- *  resolve it against. */
-const messageArgumentProblem =
-  "message must be a full message id (uuid) or a dispatch://KEY/message/<id> reference";
+/** What `dispatch read --message`, `dispatch read --ref <message ref> --history` and the two
+ *  message corrections say of a value that names no message, named for the argument the caller
+ *  used: `message` for the corrections and the read's own `--message`, `ref` for the history
+ *  read, which resolves the message its `--ref` names. The corrections and the history read take
+ *  a prefix inside a reference as well, which the reference's own issue resolves; a bare id is
+ *  always the whole uuid, since nothing says which issue to resolve it against. */
+const messageArgumentProblem = (argument: string): string =>
+  `${argument} must be a full message id (uuid) or a dispatch://KEY/message/<id> reference`;
 
 /** A `dispatch://KEY/message/<id>` reference: a message lives on an issue, so its owner is one. */
 type IssueMessageRef = ParsedDispatchRef & { readonly owner: Extract<Owner, { kind: "issue" }> };
 
-/** The message a `message` argument of `dispatch_edit_message` or `dispatch_delete_message`
- *  names: the id - a full uuid, or, inside a reference, the prefix `resolveMessageArgument`
- *  resolves against the reference's issue's messages - and the reference itself, whose issue
- *  the message is then held to. Undefined for anything else. */
+/** The message a `message` argument of `dispatch_edit_message` or `dispatch_delete_message`, or
+ *  the `ref` of a `dispatch_read` history read, names: the id - a full uuid, or, inside a
+ *  reference, the prefix `resolveMessageArgument` resolves against the reference's issue's
+ *  messages - and the reference itself, whose issue the message is then held to. Undefined for
+ *  anything else. */
 function messageArgumentId(
   value: string
 ): { readonly id: string; readonly ref?: IssueMessageRef } | undefined {
@@ -981,21 +984,25 @@ async function resolveCommentArgument(
 }
 
 /**
- * The message a `message` argument of an edit or a delete names: the full uuid it carries, or
- * the id a reference's prefix matches among its issue's messages, replies included. A bare id is
- * the message itself; a reference holds the message to the issue it names, as
- * `resolveCommentArgument` holds a comment to its owner, so a full uuid under the wrong issue is
- * refused rather than written to. `session` is the host session the thread is read as, empty or
- * undefined for a caller with none. `argumentProblems` refused every other value.
+ * The message a `message` argument of an edit or a delete, or the `ref` of a `dispatch read`
+ * history read, names: the full uuid it carries, or the id a reference's prefix matches among
+ * its issue's messages, replies included. A bare id is the message itself; a reference holds the
+ * message to the issue it names, as `resolveCommentArgument` holds a comment to its owner, so a
+ * full uuid under the wrong issue is refused rather than written to. `argument` is the argument
+ * the caller took the value from, which the refusal of a value naming no message names:
+ * `argumentProblems` refuses a correction's `message` before the call, while a history read's
+ * `ref` is checked there for its kind alone and reaches this refusal. `session` is the host
+ * session the thread is read as, empty or undefined for a caller with none.
  */
 async function resolveMessageArgument(
   tool: string,
+  argument: string,
   reference: string,
   client: DispatchClient,
   session: string | undefined
 ): Promise<string> {
   const named = messageArgumentId(reference);
-  if (named === undefined) throw new ToolInputError(tool, [messageArgumentProblem]);
+  if (named === undefined) throw new ToolInputError(tool, [messageArgumentProblem(argument)]);
   const ref = named.ref;
   if (ref === undefined) return named.id;
   const issueKey = ref.owner.issue;
@@ -1195,7 +1202,7 @@ function argumentProblems(tool: string, args: ToolArguments): string[] {
     case "dispatch_delete_message": {
       const message = optionalString(args, "message");
       if (message !== undefined && messageArgumentId(message) === undefined) {
-        problems.push(messageArgumentProblem);
+        problems.push(messageArgumentProblem("message"));
       }
       break;
     }
@@ -1232,7 +1239,7 @@ function argumentProblems(tool: string, args: ToolArguments): string[] {
     case "dispatch_read": {
       const message = optionalString(args, "message");
       if (message !== undefined && messageIdOf(message) === undefined) {
-        problems.push(messageArgumentProblem);
+        problems.push(messageArgumentProblem("message"));
       }
       // The contract holds --history to a call that names a ref, and says so itself when none
       // does; what is left to say is that the ref must name one post, since the bodies a
@@ -4934,6 +4941,7 @@ export async function executeDispatchTool(
     case "dispatch_edit_message": {
       const id = await resolveMessageArgument(
         input.tool,
+        "message",
         stringArg(args, "message"),
         client,
         hostSession
@@ -4948,6 +4956,7 @@ export async function executeDispatchTool(
     case "dispatch_delete_message": {
       const id = await resolveMessageArgument(
         input.tool,
+        "message",
         stringArg(args, "message"),
         client,
         hostSession
@@ -5888,6 +5897,7 @@ export async function executeDispatchTool(
           // issue's messages, and a message on another issue is refused rather than read.
           const id = await resolveMessageArgument(
             input.tool,
+            "ref",
             stringArg(args, "ref"),
             client,
             hostSession

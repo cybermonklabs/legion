@@ -230,11 +230,12 @@ func DecodeAnchor(data []byte, anchor *Anchor) error {
 
 // DeletedPostMark reads a post's deleted_at and deleted_by columns into the mark every read of
 // a deleted comment or message carries - the comment and message rows themselves, the event
-// log's payloads, the Inbox's reply rows, a session's answers and the body history - so that
-// one decode stands behind all of them and no read of a deleted post can answer a mark of
-// another shape. Both are nil for a post that stands, the time is answered in UTC as every
-// other time a read answers is, and an author that deleted the post is read as the actor it
-// was stored as. A mark with no actor stored (a row an older build wrote) is the time alone.
+// log's payloads, the Inbox's reply rows, a session's answers, the body history and the
+// reference graph's comment and message nodes (refs/graph.go) - so that one decode stands
+// behind all of them and no read of a deleted post can answer a mark of another shape. Both are
+// nil for a post that stands, the time is answered in UTC as every other time a read answers is,
+// and an author that deleted the post is read as the actor it was stored as. A mark with no
+// actor stored (a row an older build wrote) is the time alone.
 func DeletedPostMark(at *time.Time, by []byte) (*time.Time, *Actor, error) {
 	if at == nil {
 		return nil, nil, nil
@@ -2692,9 +2693,9 @@ type ArtifactReferences struct {
 // to a version.
 //
 // DeletedAt and DeletedBy mark a comment or a message its author deleted, as the reads of the
-// post itself carry them (Comment, Message): the body is cleared, so the node's text and an
-// excerpt cut from it are empty, and the mark is what tells a reader why. Nil on a post that
-// stands and on every node of another kind, none of which a delete marks.
+// post itself carry them (Comment, Message): the body is cleared, so the node carries no text and
+// the edge naming it no excerpt at all, and the mark is what tells a reader why. Nil on a post
+// that stands and on every node of another kind, none of which a delete marks.
 type GraphNode struct {
 	Kind           string      `json:"kind"`
 	ID             string      `json:"id"`

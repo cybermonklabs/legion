@@ -53,8 +53,9 @@ type itemBlockNode struct {
 // edited before blocks were recorded) and changed at its changed revision's time. It belongs to
 // its item at that revision.
 //
-// Only a kind that records its revisions is read here: a message is never edited and has no
-// document of its own, and its blocks are resolved by loadMessageBlockNodes.
+// Only a kind that records its revisions is read here: a message records none, since it keeps no
+// per-revision block text and has no document of its own, and its blocks are resolved by
+// loadMessageBlockNodes.
 func itemBlockNodes(ctx context.Context, q Queryer, kind ItemKind, ids []string, includeRemoved bool) ([]itemBlockNode, error) {
 	tables, err := kind.tables()
 	if err != nil {
@@ -118,15 +119,19 @@ func itemBlockNodes(ctx context.Context, q Queryer, kind ItemKind, ids []string,
 
 // loadMessageBlockNodes resolves the block nodes of messages, stored under kind message_block and
 // addressed 'message/<message uuid>#<block id>', from the current blocks of their messages, as
-// loadItemBlockNodes resolves a comment's. A message is never edited, so a block is made by the
-// message's author at its created_at and has no other change (as loadMessageNodes); it belongs to
-// its message, which has no versions, and carries no Text (CurrentItemBlockText). A direct
-// message has no address, so its blocks resolve to no node: no reference names one, and an edge
-// at one is omitted as at any node that does not exist; GET /api/v1/messages/{id}/blocks reads
-// them under the conversation's read rule.
+// loadItemBlockNodes resolves a comment's. Only a message's author edits it
+// (PATCH /api/v1/messages/{id}), so each of its blocks is made and last changed by that author,
+// at the times message_blocks records: made_at, the edit that added the block or the moment the
+// message was sent, and changed_at, the edit that last rewrote it or that same moment (as
+// loadMessageNodes reads the message's own edited_at). A message records no revisions, so a block
+// has no changed revision; it belongs to its message, which has no versions, and carries no Text
+// (CurrentItemBlockText). A direct message has no address, so its blocks resolve to no node: no
+// reference names one, and an edge at one is omitted as at any node that does not exist;
+// GET /api/v1/messages/{id}/blocks reads them under the conversation's read rule.
 func loadMessageBlockNodes(ctx context.Context, q Queryer, kind string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
-		select b.node_id, b.block_id, b.excerpt, m.id::text, m.issue_key, coalesce(i.project_key, ''), m.author, m.created_at
+		select b.node_id, b.block_id, b.excerpt, b.made_at, b.changed_at,
+		       m.id::text, m.issue_key, coalesce(i.project_key, ''), m.author
 		from message_blocks b
 		join messages m on m.id = b.message_id
 		left join issues i on i.key = m.issue_key
@@ -139,21 +144,26 @@ func loadMessageBlockNodes(ctx context.Context, q Queryer, kind string, _ bool, 
 		var nodeID, blockID, excerpt, messageID, project string
 		var issueKey *string
 		var author []byte
-		var createdAt time.Time
-		if err := rows.Scan(&nodeID, &blockID, &excerpt, &messageID, &issueKey, &project, &author, &createdAt); err != nil {
+		var madeAt, changedAt time.Time
+		if err := rows.Scan(&nodeID, &blockID, &excerpt, &madeAt, &changedAt, &messageID, &issueKey, &project, &author); err != nil {
 			return fmt.Errorf("scan message block node: %w", err)
 		}
-		node := model.GraphNode{
-			Kind:     "block",
-			ID:       nodeID,
-			BlockID:  blockID,
-			IssueKey: issueKey,
-			Project:  project,
-			Ref:      BlockRef(itemRef("message", issueKey, project, "", messageID), blockID),
-			Parent:   itemParent("message", issueKey, project, "", messageID),
+		authors, err := storedActor(author)
+		if err != nil {
+			return fmt.Errorf("decode the author of message block %s: %w", nodeID, err)
 		}
-		if err := setMadeAndChanged(&node, author, createdAt, nil, nil, storedActor); err != nil {
-			return err
+		node := model.GraphNode{
+			Kind:      "block",
+			ID:        nodeID,
+			BlockID:   blockID,
+			IssueKey:  issueKey,
+			Project:   project,
+			Ref:       BlockRef(itemRef("message", issueKey, project, "", messageID), blockID),
+			MadeBy:    authors,
+			MadeAt:    &madeAt,
+			ChangedBy: authors,
+			ChangedAt: &changedAt,
+			Parent:    itemParent("message", issueKey, project, "", messageID),
 		}
 		nodes[[2]string{kind, nodeID}] = resolvedNode{GraphNode: node, text: excerpt}
 	}
@@ -163,10 +173,11 @@ func loadMessageBlockNodes(ctx context.Context, q Queryer, kind string, _ bool, 
 // CurrentItemBlockText is the whole current text of block nodeID of an item of kind, the text a
 // reference read's node carries. A comment block's and an ask part's is the latest text the
 // kind's texts table records for it, "" once removed. A message block's is re-read from the
-// message body: a message never changes, so the body split as the index split it
-// (itemblocks.Split) holds the block at its position, which its identity hash confirms; were the
-// parser to read the body otherwise since, the block is the first of equal hash, else its stored
-// excerpt stands in. A block the item does not hold has "".
+// message body: an edit re-indexes a message's blocks in the transaction that writes the new body
+// (PATCH /api/v1/messages/{id}), so the body split as the index split it (itemblocks.Split) holds
+// the block at its position, which its identity hash confirms; were the parser to read the body
+// otherwise since, the block is the first of equal hash, else its stored excerpt stands in. A
+// block the item does not hold has "".
 func CurrentItemBlockText(ctx context.Context, q Queryer, kind ItemKind, nodeID string) (string, error) {
 	tables, err := kind.tables()
 	if err != nil {

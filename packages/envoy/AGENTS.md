@@ -1634,12 +1634,12 @@ a body of only whitespace has no blocks.
 Item blocks are top-level only, so the block holding a mention is the top-level block holding its start.
 A block's identity is `itemblocks.Hash`, the SHA-256 of its text with each CR LF read as LF, so an edit that only turns CR LF into LF (as a textarea does) changes no block.
 Its id is `b1`, `b2`, … in the order the item mints them, and no number is minted twice in one item, a removed block's included (`comment_block_state.next_block` and the ids stored).
-`comment_blocks` and `message_blocks` keep every block an item ever held, a removed one with `position` null and `removed_at` set, with its type, its identity hash, its text cut to 480 runes as its excerpt (`refs.BlockExcerptRunes`), `made_at`, and for a comment `changed_revision` and `changed_at`.
+`comment_blocks` and `message_blocks` keep every block an item ever held, a removed one with `position` null and `removed_at` set, with its type, its identity hash, its text cut to 480 runes as its excerpt (`refs.BlockExcerptRunes`), `made_at` and `changed_at`, and for a comment `changed_revision`.
 A comment's `comment_block_state.revision` counts its indexed revisions, 1 the first indexing:
 an index raises it when it is the first, when the body differs byte for byte from the one last indexed (`body_sha256`), or when its blocks changed, and otherwise writes no block.
 At the new revision a new, changed or restored block takes the revision as `changed_revision` and the write's time as `changed_at` (a new one that time as `made_at` too, except at the first indexing of a comment edited before blocks were recorded, whose making Dispatch never recorded:
 null), an unchanged one moves only its position, type and excerpt, a current block the body no longer holds is removed, and `comment_block_texts` records the whole text of each new, changed or restored block, and a null text for each removed one.
-A message is never edited and has no revision: its blocks are made and changed at its `created_at`.
+Only its author edits a message (`PATCH /api/v1/messages/{id}`), which re-indexes its blocks at `edited_at` in the transaction that writes the new body, and a message has no revision: a block takes the time of the write that holds it first as its `made_at` - the moment the message was sent, or the edit that added it - and the time of the write that last rewrote it as its `changed_at`.
 
 An edit of a comment (`PATCH /api/v1/comments/{id}`, by its author alone) keeps each block's id by one of two rule sets (`refs.IndexItem`).
 With `blocks` (each id the dashboard editor carried through the edit and `from`, where its span starts in the new body in UTF-16 code units) and a `base_revision` equal to the comment's stored revision, the carried ids decide (`itemblocks.Carry`):
@@ -1681,7 +1681,7 @@ made as it was made, last changed by the comment's author at the block's `remove
 A pin past the comment's current revision is `404 NOT_FOUND` `no revision <N> of comment
 <id>; its current revision is <M>`, one to a revision that did not hold the block `404 NOT_FOUND` `no block "<block>" in comment <id> at revision <N>`, and an unpinned reference to a block no current revision holds `404 NOT_FOUND` `no block "<block>" in <comment or message> <id>`.
 An ask's part is named `part` where a comment's and a message's block is named `block` (`itemBlockNoun`, `api/references.go`), so a part no current revision of the ask holds reads `no part "<part>" in ask <id>` and a pin to a revision that did not hold it `no part "<part>" in ask <id> at revision <N>`.
-A message never changes, so a message block pinned with `@v<N>` is no reference:
+A message records no revisions, an edit of its body included, so a message block pinned with `@v<N>` is no reference:
 text holding one cites nothing, and `?to=` or `?from=` one is `400 INVALID_REFERENCE` saying a message block takes no pin.
 
 A reply keeps the comment it answers.
@@ -1744,7 +1744,7 @@ SQL NULL (a left join that found no row, an edit that names no editor) and JSON 
 Each entry of `nodeLoaders` reads its own kind's (`refs/graph.go`).
 An issue is made by `issues.created_by` at `created_at`, last changed by the actor of its latest `issue.created`, `issue.updated` or `issue.closed` event at that event's time, and part of its parent issue.
 An artifact (a document, a file, a picture) is made by `artifacts.created_by` at `created_at`, last changed by the authors of its latest version at that version's time, and part of its issue, else of the session whose conversation owns it, else (a project document) of no node.
-A message is made by its author, and last changed by its maker when it was made, since no route edits one;
+A message is made by its author, and only its author edits it (`PATCH /api/v1/messages/{id}`), so its last change is its author at `edited_at`, as a comment's is;
 a reply that names a block it answers (`in_reply_to_block`) is part of that block, another reply part of the message it answers, another issue message of its issue, a direct message of no node.
 A component is made and changed by nobody recorded, since Dispatch does not import a component's git author, at the times `component_facts` records (below), and is part of its parent component while the model holds it.
 A session has no fact on record.
@@ -1861,7 +1861,7 @@ A `#b-<id>` fragment after an issue's spec or document, or a project's document,
 a version page's fragment names no block.
 So does one after an ask (`KEY/ask/<id>`, or a project document's `PROJECT/artifact/<slug>/ask/<id>`), a comment (`KEY/comment/<id>`, or a project document's `PROJECT/artifact/<slug>/comment/<id>`) or an issue message (`KEY/message/<id>`), naming an ask's part or a block of that item (`text.Ref.Item` the item's kind, its target id `<item kind>/<item id>#<block id>`), and one on an ask's, comment's or message's dashboard page (`/issues/KEY/asks/<id>`, `/issues/KEY/comments/<id>`, `/issues/KEY/messages/<id>`, or a document page's `?comment=<id>`, a version page's included, since an ask's parts and a comment's blocks are its own: `pageBlock`).
 A versioned document's item and an agent conversation's document name no block.
-A message never changes, so a message block's `@v<N>` makes the text no reference.
+A message records no revisions, so a message block's `@v<N>` makes the text no reference.
 The id is read with any percent-encoding, and every writer writes it as `text.EncodeBlockID` and `encodeBlockId` (`@legion/contracts`) do:
 each UTF-8 byte but ASCII letters, digits and `-` percent-encoded in upper-case hex, so `@` is `%40` and a raw `@` in the fragment is only ever the `@v<N>` pin.
 A fragment whose pin is past 9223372036854775807 names no block:
@@ -2510,7 +2510,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Those writes lock the issue row as any write does and skip the open check: `lockIssue` for a message, its deliveries and its reply; `lockedCommentAllowingClosed` for a comment's mention delivery and the agent's reply to it; and, for a comment that is not a suggestion, `lockCommentOwner`, which asks the one refusal below and is told the write is taken.
   An anchored comment's document writes - its mark, the version its anchor is pinned to, its margin record, and the thread root's projection a reply adds itself to - run under `docs.WithCommentMarks`, owner-verified because the comment's transaction holds the owner row and decided there that the comment is written, or that the body its author wrote there is that author's to replace or to withdraw.
   So the edit and the delete mark their own document context too (`editComment`, `deleteComment`), under the owner lock `lockedCommentForCorrection` took: a closed issue takes the margin record each projects, for an anchored comment and for a reply to an anchored root.
-  The delete of a comment carrying a pending suggestion rejects it there as well (`docs.RejectDeletedCommentSuggestion`, which marks its own context), so that mark, and an insert suggestion's text, leave a closed issue's document with the body.
+  The delete of a comment carrying a pending suggestion rejects it there as well (`docs.RejectDeletedCommentSuggestion`, under the context `deleteComment` marked), so that mark, and an insert suggestion's text, leave a closed issue's document with the body.
   Every other write of a suggestion's mark, and a content edit, a named version or a rebuild under the same context, still waits for a reopen.
   Everything else is `409 ISSUE_CLOSED` until a reopen: a new ask, an ask's edit, answer or resolve, a suggestion (a proposed document edit, whose acceptance is its only outcome), a document edit, a named version, an upload, a review, an approval request, a claim, a PATCH field outside the closed allow-list above, and the comment actions resolve, reopen, accept and reject on an existing comment (`lockedComment`).
   A comment's edit and its delete are not in that list: a wrong post nobody can correct after the issue closes is the defect those two routes exist for, so each takes `lockedCommentForCorrection`, which locks the owner without the open check, and so does the edit and the delete of an issue message (`lockedMessageForCorrection`).

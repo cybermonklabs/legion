@@ -280,16 +280,17 @@ func (s *Service) RejectSuggestion(ctx context.Context, artifactID, id string, a
 // does. Its one caller is the comment delete (api/comment_delete.go, deleteComment), whose
 // transaction holds the document's owner row locked (api/comment_actions.go,
 // lockedCommentForCorrection through lockOwnerOfComment) and has decided under that lock that
-// the comment is its author's to delete - the same standing a comment's own anchor writes have
-// (WithCommentMarks). So this reject runs as those writes run, under
-// commentMarkOperation(WithCommentMarks(ctx)), and a closed issue's document takes it: a closed
-// issue still takes the delete of its comment, and the suggestion's replacement text is the
-// comment's text too, so it leaves the document with the body. Owner-verified, the write meets
-// no closed refusal (allowInject); a comment's mark write, it forks the stored document cold
-// (closedIssueCommentMark, readFork says why). The accept and the reject routes keep
-// RejectSuggestion, which a closed issue refuses as it always did.
+// the comment is its author's to delete - the same standing a comment's own anchor writes have,
+// and the delete marks the context it passes here as theirs (WithCommentMarks). So this reject
+// runs as those writes run, owner-verified under the caller's mark (commentMarkOperation), and a
+// closed issue's document takes it: a closed issue still takes the delete of its comment, and
+// the suggestion's replacement text is the comment's text too, so it leaves the document with
+// the body. Owner-verified, the write meets no closed refusal (allowInject); a comment's mark
+// write, it forks the stored document cold (closedIssueCommentMark, readFork says why). The
+// accept and the reject routes keep RejectSuggestion, which a closed issue refuses as it always
+// did, and so does this reject under a context no caller marked.
 func (s *Service) RejectDeletedCommentSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) error {
-	return s.RejectSuggestion(commentMarkOperation(WithCommentMarks(ctx)), artifactID, id, actor)
+	return s.RejectSuggestion(commentMarkOperation(ctx), artifactID, id, actor)
 }
 
 func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWith string, actor model.Actor, accept bool) error {

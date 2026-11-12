@@ -456,7 +456,8 @@ func TestTheFactsOfAnEdgesOtherEndAreTheNodesOwn(t *testing.T) {
 // did not write it names that person; its answer and its resolution change nothing of it. A
 // comment's edit by its author moves its last change; another person resolving it does not. A
 // message's edit by its author moves its last change as a comment's does
-// (PATCH /api/v1/messages/{id}). A claim is no change of the issue. A spec edit is the spec's
+// (PATCH /api/v1/messages/{id}), and the blocks that edit wrote move with it, as an edited
+// comment's blocks do. A claim is no change of the issue. A spec edit is the spec's
 // last change and the edited block's, and leaves the other blocks' and every block's maker.
 func TestAChangeMovesOnlyTheChangedNode(t *testing.T) {
 	handler, database := blockIndexHandler(t)
@@ -524,16 +525,45 @@ func TestAChangeMovesOnlyTheChangedNode(t *testing.T) {
 
 	// A message its author edits, the correction route this issue added: its last change is that
 	// edit, as an edited comment's is, and not the moment it was sent.
-	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "A message."}, "alice")
+	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "A message.\n\nIts second paragraph."}, "alice")
 	messageRef := issueRef + "/message/" + message.ID
+	ofMessage := &model.NodeParent{Kind: "message", ID: message.ID, Ref: messageRef}
 	requireFacts(t, "the message as sent", readNode(t, handler, messageRef),
 		nodeFacts{MadeBy: alice, MadeAt: &message.CreatedAt, ChangedBy: alice, ChangedAt: &message.CreatedAt, Parent: ofIssue})
-	edited := editIssueMessage(t, handler, message.ID, "An edited message.", "alice")
+	// messageBlockRefs is the reference to each current block of the message, by its text.
+	messageBlockRefs := func(step string) map[string]string {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/messages/"+message.ID+"/blocks", nil, "alice")
+		succeeded(t, step, response)
+		refs := map[string]string{}
+		for _, block := range decodeBody[model.ItemBlocks](t, response).Blocks {
+			refs[block.Text] = block.Ref
+		}
+		return refs
+	}
+	sent := messageBlockRefs("read the message's blocks as sent")
+	requireFacts(t, "a block of the message as sent", readNode(t, handler, sent["Its second paragraph."]),
+		nodeFacts{MadeBy: alice, MadeAt: &message.CreatedAt, ChangedBy: alice, ChangedAt: &message.CreatedAt, Parent: ofMessage})
+	edited := editIssueMessage(t, handler, message.ID, "A message.\n\nIts second paragraph, reworded.\n\nAnd a third.", "alice")
 	if edited.EditedAt == nil || !edited.EditedAt.After(message.CreatedAt) {
 		t.Fatalf("the message's edit at %v is not after it was sent at %s", edited.EditedAt, message.CreatedAt)
 	}
 	requireFacts(t, "the message alice edited", readNode(t, handler, messageRef),
 		nodeFacts{MadeBy: alice, MadeAt: &message.CreatedAt, ChangedBy: alice, ChangedAt: edited.EditedAt, Parent: ofIssue})
+	// The blocks the edit wrote are stamped at the edit, as an edited comment's are: the block it
+	// reworded changed then, the block it added was made then, and the block it left alone keeps
+	// the moment the message was sent.
+	corrected := messageBlockRefs("read the message's blocks after the edit")
+	if corrected["A message."] != sent["A message."] {
+		t.Fatalf("the block the edit left alone is %s, want the block the message was sent with, %s",
+			corrected["A message."], sent["A message."])
+	}
+	requireFacts(t, "the message block the edit left alone", readNode(t, handler, corrected["A message."]),
+		nodeFacts{MadeBy: alice, MadeAt: &message.CreatedAt, ChangedBy: alice, ChangedAt: &message.CreatedAt, Parent: ofMessage})
+	requireFacts(t, "the message block the edit reworded", readNode(t, handler, corrected["Its second paragraph, reworded."]),
+		nodeFacts{MadeBy: alice, MadeAt: &message.CreatedAt, ChangedBy: alice, ChangedAt: edited.EditedAt, Parent: ofMessage})
+	requireFacts(t, "the message block the edit added", readNode(t, handler, corrected["And a third."]),
+		nodeFacts{MadeBy: alice, MadeAt: edited.EditedAt, ChangedBy: alice, ChangedAt: edited.EditedAt, Parent: ofMessage})
 
 	unclaimed := readNode(t, handler, issueRef)
 	succeeded(t, "claim the issue", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/claim", map[string]any{}, "bob"))

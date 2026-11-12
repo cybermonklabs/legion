@@ -13776,6 +13776,33 @@ test("a message correction named by a value that is no message id is refused bef
   expect(requests).toBe(0);
 });
 
+// The history read resolves the message its own --ref names, so a ref that names no message is
+// refused in that argument's name and not in the name of the --message nobody passed.
+test("dispatch read --history of a ref that names no message is refused in the ref's name", async () => {
+  let requests = 0;
+  const fetchImpl = (() => {
+    requests += 1;
+    throw new Error("network must not be called");
+  }) as unknown as typeof fetch;
+
+  await expect(
+    executeDispatchTool({
+      tool: "dispatch_read",
+      args: { ref: "dispatch://DSP-42/message/not-a-message", history: true },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl,
+    })
+  ).rejects.toThrow(
+    "ref must be a full message id (uuid) or a dispatch://KEY/message/<id> reference"
+  );
+  expect(requests).toBe(0);
+});
+
 test("dispatch read --history lists each replaced body newest first with its actor and time", async () => {
   const { result, requests } = await runCorrection(
     "dispatch_read",

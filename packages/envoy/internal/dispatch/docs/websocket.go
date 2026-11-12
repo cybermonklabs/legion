@@ -71,21 +71,20 @@ type commentMarksContextKey struct{}
 // callers are the comment create (api/comment_create.go), the edit (api/comment_actions.go,
 // editComment) and the delete (api/comment_delete.go).
 //
-// One operation more runs the same way, under a context it marks itself rather than one its
-// caller marked: the reject of the pending suggestion of a comment its author is deleting
-// (RejectDeletedCommentSuggestion), whose caller holds the same owner lock and decided under it
-// that the comment is deleted. A closed issue still takes that delete, so its document takes
-// that one reject, which carries the suggestion's text out of it with the comment's body. Every
-// other way a suggestion's mark is placed or settled, and a content edit, a named version or a
-// rebuild made under this context, is still refused on a closed issue.
+// One operation more runs the same way, under the same context its caller marked: the reject of
+// the pending suggestion of a comment its author is deleting (RejectDeletedCommentSuggestion),
+// which the delete calls with the context it marked here, holding the owner lock under which it
+// decided that the comment is deleted. A closed issue still takes that delete, so its document
+// takes that one reject, which carries the suggestion's text out of it with the comment's body.
+// Every other way a suggestion's mark is placed or settled, and a content edit, a named version
+// or a rebuild made under this context, is still refused on a closed issue.
 func WithCommentMarks(ctx context.Context) context.Context {
 	return context.WithValue(ctx, commentMarksContextKey{}, true)
 }
 
 // commentMarkOperation is ctx for one of the comment anchor operations WithCommentMarks names,
-// and for the reject of a deleting author's suggestion, which marks the context it passes here
-// itself (RejectDeletedCommentSuggestion): owner-verified when the caller marked ctx, unchanged
-// otherwise.
+// and for the reject of a deleting author's suggestion (RejectDeletedCommentSuggestion):
+// owner-verified when the caller marked ctx, unchanged otherwise.
 func commentMarkOperation(ctx context.Context) context.Context {
 	if commentMarks(ctx) {
 		return withOwnerVerified(ctx)

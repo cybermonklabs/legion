@@ -682,8 +682,11 @@ func writeItemBlocks(
 					removed_at = null`+makerUpdate+`
 			`, itemID, madeAt, revision, at, ids, positions, types, sums, excerpts, makers)
 		} else {
-			// A message is never edited, so its blocks are made and last changed when it was
-			// written; a reindex under another parser moves only those of new text.
+			// A message records no revisions, so a block it writes takes the time of the write
+			// as its made_at and its changed_at: the moment the message was sent, or the edit
+			// that added it (PATCH /api/v1/messages/{id}, indexed at edited_at). A block an edit
+			// rewrote keeps the made_at it was written with and takes the edit as its changed_at;
+			// a reindex under another parser moves only those of new text.
 			_, err = tx.Exec(ctx, `
 				insert into message_blocks (message_id, block_id, node_id, position, type, text_sha256, excerpt, made_at, changed_at)
 				select $1::uuid, b.id, 'message/' || $1::uuid::text || '#' || b.id, b.position, b.type, b.sum, b.excerpt, $2, $2
