@@ -241,4 +241,42 @@ func TestReturningASlotStopsNothing(t *testing.T) {
 			t.Errorf("the supervise rows of %s ask for %d suspensions, want none", root, suspends)
 		}
 	})
+
+	t.Run("a person's park of a waiting issue takes the mark of its release with it", func(t *testing.T) {
+		const (
+			waiter  = "LEGION-50"
+			atWork  = "LEGION-51"
+			blocker = "LEGION-94"
+		)
+		pool := migratedPool(t)
+		admission := quiet(t, 2)
+		seedStarted(t, pool, waiter, phase.Implementing, nil)
+		seedMirror(t, pool, waiter, "in_progress", blocker)
+		seedStarted(t, pool, atWork, phase.Implementing, nil)
+		seedMirror(t, pool, atWork, "in_progress")
+		seedMirror(t, pool, blocker, "in_progress")
+
+		tick(t, pool, admission, "the-wait-begins")
+
+		if got := issue(t, pool, waiter); got.ReleasedForWaitAt == nil {
+			t.Fatalf("%s carries no mark of its release while it waits, want the moment its row was taken away", waiter)
+		}
+
+		// A person parks both: the one that waits, which holds no row for the release to find,
+		// and the one at work, whose row the ordinary release takes.
+		dispatchEvent(t, pool, admission, "the-waiting-issue-is-parked", waiter, "backlog", blocker)
+		dispatchEvent(t, pool, admission, "the-working-issue-is-parked", atWork, "backlog")
+
+		if got := issue(t, pool, waiter); got.ReleasedForWaitAt != nil {
+			t.Fatalf("%s is parked and still marked released for a wait at %v, want no mark: it needs no row at all, so no record of it may say it stands in the line for one",
+				waiter, got.ReleasedForWaitAt)
+		}
+		if got := issue(t, pool, atWork); got.ReleasedForWaitAt != nil {
+			t.Errorf("%s was released because it needs no row and is marked released for a wait at %v, want no mark", atWork, got.ReleasedForWaitAt)
+		}
+		assertRowHolders(t, pool)
+		if got := issue(t, pool, waiter).Phase; got != phase.Implementing {
+			t.Errorf("%s stands in %s, want implementing: a park takes the row and the mark, and moves nothing of the work", waiter, got)
+		}
+	})
 }

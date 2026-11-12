@@ -14,7 +14,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // steppingClock gives admission a clock the test moves, starting at fixedNow, and answers the
@@ -52,20 +51,6 @@ func observedTick(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventI
 	}
 }
 
-// oweWorkerStart queues the start of key's worker for the phase it stands in, as a transition
-// does (workflow.StartOrOwe): the one row that carries the task, which the outbox holds
-// unclaimable until key holds a slot. tree is the issue's own tree.
-func oweWorkerStart(t *testing.T, pool *pgxpool.Pool, tree, key string, stands phase.Phase) {
-	t.Helper()
-	inTx(t, pool, func(tx pgx.Tx) {
-		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), key, record.SuperviseRequest{
-			Op: "start", Tree: tree, Role: workflow.RoleFor(stands), Generation: 1, Phase: stands,
-			Task: "Carry on " + key + ".", Assignment: "assignment-" + key}, fixedNow); err != nil {
-			t.Fatalf("owe %s the start of its %s: %v", key, workflow.RoleFor(stands), err)
-		}
-	})
-}
-
 // slotFreeNow is what the pass would answer a controller asking whether a slot stands free
 // (Admission.slotFree), read in a transaction of its own after the pass committed.
 func slotFreeNow(t *testing.T, pool *pgxpool.Pool, admission *Admission) bool {
@@ -93,13 +78,6 @@ func assertWaitsOnce(t *testing.T, pool *pgxpool.Pool, key string) {
 	if slices.Index(line[first+1:], key) >= 0 {
 		t.Fatalf("%s stands in the waiting line %v twice, want once", key, line)
 	}
-}
-
-// rowHolders is the keys given, in the order slottedKeys answers in: key order, since the rule
-// is about which issues hold one of the cap's rows and never about the index each row carries.
-func rowHolders(keys ...string) []string {
-	slices.Sort(keys)
-	return keys
 }
 
 // The slot an issue gave back for a wait comes back to it with nobody acting, the moment the
@@ -157,10 +135,9 @@ func TestTheSlotComesBackWhenTheLastWaitEnds(t *testing.T) {
 
 		tick(t, pool, admission, "the-wait-begins")
 
-		if got, want := slottedKeys(t, pool), rowHolders(atWork, behind, finishes); !slices.Equal(got, want) {
-			t.Fatalf("the issues holding a row after the first pass = %v, want %v: the waiting issue gave its row back and the promotion passed over it, so the free slot went to the candidate behind it",
-				got, want)
-		}
+		// The waiting issue gave its row back and the promotion passed over it, so the free slot
+		// went to the candidate behind it.
+		assertRowHolders(t, pool, atWork, behind, finishes)
 		if released := issue(t, pool, waiter); released.ReleasedForWaitAt == nil || !released.ReleasedForWaitAt.Equal(fixedNow) {
 			t.Fatalf("%s was released at %v, want the moment of the pass, %v", waiter, released.ReleasedForWaitAt, fixedNow)
 		}
@@ -169,9 +146,9 @@ func TestTheSlotComesBackWhenTheLastWaitEnds(t *testing.T) {
 		// A slot comes free with the waiting issue still waiting: nothing takes it, which is what
 		// makes the two readings below about the waits alone and not about the cap.
 		dispatchEvent(t, pool, admission, "finished", finishes, "done")
-		if got, want := slottedKeys(t, pool), rowHolders(atWork, behind); !slices.Equal(got, want) {
-			t.Fatalf("the issues holding a row once one finished = %v, want %v: a waiting issue is no taker for the slot, and the root the second blocker holds is none either", got, want)
-		}
+		// A waiting issue is no taker for the slot, and the root the second blocker holds is
+		// none either.
+		assertRowHolders(t, pool, atWork, behind)
 
 		dispatchEvent(t, pool, admission, "first-done", first, "done")
 
@@ -182,10 +159,9 @@ func TestTheSlotComesBackWhenTheLastWaitEnds(t *testing.T) {
 
 		dispatchEvent(t, pool, admission, "second-done", second, "done")
 
-		if got, want := slottedKeys(t, pool), rowHolders(atWork, behind, waiter); !slices.Equal(got, want) {
-			t.Fatalf("the issues holding a row once the last blocker is done = %v, want %v: the issue whose wait ended takes the free slot, before the root whose first phase has yet to start",
-				got, want)
-		}
+		// The issue whose wait ended takes the free slot, before the root whose first phase has
+		// yet to start.
+		assertRowHolders(t, pool, atWork, behind, waiter)
 		back := issue(t, pool, waiter)
 		if back.ReleasedForWaitAt != nil {
 			t.Errorf("%s holds a row and is marked released for a wait at %v, want no mark: the mark goes with the row's return", waiter, back.ReleasedForWaitAt)
@@ -240,9 +216,8 @@ func TestTheSlotComesBackWhenTheLastWaitEnds(t *testing.T) {
 		step(later.Add(time.Hour))
 		dispatchEvent(t, pool, admission, "both-waits-end", blocker, "done")
 
-		if got, want := slottedKeys(t, pool), []string{older}; !slices.Equal(got, want) {
-			t.Fatalf("the issues holding a row once both waits ended = %v, want %v: the one free slot goes to the issue that gave its row back first", got, want)
-		}
+		// The one free slot goes to the issue that gave its row back first.
+		assertRowHolders(t, pool, older)
 		if line := waitingLine(t, pool, testProject, nil); !slices.Equal(line, []string{newer}) {
 			t.Fatalf("the waiting line = %v, want %v: the issue behind it keeps its place for the next slot", line, []string{newer})
 		}
@@ -296,7 +271,7 @@ func TestTheSlotComesBackWhenTheLastWaitEnds(t *testing.T) {
 		moved := issue(t, pool, waiter)
 		moved.Phase = phase.Testing
 		putIssue(t, pool, moved)
-		oweWorkerStart(t, pool, waiter, waiter, phase.Testing)
+		oweStart(t, pool, waiter, waiter, phase.Testing)
 
 		tick(t, pool, admission, "the-wait-stands")
 

@@ -1224,10 +1224,12 @@ type Store interface {
 	PutDispatchClaim(ctx context.Context, tx pgx.Tx, key, holder string, seq int64) error
 	// DispatchIssues is every mirrored row of the Dispatch project key project, by key.
 	DispatchIssues(ctx context.Context, tx pgx.Tx, project string) ([]DispatchIssueRow, error)
-	// DispatchIssuesOf is the mirrored row of each of keys in project and the row of each issue
-	// those rows say they wait on, by key, read by primary key: what a judgement of keys reads
+	// DispatchIssuesOf is the mirrored row of each of keys and the row of each issue those rows
+	// say they wait on, by key, read by primary key: what a judgement of keys reads
 	// (blockers.Load), whatever the number of rows the project's mirror holds. No keys read
-	// nothing.
+	// nothing. A key is read whatever project it is in, since an issue may wait on an issue of
+	// another project and a blocker whose row the judgement cannot read counts as unfinished for
+	// ever; project names the project the judgement is of and survives for the error text alone.
 	DispatchIssuesOf(ctx context.Context, tx pgx.Tx, project string, keys []string) ([]DispatchIssueRow, error)
 	// DispatchChildren is every mirrored issue of the Dispatch project key project whose parent is
 	// one of parents, grouped by parent and in key order within each group; a parent with no

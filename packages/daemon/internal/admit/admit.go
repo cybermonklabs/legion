@@ -1103,6 +1103,14 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 // another project's slot, whose own daemon releases it. The further facts the predicate needs of
 // each slotted issue — its tree root, and whether that root's tree is live — come from issues
 // and facts, which the pass read once for all of them, so this still makes exactly one query.
+//
+// It also clears the mark of a release for a wait from every issue that needs no slot at all
+// (record.Issue.ReleasedForWaitAt, over issues rather than over the slotted rows): an issue
+// released for a wait holds no row, so the loop below never sees it, and it goes on working, so
+// it can reach its done or its wait for a merge, or be parked, with nothing else to clear the
+// mark. Left standing, the mark would say the issue stands in the line waiting for its slot
+// back when nothing of it is waiting, and its work coming back later would take its place in
+// the line from the moment before the park (record.Waiting).
 func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) ([]string, error) {
 	own, err := a.store.SlottedIssues(ctx, tx, a.project)
 	if err != nil {
@@ -1125,16 +1133,21 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 		if err := a.store.ReleaseSlot(ctx, tx, issue.Key); err != nil {
 			return nil, fmt.Errorf("release the slot of %s: %w", issue.Key, err)
 		}
-		// The row goes because the issue needs none at all, which is not a wait: a parked issue,
-		// a tree that left the workflow, an issue done. The mark of a release for a wait goes
-		// with it, so a record can never say an issue stands in the line waiting for its slot
-		// back when nothing of it is waiting (record.Issue.ReleasedForWaitAt).
-		if err := a.store.ClearReleasedForWait(ctx, tx, issue.Key); err != nil {
-			return nil, fmt.Errorf("clear the slot release of %s for what it waits on: %w", issue.Key, err)
-		}
 		inUse--
 		released = append(released, issue.Key)
 		a.logSlot(ctx, "released", issue.Key, inUse)
+	}
+	for _, issue := range issues {
+		if issue.ReleasedForWaitAt == nil {
+			continue
+		}
+		_, running := live[issue.Tree]
+		if record.NeedsSlot(issue, byKey[issue.Tree], running) {
+			continue
+		}
+		if err := a.store.ClearReleasedForWait(ctx, tx, issue.Key); err != nil {
+			return nil, fmt.Errorf("clear the slot release of %s for what it waits on: %w", issue.Key, err)
+		}
 	}
 	return released, nil
 }
@@ -1414,12 +1427,14 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err := a.store.PutSlot(ctx, tx, slot); err != nil {
 					return admitted, released, fmt.Errorf("put admission slot for %s: %w", issue.Key, err)
 				}
-				// The mark of a release for a wait goes with the row's return, whether the wait
-				// was this issue's reason for standing here or it never waited at all: an issue
-				// holding a row has its place against the cap back, and a mark left standing
-				// would say it gave that place up (record.Issue.ReleasedForWaitAt).
-				if err := a.store.ClearReleasedForWait(ctx, tx, issue.Key); err != nil {
-					return admitted, released, fmt.Errorf("clear the slot release of %s for what it waits on: %w", issue.Key, err)
+				// The mark of a release for a wait goes with the row's return: an issue holding
+				// a row has its place against the cap back, and a mark left standing would say
+				// it gave that place up (record.Issue.ReleasedForWaitAt). Only an issue that
+				// carries the mark is written, so an ordinary grant costs no statement.
+				if issue.ReleasedForWaitAt != nil {
+					if err := a.store.ClearReleasedForWait(ctx, tx, issue.Key); err != nil {
+						return admitted, released, fmt.Errorf("clear the slot release of %s for what it waits on: %w", issue.Key, err)
+					}
 				}
 				slots, own = append(slots, slot), append(own, slot)
 				a.logSlot(ctx, "taken", issue.Key, len(own))

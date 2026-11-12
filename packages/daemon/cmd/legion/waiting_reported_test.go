@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,16 +34,27 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 		queuedRoot   = "LEGION-212"
 		heldChild    = "LEGION-213"
 	)
-	const want = "blocked on Dispatch links: 4 — LEGION-210 waits on LEGION-300; " +
-		"LEGION-211 waits on LEGION-301; LEGION-212 waits on LEGION-302; LEGION-213 waits on LEGION-303\n"
+	// The four issues and what each waits on, which the served state and the line expected of
+	// it are both built from: an expectation written out beside a fixture of its own would read
+	// the same whatever the fixture said.
+	waits := []struct{ issue, blocker string }{
+		{startedLink, "LEGION-300"},
+		{startedChild, "LEGION-301"},
+		{queuedRoot, "LEGION-302"},
+		{heldChild, "LEGION-303"},
+	}
+	blocked := make([]string, 0, len(waits))
+	named := make([]string, 0, len(waits))
+	for _, wait := range waits {
+		blocked = append(blocked, fmt.Sprintf(`{"issue":%q,"blockedBy":[%q]}`, wait.issue, wait.blocker))
+		named = append(named, wait.issue+" waits on "+wait.blocker)
+	}
+	want := fmt.Sprintf("blocked on Dispatch links: %d — %s\n", len(waits), strings.Join(named, "; "))
 	served := `{"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-11-11T00:00:00Z","startedAt":"2026-11-11T00:00:00Z"},` +
 		`"admission":{"cap":8,"active":["LEGION-215","LEGION-220"],` +
-		`"waiting":["LEGION-210","LEGION-211","LEGION-212"],` +
-		`"trees":["LEGION-210","LEGION-211","LEGION-215","LEGION-220"],` +
-		`"blocked":[{"issue":"LEGION-210","blockedBy":["LEGION-300"]},` +
-		`{"issue":"LEGION-211","blockedBy":["LEGION-301"]},` +
-		`{"issue":"LEGION-212","blockedBy":["LEGION-302"]},` +
-		`{"issue":"LEGION-213","blockedBy":["LEGION-303"]}]},` +
+		fmt.Sprintf(`"waiting":[%q,%q,%q],`, startedLink, startedChild, queuedRoot) +
+		fmt.Sprintf(`"trees":[%q,%q,"LEGION-215","LEGION-220"],`, startedLink, startedChild) +
+		`"blocked":[` + strings.Join(blocked, ",") + `]},` +
 		`"issues":{},"pendingStatusWrites":[]}`
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +75,8 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 	}
 
 	// The same line from the summary itself, over the state's own blocked list: the command
-	// prints what blockedSummary builds, and each of the four issues stands on it.
+	// prints what blockedSummary builds, and each of the four issues of the fixture stands on
+	// it.
 	var state struct {
 		Admission struct {
 			Blocked []api.BlockedIssue `json:"blocked"`
@@ -74,10 +87,5 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 	}
 	if got := blockedSummary(state.Admission.Blocked) + "\n"; got != want {
 		t.Fatalf("blockedSummary = %q, want %q", got, want)
-	}
-	for _, key := range []string{startedLink, startedChild, queuedRoot, heldChild} {
-		if !strings.Contains(want, key+" waits on ") {
-			t.Fatalf("the line %q does not name %s: every issue Legion is waiting to start behind a Dispatch issue is named on it", want, key)
-		}
 	}
 }

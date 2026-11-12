@@ -291,11 +291,17 @@ func Started(issues []record.Issue, slots []record.Slot) map[string]struct{} {
 // second is the same judgement the line holds an unstarted parent by: a started parent waits for
 // its children exactly as one that never started does, and only the slot it holds differs.
 //
-// Two started issues wait on neither, though a rule names them. A root waiting on a person
+// Three started issues wait on neither, though a rule names them. A root waiting on a person
 // (awaiting_person, answered or not) is waiting on that person and nothing else, and the slot it
-// holds is what its resume takes back. And a tree's own root whose design gate has never opened
+// holds is what its resume takes back. A tree's own root whose design gate has never opened
 // is its architect writing the design, which is the whole of that tree's work (record.AtWork at
 // phase.Admitted): releasing it would take the slot of the one issue of the tree that is working.
+// And a root that arrived from another tree carrying the row it held there
+// (record.QueuedRoot) keeps that row: it stands in the line as record.LineQueuedRoot, whose own
+// rule exempts a root carrying a run (LineWaitsOn, WaitsOn, Exempt), so a release here would be
+// undone by the promotion of the same pass — and under a full cap not undone at all, leaving a
+// root with the row the line promises it keeps taken away for good. The release and the
+// promotion must read one judgement of such a root, and this is where the release reads it.
 // Exempt is not read here: that rule is the promotion's, about what a candidate may start in
 // spite of its links, and this one is about what a started issue holds a slot for, so an issue
 // carrying a run gives its row back like any other.
@@ -304,6 +310,9 @@ func Waits(rows map[string]Row, issue record.Issue, facts record.LineFacts, star
 		return nil
 	}
 	if issue.Phase == phase.Admitted && record.AtWork(issue, facts.Gates[issue.Tree]) {
+		return nil
+	}
+	if record.QueuedRoot(issue, facts.Gates[issue.Tree]) {
 		return nil
 	}
 	waits := Unfinished(rows, issue.Key)
@@ -318,9 +327,10 @@ func Waits(rows map[string]Row, issue record.Issue, facts record.LineFacts, star
 // StartedWaits is what each started issue among issues waits on (Waits), by key, with no entry
 // for an issue that waits on nothing and none for an issue the daemon has not started: what the
 // waiting line takes as record.LineFacts.Waits, filled by the caller for the reason HeldIssues
-// gives. slots is the caller's own read of the slots table, which says which issues hold a row.
-func StartedWaits(rows map[string]Row, issues []record.Issue, slots []record.Slot, facts record.LineFacts) map[string][]string {
-	started := Started(issues, slots)
+// gives. started is the caller's own judgement of which issues the daemon has started (Started),
+// taken as a parameter because the caller judges it for the line as well and the two must be one
+// judgement of one read.
+func StartedWaits(rows map[string]Row, issues []record.Issue, started map[string]struct{}, facts record.LineFacts) map[string][]string {
 	waits := make(map[string][]string)
 	for _, issue := range issues {
 		_, begun := started[issue.Key]
@@ -343,7 +353,8 @@ func StartedWaits(rows map[string]Row, issues []record.Issue, slots []record.Slo
 // and no longer. The waits of the issues the daemon has started are judged there too
 // (record.LineFacts.Waits, StartedWaits), from those same rows and child waits, because the
 // line stands a started issue that waits in its first part and must be told which issues those
-// are. Then the line. Then the rows of the issues the line itself names, which only the
+// are; the set of started issues (Started) is judged once here and given to both readings of
+// it. Then the line. Then the rows of the issues the line itself names, which only the
 // line can say.
 //
 // rows is whatever the caller has already read, nil on its first judgement; judgeAgain reads only
@@ -364,7 +375,8 @@ func JudgeLine(ctx context.Context, tx pgx.Tx, store record.Store, project strin
 	if rows == nil {
 		rows = map[string]Row{}
 	}
-	rows, err := judgeAgain(ctx, tx, store, project, issues, nil, Started(issues, slots), rows)
+	started := Started(issues, slots)
+	rows, err := judgeAgain(ctx, tx, store, project, issues, nil, started, rows)
 	if err != nil {
 		return rows, facts, nil, err
 	}
@@ -372,7 +384,7 @@ func JudgeLine(ctx context.Context, tx pgx.Tx, store record.Store, project strin
 	if facts.ChildWaits, err = record.ChildWaitsOf(ctx, tx, store, project, issues, facts); err != nil {
 		return rows, facts, nil, fmt.Errorf("read what the unstarted issues of %s wait on under them: %w", project, err)
 	}
-	facts.Waits = StartedWaits(rows, issues, slots, facts)
+	facts.Waits = StartedWaits(rows, issues, started, facts)
 	line := record.Waiting(issues, slots, facts)
 	rows, err = judgeAgain(ctx, tx, store, project, issues, line, nil, rows)
 	return rows, facts, line, err

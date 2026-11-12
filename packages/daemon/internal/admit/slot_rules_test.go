@@ -86,14 +86,15 @@ func takeSlot(t *testing.T, pool *pgxpool.Pool, key string) {
 	})
 }
 
-// oweStart queues the start of key's worker as a transition does (workflow.StartOrOwe): the one
-// row that carries the task, which the outbox holds unclaimable until key holds a slot. It is
-// what puts an issue whose work came back in the waiting line.
-func oweStart(t *testing.T, pool *pgxpool.Pool, key string, stands phase.Phase) {
+// oweStart queues the start of key's worker for the phase it stands in, as a transition does
+// (workflow.StartOrOwe): the one row that carries the task, which the outbox holds unclaimable
+// until key holds a slot. It is what puts an issue whose work came back in the waiting line.
+// tree is the issue's own tree, which a root of its own names by its own key.
+func oweStart(t *testing.T, pool *pgxpool.Pool, tree, key string, stands phase.Phase) {
 	t.Helper()
 	role := workflow.RoleFor(stands)
 	inTx(t, pool, func(tx pgx.Tx) {
-		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), key, record.SuperviseRequest{Op: "start", Tree: "LEGION-1",
+		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), key, record.SuperviseRequest{Op: "start", Tree: tree,
 			Role: role, Generation: 1, Phase: stands, Task: "Continue " + key + ".", Assignment: "assignment-" + key}, fixedNow); err != nil {
 			t.Fatalf("owe %s a start: %v", key, err)
 		}
@@ -396,7 +397,7 @@ func TestATreeHoldsOneRowForEachIssueTheDaemonHasStarted(t *testing.T) {
 	root = issue(t, pool, "LEGION-1")
 	root.Phase, root.Status = phase.Implementing, "in_progress"
 	putIssue(t, pool, root)
-	oweStart(t, pool, "LEGION-1", phase.Implementing)
+	oweStart(t, pool, "LEGION-1", "LEGION-1", phase.Implementing)
 
 	applyFact(t, pool, admission, "root-implementing", intake.ControllerTick{})
 

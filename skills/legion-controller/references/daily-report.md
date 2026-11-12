@@ -67,10 +67,13 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own
   merge) or its link is taken off (by a person or the tree's architect), and a children-first wait
   ends when the last open child leaves the workflow, so take nothing for them.
-  Say of each one the daemon has already started — the ones here that are in `admission.waiting`
-  and not in `admission.active` — that it holds no admission slot while it waits, that nothing of
-  its work has stopped, and that it takes a slot again by itself at the first pass after its wait
-  ends.
+  Say of each one the daemon has already started — the ones here that are in `admission.waiting`,
+  not in `admission.active`, and whose `issues.<KEY>.status` is not `todo` — that it holds no
+  admission slot while it waits, that nothing of its work has stopped, and that it takes a slot
+  again by itself at the first pass after its wait ends.
+  The status is what tells the two apart: a root Legion never started stands at `todo` and holds
+  no slot either, so without it the report would say of work Legion never began that nothing of
+  it has stopped.
 - **Free slots.** Counted as the skill's "Free slots" says, in issues rather than trees; each
   stays free until an issue in the line takes it.
 - **Open capabilities.** Each row of `read_state`'s `capabilities` whose `status` is `open`: its

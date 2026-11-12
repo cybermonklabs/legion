@@ -157,6 +157,11 @@ func (w *workflowRuntime) readObserved(ctx context.Context, keys []string) []int
 // carries the project Dispatch names on the issue, the one read that answers it, so the mirror
 // row of a blocker outside this project is that project's rather than this daemon's
 // (blockers.Mirror.put).
+//
+// An answer that names no project at all is left out as a failed read is, and logged the same
+// way: its row would be written under the empty project, which drops it out of every project's
+// read, and leaving it out keeps the row as the last answer that named one left it. The project
+// is never derived from the key here — the read that saw the issue is the one derivation.
 func (w *workflowRuntime) readBlocker(ctx context.Context, key string) (intake.IssueStatus, bool) {
 	issue, err := w.dispatch.GetIssue(ctx, key)
 	if err != nil {
@@ -170,6 +175,10 @@ func (w *workflowRuntime) readBlocker(ctx context.Context, key string) (intake.I
 	parent := ""
 	if issue.Parent != nil {
 		parent = *issue.Parent
+	}
+	if issue.Project == "" {
+		w.log.Warn("the controller tick re-read a blocker whose answer names no project", "issue", key)
+		return intake.IssueStatus{}, false
 	}
 	return intake.IssueStatus{Key: key, Project: issue.Project, Status: issue.Status, Blockers: issue.BlockedBy,
 		Seq: issue.LastSeq, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Parent: parent}, true

@@ -242,6 +242,11 @@ func dependencyComponentLeavesProject(ctx context.Context, q queryer, project st
 				}
 			}
 		}
+		// Every half of this round was already seen, so the step below would be asked for the
+		// waits of nothing and could only answer nothing: the walk has exhausted its component.
+		if len(starts) == 0 && len(dones) == 0 {
+			break
+		}
 		rows, err := q.Query(ctx, waitStepSQL, starts, dones)
 		if err != nil {
 			return false, err

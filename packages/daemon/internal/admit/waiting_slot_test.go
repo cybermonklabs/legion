@@ -13,44 +13,13 @@ import (
 )
 
 // seedStarted records key as an issue the daemon has started: a root of a live tree of its own,
-// standing in the phase given, holding an admission slot. It is seedSlotted for a phase other
-// than admitted — every issue this test releases or keeps has already been started, which is
-// what the slot row says — and shape is where a test says what else the record carries.
+// standing in the phase given, holding an admission slot. It is the package's slotted-issue
+// fixture (seedSlottedInPhase) for a phase other than admitted — every issue this test releases
+// or keeps has already been started, which is what the slot row says — ranked by its own key,
+// and shape is where a test says what else the record carries.
 func seedStarted(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, shape func(*record.Issue)) {
 	t.Helper()
-	issue := record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: testProject, Title: key, Tree: key, Phase: at, Generation: 1, Status: "in_progress",
-		Rank: key, HandedOver: true}
-	if shape != nil {
-		shape(&issue)
-	}
-	ctx := context.Background()
-	inTx(t, pool, func(tx pgx.Tx) {
-		records := record.NewStore()
-		if err := records.PutIssue(ctx, tx, issue); err != nil {
-			t.Fatalf("seed the started issue %s: %v", key, err)
-		}
-		slots, err := records.Slots(ctx, tx)
-		if err != nil {
-			t.Fatalf("list slots: %v", err)
-		}
-		if err := records.PutSlot(ctx, tx, record.Slot{Issue: key, Index: len(slots), AdmittedAt: fixedNow}); err != nil {
-			t.Fatalf("seed the slot of %s: %v", key, err)
-		}
-		seedLifecycleTx(t, tx, key)
-	})
-}
-
-// slottedKeys is every issue holding an admission slot after a pass, sorted, which is what this
-// test reads: the rule is about which issues hold one, never about the index each row carries.
-func slottedKeys(t *testing.T, pool *pgxpool.Pool) []string {
-	t.Helper()
-	keys := make([]string, 0)
-	for _, slot := range slots(t, pool) {
-		keys = append(keys, slot.Issue)
-	}
-	slices.Sort(keys)
-	return keys
+	seedSlottedInPhase(t, pool, testProject, key, key, at, shape)
 }
 
 // An issue the daemon has started and that waits on another issue holds no admission slot: the
@@ -154,11 +123,7 @@ func TestAWaitingIssueHoldsNoSlot(t *testing.T) {
 
 	tick(t, pool, admission, "tick")
 
-	want := []string{allDone, noLink, onPerson, gateClosed}
-	slices.Sort(want)
-	if got := slottedKeys(t, pool); !slices.Equal(got, want) {
-		t.Fatalf("the issues holding an admission slot after the pass = %v, want %v: an issue that waits on another issue holds none, and an issue that waits on nothing keeps the one it holds", got, want)
-	}
+	assertRowHolders(t, pool, allDone, noLink, onPerson, gateClosed)
 
 	// Each released issue stands in the line for a row of its own again, marked with the moment
 	// its row was taken away, and nothing of its work moved: its phase is where it was.
@@ -174,15 +139,10 @@ func TestAWaitingIssueHoldsNoSlot(t *testing.T) {
 	if got := issue(t, pool, heldBlocked); got.Phase != phase.Held || got.Hold == nil || got.Hold.From != phase.Implementing {
 		t.Errorf("the released held issue = %#v, want it held from implementing exactly as it stood", got)
 	}
-	line := waitingLine(t, pool, testProject, nil)
 	for _, key := range []string{implBlocked, childWait, testing_, heldBlocked, merging, accepting, noRow, carriesRun} {
-		if !slices.Contains(line, key) {
-			t.Errorf("%s stands in no part of the waiting line %v: an issue released for a wait waits there for a row of its own again", key, line)
-		}
-		if count := slices.Index(line, key); count >= 0 && slices.Index(line[count+1:], key) >= 0 {
-			t.Errorf("%s stands in the waiting line %v twice, want once", key, line)
-		}
+		assertWaitsOnce(t, pool, key)
 	}
+	line := waitingLine(t, pool, testProject, nil)
 	for _, key := range []string{allDone, noLink, onPerson, gateClosed} {
 		if slices.Contains(line, key) {
 			t.Errorf("%s stands in the waiting line %v, want it out of the line: it holds its slot and waits for none", key, line)
@@ -205,6 +165,47 @@ func TestAWaitingIssueHoldsNoSlot(t *testing.T) {
 		}
 		if !record.CanWaitOnPerson(root, facts.Gates[root.Tree], true) {
 			t.Fatalf("the root whose gate has never opened may wait on no person, want it able to: it kept the slot that says the daemon started it")
+		}
+	})
+
+	// A root that arrived from another tree carrying the row it held there keeps it, though a
+	// blocker of it is not done. Such a root stands in the line as a queued root
+	// (record.QueuedRoot), whose own rule exempts the run it carries (blockers.Exempt), so the
+	// release and the promotion must read one judgement of it: released, its row goes to the
+	// candidate ahead of it in the line and no pass ever gives it back, though the line promises
+	// it keeps the row it arrived with.
+	t.Run("a root that arrived from another tree keeps the row it carries", func(t *testing.T) {
+		const (
+			arrived   = "LEGION-30"
+			left      = "LEGION-31"
+			returning = "LEGION-32"
+			blocker   = "LEGION-98"
+		)
+		pool := migratedPool(t)
+		// One row for the project, the one this root carries: with a free row to spare the
+		// promotion would hand it straight back and hide the release behind its own grant.
+		admission := quiet(t, 1)
+		seedStarted(t, pool, arrived, phase.Implementing, func(issue *record.Issue) {
+			issue.HandedOverFrom = left
+			issue.Status = "todo"
+		})
+		seedMirror(t, pool, arrived, "todo", blocker)
+		seedMirror(t, pool, blocker, "in_progress")
+		// An issue whose work came back and owes its implementer a start: it stands in the
+		// line's first part, ahead of every queued root, so a row freed here is taken before
+		// the root that gave it up could have it back.
+		putIssue(t, pool, record.Issue{Key: returning, Repo: "acme/widgets", DefaultBranch: "main",
+			GitHubRepo: "acme/widgets", Project: testProject, Title: returning, Tree: returning,
+			Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A", HandedOver: true})
+		seedLifecycle(t, pool, returning)
+		seedMirror(t, pool, returning, "in_progress")
+		oweStart(t, pool, returning, returning, phase.Implementing)
+
+		tick(t, pool, admission, "tick")
+
+		assertRowHolders(t, pool, arrived)
+		if got := issue(t, pool, arrived); got.ReleasedForWaitAt != nil {
+			t.Fatalf("%s is marked released for a wait at %v, want no mark: it holds the row it arrived with", arrived, got.ReleasedForWaitAt)
 		}
 	})
 }

@@ -51,7 +51,9 @@ because the operator closes or decides a deployment row, and the operator or the
 fixes a live row's session.
 
 `blocked`, when present, is `[{issue, blockedBy}, …]`: every root and child Legion is waiting to
-start, each with what it waits on — the unfinished Dispatch issues of its `blocked_by` links, or,
+start, and every issue the daemon has started that waits on another issue and gave its admission
+slot back for that wait, each with what it waits on — the unfinished Dispatch issues of its
+`blocked_by` links, or,
 for a parent, the open children beneath it that children-first holds it for. `read_state` shows the
 same list under `admission.blocked`, and `legion state` prints it as `blocked on Dispatch links:`.
 A link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own merge) or its

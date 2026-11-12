@@ -761,9 +761,9 @@ func TestNoIssueIsBothUnstartedAndUnreported(t *testing.T) {
 	if got := issue(t, pool, slotted); got.Phase != phase.Admitted {
 		t.Fatalf("the slotted root = %s once its gate opened, want it still at admitted: its first phase waits on its unfinished blocker", got.Phase)
 	}
-	for _, held := range []string{waiting, child} {
-		if got := issue(t, pool, held); got.Phase != phase.Admitted {
-			t.Fatalf("%s = %s, want it held at admitted by its unfinished blocker", held, got.Phase)
+	for _, key := range []string{waiting, child} {
+		if got := issue(t, pool, key); got.Phase != phase.Admitted {
+			t.Fatalf("%s = %s, want it held at admitted by its unfinished blocker", key, got.Phase)
 		}
 	}
 	assertSlots(t, pool, nil)
