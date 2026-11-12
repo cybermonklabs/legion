@@ -610,3 +610,5 @@ func retain(ctx context.Context, fill *store.Pool, version int) (trees, cursors 
 	}
 	return trees, cursors, nil
 }
+
+// selection probe
