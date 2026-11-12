@@ -111,6 +111,12 @@ export interface CallBounds {
 export interface ModelAnswer {
   /** The option labels the answer chose, and empty where no answer could be read. */
   chosen: string[];
+  /**
+   * The answer's whole text, where one came back and could be read as a label. A caller that
+   * reads more than the label it chose - the never-decide rule, which wants the reason in the
+   * model's own words - takes it from here; a caller that wants only the label leaves it.
+   */
+  text?: string;
   /** How likely each option was, keyed by label, where the endpoint reports them. */
   probabilities: Record<string, number> | null;
   /** How sure the endpoint says it is, from 0 to 1, where it says. */
@@ -502,6 +508,7 @@ export async function askClaude(ask: ClaudeAsk): Promise<ModelAnswer> {
   }
   return {
     chosen,
+    text,
     probabilities: null,
     confidence: null,
     ...usage,

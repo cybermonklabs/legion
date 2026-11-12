@@ -23,10 +23,13 @@ import {
   readJson,
 } from "./dispatch-read";
 import {
+  DEFAULT_NEVER_DECIDE_MODEL,
   type IssueFacts,
   type NeverDecideAnswer,
   type NeverDecideKind,
+  type NeverDecideOptions,
   neverDecide,
+  neverDecideDefinition,
 } from "./never-decide";
 import { renderCase, renderDocument } from "./render";
 import { replayCase } from "./replay";
@@ -42,12 +45,14 @@ import { replayCase } from "./replay";
  * reached to within one group. The draw is at random under a seed it prints, so the same seed
  * over the same corpus draws the same slices.
  *
- * Three kinds of case never reach the draw. A question offering fewer than two options cannot be
+ * Four kinds of case never reach the draw. A question offering fewer than two options cannot be
  * judged as a choice, and a question whose answer names no option cannot be scored against what
  * the person chose, since set equality with an empty answer is nothing an arm could agree with.
  * A case the never-decide rule holds is one the shipped skill would refuse, and a coverage
  * number counting it would be larger than anything the skill can deliver; the counts and the
- * kinds held are printed and written.
+ * kinds held are printed and written. And a case whose answer from the rule could not be read
+ * is left out as well, because a rule about what must not be decided may not decide by
+ * accident; those are counted and named too.
  *
  * An approval case whose answer names no option stops the whole draw instead: every approval
  * case of this corpus carries the option the person chose, so one that does not is the corpus
@@ -55,12 +60,16 @@ import { replayCase } from "./replay";
  *
  * What is pinned and what is live. The cases are the corpus's, and each document is read at the
  * version the corpus pins, so those are the same bytes on every run. The one live reading is
- * the list of parked roots carrying the `legion` label, which the never-decide rule needs and
- * which Dispatch answers as it stands now: `draw.json` writes that list, with the time it was
- * read, beside its count. `--parked-roots <file>` reads the list from a file in the shape
- * `draw.json` writes instead of from Dispatch, so a re-run that must reproduce an earlier draw
- * passes both `--seed` and `--parked-roots <that draw's draw.json>` and then turns on the
- * corpus and the seed alone.
+ * the list of roots carrying the `legion` label that stand on the backlog or in icebox, which
+ * the never-decide rule needs and which Dispatch answers as it stands now: `draw.json` writes
+ * that list, with the time it was read, beside its count. `--backlog-roots <file>` reads the
+ * list from a file in the shape `draw.json` writes instead of from Dispatch, so a re-run that
+ * must reproduce an earlier draw passes both `--seed` and `--backlog-roots <that draw's
+ * draw.json>` and then turns on the corpus and the seed alone.
+ *
+ * The rule itself is a model call per case. `--cache <dir>` keeps those answers between runs,
+ * keyed on the prose of the definition among other things, so a redraw of a frozen definition
+ * pays for none of them again and a changed definition is asked afresh by construction.
  *
  * The anchor slice is written with a descriptor per case - the ask, the lead document, the
  * version requested and the SHA-256 of that document as rendered - so a later round can prove it
@@ -68,22 +77,25 @@ import { replayCase } from "./replay";
  */
 
 const USAGE = `usage: bun scripts/approval-eval/draw.ts --corpus <dir> --cut <date> --out <dir> \\
-  [--seed <n>] [--parked-roots <file>]
+  [--seed <n>] [--backlog-roots <file>] [--cache <dir>]
 
 Draws the post-cut cases of a corpus into the fit, report, anchor and reserve slices.
 
 Options:
-  --corpus <dir>         Required. A directory holding corpus.jsonl and snapshot.json.
-  --cut <date>           Required. An ISO 8601 time, for example 2026-11-05T00:00:00Z. A case
-                         answered at or after it is drawn; a case answered before it is
-                         training.
-  --out <dir>            Required. Where slices.json, anchor-descriptors.json and draw.json are
-                         written. An absolute path outside this repository's workspace.
-  --seed <n>             The seed of the draw. With none, one is made and printed.
-  --parked-roots <file>  The parked roots carrying the legion label, read from this file rather
-                         than from Dispatch. The shape is the one draw.json writes, so an
-                         earlier draw's draw.json names its own list. With --seed, this makes a
-                         re-run reproduce that draw from the corpus alone.
+  --corpus <dir>          Required. A directory holding corpus.jsonl and snapshot.json.
+  --cut <date>            Required. An ISO 8601 time, for example 2026-11-05T00:00:00Z. A case
+                          answered at or after it is drawn; a case answered before it is
+                          training.
+  --out <dir>             Required. Where slices.json, anchor-descriptors.json and draw.json
+                          are written. An absolute path outside this repository's workspace.
+  --seed <n>              The seed of the draw. With none, one is made and printed.
+  --backlog-roots <file>  The roots carrying the legion label that stand on the backlog or in
+                          icebox, read from this file rather than from Dispatch. The shape is
+                          the one draw.json writes, so an earlier draw's draw.json names its
+                          own list. With --seed, this makes a re-run reproduce that draw from
+                          the corpus alone.
+  --cache <dir>           Where the never-decide rule's answers are kept between runs. Without
+                          it every case is asked of the model again.
 
 Exit status: 0 when the draw was written, 2 when it could not run.`;
 
@@ -109,8 +121,11 @@ export type SliceName = "fit" | "report" | "anchor" | "reserve";
 /** How many option a question must offer to be judged as a choice at all. */
 const LEAST_OPTIONS = 2;
 
-/** How many cases are read from Dispatch at once while the post-cut cases are rendered. */
-const RENDER_CONCURRENCY = 8;
+/**
+ * How many cases are read from Dispatch and put to the never-decide rule at once. The rule is
+ * one model call per case, so this is what the whole draw's wall time turns on.
+ */
+const RENDER_CONCURRENCY = 16;
 
 /** How many issues one page of the issue list asks for, which is that route's own maximum. */
 const ISSUE_PAGE = 250;
@@ -123,7 +138,8 @@ interface Flags {
   cut: string;
   out: string;
   seed: number | undefined;
-  parkedRoots: string | undefined;
+  backlogRoots: string | undefined;
+  cache: string | undefined;
 }
 
 /** One post-cut case as the draw was given it: the row, the rule's answer and its document. */
@@ -150,15 +166,20 @@ export interface AnchorDescriptor {
 }
 
 /** Why a case the rule did not hold could still not be drawn. */
-export type UndrawableKind = "too-few-options" | "no-option-chosen";
+export type UndrawableKind = "too-few-options" | "no-option-chosen" | "rule-unreadable";
 
 /** The undrawable kinds, in the order they are counted and printed. */
-const UNDRAWABLE_KINDS: readonly UndrawableKind[] = ["too-few-options", "no-option-chosen"];
+const UNDRAWABLE_KINDS: readonly UndrawableKind[] = [
+  "too-few-options",
+  "no-option-chosen",
+  "rule-unreadable",
+];
 
 /** What each undrawable kind is called where a count of it is printed. */
 const UNDRAWABLE_NAMES: Readonly<Record<UndrawableKind, string>> = {
   "too-few-options": "questions with too few options",
   "no-option-chosen": "questions answered with no option",
+  "rule-unreadable": "unreadable never-decide answers",
 };
 
 /** The corpus is not what the draw takes it for, so no draw over it would mean anything. */
@@ -267,7 +288,7 @@ function emptyDraw(seed: number): Draw {
     held: [],
     heldByKind: {},
     undrawable: [],
-    undrawableByKind: { "too-few-options": 0, "no-option-chosen": 0 },
+    undrawableByKind: { "too-few-options": 0, "no-option-chosen": 0, "rule-unreadable": 0 },
     anchors: [],
   };
 }
@@ -305,6 +326,16 @@ export function drawSlices(cases: readonly DrawCase[], seed: number): Draw {
       });
       const name = heldKind ?? "unnamed";
       draw.heldByKind[name] = (draw.heldByKind[name] ?? 0) + 1;
+      continue;
+    }
+    if (drawCase.hold.fault !== null) {
+      // Neither held nor decided: a rule about what must not be decided may not decide by
+      // accident, so the case leaves the draw and is named with what came back.
+      leaveOut(
+        row,
+        "rule-unreadable",
+        `the never-decide answer could not be read: ${drawCase.hold.fault}`
+      );
       continue;
     }
     if (row.kind === "question" && row.options.length < LEAST_OPTIONS) {
@@ -408,8 +439,11 @@ function issueFactsOf(value: unknown): { key: string; facts: IssueFacts } | null
   };
 }
 
-/** The parked roots carrying the `legion` label, as `draw.json` writes them and reads them. */
-export interface ParkedRoots {
+/**
+ * The roots carrying the `legion` label that stand on the backlog or in icebox, as `draw.json`
+ * writes them and reads them.
+ */
+export interface BacklogRoots {
   /** When the list was read from Dispatch, as the run that read it stamped it. */
   readAt: string;
   /** Where this run took it from: `dispatch`, or the file it was pinned from. */
@@ -419,13 +453,14 @@ export interface ParkedRoots {
 }
 
 /**
- * Every issue carrying the `legion` label at a parked status, read now. That is the fact the
- * never-decide rule's parked-root kind needs and the rendered case does not carry; it is read
- * here, in the command, and handed to the rule as a value. Dispatch's own list answers it in one
- * page per status, which is why no case is read for on its own. The list is sorted by key, so
- * what `draw.json` writes of one reading is the same bytes however the pages came back.
+ * Every issue carrying the `legion` label that stands on the backlog or in icebox, read now.
+ * That is the fact the never-decide rule's waiting-root kind needs and the rendered case does
+ * not carry; it is read here, in the command, and handed to the rule as a value. Dispatch's own
+ * list answers it in one page per status, which is why no case is read for on its own. The list
+ * is sorted by key, so what `draw.json` writes of one reading is the same bytes however the
+ * pages came back.
  */
-async function parkedLegionRoots(config: DispatchConfig): Promise<ParkedRoots> {
+async function backlogLegionRoots(config: DispatchConfig): Promise<BacklogRoots> {
   const issues: Array<{ key: string } & IssueFacts> = [];
   const seen = new Set<string>();
   for (const status of ["backlog", "icebox"]) {
@@ -451,29 +486,29 @@ async function parkedLegionRoots(config: DispatchConfig): Promise<ParkedRoots> {
 
 /**
  * The same list, pinned: read from a file in the shape `draw.json` writes, which is either that
- * whole file or the `parkedLegionRoots` object inside it. The reading time the file carries is
+ * whole file or the `backlogLegionRoots` object inside it. The reading time the file carries is
  * kept, because it is when the list was true; the source becomes the file.
  */
-async function pinnedParkedRoots(path: string): Promise<ParkedRoots> {
+async function pinnedBacklogRoots(path: string): Promise<BacklogRoots> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(await readFile(path, "utf8"));
   } catch {
-    throw new UsageError(`--parked-roots ${path} could not be read as JSON`);
+    throw new UsageError(`--backlog-roots ${path} could not be read as JSON`);
   }
   const record = recordOf(parsed);
-  const held = recordOf(record?.parkedLegionRoots) ?? record;
+  const held = recordOf(record?.backlogLegionRoots) ?? record;
   const listed = listOf(held?.issues);
   if (held === null || listed.length === 0) {
     throw new UsageError(
-      `--parked-roots ${path} names no parked roots: it takes the shape draw.json writes, ` +
-        "which is an object with `issues` or a whole draw.json holding `parkedLegionRoots`"
+      `--backlog-roots ${path} names no such roots: it takes the shape draw.json writes, ` +
+        "which is an object with `issues` or a whole draw.json holding `backlogLegionRoots`"
     );
   }
   const issues: Array<{ key: string } & IssueFacts> = [];
   for (const value of listed) {
     const read = issueFactsOf(value);
-    if (read === null) throw new UsageError(`--parked-roots ${path} holds an entry with no key`);
+    if (read === null) throw new UsageError(`--backlog-roots ${path} holds an entry with no key`);
     issues.push({ key: read.key, ...read.facts });
   }
   issues.sort((one, other) => (one.key < other.key ? -1 : 1));
@@ -481,9 +516,9 @@ async function pinnedParkedRoots(path: string): Promise<ParkedRoots> {
 }
 
 /** The facts by issue key, which is how the rule is handed them. */
-function factsByKey(parked: ParkedRoots): Map<string, IssueFacts> {
+function factsByKey(roots: BacklogRoots): Map<string, IssueFacts> {
   const facts = new Map<string, IssueFacts>();
-  for (const issue of parked.issues) {
+  for (const issue of roots.issues) {
     facts.set(issue.key, {
       parent: issue.parent,
       labels: issue.labels,
@@ -498,7 +533,8 @@ function factsByKey(parked: ParkedRoots): Map<string, IssueFacts> {
 async function drawCaseOf(
   row: CaseRow,
   issues: ReadonlyMap<string, IssueFacts>,
-  config: DispatchConfig
+  config: DispatchConfig,
+  options: NeverDecideOptions
 ): Promise<{ drawCase: DrawCase; unread: number }> {
   const replayed = row.kind === "approval" ? await replayCase(row, config) : null;
   const documents = replayed?.documents ?? [];
@@ -513,7 +549,16 @@ async function drawCaseOf(
   return {
     drawCase: {
       row,
-      hold: neverDecide({ text, row, issue }),
+      hold: await neverDecide(
+        {
+          text,
+          row,
+          issue,
+          documentId: lead?.artifactId ?? null,
+          documentVersion: lead?.requestedVersion ?? null,
+        },
+        options
+      ),
       documentId: lead?.artifactId ?? null,
       requestedVersion: lead?.requestedVersion ?? null,
       sha256,
@@ -526,7 +571,8 @@ async function drawCaseOf(
 async function drawCasesOf(
   rows: readonly CaseRow[],
   issues: ReadonlyMap<string, IssueFacts>,
-  config: DispatchConfig
+  config: DispatchConfig,
+  options: NeverDecideOptions
 ): Promise<{ cases: DrawCase[]; unread: number }> {
   const cases = new Array<DrawCase>(rows.length);
   let unread = 0;
@@ -535,7 +581,7 @@ async function drawCasesOf(
     for (let index = next++; index < rows.length; index = next++) {
       const row = rows[index];
       if (row === undefined) return;
-      const one = await drawCaseOf(row, issues, config);
+      const one = await drawCaseOf(row, issues, config, options);
       cases[index] = one.drawCase;
       unread += one.unread;
     }
@@ -552,7 +598,8 @@ function readFlags(argv: readonly string[]): Flags {
     cut?: string;
     out?: string;
     seed?: string;
-    "parked-roots"?: string;
+    "backlog-roots"?: string;
+    cache?: string;
   };
   try {
     ({ values } = parseArgs({
@@ -562,7 +609,8 @@ function readFlags(argv: readonly string[]): Flags {
         cut: { type: "string" },
         out: { type: "string" },
         seed: { type: "string" },
-        "parked-roots": { type: "string" },
+        "backlog-roots": { type: "string" },
+        cache: { type: "string" },
       },
       strict: true,
       allowPositionals: false,
@@ -587,7 +635,8 @@ function readFlags(argv: readonly string[]): Flags {
     cut,
     out,
     seed,
-    parkedRoots: values["parked-roots"]?.trim() || undefined,
+    backlogRoots: values["backlog-roots"]?.trim() || undefined,
+    cache: values.cache?.trim() || undefined,
   };
 }
 
@@ -621,18 +670,28 @@ async function draw(flags: Flags): Promise<number> {
   console.log(`cut               ${new Date(cut).toISOString()}`);
   console.log(`post-cut cases    ${post.length}`);
   console.log(`seed              ${seed} (--seed ${seed} draws these slices again)`);
-  const parked =
-    flags.parkedRoots === undefined
-      ? await parkedLegionRoots(config)
-      : await pinnedParkedRoots(flags.parkedRoots);
-  const issues = factsByKey(parked);
-  console.log(`parked legion roots read  ${parked.issues.length}`);
+  const roots =
+    flags.backlogRoots === undefined
+      ? await backlogLegionRoots(config)
+      : await pinnedBacklogRoots(flags.backlogRoots);
+  const issues = factsByKey(roots);
+  console.log(`legion roots on the backlog or in icebox  ${roots.issues.length}`);
   console.log(
-    parked.source === "dispatch"
-      ? `                  from Dispatch at ${parked.readAt}`
-      : `                  pinned from ${parked.source}, read at ${parked.readAt}`
+    roots.source === "dispatch"
+      ? `                  from Dispatch at ${roots.readAt}`
+      : `                  pinned from ${roots.source}, read at ${roots.readAt}`
   );
-  const rendered = await drawCasesOf(post, issues, config);
+  const definition = await neverDecideDefinition();
+  const ruleOptions: NeverDecideOptions = {
+    model: DEFAULT_NEVER_DECIDE_MODEL,
+    cacheDirectory: flags.cache ?? null,
+    definition,
+  };
+  console.log(`the rule          ${DEFAULT_NEVER_DECIDE_MODEL}, one call per case`);
+  console.log(
+    `cache             ${flags.cache ?? "none, so every case is asked of the model again"}`
+  );
+  const rendered = await drawCasesOf(post, issues, config, ruleOptions);
   const drawn = drawSlices(rendered.cases, seed);
   console.log("");
   console.log(countsTable(drawn));
@@ -648,6 +707,17 @@ async function draw(flags: Flags): Promise<number> {
   for (const kind of UNDRAWABLE_KINDS) {
     console.log(`  ${UNDRAWABLE_NAMES[kind].padEnd(35)}${drawn.undrawableByKind[kind]}`);
   }
+  const holds = rendered.cases.map((one) => one.hold);
+  const cached = holds.filter((one) => one.source === "cache").length;
+  const asked = holds.filter((one) => one.source === "model").length;
+  console.log(
+    `the rule's calls  ${asked} asked, ${cached} from the cache, ` +
+      `${holds.length - asked - cached} settled by the issue's facts`
+  );
+  console.log(
+    `the rule's tokens ${holds.reduce((total, one) => total + (one.inputTokens ?? 0), 0)} read, ` +
+      `${holds.reduce((total, one) => total + (one.outputTokens ?? 0), 0)} written`
+  );
   console.log(`documents that could not be read ${rendered.unread}`);
   console.log("");
   for (const slice of SLICES) {
@@ -670,11 +740,24 @@ async function draw(flags: Flags): Promise<number> {
     groups: drawn.groups,
     postCutCases: post.length,
     documentsUnread: rendered.unread,
-    // The one input of the draw that is not the corpus: the parked labelled roots, which the
-    // never-decide rule reads. The list is written whole, with the time it was read, so
-    // `--parked-roots <this file>` draws these slices again whatever Dispatch shows later.
-    parkedLegionRootsRead: parked.issues.length,
-    parkedLegionRoots: parked,
+    // The one input of the draw that is not the corpus: the labelled roots on the backlog or in
+    // icebox, which the never-decide rule reads. The list is written whole, with the time it
+    // was read, so `--backlog-roots <this file>` draws these slices again whatever Dispatch
+    // shows later.
+    backlogLegionRootsRead: roots.issues.length,
+    backlogLegionRoots: roots,
+    // What the rule was, for this draw: the prose it applied and what applying it cost. A
+    // change of one byte of that prose changes every cache key, so a later draw over the same
+    // corpus and seed with another definition is a different reading and says so here.
+    rule: {
+      model: DEFAULT_NEVER_DECIDE_MODEL,
+      definitionSha256: createHash("sha256").update(definition, "utf8").digest("hex"),
+      cache: flags.cache ?? null,
+      asked,
+      cached,
+      inputTokens: holds.reduce((total, one) => total + (one.inputTokens ?? 0), 0),
+      outputTokens: holds.reduce((total, one) => total + (one.outputTokens ?? 0), 0),
+    },
     excluded: {
       held: { total: drawn.held.length, byKind: drawn.heldByKind, cases: drawn.held },
       undrawable: {

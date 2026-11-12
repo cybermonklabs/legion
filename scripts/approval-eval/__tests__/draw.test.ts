@@ -13,7 +13,12 @@ import type { NeverDecideAnswer } from "../never-decide";
 const DECIDED: NeverDecideAnswer = {
   held: false,
   kind: null,
-  reason: "no kind the agent never decides was named",
+  reason: "the document asks for no act the agent never decides",
+  answer: "none\nthe document asks for no act the agent never decides",
+  source: "model",
+  fault: null,
+  inputTokens: 900,
+  outputTokens: 30,
 };
 
 /** One case, with only the fields the draw reads named. */
@@ -158,9 +163,11 @@ describe("drawSlices", () => {
     const held = cases[0];
     if (held === undefined) throw new Error("the corpus is empty");
     cases[0] = drawCase(held.row, {
+      ...DECIDED,
       held: true,
       kind: "destructive-act",
-      reason: "a document that asks for a destructive act: it names rm -rf",
+      reason: "The change list asks for the spool directory to be removed.",
+      answer: "destructive-act\nThe change list asks for the spool directory to be removed.",
     });
     const draw = drawSlices(cases, 7);
     expect(placement(draw).has(held.row.caseId)).toBe(false);
@@ -179,7 +186,11 @@ describe("drawSlices", () => {
     expect(where.has("q-one")).toBe(false);
     expect(draw.undrawable.map((one) => one.caseId).sort()).toEqual(["q-none", "q-one"]);
     expect(draw.undrawable[0]?.reason).toMatch(/cannot be judged as a choice/);
-    expect(draw.undrawableByKind).toEqual({ "too-few-options": 2, "no-option-chosen": 0 });
+    expect(draw.undrawableByKind).toEqual({
+      "too-few-options": 2,
+      "no-option-chosen": 0,
+      "rule-unreadable": 0,
+    });
   });
 
   test("leaves a question the person answered with no option out of every slice", () => {
@@ -190,7 +201,11 @@ describe("drawSlices", () => {
     expect(draw.undrawable.map((one) => one.caseId)).toEqual(["q-empty"]);
     expect(draw.undrawable[0]?.undrawableKind).toBe("no-option-chosen");
     expect(draw.undrawable[0]?.reason).toMatch(/cannot be scored by set equality/);
-    expect(draw.undrawableByKind).toEqual({ "too-few-options": 0, "no-option-chosen": 1 });
+    expect(draw.undrawableByKind).toEqual({
+      "too-few-options": 0,
+      "no-option-chosen": 1,
+      "rule-unreadable": 0,
+    });
   });
 
   test("refuses the whole draw over an approval case answered with no option", () => {
