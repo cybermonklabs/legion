@@ -27,7 +27,11 @@ const ServingFloor = 46
 // else: 47 and 50 have no entry, because no change ever shipped under either, so they are in no
 // list. `version_test.go` reads the entry headers out of version.go and holds this list to them
 // in both directions.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 89}
+//
+// The last is the constant rather than its number, because this change's own entry is the last
+// one: a renumber of this change moves shapedAnswersContract and this list with it, and moving
+// one of the two alone would describe a shape at a contract no entry declares.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, shapedAnswersContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -184,7 +188,39 @@ type EnumeratedValue struct {
 // `declined` at 68, and `strandedClaims[].state` gained `retired` at 56 — so every other list
 // is recorded whole at its own field's arrival. (`suspendedBy` gained `released` at 48 and is
 // no row here: the operator claim answers carry it and no plugin parses them.)
-var EnumeratedFields = []EnumeratedField{
+var EnumeratedFields = enumeratedFields()
+
+// enumeratedFields is every row the table holds: the state's own, the record's taken from them,
+// and the registration's, in that order.
+//
+// The record's rows are taken rather than written, because the record route answers the very
+// value the whole-project body holds under `issues.<key>` (shaping.go's shapeIssue): every
+// enumerated field of an issue is the one field at two key paths, and the record's path is the
+// state's with the issue map's own prefix gone. Written out a second time, the two lists part
+// company the day a per-issue field is added to one of them: the record route would answer that
+// field with no domain recorded and no gate on its values.
+func enumeratedFields() []EnumeratedField {
+	fields := slices.Clone(stateEnumeratedFields)
+	for _, field := range stateEnumeratedFields {
+		path, ofAnIssue := strings.CutPrefix(field.KeyPath, issueKeyPath)
+		if !ofAnIssue {
+			continue
+		}
+		fields = append(fields, EnumeratedField{Answer: AnswerIssueRecord, KeyPath: path, Values: field.Values})
+	}
+	// `role` of the claim a registration issued (claim.RegisterResponse.Role). The controller's
+	// registration answers `controller` under a `z.literal` and is no row.
+	return append(fields, EnumeratedField{Answer: AnswerRegister, KeyPath: "role", Values: claimRoles})
+}
+
+// issueKeyPath is the path the whole-project body writes one issue's fields under. The record
+// route writes those same fields with the prefix gone, which is the one difference between the
+// two readings of an issue.
+const issueKeyPath = "issues.*."
+
+// stateEnumeratedFields is every enumerated field of the state, the answer that carries all but
+// one of them. Each row under issueKeyPath is a row of the record answer too (enumeratedFields).
+var stateEnumeratedFields = []EnumeratedField{
 	// `phase` of an issue, where the workflow holds it (api.Issue.Phase, LEGION_PHASES).
 	{Answer: AnswerState, KeyPath: "issues.*.phase", Values: phases},
 	// `state` of a claim view, where a claim is in its life (api.ClaimView.State,
@@ -273,34 +309,6 @@ var EnumeratedFields = []EnumeratedField{
 	// four facts holds it (api.WhyView.State). It arrived beside the line's own fields and is
 	// served down with them.
 	{Answer: AnswerState, KeyPath: "issues.*.why.state", Values: whyStates},
-	// The record route answers the very value the whole-project body holds under
-	// `issues.<key>`, so every field of an issue above has its row here too, at the path the
-	// record writes it, and the two rows of one field share one list.
-	{Answer: AnswerIssueRecord, KeyPath: "phase", Values: phases},
-	{Answer: AnswerIssueRecord, KeyPath: "architect.state", Values: claimViewStates},
-	{Answer: AnswerIssueRecord, KeyPath: "workers.*.claim.state", Values: claimViewStates},
-	{Answer: AnswerIssueRecord, KeyPath: "architect.updateState", Values: updateStates},
-	{Answer: AnswerIssueRecord, KeyPath: "workers.*.claim.updateState", Values: updateStates},
-	{Answer: AnswerIssueRecord, KeyPath: "pullRequest.state", Values: pullRequestStates},
-	{Answer: AnswerIssueRecord, KeyPath: "pullRequest.mergeState", Values: mergeStates},
-	{Answer: AnswerIssueRecord, KeyPath: "gatedSteps.*.step", Values: designSteps},
-	{Answer: AnswerIssueRecord, KeyPath: "gatedSteps.*.status", Values: gatedStepStatuses},
-	{Answer: AnswerIssueRecord, KeyPath: "waitingOn.answeredBy", Values: waitAnswers},
-	{Answer: AnswerIssueRecord, KeyPath: "memoryGroup", Values: memoryGroups},
-	{Answer: AnswerIssueRecord, KeyPath: "memoryDrawMode", Values: memoryDrawModes},
-	{Answer: AnswerIssueRecord, KeyPath: "heldFrom", Values: workflowPhases},
-	{Answer: AnswerIssueRecord, KeyPath: "architect.failure.cause", Values: failureCauses},
-	{Answer: AnswerIssueRecord, KeyPath: "workers.*.claim.failure.cause", Values: failureCauses},
-	{Answer: AnswerIssueRecord, KeyPath: "architect.pendingCause", Values: failureCauses},
-	{Answer: AnswerIssueRecord, KeyPath: "workers.*.claim.pendingCause", Values: failureCauses},
-	{Answer: AnswerIssueRecord, KeyPath: "architect.pendingTask.phase", Values: workflowPhases},
-	{Answer: AnswerIssueRecord, KeyPath: "workers.*.claim.pendingTask.phase", Values: workflowPhases},
-	{Answer: AnswerIssueRecord, KeyPath: "waitingLine.part", Values: lineParts},
-	{Answer: AnswerIssueRecord, KeyPath: "waitingLine.kind", Values: lineKinds},
-	{Answer: AnswerIssueRecord, KeyPath: "why.state", Values: whyStates},
-	// `role` of the claim a registration issued (claim.RegisterResponse.Role). The controller's
-	// registration answers `controller` under a `z.literal` and is no row.
-	{Answer: AnswerRegister, KeyPath: "role", Values: claimRoles},
 }
 
 // valuesFrom is every value of a field whose list has not moved since the field arrived: each
@@ -401,8 +409,11 @@ var wakeRoles = valuesFrom(wakesWaitingContract,
 	"architect", "planner", "implementer", "tester", "reviewer", "merger")
 
 // updateStates is every value of a claim view's `updateState`, recorded at the contract this
-// change adds the key under.
-var updateStates = valuesFrom(shapedAnswersContract, "none", "open", "asked", "push-check-reask", "answered")
+// change adds the key under. The words are the five the package declares (updatestate.go), so a
+// state renamed there is renamed here and the domain cannot spell one the daemon never writes.
+var updateStates = valuesFrom(shapedAnswersContract,
+	string(UpdateStateNone), string(UpdateStateOpen), string(UpdateStateAsked),
+	string(UpdateStatePushCheckReask), string(UpdateStateAnswered))
 
 // pullRequestStates is every state a recorded pull request is in. The field is older than the
 // floor (version.go's 36) and the list has not moved since.

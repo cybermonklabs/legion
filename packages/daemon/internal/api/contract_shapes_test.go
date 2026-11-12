@@ -670,7 +670,9 @@ func (k callerKind) contracts(t *testing.T, contract int) (restore, strip int) {
 	if stated := k.stated(contract); stated > 0 {
 		request.Header.Set(pluginContractHeader, strconv.Itoa(stated))
 	}
-	return s.contractsFor(request, AnswerState, k.claims(contract))
+	// The body decides no contract: it is what the record of the shaping is read against, and
+	// this reading throws that record away (recordShaping).
+	return s.contractsFor(request, AnswerState, State{}, k.claims(contract))
 }
 
 // fixturePodOf places the fixture's pod at statePodAddr, as stateServer's own CallerPod does.
@@ -1077,7 +1079,7 @@ func TestTheRecordSetIsOneRecordPerAnswerPerContract(t *testing.T) {
 	// The table itself: every row names an answer of Answers, so a row no answer carries is red
 	// rather than a domain nothing records, and every arrival is a contract this daemon serves a
 	// shape for. A value older than the field's own answer is no error — the record answer
-	// arrived at 81 and carries all nine values of `answeredBy` from its first record — since a
+	// arrived at 89 and carries all nine values of `answeredBy` from its first record — since a
 	// domain is every value whose arrival is at or below the contract (domainsOf).
 	for _, field := range EnumeratedFields {
 		if !slices.ContainsFunc(Answers, func(answer Answer) bool { return answer.ID == field.Answer }) {

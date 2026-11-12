@@ -280,7 +280,7 @@ func TestTheFailureRecordOverTheRoutes(t *testing.T) {
 	// record one contract below the declared number reads a body with neither key, because its
 	// plugin's schema names neither and a strict reader before the contract refuses the whole
 	// body for one key it does not know. The caller's own recorded claim contract is what decides
-	// this (podContract), never the declared constant, which is why this row names
+	// this (podContracts), never the declared constant, which is why this row names
 	// recordFieldsContract rather than DaemonAPIVersion.
 	t.Run("GET /legion/v1/state, a pod one contract behind", func(t *testing.T) {
 		body := stateFrom(t, state, statePodAddr+":41000", podClaims(recordFieldsContract-1))

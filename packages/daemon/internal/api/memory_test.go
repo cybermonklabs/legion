@@ -96,23 +96,23 @@ var (
 
 // The route authenticates nobody, so it knows a plugin by the pod the request came from: a pod
 // whose claims record a contract below memoryContract is served issues with only the keys the
-// last strict reader before it knows, and the rest of the body as it is. The twelve downgrades
-// compose, band by band: a pod at 46 to 48 is served the update rounds it reads and none of the
-// memory draws, the trees, the wakes the pacing holds, the gated steps, the retired stranded
-// entries, the step records, the places in the admission line, the counts of the moves back, the
-// count of claims the refresh lane has left, the failure record and the issues' answers; a pod
-// at 49 or 50 the memory draws as well, and still none of the rest; a pod at 51 or 52 the trees
-// too; a pod at 53 or 54 the wakes too; a pod at 55 the steps too, and still none of the retired
-// entries, the step records, the places, the counts of the moves back, the refresh count, the
-// failure record and the answers; a pod at 56 the retired entries too; a pod at 57 the step
-// records too; a pod at 58 to 61 the places too, and neither count nor the record nor the
-// answers; a pod from 62 to 72 the counts of the moves back too, and still no refresh count; a
-// pod at 73 or 74 the refresh count too, and none of the nine keys the decided record added; a
-// pod from 75 to 84 those nine too, and no issue's answer and no field of the line beside its
-// place and its length; a pod below 46 none of the twelve; and a pod at 85, this daemon's
-// declared contract, a pod whose claims record no contract and a caller in no pod — the
-// operator's `legion state`, whose memory line reads the draws, whose queue line reads the wakes
-// and whose tool-call line reads the step records — are served all of them.
+// last strict reader before it knows, and the rest of the body as it is. The downgrades this
+// case walks compose, band by band: a pod at 46 to 48 is served the update rounds it reads and
+// none of the memory draws, the trees, the wakes the pacing holds, the gated steps, the retired
+// stranded entries, the step records, the places in the admission line, the counts of the moves
+// back, the count of claims the refresh lane has left, the failure record and the issues'
+// answers; a pod at 49 or 50 the memory draws as well, and still none of the rest; a pod at 51
+// or 52 the trees too; a pod at 53 or 54 the wakes too; a pod at 55 the steps too, and still
+// none of the retired entries, the step records, the places, the counts of the moves back, the
+// refresh count, the failure record and the answers; a pod at 56 the retired entries too; a pod
+// at 57 the step records too; a pod at 58 to 61 the places too, and neither count nor the record
+// nor the answers; a pod from 62 to 72 the counts of the moves back too, and still no refresh
+// count; a pod at 73 or 74 the refresh count too, and none of the nine keys the decided record
+// added; a pod from 75 to 84 those nine too, and no issue's answer and no field of the line
+// beside its place and its length; a pod below 46 none of them; and a pod at 85, a pod at 89,
+// this daemon's declared contract, a pod whose claims record no contract and a caller in no pod
+// — the operator's `legion state`, whose memory line reads the draws, whose queue line reads the
+// wakes and whose tool-call line reads the step records — are served all of them.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)

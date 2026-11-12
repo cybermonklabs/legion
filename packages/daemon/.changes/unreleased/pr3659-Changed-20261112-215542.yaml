@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  The daemon answers every caller in the shape that caller's own plugin reads. A request states
+  the contract its plugin speaks in the `Legion-Plugin-Contract` header. Every answer carries the
+  daemon's own contract in `Legion-Daemon-Contract`. A caller that states no contract is read from
+  the claims of the pod it asks from. A key a later contract added is left out of that body, and a
+  key a later contract removed is written back. So a plugin roll that replaces one pod at a time
+  leaves `legion` working in every pod it has not replaced yet. The same rule holds for a value. A
+  reader refuses the whole body for a value its contract does not name, so a wait answer or a
+  stranded claim state the caller's contract does not name is held back.
+  `GET /legion/v1/issues/{key}/record` answers one issue on its own, and `GET /healthz` answers
+  the project the daemon serves beside its status.
+time: 2026-11-12T21:55:42.614806298Z
+custom:
+    Issue: pr3659

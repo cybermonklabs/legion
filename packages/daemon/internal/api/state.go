@@ -118,7 +118,7 @@ type State struct {
 	// read before the floor this daemon shapes an answer from (ServingFloor) is raised: no claim
 	// holding a process reads below it. A claim that is suspended, failed or retired gave its
 	// locator up with its process and lowers it by nothing, however old the plugin it last
-	// recorded (contract 81).
+	// recorded (contract 89).
 	LowestPluginContract *int `json:"lowestPluginContract,omitempty"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
 	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below shaping.go's
@@ -1504,8 +1504,8 @@ func ClaimWakes(wakes []WakeWaiting) map[claim.Token]WakeView {
 // owns. It does not commit it: the route can refuse one failed projection without publishing a
 // partial snapshot. It answers the project's claims beside the state, the ones it read through
 // that transaction to build the claim views, so the route decides what the caller's plugin reads
-// (server's shapeState) from the claims of the snapshot it serves, rather than reading the table a
-// second time at another moment.
+// (shaping.go's shapeState) from the claims of the snapshot it serves, rather than reading the
+// table a second time at another moment.
 type StateSource interface {
 	State(ctx context.Context, tx pgx.Tx) (State, []supervise.Claim, error)
 }
