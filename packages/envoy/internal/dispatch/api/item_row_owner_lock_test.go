@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -29,37 +32,23 @@ import (
 //
 // The table is the point. A serving writer of an item row is covered by adding a row that names
 // it and drives it - a route through its handler, a command through its function - not by writing
-// another reason into another test.
+// another reason into another test. Every writer the census names is placed: it is a row here, or
+// it is named in itemRowLockNoRow with why it has none, and
+// TestTheLockTablePlacesEveryWriterTheCensusNames holds the two lists to the census and to each
+// other, so a census entry added or renamed on one side alone reds rather than leaving this table
+// quietly stale.
 //
 // Each row runs the writer on a store with one connection of its own, so the backend the wait
 // watches (storetest.WaitForQueuedBehind) is that writer's and no other: a document settlement or
 // a mention sender on the shared pool queues behind the same owner lock, and counting the
 // backends behind it would pass a writer that never waited.
 //
-// What the table covers is the backfill and the five comment routes. What it does not cover, and
-// what each would cost:
-//
-//   - this package's ask routes - createAskFor and editAsk (asks.go), answerTransition
-//     (ask_transitions.go), putAskAskedOf (ask_asked_of.go), openApprovalAsk and
-//     handBackApprovalAsk (reviews.go) - and its message routes, createStoredMessage
-//     (messages.go) and insertSessionReply (message_delivery.go). Each is a row of this shape and
-//     a fixture: an open ask for the three that change one, a document carrying an approval
-//     request for the reviews pair, and for the session reply the stub listener and the delivered
-//     message it answers, as the comment reply row here stands up for a comment. Nothing about
-//     their shape resists the table; they are the rows this round did not pay for.
-//   - the writers that run inside another writer's transaction: docs' refreshAnchors,
-//     RewriteApprovalAsk, answerApprovalAsk, the ask-block writers, queueAskResolution and
-//     WriteRestoredAsks, and refs' queueBlocks, queueBlockRefs, queueRecordIndexed,
-//     queueStateLock, markItemBlocksOwed, clearItemWindowsOwed, queueStamp and
-//     settleOwedStatement. None takes a lock of its own: the caller's transaction holds the
-//     owner, so a row here would prove the caller's lock and say nothing about the callee. To
-//     cover one is to drive its caller - a version write and the settlement behind it, or the
-//     block-index tick - and then to tell the callee's statement from its caller's, which one
-//     call on one backend does not tell.
-//   - the writers that take no owner lock at all, which is their census entry's exception:
-//     cmd/dispatch-seed's three loaders, refs.RebuildAll, api's writeBroadcast and docs'
-//     restoreWordings at boot. There is nothing for them to wait for, and a row asserting they do
-//     not wait would prove the exception, not the rule.
+// A row may also hand the holder a write of its own to make before it lets the lock go
+// (lockedItemWrite.meanwhile). That is the reader this table could not otherwise have: waiting is
+// proved by waiting, but what a writer does with the row it finds once it has the lock - whether
+// it decides on the row as the lock froze it, or on a row it read before it - shows only where the
+// row changed underneath it while it waited. The anchor-block backfill is driven that way, and why
+// is written at readyAnchorBlockBackfill.
 
 // itemRowOwnerLockQueued bounds the wait for a writer's backend to queue behind the held lock. A
 // writer reaches its owner lock in milliseconds - the reads before it are the request's own - so
@@ -86,6 +75,11 @@ type lockedItemWrite struct {
 	// call runs the writer on another goroutine and answers what it answered, in a form a
 	// failure can print; it keeps the answer itself for wrote.
 	call func() string
+	// meanwhile, where a row has one, is the write another writer of this owner makes while the
+	// lock is held and the writer under test is queued behind it. It runs on the holder's own
+	// transaction, which is the writer holding the owner here, and the holder commits rather
+	// than rolls back, so what it wrote is what the queued writer finds when it is let through.
+	meanwhile func(t *testing.T, holder pgx.Tx)
 	// wrote fails the test unless the writer, run once the lock was given back, finished and
 	// left the row it meant to write.
 	wrote func(t *testing.T)
@@ -96,47 +90,233 @@ type lockedItemWrite struct {
 type itemRowLockCase struct {
 	// name is the subtest's name.
 	name string
-	// writer is the writer the row drives, as the census names it (itemRowWriters): the file
-	// within the module and the function.
-	writer string
+	// file and function are the writer this row drives, spelled as the census spells it
+	// (itemRowWriters): the path within the module, and the function within that file. They are
+	// read, not only printed - TestTheLockTablePlacesEveryWriterTheCensusNames looks the pair up
+	// in the census - so a writer renamed on one side alone reds there.
+	file     string
+	function string
 	// ready stands up a server of this row's own, seeds what the writer needs and readies the
 	// call.
 	ready func(t *testing.T) lockedItemWrite
 }
 
+// writer is the row's writer as a failure prints it.
+func (c itemRowLockCase) writer() string { return c.file + " " + c.function }
+
 // itemRowLockTable is the table: the serving writers of item rows this test holds behind an owner
-// lock. A writer added to the census is added here too, as a row of its own.
+// lock. Every serving writer the census names is here - the five comment routes, the four ask
+// routes, the two approval-request writers, the two message writers and the anchor-block backfill
+// - and a serving writer added to the census is added here too, as a row of its own.
 var itemRowLockTable = []itemRowLockCase{
 	{
-		name:   "the comment create route",
-		writer: "internal/dispatch/api/comment_create.go createCommentFor",
-		ready:  readyCommentCreate,
+		name:     "the comment create route",
+		file:     "internal/dispatch/api/comment_create.go",
+		function: "createCommentFor",
+		ready:    readyCommentCreate,
 	},
 	{
-		name:   "the comment edit route",
-		writer: "internal/dispatch/api/comment_actions.go editComment",
-		ready:  readyCommentEdit,
+		name:     "the comment edit route",
+		file:     "internal/dispatch/api/comment_actions.go",
+		function: "editComment",
+		ready:    readyCommentEdit,
 	},
 	{
-		name:   "the comment resolve route",
-		writer: "internal/dispatch/api/comment_actions.go commentAction",
-		ready:  readyCommentResolve,
+		name:     "the comment resolve route",
+		file:     "internal/dispatch/api/comment_actions.go",
+		function: "commentAction",
+		ready:    readyCommentResolve,
 	},
 	{
-		name:   "the comment reopen route",
-		writer: "internal/dispatch/api/comment_actions.go reopenComment",
-		ready:  readyCommentReopen,
+		name:     "the comment reopen route",
+		file:     "internal/dispatch/api/comment_actions.go",
+		function: "reopenComment",
+		ready:    readyCommentReopen,
 	},
 	{
-		name:   "the mention reply route",
-		writer: "internal/dispatch/api/comment_delivery.go replyComment",
-		ready:  readyCommentReply,
+		name:     "the mention reply route",
+		file:     "internal/dispatch/api/comment_delivery.go",
+		function: "replyComment",
+		ready:    readyCommentReply,
 	},
 	{
-		name:   "the anchor-block backfill",
-		writer: "internal/dispatch/docs/anchor_blocks.go backfillAnchorBlock",
-		ready:  readyAnchorBlockBackfill,
+		name:     "the ask create route",
+		file:     "internal/dispatch/api/asks.go",
+		function: "createAskFor",
+		ready:    readyAskCreate,
 	},
+	{
+		name:     "the ask edit route",
+		file:     "internal/dispatch/api/asks.go",
+		function: "editAsk",
+		ready:    readyAskEdit,
+	},
+	{
+		name:     "the ask answer route",
+		file:     "internal/dispatch/api/ask_transitions.go",
+		function: "answerTransition",
+		ready:    readyAskAnswer,
+	},
+	{
+		name:     "the ask hand-on route",
+		file:     "internal/dispatch/api/ask_asked_of.go",
+		function: "putAskAskedOf",
+		ready:    readyAskHandOn,
+	},
+	{
+		name:     "the approval request route",
+		file:     "internal/dispatch/api/reviews.go",
+		function: "openApprovalAsk",
+		ready:    readyApprovalRequest,
+	},
+	{
+		name:     "the approval hand-back",
+		file:     "internal/dispatch/api/reviews.go",
+		function: "handBackApprovalAsk",
+		ready:    readyApprovalHandBack,
+	},
+	{
+		name:     "the issue message route",
+		file:     "internal/dispatch/api/messages.go",
+		function: "createStoredMessage",
+		ready:    readyIssueMessage,
+	},
+	{
+		name:     "the session reply route",
+		file:     "internal/dispatch/api/message_delivery.go",
+		function: "insertSessionReply",
+		ready:    readySessionReply,
+	},
+	{
+		name:     "the anchor-block backfill",
+		file:     "internal/dispatch/docs/anchor_blocks.go",
+		function: "backfillAnchorBlock",
+		ready:    readyAnchorBlockBackfill,
+	},
+}
+
+// itemRowCallersTransaction is why a writer that runs inside another writer's transaction has no
+// row: the caller's transaction holds the owner, so a row here would prove the caller's lock and
+// say nothing about the callee.
+const itemRowCallersTransaction = "runs inside another writer's transaction, which already holds " +
+	"the owner, so a row here would prove the caller's lock and say nothing about the callee. " +
+	"Covering it costs driving its caller - a version write and the settlement behind it, or the " +
+	"block-index tick - and then telling the callee's statement from its caller's, which one call " +
+	"on one backend does not tell"
+
+// itemRowNoOwnerLock is why a writer that takes no owner lock has no row: there is nothing for it
+// to wait for, and the census entry says why it takes none.
+const itemRowNoOwnerLock = "takes no owner lock at all, which is its census entry's exception: " +
+	"there is nothing for it to wait for, and a row asserting that it does not wait would prove " +
+	"the exception rather than the rule"
+
+// itemRowLockNoRow is every writer of the census that this table does not drive, with why it has
+// no row. Together with itemRowLockTable it accounts for the census exactly, which
+// TestTheLockTablePlacesEveryWriterTheCensusNames holds it to: a writer of an item row added
+// tomorrow is a row above, or it is named here with what its row would cost - the fixture it
+// needs - and either way nobody has to read the table to find out which writers it left out.
+var itemRowLockNoRow = map[string]map[string]string{
+	// Writers whose statements run in a transaction some other writer opened and locked.
+	"internal/dispatch/docs/anchor_refresh.go": {"refreshAnchors": itemRowCallersTransaction},
+	"internal/dispatch/docs/approval_ask.go":   {"RewriteApprovalAsk": itemRowCallersTransaction},
+	"internal/dispatch/docs/approval_carry.go": {"answerApprovalAsk": itemRowCallersTransaction},
+	"internal/dispatch/docs/ask_blocks.go": {
+		"createAskBlock":      itemRowCallersTransaction,
+		"reconcileAskBlocks":  itemRowCallersTransaction,
+		"restoreRetractedAsk": itemRowCallersTransaction,
+	},
+	"internal/dispatch/docs/ask_row.go": {
+		"queueAskResolution": itemRowCallersTransaction,
+		"WriteRestoredAsks":  itemRowCallersTransaction,
+	},
+	"internal/dispatch/refs/item_blocks.go": {
+		"clearItemWindowsOwed": itemRowCallersTransaction,
+		"markItemBlocksOwed":   itemRowCallersTransaction,
+		"queueBlockRefs":       itemRowCallersTransaction,
+		"queueBlocks":          itemRowCallersTransaction,
+		"queueRecordIndexed":   itemRowCallersTransaction,
+		"queueStateLock":       itemRowCallersTransaction,
+	},
+	"internal/dispatch/refs/refs.go": {"queueStamp": itemRowCallersTransaction},
+
+	// Writers that take no owner lock, each by its census entry's own exception.
+	"cmd/dispatch-seed/write_items.go": {
+		"writeAsks":     itemRowNoOwnerLock,
+		"writeComments": itemRowNoOwnerLock,
+		"writeMessages": itemRowNoOwnerLock,
+	},
+	"internal/dispatch/api/broadcasts.go":       {"writeBroadcast": itemRowNoOwnerLock},
+	"internal/dispatch/docs/decided_wording.go": {"restoreWordings": itemRowNoOwnerLock},
+	"internal/dispatch/refs/rebuild.go": {
+		"RebuildAll": itemRowNoOwnerLock,
+		// The drain's settle runs under the owner lock the drain took for the row it settles.
+		"settleOwedStatement": itemRowCallersTransaction,
+	},
+}
+
+// TestTheLockTablePlacesEveryWriterTheCensusNames holds the lock table and the census to each
+// other. The census names every writer of an item row (itemRowWriters); this table drives the
+// ones a server runs, and itemRowLockNoRow names the rest with why they have none. Three things
+// red here:
+//
+//   - a row naming a writer no census entry holds, which is a function renamed or taken out on
+//     one side alone, leaving a row that drives something the census does not call a writer;
+//   - a writer the census names that is on no row and in no gap, which is the serving writer
+//     added to the census and not to this table - the stale table this check exists to prevent;
+//   - a writer both driven and excused, where the two lists disagree about what was paid for.
+//
+// It reads names alone and needs no database, as the census does: what the rows prove about locks
+// is TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites's half.
+func TestTheLockTablePlacesEveryWriterTheCensusNames(t *testing.T) {
+	placed := map[string]string{}
+	var unknown, twice []string
+	place := func(file, function, where string) {
+		writer := file + " " + function
+		if _, named := itemRowWriters[file][function]; !named {
+			unknown = append(unknown, writer+" ("+where+")")
+		}
+		if already, repeated := placed[writer]; repeated {
+			twice = append(twice, writer+" ("+already+" and "+where+")")
+			return
+		}
+		placed[writer] = where
+	}
+	for _, row := range itemRowLockTable {
+		place(row.file, row.function, "the row "+row.name)
+	}
+	for file, functions := range itemRowLockNoRow {
+		for function := range functions {
+			place(file, function, "itemRowLockNoRow")
+		}
+	}
+	slices.Sort(unknown)
+	if len(unknown) > 0 {
+		t.Errorf("this file names a writer the census does not (itemRowWriters):\n\t%s\n"+
+			"A writer is spelled here as the census spells it, the path within the module and the "+
+			"function. Rename it on both sides, or take it out of both.", strings.Join(unknown, "\n\t"))
+	}
+	slices.Sort(twice)
+	if len(twice) > 0 {
+		t.Errorf("a writer is both driven by a row and excused from having one:\n\t%s\n"+
+			"Each writer is placed once: drive it, or say why it has no row.", strings.Join(twice, "\n\t"))
+	}
+	var unplaced []string
+	for file, functions := range itemRowWriters {
+		for function := range functions {
+			if _, found := placed[file+" "+function]; !found {
+				unplaced = append(unplaced, file+" "+function)
+			}
+		}
+	}
+	slices.Sort(unplaced)
+	if len(unplaced) > 0 {
+		t.Errorf("a writer of an item row is on no row of the lock table and in no gap of it:\n\t%s\n"+
+			"A writer a server runs gets a row of its own in itemRowLockTable, which holds it behind "+
+			"the owner lock of the row it writes. One that cannot have a row yet goes in "+
+			"itemRowLockNoRow with why - the fixture its row would cost, or the caller whose "+
+			"transaction it runs in - so that what this table leaves out is read off this file "+
+			"rather than counted against the census.", strings.Join(unplaced, "\n\t"))
+	}
 }
 
 // TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites holds the owner lock of the
@@ -154,8 +334,13 @@ var itemRowLockTable = []itemRowLockCase{
 // (storetest.OwnerLockWaiters), so a waiter holding a transaction id wrote the row it writes
 // before it locked it, which is the writer the advisory lock does not exclude.
 //
+// A row with a meanwhile gets a third question. The holder, which is the other writer of this
+// owner, makes that write while the writer under test is queued, and commits it before it lets
+// the lock go; what the writer does next says whether it read the row under the lock or before
+// it. Waiting proves the lock is taken; only this proves the lock is worth taking.
+//
 // The census is the other half of this: it names every writer, this proves the lock of the
-// writers it lists, and the gap between the two is named in this file's text.
+// writers it lists, and TestTheLockTablePlacesEveryWriterTheCensusNames keeps the two lists one.
 func TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites(t *testing.T) {
 	for _, writer := range itemRowLockTable {
 		t.Run(writer.name, func(t *testing.T) {
@@ -177,23 +362,29 @@ func TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites(t *testin
 					"row under no owner lock, so a writer holding the owner does not exclude it, and "+
 					"main's `for no key update` of the item row did. Take the owner's lock "+
 					"(store.LockOwner, refs.LockItemOwner) before the write.",
-					writer.writer, answer, write.owner.LockKey(), write.writes)
+					writer.writer(), answer, write.owner.LockKey(), write.writes)
 			}
 			if holdsTransactionID(t, holder, write.pid) {
 				t.Fatalf("%s waits for %s, the owner lock of %s, with a transaction id already open: it "+
 					"wrote before it locked, so what it wrote landed under a writer holding that owner. "+
 					"Take the owner's lock in the read phase, before the first write.",
-					writer.writer, write.owner.LockKey(), write.writes)
+					writer.writer(), write.owner.LockKey(), write.writes)
 			}
 
-			if err := holder.Rollback(ctx); err != nil {
+			if write.meanwhile != nil {
+				write.meanwhile(t, holder)
+			}
+			// Committed, not rolled back: a row's meanwhile is the other writer's write, and the
+			// writer queued behind this lock must meet it. A holder with no meanwhile wrote
+			// nothing, so its commit and its rollback leave the same database behind.
+			if err := holder.Commit(ctx); err != nil {
 				t.Fatalf("release the owner lock: %v", err)
 			}
 			select {
 			case <-answered:
 			case <-time.After(itemRowOwnerLockFinish):
 				t.Fatalf("%s never answered within %s of the owner lock being released",
-					writer.writer, itemRowOwnerLockFinish)
+					writer.writer(), itemRowOwnerLockFinish)
 			}
 			write.wrote(t)
 		})
@@ -364,13 +555,14 @@ func readyCommentReopen(t *testing.T) lockedItemWrite {
 		})
 }
 
-// readyCommentReply drives POST /api/v1/comments/{id}/reply, the mentioned agent's answer, which
-// stores a comment of its own under the mentioned comment's owner lock (replyComment,
-// lockedCommentForDelivery). The mention it answers needs a listener to resolve against, so this
-// row stands one up and lets the create's delivery settle before the reply takes its attempt.
-func readyCommentReply(t *testing.T) lockedItemWrite {
+// itemRowSessionListener is an Envoy listener with one live session, s1, which takes every send
+// and answers it: the fixture a row whose writer answers a delivery needs, since the delivery it
+// answers is only made where a listener took it. capabilities are the session's, as the delivery
+// the row drives needs them - a mention is steered, a targeted message is a btw.
+func itemRowSessionListener(t *testing.T, capabilities ...string) *httptest.Server {
 	t.Helper()
-	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
+	sessions := `[{"session_id":"s1","title":"planner","capabilities":["` +
+		strings.Join(capabilities, `","`) + `"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
@@ -378,12 +570,22 @@ func readyCommentReply(t *testing.T) lockedItemWrite {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions":
 			_, _ = w.Write([]byte(sessions))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
-			_, _ = w.Write([]byte(`{"event_id":"mention-envelope","recipient":"s1"}`))
+			_, _ = w.Write([]byte(`{"event_id":"item-row-envelope","recipient":"s1"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	t.Cleanup(listener.Close)
+	return listener
+}
+
+// readyCommentReply drives POST /api/v1/comments/{id}/reply, the mentioned agent's answer, which
+// stores a comment of its own under the mentioned comment's owner lock (replyComment,
+// lockedCommentForDelivery). The mention it answers needs a listener to resolve against, so this
+// row stands one up and lets the create's delivery settle before the reply takes its attempt.
+func readyCommentReply(t *testing.T) lockedItemWrite {
+	t.Helper()
+	listener := itemRowSessionListener(t, "steer")
 	fixture := newItemRowFixture(t, testServerOptions{envoyURL: listener.URL}, "Mention reply", "A spec.\n")
 	comment := decodeMentionedComment(t, postMentionedComment(t, fixture.handler, fixture.issueKey, map[string]any{
 		"body":     "The session this mention names must answer.",
@@ -415,6 +617,246 @@ func readyCommentReply(t *testing.T) lockedItemWrite {
 		})
 }
 
+// readyAskCreate drives POST /api/v1/issues/{key}/asks, which inserts the ask row under the
+// owner's lock the route takes before it reads the owner (createAskFor, requireOpenOwnerStatus).
+func readyAskCreate(t *testing.T) lockedItemWrite {
+	t.Helper()
+	fixture := newItemRowFixture(t, testServerOptions{}, "Ask create", "A spec.\n")
+	const question = "Which transport, with the lock held?"
+	return fixture.routeWrite(t, "the ask it inserts",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+fixture.issueKey+"/asks",
+				map[string]any{
+					"question": question,
+					"options":  []map[string]string{{"label": "Yes"}, {"label": "No"}},
+					"actor":    sessionActor(),
+				})
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusCreated {
+				t.Fatalf("create the ask once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			if stored := fixture.askQuestion(t, decodeBody[model.Ask](t, answer).ID); stored != question {
+				t.Fatalf("the ask's stored question = %q, want %q", stored, question)
+			}
+		})
+}
+
+// readyAskEdit drives PATCH /api/v1/asks/{id}, which rewords the ask row under the ask's owner
+// lock, taken before the document's (editAsk, requireOpenOwner).
+func readyAskEdit(t *testing.T) lockedItemWrite {
+	t.Helper()
+	fixture := newItemRowFixture(t, testServerOptions{}, "Ask edit", "A spec.\n")
+	askID := createIssueAsk(t, fixture.handler, fixture.issueKey, "Which transport?")
+	const reworded = "Which transport, reworded while the lock was held?"
+	return fixture.routeWrite(t, "the ask row it rewords",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return sessionRequest(t, handler, http.MethodPatch, "/api/v1/asks/"+askID, map[string]any{
+				"question": reworded,
+				"options":  []map[string]string{{"label": "Yes"}, {"label": "No"}},
+				"actor":    sessionActor(),
+			})
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusOK {
+				t.Fatalf("edit the ask once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			if stored := fixture.askQuestion(t, askID); stored != reworded {
+				t.Fatalf("the ask's stored question = %q, want %q", stored, reworded)
+			}
+		})
+}
+
+// readyAskAnswer drives POST /api/v1/asks/{id}/answer, the person's answer, which writes the
+// ask's state under the owner lock transitionAskTx takes before the transition reads the ask
+// (answerTransition, requireOpenOwner).
+func readyAskAnswer(t *testing.T) lockedItemWrite {
+	t.Helper()
+	fixture := newItemRowFixture(t, testServerOptions{}, "Ask answer", "A spec.\n")
+	askID := createIssueAsk(t, fixture.handler, fixture.issueKey, "Which transport?")
+	return fixture.routeWrite(t, "the ask row it answers",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer",
+				map[string]any{"selected": []string{"Yes"}}, "alice")
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusOK {
+				t.Fatalf("answer the ask once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			if state := fixture.askState(t, askID); state != "answered" {
+				t.Fatalf("the ask's stored state = %q, want answered", state)
+			}
+		})
+}
+
+// readyAskHandOn drives PUT /api/v1/asks/{id}/asked-of, which writes the person the ask waits on
+// under the ask's owner lock, taken with the read of the owner it guards (putAskAskedOf,
+// requireOpenOwner, store.LockOwnerAndRead).
+func readyAskHandOn(t *testing.T) lockedItemWrite {
+	t.Helper()
+	fixture := newItemRowFixture(t, testServerOptions{}, "Ask hand-on", "A spec.\n")
+	askID := createIssueAsk(t, fixture.handler, fixture.issueKey, "Which transport?")
+	return fixture.routeWrite(t, "the asked_of columns of the ask row it hands on",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, http.MethodPut, "/api/v1/asks/"+askID+"/asked-of",
+				map[string]any{"asked_of": "bob"}, "alice")
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusOK {
+				t.Fatalf("hand the ask on once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			askedOf, by, at := askedOfColumns(t, fixture.database, askID)
+			if askedOf == nil || *askedOf != "bob" || by == nil || *by != "alice" || at == nil {
+				t.Fatalf("the ask holds asked_of=%v asked_of_by=%v asked_of_at=%v, want it waiting on bob",
+					askedOf, by, at)
+			}
+		})
+}
+
+// readyApprovalRequest drives POST /api/v1/artifacts/{id}/approval-requests on a document with no
+// request open, which inserts the approval ask under the document's owner lock (openApprovalAsk,
+// requireOpenOwner).
+func readyApprovalRequest(t *testing.T) lockedItemWrite {
+	t.Helper()
+	fixture := newItemRowFixture(t, testServerOptions{}, "Approval request", "A spec.\n")
+	return fixture.routeWrite(t, "the approval ask it inserts",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return sessionRequest(t, handler, http.MethodPost,
+				"/api/v1/artifacts/"+fixture.artifactID+"/approval-requests",
+				map[string]any{"summary": "Caps retries at three attempts.", "actor": sessionActor()})
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusCreated {
+				t.Fatalf("request approval once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			if askID := decodeApprovalAskID(t, answer); !fixture.askIsApproval(t, askID) {
+				t.Fatalf("the ask %s the route answered with carries no approval, so the row it meant "+
+					"to write is not the row it wrote", askID)
+			}
+		})
+}
+
+// readyApprovalHandBack drives the same route on a document whose approval request is already
+// open and waiting on its agent, which is the hand-back: the request's documents are written back
+// at their current versions, and the reply it answers is recorded, under the document's owner
+// lock the route took (handBackApprovalAsk, requireOpenOwner). The turn is what makes it a
+// hand-back, so the fixture opens the request and has the human answer in its thread, which is
+// what leaves it waiting on the agent.
+func readyApprovalHandBack(t *testing.T) lockedItemWrite {
+	t.Helper()
+	fixture := newItemRowFixture(t, testServerOptions{}, "Approval hand-back", "A spec.\n")
+	opened := sessionRequest(t, fixture.handler, http.MethodPost,
+		"/api/v1/artifacts/"+fixture.artifactID+"/approval-requests",
+		map[string]any{"summary": "Names the existing proposal.", "actor": sessionActor()})
+	if opened.Code != http.StatusCreated {
+		t.Fatalf("open the approval request this row hands back: status=%d body=%s",
+			opened.Code, opened.Body.String())
+	}
+	askID := decodeApprovalAskID(t, opened)
+	if human := dispatchRequest(t, fixture.handler, http.MethodPost,
+		"/api/v1/issues/"+fixture.issueKey+"/comments",
+		map[string]any{"ask_id": askID, "body": "Please clarify the rollout."}, "alice"); human.Code != http.StatusCreated {
+		t.Fatalf("the human reply that leaves the request waiting on its agent: status=%d body=%s",
+			human.Code, human.Body.String())
+	}
+	return fixture.routeWrite(t, "the approval ask row it hands back",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return sessionRequest(t, handler, http.MethodPost,
+				"/api/v1/artifacts/"+fixture.artifactID+"/approval-requests",
+				map[string]any{"summary": "Clarifies the rollout.", "actor": sessionActor()})
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusCreated {
+				t.Fatalf("hand the approval request back once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			var handedBack bool
+			if err := fixture.database.Pool.QueryRow(context.Background(),
+				`select handed_back_reply_id is not null from asks where id = $1`, askID).Scan(&handedBack); err != nil {
+				t.Fatalf("read the approval ask's hand-back: %v", err)
+			}
+			if !handedBack {
+				t.Fatal("the approval ask records no hand-back: the route answered without writing the row it meant to write")
+			}
+		})
+}
+
+// readyIssueMessage drives POST /api/v1/issues/{key}/messages, which inserts the message row
+// under the issue's owner lock (createStoredMessage, lockIssue).
+func readyIssueMessage(t *testing.T) lockedItemWrite {
+	t.Helper()
+	fixture := newItemRowFixture(t, testServerOptions{}, "Issue message", "A spec.\n")
+	const body = "The message the held lock delays."
+	return fixture.routeWrite(t, "the message it inserts",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, http.MethodPost,
+				"/api/v1/issues/"+fixture.issueKey+"/messages", map[string]any{"body": body}, "alice")
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusCreated {
+				t.Fatalf("create the message once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			if stored := fixture.messageBody(t, decodeBody[model.Message](t, answer).ID); stored != body {
+				t.Fatalf("the message's stored body = %q, want %q", stored, body)
+			}
+		})
+}
+
+// readySessionReply drives POST /api/v1/messages/{id}/reply, the session's answer to a message
+// delivered to it, which inserts the reply message under the issue's owner lock the route takes
+// before it plans anything (insertSessionReply, replyMessage's lockIssue). The delivery it
+// answers needs a listener to take it, so this row stands one up and sends the message to that
+// session before the lock is held.
+func readySessionReply(t *testing.T) lockedItemWrite {
+	t.Helper()
+	listener := itemRowSessionListener(t, "btw")
+	fixture := newItemRowFixture(t, testServerOptions{envoyURL: listener.URL}, "Session reply", "A spec.\n")
+	message := createIssueMessage(t, fixture.handler, fixture.issueKey, map[string]any{
+		"body": "Did this ship?", "target": "session:s1", "delivery": "btw",
+	}, "alice")
+	if len(message.Deliveries) != 1 || message.Deliveries[0].Attempt != 1 || message.Deliveries[0].State != "sent" {
+		t.Fatalf("the message this row is answered = %#v, want one attempt sent to the listener's session",
+			message.Deliveries)
+	}
+	return fixture.routeWrite(t, "the reply message it inserts",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/reply", map[string]any{
+				"actor":   map[string]any{"kind": "session", "id": "s1"},
+				"attempt": 1,
+				"body":    "The reply the held lock delays.",
+			})
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusCreated {
+				t.Fatalf("reply to the message once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			var replies int
+			if err := fixture.database.Pool.QueryRow(context.Background(),
+				`select count(*) from messages where in_reply_to = $1`, message.ID).Scan(&replies); err != nil {
+				t.Fatalf("count the message's replies: %v", err)
+			}
+			if replies != 1 {
+				t.Fatalf("the message has %d replies, want the one the route answered with", replies)
+			}
+		})
+}
+
+// backfillAnchorQuote is the quote the backfilled comment is anchored to when the row is seeded,
+// and backfillMovedQuote the one the holder moves it to while the backfill waits. They are two
+// passages of this row's document, so they resolve to two blocks, which is what lets the row read
+// which of them the backfill pinned.
+const (
+	backfillAnchorQuote = "Target passage"
+	backfillMovedQuote  = "Introduction"
+)
+
 // readyAnchorBlockBackfill drives docs.BackfillAnchorBlocks, the command that pins the block of a
 // legacy quote anchor, a row at a time, under that row's owner lock (backfillAnchorBlock,
 // refs.LockItemOwner). It is a command, so it is driven through its function rather than through
@@ -424,13 +866,30 @@ func readyCommentReply(t *testing.T) lockedItemWrite {
 // to a quote whose block the create pinned, with the block taken back off, which is what an
 // anchor written before the block identity existed holds (anchorBlockCandidates). It is the only
 // such row in this fixture's database, so it is the row the command locks.
+//
+// This row has a meanwhile, and it is the only thing that reads the command's own lock. Waiting
+// does not: resolving the quote is document work, and a document read joined to a transaction
+// takes the document owner's lock itself (docs.joinRead, lockArtifactOwner), which for a comment
+// on an issue's document is the same lock the row's owner lock is. A backfill with
+// refs.LockItemOwner deleted therefore still queues behind this holder, and still queues with no
+// transaction id, because what it has run by then are reads. What the deletion costs is the order
+// of the re-read: the command's contract is that the row's anchor is read under the lock, so the
+// quote it resolves is the quote the row holds now (backfillAnchorBlock). Without the lock the
+// anchor is read before the wait, and the quote resolved is the one the row held before the
+// writer ahead of it rewrote it.
+//
+// So the holder is that writer. While the command is queued it moves the anchor's quote to the
+// document's other passage and commits, as a settlement that rewrote the anchor would
+// (docs.refreshAnchors), and the row then asks which quote's block the command pinned. Under the
+// lock it is the moved quote's, read under the lock it waited for; without the lock it is the old
+// quote's, pinned over an anchor that no longer holds that quote.
 func readyAnchorBlockBackfill(t *testing.T) lockedItemWrite {
 	t.Helper()
 	ctx := context.Background()
 	fixture := newItemRowFixture(t, testServerOptions{}, "Anchor block backfill", "Introduction.\n\nTarget passage.\n")
 	comment := createThreadComment(t, fixture.handler, fixture.issueKey, map[string]any{
 		"body":   "Please clarify this.",
-		"anchor": map[string]any{"artifact": "spec", "quote": "Target passage"},
+		"anchor": map[string]any{"artifact": "spec", "quote": backfillAnchorQuote},
 	}, "alice")
 	pinned := fixture.anchorBlockID(t, comment.ID)
 	if pinned == "" {
@@ -453,6 +912,14 @@ func readyAnchorBlockBackfill(t *testing.T) lockedItemWrite {
 			report, backfillErr = service.BackfillAnchorBlocks(ctx)
 			return fmt.Sprintf("%+v with error %v", report, backfillErr)
 		},
+		meanwhile: func(t *testing.T, holder pgx.Tx) {
+			if _, err := holder.Exec(ctx, `
+				update comments set anchor = jsonb_set(anchor, '{quote}', to_jsonb($2::text), true)
+				where id = $1
+			`, comment.ID, backfillMovedQuote); err != nil {
+				t.Fatalf("move the anchor's quote while the backfill waits: %v", err)
+			}
+		},
 		wrote: func(t *testing.T) {
 			if backfillErr != nil {
 				t.Fatalf("backfill the anchor blocks once the lock was released: %v", backfillErr)
@@ -460,9 +927,22 @@ func readyAnchorBlockBackfill(t *testing.T) lockedItemWrite {
 			if report.Comments != 1 {
 				t.Fatalf("the backfill pinned %+v, want the one comment this fixture unpinned", report)
 			}
-			if blockID := fixture.anchorBlockID(t, comment.ID); blockID != pinned {
-				t.Fatalf("the comment's block_id = %q, want %q: the backfill must still pin the block "+
-					"once it holds the lock", blockID, pinned)
+			moved, err := service.BlockForQuote(ctx, fixture.artifactID, backfillMovedQuote)
+			if err != nil {
+				t.Fatalf("resolve the block of the quote the anchor was moved to: %v", err)
+			}
+			if moved == pinned {
+				t.Fatalf("both quotes of this row's document resolve to block %s, so the row cannot "+
+					"tell the anchor the backfill read under the lock from the one it read before it",
+					moved)
+			}
+			if blockID := fixture.anchorBlockID(t, comment.ID); blockID != moved {
+				t.Fatalf("the comment's block_id = %q, want %q, the block of the quote the anchor held "+
+					"when the backfill was let through: %q is the block of the quote it held before "+
+					"this test's holder moved it, so the backfill read the anchor before it took the "+
+					"row's owner lock and pinned a block for a quote the row no longer carries. Take "+
+					"the owner's lock (refs.LockItemOwner) first and re-read the anchor under it "+
+					"(backfillAnchorBlock).", blockID, moved, pinned)
 			}
 		},
 	}
@@ -490,6 +970,61 @@ func (f itemRowFixture) commentResolved(t *testing.T, commentID string) bool {
 	return resolved
 }
 
+// messageBody is the message's stored body, read from the pool.
+func (f itemRowFixture) messageBody(t *testing.T, messageID string) string {
+	t.Helper()
+	var body string
+	if err := f.database.Pool.QueryRow(context.Background(),
+		`select body from messages where id = $1`, messageID).Scan(&body); err != nil {
+		t.Fatalf("read the message's body: %v", err)
+	}
+	return body
+}
+
+// askQuestion is the ask's stored question, read from the pool.
+func (f itemRowFixture) askQuestion(t *testing.T, askID string) string {
+	t.Helper()
+	var question string
+	if err := f.database.Pool.QueryRow(context.Background(),
+		`select question from asks where id = $1`, askID).Scan(&question); err != nil {
+		t.Fatalf("read the ask's question: %v", err)
+	}
+	return question
+}
+
+// askState is the ask's stored state, read from the pool.
+func (f itemRowFixture) askState(t *testing.T, askID string) string {
+	t.Helper()
+	var state string
+	if err := f.database.Pool.QueryRow(context.Background(),
+		`select state from asks where id = $1`, askID).Scan(&state); err != nil {
+		t.Fatalf("read the ask's state: %v", err)
+	}
+	return state
+}
+
+// askIsApproval reports whether the ask's row carries an approval, which is what the approval
+// request route writes and an ordinary ask has none of.
+func (f itemRowFixture) askIsApproval(t *testing.T, askID string) bool {
+	t.Helper()
+	var approval bool
+	if err := f.database.Pool.QueryRow(context.Background(),
+		`select approval is not null from asks where id = $1`, askID).Scan(&approval); err != nil {
+		t.Fatalf("read the ask's approval: %v", err)
+	}
+	return approval
+}
+
+// decodeApprovalAskID is the id of the ask an approval request answered with.
+func decodeApprovalAskID(t *testing.T, answer *httptest.ResponseRecorder) string {
+	t.Helper()
+	return decodeBody[struct {
+		Ask struct {
+			ID string `json:"id"`
+		} `json:"ask"`
+	}](t, answer).Ask.ID
+}
+
 // anchorBlockID is the block the comment's anchor pins, empty where it pins none.
 func (f itemRowFixture) anchorBlockID(t *testing.T, commentID string) string {
 	t.Helper()
@@ -505,9 +1040,10 @@ func (f itemRowFixture) anchorBlockID(t *testing.T, commentID string) string {
 }
 
 // oneConnectionStore opens a store of one connection onto deps' database and answers it with the
-// backend it holds, so a call made on it is told from every other by its pid (QueuedBehind). It
-// is the store half of oneConnectionHandler (ask_turn_test.go), which a writer that is not a
-// route needs.
+// backend it holds, so a call made on it is told from every other by its pid (QueuedBehind). A
+// writer that is not a route runs on it directly; a route runs on the handler built over it
+// (oneConnectionHandler, ask_turn_test.go), which is this store with deps' routes registered on
+// it.
 func oneConnectionStore(t *testing.T, deps Deps) (*store.Store, uint32) {
 	t.Helper()
 	config := deps.Store.Pool.Config()
@@ -519,6 +1055,8 @@ func oneConnectionStore(t *testing.T, deps Deps) (*store.Store, uint32) {
 		t.Fatalf("open the call's one-connection pool: %v", err)
 	}
 	callStore := &store.Store{Pool: store.NewPool(opened)}
+	// Registered before anything the caller registers over this store - a server's wait, a
+	// document service's shutdown - so that those run first and the pool closes after them.
 	t.Cleanup(callStore.Pool.Close)
 	conn, err := callStore.Pool.Acquire(context.Background())
 	if err != nil {

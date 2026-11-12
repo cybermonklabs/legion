@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -325,26 +323,11 @@ func TestReplyUnderAnAnsweredAskRecordsNoTurn(t *testing.T) {
 // deps.Store runs on that one backend, and a test watches the backend that request waits on
 // (storetest.WaitForQueuedBehind) rather than count every session queued behind a lock. Its
 // listener, broker and document service are deps's, so what it writes is what the test's own
-// handler reads.
+// handler reads. The store is oneConnectionStore's (item_row_owner_lock_test.go), which a writer
+// that is not a route runs on directly; this is that store with deps' routes registered over it.
 func oneConnectionHandler(t *testing.T, deps Deps) (http.Handler, uint32) {
 	t.Helper()
-	config := deps.Store.Pool.Config()
-	config.MaxConns = 1
-	config.MinConns = 0
-	config.MinIdleConns = 0
-	opened, err := pgxpool.NewWithConfig(context.Background(), config)
-	if err != nil {
-		t.Fatalf("open the call's one-connection pool: %v", err)
-	}
-	callStore := &store.Store{Pool: store.NewPool(opened)}
-	// Registered before the server's wait, so the wait runs first and this closes after.
-	t.Cleanup(callStore.Pool.Close)
-	conn, err := callStore.Pool.Acquire(context.Background())
-	if err != nil {
-		t.Fatalf("acquire the call's connection: %v", err)
-	}
-	pid := conn.Conn().PgConn().PID()
-	conn.Release()
+	callStore, pid := oneConnectionStore(t, deps)
 	callDeps := deps
 	callDeps.Store = callStore
 	mux := http.NewServeMux()

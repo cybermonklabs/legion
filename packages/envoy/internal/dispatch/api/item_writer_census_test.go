@@ -211,7 +211,10 @@ const seedLoaderException = "none, and none to take: cmd/dispatch-seed is a comm
 // TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites takes an item's owner lock in
 // a transaction of its own and requires the writer to wait for it, over a table of the serving
 // writers of these rows. That table is the other half of this one - names here, locks there -
-// and it covers the writers it lists, with the gap named in its own text.
+// and every entry of this map is placed in it: a row that drives the writer, or a named reason
+// why it has none. An entry added here and placed nowhere reds
+// TestTheLockTablePlacesEveryWriterTheCensusNames, so what that table leaves out stays written
+// down rather than going quietly out of date.
 //
 // Its reach is the statement as this scan can assemble it, which is the reach the lock-level
 // guard documents (TestNoForUpdateOnOwnerTables): a literal, or a chain of literals and

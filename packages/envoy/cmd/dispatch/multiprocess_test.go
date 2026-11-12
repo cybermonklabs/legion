@@ -2991,9 +2991,10 @@ func addPopulationAuthor(t *testing.T, database *store.Store, author string) {
 //
 // bound, standby, errors and lines are everything the process ever wrote, every line of each,
 // because the failure messages print them and because a row counts the binds a process made
-// (TestAProcessBackFromANATSCutLeavesDeliveryEventsToTheProcessThatTookIt). holds and
+// (TestAProcessBackFromANATSCutLeavesDeliveryEventsToTheProcessThatTookIt). holds, failed and
 // sinceGiveUp are the state it is in now, which is not the same question: a bind is not forever,
-// so having bound the durable once is not holding it (boundBy).
+// so having bound the durable once is not holding it (boundBy), and an error before a give-up is
+// about a durable the process has since let go of.
 type deliveryOutcome struct {
 	bound   []string
 	standby []string
@@ -3003,6 +3004,17 @@ type deliveryOutcome struct {
 	// is the bind. A process that never bound it holds nothing, and one that bound it and then
 	// logged deliveryConnectionChangedMessage gave it up and holds nothing either.
 	holds bool
+	// failed is whether the process has logged a delivery error for the durable since its last
+	// give-up of it: a bind or a serve of it that it tried and could not finish. It is read of a
+	// pair where neither process holds the durable (deliveryOutcomes.settled), where it tells a
+	// hand-over still in flight from a pair that will not reach one: a process whose word on the
+	// durable since its give-up is an error is no taker a bind poll away from holding it.
+	//
+	// Since the give-up, for the reason sinceGiveUp is kept at all: an error a process logged
+	// about a durable it has since let go of says nothing about the durable now. It is set where
+	// the error is sorted, beside holds, rather than by re-reading sinceGiveUp for the lines
+	// deliveryOutcomeFor has already classified.
+	failed bool
 	// sinceGiveUp are the bind, standing-by and error lines it wrote after its last give-up of
 	// the durable, or all of them where it never gave the durable up. What the process says the
 	// durable is now is read from these alone: a line it wrote before a give-up is about a
@@ -3028,23 +3040,6 @@ type deliveryOutcome struct {
 func (o deliveryOutcome) settled() bool {
 	for _, line := range o.sinceGiveUp {
 		if !strings.Contains(line, `msg="`+deliveryLeaseHeldMessage+`"`) {
-			return true
-		}
-	}
-	return false
-}
-
-// failed reports whether the process has logged a delivery error for the durable since its last
-// give-up of it: a bind or a serve of the durable it tried and could not finish. It is read of
-// a pair where neither process holds the durable (deliveryOutcomes.settled), where it tells a
-// hand-over still in flight from a pair that will not reach one: a process whose word on the
-// durable since its give-up is an error is no taker a bind poll away from holding it.
-//
-// Since the give-up, for the reason settled reads that stretch alone: an error a process logged
-// about a durable it has since let go of says nothing about the durable now.
-func (o deliveryOutcome) failed() bool {
-	for _, line := range o.sinceGiveUp {
-		if strings.Contains(line, "level=ERROR") {
 			return true
 		}
 	}
@@ -3145,12 +3140,13 @@ func deliveryLinesAfterGiveUp(process *dispatchProcess, durable string, within t
 // reads the same lines.
 //
 // In order, because a bind and a give-up are the same durable's two directions, and the last of
-// them is where the process stands: a bind has it holding the durable (holds), the give-up
-// (deliveryConnectionChangedMessage) has it back in its bind poll holding nothing and starts its
-// current state over (sinceGiveUp), and a bind after such a give-up has it holding the durable
-// again. A give-up is sorted into none of the three lists - it is neither a bind, nor one of
-// deliveryStandbyMessages, nor an error - so what the failure messages print is unchanged; it is
-// in lines, as every delivery line naming the durable is, and describe prints it there.
+// them is where the process stands: a bind has it holding the durable (holds), an error has it
+// failed on it (failed), the give-up (deliveryConnectionChangedMessage) has it back in its bind
+// poll holding nothing, failed on nothing and its current state started over (sinceGiveUp), and
+// a bind after such a give-up has it holding the durable again. A give-up is sorted into none of
+// the three lists - it is neither a bind, nor one of deliveryStandbyMessages, nor an error - so
+// what the failure messages print is unchanged; it is in lines, as every delivery line naming
+// the durable is, and describe prints it there.
 func deliveryOutcomeFor(process *dispatchProcess, durable string) deliveryOutcome {
 	var outcome deliveryOutcome
 	for _, line := range process.logLines("dispatch delivery:", "name="+durable) {
@@ -3158,9 +3154,10 @@ func deliveryOutcomeFor(process *dispatchProcess, durable string) deliveryOutcom
 		switch {
 		case strings.Contains(line, "level=ERROR"):
 			outcome.errors = append(outcome.errors, line)
+			outcome.failed = true
 			outcome.sinceGiveUp = append(outcome.sinceGiveUp, line)
 		case strings.Contains(line, `msg="`+deliveryConnectionChangedMessage+`"`):
-			outcome.holds, outcome.sinceGiveUp = false, nil
+			outcome.holds, outcome.failed, outcome.sinceGiveUp = false, false, nil
 		case strings.Contains(line, `msg="`+deliveryBoundMessage+`"`):
 			outcome.bound = append(outcome.bound, line)
 			outcome.holds = true
@@ -3223,9 +3220,9 @@ func (o deliveryOutcomes) boundBy() []*dispatchProcess {
 // neither holds it and neither has failed on it. That state is one bind poll away from a single
 // holder and says nothing about which process ends up with the durable, so the wait goes on
 // through it (waitForDeliveryOutcomes). Read as settled it fails the row naming no holder at
-// all, which is what review round 23's probe found: B logged the durable missing, A bound it,
-// gave it up and stood by for it, and both read as answered with boundBy empty for the whole
-// two-second poll before B's bind.
+// all, and the pair sits in that state for real time: measured on a pair of live processes, B
+// logged the durable missing, A bound it, gave it up and stood by for it, and the two read as
+// answered with boundBy empty for the whole two-second poll before B's bind.
 //
 // The error is what tells the two apart. A process whose last word on the durable is a delivery
 // error is binding nothing on its next poll, so the pair is where it will stay and waiting adds
@@ -3244,7 +3241,7 @@ func (o deliveryOutcomes) settled() bool {
 	if !o.a.settled() || !o.b.settled() {
 		return false
 	}
-	return len(o.boundBy()) > 0 || o.a.failed() || o.b.failed()
+	return len(o.boundBy()) > 0 || o.a.failed || o.b.failed
 }
 
 // A delivery durable's holder is read from each process's own lines in the order it wrote them,
@@ -3324,12 +3321,12 @@ func TestADeliveryDurableGivenUpReadsAsHeldByTheProcessThatTookItOver(t *testing
 			durable, names, read(bothHold).a.describe(), read(bothHold).b.describe())
 	}
 
-	// A hand-over still in flight, the state review round 23 probed: B's poll found the durable
-	// missing before A gave it up, A bound it, gave it up at a connection event and stood by for
-	// it, and B has not bound it yet. Each process has answered - B's line is one of the two that
-	// say what the durable is - and neither holds it, so the pair is one bind poll short of a
-	// reading. Read as settled, this fails a row with no holder to name, for up to the two
-	// seconds until B's bind.
+	// A hand-over still in flight, the state a pair passes through for up to one bind poll: B's
+	// poll found the durable missing before A gave it up, A bound it, gave it up at a connection
+	// event and stood by for it, and B has not bound it yet. Each process has answered - B's line
+	// is one of the two that say what the durable is - and neither holds it, so the pair is one
+	// bind poll short of a reading. Read as settled, this fails a row with no holder to name, for
+	// up to the two seconds until B's bind.
 	inFlight := &dispatchPair{
 		a: deliveryLogOf(
 			info("47.000Z", deliveryBoundMessage),
@@ -3364,9 +3361,9 @@ func TestADeliveryDurableGivenUpReadsAsHeldByTheProcessThatTookItOver(t *testing
 		b: deliveryLogOf(failure),
 	}
 	failed := read(bothFailed)
-	if !failed.a.failed() || !failed.b.failed() || len(failed.boundBy()) != 0 {
+	if !failed.a.failed || !failed.b.failed || len(failed.boundBy()) != 0 {
 		t.Fatalf("the failed pair reads as failed=%t for A, failed=%t for B and %s holding %s, and it is two processes that failed on the durable with neither holding it. A logged:\n%s\nB logged:\n%s",
-			failed.a.failed(), failed.b.failed(), processNames(bothFailed, failed.boundBy()), durable, failed.a.describe(), failed.b.describe())
+			failed.a.failed, failed.b.failed, processNames(bothFailed, failed.boundBy()), durable, failed.a.describe(), failed.b.describe())
 	}
 	if !failed.settled() {
 		t.Errorf("two processes that failed on %s with neither holding it read as an unsettled pair, and they are a reading: no poll of either is about to bind the durable, so a row waiting here waits its whole deadline out and then fails for a hand-over that never finished, with the errors it should have reported printed as the logs of that failure. A logged:\n%s\nB logged:\n%s",
