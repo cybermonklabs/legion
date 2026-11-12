@@ -615,13 +615,12 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 	var silent []record.SilentIssue
 	for _, held := range workers {
 		run := runs[held.token]
-		lastStep := time.Time{}
-		if run.Claim != nil {
-			lastStep = run.Claim.Step.LastStep()
-		}
-		if !workflow.SilentPhaseWorker(held.issue, held.root, facts.Gates[held.issue.Tree], held.role, run, lastStep, a.workerSilence, now) {
+		if !workflow.SilentPhaseWorker(held.issue, held.root, facts.Gates[held.issue.Tree], held.role, run, a.workerSilence, now) {
 			continue
 		}
+		// The rule answered true, so this run has a claim and that claim's record holds the
+		// moment the rule judged it by (workflow.SilentPhaseWorker).
+		lastStep := run.Claim.Step.LastStep()
 		silent = append(silent, record.SilentIssue{Issue: held.issue.Key, Role: held.role, LastStep: lastStep,
 			Silent: now.Sub(lastStep).Round(time.Minute).String()})
 	}

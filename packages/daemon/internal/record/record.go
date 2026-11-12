@@ -1649,8 +1649,9 @@ type QueuedSupervise struct {
 // RoleClaim is a claim as RoleRun reads it: its state, the tree it is in, who suspended it while it
 // is suspended, the newest start the outbox ran against it (last_start_row), the update round it is
 // in (update_round), the write mark its retirement took (retired_at_write_mark), the moment its
-// agent last stepped (step_at, turn_started_at), and the task it holds, nil for none, with the
-// task's generation, phase and confirmation.
+// agent last stepped (step_at, turn_started_at), what its own session last reported it was doing
+// (activity_at, activity_background, activity_next_reminder_at), and the task it holds, nil for
+// none, with the task's generation, phase and confirmation.
 type RoleClaim struct {
 	State        supervise.ClaimState
 	Tree         string
@@ -1674,6 +1675,21 @@ type RoleClaim struct {
 	// the record, because the one reader that has the live claim at hand is the sweep over the
 	// supervisor, and admission has no claim of that supervisor at all (admit's silentWorkers).
 	Step supervise.StepRecord
+	// ActivityAt, ActivityBackground and ActivityNextReminderAt are the claim's own session's
+	// last activity report (POST /legion/v1/claims/activity, store's PutClaimActivity): when it
+	// read what it was doing, zero for a session that has reported nothing; whether that reading
+	// found background work of the session's own running; and when the phase reminder armed in
+	// that session is due, zero when none was live. The kinds that report named
+	// (activity_kinds) are no part of this read: a rule over a run asks whether such work is
+	// running, never what it is, where the idle release names the kinds in the hold it records.
+	//
+	// What they are for: a worker that waits on its own async job or subagent, and one whose own
+	// phase reminder is still ahead of it, take no step and are no workers nothing will prompt
+	// (workflow.SilentPhaseWorker). The idle release holds a pod on these same two readings
+	// (workflow's IdleRelease, IdleHoldBackgroundWork and IdleHoldReminder).
+	ActivityAt             time.Time
+	ActivityBackground     bool
+	ActivityNextReminderAt time.Time
 	// RetiredAtWriteMark is the number outbox_write_mark_seq handed the write that recorded this
 	// claim's retirement (store's putClaim, whose doc holds what that sequence orders and what it
 	// does not), and 0 for a claim that has never retired and for one an earlier release retired,

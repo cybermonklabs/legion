@@ -371,7 +371,7 @@ func TestSilentPhaseWorkerIsToldToItsArchitect(t *testing.T) {
 	}
 	for _, part := range []string{podUpdateIssue, string(worker), string(phase.Implementing),
 		last.Format(time.RFC3339), (podUpdateSilence + time.Minute).String(),
-		"sent the phase's task again, under the assignment " + silenceAssignment} {
+		"wrote the start row that sends the phase's task again, under the assignment " + silenceAssignment} {
 		if !strings.Contains(notice.Reason, part) {
 			t.Errorf("the notice's reason %q names no %q, which its architect needs to act on it", notice.Reason, part)
 		}
@@ -393,12 +393,13 @@ func TestSilentPhaseWorkerIsToldToItsArchitect(t *testing.T) {
 	}
 }
 
-// A silence the daemon cannot repair is told with the reason, and a silence whose repair the
-// store refused is told to nobody at all. The two are the halves of one rule: the notice, the
-// start row and the mark that the fact was applied commit together, so a notice saying the
-// task was sent again is a notice whose start row is there, and a repair that failed leaves the
-// fact unapplied for the next sweep to read again (workflow's workerSilent).
-func TestSilentPhaseWorkerThatCannotBeSentItsTaskIsToldWithTheReason(t *testing.T) {
+// A phase row that names no assignment is resumed under none, as admission's own repair of a
+// slotted worker resumes one, and a silence whose repair the store refused is told to nobody at
+// all. The notice, the start row and the mark that the fact was applied commit together, so a
+// notice saying the start row was written is a notice whose start row is there, and a repair
+// that failed leaves the fact unapplied for the next sweep to read again (workflow's
+// workerSilent).
+func TestSilentPhaseWorkerWhoseRepairTheRecordShapesOrRefuses(t *testing.T) {
 	t.Run("the phase row names no assignment", func(t *testing.T) {
 		rig := newPodUpdateRig(t, silentWorker(claim.RoleImplementer))
 		rig.assigns(claim.RoleImplementer, "")
@@ -410,15 +411,17 @@ func TestSilentPhaseWorkerThatCannotBeSentItsTaskIsToldWithTheReason(t *testing.
 		if len(notices) != 1 {
 			t.Fatalf("the notices of %s = %+v, want the one its architect is owed", podUpdateIssue, notices)
 		}
-		if !strings.Contains(notices[0].Reason, "sent no task") {
-			t.Errorf("the notice's reason %q does not say the daemon sent no task", notices[0].Reason)
+		if !strings.Contains(notices[0].Reason, "wrote the start row that sends the phase's task again") {
+			t.Errorf("the notice's reason %q does not say the daemon wrote the start row", notices[0].Reason)
 		}
-		if strings.Contains(notices[0].Reason, "sent the phase's task again") {
-			t.Errorf("the notice's reason %q claims a task was sent, and none was", notices[0].Reason)
+		if strings.Contains(notices[0].Reason, "under the assignment") {
+			t.Errorf("the notice's reason %q names an assignment the phase row does not hold", notices[0].Reason)
 		}
-		if got := rig.starts(); len(got) != 0 {
-			t.Fatalf("the supervise rows of %s = %+v, want none: a start under no assignment hands the worker a fence it can never satisfy",
-				podUpdateIssue, got)
+		want := []record.SuperviseRequest{{Op: "start", Tree: podUpdateIssue, Role: claim.RoleImplementer, Generation: 1,
+			Phase: phase.Implementing, Task: workflow.ResumePhaseTask(rig.issue()), NeedsSlot: true}}
+		if got := rig.starts(); len(got) != 1 || got[0] != want[0] {
+			t.Fatalf("the supervise rows of %s = %+v, want %+v: a row naming no assignment is resumed under none",
+				podUpdateIssue, got, want)
 		}
 	})
 
@@ -467,16 +470,13 @@ func TestSilentPhaseWorkerThatCannotBeSentItsTaskIsToldWithTheReason(t *testing.
 // a duplicate applies nothing. A worker that steps and then goes silent again is a second
 // silence, with a moment of its own, and it is told again. That is R5 of dispatch://INFRA-3163.
 //
-// The two halves below prove different things, and only the second can see the identity. Where
-// the daemon repaired the silence, the start row the repair wrote is itself what stops the
-// second notice: the handler re-reads the record, finds a start already queued for the phase
-// and answers false there, whatever id the sweep minted (workflow's queuedStartActs). What that
-// half proves is the other direction — that a worker which moves and falls silent again is a
-// silence of its own and is told again. Where the daemon could do nothing for the worker, the
-// phase row naming no assignment, the repair writes no start row at all
-// (workflow.(*Engine).repairSilence): nothing in the record moves between the two sweeps, the
-// rule answers the same both times, and the fact's identity is the only thing left that can
-// keep the second sweep from telling the architect a second time.
+// What stops the second notice here is the record the repair left: the handler re-reads it,
+// finds a start already queued for the phase and answers false, whatever id the sweep minted
+// (workflow's queuedStartActs). Every silence the daemon reads writes that row, so no sweep of
+// this rig can meet one the record alone would tell twice; the identity is read where a repair
+// rolled back and left no row, which the refused start above asserts by that very id. What this
+// test proves beside the one notice is the other direction: a worker which moves and falls
+// silent again is a silence of its own and is told again.
 func TestSilentPhaseWorkerIsToldOncePerSilence(t *testing.T) {
 	t.Run("the silence the daemon repaired", func(t *testing.T) {
 		rig := aSilentPhaseWorker(t)
@@ -523,31 +523,6 @@ func TestSilentPhaseWorkerIsToldOncePerSilence(t *testing.T) {
 				told, second.Format(time.RFC3339))
 		}
 	})
-
-	t.Run("the silence the daemon could not repair", func(t *testing.T) {
-		rig := newPodUpdateRig(t, silentWorker(claim.RoleImplementer))
-		rig.assigns(claim.RoleImplementer, "")
-		began := rig.clock.Now().UTC()
-		rig.goesQuiet(claim.RoleImplementer)
-
-		rig.sweepForSilence()
-		// The minute between one sweep of the daemon's and the next. The silence is the same
-		// silence through it — its moment is the claim's last step, which has not moved — so the
-		// fact is the same fact: nothing of the moment a sweep ran is in its identity
-		// (workerSilentEventID).
-		rig.clock.advance(time.Minute)
-		rig.sweepForSilence()
-
-		notices := rig.silenceNotices()
-		if len(notices) != 1 || !strings.Contains(notices[0].Reason, began.Format(time.RFC3339)) {
-			t.Fatalf("two sweeps over one unrepairable silence wrote %+v, want the one notice of the silence that began at %s: the fact's identity is all that holds the second sweep",
-				notices, began.Format(time.RFC3339))
-		}
-		if got := rig.starts(); len(got) != 0 {
-			t.Fatalf("the supervise rows of %s = %+v, want none: the phase row names no assignment, so neither sweep had a start row to write, which is what leaves the identity alone in this",
-				podUpdateIssue, got)
-		}
-	})
 }
 
 // Every reading that says there is nothing to do leaves the record exactly as it stood: no start
@@ -577,6 +552,23 @@ func TestSilentPhaseWorkerExits(t *testing.T) {
 					ID: "outbox:7", Task: "Carry on.", Phase: phase.Implementing, Generation: 1})
 				r.awaitClaim(claim.RoleImplementer, "the task it holds",
 					func(c supervise.Claim) bool { return c.Pending != nil })
+			},
+		},
+		// The worker ended its turn with an async job or a subagent of its own still running,
+		// which its role prompt allows and its phase reminder stays quiet for: it takes no step
+		// until that work ends, and its own process is what prompts it then. The report is the
+		// session's own (POST /legion/v1/claims/activity), written through the store's narrow
+		// call as the route writes it, and the idle release holds a pod on the same reading
+		// (workflow's IdleHoldBackgroundWork).
+		"the claim's session reported background work of its own": {
+			set: func(r *podUpdateRig) {
+				known, err := r.st.PutClaimActivity(r.ctx, r.tokens[claim.RoleImplementer], claim.SessionActivity{
+					At:             r.clock.Now(),
+					BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"async-job"}},
+				})
+				if err != nil || !known {
+					r.t.Fatalf("report the background work of the implementer: known %v, %v", known, err)
+				}
 			},
 		},
 		"a start for the phase is already queued": {

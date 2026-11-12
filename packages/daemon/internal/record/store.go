@@ -2626,6 +2626,7 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
 	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark,
 		c.update_round, c.step_at, c.turn_started_at,
+		c.activity_at, c.activity_background, c.activity_next_reminder_at,
 		d.claim_token is not null, coalesce(d.generation, 0), coalesce(d.phase, ''), d.confirmed_at
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
@@ -2642,8 +2643,14 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		// whose agent has neither stepped nor begun a turn has neither, and the zero time left
 		// in the step record is what says so to its reader (supervise.StepRecord.LastStep).
 		var stepped, turnStarted *time.Time
+		// Both activity moments are nullable (migration 20261101214123_claim_session_activity):
+		// a session that has reported nothing has no activity_at, and one that armed no reminder
+		// has no activity_next_reminder_at. The zero time left in each is what says so to the
+		// rule that reads them (workflow.SilentPhaseWorker).
+		var reported, reminder *time.Time
 		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
-			&held.UpdateRound, &stepped, &turnStarted, &pending, &task.Generation, &task.Phase, &confirmed); err != nil {
+			&held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
+			&pending, &task.Generation, &task.Phase, &confirmed); err != nil {
 			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 		}
 		if stepped != nil {
@@ -2651,6 +2658,12 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		}
 		if turnStarted != nil {
 			held.Step.TurnStartedAt = *turnStarted
+		}
+		if reported != nil {
+			held.ActivityAt = *reported
+		}
+		if reminder != nil {
+			held.ActivityNextReminderAt = *reminder
 		}
 		if pending {
 			if confirmed != nil {

@@ -1502,9 +1502,9 @@ var validNoticeKinds = []NoticeKind{
 // is up, it holds no task, and its agent has not stepped for longer than the bound the
 // deployment sets (`worker_silence_minutes`), so nothing in the daemon and nothing in that
 // process will prompt it (workflow's SilentPhaseWorker, workerSilent). It is that worker's
-// issue's architect's to read, as the two above are, and it says which of two things the daemon
-// did: it sent the phase's task again under the assignment the phase row names, or it sent no
-// task because that row names none (workflow's workerSilentDid).
+// issue's architect's to read, as the two above are, and it says what the daemon wrote about
+// it: the start row that sends the phase's task again, under the assignment the phase row
+// names where it holds one (workflow's workerSilentDid).
 func validNoticeKind(kind NoticeKind) bool {
 	return slices.Contains(validNoticeKinds, kind)
 }

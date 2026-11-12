@@ -2404,9 +2404,11 @@ func TestRoleRunsSkipsAnotherRolesUndecodableRow(t *testing.T) {
 // that no row is read at all — RoleRuns fails that very role's run on it — and a token no claim
 // stands under is absent from the answer, which is the nil claim RoleRuns reports for it. The
 // task a claim holds comes with it, as it does through RoleRuns, and so do the update round
-// the claim is in (RoleClaim.UpdateRound) and the record of its agent's last step
-// (RoleClaim.Step), which a rule over a run reads to tell a worker whose round prompts it, or
-// whose agent is still moving, from one nothing will prompt (workflow.SilentPhaseWorker).
+// the claim is in (RoleClaim.UpdateRound), the record of its agent's last step
+// (RoleClaim.Step) and what its own session last reported it was doing (RoleClaim.ActivityAt,
+// ActivityBackground, ActivityNextReminderAt), which a rule over a run reads to tell a worker
+// whose round prompts it, whose agent is still moving, or whose own process will prompt it,
+// from one nothing will prompt (workflow.SilentPhaseWorker).
 func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -2427,6 +2429,17 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 	stepped := turnStarted.Add(30 * time.Minute)
 	if known, err := st.PutClaimStep(ctx, tester, supervise.StepRecord{At: stepped, TurnStartedAt: turnStarted}); err != nil || !known {
 		t.Fatalf("record the step of the tester's claim = %t, %v", known, err)
+	}
+	// The activity columns are written by their own call too (store's PutClaimActivity), and a
+	// report dated ahead of the daemon's clock is bounded to it, so the fixture reports in the
+	// past: a session that found background work running with its phase reminder armed.
+	reported := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
+	reminder := reported.Add(10 * time.Minute)
+	if known, err := st.PutClaimActivity(ctx, tester, claim.SessionActivity{At: reported,
+		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"async-job"}},
+		Phase:          claim.PhaseActivity{NextReminderAt: &reminder},
+	}); err != nil || !known {
+		t.Fatalf("record the activity of the tester's claim = %t, %v", known, err)
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		_, err := tx.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
@@ -2452,6 +2465,10 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 		if !read.Step.At.Equal(stepped) || !read.Step.TurnStartedAt.Equal(turnStarted) || !read.Step.LastStep().Equal(stepped) {
 			t.Fatalf("the step record of the tester's claim = %+v, want the step at %s inside the turn begun at %s the fixture wrote",
 				read.Step, stepped, turnStarted)
+		}
+		if !read.ActivityAt.Equal(reported) || !read.ActivityBackground || !read.ActivityNextReminderAt.Equal(reminder) {
+			t.Fatalf("the activity of the tester's claim = %s, background %v, reminder %s, want the report of background work at %s with its reminder due at %s",
+				read.ActivityAt, read.ActivityBackground, read.ActivityNextReminderAt, reported, reminder)
 		}
 		if _, found := claims[merger]; found {
 			t.Fatalf("the answer holds %s, a role the store has no claim of", merger)

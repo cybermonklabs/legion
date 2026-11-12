@@ -184,14 +184,15 @@ func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 }
 
 // SilentPhaseWorker is whether the worker of issue's phase is one nothing will prompt: its
-// process is up and between turns, it holds no task, and the last step the daemon saw its agent
-// take is older than bound. The daemon sends a phase's task as one outbox row and the claim
-// machine retires it at the end of the first turn that confirmed it (supervise's settle and
-// retirePending, internal/supervise/delivery.go), so a live claim holding no task is a claim the
-// daemon owes nothing and will prompt for nothing; what carries a worker through the rest of its
-// phase is a timer inside its own process (packages/pi-shared/src/phase-reminder.ts), which dies
-// with that process, so a process replaced or ended between turns leaves a phase that nothing
-// moves and a record in which nothing says so.
+// process is up and between turns, it holds no task, its own session reports nothing of its own
+// still to come, and the last step the daemon saw its agent take is older than bound. The daemon
+// sends a phase's task as one outbox row and the claim machine retires it at the end of the
+// first turn that confirmed it (supervise's settle and retirePending,
+// internal/supervise/delivery.go), so a live claim holding no task is a claim the daemon owes
+// nothing and will prompt for nothing; what carries a worker through the rest of its phase is a
+// timer inside its own process (packages/pi-shared/src/phase-reminder.ts), which dies with that
+// process, so a process replaced or ended between turns leaves a phase that nothing moves and a
+// record in which nothing says so.
 //
 // Both supervise.StateReady and supervise.StateIdle are in the rule because the state does not
 // separate the fault from health — each is a process waiting to be prompted, whether its last
@@ -202,41 +203,51 @@ func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 // and four idle (dispatch://INFRA-3163, plan.md, "What the reading found"), so a rule of one
 // state would have named less than half of them.
 //
-// This rule and StartFor are never both true of one run, so admission's repair of a slot whose
-// worker has no task (admit's resumeSlottedWorkers, whose gate StartFor is) and this one never
-// act on the same claim: StartFor answering false is a term of this rule. It is a term rather
-// than a conclusion drawn from the others because StartFor answers true for two shapes no other
-// term rules out — a run with a stop queued that still acts, the release of an idle pod among
-// them, whose wake brings the pod back with the role's task (the daemon's wake rows), and a
-// claim recorded in another tree, which is live in that tree and which promotion starts — and
-// each of those is a claim something will reach.
+// Two terms are the claim's own session's report of what it is doing (record.RoleClaim's
+// ActivityAt, ActivityBackground and ActivityNextReminderAt): a session that reported at all and
+// found background work of its own running, and one whose phase reminder is due later than now,
+// are left alone, because that worker's own process ends the wait or starts that turn, and
+// neither shows as a step. They are the reading the idle release already holds a pod for
+// (IdleRelease, IdleHoldBackgroundWork and IdleHoldReminder). A report the dead process left
+// behind cannot mask the fault for long: every claimed session reports whenever its reading
+// changes, five seconds apart (packages/pi-legion/extensions/legion.ts,
+// SESSION_ACTIVITY_PERIOD_MS), and a replacement's first reading always differs from the dead
+// process's, where the bound is sixteen minutes at its lowest (config's minWorkerSilence). A
+// reminder already due rather than ahead leaves no worker alone: that timer is the very one this
+// rule backs up, and it died with the process that armed it.
+//
+// Three terms — no queued stop of the claim that still acts (actingStop), the claim recorded in
+// root's own tree, and no queued start for the phase (queuedStartActs) — are the question
+// admission's repair of a slot whose worker has no task asks before it starts one (StartFor,
+// admit's resumeSlottedWorkers), because a claim any of them names is one something will reach
+// and the two repairs may never act on one claim.
 //
 // A bound of zero or less switches the rule off, for a deployment that wants no such repair, and
-// a lastStep of the zero time is a claim judged from nothing: the record of a claim whose agent
-// has neither stepped nor begun a turn holds no moment at all (supervise.StepRecord.LastStep),
-// and the daemon guesses none, as the stall backstop guesses none.
+// a claim whose record holds no step is a claim judged from nothing: the record of a claim whose
+// agent has neither stepped nor begun a turn holds no moment at all
+// (supervise.StepRecord.LastStep), and the daemon guesses none, as the stall backstop guesses
+// none.
 //
 // A suspension held over the claim for its agent's turn is no term of this rule, because no
 // record carries it: supervise.Claim.SuspensionHeld lives in the machine's memory and the store
-// never writes it, so only a reader of the live supervisor can see one. The sweep that selects
-// claims over that supervisor is where such a claim is passed over; the handler that re-reads
-// the record cannot see it, so the rule the two share asks for it from neither.
+// never writes it, so neither caller can see one. Such a claim is named silent and started, and
+// the outbox refuses that start while the suspension holds (supervise's RuleHolds), which is why
+// the notice says what the daemon wrote rather than what the worker was sent (silence.go's
+// workerSilentRecord).
 //
 // It reads values and no store, as StartFor does, so it is tested as a table
-// (silent_phase_worker_test.go), and both of its callers can call it: the one-minute sweep,
-// which reads the live claims, and the handler of the fact that sweep applies, which re-reads
-// the record inside the fact's own transaction and holds no claim of the supervisor's at all.
-// Every claim fact it shares with StartFor — that this daemon holds the claim at all, its
-// state, the update round it is in, and the task it holds — it reads from run.Claim, the value
-// StartFor reads, so the two rules can never judge one claim from two readings of it. role is
-// the role the run was read for, and the rule holds it against PhaseWorkerRole(issue), the role
-// the work of the issue's own phase belongs to: the sweep's handler asks that same function of
-// the record before it reads a run at all, and admission's list reads each run for the role it
-// answers. lastStep comes from the caller because no record of a run carries a step record at
-// all: the sweep takes it from the claim it read (supervise.Claim.Step.LastStep(), as the
-// daemon's stall backstop takes it), and the handler from the fact the sweep wrote.
+// (silent_phase_worker_test.go). Its two callers are the handler of the silence fact the
+// daemon's one-minute sweep writes, which re-reads the record inside the fact's own transaction
+// (workerSilent), and admission's tick list, which reads each issue's run for the role it answers
+// (admit's silentWorkers); the sweep itself judges a live claim and calls no rule. Every claim
+// fact it shares with StartFor — that this daemon holds the claim at all, its state, the update
+// round it is in, and the task it holds — it reads from run.Claim, the value StartFor reads, so
+// the two rules can never judge one claim from two readings of it, and it reads the moment of the
+// last step from that same claim (record.RoleClaim.Step). role is the role the run was read for,
+// and the rule holds it against PhaseWorkerRole(issue), the role the work of the issue's own
+// phase belongs to, which both callers ask of the record themselves.
 func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun,
-	lastStep time.Time, bound time.Duration, now time.Time,
+	bound time.Duration, now time.Time,
 ) bool {
 	if bound <= 0 || run.Claim == nil {
 		return false
@@ -257,9 +268,17 @@ func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role clai
 	if c.Pending != nil && c.Pending.StillWorked(issue.Generation, issue.Phase, c.State) {
 		return false
 	}
-	if queuedStartActs(run, actingStop(run, root), issue.Phase) || StartFor(run, root, issue.Generation, issue.Phase) {
+	if !c.ActivityAt.IsZero() && c.ActivityBackground {
 		return false
 	}
+	if c.ActivityNextReminderAt.After(now) {
+		return false
+	}
+	stop := actingStop(run, root)
+	if stop != 0 || c.Tree != root.Key || queuedStartActs(run, stop, issue.Phase) {
+		return false
+	}
+	lastStep := c.Step.LastStep()
 	return !lastStep.IsZero() && lastStep.Add(bound).Before(now)
 }
 

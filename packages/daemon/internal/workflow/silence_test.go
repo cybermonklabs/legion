@@ -40,9 +40,15 @@ type silenceRecord struct {
 	generation uint64
 	lingers    bool
 	// assignment is the phase row's, "" for the row that names none.
-	assignment  string
+	assignment string
+	// completedAt is the phase row's record of a completion the workflow accepted for this
+	// phase entry, zero for a row that carries none (record.PhaseRow.CompletedAt).
+	completedAt time.Time
 	state       supervise.ClaimState
 	updateRound string
+	// stepped is the moment the claim's agent last stepped as the record holds it, zero for the
+	// silenceStep() every fact of these cases names: the moment the sweep read.
+	stepped time.Time
 	// holdsTask records a task of the issue's generation and phase on the claim, unconfirmed,
 	// which is a task the claim still works (supervise.Delivery.StillWorked).
 	holdsTask bool
@@ -73,7 +79,8 @@ func silenceToken(t *testing.T, role claim.Role) claim.Token {
 }
 
 // seedSilence writes rec as the store holds it: the issue and its admission slot, the role's
-// phase row, the claim, the task it holds and the start already queued for it.
+// phase row with the completion it carries, the claim with the moment its agent last stepped,
+// the task it holds and the start already queued for it.
 func seedSilence(t *testing.T, pool *pgxpool.Pool, rec silenceRecord) record.Issue {
 	t.Helper()
 	issue := record.Issue{Key: silenceIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
@@ -89,11 +96,16 @@ func seedSilence(t *testing.T, pool *pgxpool.Pool, rec silenceRecord) record.Iss
 	seedIssue(t, pool, issue)
 	seedSlot(t, pool, record.Slot{Issue: silenceIssue, Index: 0, AdmittedAt: silenceClock()})
 	token := silenceToken(t, claim.RoleTester)
-	seedPhase(t, pool, record.PhaseRow{Issue: silenceIssue, Role: claim.RoleTester, Claim: token, Assignment: rec.assignment})
+	seedPhase(t, pool, record.PhaseRow{Issue: silenceIssue, Role: claim.RoleTester, Claim: token,
+		Assignment: rec.assignment, CompletedAt: rec.completedAt})
+	stepped := rec.stepped
+	if stepped.IsZero() {
+		stepped = silenceStep()
+	}
 	if _, err := pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-		state, update_round, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-		values ($1, $2, $3, $3, 'tester', $4, 'ses', '/sessions/ses.jsonl', $5, $6, 0, 0, 0, 0)`,
-		string(token), "legion", silenceIssue, int64(rec.generation), string(rec.state), rec.updateRound); err != nil {
+		state, update_round, step_at, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+		values ($1, $2, $3, $3, 'tester', $4, 'ses', '/sessions/ses.jsonl', $5, $6, $7, 0, 0, 0, 0)`,
+		string(token), "legion", silenceIssue, int64(rec.generation), string(rec.state), rec.updateRound, stepped); err != nil {
 		t.Fatalf("seed the tester's claim of %s: %v", silenceIssue, err)
 	}
 	if rec.holdsTask {
@@ -173,8 +185,8 @@ func silenceSuperviseRows(t *testing.T, pool *pgxpool.Pool) []silenceSuperviseRo
 }
 
 // namesTheSilence is every part of the record R2 asks the notice to name and that the case's
-// own outcome adds: the issue, the role, the phase, the moment of the last step and the length
-// of the silence, then the clause the outcome chose.
+// own clause adds: the issue, the role, the phase, the moment of the last step and the length
+// of the silence, then what the daemon wrote about it (workerSilentDid).
 func namesTheSilence(t *testing.T, reason string, outcome string, absent string) {
 	t.Helper()
 	for _, part := range []string{silenceIssue, string(claim.RoleTester), string(phase.Testing),
@@ -214,35 +226,38 @@ func TestASilentWorkerIsSentItsPhasesTaskAgainUnderTheAssignmentItsRowNames(t *t
 	if notices[0].Role != claim.RoleTester || notices[0].Phase != phase.Testing {
 		t.Errorf("the notice names role %q and phase %q, want the tester of testing", notices[0].Role, notices[0].Phase)
 	}
-	namesTheSilence(t, notices[0].Reason, "sent the phase's task again, under the assignment "+silenceAssignment, "")
+	namesTheSilence(t, notices[0].Reason, "wrote the start row that sends the phase's task again, under the assignment "+silenceAssignment, "")
 	if rows := noticeRows(t, pool); len(rows) != 1 {
 		t.Fatalf("the notice rows = %d, want the architect's one: the project's controller is told this fact on its own periodic wake", len(rows))
 	}
 }
 
-// A silent phase worker whose phase row names no assignment gets no start row at all: a start
-// under no assignment hands the worker a fence its completion could never satisfy. Its
-// architect is told that, so the one reader that can message the worker knows nothing else
-// will.
-func TestASilentWorkerWhosePhaseRowNamesNoAssignmentIsToldAndNotStarted(t *testing.T) {
+// A silent phase worker whose phase row names no assignment is resumed just the same, as
+// admission's own repair of a slotted worker resumes one: the completion fence compares only
+// when both sides are set (api/handoff.go), and a re-admitted tree's members all have an empty
+// one (record.ClearGeneration). The start carries no assignment and the notice names none,
+// claiming nothing about an assignment the row does not hold.
+func TestASilentWorkerWhosePhaseRowNamesNoAssignmentIsStartedUnderNone(t *testing.T) {
 	pool := migratedPool(t)
 	rec := aSilentTester()
 	rec.assignment = ""
-	seedSilence(t, pool, rec)
+	issue := seedSilence(t, pool, rec)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
 	if err := applySilence(t, pool, engine, aSilenceOf(claim.RoleTester, 1)); err != nil {
 		t.Fatalf("apply the silence: %v", err)
 	}
 
-	if got := silenceSuperviseRows(t, pool); len(got) != 0 {
-		t.Fatalf("the supervise rows of %s = %+v, want none: the phase row names no assignment to start the worker under", silenceIssue, got)
+	want := []silenceSuperviseRow{{op: "start", role: claim.RoleTester, task: ResumePhaseTask(issue), stands: phase.Testing}}
+	if got := silenceSuperviseRows(t, pool); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the supervise rows of %s = %+v, want %+v: a row naming no assignment is resumed under none, as admission resumes one",
+			silenceIssue, got, want)
 	}
 	notices := noticesOfKind(t, pool, silenceIssue, workerSilentNotice)
 	if len(notices) != 1 {
 		t.Fatalf("the %s notices of %s = %d, want the one its architect is owed", workerSilentNotice, silenceIssue, len(notices))
 	}
-	namesTheSilence(t, notices[0].Reason, "sent no task", "sent the phase's task again")
+	namesTheSilence(t, notices[0].Reason, "wrote the start row that sends the phase's task again", "under the assignment")
 }
 
 // Every reading that says there is nothing to do leaves the record exactly as it stood: no
@@ -273,6 +288,23 @@ func TestASilenceTheRecordAnswersForChangesNothing(t *testing.T) {
 		{name: "the claim holds a task it still works", rec: func() silenceRecord {
 			rec := aSilentTester()
 			rec.holdsTask = true
+			return rec
+		}()},
+		// The claim took a turn between the sweep's read and this apply — an Envoy message, a
+		// person's steer, a background result — and is back to ready with a step of its own.
+		// The step is still older than the bound, so the rule answers true and the handler's
+		// own reading of the fact's moment against the record's is what ends it.
+		{name: "the claim stepped after the moment the fact names", rec: func() silenceRecord {
+			rec := aSilentTester()
+			rec.stepped = silenceClock().Add(-time.Hour)
+			return rec
+		}()},
+		// A completion the workflow accepted that moved nothing: an implementing completion
+		// with no pull request, or a reviewing round no review has decided. That worker
+		// finished its phase entry and is owed no turn.
+		{name: "the role's completion of this phase entry was accepted", rec: func() silenceRecord {
+			rec := aSilentTester()
+			rec.completedAt = silenceClock().Add(-time.Hour)
 			return rec
 		}()},
 		{name: "a start for the phase is already queued", rec: func() silenceRecord {

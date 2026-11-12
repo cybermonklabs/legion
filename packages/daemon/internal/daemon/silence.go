@@ -30,19 +30,21 @@ func workerSilentEventID(token claim.Token, lastStep time.Time) string {
 // (config.Config.WorkerSilence, `worker_silence_minutes`). It rides the orphan sweep, over the
 // claims that sweep already read, as the stall backstop does (backstopStalledTurns).
 //
-// The pass decides nothing. Its reading is cheap and is made over the live claims alone, the
-// record can have moved since it was read, and the handler re-reads the record inside the
-// fact's own transaction and decides there, on the rule the two share
-// (workflow.(*Engine).workerSilent, workflow.SilentPhaseWorker). So the fact carries what this
-// pass read — the moment of the last step and the bound it judged that moment against — and
-// nothing it concluded.
+// The pass decides nothing and calls no rule: the terms below are a cheap filter over the live
+// claims, the record can have moved since it was read, and the handler re-reads the record
+// inside the fact's own transaction and decides there, on the rule it and admission's tick list
+// share (workflow.(*Engine).workerSilent, workflow.SilentPhaseWorker). So the fact carries what
+// this pass read — the moment of the last step and the bound it judged that moment against —
+// and nothing it concluded.
 //
-// Two of the terms below are this sweep's alone and are no part of the shared rule. A
-// suspension held over a claim for its agent's turn lives in the machine's memory and the store
-// never writes it (supervise.Claim.SuspensionHeld), so only a reader of the live supervisor can
-// see one and the handler could not ask for it. The same holds for a claim of an issue the
-// daemon records none of (c.Issue == ""): the daemon's own controller claim is on no issue, and
-// a fact about no issue would name no record to re-read.
+// One term below is this sweep's alone and is no term of that rule: a claim of an issue
+// the daemon records none of (c.Issue == ""), which is the daemon's own controller claim, since
+// a fact about no issue would name no record to re-read. A suspension held over a claim for its
+// agent's turn is no term here either: supervise.Claim.SuspensionHeld is the machine's own
+// memory and the claims this sweep reads come from the store (supervisor.Claims), which never
+// writes it. Such a claim is swept like any other, and the outbox refuses the start the repair
+// writes while the suspension holds, which the architect's notice says (workflow's
+// workerSilentDid).
 //
 // The identity of each fact is the claim token and the moment of that claim's last step
 // (workerSilentEventID), and that is what makes one silence one telling. A duplicate applies
@@ -70,7 +72,7 @@ func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []super
 		if c.State != supervise.StateReady && c.State != supervise.StateIdle {
 			continue
 		}
-		if c.UpdateRound != "" || c.SuspensionHeld {
+		if c.UpdateRound != "" {
 			continue
 		}
 		last := c.Step.LastStep()
