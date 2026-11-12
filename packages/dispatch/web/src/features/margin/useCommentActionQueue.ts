@@ -10,14 +10,14 @@ import {
   commentResolveRequest,
 } from "../../api/client";
 import { newSendKey } from "../../lib/send-key";
-import { retriesUnderItsKey } from "../writes/keyed-write";
+import { pressKey, type StoppedPress, stoppedPress } from "../writes/keyed-write";
 import { type Shape, shape } from "../writes/write-storage";
 import {
   defineWriteKind,
+  liveWrite,
   ofKind,
   useWriteSelection,
   useWrites,
-  type Write,
   type WriteChange,
   type Writes,
 } from "../writes/write-store";
@@ -54,12 +54,12 @@ function actionFailure(id: string, error: Error): CommentActionFailure {
 }
 
 /** A refused action as the card reports it, with what a Retry makes again: the press itself, and
- *  the key it went out under where Dispatch never gave its verdict (`retriesUnderItsKey`), so a
- *  Retry of a stopped action is that action again rather than a second one. */
+ *  the press it was where Dispatch never gave its verdict (`stoppedPress`), so a Retry of a
+ *  stopped action is that action again, under its key, rather than a second one. */
 interface Refused {
   readonly failure: CommentActionFailure;
   readonly input: CommentActionInput;
-  readonly key: string | undefined;
+  readonly stopped: StoppedPress<CommentActionInput> | undefined;
 }
 
 interface CommentActionQueueOptions<TContext> {
@@ -118,21 +118,15 @@ class CommentActionClearedError extends Error {
   }
 }
 
-/** Whether `row` is an action that may still reach the server: waiting for an earlier one, out,
- *  or late. A refused one never is - the card shows its refusal itself (`inline`), so the store
- *  lets it go the moment Dispatch refuses it. */
-function stillInLine(row: Write): boolean {
-  return row.status === "queued" || row.status === "sending" || row.status === "late";
-}
-
 /**
  * Holds one comment action until every action pressed before it has landed, and gives it up
  * (`CommentActionClearedError`) once one of those is refused: an action on another comment waits
  * for the one in flight, and a failure clears the actions still waiting. Both are read from the
- * store's own rows - the press order is the order the store joined them in, and the refusal is
- * the store's own outcome - rather than from a map the component holds, so neither dies with the
- * card that pressed them. Two actions on one comment need none of this: the store's own line
- * (`comment:<id>`) orders them.
+ * store - the press order is the order the store joined them in, and what became of each is the
+ * store's own outcome (`Writes.onOutcome`), which it tells once its rows already say so -
+ * rather than from a map the component holds, so neither dies with the card that pressed them.
+ * Two actions on one comment need none of this: the store's own line (`comment:<id>`) orders
+ * them.
  */
 function afterEarlierActions(writes: Writes, key: string): Promise<void> {
   /** This action's own row, once the store has joined it: every action of the store is earlier
@@ -141,33 +135,24 @@ function afterEarlierActions(writes: Writes, key: string): Promise<void> {
   const earlier = (): boolean =>
     writes.rows().some((row) => {
       const action = ofKind(row, commentActionWrite);
-      return action !== undefined && action.id < mine && stillInLine(action);
+      return action !== undefined && action.id < mine && liveWrite(action);
     });
   if (!earlier()) return Promise.resolve();
   const waited = Promise.withResolvers<void>();
-  let cleared = false;
-  const stopOutcomes = writes.onOutcome((outcome) => {
+  const stop = writes.onOutcome((outcome) => {
     const action = ofKind(outcome.write, commentActionWrite);
-    if (outcome.kind === "refused" && action !== undefined && action.id < mine) {
-      cleared = true;
+    const cleared =
+      action !== undefined &&
+      ((outcome.kind === "refused" && action.id < mine) ||
+        (outcome.kind === "discarded" && action.id === mine));
+    if (cleared) {
+      stop();
+      waited.reject(new CommentActionClearedError());
+    } else if (!earlier()) {
+      stop();
+      waited.resolve();
     }
   });
-  const stopRows = writes.subscribe(() => {
-    const gone = writes.rows().every((row) => row.key !== key);
-    if (!gone && earlier()) return;
-    stopRows();
-    // The store publishes its rows before it tells of the refusal that changed them, so the
-    // verdict is read a task later: by then a refusal of an earlier action has arrived.
-    void Promise.resolve().then(() => {
-      stop();
-      if (cleared || gone) waited.reject(new CommentActionClearedError());
-      else waited.resolve();
-    });
-  });
-  const stop = (): void => {
-    stopOutcomes();
-    stopRows();
-  };
   return waited.promise;
 }
 
@@ -194,13 +179,12 @@ export function useCommentActionQueue<TContext = undefined>({
   const inLine = useWriteSelection("comment-actions", (rows) =>
     rows.flatMap((row) => {
       const action = ofKind(row, commentActionWrite);
-      return action !== undefined && stillInLine(action) ? [action.detail] : [];
+      return action !== undefined && liveWrite(action) ? [action.detail] : [];
     })
   );
   const pendingActionIds = useMemo(() => new Set(inLine.map((action) => action.id)), [inLine]);
 
-  function press(input: CommentActionInput, under: string | undefined): void {
-    const key = under ?? newSendKey();
+  function press(input: CommentActionInput, key: string): void {
     const request = commentActionRequest(input);
     let context: TContext | undefined;
     let begun = false;
@@ -242,7 +226,7 @@ export function useCommentActionQueue<TContext = undefined>({
           setRefused({
             failure: actionFailure(input.id, refusal),
             input,
-            key: retriesUnderItsKey(refusal) ? key : undefined,
+            stopped: stoppedPress(key, input, refusal),
           });
         }
       );
@@ -253,11 +237,11 @@ export function useCommentActionQueue<TContext = undefined>({
     mutateItem: (input: CommentActionInput) => {
       // A second press of an action already in line is the same action: the store holds it.
       if (inLine.some((action) => action.id === input.id && action.kind === input.kind)) return;
-      press(input, undefined);
+      press(input, newSendKey());
     },
     pendingActionIds,
     retryItem: () => {
-      if (refused !== undefined) press(refused.input, refused.key);
+      if (refused !== undefined) press(refused.input, pressKey(refused.stopped, refused.input));
     },
   };
 }

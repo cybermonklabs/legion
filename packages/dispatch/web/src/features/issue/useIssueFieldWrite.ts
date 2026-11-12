@@ -5,11 +5,16 @@ import { issuePatchRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { inboxQuery, issueQuery, projectListsKey } from "../../api/queries";
 import type { InboxRow, IssueDetails, IssueSummary, UpdateIssueInput } from "../../api/types";
-import { newSendKey } from "../../lib/send-key";
-import { retriesUnderItsKey, WriteDiscardedError } from "../writes/keyed-write";
+import {
+  pressKey,
+  type StoppedPress,
+  stoppedPress,
+  WriteDiscardedError,
+} from "../writes/keyed-write";
 import { type Shape, shape } from "../writes/write-storage";
 import {
   defineWriteKind,
+  liveWrite,
   ofKind,
   type Shown,
   useWriteSelection,
@@ -76,16 +81,16 @@ export const issueFieldWrite = defineWriteKind<IssueFieldDetail>({
 
 export const inboxKey = inboxQuery().queryKey;
 
-/** Whether `row` is a write of `issue`'s `field` that may still reach the server: waiting its
- *  turn, out, or late. A refused one never is - the engine shows its own refusals (`inline`), so
- *  the store lets it go the moment Dispatch refuses it. */
+/** Whether `row` is a write of `issue`'s `field` that may still reach the server (`liveWrite`).
+ *  A refused one never is - the engine shows its own refusals (`inline`), so the store lets it
+ *  go the moment Dispatch refuses it. */
 function stillInLine(row: Write, issue: string, field: string): boolean {
   const write = ofKind(row, issueFieldWrite);
   return (
     write !== undefined &&
     write.detail.issue === issue &&
     write.detail.field === field &&
-    (write.status === "queued" || write.status === "sending" || write.status === "late")
+    liveWrite(write)
   );
 }
 
@@ -127,13 +132,17 @@ export function useIssueFieldWrite<Value>(
   const writes = useWrites();
   const detailKey = issueQuery(issueKey).queryKey;
   const [refused, setRefused] = useState<Refused<Value> | undefined>(undefined);
-  /** The write this control pressed last, while a pick of its own may still replace it. Another
-   *  surface's pick, and one this page pressed before a reload, stand in the line on their own:
-   *  nothing of theirs is this control's to take out. */
-  const mine = useRef<number | undefined>(undefined);
+  /** The write this control pressed last, while a pick of its own may still replace it, and the
+   *  caches as they stood before that pick was shown: a pick that takes its place takes that
+   *  snapshot with it, since the pick it replaced was never sent and the server never had it.
+   *  Another surface's pick, and one this page pressed before a reload, stand in the line on
+   *  their own: nothing of theirs is this control's to take out. */
+  const mine = useRef<{ readonly id: number | undefined; readonly snapshot: Snapshot } | undefined>(
+    undefined
+  );
   /** The last press the reader stopped, which a press of the same value makes again under its
    *  key, so Dispatch answers it with what it did rather than taking the write twice. */
-  const stopped = useRef<{ readonly key: string; readonly value: Value } | undefined>(undefined);
+  const stopped = useRef<StoppedPress<Value> | undefined>(undefined);
   /** What a later press of this control rolls back to once an earlier one was refused: the
    *  caches as they stood before that refused press showed its value, since the server never
    *  took it. Without it a second refusal would put the first refused pick on screen and call it
@@ -177,21 +186,21 @@ export function useIssueFieldWrite<Value>(
     // Two picks of this control that have not gone out are one request, the newest: the one
     // waiting leaves the line and its press is refused `WriteDiscardedError`, which the engine
     // swallows. A write already out, or one another surface pressed, is nobody's to take out.
-    if (mine.current !== undefined) {
-      writes.discard(mine.current);
-    }
+    const replaced =
+      mine.current?.id !== undefined && writes.discard(mine.current.id) ? mine.current : undefined;
     setRefused(undefined);
     setInHand((count) => count + 1);
     for (const queryKey of [detailKey, projectListsKey, inboxKey]) {
       // A read in flight would otherwise answer with the server's older value over the pick.
       void queryClient.cancelQueries({ queryKey });
     }
-    const snapshot = takeSnapshot();
-    const again = stopped.current;
-    stopped.current = undefined;
+    // What a refusal of this pick rolls back to: the caches before the pick it replaced was
+    // shown, where it replaced one, since that pick never went out.
+    const snapshot = replaced?.snapshot ?? takeSnapshot();
     // A value here is a priority, a login or a repository, so the same value is the same press
     // made again, under the key Dispatch may already have taken that press under.
-    const key = again !== undefined && Object.is(again.value, value) ? again.key : newSendKey();
+    const key = pressKey(stopped.current, value);
+    stopped.current = undefined;
     const press = writes.run({
       detail: { field: field.name, issue: issueKey },
       inline: true,
@@ -206,13 +215,13 @@ export function useIssueFieldWrite<Value>(
       target: `issue:${issueKey}`,
     });
     const id = writes.idOf(key);
-    mine.current = id;
+    mine.current = { id, snapshot };
     /** This press has settled here, so the control holds it no longer, and whether a newer write
      *  of the field is left: the store has let this one go by now, and one write of a target
      *  goes out at a time, so every write of the field still in the line was pressed after it. */
     const settled = (): boolean => {
       setInHand((count) => count - 1);
-      if (mine.current === id) {
+      if (mine.current?.id === id) {
         mine.current = undefined;
       }
       return writes.rows().some((row) => stillInLine(row, issueKey, field.name));
@@ -236,9 +245,7 @@ export function useIssueFieldWrite<Value>(
           return;
         }
         const refusal = error instanceof Error ? error : new Error(String(error));
-        if (retriesUnderItsKey(refusal)) {
-          stopped.current = { key, value };
-        }
+        stopped.current = stoppedPress(key, value, refusal) ?? stopped.current;
         if (newer) {
           // A press after this one is still in the line and will roll back for both of them:
           // to here, before this refused value was shown, rather than to a value the server

@@ -1956,3 +1956,95 @@ test("a reload sends an unlined DELETE again", async () => {
     }
   });
 });
+
+// Spec version 22 of dispatch://INFRA-299. A write whose answer carries something shown once and
+// never again - the agent-token mint's secret - is kept for its order while the page lives, and
+// a reload drops it rather than sending it again, as it drops a `DELETE` on a line: a repeat
+// Dispatch took would make what that answer shows with no press left to take the answer.
+test("a reload drops a write whose answer is shown once rather than sending it again", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const before = new Writes(signedIn(), tab.page(), memoryFiles());
+    const mint: WriteRequest = {
+      body: { name: "ci", scopes: ["read"] },
+      method: "POST",
+      path: "/api/v1/me/agent-tokens",
+    };
+    const send = spyOn(api, "send").mockRejectedValue(dropped("/api/v1/me/agent-tokens"));
+    try {
+      void before
+        .run({
+          answerShownOnce: "its answer carries the new token's secret, which is shown once",
+          detail: null,
+          kind: plainWrite,
+          label: "New agent token ci",
+          presentation: "indicator",
+          request: mint,
+          target: "agent-tokens:me",
+        })
+        .catch(() => {});
+      await settle();
+      const key = row(before)?.key ?? "";
+      expect(tab.kept(key)).toMatchObject({
+        request: { method: "POST" },
+        target: "agent-tokens:me",
+      });
+      const sent = send.mock.calls.length;
+
+      const after = new Writes(signedIn(), tab.page(), memoryFiles());
+      after.resume("alice");
+      await settle();
+      expect(send).toHaveBeenCalledTimes(sent);
+      expect(after.rows()).toEqual([]);
+      expect(tab.kept(key)).toBeUndefined();
+    } finally {
+      before.clear();
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// R7 of dispatch://INFRA-299. A refused write is not live, so nothing shows its change over the
+// answers that land; a Retry puts it back in its line, live again, and shows its change again at
+// once, as its press did, rather than leaving the screen without it until it lands.
+test("a Retry shows a refused write's change again as it rejoins its line", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const client = signedIn();
+    const writes = new Writes(client, tab.page(), memoryFiles());
+    client.setQueryData(["user-state"], { pinned: false });
+    const answers: (() => Promise<unknown>)[] = [
+      () => Promise.reject(verdict),
+      () => new Promise<never>(() => {}),
+    ];
+    try {
+      void writes
+        .run({
+          detail: null,
+          kind: plainWrite,
+          label: "CORE-1 pinned",
+          presentation: "indicator",
+          shows: (shown) =>
+            shown.on<{ pinned: boolean }>(["user-state"], (current) => ({
+              ...current,
+              pinned: true,
+            })),
+          unlined: offLine,
+          write: attemptOf(put, () => answers.shift()?.() ?? Promise.resolve({})),
+        })
+        .catch(() => {});
+      await settle();
+      expect(row(writes)?.status).toBe("refused");
+      // Dispatch's row, read again once the pin was refused.
+      client.setQueryData(["user-state"], { pinned: false });
+
+      writes.retry(row(writes)?.id ?? 0);
+      expect(row(writes)?.status).toBe("sending");
+      expect(client.getQueryData<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
+    } finally {
+      writes.clear();
+      tab.close();
+    }
+  });
+});

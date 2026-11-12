@@ -272,10 +272,17 @@ interface WriteSpecBase<D, K> {
    *  done what it was for: the write lands, with no answer, rather than being held for the next
    *  sign-in. */
   readonly endsWithSession?: boolean;
+  /** Why this write's answer carries something shown once and never again - the agent-token
+   *  mint's secret - in the words of whoever wrote it, for a write of that kind. It is kept for
+   *  its order while the page lives, as every write is, and a reload drops it rather than sending
+   *  it again, as it drops a `DELETE` on a line (`droppedOnReload`): a repeat Dispatch took would
+   *  make what its answer shows with no press left to take that answer. */
+  readonly answerShownOnce?: string;
   /** The change this write shows, for a write that shows one: the store shows it at the press,
-   *  before anything goes out, and again over each answer that lands on a cache it wrote while
-   *  the write is live (`#showAgain`). A write that shows nothing - a read mark, a create that
-   *  only asks for a list again - leaves it out. */
+   *  before anything goes out, again over each cache write that lands on a cache it wrote while
+   *  the write is live (`#showAgain`), and again as a Retry puts it back in its line. A write
+   *  that shows nothing - a read mark, a create that only asks for a list again - leaves it
+   *  out. */
   readonly shows?: WriteChange;
 }
 
@@ -340,6 +347,9 @@ interface Entry {
    *  land on this page, as it does in a browser with no IndexedDB. */
   unkept: boolean;
   readonly endsWithSession: boolean;
+  /** Why its answer is shown once (`WriteSpec.answerShownOnce`), kept with it so a reload drops
+   *  it; nothing for any other write. */
+  readonly answerShownOnce: string | undefined;
   /** The change this write shows, and nothing for one that shows none. A write that shows its
    *  change when its turn comes rather than at the press names it then (`Writes.shows`). */
   shows: WriteChange | undefined;
@@ -349,15 +359,21 @@ interface Entry {
   /** The key every cache that change wrote by prefix starts with (`Shown.under`), so a cache an
    *  answer fills for the first time is shown over too. */
   readonly under: QueryKey[];
-  /** Whether this write wrote `query`'s cache, so an answer landing there is one its change is
-   *  shown over again. */
-  readonly wrote: (query: Query) => boolean;
+}
+
+/** Whether `entry`'s change wrote `query`'s cache, by name or by prefix, so a cache write that
+ *  lands there is one its change is shown over again. */
+function wrote(entry: Entry, query: Query): boolean {
+  return (
+    entry.exact.has(query.queryHash) || entry.under.some((head) => startsWith(query.queryKey, head))
+  );
 }
 
 /** Whether `write` may still reach Dispatch, which is while its change is shown again: waiting
  *  its turn, out, or late - `stopping` among them, since the attempt already out may still land.
- *  A refused write is not, nor a made one, and a discarded write is held no longer. */
-function liveWrite(write: Write): boolean {
+ *  A refused write is not, nor a made one, and a discarded write is held no longer. The one rule
+ *  every engine that reads the store's rows asks it by. */
+export function liveWrite(write: Write): boolean {
   return write.status === "queued" || write.status === "sending" || write.status === "late";
 }
 
@@ -440,8 +456,9 @@ export class Writes {
    *  Dispatch still named them (`releaseUnsettled`), each with the time until which a lapse of
    *  theirs is that sign-out landing late rather than a lapse. */
   readonly #unsettledSignOuts = new Map<string, number>();
-  /** Whether a change is being shown now, so the caches it writes - and the re-showing of
-   *  another write over the same answer - are not read as answers of their own (`#showAgain`). */
+  /** Whether the store is writing a change into the caches now - at a press, at a Retry, or
+   *  over a cache write that landed - so the cache writes it makes are not read as cache writes
+   *  to show live writes over (`#whileShowing`, `#showAgain`). */
   #showing = false;
 
   constructor(
@@ -452,13 +469,12 @@ export class Writes {
     this.#client = client;
     this.#kept = kept;
     this.#files = files;
-    // Every answer that lands, wherever it was asked for: a query whose data a fetch replaced.
-    // A `setQueryData` - this store's own showing, a kind's merge of Dispatch's answer, the
-    // event feed's patch - carries `manual` and is the page writing, not an answer landing.
+    // Every cache write that lands, from wherever it came: an answer a fetch put there, or a
+    // `setQueryData` of the page's own - a surface merging Dispatch's answer, an engine rolling a
+    // refused pick back, a kind's landing, the event feed's patch - each of which may replace
+    // what a live write showed. The store's own writing is not one (`#whileShowing`).
     client.getQueryCache().subscribe((event) => {
-      if (event.type !== "updated") return;
-      const { action } = event;
-      if (action.type !== "success" || action.manual === true) return;
+      if (event.type !== "updated" || event.action.type !== "success") return;
       this.#showAgain(event.query);
     });
     watcher?.(this);
@@ -485,37 +501,58 @@ export class Writes {
   };
 
   /**
-   * Shows again, over the answer `query` has just taken, the change of every live write that
-   * wrote that cache, in the order the store holds them in (`joined`), so the last to be pressed
-   * is the last to be seen (R7 of dispatch://INFRA-299). Each change is the same call its press
-   * made, read against the cache as it stands - the answer - so what reappears is the change
-   * itself and never a value computed before it.
+   * Shows again, over the cache write `query` has just taken, the change of every live write
+   * that wrote that cache, in the order the store holds them in (`joined`), so the last to be
+   * pressed is the last to be seen (R7 of dispatch://INFRA-299). A cache write is any the store
+   * did not make itself: an answer a fetch put there, and every `setQueryData` of the page's - a
+   * surface merging an earlier write's answer, an engine's rollback of a refused pick - since
+   * each replaces what the live writes showed there. Each change is the same call its press made,
+   * read against the cache as it stands, so what reappears is the change itself and never a value
+   * computed before it.
    *
    * Live is `queued`, `sending` and `late`, `stopping` among them, because the attempt already
    * out may still land; a write that was refused, discarded or made is not, and a write that
    * shows nothing shows nothing again.
    *
-   * The store's own writing is not an answer: `#showing` holds while a change runs, so neither
-   * the change's own caches nor another write's re-showing reads as one, and nothing recurs.
+   * Nothing recurs: every cache write the store makes runs inside `#whileShowing`, and TanStack
+   * tells its cache's listeners of a write in the very call that makes it, so each of those
+   * returns here at once. A cache write from outside the store is shown over once, and that
+   * showing is the store's own.
    */
   #showAgain(query: Query): void {
     if (this.#showing) return;
     const live = [...this.#entries.values()]
-      .filter((entry) => entry.shows !== undefined && liveWrite(entry.write) && entry.wrote(query))
+      .filter((entry) => entry.shows !== undefined && liveWrite(entry.write) && wrote(entry, query))
       .sort((a, b) => a.write.joined - b.write.joined);
     if (live.length === 0) return;
+    this.#whileShowing(() => {
+      for (const entry of live) entry.shows?.(this.#onto(query));
+    });
+  }
+
+  /** Runs `show`, which writes changes into the caches, as the store's own writing: no cache
+   *  write it makes is shown over again (`#showAgain`). */
+  #whileShowing(show: () => void): void {
     this.#showing = true;
     try {
-      for (const entry of live) entry.shows?.(this.#onto(query));
+      show();
     } finally {
       this.#showing = false;
     }
   }
 
-  /** Shows a change at the press: on every cache it names, recording each of them, so the store
-   *  knows which answers that write must show it over again. A cache holding nothing is left
-   *  holding nothing - there is no row there to change - and the answer that fills it is shown
-   *  over in its turn (`wrote`). */
+  /** Shows `entry`'s change, if it has one, on every cache it names (`#everywhere`): at the
+   *  press, as a surface names it at its turn (`shows`), and as a Retry puts it back in its
+   *  line. */
+  #showEverywhere(entry: Entry): void {
+    const { shows } = entry;
+    if (shows !== undefined) this.#whileShowing(() => shows(this.#everywhere(entry)));
+  }
+
+  /** Shows a change on every cache it names, recording each of them, so the store knows which
+   *  cache writes that write must show it over again. A cache holding nothing is left holding
+   *  nothing - there is no row there to change - and the answer that fills it is shown over in
+   *  its turn (`wrote`). */
   #everywhere(entry: Entry): Shown {
     const client = this.#client;
     return {
@@ -524,7 +561,8 @@ export class Writes {
         client.setQueryData<T>(key, (data) => (data === undefined ? undefined : change(data)));
       },
       under: <T>(key: QueryKey, change: (data: T) => T) => {
-        entry.under.push(key);
+        const hash = hashKey(key);
+        if (!entry.under.some((head) => hashKey(head) === hash)) entry.under.push(key);
         client.setQueriesData<T>({ queryKey: key }, (data) =>
           data === undefined ? undefined : change(data)
         );
@@ -561,12 +599,7 @@ export class Writes {
     const entry = this.#entries.get(id);
     if (entry === undefined) return;
     entry.shows = change;
-    this.#showing = true;
-    try {
-      change(this.#everywhere(entry));
-    } finally {
-      this.#showing = false;
-    }
+    this.#showEverywhere(entry);
   }
 
   /** Makes `spec`'s write, stamped with the person signed in now, and answers with Dispatch's 2xx,
@@ -602,12 +635,11 @@ export class Writes {
       this.#signingOut.add(login);
       this.#holdWritesOf(login);
     }
-    const exact = new Set<string>();
-    const under: QueryKey[] = [];
     const entry: Entry = {
+      answerShownOnce: spec.answerShownOnce,
       attempt: request === undefined ? spec.write : (bounds) => api.send(request, bounds),
       endsWithSession: spec.endsWithSession ?? false,
-      exact,
+      exact: new Set<string>(),
       expiry: undefined,
       file: spec.file,
       held: false,
@@ -617,7 +649,7 @@ export class Writes {
       shows: spec.shows,
       stop: new AbortController(),
       turn: undefined,
-      under,
+      under: [],
       unkept: false,
       write: {
         detail: spec.detail,
@@ -637,8 +669,6 @@ export class Writes {
         target: spec.target,
         uploaded: undefined,
       },
-      wrote: (query) =>
-        exact.has(query.queryHash) || under.some((head) => startsWith(query.queryKey, head)),
     };
     // The entry joins at once, whatever its file is doing: every lifecycle method works over
     // `#entries`, so a write that joined late would outlive a sign-out, a lapse or another
@@ -649,16 +679,9 @@ export class Writes {
       this.#keepFile(entry, key, login, spec.file, () => this.#keep(entry));
     }
     // The change is shown here, before anything goes out and in the task the press ran in, so
-    // the person sees it at once; the store shows it again over each answer that lands on one of
-    // the caches it names, until this write settles (`#showAgain`).
-    if (spec.shows !== undefined) {
-      this.#showing = true;
-      try {
-        spec.shows(this.#everywhere(entry));
-      } finally {
-        this.#showing = false;
-      }
-    }
+    // the person sees it at once; the store shows it again over each cache write that lands on
+    // one of the caches it names, until this write settles (`#showAgain`).
+    this.#showEverywhere(entry);
     this.#join(entry, "sending");
     return press.promise as Promise<T | null>;
   }
@@ -711,7 +734,9 @@ export class Writes {
   }
 
   /** Puts the refused `entry` back in its target's line under `key`, at the back, to be made
-   *  again: `sent` says whether something has already gone out under that key. */
+   *  again: `sent` says whether something has already gone out under that key. It is live again,
+   *  so its change is shown again as it rejoins, as at its press, rather than left off the screen
+   *  until it lands. */
   #retryUnder(entry: Entry, key: string, sent: boolean): void {
     entry.stop = new AbortController();
     entry.write = {
@@ -724,6 +749,7 @@ export class Writes {
       status: "queued",
       uploaded: undefined,
     };
+    this.#showEverywhere(entry);
     this.#join(entry, "sending");
   }
 
@@ -989,9 +1015,9 @@ export class Writes {
   #resume(kept: KeptWrite, kind: AnyKind, detail: unknown, now: number, file?: File): void {
     const request = kept.request === null ? null : (requestFrom(kept.request, file) ?? null);
     let attempt: Attempt<unknown> | undefined;
-    if (kind.resume !== undefined) attempt = kind.resume(detail, request);
-    else if (request !== null && !droppedOnReload(kept.target, request.method)) {
-      attempt = (bounds) => api.send(request, bounds);
+    if (!droppedOnReload(kept, request)) {
+      if (kind.resume !== undefined) attempt = kind.resume(detail, request);
+      else if (request !== null) attempt = (bounds) => api.send(request, bounds);
     }
     const out = kept.state.status !== "refused";
     const onItsOwn = out && resumesOnItsOwn(kept.pressedAt, now);
@@ -1004,6 +1030,7 @@ export class Writes {
     // change was a call of the surface that pressed it, which no record holds. The write still
     // goes out, in its line, and Dispatch's answer is what the page then reads.
     const entry: Entry = {
+      answerShownOnce: kept.answerShownOnce,
       attempt,
       endsWithSession: false,
       exact: new Set<string>(),
@@ -1036,7 +1063,6 @@ export class Writes {
         target: kept.target ?? undefined,
         uploaded: undefined,
       },
-      wrote: () => false,
     };
     if (onItsOwn) {
       this.#join(entry, resumedFrom(kept.state));
@@ -1375,6 +1401,7 @@ export class Writes {
     }
     const kind = kinds.get(write.kind);
     this.#kept.keep({
+      answerShownOnce: entry.answerShownOnce,
       carried: this.#carried.get(write.key) ?? null,
       detail: kind?.keep === undefined ? write.detail : kind.keep(write.detail),
       key: write.key,
@@ -1426,15 +1453,21 @@ function resumedFrom(state: KeptState): From {
   return "sending";
 }
 
-/** Whether a kept write a reload takes up is dropped rather than made again: every `DELETE` on a
- *  line, whichever one it is - the claim release, the session unsubscribe, the ask un-snooze,
- *  the agent-token revoke, the repository-mapping removal, the architecture-source removal -
- *  each kept for its order while the page lived and ending with that page. Such a route carries
- *  no idempotency key (`goesUnderKey` sends one on a `POST` and a `PATCH` alone), so a repeat
- *  could undo what another person did in between. A `PUT` carries no key either and is made
- *  again, as the pin is, because it names the state it wants rather than a change to it. */
-function droppedOnReload(target: string | null, method: WriteMethod): boolean {
-  return target !== null && method === "DELETE";
+/** Whether a kept write a reload takes up is dropped rather than made again. Two kinds are, each
+ *  kept for its order while the page lived and ending with that page. Every `DELETE` on a line,
+ *  whichever one it is - the claim release, the session unsubscribe, the ask un-snooze, the
+ *  agent-token revoke, the repository-mapping removal, the architecture-source removal: such a
+ *  route carries no idempotency key (`goesUnderKey` sends one on a `POST` and a `PATCH` alone),
+ *  so a repeat could undo what another person did in between. A `PUT` carries no key either and
+ *  is made again, as the pin is, because it names the state it wants rather than a change to it.
+ *  And every write whose answer carries something shown once and never again, which says so with
+ *  its reason (`WriteSpec.answerShownOnce`) - today the agent-token mint: one that never reached
+ *  Dispatch would be made by the repeat with no press left to take its answer, so its secret is
+ *  shown on no page and the person holds a live token they must find and revoke. */
+function droppedOnReload(kept: KeptWrite, request: WriteRequest | null): boolean {
+  return (
+    kept.answerShownOnce !== undefined || (kept.target !== null && request?.method === "DELETE")
+  );
 }
 
 /** How `write`'s state is kept, or `undefined` for one that is made and so kept no longer. */

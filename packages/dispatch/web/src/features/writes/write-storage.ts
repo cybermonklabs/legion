@@ -100,6 +100,11 @@ export interface KeptWrite {
    *  `load` hands back: the release before this one wrote no such field, and `load` is the one
    *  place that converts a missing one (`KeptEntry`), so nowhere else is absence a case. */
   readonly carried: WriteMethod | null;
+  /** Why its answer carries something shown once and never again, for a write that says so
+   *  (`WriteSpec.answerShownOnce`), which a reload drops rather than sends again
+   *  (`droppedOnReload`); absent for every other write. An entry an older release wrote holds
+   *  none, and none of its writes said so. */
+  readonly answerShownOnce?: string;
   readonly detail: unknown;
 }
 
@@ -199,6 +204,7 @@ type KeptEntry = Omit<KeptWrite, "carried"> & {
 };
 
 const keptEntryShape = shape.record({
+  answerShownOnce: shape.optional(shape.string),
   carried: shape.optional(shape.nullable(shape.oneOf(...WRITE_METHODS))),
   detail: shape.unknown,
   key: shape.string,

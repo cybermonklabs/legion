@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the bare mouse, pointer and touch presses a draggable parent must not see, which user-event has no form for
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -9,6 +9,8 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { issuePriority } from "./issue-priority";
 import { PriorityControl } from "./PriorityControl";
+import { useIssueAssignee } from "./useIssueAssignee";
+import { useIssuePriority } from "./useIssuePriority";
 
 const issue: Issue = {
   closed_at: null,
@@ -454,6 +456,102 @@ test("a refused pick after another refused pick rolls back to the server's value
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([summary, otherSummary]);
     expect(queryClient.getQueryData<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
   } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// R10 of dispatch://INFRA-299. A pick that replaces one still waiting its turn rolls back, once
+// refused, to what the screen held before the pick it replaced was shown: that pick was never
+// sent, so the server never had it, and the screen must not come back to it.
+test("a refused pick that replaced a waiting pick rolls back past the pick it replaced", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const second = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise);
+  const { queryClient, unmount, user } = renderControl();
+  try {
+    await user.selectOptions(select(), "0");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
+    );
+    await user.selectOptions(select(), "3");
+    await user.selectOptions(select(), "2");
+    expect(select().value).toBe("2");
+
+    await act(async () => {
+      first.resolve({ ...issue, priority: 0 });
+      await first.promise;
+    });
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
+    );
+    act(() => {
+      second.reject(new Error("offline"));
+    });
+    await screen.findByRole("alert");
+    // The server holds P0, the pick it took; P3 never went out.
+    expect(select().value).toBe("0");
+    expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([
+      { ...summary, priority: 0 },
+      otherSummary,
+    ]);
+    expect(queryClient.getQueryData<InboxRow[]>(inboxKey)).toEqual([{ ...inboxRow, priority: 0 }]);
+    expect(queryClient.getQueryData<IssueDetails>(detailKey)?.priority).toBe(0);
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// R7 of dispatch://INFRA-299. One issue's writes go out one at a time, so the answer of an
+// earlier save of another field always predates a pick waiting behind it: the engine merges
+// that answer into the caches, and the store shows the waiting pick again over the merge, so
+// the person's pick stays on screen while it is out.
+test("a pick waiting behind another field's save stays shown over that save's merged answer", async () => {
+  const assigned = Promise.withResolvers<Issue>();
+  const prioritised = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => assigned.promise)
+    .mockImplementationOnce(() => prioritised.promise);
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  queryClient.setQueryData(detailKey, details);
+  queryClient.setQueryData(listKey, [summary, otherSummary]);
+  queryClient.setQueryData(inboxKey, [inboxRow]);
+  const { result, unmount } = renderHook(
+    () => ({ assignee: useIssueAssignee(issue.key), priority: useIssuePriority(issue.key) }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+  try {
+    act(() => result.current.assignee.submit("bob"));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    act(() => result.current.priority.submit(2));
+    expect(queryClient.getQueryData<IssueDetails>(detailKey)?.priority).toBe(2);
+
+    await act(async () => {
+      assigned.resolve({ ...issue, assignee: "bob" });
+      await assigned.promise;
+    });
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
+    );
+    // The assignee's answer is merged, and the priority pick, still out, is shown over it.
+    expect(queryClient.getQueryData<IssueDetails>(detailKey)).toMatchObject({
+      assignee: "bob",
+      priority: 2,
+    });
+  } finally {
+    await act(async () => {
+      prioritised.resolve({ ...issue, assignee: "bob", priority: 2 });
+      await prioritised.promise;
+    });
     unmount();
     patchIssue.mockRestore();
   }

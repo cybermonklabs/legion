@@ -183,6 +183,9 @@ export function AgentTokensSection(): ReactNode {
   // (`agent-tokens:me`), where a change to what a token may do and a revoke stand in that
   // token's own (`agent-token:<id>`).
   const createToken = useKeyedWrite({
+    // Spec version 22 of dispatch://INFRA-299: a reload drops the mint rather than send it again.
+    answerShownOnce:
+      "its answer is the token's secret, shown once: a mint a reload sent again would make a live token whose secret no page shows",
     inline: true,
     label: (input: { name: string; before: readonly string[]; scopes: readonly DispatchScope[] }) =>
       `New agent token ${input.name}`,

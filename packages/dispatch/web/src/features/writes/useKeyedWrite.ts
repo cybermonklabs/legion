@@ -7,8 +7,7 @@ import {
 import { useCallback, useRef, useState } from "react";
 
 import type { WriteBounds, WriteRequest } from "../../api/client";
-import { newSendKey } from "../../lib/send-key";
-import { retriesUnderItsKey } from "./keyed-write";
+import { pressKey, type StoppedPress, stoppedPress } from "./keyed-write";
 import { plainWrite, useWrites, type WriteChange } from "./write-store";
 
 /** A write a surface makes for the reader: `useMutation`'s options, but for `mutationFn`, which
@@ -31,6 +30,9 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
   /** Whether the write ends the person's session (a sign-out): a lapse of that session lands it
    *  rather than holding it for the next sign-in (`WriteSpec.endsWithSession`). */
   readonly endsWithSession?: boolean;
+  /** Why this write's answer carries something shown once and never again, for a write of that
+   *  kind, which a reload drops rather than sends again (`WriteSpec.answerShownOnce`). */
+  readonly answerShownOnce?: string;
   /** The change this press shows, for a write that shows one: the store shows it as the write
    *  joins - after `onMutate`, which is where the surface snapshots what a refusal rolls back to
    *  - and again over each answer that lands on a cache it wrote while the write is live (R7 of
@@ -62,17 +64,6 @@ export type KeyedWriteMade<TData, TVariables> =
       readonly request: (variables: TVariables) => WriteRequest<TData>;
       readonly unlined?: undefined;
     };
-
-/** Whether `a` and `b` are the same variables: one value, or two that serialise alike (a form
- *  built afresh at each submit); variables that do not serialise are only themselves. */
-function sameVariables(a: unknown, b: unknown): boolean {
-  if (Object.is(a, b)) return true;
-  try {
-    return JSON.stringify(a) === JSON.stringify(b);
-  } catch {
-    return false;
-  }
-}
 
 /** A press Dispatch made and had no answer to give for: its variables, and when it landed. */
 export interface UnansweredLanding<TVariables> {
@@ -109,6 +100,7 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
  * to say so, until the next press or `forgetUnanswered`.
  */
 export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
+  answerShownOnce,
   endsWithSession,
   file,
   inline,
@@ -122,9 +114,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
 }: KeyedWriteOptions<TData, TVariables, TContext>): KeyedWriteResult<TData, TVariables, TContext> {
   const writes = useWrites();
   /** The last press the reader stopped, which a Retry of the same variables makes again. */
-  const stopped = useRef<{ readonly key: string; readonly variables: TVariables } | undefined>(
-    undefined
-  );
+  const stopped = useRef<StoppedPress<TVariables> | undefined>(undefined);
   const [unanswered, setUnanswered] = useState<UnansweredLanding<TVariables> | undefined>(
     undefined
   );
@@ -135,9 +125,9 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
       const again = stopped.current;
       stopped.current = undefined;
       setUnanswered(undefined);
-      const key =
-        again !== undefined && sameVariables(again.variables, variables) ? again.key : newSendKey();
+      const key = pressKey(again, variables);
       const press = {
+        answerShownOnce,
         detail: null,
         endsWithSession,
         file: file?.(variables),
@@ -158,9 +148,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
           return answer;
         },
         (error: unknown) => {
-          if (retriesUnderItsKey(error instanceof Error ? error : undefined)) {
-            stopped.current = { key, variables };
-          }
+          stopped.current = stoppedPress(key, variables, error) ?? stopped.current;
           throw error;
         }
       );
