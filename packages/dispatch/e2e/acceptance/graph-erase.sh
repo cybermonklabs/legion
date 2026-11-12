@@ -7,11 +7,13 @@
 # read of the node's address answers what a deleted node answers, byte for byte, no tuple and no
 # projection row of it remains, the `artifact_versions` row holding the erased text is gone and
 # the `artifact_reviews` row whose digest covered those bytes is gone, reported by its issue and
-# its version; the `graph_erasures` row holds what was removed, who ran it and when, and holds no
-# erased text; every node left carries a supertag of the closed list the store itself holds, so
-# the erase wrote no node of its own; `envoy-dispatch census --store` reads zero differences; and
-# the command's path over HTTP answers 404 to the deployment's agent bearer and to a person's
-# cookie alike, because no route serves it.
+# its version; no store this driver can search holds the secret, and the `events` rows that held
+# it stand with their payload redacted, the marker naming the erase in each and the row's id,
+# time and actor what they were before; the `graph_erasures` row holds what was removed, who ran
+# it and when, and holds no erased text; every node left carries a supertag of the closed list
+# the store itself holds, so the erase wrote no node of its own; `envoy-dispatch census --store`
+# reads zero differences; and the command's path over HTTP answers 404 to the deployment's agent
+# bearer and to a person's cookie alike, because no route serves it.
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), DATABASE_URL (the database that
@@ -54,9 +56,10 @@ readonly base="${DISPATCH_URL%/}"
 # authenticates must name it (enforceCookieOrigin).
 base_host="${base#*://}"
 readonly origin="${base%%://*}://${base_host%%/*}"
+# One statement, so the directive covers both: a directive comment reaches the command after it
+# alone, and before this it left the second of them reported.
 # shellcheck disable=SC2153 # PROJECT and DATABASE_URL are the caller's inputs, checked by name above
-readonly project="$PROJECT"
-readonly database_url="$DATABASE_URL"
+readonly project="$PROJECT" database_url="$DATABASE_URL"
 readonly login="${DEV_SIGNIN_LOGIN:-alice}"
 session="graph-erase-$(date +%s)-$$"
 readonly session
@@ -208,6 +211,24 @@ want_rows E3 "the refused run wrote nothing" 1 \
 want_rows E3 "the refused run recorded no erasure" 0 \
   "select count(*) from graph_erasures where node_id = '$comment'"
 
+# The event log as it stands before the erase: the rows whose payload holds the secret, and the
+# id, the time and the actor of each. R5 redacts a payload in place rather than deleting its
+# row, because the log is append-only, so these are the rows E5 reads again afterwards and these
+# are the facts that must be the same then.
+query E3 "count the event rows holding the secret" \
+  "select count(*) from events where payload::text like '%$secret%'"
+events_held="$answer"
+readonly events_held
+[[ "$events_held" -gt 0 ]] ||
+  fail E3 "the event log holds the comment's own write" \
+    "no events row holds the secret, so the redaction E5 reads would prove nothing"
+query E3 "read the id, time and actor of each event row holding the secret" \
+  "select coalesce(jsonb_agg(jsonb_build_object('id', id, 'created_at', created_at, 'actor', actor) order by id), '[]'::jsonb)::text
+     from events where payload::text like '%$secret%'"
+events_before="$answer"
+readonly events_before
+pass E3 "the event log holds $events_held row(s) with the secret, read with their id, time and actor"
+
 # The answer an address nobody holds gives, read before the erase, so the comparison after it is
 # against this server's own words and not against a status this driver chose.
 missing="00000000-0000-4000-8000-000000000000"
@@ -260,6 +281,24 @@ want_rows E5 "no block excerpt still holds the erased text" 0 \
   "select count(*) from document_blocks where excerpt like '%$secret%'"
 want_rows E5 "no event payload still holds the erased text" 0 \
   "select count(*) from events where payload::text like '%$secret%'"
+# What the event log holds instead, which the four lines above cannot say: the marker naming the
+# erase (graphcensus.eraseMarker, one constant), through which a reader of a redacted payload
+# reaches the `graph_erasures` row recording the run. The rows are the rows E3 read, each with
+# the id, the time and the actor it had then, because R5 moves the payload and nothing else.
+marker="[erased by envoy-dispatch erase $node, recorded in graph_erasures]"
+readonly marker
+want_rows E5 "the event log holds every row that held the erased text, redacted and marked" \
+  "$events_held" "select count(*) from events where position('$marker' in payload::text) > 0"
+query E5 "read the id, time and actor of each redacted event row" \
+  "select coalesce(jsonb_agg(jsonb_build_object('id', id, 'created_at', created_at, 'actor', actor) order by id), '[]'::jsonb)::text
+     from events where position('$marker' in payload::text) > 0"
+[[ "$answer" == "$events_before" ]] ||
+  fail E5 "the redacted rows are the rows that held the secret, their id, time and actor untouched" \
+    "now $answer, before the erase $events_before"
+pass E5 "the redacted event rows are those rows, each with its id, its time and its actor unchanged"
+grep -Eq "^  redacted: events [1-9][0-9]*\$" "$work/erase" ||
+  fail E5 "the run says how many rows it redacted" "no redacted events line in: $(<"$work/erase")"
+pass E5 "envoy-dispatch erase reported the rows it redacted"
 
 # E6: the record of the erase.
 query E6 "read the graph_erasures row" \

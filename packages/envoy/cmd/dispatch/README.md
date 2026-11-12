@@ -2304,6 +2304,13 @@ It is reached by the command and the database credential alone: no HTTP route se
 It removes, in one transaction: the tuples out of the node, the tuples whose far end it is, every projection row of it (`comments`, `document_blocks` and `block_refs`, found by the `node_kind`/`node_address` pair migration `20261109022248` gave all three) and the rows that cannot exist without one of them, the whole text of every block it projects onto (`document_block_texts`, which references `artifacts` alone, so no foreign key into those tables names it and it is deleted by the block's own `artifact_id` and `block_id`), the `artifact_versions` rows whose markdown holds the erased text, and each `artifact_reviews` row whose `content_sha256` covered those bytes.
 It cannot rewrite such a review: `artifact_review_content_sha256_update` raises on any statement that moves a stored digest, so an approval over erased bytes ends rather than drifting, and the command names every one it ended by its document and its version.
 
+Deleting those rows is not the whole of it, because the erased bytes reach stores no row of the node owns.
+The same transaction rewrites every `document_block_texts.text` and `document_blocks.excerpt` that holds the erased text, replacing it with a marker naming the node and the `graph_erasures` record;
+those rows are rewritten and not deleted because each projects a block node of its own — a paragraph of a document that quoted the erased thing — and a live node no row projects is a difference `census --store` reads.
+An excerpt is cut again from the rewritten text the way the indexer cuts it, and `text_sha256` is left where it is, since it is the digest the indexer compares a later version's block against.
+It redacts `events.payload` in place for the same reason the log is append-only: the row stays with its id, its time and its actor untouched and the marker where the bytes were.
+Each of those is counted on its own `redacted:` line of the report, beside the `rows:` lines of what was deleted.
+
 It refuses to remove anything until it has listed what it would.
 With `--node` alone it reads all of the above, prints it, rolls back and exits 1; run again with `--confirm` it prints the same list and removes it.
 It refuses too — before removing anything — when a row that is not part of the node points at its projection through a nullable reference: a reply whose `reply_to` names an erased comment is somebody else's words, and an ask handed back through it is that ask's own history.

@@ -7,15 +7,30 @@ import (
 	"io"
 	"os"
 	"os/user"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // eraseApplicationName is how the erase appears in pg_stat_activity, as the census names itself:
 // an operator reading the activity of a database sees which pass holds its rows.
 const eraseApplicationName = "envoy-dispatch erase"
+
+// eraseMarker stands where the erased bytes were in a row the erase rewrites rather than
+// deletes, with the node the run addressed written into it. A reader of a redacted payload
+// learns three things from it: those bytes went by an erase and not by a lost write, which node
+// that erase addressed, and that `graph_erasures` holds the record of the run - who ran it,
+// when, and everything else it removed. It names the node and never the text, so a row it marks
+// holds none of what was erased.
+const eraseMarker = "[erased by envoy-dispatch erase %s:%s, recorded in graph_erasures]"
+
+// blockExcerpt is refs.BlockExcerptRunes as a statement spells it: an excerpt this file rewrites
+// is cut from its block's text exactly as the indexer cuts it (refs.IndexBlocks).
+var blockExcerpt = strconv.Itoa(refs.BlockExcerptRunes)
 
 // projectedTables are the tables that carry a node's address, and so are the rows a node is
 // projected onto (migration 20261109022248 gave all three `node_kind` and `node_address`). Text
@@ -77,6 +92,10 @@ type Erasure struct {
 	Inbound int64 `json:"inbound_tuples"`
 	// Rows are the projection rows of the node and the rows that cannot exist without them.
 	Rows []ErasedRows `json:"rows"`
+	// RedactedRows are the rows the run rewrote where it may take no row away: a block of a
+	// document that quoted the erased text, whose row projects a block node of its own, and the
+	// append-only event log. Each of them holds the marker where those bytes were.
+	RedactedRows []ErasedRows `json:"redacted"`
 	// Versions and Reviews are the document versions whose markdown holds the erased text and
 	// the approvals whose digest covered those bytes.
 	Versions []ErasedVersion `json:"versions"`
@@ -169,7 +188,7 @@ func Erase(ctx context.Context, databaseURL, kind, id string, confirmed bool) (*
 	if !confirmed || len(erasure.Blockers) > 0 {
 		return erasure, nil
 	}
-	if err := erasure.apply(ctx, tx, artifacts, numbers); err != nil {
+	if err := erasure.apply(ctx, tx, texts, artifacts, numbers); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -180,8 +199,9 @@ func Erase(ctx context.Context, databaseURL, kind, id string, confirmed bool) (*
 }
 
 // erasedTexts is the text the node's own rows hold, which is what the erase looks for in the
-// document versions. A node whose projection holds no text - a block reference, or a node with
-// no projection row at all - erases no version, and the run then removes the node alone.
+// document versions and in every store it rewrites. A node whose projection holds no text - a
+// block reference, or a node with no projection row at all - erases no version and redacts
+// nothing, and the run then removes the node alone.
 func erasedTexts(ctx context.Context, tx pgx.Tx, kind, id string) ([]string, error) {
 	var texts []string
 	for _, held := range projectedTables {
@@ -395,11 +415,141 @@ func (e *Erasure) eraseBlockTexts(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
+// marker is eraseMarker naming the node this run addressed, which is what stands in every row
+// the run rewrites.
+func (e *Erasure) marker() string { return fmt.Sprintf(eraseMarker, e.Kind, e.ID) }
+
+// placeholders is `$1 … $n` for one redaction: the marker first and one for each erased text
+// after it, which is the order redactionArgs binds them in.
+func placeholders(texts []string) []string {
+	bound := make([]string, len(texts)+1)
+	for i := range bound {
+		bound[i] = "$" + strconv.Itoa(i+1)
+	}
+	return bound
+}
+
+// redactionArgs are those parameters' values.
+func redactionArgs(marker string, texts []string) []any {
+	args := make([]any, 0, len(texts)+1)
+	args = append(args, marker)
+	for _, text := range texts {
+		args = append(args, text)
+	}
+	return args
+}
+
+// jsonStrings is each of those parameters as a jsonb rendered to text holds it: the value's own
+// json escaping, spelled by the database rather than by this package, so what a statement looks
+// for in a payload is byte for byte what that payload holds. to_jsonb wraps a string in quotes,
+// which the substring cuts back off.
+func jsonStrings(bound []string) []string {
+	escaped := make([]string, len(bound))
+	for i, value := range bound {
+		rendered := "to_jsonb(" + value + "::text)::text"
+		escaped[i] = "substring(" + rendered + " from 2 for length(" + rendered + ") - 2)"
+	}
+	return escaped
+}
+
+// redaction is one column with every erased text replaced by the marker, as a statement spells
+// it: one replace() around the last, so a row holding two of those texts is rewritten by one
+// pass and counted once. values is placeholders, or jsonStrings of them for a column a
+// statement reads as json.
+func redaction(column string, values []string) string {
+	rewritten := column
+	for _, text := range values[1:] {
+		rewritten = "replace(" + rewritten + ", " + text + ", " + values[0] + ")"
+	}
+	return rewritten
+}
+
+// redact rewrites the stores that hold the erased text and that the erase may take no row out
+// of: the blocks of the documents that quoted it, whose rows project block nodes of their own,
+// and the append-only event log. It runs after the deletes, so a row this run has already
+// removed is not rewritten first and counted as both.
+func (e *Erasure) redact(ctx context.Context, tx pgx.Tx, texts []string) error {
+	if len(texts) == 0 {
+		return nil
+	}
+	if err := e.redactBlocks(ctx, tx, texts); err != nil {
+		return err
+	}
+	return e.redactEvents(ctx, tx, texts)
+}
+
+// redactBlocks rewrites every block that held the erased text: the text itself, and the excerpt
+// of the document_blocks row that text was cut for. Those rows are rewritten and not deleted
+// because each projects a block node of its own - a paragraph of a document that quoted the
+// node, not the node this run addressed - and a live node no row projects is a difference the
+// store census reads (c-census).
+//
+// An excerpt is cut from the rewritten text the way the indexer cuts it (refs.IndexBlocks), so
+// a reader of the excerpt and a reader of the text are told the same thing, and an excerpt that
+// held only the first part of a long erased text is rewritten too. A block that rewrite does
+// not reach - one whose text document_block_texts does not hold - has its excerpt rewritten by
+// the statement after it.
+//
+// text_sha256 stands as it is. It is the digest of the bytes the version stated, which is what
+// the indexer compares a later version's block against: moved to the digest of the redacted
+// text, a version restating the erased bytes would read as a change and write them back in.
+func (e *Erasure) redactBlocks(ctx context.Context, tx pgx.Tx, texts []string) error {
+	bound := placeholders(texts)
+	args := redactionArgs(e.marker(), texts)
+	rewritten := redaction("held.text", bound)
+	var blockTexts, recut int64
+	if err := tx.QueryRow(ctx, `
+		with redacted as (
+			update document_block_texts held set text = `+rewritten+`
+			where held.text <> `+rewritten+`
+			returning held.artifact_id, held.block_id, held.version, held.text
+		), recut as (
+			update document_blocks block set excerpt = left(redacted.text, `+blockExcerpt+`)
+			from redacted
+			where redacted.artifact_id = block.artifact_id and redacted.block_id = block.block_id
+			  and redacted.version = block.changed_version
+			  and block.excerpt <> left(redacted.text, `+blockExcerpt+`)
+			returning 1
+		)
+		select (select count(*) from redacted), (select count(*) from recut)`,
+		args...).Scan(&blockTexts, &recut); err != nil {
+		return fmt.Errorf("redact the block texts holding the text of %s:%s: %w", e.Kind, e.ID, err)
+	}
+	excerpts := redaction("excerpt", bound)
+	tag, err := tx.Exec(ctx, `update document_blocks set excerpt = `+excerpts+
+		` where excerpt <> `+excerpts, args...)
+	if err != nil {
+		return fmt.Errorf("redact the block excerpts holding the text of %s:%s: %w", e.Kind, e.ID, err)
+	}
+	e.redacted("document_block_texts", blockTexts)
+	e.redacted("document_blocks", recut+tag.RowsAffected())
+	return nil
+}
+
+// redactEvents rewrites the payload of every event that held the erased text. The event log is
+// append-only - R5 redacts there rather than deleting - so the statement moves the payload and
+// nothing else: the row stands with its id, its time and its actor, because what the log says
+// happened and who did it is the record, and the bytes inside it are all the erase takes. A
+// text a payload holds is json escaped, so each is looked for as that payload spells it, and
+// the whole of the payload is searched, a text written into a key going with one written into
+// a value.
+func (e *Erasure) redactEvents(ctx context.Context, tx pgx.Tx, texts []string) error {
+	rewritten := redaction("payload::text", jsonStrings(placeholders(texts)))
+	tag, err := tx.Exec(ctx, `update events set payload = (`+rewritten+`)::jsonb
+		where payload::text <> `+rewritten, redactionArgs(e.marker(), texts)...)
+	if err != nil {
+		return fmt.Errorf("redact the event payloads holding the text of %s:%s: %w", e.Kind, e.ID, err)
+	}
+	e.redacted("events", tag.RowsAffected())
+	return nil
+}
+
 // apply removes everything the run read, in the one order the foreign keys allow: the whole
 // text of every block of the node, then the rows that cannot exist without a projection row,
-// then the projection rows, then the approvals and the versions they stood on, then the tuples
-// of both sides, then the node, and last the record of what went.
-func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, artifacts []string, numbers []int32) error {
+// then the projection rows, then the approvals and the versions they stood on. Then it rewrites
+// what it may not remove, the blocks of the documents that quoted the node and the event log,
+// and last go the tuples of both sides, the node, and the record of what the run did.
+func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, texts, artifacts []string, numbers []int32) error {
 	if err := e.eraseBlockTexts(ctx, tx); err != nil {
 		return err
 	}
@@ -443,6 +593,9 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, artifacts []string, numb
 		}
 		e.removed("artifact_versions", tag.RowsAffected())
 	}
+	if err := e.redact(ctx, tx, texts); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `delete from graph_tuples where from_kind = $1 and from_id = $2`, e.Kind, e.ID); err != nil {
 		return fmt.Errorf("delete the tuples out of %s:%s: %w", e.Kind, e.ID, err)
 	}
@@ -470,16 +623,27 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, artifacts []string, numb
 
 // removed adds one table's deleted rows to the report, keeping one line per table.
 func (e *Erasure) removed(table string, rows int64) {
+	e.Rows = countedRows(e.Rows, table, rows)
+}
+
+// redacted adds one table's rewritten rows to the report, counted as removed counts a deleted
+// one, so a run says what it rewrote as well as what it emptied.
+func (e *Erasure) redacted(table string, rows int64) {
+	e.RedactedRows = countedRows(e.RedactedRows, table, rows)
+}
+
+// countedRows adds one table's rows to a count of them, keeping one line per table.
+func countedRows(counted []ErasedRows, table string, rows int64) []ErasedRows {
 	if rows == 0 {
-		return
+		return counted
 	}
-	for i := range e.Rows {
-		if e.Rows[i].Table == table {
-			e.Rows[i].Rows += rows
-			return
+	for i := range counted {
+		if counted[i].Table == table {
+			counted[i].Rows += rows
+			return counted
 		}
 	}
-	e.Rows = append(e.Rows, ErasedRows{Table: table, Rows: rows})
+	return append(counted, ErasedRows{Table: table, Rows: rows})
 }
 
 // Write prints what the run read and what it did, the versions and the reviews named one per
@@ -497,6 +661,9 @@ func (e *Erasure) Write(w io.Writer) {
 	}
 	for _, rows := range e.Rows {
 		fmt.Fprintf(w, "  rows: %s %d\n", rows.Table, rows.Rows)
+	}
+	for _, rows := range e.RedactedRows {
+		fmt.Fprintf(w, "  redacted: %s %d\n", rows.Table, rows.Rows)
 	}
 	fmt.Fprintf(w, "  versions holding the erased text: %d\n", len(e.Versions))
 	for _, version := range e.Versions {
