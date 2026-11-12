@@ -20392,6 +20392,9 @@ describe("consumer delivery", () => {
     await session.follow("notifications.team.moved-to");
     await settle();
 
+    // The follow itself was accepted, so the absence below is the move's doing rather than a
+    // topic the listener refused.
+    expect(session.registrations.at(-1)?.topics).toContain("notifications.team.moved-to");
     const appended = session.fixture.entries.slice(mark);
     expect(appended.filter((entry) => entry.customType === REPLAY_STATE_ENTRY)).toEqual([]);
     expect(JSON.stringify(appended)).not.toContain(kept);

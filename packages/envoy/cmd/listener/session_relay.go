@@ -50,8 +50,8 @@ const (
 	relayReplyProgress = "progress"
 	// relayReplyDone: the frame is written (or skipped); the message is acked. Also a receipt.
 	relayReplyDone = "done"
-	// relayReplyNak: the session cannot take the frame; the server delivers it again after
-	// relayNakDelay.
+	// relayReplyNak: the session cannot take the frame; the server delivers it again after the
+	// delay the message's own delivery count earns (relayNakDelayFor).
 	relayReplyNak = "nak"
 )
 
@@ -75,8 +75,19 @@ const (
 	// 2, 4, 8, 16, then 30 s, each after a 3 s receipt wait, so the fifth probe is 42 s in).
 	relayPauseFirst = 2 * time.Second
 	relayPauseMax   = 30 * time.Second
-	// relayNakDelay is how long the server waits to deliver a message a session refused (nak).
+	// relayNakDelay is how long the server waits to deliver a message a session refused (nak)
+	// again on that message's first delivery. The wait doubles with the message's delivery count
+	// and stops at relayPauseMax, so one frame the session goes on refusing comes back 1, 2, 4,
+	// 8, 16 s and then 30 s apart (relayNakDelayFor): a frame nobody can take -- a host that is
+	// gone, a frame the session refuses every time -- is relayed about 8,600 times over the
+	// stream's 72-hour retention instead of the 259,200 a flat second costs, while a session
+	// that is merely busy sees the same first retries it saw before. The session consumer's
+	// MaxDeliver (bus.SessionConsumerMaxDeliver) is what ends the ladder.
 	relayNakDelay = time.Second
+	// relayNakShiftMax is the most relayNakDelay is doubled: relayNakDelay << relayNakShiftMax
+	// (32 s) is the first rung at or above relayPauseMax, so a delivery count past the rung
+	// after it takes the cap and the shift overflows no time.Duration (relayNakDelayFor).
+	relayNakShiftMax = 5
 	// relayRetryFirst and relayRetryMax bound the wait before a relay whose consumer call or pull
 	// failed restarts at the ack floor; it doubles from the first to the max.
 	relayRetryFirst = time.Second
@@ -442,6 +453,11 @@ type relayFrame struct {
 	run    *relayRun
 	acker  bus.SessionAcker
 	sentAt time.Time
+	// delivered is the message's delivery count, 1 the first, as the consumer reported it to the
+	// pull that published the frame (bus.SessionMessage.Delivered, relayHeaderDelivered). The
+	// count is the message's and not the reply's, so the frame carries it from publishFrame to
+	// the nak onReply sends (relayNakDelayFor).
+	delivered uint64
 	// answered is set once the session sent any reply for the frame, under framesMu.
 	answered bool
 }
@@ -1026,7 +1042,7 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 // of its own under the listener's reply inbox.
 func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool) error {
 	token := strconv.FormatUint(m.nextToken.Add(1), 36)
-	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: time.Now()}
+	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: time.Now(), delivered: msg.Delivered}
 	m.framesMu.Lock()
 	if run.outstanding == nil {
 		run.outstanding = map[string]*relayFrame{}
@@ -1094,12 +1110,13 @@ func (m *sessionRelays) forget(run *relayRun) map[string]*relayFrame {
 // listener relays a session with no record: the naks of such a hand-over reach the consumer a
 // lapsed record leaves standing, which holds those messages for the session's next
 // registration, and are publishes the server drops where a stop or a reap took the consumer
-// with the record; the run's line says both (relayCancelSessionGone, relayHandOverLines). A nak
-// is safe to repeat as far as the server goes, since the session consumer sets MaxDeliver = -1
-// (internal/bus/session_consumers.go, applySettings): a message returned here spends no server
-// redelivery budget. Each delivery still raises the message's delivery count, which the session's
-// client counts toward the attempts it allows a frame its host fails
-// (RELAY_ATTEMPTS_BEFORE_FAILED, packages/envoy-client/src/consumer-delivery.ts). It returns how
+// with the record; the run's line says both (relayCancelSessionGone, relayHandOverLines). A
+// message returned here is delivered again, so it spends one of the session consumer's
+// deliveries (bus.SessionConsumerMaxDeliver, internal/bus/session_consumers.go applySettings),
+// as every delivery of it does, and a hand-over is one of them. The delivery also raises the
+// message's delivery count, which the session's client counts toward the attempts it allows a
+// frame its host fails (RELAY_ATTEMPTS_BEFORE_FAILED,
+// packages/envoy-client/src/consumer-delivery.ts). It returns how
 // many messages it returned, and the naks that failed as one error, so that the
 // run's one hand-over line can say whether the hand-over was whole rather than claiming it was.
 func (m *sessionRelays) release(run *relayRun) (int, error) {
@@ -1115,10 +1132,27 @@ func (m *sessionRelays) release(run *relayRun) (int, error) {
 	return bus.ReturnMessages("the relay of session "+run.sessionID, held)
 }
 
+// relayNakDelayFor is how long the server waits before it delivers a frame the session refused
+// (nak) again: relayNakDelay for a message on its first delivery, doubled for every delivery it
+// has had before this one, and relayPauseMax from the rung that reaches the cap on, so one
+// frame the session goes on refusing comes back 1, 2, 4, 8, 16 s and then 30 s apart.
+//
+// delivered is the message's own delivery count, which the frame carried from the pull that
+// published it (relayFrame.delivered); a pulled message is on its first delivery at 1. A count
+// of 0 is no count at all, and so is one past relayNakShiftMax+1: both take the cap, rather
+// than a delay shorter than the rung before it or one the shift overflowed.
+func relayNakDelayFor(delivered uint64) time.Duration {
+	if delivered == 0 || delivered > relayNakShiftMax+1 {
+		return relayPauseMax
+	}
+	return min(relayNakDelay<<(delivered-1), relayPauseMax)
+}
+
 // onReply hears a session's reply to a frame: received marks the frame answered, progress restarts
-// its ack wait, done acks it and nak has the server deliver it again after relayNakDelay; done and
-// nak end the frame. Any of them is the session answering, which puts the run's pause backoff back
-// to its first wait. A reply to a token no frame awaits, or with any other body, is ignored.
+// its ack wait, done acks it and nak has the server deliver it again after the delay the message's
+// delivery count earns (relayNakDelayFor); done and nak end the frame. Any of them is the session
+// answering, which puts the run's pause backoff back to its first wait. A reply to a token no
+// frame awaits, or with any other body, is ignored.
 func (m *sessionRelays) onReply(msg *nats.Msg) {
 	token, ok := strings.CutPrefix(msg.Subject, m.replyPrefix)
 	if !ok {
@@ -1151,7 +1185,7 @@ func (m *sessionRelays) onReply(msg *nats.Msg) {
 	case relayReplyDone:
 		err = frame.acker.Ack()
 	case relayReplyNak:
-		err = frame.acker.NakWithDelay(relayNakDelay)
+		err = frame.acker.NakWithDelay(relayNakDelayFor(frame.delivered))
 	}
 	if err != nil {
 		m.logger.Warn("session relay could not answer the consumer for a frame", slog.String("session_id", frame.run.sessionID), slog.String("reply", reply), slog.String("error", err.Error()))

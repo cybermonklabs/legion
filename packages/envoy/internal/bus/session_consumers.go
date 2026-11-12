@@ -26,6 +26,36 @@ const (
 	// SessionConsumerMaxAckPending is how many of a session's messages can be delivered and not yet
 	// acked at once; the server delivers no more until one is.
 	SessionConsumerMaxAckPending = 1024
+	// SessionConsumerMaxDeliver is how many times the server delivers one message to a session
+	// consumer before it stops delivering it, in place of the -1 (no limit) a consumer carried
+	// before: a frame a session keeps refusing is relayed 240 times and no more.
+	//
+	// 240 is what the relay's nak ladder spends in about two hours: the listener naks a refused
+	// frame after 1, 2, 4, 8, 16 s and then 30 s a lap (cmd/listener relayNakDelayFor), so 240
+	// deliveries of one frame take 31 s + 234 * 30 s = 7,051 s. Unlimited, that frame came back
+	// every second for the stream's whole 72-hour retention, about 259,000 relays of it.
+	//
+	// What it costs is the message the cap stops delivering. The stream's retention is
+	// LimitsPolicy (stream.go streamCfg), so the server deletes no message when a consumer
+	// reaches the cap: measured against nats-server v2.15.1 in
+	// TestAMessageThatReachesMaxDeliverLeavesTheStreamAndMovesTheConsumerPastIt, the stream
+	// still holds the message, the consumer delivers it no more, it holds nothing for an ack
+	// and nothing to deliver, and the server publishes one
+	// $JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.<stream>.<consumer> naming the stream, the
+	// consumer and the stream sequence (server/jetstream_api.go
+	// JSAdvisoryConsumerMaxDeliveryExceedPre, JSConsumerDeliveryExceededAdvisory).
+	//
+	// The server leaves its own ack floor below the capped message (it read 0 with the message
+	// at 1), but that consumer has delivered past it and holds nothing for an ack, which is the
+	// state ackFloor reads as acked up to the last delivery. So the session is not handed the
+	// frame again: the restart every start of its relay makes (RestartAtFloor) and the consumer
+	// created again at the floor a delete recorded (SessionResumeSubject) both start after it,
+	// measured in that same row, and the message stands on the stream until its age takes it,
+	// reachable only by a consumer created below that floor. A session that refused one frame
+	// 240 times over two hours never takes it. The deliveries the cap counts are all of them:
+	// a hand-over's nak (cmd/listener sessionRelays.release) and an ack wait that passed
+	// (SessionConsumerAckWait) each spend one too.
+	SessionConsumerMaxDeliver = 240
 	// SessionConsumerInactiveThreshold is how long a session consumer outlives its last pull
 	// before the server removes it: the backstop for a consumer no listener deletes, not the
 	// bound on how long one holds a slot of the stream's consumer cap (streamMaxConsumers). A
@@ -657,7 +687,7 @@ func (s *SessionConsumers) applySettings(config *jetstream.ConsumerConfig, filte
 	config.AckPolicy = jetstream.AckExplicitPolicy
 	config.AckWait = s.ackWait
 	config.MaxAckPending = SessionConsumerMaxAckPending
-	config.MaxDeliver = -1
+	config.MaxDeliver = SessionConsumerMaxDeliver
 	config.InactiveThreshold = s.inactiveThreshold
 	config.FilterSubject = ""
 	config.FilterSubjects = filters

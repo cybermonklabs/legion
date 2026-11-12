@@ -640,20 +640,21 @@ that topic, and takes it out of the listener's registry as
 `envoy_unsubscribe` does (`client.unsubscribe`): a resumed session registered the topic again
 before the frame arrived, and the
 registry, which only ever adds a registered topic, would have the next restart follow it again.
-Every replayed card is held to the session the sweep reads for, which `showReplayed` takes before
+Every card is held to the session the frame was relayed to, which the delivery reads before
 anything awaits: the removal's close is the one window a `/new` or a `/resume` lands in, and a
-card handed after one would go to the conversation the host moved to. Nothing is handed and
-nothing is recorded then; the frame keeps its place in the stream, and the sweep after the host is
-back on the session it names shows it there.
+card handed after one would go to the conversation the host moved to.
+Nothing is handed and nothing is recorded then; the frame is answered `nak`, so the listener
+relays it again to the session it names once that session is open here.
 
 Two transcript entries hold it, written with `pi.appendEntry` and rebuilt by
 `restoreLocalSessionState` from every entry of the session file (`replaySnapshot`):
 `envoy-replay-delivered` (`{event_id?, dedupe_key?, at}`), one per frame the ledger records,
-shown or named in a failure notice; and `envoy-replay-state`
-(`{stream_id?, stream_created, subjects, notices?}`), written only
-when it changed, the newest being the state; `notices` holds a one-time notice raised
-but not told yet, so a process that ends before
-telling it tells it after the restart. The ledger also takes the frame of
+shown or named in a failure notice; and `envoy-replay-state` (`{topics}`, `LedgerStateSchema`),
+written only when it changed, the newest being the state, which holds the topics the session
+follows so a restart follows them again.
+A one-time notice raised but not told yet is held in the session's own transcript rather than in
+that state (`requeueNotices`), so a process that ends before telling it tells it after the
+restart. The ledger also takes the frame of
 every `envoy-message` card the session file holds (`custom_message` entries, every branch;
 `writtenCardIdentity`), dated by its entry, so a card written just before the process ended, its
 record not, is not shown twice. A restore drops ledger entries recorded 72 hours ago or more and

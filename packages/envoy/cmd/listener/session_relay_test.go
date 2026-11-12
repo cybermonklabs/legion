@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
@@ -19,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
+	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -1120,4 +1122,114 @@ accounts {
 		}
 	}
 	t.Fatalf("no ERROR says the session-consumer connection failed:\n%s", output)
+}
+
+// nakLadderAcker is the acker of a frame whose naks are read rather than sent: it records the
+// delay the relay asked the server for each time, as the stand-in rows read what the session was
+// sent. Nothing it answers fails, so the relay logs nothing.
+type nakLadderAcker struct {
+	mu     sync.Mutex
+	delays []time.Duration
+}
+
+func (a *nakLadderAcker) Ack() error        { return nil }
+func (a *nakLadderAcker) InProgress() error { return nil }
+
+func (a *nakLadderAcker) NakWithDelay(delay time.Duration) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.delays = append(a.delays, delay)
+	return nil
+}
+
+// last is the delay of the nak the relay asked for last, or -1 when it asked for none.
+func (a *nakLadderAcker) last() time.Duration {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.delays) == 0 {
+		return -1
+	}
+	return a.delays[len(a.delays)-1]
+}
+
+// A frame the session refuses is naked with a delay that climbs with the message's own delivery
+// count -- 1, 2, 4, 8, 16 s and then 30 s a lap (relayPauseMax) -- so a frame nobody can take is
+// relayed about 8,600 times over the stream's 72-hour retention instead of the 259,200 a flat
+// second costs. A count the relay has none of (0), and one past the ladder, take the cap: never
+// a delay under the rung before it, and never one the shift overflowed.
+func TestTheNakDelayClimbsWithTheMessagesDeliveryCount(t *testing.T) {
+	if relayNakDelay<<relayNakShiftMax < relayPauseMax {
+		t.Fatalf("relayNakDelay << relayNakShiftMax is %s, under the cap %s: the ladder stops below its own cap and the guard no longer bounds the shift",
+			relayNakDelay<<relayNakShiftMax, relayPauseMax)
+	}
+	relays := &sessionRelays{replyPrefix: "relay.reply.", frames: map[string]*relayFrame{}, logger: logging.New("test")}
+	run := &relayRun{sessionID: "ses_nak_ladder", outstanding: map[string]*relayFrame{}}
+	acker := &nakLadderAcker{}
+	// nakAt refuses one frame of delivery count delivered, as a session that cannot take it
+	// does, and answers the delay the relay asked the server for.
+	nakAt := func(delivered uint64) time.Duration {
+		t.Helper()
+		token := strconv.FormatUint(delivered, 10)
+		frame := &relayFrame{run: run, acker: acker, sentAt: time.Now(), delivered: delivered}
+		relays.framesMu.Lock()
+		relays.frames[token] = frame
+		run.outstanding[token] = frame
+		relays.framesMu.Unlock()
+		relays.onReply(&natsgo.Msg{Subject: relays.replyPrefix + token, Data: []byte(relayReplyNak)})
+		return acker.last()
+	}
+
+	ladder := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second, 30 * time.Second}
+	// The negative control the rungs stand on: a relay that naks flat answers relayNakDelay to
+	// every one of them, which is the first rung alone.
+	if !slices.ContainsFunc(ladder[1:], func(d time.Duration) bool { return d != relayNakDelay }) {
+		t.Fatalf("every rung this row drives is relayNakDelay (%s), so a flat delay would pass it", relayNakDelay)
+	}
+	for rung, want := range ladder {
+		delivered := uint64(rung + 1)
+		if got := nakAt(delivered); got != want {
+			t.Errorf("the nak of delivery %d asked the server for %s, want %s", delivered, got, want)
+		}
+	}
+	for _, delivered := range []uint64{0, uint64(relayNakShiftMax) + 2, 240, math.MaxUint64} {
+		if got := nakAt(delivered); got != relayPauseMax {
+			t.Errorf("the nak of delivery %d asked the server for %s, want the cap %s", delivered, got, relayPauseMax)
+		}
+	}
+}
+
+// The count the ladder climbs is the message's own, carried from the pull that published the
+// frame to the reply that refuses it (relayFrame.delivered): a session that refuses the same
+// frame over and over has it back about a second later, then about two seconds later, rather
+// than every second. The row reads the frames' arrivals on the session's own connection, as the
+// relay rows above read what the session was sent, and their Envoy-Delivered headers, which is
+// the same count the ladder is read from.
+func TestARefusedFrameComesBackOnTheLadderRatherThanEverySecond(t *testing.T) {
+	rig := newRelayRig(t)
+	const sessionID = "ses_nak_relay_ladder"
+	standIn := startSessionStandIn(t, rig.url, sessionID, func(relayedFrame) []string {
+		return []string{relayReplyReceived, relayReplyNak}
+	})
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	stored, seq := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+
+	frames := standIn.collect(t, 3, 20*time.Second)
+	for i, frame := range frames {
+		if frame.item.EventID != stored.EventID || frame.seq != seq {
+			t.Fatalf("frame %d carries %d:%s, want the one refused frame %d:%s", i+1, frame.seq, frame.item.EventID, seq, stored.EventID)
+		}
+		if got := frame.msg.Header.Get(relayHeaderDelivered); got != strconv.Itoa(i+1) {
+			t.Fatalf("frame %d carries %s = %q, want %d", i+1, relayHeaderDelivered, got, i+1)
+		}
+	}
+	first := frames[1].arrived.Sub(frames[0].arrived)
+	second := frames[2].arrived.Sub(frames[1].arrived)
+	t.Logf("the refused frame came back after %s and then %s", first, second)
+	if first < 500*time.Millisecond || first > 2500*time.Millisecond {
+		t.Errorf("the first redelivery came %s after the refusal, want about relayNakDelay (%s)", first, relayNakDelay)
+	}
+	if second < 1600*time.Millisecond {
+		t.Errorf("the second redelivery came %s after the first, want about twice relayNakDelay (%s): the delay is flat, so the frame comes back every second for the stream's whole retention",
+			second, 2*relayNakDelay)
+	}
 }

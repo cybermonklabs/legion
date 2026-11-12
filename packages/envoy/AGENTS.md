@@ -4494,7 +4494,7 @@ Only the listener's NATS user manages the consumer: it creates, reads, pulls, ac
 The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`, gets no JetStream API.
 
 - **Settings** (`bus.SessionConsumers`):
-  explicit ack, `AckWait` 60 s, `MaxAckPending` 1,024, `MaxDeliver` unlimited, the stream's replica count, and an `InactiveThreshold` the listener derives at start.
+  explicit ack, `AckWait` 60 s, `MaxAckPending` 1,024, `MaxDeliver` 240 (`bus.SessionConsumerMaxDeliver`, the cap the relay's nak ladder spends in about two hours; the server then stops delivering that message, leaves the consumer holding nothing for it and publishes `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES`, the stream keeps the message because its retention is `LimitsPolicy`, and a restart at the ack floor starts past it, so the session is not handed it again), the stream's replica count, and an `InactiveThreshold` the listener derives at start.
   That threshold is the backstop for a consumer no listener deleted rather than the bound on how long one lives ("Deleted" below), and it must stand above the sweep's own bound, because the server's removal writes no resume record: `bus.InactiveThresholdFor` takes the longer of `ENVOY_SESSION_GONE_HORIZON` and the session bucket's maximum age, adds one `ENVOY_SESSION_REAP_INTERVAL` and one sweep interval and a 15-minute margin, and never answers below `bus.SessionConsumerInactiveThreshold` (1 hour, which is also what a listener that set nothing carries); a listener logs the value and those windows once at start.
   It is no bound of its own: nats-server restarts its clock at every consumer leader election (v2.15.1 arms the timer in `setLeader` and reschedules nothing while the consumer is not the leader), so on a replicated hub it removes nothing predictably.
   A new consumer starts at the first of these the call has (`bus.SessionConsumers.Ensure`, `create`): the start a restart of it left pending ("Restart at the ack floor" below), the start the registration's `resume` asks for, the sequence after the floor the session's resume record holds ("Deleted" below), the first sequence the stream holds on that session's own agent subject (`bus.Client.NextStoredMessage`, one `$JS.API.STREAM.MSG.GET` by `next_by_subj`), and otherwise the sequence after the stream's last, which delivers what `DeliverNew` delivers.
@@ -4604,7 +4604,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   The session answers each frame with one word:
   `received` once the frame decodes, before any host work;
   `progress` every 20 s while it holds the frame unwritten (`InProgress`);
-  `done` once it wrote, skipped or refused the frame (`Ack`, which also counts as `received`); `nak` when it cannot take it (`NakWithDelay` of 1 s).
+  `done` once it wrote, skipped or refused the frame (`Ack`, which also counts as `received`); `nak` when it cannot take it (`NakWithDelay` of 1 s on the message's first delivery, doubling with its delivery count to 30 s a lap: 1, 2, 4, 8, 16, then 30 s, `relayNakDelayFor`).
   Up to `MaxAckPending` frames are in flight.
   The relay judges none of them:
   every frame it pulls is published whatever the caches hold, and a refusal of a message on a followed topic is the fan-out's to report (the "No consumer" bullet below).

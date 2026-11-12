@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  A frame the relay gives up on is answered `done` only when the session was told of it.
+  `DeliveryLedger.liveFailed` takes the session the frame was addressed to and answers whether the
+  frame was reported: `true` once its notice is shown, or queued, which is the host taking it on,
+  and `false` when the host refused it or the session it names is closed here. A give-up nobody was
+  told of is answered `nak`, so the stream keeps the message for whoever takes that session next,
+  where before it was acked away and the message existed nowhere. A frame whose bytes cannot be
+  read goes back the same way; the one give-up still acked is a frame that is no JSON object, which
+  no notice could ever name. The attempt limit counts this host's own failures of a frame rather
+  than JetStream's cumulative delivery count, so a returning session still gets its three attempts,
+  and the whole give-up of one frame is worked once however many times the stream hands it back.

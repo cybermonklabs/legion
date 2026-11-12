@@ -77,8 +77,11 @@ const TWO_STEPS: readonly string[] = [
  */
 const COOLDOWN_MS = 4_000;
 
-/** The wait a worker killed mid-cooldown is resumed inside: long enough to cover omp's own
- * startup twice over, short enough for the return to come while the case watches. */
+/** The cooldown the killed-and-resumed case arms, which is what its return is measured against:
+ * long enough that a restored arming is still running when the replacement pane is relaunched,
+ * short enough for the return to come while the case watches. The relaunch's own boot is not
+ * covered by it and is not meant to be - the case measures the return from the resumed life's
+ * first served turn, and reads the restored arming from where that turn went (below). */
 const RESUME_COOLDOWN_MS = 12_000;
 
 const cleanup: Cleanup = [];
@@ -477,11 +480,23 @@ test.skipIf(skip)(
 
     const resumed = pane.served.slice(firstLife);
     expect(resumed.length).toBeGreaterThan(1);
-    // Every request the resumed life sent before the restored due time went to the weaker model:
-    // the arming was restored, not dropped, and its wait was not started again by the relaunch.
-    expect(resumed.filter((turn) => turn.at < dueAt).map((turn) => turn.model)).not.toContain(
-      "strong-model"
-    );
+    // That the arming was restored, and not dropped or started again, is read from where this
+    // life's own turns went. Which half says it depends on whether the relaunch's boot outran the
+    // cooldown, and both are assertions: a filter over the turns before the due time proves
+    // nothing when there are none, which is what a loaded box gives.
+    const beforeDue = resumed.filter((turn) => turn.at < dueAt);
+    if (beforeDue.length > 0) {
+      // The life was serving while the restored wait still ran, so every one of those turns went
+      // to the weaker model.
+      expect(beforeDue.map((turn) => turn.model)).not.toContain("strong-model");
+    } else {
+      // The boot outran the wait, so this life's first turn is already past the due time: it
+      // must be the return itself. A life that had started the wait again would have spent a
+      // whole cooldown on the weaker model first, and a life that had dropped the arming would
+      // never leave it.
+      expect(resumed[0]?.model).toBe("strong-model");
+      expect(pane.returnedAt(dueAt)).toBe(resumed[0]?.at);
+    }
     // And the return did come, which is what says the arming survived at all: a life that had
     // restored nothing would have stayed on the weaker model for good.
     //

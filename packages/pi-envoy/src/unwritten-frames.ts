@@ -161,7 +161,7 @@ export function unwrittenCardKeys(identity: {
  * not have open, or the host refused the card, or an inert card held had nothing to wait under
  * (`sendCard`), or the host dropped the frame unwritten (a session change,
  * `releaseOtherSessions`; a person's turn an interrupt withdrew,
- * `handBackWithdrawn`), so a sweep shows the stream's copy.
+ * `handBackWithdrawn`), so the frame is answered no `done` and the stream keeps its copy.
  *
  * It also holds the replay notices (`sendNotice`) sent while the host is not settled, in order,
  * until the first settled moment hands them. A notice names no frame and has no claim: nothing
@@ -193,8 +193,8 @@ export class UnwrittenFrames {
    * it, or a failure notice naming it. `queued`: the card is shown only once the host writes it
    * (`written`), and the claim, when there is one, waits until then. `shown`: a card of a frame
    * the ledger keeps nothing of, which nothing waits on, so its claim settles at once. A send
-   * that throws leaves nothing waiting and releases the claim, so a re-send or a sweep shows the
-   * frame again.
+   * that throws leaves nothing waiting and releases the claim, so the listener sends the frame
+   * again.
    *
    * `closed`: the host is not on `session` (`UnwrittenFramesHost.hostIsOn`), so nothing is handed
    * and nothing is marked shown - the host writes what it is handed in the conversation it has,
@@ -207,7 +207,8 @@ export class UnwrittenFrames {
    *
    * An inert card sent while the host is not settled is not handed: it waits, `queued`, and the
    * first settled moment hands it (`handBackWithdrawn`). One whose frame the ledger keeps nothing
-   * of has nothing to wait under, so its claim is released and a sweep shows the frame again.
+   * of has nothing to wait under, so its claim is released and the listener sends the frame
+   * again.
    */
   sendCard(
     session: string,
@@ -400,12 +401,13 @@ export class UnwrittenFrames {
    * to whoever interrupted (measured on omp 18.8.9: RPC `abort_and_restore_queue` answers it in
    * its `steering` list, the terminal puts it in the editor) and is never written. Such a turn is
    * not handed again, since run late it could act on an instruction the person no longer means:
-   * its claim is released and nothing records it, so the next sweep shows the stream's copy as a
-   * card that runs nothing. That holds for a typed input only. A `pi.sendUserMessage` turn (sent
+   * its claim is released and nothing records it, so the listener sends the frame again and it
+   * is shown as a card that runs nothing. That holds for a typed input only. A `pi.sendUserMessage` turn (sent
    * only on a host without `pi.sendUserInput`) never gets here: the aborted run's `agent_end` calls
    * `textTurnsEnded` right after `runAborted` (extensions/envoy.ts), which records the turn as
-   * shown, since the host keeps no mark that would tell a withdrawn one from a written one: no
-   * sweep shows the stream's copy of such a turn, which only the person who interrupted got back.
+   * shown, since the host keeps no mark that would tell a withdrawn one from a written one: the
+   * stream's copy of such a turn is never shown again, and only the person who interrupted got
+   * it back.
    */
   handBackWithdrawn(): void {
     const since = this.#moments;
@@ -441,8 +443,8 @@ export class UnwrittenFrames {
    * The host moved to `sessionID`: what the session it left was handed and has not written is no
    * longer waited on, since the host dropped it with the session (measured on omp 18.8.9: a card a
    * turn held when RPC `new_session` ran got no `message_end`). Its claim is released and nothing
-   * records it, so a sweep of that session, once the host is back on it or resumes it, shows the
-   * stream's copy again and waits on it anew. A notice held for the session it left is dropped:
+   * records it, so the stream keeps its copy and the session's own consumer relays it again once
+   * the host is back on that session or resumes it, to be waited on anew. A notice held for the session it left is dropped:
    * it concerns only the session it was raised for, whose transcript records it, so the restore
    * once the host is back on that session holds it again (`requeueNotices`).
    */
@@ -486,7 +488,7 @@ export class UnwrittenFrames {
   }
 
   // The host wrote what it was handed: the record of the frame is asked for under the session
-  // the frame names, the one it was shown in, so no sweep shows the stream's copy again, here or
+  // the frame names, the one it was shown in, so the stream's copy is never shown again, here or
   // after a restart, and its claim settles. No test of this instance's own id belongs here:
   // `DeliveryLedger.recordDeliveredFor` makes the test itself, and records nothing, once the
   // session it is handed is not the one this process writes its transcript to.

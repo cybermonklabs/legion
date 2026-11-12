@@ -1,6 +1,11 @@
 import { agentSubject } from "@legion/contracts";
 import { z } from "zod";
-import { type DedupeIdentity, DedupeIdentitySchema, renderInbound } from "./delivery";
+import {
+  type DedupeIdentity,
+  DedupeIdentitySchema,
+  type InboundEnvelope,
+  renderInbound,
+} from "./delivery";
 import { type DeliveryLedger, envoyNoticeText } from "./delivery-ledger";
 import { messageFor } from "./errors";
 import { registrationTopics, subjectsOverlap } from "./stream-topics";
@@ -58,11 +63,19 @@ export const RELAY_PROGRESS_INTERVAL_MS = 20_000;
 export const FOLLOW_CLOCK_ALLOWANCE_MS = 2_000;
 
 /**
- * How many deliveries of one frame may fail in the host (its `deliver` threw) before the session
- * is told of the frame it was never shown (`DeliveryLedger.liveFailed`) instead of the frame
- * coming again: a frame the host can never show must not come back every second forever. The
- * frame is then answered `done` only when that telling reached somebody, and `nak` when it did
- * not, so a give-up nobody heard of leaves the message on the stream (`failed`).
+ * How many times the host may fail one frame (its `deliver` threw) before the session is told of
+ * the frame it was never shown (`DeliveryLedger.liveFailed`) instead of the frame coming again: a
+ * frame the host can never show must not come back every second forever. The frame is then
+ * answered `done` only when that telling reached somebody, and `nak` when it did not, so a
+ * give-up nobody heard of leaves the message on the stream (`failed`).
+ *
+ * The count is of this host's own failures of that frame, kept here per frame across its
+ * deliveries (`troubled`), and deliberately not the frame's `delivered`, which is JetStream's
+ * cumulative count and rises for reasons that are no failure at all: a claim the session
+ * released, a frame that arrived while the host was switching or shutting down, every restart of
+ * the relay at the ack floor, and each nak this give-up itself answers. Counting those would give
+ * a returning session one attempt rather than three, and would make each give-up raise the number
+ * that decides the next one.
  */
 const RELAY_ATTEMPTS_BEFORE_FAILED = 3;
 
@@ -231,6 +244,12 @@ export interface ConsumerDeliveryOptions {
   readonly now?: () => number;
   /** Runs `callback` every `ms` until the returned stop runs; `setInterval` by default. */
   readonly every?: (ms: number, callback: () => void) => () => void;
+  /**
+   * How a give-up reads the frame it is about to report (`renderInbound` by default). The host
+   * renders the frame itself when it takes it, so a frame whose bytes its render throws on
+   * throws here too; a test gives a render that throws to drive what that frame is answered.
+   */
+  readonly render?: typeof renderInbound;
 }
 
 /**
@@ -338,6 +357,7 @@ interface Entry {
 
 export function createConsumerDelivery(options: ConsumerDeliveryOptions): ConsumerDelivery {
   const { host, ledger, sessionID } = options;
+  const render = options.render ?? renderInbound;
   const now = options.now ?? Date.now;
   const repeat = options.every ?? every;
   const ownSubject = agentSubject(sessionID);
@@ -365,6 +385,13 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   let persisted = JSON.stringify({ follows: {} } satisfies ConsumerDeliverySnapshot);
   // Frames received and unsettled, by stream and sequence: a redelivery joins its first copy.
   const entries = new Map<string, Entry>();
+  // What this host has made of one frame, kept by the frame's key across its deliveries, since
+  // an entry lives only as long as one delivery: how many times this host failed it
+  // (`RELAY_ATTEMPTS_BEFORE_FAILED`), and whether its give-up has already been reported, after
+  // which every further delivery of it goes back in silence rather than rendering it again,
+  // attempting a second notice and raising a second warning to the person. A frame settled
+  // `done` and a stream replaced drop what is kept for it.
+  const troubled = new Map<string, { failures: number; givenUp: boolean }>();
   const queue: Entry[] = [];
   let blocking: Entry | undefined;
   let pumping = false;
@@ -392,6 +419,8 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
     streamID = id;
     held = new Set();
     written = undefined;
+    // The frames those keys named are gone with the stream.
+    troubled.clear();
   };
 
   // Tells `stream_recreated` once when the stream the last registration asked to resume on is not
@@ -421,6 +450,7 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
     entry.stopProgress();
     entries.delete(entry.key);
     for (const reply of entry.replies) send(reply, body);
+    if (body === "done") troubled.delete(entry.key);
     if (body === "done" && entry.frame.streamID === streamID) {
       held.delete(entry.frame.streamSeq);
       written = Math.max(written ?? 0, entry.frame.streamSeq);
@@ -438,8 +468,8 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   const alreadyWritten = (identity: DedupeIdentity | undefined): boolean =>
     identity !== undefined && ledger.delivered(identity);
 
-  // The frame's last delivery failed. Below the attempt limit it comes again; at it, the session
-  // is told what it was never shown, and the frame is settled on whether that telling reached
+  // The host failed this frame. Below the attempt limit it comes again; at it, the session is
+  // told what it was never shown, and the frame is settled on whether that telling reached
   // anybody. `done` takes the frame off the consumer, so it is answered only once the notice is
   // written or the host has taken it on: with the notice shown, the session holds a record of the
   // message and can read it again. When nobody was told - the host moved to another session while
@@ -447,9 +477,22 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   // stream holds it for whoever takes this session next. Acking it there would lose the message
   // with nothing anywhere that names it, which is the one thing a session's own consumer exists
   // to prevent.
+  //
+  // A frame whose give-up was reported to nobody comes back, and the whole of that work is done
+  // once: the laps after it go back in silence, since rendering the frame again, attempting a
+  // second notice and raising a second warning to the person tells nobody anything the first did
+  // not. What bounds those laps is the listener's growing nak delay and the consumer's
+  // `MaxDeliver`, not this client.
   const failed = (entry: Entry, error: unknown) => {
     if (entry.settled) return;
-    if (entry.frame.delivered < RELAY_ATTEMPTS_BEFORE_FAILED) {
+    const trouble = troubled.get(entry.key) ?? { failures: 0, givenUp: false };
+    troubled.set(entry.key, trouble);
+    if (trouble.givenUp) {
+      settle(entry, "nak");
+      return;
+    }
+    trouble.failures += 1;
+    if (trouble.failures < RELAY_ATTEMPTS_BEFORE_FAILED) {
       log(`frame ${entry.frame.streamSeq} failed; it comes again`, error);
       settle(entry, "nak");
       return;
@@ -458,17 +501,37 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
       `frame ${entry.frame.streamSeq} failed and does not come again; its session gets the notice`,
       error
     );
-    let telling: Promise<boolean> | undefined;
-    safely("failure notice", () => {
-      const { subject, data } = entry.frame;
-      const { envelope } = renderInbound(data, sessionID, subject);
-      if (envelope !== undefined) telling = ledger.liveFailed(sessionID, envelope, error);
-    });
-    // No envelope to name, so no notice can ever be shown for this frame and a frame sent again
-    // would fail the same way: it is settled rather than left to come back for ever.
-    if (telling === undefined) {
+    // The frame goes back whenever nobody could be told of it, and `givenUp` is what makes that
+    // one episode rather than one per delivery.
+    const goesBack = (why: string, thrown?: unknown) => {
+      trouble.givenUp = true;
+      log(`frame ${entry.frame.streamSeq} ${why}; it goes back to the stream`, thrown);
+      settle(entry, "nak");
+    };
+    // The render is read in its own try: a throw here is no deliberate drop. The host's own
+    // `deliver` renders the frame too, so a frame that fails because its bytes cannot be read
+    // throws here on every delivery, and acking it would lose the message with nothing that
+    // names it - round 40's loss by another door.
+    let envelope: InboundEnvelope | undefined;
+    try {
+      envelope = render(entry.frame.data, sessionID, entry.frame.subject).envelope;
+    } catch (thrown) {
+      goesBack("could not be read to report it", thrown);
+      return;
+    }
+    // The render answered no envelope, which is bytes that are no JSON object: no notice can
+    // name such a frame, and a copy of it would fail the same way for ever, so this one give-up
+    // is acked deliberately.
+    if (envelope === undefined) {
       log(`frame ${entry.frame.streamSeq} carries no envelope to report; it is dropped`);
       settle(entry, "done");
+      return;
+    }
+    let telling: Promise<boolean>;
+    try {
+      telling = ledger.liveFailed(sessionID, envelope, error);
+    } catch (thrown) {
+      goesBack("could not be reported", thrown);
       return;
     }
     // The reply waits on the notice, which the progress heartbeat holds the frame open for.
@@ -478,15 +541,11 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
           settle(entry, "done");
           return;
         }
-        log(`frame ${entry.frame.streamSeq} was reported to nobody; it goes back to the stream`);
-        settle(entry, "nak");
+        goesBack("was reported to nobody");
       },
       (thrown: unknown) => {
-        log(
-          `frame ${entry.frame.streamSeq} could not be reported; it goes back to the stream`,
-          thrown
-        );
-        settle(entry, "nak");
+        // A ledger of this repository never rejects; a host that passes its own keeps the frame.
+        goesBack("could not be reported", thrown);
       }
     );
   };

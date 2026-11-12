@@ -103,6 +103,8 @@ function setup(
   options: {
     readonly clock?: { now: number };
     readonly ledger?: Pick<DeliveryLedger, "delivered">;
+    /** The give-up's own render, for the row driving a frame whose bytes cannot be read. */
+    readonly render?: ConsumerDeliveryOptions["render"];
   } = {}
 ) {
   const clock = options.clock ?? { now: T0 };
@@ -115,9 +117,11 @@ function setup(
   // the notice belongs to the session the frame was addressed to, not to whatever the host has
   // open when the frame gives up.
   const failed: Array<{ readonly session: string; readonly eventID: string | undefined }> = [];
+  /** Every notice the give-up path started, which `settled` waits on. */
+  const notices: Promise<unknown>[] = [];
   // What the ledger answers a notice with: whether anybody was told. A session the host has left
   // is told nothing, and the relay must then leave the frame on the stream.
-  const notice = { told: true };
+  const notice = { told: true, rejectWith: undefined as Error | undefined };
   const logs: string[] = [];
   // The snapshots the host was asked to write.
   const persisted: ConsumerDeliverySnapshot[] = [];
@@ -139,9 +143,16 @@ function setup(
     publish: (reply, body) => replies.push([reply, body]),
     ledger: {
       delivered: (identity) => options.ledger?.delivered(identity) ?? false,
-      liveFailed: async (session, envelope) => {
+      liveFailed: (session, envelope) => {
         failed.push({ session, eventID: envelope.event_id });
-        return notice.told;
+        const answer = (async () => {
+          // A ledger of this repository never rejects; a host may pass one of its own, and the
+          // relay must keep the frame for it rather than ack a give-up it knows nothing about.
+          if (notice.rejectWith !== undefined) throw notice.rejectWith;
+          return notice.told;
+        })();
+        notices.push(answer.catch(() => undefined));
+        return answer;
       },
     },
     persist: (snapshot) => {
@@ -150,18 +161,21 @@ function setup(
     },
     now: () => clock.now,
     every: timers.every,
+    ...(options.render === undefined ? {} : { render: options.render }),
   };
   const delivery = createConsumerDelivery(config);
   /** Waits until every hand-off the host started has finished, those they let go included, and
-   *  then drains the microtasks a give-up's notice settles through: the relay answers a frame it
-   *  gave up on only once the ledger says whether anybody was told (`failed`). */
+   *  then waits on the notices the give-up path started: the relay answers a frame it gave up on
+   *  only once the ledger has said whether anybody was told (`failed`), so a row reading that
+   *  answer waits on the notice itself rather than on a count of microtasks. */
   const settled = async () => {
     let seen: number;
     do {
-      seen = running.length;
-      await Promise.allSettled(running);
-    } while (running.length !== seen);
-    for (let tick = 0; tick < 5; tick += 1) await Promise.resolve();
+      seen = running.length + notices.length;
+      await Promise.allSettled([...running, ...notices]);
+      // The settle runs in the notice's own `then`, one microtask after it resolves.
+      await Promise.resolve();
+    } while (running.length + notices.length !== seen);
   };
   return {
     clock,
@@ -270,23 +284,85 @@ describe("replies", () => {
     expect(repliesTo(replies, "_INBOX.1")).toEqual(["received", "nak"]);
   });
 
-  test("a frame the host throws on comes again, until its third delivery gives up", async () => {
+  // The attempt limit is of this host's own failures of one frame, counted across the frame's
+  // deliveries, so three failures here are three throws and not three arrivals.
+  test("a frame the host throws on comes again, until its third failure gives up", async () => {
     const { delivery, logs, replies, failed, state, settled } = setup();
     state.deliver = () => Promise.reject(new Error("render failed"));
 
     delivery.receive(relay({ seq: 1, reply: "_INBOX.a" }));
     await settled();
+    delivery.receive(relay({ seq: 1, delivered: 2, reply: "_INBOX.b" }));
+    await settled();
     delivery.receive(relay({ seq: 1, delivered: 3, reply: "_INBOX.c" }));
     await settled();
 
     expect(repliesTo(replies, "_INBOX.a")).toEqual(["received", "nak"]);
+    expect(repliesTo(replies, "_INBOX.b")).toEqual(["received", "nak"]);
     expect(repliesTo(replies, "_INBOX.c")).toEqual(["received", "done"]);
     expect(failed).toEqual([{ session: SESSION, eventID: "evt-1" }]);
-    // Both failures are logged: the one that comes again, and the one that gives up on it.
+    // Each failure is logged: the two that come again, and the one that gives up on it.
     expect(logs).toEqual([
+      "consumer delivery: frame 1 failed; it comes again",
       "consumer delivery: frame 1 failed; it comes again",
       "consumer delivery: frame 1 failed and does not come again; its session gets the notice",
     ]);
+  });
+
+  // JetStream's `delivered` counts every delivery of the frame, and most of them are no failure
+  // of this host at all: a claim the session released, a frame that arrived while the host was
+  // switching, every restart of the relay at the ack floor, and each nak a give-up itself
+  // answers. A session that comes back to a frame delivered many times before must still get its
+  // three attempts, or its first stumble is its last.
+  test("counts this host's own failures, not the deliveries the server has made", async () => {
+    const { delivery, logs, replies, failed, state, settled } = setup();
+    state.deliver = () => Promise.reject(new Error("render failed"));
+
+    delivery.receive(relay({ seq: 1, delivered: 7, reply: "_INBOX.back-1" }));
+    await settled();
+    delivery.receive(relay({ seq: 1, delivered: 8, reply: "_INBOX.back-2" }));
+    await settled();
+
+    // Two failures of this host, so no notice yet whatever the server's count says.
+    expect(failed).toEqual([]);
+    expect(repliesTo(replies, "_INBOX.back-1")).toEqual(["received", "nak"]);
+    expect(repliesTo(replies, "_INBOX.back-2")).toEqual(["received", "nak"]);
+    expect(logs).toEqual([
+      "consumer delivery: frame 1 failed; it comes again",
+      "consumer delivery: frame 1 failed; it comes again",
+    ]);
+
+    delivery.receive(relay({ seq: 1, delivered: 9, reply: "_INBOX.back-3" }));
+    await settled();
+    expect(failed).toEqual([{ session: SESSION, eventID: "evt-1" }]);
+  });
+
+  // A frame the host took, having failed it before, leaves nothing behind it: its next trouble
+  // starts at the first attempt again, so a session that stumbles once an hour never gives up.
+  test("forgets a frame's failures once the host takes it", async () => {
+    const { delivery, handed, logs, replies, state, settled } = setup();
+    state.deliver = () => Promise.reject(new Error("render failed"));
+
+    delivery.receive(relay({ seq: 1, reply: "_INBOX.try-1" }));
+    await settled();
+    delivery.receive(relay({ seq: 1, delivered: 2, reply: "_INBOX.try-2" }));
+    await settled();
+
+    state.deliver = () => undefined;
+    delivery.receive(relay({ seq: 1, delivered: 3, reply: "_INBOX.taken" }));
+    await settled();
+    expect(repliesTo(replies, "_INBOX.taken")).toEqual(["received"]);
+    // The host answers the frame it took, which settles it and forgets its trouble.
+    handed.at(-1)?.done();
+    await settled();
+    expect(repliesTo(replies, "_INBOX.taken")).toEqual(["received", "done"]);
+
+    state.deliver = () => Promise.reject(new Error("render failed"));
+    delivery.receive(relay({ seq: 1, delivered: 4, reply: "_INBOX.again" }));
+    await settled();
+
+    expect(repliesTo(replies, "_INBOX.again")).toEqual(["received", "nak"]);
+    expect(logs.at(-1)).toBe("consumer delivery: frame 1 failed; it comes again");
   });
 
   // The silent loss this change exists to prevent: `done` takes the frame off the consumer, so a
@@ -299,12 +375,18 @@ describe("replies", () => {
     // The host has moved to another session, so the ledger shows the notice to nobody.
     notice.told = false;
 
-    delivery.receive(relay({ seq: 1, delivered: 3, reply: "_INBOX.gone" }));
-    await settled();
+    for (const [delivered, reply] of [
+      [1, "_INBOX.gone-1"],
+      [2, "_INBOX.gone-2"],
+      [3, "_INBOX.gone"],
+    ] as const) {
+      delivery.receive(relay({ seq: 1, delivered, reply }));
+      await settled();
+    }
 
     expect(failed).toEqual([{ session: SESSION, eventID: "evt-1" }]);
     expect(repliesTo(replies, "_INBOX.gone")).toEqual(["received", "nak"]);
-    expect(logs).toEqual([
+    expect(logs.slice(-2)).toEqual([
       "consumer delivery: frame 1 failed and does not come again; its session gets the notice",
       "consumer delivery: frame 1 was reported to nobody; it goes back to the stream",
     ]);
@@ -320,16 +402,105 @@ describe("replies", () => {
     const { delivery, logs, replies, failed, state, settled } = setup();
     state.deliver = () => Promise.reject(new Error("render failed"));
 
-    delivery.receive(
-      relay({ seq: 1, delivered: 3, reply: "_INBOX.bare", payload: "not an envelope" })
-    );
-    await settled();
+    for (const [delivered, reply] of [
+      [1, "_INBOX.bare-1"],
+      [2, "_INBOX.bare-2"],
+      [3, "_INBOX.bare"],
+    ] as const) {
+      delivery.receive(relay({ seq: 1, delivered, reply, payload: "not an envelope" }));
+      await settled();
+    }
 
     expect(failed).toEqual([]);
     expect(repliesTo(replies, "_INBOX.bare")).toEqual(["received", "done"]);
     expect(logs.at(-1)).toBe(
       "consumer delivery: frame 1 carries no envelope to report; it is dropped"
     );
+  });
+
+  // Round 40's loss by its most likely door: the host fails a frame by rendering it, so a frame
+  // whose bytes its render throws on throws in the give-up too. Read as a deliberate drop, that
+  // frame would be acked away under a line saying it names no envelope, and the message would be
+  // nowhere. It goes back to the stream instead, under its own line.
+  test("a give-up whose render throws goes back to the stream, named as what it is", async () => {
+    const { delivery, logs, replies, failed, state, settled } = setup({
+      render: () => {
+        throw new Error("the frame's bytes could not be read");
+      },
+    });
+    state.deliver = () => Promise.reject(new Error("render failed"));
+
+    for (const [delivered, reply] of [
+      [1, "_INBOX.unread-1"],
+      [2, "_INBOX.unread-2"],
+      [3, "_INBOX.unread"],
+    ] as const) {
+      delivery.receive(relay({ seq: 1, delivered, reply }));
+      await settled();
+    }
+
+    expect(failed).toEqual([]);
+    expect(repliesTo(replies, "_INBOX.unread")).toEqual(["received", "nak"]);
+    expect(logs.at(-1)).toBe(
+      "consumer delivery: frame 1 could not be read to report it; it goes back to the stream"
+    );
+    expect(delivery.resumePoint()).toEqual({ stream_id: STREAM, seq: 0 });
+  });
+
+  // A ledger of this repository never rejects, and a host may pass one of its own: a notice this
+  // client cannot get an answer out of is no proof that anybody was told, so the frame stays.
+  test("a give-up whose ledger rejects goes back to the stream", async () => {
+    const { delivery, logs, notice, replies, state, settled } = setup();
+    state.deliver = () => Promise.reject(new Error("render failed"));
+    notice.rejectWith = new Error("this host's own ledger threw");
+
+    for (const [delivered, reply] of [
+      [1, "_INBOX.reject-1"],
+      [2, "_INBOX.reject-2"],
+      [3, "_INBOX.reject"],
+    ] as const) {
+      delivery.receive(relay({ seq: 1, delivered, reply }));
+      await settled();
+    }
+
+    expect(repliesTo(replies, "_INBOX.reject")).toEqual(["received", "nak"]);
+    expect(logs.at(-1)).toBe(
+      "consumer delivery: frame 1 could not be reported; it goes back to the stream"
+    );
+  });
+
+  // The bound's client half: a frame whose give-up reached nobody comes back, and the stream may
+  // hand it over hundreds of times before its consumer's own cap ends it. Rendering it again,
+  // attempting a second notice and raising a second warning to the person on each lap tells
+  // nobody anything the first lap did not, so the episode is worked once and the laps after it
+  // go back in silence.
+  test("a frame already given up on goes back in silence, not once per delivery", async () => {
+    const { delivery, logs, notice, replies, failed, state, settled } = setup();
+    state.deliver = () => Promise.reject(new Error("render failed"));
+    notice.told = false;
+
+    for (const [delivered, reply] of [
+      [1, "_INBOX.lap-1"],
+      [2, "_INBOX.lap-2"],
+      [3, "_INBOX.lap-3"],
+    ] as const) {
+      delivery.receive(relay({ seq: 1, delivered, reply }));
+      await settled();
+    }
+    const afterTheEpisode = logs.length;
+
+    for (const [delivered, reply] of [
+      [4, "_INBOX.lap-4"],
+      [5, "_INBOX.lap-5"],
+    ] as const) {
+      delivery.receive(relay({ seq: 1, delivered, reply }));
+      await settled();
+      expect(repliesTo(replies, reply)).toEqual(["received", "nak"]);
+    }
+
+    // One notice for the episode, and not one per lap, and no line for the laps after it.
+    expect(failed).toEqual([{ session: SESSION, eventID: "evt-1" }]);
+    expect(logs).toHaveLength(afterTheEpisode);
   });
 
   test("closing the session answers nak for every unsettled frame and any later one", () => {

@@ -315,13 +315,19 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
     envelope,
   });
 
-  // A notice written settles the frame for good, here and after a restart; one the host queued is
-  // the host's to record once written.
+  // Answers whether the frame was reported, which is what the relay settles it on
+  // (`liveFailed`): `true` once the notice is shown, or queued, which is the host taking it on,
+  // and `false` when the host refused it, since nobody was told then and the stream's copy is
+  // all that is left of the message.
   //
-  // Answers whether the frame was reported: `true` when the notice is written, or queued, which
-  // is the host taking it on. `false` says nobody was told - the host refused the notice, or it
-  // moved off this session while the notice was in flight - and the frame is then the relay's to
-  // hold rather than to settle, since the stream's copy is the only one left (`liveFailed`).
+  // The host can move off this session while the show runs, and the answer and the record part
+  // company there. A notice the host showed went to the session it names, so the frame is
+  // reported whatever the host does next, and answering `false` for it would hold the frame on
+  // the stream and show the session a second notice of the same message on the next delivery.
+  // The record is the other half: it is written only while this session is still the one the
+  // host writes, so a notice shown as the host moved is reported and not recorded, and a
+  // redelivery of that frame would card it again - which is the ordinary at-least-once of a
+  // session that has gone, and no worse than the ack the notice earns.
   const showFailureNotice = async (
     notice: FailureNotice,
     alive: () => boolean
@@ -330,12 +336,13 @@ export function createDeliveryLedger(options: DeliveryLedgerOptions): DeliveryLe
     try {
       queued = (await host.showFailureNotice(notice)) === "queued";
     } catch (error) {
-      if (!alive()) return false;
-      safely("failure notice warning", () => host.failureNoticeFailed(notice, error));
+      // Nobody was told. The warning goes to the person only while this session is the one
+      // open: a person reading another conversation is told nothing of a frame that named this
+      // one.
+      if (alive()) safely("failure notice warning", () => host.failureNoticeFailed(notice, error));
       return false;
     }
-    if (!alive()) return false;
-    if (queued) return true;
+    if (queued || !alive()) return true;
     record(ledgerIdentity(notice.envelope));
     await flush(alive);
     return true;

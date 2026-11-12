@@ -124,7 +124,10 @@ delivery path failed a frame outside the relay calls `liveFailed(sessionID, enve
 which shows that notice at once, to the session the frame was addressed to and to no other: a
 frame that failed because the host moved on names a session that is closed here now, and nothing
 is shown or recorded for it then. It answers whether the frame was reported, so the relay settles
-a give-up nobody was told of with `nak` rather than acking a message that then exists nowhere. `failureNoticeFields` words that card, and
+a give-up nobody was told of with `nak` rather than acking a message that then exists nowhere; a
+notice shown to the session it names is reported even where the host moved before it resolved,
+and only its record waits for a host that is still on that session. `failureNoticeFields` words
+that card, and
 `envoyNoticeText` renders a notice's fields under `envoy:` in TOON, so a sender's summary that
 holds a newline stays inside its own field. Work started for one session stops, writing nothing, once
 `sessionID()` names another.

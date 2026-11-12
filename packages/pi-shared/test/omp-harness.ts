@@ -222,10 +222,11 @@ const RELAY_SEND_DEFAULT_MS = 30_000;
  * frame it is, and a copy of a frame the session already holds is answered and never shown twice
  * (`createConsumerDelivery`).
  *
- * Answers that word, which is `received` and nothing else: what each word a session can answer
- * first means, and which of them is a take, is `relayFirstAnswers` above, and this reads the
- * answer through that table rather than spelling the meanings again. A caller that awaits a send
- * would otherwise read a frame the session dropped, or one it refused, as a frame it took.
+ * Answers the word the session took the frame with, which is `RelayTake`, the take rows of
+ * `relayFirstAnswers` derived from the table itself rather than named again here. What each word
+ * a session can answer first means, and which of them is a take, is that table, and this reads
+ * the answer through it: a caller that awaits a send would otherwise read a frame the session
+ * dropped, or one it refused, as a frame it took.
  */
 export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
   // Read once, so the refusal below names the bound this send actually kept.

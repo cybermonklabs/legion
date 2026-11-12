@@ -35,12 +35,14 @@ function createHost(followed: string[]) {
     noticeWarnings: [] as FailureNotice[],
     logs: [] as string[],
     writes: [] as Write[],
+    /** What the host does with the notice: a word, an Error it throws, or a promise of either,
+     *  which a row driving a host that moves while the show runs resolves after it moved. */
     noticeWith: (_notice: FailureNotice): unknown => undefined,
     sessionID: () => host.session,
     writeSessionID: () => host.writeSession ?? host.session,
     followedSubjects: () => host.followed,
     async showFailureNotice(notice: FailureNotice): Promise<FailureNoticeOutcome> {
-      const outcome = host.noticeWith(notice);
+      const outcome = await host.noticeWith(notice);
       if (outcome instanceof Error) throw outcome;
       host.notices.push(notice);
       return outcome === "queued" ? "queued" : "shown";
@@ -256,6 +258,52 @@ describe("a frame the session could not be shown", () => {
     });
     expect(ledger.delivered({ event_id: "evt-lost" })).toBe(true);
     expect(host.writes.at(-1)?.delivered).toEqual([{ event_id: "evt-lost", at: T0 }]);
+  });
+
+  // The contract this change is named for, on the one path that can cross it: the host moving
+  // while the notice is in flight. The notice was shown to the session it names before the move,
+  // so the frame is reported and the relay may settle it; what the move takes away is the record,
+  // which only this session's own transcript may carry. An answer of `false` here would hold the
+  // frame on the stream and card the same message a second time on its next delivery.
+  test("shown to this session and answered after the host moved is reported, and recorded nowhere", async () => {
+    const frame = envelope({ event_id: "evt-shown-then-moved" });
+    host.noticeWith = () => {
+      // The host moves while the show runs, as a `/resume` or a `/new` does mid-await.
+      host.session = "ses-other";
+      host.writeSession = "ses-other";
+      return Promise.resolve("shown");
+    };
+
+    expect(await ledger.liveFailed(SESSION, frame, new Error("the transcript write failed"))).toBe(
+      true
+    );
+
+    expect(host.notices.map((notice) => notice.eventId)).toEqual(["evt-shown-then-moved"]);
+    // No record and no write: the transcript that would carry them is another conversation's.
+    expect(ledger.delivered(frame)).toBe(false);
+    expect(host.writes).toEqual([]);
+    expect(host.noticeWarnings).toEqual([]);
+  });
+
+  // The other side of the same move: the host refused the notice as it moved, so nobody was told
+  // and the relay must keep the frame. The warning is not raised either, since the person reading
+  // the conversation the host moved to was never the addressee of this message.
+  test("refused after the host moved is reported to nobody, and warns nobody", async () => {
+    const frame = envelope({ event_id: "evt-refused-then-moved" });
+    host.noticeWith = () => {
+      host.session = "ses-other";
+      host.writeSession = "ses-other";
+      return Promise.reject(new Error("the session it names is closed"));
+    };
+
+    expect(await ledger.liveFailed(SESSION, frame, new Error("the transcript write failed"))).toBe(
+      false
+    );
+
+    expect(host.notices).toEqual([]);
+    expect(host.noticeWarnings).toEqual([]);
+    expect(ledger.delivered(frame)).toBe(false);
+    expect(host.writes).toEqual([]);
   });
 
   test("that names a session the host has left is reported nowhere, and told where it is open", async () => {
