@@ -436,6 +436,58 @@ describe("newAsks", () => {
     ).toEqual([]);
   });
 
+  // Two readings of one `with` can open one id with two different questions, and the server
+  // writes into the ask whichever one it parses. The client cannot know which that is, so it
+  // reports both: holding the marker-stripped reading back, which is the one the server parses
+  // here, would ask a person words the rules model never read.
+  test("a replace's with whose readings differ opens the ask of each reading", () => {
+    expect(
+      newAsks("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [
+          { op: "replace", find: "a", with: "- :::ask{#q}\n  Benign?\n    :::\n  Evil?\n  :::" },
+        ],
+      })
+    ).toEqual([
+      { kind: "block", id: "q", text: "Benign?", opening: "Benign?" },
+      { kind: "block", id: "q", text: "Benign?\n    :::\n  Evil?", opening: "Benign? ::: Evil?" },
+    ]);
+  });
+
+  // An ask block with no id has nothing but its text to pair its readings on, so the reading
+  // that opens it empty inside the list item is dropped beside the one that holds the question,
+  // rather than counted as a second ask.
+  test("a replace's with holding an id-less ask block opens that one ask", () => {
+    expect(
+      newAsks("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "a", with: "- :::ask{}\nQ?\n:::" }],
+      })
+    ).toEqual([{ kind: "block", text: "Q?", opening: "Q?" }]);
+  });
+
+  // An empty ask is dropped only beside words, which are what the rules model matches on. Where
+  // every reading opens an empty ask and nothing else, the empty ask is what the server writes,
+  // so it is reported and reaches review.
+  test("a replace's with whose every reading opens an empty ask opens it", () => {
+    expect(
+      newAsks("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "a", with: "- :::ask{#q}\n:::" }],
+      })
+    ).toEqual([{ kind: "block", id: "q", text: "", opening: "" }]);
+    expect(
+      newAsks("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "a", with: "- :::ask{}\n:::" }],
+      })
+    ).toEqual([{ kind: "block", text: "", opening: "" }]);
+  });
+
   test("a new issue's spec opens each ask block in it", () => {
     const spec = [
       "# Spec",

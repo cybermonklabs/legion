@@ -21,10 +21,20 @@
 // yet and cannot be read. The client therefore scans every string the server might parse and
 // takes the union: the `with` as sent, and the `with` with a leading block marker or task
 // checkbox taken off its first line. The gate already fails closed and over-reports deliberately;
-// a reading that is not the server's can only add an ask to review, never hide one. A later strip
-// adds one more candidate reading rather than a server rule to keep in step. When the server
-// strips is not read here: that needs the document, which the client does not have, so the strip
-// is lexical and both readings are scanned.
+// a reading that is not the server's can only add an ask to review, or drop an ask holding no
+// text where an ask the union holds carries words, so the words a person will be asked are never
+// hidden. `LEADING_STRIP` copies the server's own patterns (pmdoc's leadingHeadingMarker,
+// leadingOrderedMarker and leadingBulletMarker in
+// packages/envoy/internal/dispatch/pmdoc/markers.go:46-48, and leadingTaskCheckbox in
+// packages/envoy/internal/dispatch/pmdoc/tasks.go:103), so it is a server rule to keep in step:
+// a pattern this copy holds and the server does not costs one more candidate reading, while a
+// marker the server learns to strip and this copy does not hides the string the server parses.
+// Reading those two sites whenever the strip changes is what holds the copy in step. The server
+// strips one marker and then one checkbox over a task item's text (replacementMarkdown,
+// packages/envoy/internal/dispatch/docs/edits.go:1488); each later strip of the loop here adds
+// one more candidate reading rather than a server rule. When the server strips is not read here:
+// that needs the document, which the client does not have, so the strip is lexical and every
+// reading is scanned.
 //
 // The Dispatch server decides which lines of markdown are ask blocks, so the scan reads markdown as
 // its parser does: goldmark's block structure (`parseBlocks`, `openBlocks` and the default block
@@ -175,21 +185,41 @@ function scanAsks(markdown: string, frontMatter: boolean): NewAsk[] {
 
 /**
  * The ask blocks a `replace`'s `with` opens, over every string the server might parse it as
- * (replacementReadings), merged: an ask is its own `#id` where it has one and its text where it
- * has none, and the reading that carries the question wins over one that carries none, since the
- * rules model matches on the ask's words and an empty one reviews nothing. The order is the order
- * the readings opened them in, which for the `with` as sent is document order.
+ * (replacementReadings), merged by the whole ask and not by its id alone: two readings that open
+ * one id with different text are two variants of what a person would be asked, and both are
+ * reported, since the client cannot know which reading the server parses and the gate may not
+ * hide the words the server writes into the ask. The gate over-reports deliberately: a variant
+ * the server never writes costs the rules model a second reading of nearly the same words, where
+ * a hidden one would let words no one reviewed reach a person.
+ *
+ * The one variant dropped is an empty one standing beside words, which gives the rules model
+ * nothing to match on. An ask that carries an id drops its empty variant only where another
+ * variant of that same id carries text; an ask with no id, whose empty reading carries nothing to
+ * pair it on, is dropped where any reported ask carries text. Where every reading opens an empty
+ * ask and nothing else, it is kept, so an ask block written empty still reaches review.
+ *
+ * The order is the order the readings opened the asks in, which for the `with` as sent is
+ * document order.
  */
 function replacementAsks(replacement: string): NewAsk[] {
-  const found = new Map<string, NewAsk>();
+  // An ask's `kind` and `opening` follow from its id and its text, so the two are the whole
+  // variant. JSON holds them apart, where a separator character an id may itself hold would let
+  // two different pairs read as one key.
+  const variants = new Map<string, NewAsk>();
   for (const reading of replacementReadings(replacement)) {
     for (const ask of scanAsks(reading, false)) {
-      const key = ask.id === undefined ? `text ${ask.text}` : `id ${ask.id}`;
-      const held = found.get(key);
-      if (held === undefined || (held.text === "" && ask.text !== "")) found.set(key, ask);
+      const key = JSON.stringify([ask.id ?? null, ask.text]);
+      if (!variants.has(key)) variants.set(key, ask);
     }
   }
-  return [...found.values()];
+  const found = [...variants.values()];
+  const idsWithText = new Set(
+    found.flatMap((ask) => (ask.text !== "" && ask.id !== undefined ? [ask.id] : []))
+  );
+  const anyText = found.some((ask) => ask.text !== "");
+  return found.filter(
+    (ask) => ask.text !== "" || (ask.id === undefined ? !anyText : !idsWithText.has(ask.id))
+  );
 }
 
 /**
