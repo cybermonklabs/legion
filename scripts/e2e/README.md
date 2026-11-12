@@ -206,16 +206,6 @@ Each item below names a script, then what it proves.
   — through a PersistentVolumeClaim (read-only by default) and as an `nfs` export with `read_only: false` — reads the server's seed file through the claim, is refused a write there, and writes a file through the export that the server then holds;
   `legion start --check-config` refuses a volume naming two sources, and `legion probe-boot` mounts both shares and refuses a missing claim, a missing export and a server that never answers, each naming the volume and its share, and an image digest the registry does not have, naming the image
 
-- `merged-root-waits.sh`
-
-  the daemon keeps a tree's order at the close, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own:
-  a `sign_off` of a root sent while a child beneath it is still in the workflow is refused `SIGNOFF_CHILD_IN_WORKFLOW`, and the sign-off is accepted once that child has left;
-  the root's merge, as GitHub's own envelope, leaves it in `awaiting_merge` with its pull request `merged`, no Dispatch `done`, no suspension, no admission slot held and its architect told once by a `pr-merged` notice naming the issue the close waits for;
-  a restart there leaves the wait and tells nobody again;
-  the issue the root waits for completes its phase in that wait, where a lingering tree refuses it 409 `TREE_LINGERING`;
-  a pull request GitHub reports opened from the waiting root's branch leaves the merged one the root waits on recorded;
-  and that issue's own merge closes it and the root behind it, with the tree suspended, the slots its issues held released and the root's production check open on the root's merged pull request
-
 - `dispatch-claimant-delivery.sh`
 
   Dispatch's outbox delivers a person's answer, comment or untargeted message on an issue a session has claimed to that session's own `notifications.agent.<session>`, driven over HTTP through the real `envoy-dispatch` against a loopback PostgreSQL the caller names and a NATS of the run's own:
@@ -258,17 +248,10 @@ Each item below names a script, then what it proves.
   a root that ran as a tree of its own is never held so, and takes the free slot;
   and a child recorded in another live tree is refused 409 `CHILD_IN_OTHER_TREE` naming it and that tree, with nothing changed or written
 
-- `no-required-checks.sh`
+- `conflict-no-takeover.sh`
 
-  a pull request whose base branch requires no check and no workflow has no CI verdict, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with GitHub's settlements as its own envelopes and what each base requires read by the daemon's own required-checks pass from a GitHub stand-in the driver switches:
-  a failed check on a base that requires nothing leaves no `checksVerdict` key on `GET /legion/v1/state`, the issue in `testing` and no `checks-red`;
-  the same failure once that base requires the check is `red`, sends the work to `implementing` and tells one `checks-red` naming it;
-  and a passing required check is `green`
-
-- `ci-red-no-takeover.sh`
-
-  a CI red takes no role's turn over, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with CI's settlements, the pushes and the synchronizes as GitHub envelopes and each role's registration, turns and completions over the daemon's own HTTP routes and worker stream:
-  the red starts the implementer at once, while the tester is still working the turn its own assignment began and nothing at all is sent to the tester's connection;
+  a phase move the daemon makes on its own — a head that starts conflicting with its base — takes no role's turn over, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with CI's settlements, the pushes and the synchronizes as GitHub envelopes and each role's registration, turns and completions over the daemon's own HTTP routes and worker stream:
+  the conflict starts the implementer at once, while the tester is still working the turn its own assignment began and nothing at all is sent to the tester's connection;
   the tester is told its phase ended by one message on its own role topic;
   a completion it reports from that old turn is refused `409 HANDOFF_STALE_ASSIGNMENT` while the completion of the handoff the new assignment's own task calls for, at a commit of its own, is taken;
   and a phase-ended message to a role topic no live session holds finishes its outbox row rather than retrying, with the start still acting
@@ -377,16 +360,10 @@ Each item below names a script, then what it proves.
   the real `api.NewServer`'s App leases, rendered as the gh files a pane's `GH_CONFIG_DIR` holds, make the real `gh` identify as the implementer and reviewer bots, an empty `GH_CONFIG_DIR` authenticates nobody, and `git` clones the smoke repository through `gh auth git-credential` from the implement App's files alone.
   Devbox only
 
-- `TestRealGitHubReadyHoldsTheHeadToRetrosCommits`
-
-  the daemon's `POST /legion/v1/handoff/complete` with `ready: true`, over a real Postgres and as the real implement App, holds a pull request's head to its review round's approved head plus retro's commits:
-  GitHub's compare of the two must show nothing outside `docs/solutions/` but a change whose every path is under `.legion/`, or READY is refused `READY_UNREVIEWED_CHANGE` naming the paths.
-  Devbox only
-
 ## On a GitHub-hosted runner
 
 [`.github/workflows/e2e.yaml`](../../.github/workflows/e2e.yaml) runs one proof per job on `ubuntu-24.04`, against a Postgres service.
-Six scripts run there: `child-adoption.sh`, `dispatch-claimant-delivery.sh`, `merged-root-waits.sh`, `no-required-checks.sh`, `verification-results.sh` and `stage1-skeleton.sh`, which the `test` job of `ci.yaml` also runs.
+Six scripts run there: `child-adoption.sh`, `conflict-no-takeover.sh`, `dispatch-claimant-delivery.sh`, `handoff-records.sh`, `verification-results.sh` and `stage1-skeleton.sh`, which the `test` job of `ci.yaml` also runs.
 None of them needs a secret, and none there may:
 Sami answered that no API key goes into this repository, and that a smoke test which calls a model runs in the deployment repository on workload identity federation (sjawhar/legion#2512).
 Every other script needs a devbox, a throwaway kind cluster, a real cluster or a model key, and the workflow refuses it by name with what its own header says it needs.
@@ -395,7 +372,7 @@ Every other script needs a devbox, a throwaway kind cluster, a real cluster or a
 A person or a role starts a proof two ways, and takes no devbox for either:
 
 ```sh
-gh workflow run e2e.yaml -f script=merged-root-waits   # one proof, with or without the .sh
+gh workflow run e2e.yaml -f script=child-adoption   # one proof, with or without the .sh
 gh pr edit <number> --add-label e2e                    # every hosted proof, on that pull request
 ```
 
@@ -412,7 +389,7 @@ gh run download <run id>    # every evidence directory the run uploaded
 ```
 
 Each job writes its evidence to one directory and uploads it as `e2e-<script>-<run id>-<run attempt>`, on a pass and on a failure.
-The job sets the evidence variable of the script it runs (`CHILD_ADOPTION_EVIDENCE_DIR`, `MERGED_ROOT_WAITS_EVIDENCE_DIR`, `NO_REQUIRED_CHECKS_EVIDENCE_DIR`), so that script writes its transcript and its logs there.
+The job sets the evidence variable of the script it runs (`CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`), so that script writes its transcript and its logs there.
 It also keeps the run's own output as `output.log` in the same directory, which is what `stage1-skeleton.sh`, `dispatch-claimant-delivery.sh` and `verification-results.sh` leave a reader:
 they take no evidence variable and keep a work directory of their own, whose path that output names.
 
@@ -433,24 +410,6 @@ The ungated `TestLiveProofAppsReadTheLib` proves the read in every `go test`.
 It mints the implement App's lease through its `token_command` (the daemon's token mode), writes the gh files the daemon would render for a pane, and drives the real `gh` and `git` against them.
 The test's temporary gh directories and clone directory are removed by Go's test cleanup;
 the GitHub operations are read-only except for locally cloning the smoke repository.
-
-## TestRealGitHubReadyHoldsTheHeadToRetrosCommits
-
-```sh
-LEGION_REAL_GITHUB=1 LEGION_TEST_PG_DSN=postgres://… \
-LEGION_READY_SCOPE_REPO=<owner>/<repo> LEGION_READY_SCOPE_PR=<n> LEGION_READY_SCOPE_ISSUE=<KEY> \
-LEGION_READY_SCOPE_APPROVED=<approved sha> LEGION_READY_SCOPE_HEAD=<head sha> \
-[LEGION_READY_SCOPE_REFUSE=<path>] \
-  go -C packages/daemon test -count=1 ./internal/api \
-    -run '^TestRealGitHubReadyHoldsTheHeadToRetrosCommits$' -v
-```
-
-It records the issue at `merging` with the pull request at the head and the review round's approval of the approved sha, posts the merger's READY through the real route, and runs the check itself (`unreviewedChange`) on the same two heads with the implement App's token, since READY publishes a pull request already merged without reading it.
-With `LEGION_READY_SCOPE_REFUSE` set, both must be refused `READY_UNREVIEWED_CHANGE` naming that path.
-Unset, the check must pass, and READY must be accepted, or refused only by a check that runs after it: the head's handoffs, a conflict or a by-hand file list.
-It only reads GitHub; the pull request and its two heads are the operator's to make and close.
-As `TestRealGitHubCredentialSurface` does, it reads the implement App from [`lib/github-apps.sh`](#libgithub-appssh) and proves it from its token against GitHub before it acts, which needs `bun` on `PATH` (and `jq` for its log line).
-
 
 ## stage1-skeleton.sh
 
@@ -700,8 +659,8 @@ LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM priva
 ```
 
 **Devbox only; CI does not run this script.**
-It runs real Oh My Pi agents and real GitHub Apps, and sees one disposable pull request merged into `sjawhar/legion-smoke` by the daemon's own submission on its accepted READY:
-the repository allows no auto-merge, so the daemon merges it once GitHub reports it mergeable, and the proof only reads it (`await_ready_merge`), never merging it by hand.
+It runs real Oh My Pi agents and real GitHub Apps, and sees one disposable pull request merged into `sjawhar/legion-smoke` by its own merger:
+the merge is the merger agent's `gh pr merge --squash --match-head-commit`, under the subject and the empty body it passes itself, and the proof only reads it (`await_merger_merge`), never merging it by hand.
 The run needs:
 
 - `go`
@@ -801,9 +760,9 @@ A file, URL or token that prevents Dispatch fails the baseline read, naming it; 
 The scratch Dispatch runs with `HOME` and `XDG_CONFIG_HOME` in the run's work directory, so it reads no envoy.json of the operator's.
 
 It proves admission order and a child that stands in its tree with no slot of its own
-— a slot is one issue the daemon has started, and an issue keeps it until it is done, leaves the workflow or waits only for its merge; this child's tree has not opened its design gate, so the daemon has not started the child and it waits at `admitted` in no line; it is parked to `backlog` as soon as that is seen, which is all it was filed for, so it holds up no issue above it
+— a slot is one issue the daemon has started, and an issue keeps it until it is done or leaves the workflow; this child's tree has not opened its design gate, so the daemon has not started the child and it waits at `admitted` in no line; it is parked to `backlog` as soon as that is seen, which is all it was filed for, so it holds up no issue above it
 — then drives a root from `todo` through an architect's spec and gate registration, which the architect does on its own (the proof never prompts it:
-its first turn is the daemon's `catch-up` notice, and the root's primary document is the proof's one-file smoke spec), the root's wait on the human at its gate (`awaiting_person`, the slot it took at its admission kept, architect live), the human approval, the root's resume with no further slot, planner, implementer pull request, tester, reviewer, the architect's acceptance at `accepting`, retro, merger READY, the daemon's merge of the READY head, which closes the issue (`daemon-merge`), and the tester's production check after the close, its first look, the look that look's own `wake_at` starts and the bound's last look (`production-check-bound`).
+its first turn is the daemon's `catch-up` notice, and the root's primary document is the proof's one-file smoke spec), the root's wait on the human at its gate (`awaiting_person`, the slot it took at its admission kept, architect live), the human approval, the root's resume with no further slot, planner, implementer pull request, tester, reviewer, the architect's acceptance at `accepting`, retro, the merger's own merge of the head it read, which closes the issue (`merger-merge`), and the tester's production check after the close, its first look, the look that look's own `wake_at` starts and the bound's last look (`production-check-bound`).
 It also proves three changes-requested rounds, each posted by the reviewer pane and ended by that reviewer's completion
 — a review ends when its reviewer completes it, so the round returns to implementing only once the reviewer's handoff is recorded on the Dispatch issue under the reviewer's claim session, and each review, like the final approval, names the issue branch's head at that round's reviewer completion, the implementer's last pushed head (the order the Go reviewer prompt gives;
 the proof names only the decision); in round one the proof human, a GitHub App and so a bot account like a CI bot and none of Legion's role Apps, also opens a file-level review thread (the run reads the thread's author back and stops, naming it, when the devbox `gh` posted as anything else, such as the user after its App routing failed).
@@ -813,9 +772,7 @@ this one it already had), so the thread then carries the reviewer's reply and st
 No word of a reply resolves anything.
 Each round names one concrete correction the spec permits (a distinct line appended to the smoke file, the one product file the implementer's pull request changed, which the run records and requires to be exactly one;
 the correction counts only in that file's patch on the pull request) and reaches testing only on that round's own implementer handoff (the daemon's phase record must hold the implementer's handoff for that round when the issue reaches testing, and the pushed commit carrying the handoff that every planner, implementer, tester, and reviewer completion reported is authored and committed by that role's own App, read from the issue's workspace).
-It also proves `pr-blocked`, READY refusing after a later spec version until a human approves it (`ready-gated-on-new-spec-version`, which ends on Dispatch carrying the human's approval forward:
-after the gate-state negative control below, the proof inserts a decision block at the end of the spec through the edits route in a stand-in architect session's name (`dispatch_agent` in `lib/workflow.sh`), the merger's READY is refused at that version, and the proof human answers the block, which is the whole change since the version he approved;
-the issue reaches `awaiting_merge` on the carried `artifact.approved` at the version after the refused one, the spec's newest review is pinned to that version in his name with the carry's reason and no ask, no approval request is opened, and the proof writes no review through the reviews route between the refusal and the release), a held worker after its launch budget and the architect's retry relaunching it, a root whose human decides at the design gate that no change is needed (`architect-closes-a-no-change-root`:
+It also proves `pr-blocked` and a held worker after its launch budget and the architect's retry relaunching it, a root whose human decides at the design gate that no change is needed (`architect-closes-a-no-change-root`:
 the root waits on the person keeping its slot, the human's changes request answers it and the root resumes at `admitted` with its architect's session resumed, which `close_root` requires;
 the architect then ends its tree with `close_root`, the daemon posts its reason on the issue before it writes `done`, every status write on the issue is the daemon's, the slot the close frees goes to the next root, and the journal has the root's wait, the gate's changes request, one slot release (the close) and one slot take (its admission), the close, the linger and the architect's suspension), restart during implementation, a pending status write while Dispatch is down, and the Go pane's credentials (`in-agent-credentials`):
 in one bash tool call of a real implementer pane, `gh` — the launcher directory's `legion gh` wrapper, over the daemon's PATH's real gh (`LEGION_GH_PATH`)
@@ -832,7 +789,7 @@ The reviewer's approval then moves the issue to `accepting`, which the checkpoin
 no worker starts (the implementer's claim holds no retro task, `claim_pending_phase`), the daemon queues no status write and the board keeps `needs_review`, and the architect holds the reviewer's `phase-finished` notice.
 `retro-handoff` prompts the architect to accept: its `sign_off` moves the issue to `retro` (the daemon log's `workflow: phase changed …
 from=accepting to=retro trigger=sign_off`, `phase_change_logged`), the board to `retro`, and starts the implementer's retro.
-`daemon-merge` sees the daemon's merge close the issue: `awaiting_merge` and the merged pull request write `done` (`… from=awaiting_merge to=done
+`merger-merge` sees the merger's own merge close the issue: the daemon's read of the merged pull request writes `done` (`… from=merging to=done
 trigger=pull_request_merged`, the board `done` within 60 s), the production check opens on the merge commit at its first look, woken by the merge (`check_opened_on`), and the root's close lingers the tree:
 `legion claims list --json` shows the architect, planner, implementer, reviewer and merger `suspended` and the tester alone live (`claim_states_are`, which takes the spared role, the one the project's `production_check` names), handed the first look in its pane.
 The proof sends the tester nothing at a look,
@@ -867,15 +824,13 @@ the pane watcher recorded an endpoint violation (`$evidence/pane-endpoint-violat
 With either, no such line is printed and the ordinary failure stands.
 The run exits non-zero either way, and the smoke `main` may still carry the leftovers the cleanup was to remove;
 the trap closes the fixture pull request if it is still open and deletes its branch (below).
-From the proof's merge (Stage 4b takes it before the merger's READY, since the daemon's merge can follow READY by seconds) until that cleanup passes, the run holds the smoke `main`:
+From the proof's merge (Stage 4b takes it before the merger merges, since that merge can follow the merger's assignment by seconds) until that cleanup passes, the run holds the smoke `main`:
 an exclusive `flock` on `/tmp/legion-e2e-smoke-main.<owner>-<repo>.lock`, shared by every Stage 3 and Stage 4b run on the box (`hold_smoke_main` in `lib/workflow.sh`).
 Another run's merge inside that window adds the same paths and GitHub refuses it as unmergeable.
 A run that finds the lock held names the holder, says every minute how long it has waited, and fails after 45 minutes naming it.
 The lock is on an open descriptor, so a holder that dies or is killed frees it with no stale lock left behind.
-Each check is named in the transcript; negative controls demonstrate that the status-actor, held-worker, re-closed-gate and worker-notice assertions reject deliberately corrupted observations before the captured observations pass again (the worker notice's:
+Each check is named in the transcript; negative controls demonstrate that the status-actor, held-worker and worker-notice assertions reject deliberately corrupted observations before the captured observations pass again (the worker notice's:
 a copy of one phase-worker session with a `pr-blocked` delivery appended).
-`ready-gated-on-new-spec-version` opens with a live gate-state negative control for the carry:
-the human's whole-document upload closes the gate, no `artifact.approved` names its version and no review is pinned to it (a version that is nobody's answer to a decision block carries no approval), and only his own review reopens it, which releases nothing since no READY is held yet.
 Once every agent is gone, `model-turns-through-the-route` runs [`lib/check-model-route.sh`](#libcheck-model-routesh) over every agent session in the isolated profile, each subagent's included:
 it fails on any assistant turn or model selection that is not the `anthropic` provider's, the route's, and its negative control (a copy of one captured session with a turn rewritten as Bedrock's) is kept in the evidence as `model-route-control/`.
 It runs after `services-stopped` has stopped the watcher, the daemon and the private tmux server and found no proof process left, since an idle agent takes a turn on the next event the daemon delivers, and before the transcripts are copied and the profile removed.
@@ -931,9 +886,8 @@ It creates no Docker container: the daemon and Dispatch take their own databases
 It runs `admission_cap: 5`, which is Stage 3's configuration's one difference beside the merge queue, and the number is the peak the lane's own narrative needs: the cap counts the issues the daemon has started, roots and children alike, and each of the three roots keeps the slot it took at its admission while it waits on the person at its closed gate, so the three hold three of the five throughout and root 1's two children take the rest at `rerun-a-closed-child`.
 At the cap of 3 this lane ran before, those three roots would have held every slot and the child could never have reached planning.
 Real agents drive the task's surfaces through it:
-a Go prompt part a restart rewrites, the refused root stops, the phase reminder (a planner whose turn ends with its phase open is reminded, and the tool's `handoff_complete` closes the phase, after which no reminder comes), park and re-run, the phase-finished notice's summary and verdict, each root's `accepting` after its reviewer's approval and the architect's `sign_off` there (`reviewers`), the daemon posting and publishing the merger's READY (directly, across a refused gate, and with and without a merge queue holder;
-the daemon carries no length of its own and holds a packet to the bounds Dispatch publishes, refusing one past them at `handoff_complete`, which its own tests measure in `internal/api/handoff_test.go` and `internal/daemon/outbox_scratch_dispatch_test.go`), that the merger's pane carries no grant file and ran no `legion` from bash (`merger-pane-mints-no-grant`), and the early-merge and closed-unmerged notices, where the merger's READY on an already-merged pull request, and a merge at `awaiting_merge`, each close the issue (`done`).
-Every proof pull request is retargeted to a scratch base before any merge (the one merged at `awaiting_merge` to a base of its own, cut from the same main commit), so the smoke main is never merged into, and both bases are deleted at the end.
+a Go prompt part a restart rewrites, the refused root stops, the phase reminder (a planner whose turn ends with its phase open is reminded, and the tool's `handoff_complete` closes the phase, after which no reminder comes), park and re-run, the phase-finished notice's summary and verdict, each root's `accepting` after its reviewer's approval and the architect's `sign_off` there (`reviewers`), the merger's own merge of the pull request under the squash message it writes itself (`merger-merges-with-its-own-squash-message`, which reads the merge commit back and refuses one carrying the branch's own commit messages), a design gate re-closed in `merging` holding that merge up not at all (`a-reclosed-gate-holds-no-merge`), that the merger's pane carries no grant file and ran no `legion` from bash (`merger-pane-mints-no-grant`), and the early-merge and closed-unmerged notices, where a merge the merger did not make still closes the issue (`done`).
+Every proof pull request is retargeted to a scratch base before any merge (the two the merger merges to bases of their own, cut from the same main commit), so the smoke main is never merged into, and both bases are deleted at the end.
 The evidence is kept in `ACCEPT_EVIDENCE_DIR` (default the kept scratch work directory's `evidence/`), `transcript.log` (the whole run) among it.
 A run that ends on its soft failures gets [notes](#libmodel-gateway-unservedsh) for its first soft-failing check, from that check's own start.
 The `EXIT` trap closes every proof pull request still open and deletes the proof branches and both bases, also when whoever reads the run's output goes first or the transcript's disk fills, as in [stage 3](#stage3-devbox-workflowsh).
@@ -2221,7 +2175,7 @@ A pass proves that and no more:
 
 - The pod is an issue pod; the daemon's own controller pod, under `controller: daemon`, is not launched or checked.
 
-Four roots run under `admission_cap: 4`, a cap of the issues the daemon has started rather than of trees (dispatch://INFRA-980), each of which keeps its slot until it is done, leaves the workflow or waits only for its merge:
+Four roots run under `admission_cap: 4`, a cap of the issues the daemon has started rather than of trees (dispatch://INFRA-980), each of which keeps its slot until it is done or leaves the workflow:
 
 - Tree 1 runs the whole workflow with real agents to `done`, through one changes-requested review round in a thread the reviewer opens and the architect's acceptance at `accepting`;
   the daemon's merge closes it, its tester runs the production check after the close (the first look, then the bound's last look) while the tree lingers, and the tree closes at the linger's expiry.
@@ -2241,7 +2195,7 @@ Four roots run under `admission_cap: 4`, a cap of the issues the daemon has star
 **Three checkpoints are gone with INFRA-229 and INFRA-980**, `mid-turn-carry` and `carried-child`, with the setups that left a child mid-run and mid-turn under a closing root, and `children-at-the-merge`, whose children entered tree 1 after its root had been accepted.
 Each needed a root to close, or to merge, while a child of its tree was still in the workflow.
 No merge closes a root that way any more, and since INFRA-980 no issue enters a tree beneath an ancestor already accepted either (`CHILD_UNDER_ACCEPTED_PARENT`, and a person's own move held at `admitted`), so a merged root waiting for the rest of its tree is a state no tree started on this release reaches at all.
-That wait is still the daemon's, for the states a deploy meets — a root a migration finds already in `awaiting_merge` with an issue of its tree in a phase, a carried child's hand-over, and a close delivered late — and it is proven where that shape can be written down: [`merged-root-waits.sh`](#merged-root-waitssh), whose driver seeds it and drives the merge.
+That wait is still the daemon's, for the states a deploy meets — a root a migration finds already in `merging` with an issue of its tree in a phase, a carried child's hand-over, and a close delivered late — and it is proven where that shape can be written down, in the daemon's own tests of the close (`packages/daemon/internal/workflow/merged_chain_close_test.go` and `merged_child_close_test.go`).
 Stage 4b proves instead the rule that makes it unreachable, against real pods: the sign-off the daemon refuses while an issue beneath the root is in the workflow (`children-first-acceptance`).
 The one close that still lingers a tree children and all is a person's own in the Dispatch dashboard, which this driver cannot make
 — every write it sends production Dispatch names a session as its author (`lib/workflow.sh`), the daemon sets a live root's status back when the session writing it holds no claim in the tree, and the operator's `legion status` writes only `todo`, `backlog` or `icebox`, never the `done` a hand-over needs.
@@ -2328,7 +2282,7 @@ A signal to the whole process group does not stop the removal:
   it holds no claim, so the daemon sets back its status write on a live root as it does any outside session's.
   The run takes trees out with `legion status` from the operator shell, the daemon's own write.
 
-- **`sjawhar/legion-smoke`**: the fixture branch `legion/<tree 2>`, tree 1's pull request, which the daemon merges on its accepted READY while the proof only reads it (`await_ready_merge`), and `done`'s cleanup pull request on `proof/clean-main-<run_label>` (`legsmoke` by default), which the proof human merges.
+- **`sjawhar/legion-smoke`**: the fixture branch `legion/<tree 2>`, tree 1's pull request, which the merger merges itself while the proof only reads it (`await_merger_merge`), and `done`'s cleanup pull request on `proof/clean-main-<run_label>` (`legsmoke` by default), which the proof human merges.
   The teardown closes any pull request the run left open, such as one from a run that stopped before the merge, and deletes each tree's branch `legion/<tree>`.
   It also closes the cleanup pull request if it is still open, with a comment naming the run, and deletes its branch, when the run stopped after `done` made that branch and before the merge deleted it (a merge GitHub answered with a 504, the wait that timed out, an interrupt;
   [`close_smoke_cleanup`](#libworkflowsh)), and prints the URL of a pull request it could not close.
@@ -2551,20 +2505,20 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   `legion claims resume` then relaunches it with no `suspendedBy`, the held notice arrives in its session, and the daemon logged exactly two `api: operator request` lines for the architect, the suspend's route and then the resume's.
   With real agents throughout; the tester's adoption leaves a new empty change and keeps the implementer's author
 
-- `ci-red-no-takeover`
+- `conflict-no-takeover`
 
-  CI settling red while tree 1's tester is in a turn takes the phase back without its completion and takes nothing else:
+  A head that starts conflicting with its base while tree 1's tester is in a turn takes the phase back without its completion and takes nothing else:
   the implementer's start acts at once, and the tester keeps its turn, its background job, its process and its session.
-  The control: the tester runs `/usr/bin/sleep 20 && date … > /tmp/stage4b-ci-red-control`, and the file is written.
-  The witness: the tester runs the same chain with `/usr/bin/sleep 600` into `/tmp/stage4b-ci-red-witness`
+  The control: the tester runs `/usr/bin/sleep 20 && date … > /tmp/stage4b-conflict-control`, and the file is written.
+  The witness: the tester runs the same chain with `/usr/bin/sleep 600` into `/tmp/stage4b-conflict-witness`
   — a bash call Oh My Pi backgrounds once it outruns its own threshold, since nothing of Legion's turns `bash.autoBackground.enabled` off, so the tester waits on it with the `wait` tool — its claim `working` and the sleep in its pod's process list;
-  the proof human commits `.fail-me` to the pull request's branch, the smoke repository's `fail-on-demand` check fails on it, and tree 1 returns to `implementing`.
-  The daemon then has the implementer in a turn of the red's task
+  the proof human commits a different version of the one file the pull request changes to its base branch, GitHub reports the head `CONFLICTING`, and tree 1 returns to `implementing`.
+  The daemon then has the implementer in a turn of the conflict's task
   — its claim `working` on a confirmed `implementing` delivery, the task in its session — while that sleep is still in the tester's process list and the witness file is absent;
-  the tester's session (kept as `ci-red-tester-session.jsonl`) holds no aborted turn, its claim is the one it first registered with, and it receives the phase-ended message on its own role topic (`CI went red, so your testing phase has ended`), which is what ends the `wait` it is in.
+  the tester's session (kept as `conflict-tester-session.jsonl`) holds no aborted turn, its claim is the one it first registered with, and it receives the phase-ended message on its own role topic (`the daemon ended your testing phase`), which is what ends the `wait` it is in.
   A control over a copy of that session with one aborted assistant turn appended must be refused.
   Its witness job then runs on and writes the witness file.
-  The implementer, told to, deletes `.fail-me`, tree 1 returns to `testing`, and the tester is handed testing again on its first session in its first pod
+  The implementer, told to, merges the base forward, tree 1 returns to `testing`, and the tester is handed testing again on its first session in its first pod
 
 - `tree-reviewed`
 
@@ -2631,7 +2585,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   REST `/user` is refused for an installation token):
   the implement App's bot login for the implementer, the review App's for every other role (`role_app`, `lib/workflow.sh`, each login read from GitHub by `read_app_logins`), with the other App in no bash result.
   Each dispatched a `task` subagent, `FullAgentGh`, whose result carries the same login, and whose own session beside its parent's holds that login in a bash result of its own, no bash result with the other App, and an accepted yield.
-  The merger wrote, edited and read its page (`/tmp/full-agent-tools-merger.html`) and printed the implement App's login, never the reviewer's App, and is left waiting for `done`'s READY.
+  The merger wrote, edited and read its page (`/tmp/full-agent-tools-merger.html`) and printed the implement App's login, never the reviewer's App, and is left waiting for `done`'s merge instruction.
   The control: `notebook`, which nothing asked for, has no result in any session.
   Nothing relaunched the four finished workers, idle again in their first processes, and tree 1 is still in merging.
   Each instruction as sent, each role's session from the delivery on (`<role>.jsonl`, fetched once and the bytes every assertion on that role judged) and each subagent session (`<role>-<id>.jsonl`) are kept under `full-agent-tools/`
@@ -2820,26 +2774,31 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
 - `done`
 
-  before the merger's READY, since the daemon's merge of the READY head can follow it by seconds: the smoke main's lock is taken (`hold_smoke_main`).
-  Then the merger's READY and the daemon's merge of its head
-  — the proof only reads the pull request until it merges (`await_ready_merge`) and never merges it by hand; the note names the merge commit.
-  **The merge closes tree 1 at once**, since nothing of its tree is in the workflow: children 3 and 4 were parked at `children-first-acceptance`, before the sign-off the daemon held for them, and no issue has entered the tree since, which beneath an accepted root the daemon refuses.
-  So no `workflow: a merged root's close waits for the rest of its tree` line names tree 1, and its architect is told no `pr-merged` notice, which is that wait's own:
-  `awaiting_merge` → `done` within 900 s (the daemon log's `workflow: phase changed … from=awaiting_merge to=done trigger=pull_request_merged`;
+  before the merger merges, since that merge can follow its assignment by seconds: the smoke main's lock is taken (`hold_smoke_main`).
+  Then the merger's own merge of the head it read — the proof only reads the pull request until it merges (`await_merger_merge`) and never merges it by hand; the note names the merge commit.
+  **The merge does not close tree 1**, since children 3 and 4 are still in the workflow (INFRA-229):
+  the daemon records it (`legion state`: the root's `pullRequest.state` `merged` while its phase stays `merging`) and logs `workflow: a merged root's close waits for the rest of its tree` with `waitingFor` naming both children in order;
+  its architect gets one `pr-merged` notice naming the pull request and both;
+  the admission slot is still the root's, no production check is open, the Dispatch board still reads `retro`, no `workflow: tree lingers` line names tree 1, and no claim of tree 1 is suspended.
+  The proof human then parks the children one at a time (`backlog`, each leaving the workflow with its planner suspended, and within 600 s with no Sandbox, no pod and no disk:
+  the park deletes the child's Sandbox as a close does, and the disk goes with the pod, read inside the same wait, `child_parked`):
+  child 3's park leaves the root in `merging`, and child 4's
+  — the last member of the tree to leave — closes it, as the merge of a finished tree's root does.
+  `merging` → `done` within 900 s (the log's `workflow: phase changed … from=merging to=done trigger=pull_request_merged` and `workflow: a merged root closes once its last child left the workflow`;
   Dispatch `done` within 120 s), the production check opens on the merge commit at its first look, woken by the merge (`check_opened_on`:
   `looks: 1`, `lookOpen: true`, `lastWake.kind: merge`, `role: tester`), and the close hands the tester — the role a project that names no `production_check` gets — that look in the still-live pod.
-  No issue of tree 1 holds an admission slot at the close: the root's row went when it reached `awaiting_merge`, its children's at their parks, and the close frees whatever is left.
-  The proof sends it nothing there, so the fixture's instructions say a check task waits for no targeted message and acts on the daemon's task as written
+  No issue of tree 1 holds an admission slot at the close: its children's rows went at their parks, and the close frees the root's own, which it held through `merging`.
+  The proof sends it nothing, so the fixture tells a check task to wait for no targeted message and act on the daemon's task as written
   — this proof has no production and no deploy role, so the tester leaves `Production: pending deploy of <merge commit>` on the pull request and reports `pending` (`check_look_reported`, within 600 s of the look's start:
-  `looks: 1, lookOpen: false`, the check still open); the smoke main's cleanup (`clean_smoke_main`) runs while it works.
-  That report's `wake_at` is an hour on, at or past the check's bound, so the daemon names no look of its own for it (`check_wake_past_bound`, the daemon log's `workflow: production check names no wake: it falls at or past the check's bound` for look 1) and the bound's last look is the next one: nothing else wakes a check.
+  `looks: 1, lookOpen: false`, the check still open); `clean_smoke_main` runs while it works.
+  That report's `wake_at` is an hour on, at or past the check's bound, so the daemon names no look of its own (`check_wake_past_bound`, the log's `workflow: production check names no wake …` for look 1) and the bound's last look is next: nothing else wakes a check.
   The pending report suspends the tester's claim, its session kept in the session database, and deletes the root's Sandbox as any stop of an issue does:
-  within 600 s the root has no Sandbox, no pod and no disk (`kubectl get sandboxes,pods -l legion.dev/issue=<tree 1>` lists nothing, and the disk that pod owned answers none, read inside the same wait);
+  within 600 s the root has no Sandbox, no pod and no disk (`kubectl get sandboxes,pods -l legion.dev/issue=<tree 1>` lists nothing, and the disk that pod owned answers none, read in the same wait);
   `legion claims list --json` then shows all six claims `suspended` (`claim_states_are`).
   The close suspends every role of tree 1, architect to merger, within 1800 s, since the daemon's suspension of a role in a turn waits for that turn to end, and a wait that runs out names each role still unsuspended with whether its suspension is held for a turn;
   tree 1's events carry its architect's `issue.claimed`, and done leaves its root issue unclaimed.
-  The READY packet names the pull request's head, and `reviewThreads` shows every thread resolved, the reviewer's and the bot's included (`review-threads-at-ready.json`):
-  the end state the implementer's `gh` left, its own threads and the bot's the reviewer named to it, since the merger resolves nothing and READY reads no thread state.
+  Before the merge, `reviewThreads` shows every thread resolved, the reviewer's and the bot's included (`review-threads-at-merge.json`):
+  the end state the implementer's `gh` left, its own threads and the bot's the reviewer named to it, since the merger resolves nothing and reads no thread state.
   Control: the same record with the reviewer's thread unresolved fails
 
 - `production-check-bound`
@@ -3288,7 +3247,7 @@ It differs from [`dispatch-user-turns.sh`](#dispatch-user-turnssh) in these ways
   It sets no key of its own, and prints only each key's length.
   A key is needed only for a model of its provider.
 
-- **Postgres is a loopback server the caller names**, in `LEGION_TEST_PG_DSN`, as for [`merged-root-waits.sh`](#merged-root-waitssh).
+- **Postgres is a loopback server the caller names**, in `LEGION_TEST_PG_DSN`, as for [`child-adoption.sh`](#child-adoptionsh).
   The script creates a database of its own in it with `psql` and force-drops it with `psql` on any exit.
   It takes the DSN only when [`lib/loopback-dsn.py`](#libloopback-dsnpy) takes it, through [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `run_database_url`, which it calls in `setup`, before it builds or starts anything.
   Dispatch's `DATABASE_URL` is the connection string `run_database_url` rebuilds from the keywords libpq reads of the DSN, with that database as its `dbname`, so no client of the run is handed the DSN's own text, and `setup` refuses a DSN the rebuild cannot carry.
@@ -3297,7 +3256,7 @@ It differs from [`dispatch-user-turns.sh`](#dispatch-user-turnssh) in these ways
 
 - **NATS is a pinned `nats-server`**: `LEGION_E2E_NATS_BIN`, or v2.10.22, which the rig installs once with `go install`.
   In an issue pod it installs into `/legion/scratch/bin`, on the issue's volume, and otherwise into the run's own directory.
-  The server starts with JetStream on a port the kernel picks, as `merged-root-waits.sh` starts it.
+  The server starts with JetStream on a port the kernel picks, as `child-adoption.sh` starts it.
 
 - **No variable of the caller's shell named `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `OMP*`, `PI_*`, `PGHOSTADDR`, `PGSERVICE` or `PGSERVICEFILE` reaches any process of the run.**
   A Legion pane's own Dispatch, Envoy and profile stay out of it, and the three `PG` variables stay out of every psql and every client the run starts.
@@ -3846,56 +3805,6 @@ The loader, the runtime, the image probe, Agent Sandbox's pod, gVisor, the node'
 `share_volumes_kind_test.go`, untagged, builds all four files through the loader and each runtime through `sandboxOptions` and `sandbox.New` on every `go test`.
 `SHARE_VOLUMES_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript, the four `legion.yaml` files and the missing-image copy of the `shares` one, the issue pod's manifest and each `probe-boot`'s output.
 
-## merged-root-waits.sh
-
-```sh
-LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/merged-root-waits.sh     # → "merged root waits e2e: PASS in <n>s", exit 0
-```
-
-Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster.
-`LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
-the script starts none, so CI's service, a devbox container and a pod's own embedded PostgreSQL all satisfy it on a loopback address.
-The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
-The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `no-required-checks.sh` makes too.
-
-| check | what it holds |
-| :--- | :--- |
-| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
-| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestAMergedRootsCloseWaitsForTheRestOfItsTreeLive` (`internal/daemon/merged_root_waits_live_test.go`, `-tags e2e`) |
-| `proof` | the seven steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
-
-The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, and seeds one tree:
-a root in `accepting` on a reviewed, open pull request, seeded holding no admission slot, with one child implementing beneath it on an open pull request of its own, holding one.
-A second issue of that tree is written at step 3, with the shape the wait is driven from; it is one of its own rather than the parked child, whose workers the park's own suspension is still stopping.
-Every fact it drives enters by a transport production has
-— a GitHub or Dispatch envelope on the `ENVOY_NOTIFICATIONS` stream, or one of the daemon's own HTTP routes
-— and every assertion is a read of `GET /legion/v1/state`, of what the daemon posted to the Dispatch stand-in or published to the Envoy listener stand-in, or of what the fake worker runtime was asked to launch and suspend.
-Step 6 also reads the store once, for the daemon's `processed_events` row of the envelope it drove, so that its window starts with that event applied;
-no route shows it, since the workflow only logs the event it leaves.
-The steps run in the order each one's state follows from the last, and the restart runs where the wait it must not disturb stands.
-Steps 3 to 7 stand on a state the driver seeds rather than reaches:
-step 1's refusal is why, since a tree that starts after this release can put nothing beneath a root it has accepted, so the merged root's wait is driven from the shape a deploy meets — a root already in `awaiting_merge` with an issue of its tree in a phase, which a migration finds, a carried child's hand-over makes, or a close delivered late finds:
-
-| step | driven by | read back as |
-| :--- | :--- | :--- |
-| `step1-the-sign-off-is-refused-while-the-child-is-in-the-workflow` | the architect's `POST /legion/v1/signoff`, with a grant its registered session bought, while the child implements | 409 `SIGNOFF_CHILD_IN_WORKFLOW` naming the child, and over three seconds the root still `accepting` and the child still `implementing`: the refusal moved nothing |
-| `step2-the-child-leaves-and-the-sign-off-is-accepted` | the architect's `POST /legion/v1/children/park` of the child, the remedy the refusal names, then the same sign-off again | 200 and the child out of the workflow, `done` with its slot released; then 200, the root in `retro` with the Dispatch stand-in's `retro` write |
-| `step3-the-merged-root-waits-for-the-issue-beneath-it` | the seeded shape — the root in `awaiting_merge` and a second issue of its tree implementing beneath it, on an open pull request and a slot of its own, as the release's migration leaves one — and then the root's merge, as a `notifications.github.…` envelope | the root still `awaiting_merge`, its `pullRequest.state` now `merged`, its Dispatch status not `done`, no admission slot of its own while that issue keeps one, no production check, no suspension asked of the runtime, no status write taken by the Dispatch stand-in, and exactly one `pr-merged` notice on the architect's role topic naming the pull request and the issue it waits for |
-| `step4-a-restart-leaves-the-wait-and-tells-no-one-again` | a restart of the daemon at that state | over three seconds, the root still `awaiting_merge` on its merged pull request and still exactly one `pr-merged` notice: the boot's sweep leaves the wait and repeats no notice |
-| `step5-the-waiting-roots-child-completes-its-phase` | that issue's implementer completion over `POST /legion/v1/handoff/complete` | 200, the issue in `testing`, and the root still waiting — where a lingering tree refuses the completion 409 `TREE_LINGERING` |
-| `step6-a-pull-request-opened-from-the-waiting-roots-branch-leaves-its-merge` | GitHub's `opened` of another pull request of the run's own from the root's branch `legion/<root>`, as a `notifications.github.…` envelope | once the daemon's `processed_events` row shows it took the envelope, over three seconds, the root still `awaiting_merge` with `pullRequest.number` its own merged pull request's and `pullRequest.state` `merged`: the opened is not recorded over the merge the root waits on |
-| `step7-the-childs-merge-closes-the-root` | that issue's own merge envelope | the issue `done` with its slot released; the root `done` on Dispatch too, its production check open on the root's own merged pull request (the one step 6 left standing), its architect suspended with its session kept (the linger's own doing, which the state carries no deadline for), and still the one `pr-merged` notice |
-
-What the proof stands in for lies outside the two rules:
-the broker is a native `nats-server` rather than the testcontainers one the daemon's other NATS tests start, Dispatch is this package's own stand-in grown into the board the daemon writes to and reads its issues from, Envoy's listener is the package's `noticeListener`, GitHub answers that it knows no pull request so each disarm finishes, the two Apps' tokens are placeholders, and no agent runs:
-each claim is launched by the package's fake runtime and brought to ready over the daemon's own worker stream and HTTP routes.
-The records that put the tree at each step are seeded through the store, as every daemon test seeds its fixture, and each seed is printed as one.
-The configuration load, the store and its migrations, the HTTP API, the claim supervision, `openWorkflow`, the JetStream consumers and the outbox lanes are the real ones.
-`MERGED_ROOT_WAITS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log and the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`.
-
 ## dispatch-claimant-delivery.sh
 
 ```sh
@@ -4142,7 +4051,7 @@ Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py
 the script starts none, so CI's service, a devbox container and a pod's own embedded PostgreSQL all satisfy it on a loopback address.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `merged-root-waits.sh` and `no-required-checks.sh` make too.
+The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
 
 | check | what it holds |
 | :--- | :--- |
@@ -4183,57 +4092,11 @@ T, X, step 7's Q6, step 9's tree lifecycle under R, step 10's Q and step 11's U 
 The configuration load, the store and its migrations, the HTTP API, the claim supervision, `openWorkflow`, the JetStream consumers and the outbox lanes are the real ones.
 `CHILD_ADOPTION_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log and the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`.
 
-## no-required-checks.sh
+## conflict-no-takeover.sh
 
 ```sh
 LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/no-required-checks.sh     # → "no required checks e2e: PASS in <n>s", exit 0
-```
-
-Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster.
-`LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
-the script starts none, so CI's service, a devbox container and a pod's own embedded PostgreSQL all satisfy it on a loopback address.
-The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
-The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
-The daemon reads what each base branch requires at boot and every two minutes after (`requiredChecksInterval`), and the proof waits for the read that follows the switch step 2 makes, so most of a run is that wait.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `merged-root-waits.sh` makes too.
-
-| check | what it holds |
-| :--- | :--- |
-| `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
-| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestABaseThatRequiresNothingGivesNoVerdictLive` (`internal/daemon/no_required_checks_live_test.go`, `-tags e2e`) |
-| `proof` | the three steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
-
-The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, and seeds two roots, each holding its tree's slot on an open pull request at its first head, each on a base branch of its own so each has its own required set:
-one in `testing` on a base that requires nothing, its set not yet read;
-and one in `reviewing` on a base that requires `ci`.
-Every fact enters by a transport production has:
-CI settlements as `notifications.github.…` envelopes on the `ENVOY_NOTIFICATIONS` stream, and what each base requires as the daemon's own required-checks pass reads it from the GitHub stand-in
-— the pull request (its base, head and `mergeable: true`), its reviews (none), the base's rulesets (`/rules/branches/<base>`, switched between a lone `pull_request` rule and a `required_status_checks` rule for `ci`) and the base branch itself, unprotected, every read answered 2xx, since a failed read keeps the set last read.
-Every assertion is a read of `GET /legion/v1/state` — raw, where a step holds that `checksVerdict` is absent
-— or of the notices the daemon published to the Envoy listener stand-in.
-The store is read only to know the daemon took what a step drove, which no route shows:
-the settlement it recorded (`checked_head`) and the set its pass read (`required`, polled for up to three minutes after the switch).
-
-| step | driven by | read back as |
-| :--- | :--- | :--- |
-| `nothing-required-failed-check` | CI's settlement of the first issue's head with `ci` failed, on a base that requires nothing | once the settlement and the boot's read of the empty set are recorded, `issues[<key>].pullRequest` has no `checksVerdict` key; over three seconds the issue stays in `testing` and its architect is told no `checks-red` |
-| `the-same-failure-once-required-is-red` | the stand-in switched to make that base require `ci`, read by the daemon's next pass | `checksVerdict` `red`, the issue in `implementing`, and one `checks-red` reading `CI is red at a1: ci` — the control that step 1's absent verdict was the empty set's, not an unread set or a lost settlement |
-| `a-passing-required-check-is-green` | CI's settlement of the second issue's head with `ci` passed, on a base that requires it | `checksVerdict` `green`, the issue still in `reviewing` |
-
-What the proof stands in for lies outside the rule:
-the broker is a native `nats-server` rather than the testcontainers one the daemon's other NATS tests start, GitHub is a REST stand-in that also answers the repository a launch reads and a GraphQL root that knows no pull request, Dispatch is the board the whole-daemon drivers share (`liveDispatch`, in `internal/daemon/live_proof_test.go`), Envoy's listener is the package's `noticeListener`, the two Apps' tokens are placeholders, and no agent runs:
-a send-back's implementer is launched by the package's fake runtime, which provisions its own workspace so the daemon clones nothing, and never registers.
-The records are seeded through the store, as every daemon test seeds its fixture, and each seed is printed as one.
-The configuration, the store and its migrations, the HTTP API, `openWorkflow` and its required-checks pass, the JetStream consumers and the outbox lanes are the real ones.
-`NO_REQUIRED_CHECKS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log and the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`.
-
-## ci-red-no-takeover.sh
-
-```sh
-LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/ci-red-no-takeover.sh     # → "ci red no takeover e2e: PASS in <n>s", exit 0
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/conflict-no-takeover.sh     # → "conflict no takeover e2e: PASS in <n>s", exit 0
 ```
 
 Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
@@ -4242,18 +4105,18 @@ the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
 A run takes about a minute.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `merged-root-waits.sh` and `no-required-checks.sh` make too.
+The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `child-adoption.sh` makes too.
 
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
-| `driver` | a test binary of `TestACIRedStartsTheNextRoleAtOnceAndTakesNoTurnOverLive` (`internal/daemon/ci_red_no_takeover_live_test.go`, `-tags e2e`) |
+| `driver` | a test binary of `TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive` (`internal/daemon/conflict_no_takeover_live_test.go`, `-tags e2e`) |
 | `proof` | the five steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, and seeds one root implementing on an open pull request whose base requires `ci`, holding its tree's slot, with its implementer's claim mid-launch, serving run 1, which the boot relaunches.
 Facts enter only as production's do:
-CI settlements, the pushes and the synchronizes as `notifications.github.…` envelopes on the `ENVOY_NOTIFICATIONS` stream;
+the base pushes that ask the daemon to read the head, the branch pushes and the synchronizes as `notifications.github.…` envelopes on the `ENVOY_NOTIFICATIONS` stream;
 the daemon's own HTTP routes for each role's registration, readiness, grants and completions;
 and the daemon's worker stream for each role's turns, which the driver speaks as `legion worker-shim` does (`shimwire` frames: the prompt's response, `agent_start`, `agent_end` and the `prompt_result` behind it).
 The daemon's RPC has no abort frame, so the proof holds the stronger fact that leaves:
@@ -4262,8 +4125,8 @@ the role's connection is sent nothing at all while the start acts, read by readi
 | step | driven by | read back as |
 | :--- | :--- | :--- |
 | `step1-the-tester-works-the-assignment-its-phase-handed-it` | the seeded implementer's `handoff_complete` at `h1`, then the tester's registration, readiness and turn on the task it is prompted | the issue in `testing`, and the tester's claim `working` on a confirmed delivery of its testing task |
-| `step2-the-red-starts-the-implementer-while-the-testers-turn-runs-on` | CI's settlement of `h1` with `ci` failed, while that turn runs | the implementer prompted its fix task at once, named with the red; the issue in `implementing`; the tester still `working` the delivery it confirmed before the red; its connection sent nothing at all over three seconds; and the runtime asked to suspend nothing |
-| `step3-the-tester-is-told-its-phase-ended-on-its-own-role-topic` | nothing: the red's own `phase_ended` row, on the outbox's role-message lane | exactly one message on `notifications.role.<the tester's claim>`, the sentence `record.PhaseEnded` writes, printed in full, with the red behind its `Reason:` label; and the architect's one `checks-red` on its own topic beside it — a different message to a different role |
+| `step2-the-conflict-starts-the-implementer-while-the-testers-turn-runs-on` | a push onto the base, after which GitHub answers the head conflicting, while that turn runs | the implementer prompted its fix task at once, named with the conflict; the issue in `implementing`; the tester still `working` the delivery it confirmed before the move; its connection sent nothing at all over three seconds; and the runtime asked to suspend nothing |
+| `step3-the-tester-is-told-its-phase-ended-on-its-own-role-topic` | nothing: the move's own `phase_ended` row, on the outbox's role-message lane | exactly one message on `notifications.role.<the tester's claim>`, the sentence `record.PhaseEnded` writes, printed in full, with the reason behind its `Reason:` label; and the architect's one `checks-red` on its own topic beside it — a different message to a different role |
 | `step4-the-old-turns-completion-is-refused-and-the-new-assignments-is-taken` | the implementer's push of `h2`, GitHub's synchronize and its completion there, which hands testing out again; then the tester's completion from the turn it began in step 1, at its first handoff `t1`, and, once that turn has ended and the new assignment's task has reached it, the completion of the handoff `t2` that task's work wrote | the first refused `409 HANDOFF_STALE_ASSIGNMENT` with the issue left in `testing`, the second taken, with the issue in `reviewing` |
 | `step5-a-phase-ended-message-no-session-holds-finishes-and-the-start-still-acts` | the reviewer's role topic answered `404 unclaimed`, as the listener answers for a role no live session holds; then the push of `h3`, its synchronize and CI's settlement of `h3` with `ci` failed | the implementer prompted its fix task again and the issue in `implementing`, one refused publish on that topic and no retry over three seconds, no `phase_ended` row left in the outbox, and nothing delivered on the topic |
 
@@ -4273,7 +4136,7 @@ every claim is launched by the package's fake runtime, which provisions its own 
 The issue, its pull request, its slot and the implementer's claim are seeded through the store, as every daemon test seeds its fixture.
 The configuration, the store and its migrations, the HTTP API, the claim supervision and its worker stream, `openWorkflow`, the JetStream consumers and the outbox lanes — the phase-ended lane among them — are the real ones.
 The store is read for one thing no route shows: whether step 5's `phase_ended` row is still in the outbox.
-`CI_RED_NO_TAKEOVER_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log and the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`.
+`CONFLICT_NO_TAKEOVER_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log and the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`.
 
 ## provider-error-retry.sh
 
@@ -4290,10 +4153,10 @@ the proof launches real agents and guesses no build, and in a Legion worker pod 
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none, so CI's service, a devbox container and a pod's own embedded PostgreSQL all satisfy it on a loopback address.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
-The broker is the run's own, as for [`merged-root-waits.sh`](#merged-root-waitssh).
+The broker is the run's own, as for [`conflict-no-takeover.sh`](#conflict-no-takeoversh).
 A whole run took 317 s measured in a Legion worker pod (omp/18.16.0), the driver 300 s of it:
 the ladder's first three gaps are waited out where they are real, 30 s, 60 s and 120 s of wall clock between the daemon's sends, while its fourth and fifth are driven on the daemon's own clock (`ladderClock`, which shortens those two durations and no others), since waiting them out would add twelve minutes and measure the same ladder twice.
-The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `ci-red-no-takeover.sh` and `merged-root-waits.sh` make too.
+The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
 
 | check | what it holds |
 | :--- | :--- |
@@ -4488,7 +4351,7 @@ It runs on any Linux host with `go`, `awk`, `bun` (after `bun install` at the ch
 the driver also creates Dispatch's own database on the same server and drops it on exit, so the DSN's role must be allowed to create and drop databases, and the server must offer the `pgvector` extension Dispatch's migrations create.
 That server must be this machine's: the DSN's host must be loopback, and `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The script starts no database.
-The broker is the run's own, as for [`merged-root-waits.sh`](#merged-root-waitssh).
+The broker is the run's own, as for [`child-adoption.sh`](#child-adoptionsh).
 A run takes two to four minutes, most of it building Dispatch and the driver.
 The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
 before them the script refuses a host with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI out of.
@@ -4807,10 +4670,10 @@ Seven of them source that file through [`lib/rig.sh`](#librigsh), and [`envoy-se
 require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
 ```
 
-The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prerequisites` check reads `LEGION_TEST_PG_DSN` for each of the eight proofs that make that run: `child-adoption.sh`, `ci-red-no-takeover.sh`, `claim-compaction.sh`, [`handoff-records.sh`](#handoff-recordssh), [`merged-root-waits.sh`](#merged-root-waitssh), `no-required-checks.sh`, [`provider-error-retry.sh`](#provider-error-retrysh) and [`role-prompt-rule.sh`](#role-prompt-rulesh).
+The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prerequisites` check reads `LEGION_TEST_PG_DSN` for each of the six proofs that make that run: `child-adoption.sh`, `claim-compaction.sh`, [`conflict-no-takeover.sh`](#conflict-no-takeoversh), [`handoff-records.sh`](#handoff-recordssh), [`provider-error-retry.sh`](#provider-error-retrysh) and [`role-prompt-rule.sh`](#role-prompt-rulesh).
 [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) read their DSN with `run_database_url` alone, in the step that names the run's own database.
 Every proof that writes a server its caller's DSN names reads that DSN with this guard before it starts anything.
-That is the first of two frames for the eight whole-daemon proofs: this guard reads the caller's DSN with libpq in the shell, and the test binary those eight run reads every DSN it builds from that one back with pgx inside itself (`DatabaseURL`, `packages/daemon/internal/testpg/testdb/testdb.go`).
+That is the first of two frames for the six whole-daemon proofs: this guard reads the caller's DSN with libpq in the shell, and the test binary those six run reads every DSN it builds from that one back with pgx inside itself (`DatabaseURL`, `packages/daemon/internal/testpg/testdb/testdb.go`).
 The rationale is written once, above `require_loopback_dsn` in [`lib/loopback-dsn.sh`](#libloopback-dsnsh): the client the run then writes that server with must be libpq too, because libpq and a URL parser read different text as the host.
 That one copy also says which client each call site then writes the server with, what the pinned `github.com/jackc/pgx/v5 v5.11.0` carries for the four proofs that give Dispatch the caller's raw DSN and for the binary's own rewrites, and what a raise of that pin moves.
 
@@ -4860,7 +4723,7 @@ Two more cases pin a refusal of that mode: a password of bytes libpq reads as no
 The two helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask libpq.
 Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this file addresses beside itself, so it needs nothing of its caller's.
 [`lib/rig.sh`](#librigsh) sources it, which is how seven of the eight proofs have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
-[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources it on its own too, and calls `require_loopback_dsn` in `prerequisites` for the seven proofs that make its run.
+[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources it on its own too, and calls `require_loopback_dsn` in `prerequisites` for the six proofs that make its run.
 
 ```sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"     # sourced, never run
@@ -5802,7 +5665,7 @@ the review App's ROUND-th changes-requested review whose last footer names the s
 The handoff checks read the daemon's phase record (the `phases` table joined to `issues`, and the same row as `legion state --json` shows it under `.workers[ROLE]`), not the ids of the facts it processed, so they hold whatever format a handoff event id takes.
 A role's completion of a file-backed phase (planning, implementing, testing, reviewing) names the Dispatch handoff record it wrote with `dispatch handoff-write` (`handoffRecord`:
 its id and version); the implementer's and the merger's also report a commit (`handoff_commit`:
-the implementer's pushed tip, which the `legion` tool refuses unpushed, and for retro and READY the commit the workspace stands on).
+the implementer's pushed tip, which the `legion` tool refuses unpushed, and for retro and the merger the commit the workspace stands on).
 The daemon empties both when a transition starts that role on a new phase (`clearHandoff`, `packages/daemon/internal/workflow/effects.go`);
 the implementer's `rounds` counts its returns to implementing.
 Read right after the transition a completion caused, a role's handoff is that phase's own:
@@ -5985,8 +5848,8 @@ The review App's key reaches such a file in every mode, under `$work/app-key` or
 a token reaches one only where the daemon can run neither `agent-secrets` nor a key command, which is that `bridge` container, and the run's teardown removes them ([Pod reachability](#pod-reachability)).
 A run refuses before its first write anywhere:
 Stage 3, 4b.13b, the Claude Code backend and Stage 4b check both Apps (`read_app_logins`), Stage 4a, which acts as the implement App alone, checks that one.
-`TestRealGitHubCredentialSurface` and `TestRealGitHubReadyHoldsTheHeadToRetrosCommits` source this lib and run its `require_app_inputs implement`, `app_token_command` and `check_github_apps implement` (through `liveProofImplementApp` and `proveLiveProofApps` in `packages/daemon/internal/api/real_github_test.go`;
-`proveLiveProofApps` checks the very block the proofs act with), so they hold no copy of the App, its checks or its token command, and they prove the implement App as the stage proofs do before they act: they take the implement inputs and no others, so no review input, the key command included, is read for them.
+`TestRealGitHubCredentialSurface` sources this lib and runs its `require_app_inputs implement`, `app_token_command` and `check_github_apps implement` (through `liveProofImplementApp` and `proveLiveProofApps` in `packages/daemon/internal/api/real_github_test.go`;
+`proveLiveProofApps` checks the very block the proofs act with), so it holds no copy of the App, its checks or its token command, and it proves the implement App as the stage proofs do before it acts: it takes the implement inputs and no others, so no review input, the key command included, is read for it.
 Stage 4a hands its Go harness the implement App's id, its secret and that App's `app_token_command`, which the harness's token manager runs with `sh -c`, so it holds no copy of the token command either.
 The checks run in the C locale whatever the caller's, so a UTF-8 locale does not admit fullwidth digits or accented letters.
 `require_app_inputs` also fills `app_key_unsets`, the `env` argument list (`-u NAME` …) every proof passes to a process it starts, so no such process inherits an App credential, the proof human's included.
@@ -6180,7 +6043,7 @@ Each item below names a function, then what it does.
 ## lib/live-daemon-proof.sh
 
 The run a whole-daemon live proof makes around its driver.
-`merged-root-waits.sh`, `no-required-checks.sh`, `child-adoption.sh`, `ci-red-no-takeover.sh`, `handoff-records.sh`, `provider-error-retry.sh`, `claim-compaction.sh` and `role-prompt-rule.sh` differ only in what their driver proves, so each sets its own values and makes this run.
+`child-adoption.sh`, `conflict-no-takeover.sh`, `handoff-records.sh`, `provider-error-retry.sh`, `claim-compaction.sh` and `role-prompt-rule.sh` differ only in what their driver proves, so each sets its own values and makes this run.
 
 ```sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"     # sourced, never run
@@ -6202,10 +6065,10 @@ On any exit it stops the `nats-server`, removes the work directory and prints `L
 
 | argument | is |
 | :--- | :--- |
-| `LABEL` | the run's name in its last line: `merged root waits`, `no required checks`, `child adoption`, `handoff records`, `provider error retry`, `claim compaction` |
+| `LABEL` | the run's name in its last line: `child adoption`, `conflict no takeover`, `handoff records`, `provider error retry`, `claim compaction` |
 | `SLUG` | the name of the run's own files under `TMPDIR` (or `/tmp` when it is unset): the work directory `legion-e2e-SLUG.<pid>.*`, which holds the broker's store and the driver binary `SLUG.test`, and the evidence directory `legion-e2e-SLUG-evidence.*` when `EVIDENCE` is empty |
 | `TEST` | the one test the driver runs (`-test.run '^TEST$'`); `proof` fails unless the driver reports `--- PASS: TEST`, so a driver that skipped, or a pattern that matched nothing, is no pass |
-| `EVIDENCE` | the evidence directory the script's own variable names (`MERGED_ROOT_WAITS_EVIDENCE_DIR`, `NO_REQUIRED_CHECKS_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CI_RED_NO_TAKEOVER_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
+| `EVIDENCE` | the evidence directory the script's own variable names (`CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
 
 The drivers share their Go harness the same way:
 `internal/daemon/live_proof_test.go` (`-tags e2e`) holds the broker and log variables (`LEGION_E2E_NATS_URL`, `LEGION_E2E_DAEMON_LOG`);

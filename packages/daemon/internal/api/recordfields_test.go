@@ -126,6 +126,16 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		UpdateToldAt:            &answeredAt,
 		UpdateAnsweredByTurnEnd: true, UpdateReaskedForPushCheck: true, UpdateLeftRound: "pod:older",
 		ProviderErrorRun: 6,
+		LastTurnStart:    at.Add(-2 * time.Minute),
+		LastTurnEnd:      at.Add(-30 * time.Second),
+		LastReady:        at.Add(-3 * time.Minute),
+		LastDeathCause:   "the pod was evicted",
+		LastStartFailure: "the launcher refused the start",
+		TurnOutcomes: []supervise.TurnOutcome{{
+			Generation: 3, Sequence: 2, Refused: true, Message: "the provider refused this turn",
+		}},
+		Abandoned:   supervise.AbandonedSession{Session: "ses_implementer_499", Why: "the provider refused every turn of it", At: at.Add(-time.Hour)},
+		SessionLost: true,
 		Step: supervise.StepRecord{
 			At: at.Add(-time.Minute), TurnStartedAt: at.Add(-2 * time.Minute),
 			Tool: "bash", CallID: "toolu_impl_11", ArgsBytes: 128, ArgsHash: "9b2e45c0d1f8a673",
