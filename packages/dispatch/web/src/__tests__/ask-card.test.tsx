@@ -1000,6 +1000,81 @@ test("AskCard dismisses the question-shaped guard when the response becomes an a
   }
 });
 
+// The pair a question-shaped answer offers - Ask back instead, Answer with it anyway - is two
+// more sends of this card, and a picture pasted while that pair stands is not in the draft yet:
+// both wait for it, as Answer and Ask back do. The upload landing is an edit of the draft, so
+// the card is back to its own buttons by then, and the answer it sends carries the picture.
+test("the question-shaped pair waits for a picture still uploading", async () => {
+  const user = userEvent.setup();
+  const submitted: AnswerAskInput[] = [];
+  const replyCalls: CreateCommentInput[] = [];
+  const { promise: landed, resolve: land } = Promise.withResolvers<void>();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockImplementation(async () => {
+    await landed;
+    return { artifact: { name: "shot.png", slug: "shot-png" }, version: { number: 1 } } as never;
+  });
+  const input = ask();
+  const { view } = renderCard(
+    <AskCard
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      ask={input}
+      createReply={async (_issueKey, replyInput) => {
+        replyCalls.push(replyInput);
+        return reply({ ask_id: replyInput.ask_id, body: replyInput.body });
+      }}
+      getAskThread={emptyThread(input)}
+    />
+  );
+
+  try {
+    const field = view.getByLabelText("Your answer") as HTMLTextAreaElement;
+    await user.click(field);
+    await user.paste("How does this fit the release?");
+    await user.click(view.getByRole("button", { name: "Answer" }));
+    const choice = await view.findByRole("group", { name: "Question-shaped answer" });
+    expect(submitted).toEqual([]);
+
+    // user-event's paste carries text, never the file this row uploads.
+    fireEvent.paste(field, { clipboardData: { files: [png("shot.png")] } });
+    await view.findByText("Uploading file…");
+    const anyway = within(choice).getByRole("button", { name: "Answer with it anyway" });
+    const askBack = within(choice).getByRole("button", { name: "Ask back instead" });
+    expect(anyway.hasAttribute("disabled")).toBe(true);
+    expect(askBack.hasAttribute("disabled")).toBe(true);
+    await user.click(anyway);
+    await user.click(askBack);
+    await Bun.sleep(20);
+    expect(submitted).toEqual([]);
+    expect(replyCalls).toEqual([]);
+
+    land();
+    const text =
+      "How does this fit the release? ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)";
+    await waitFor(() => expect(field.value).toBe(text));
+    // The landed text is an edit of the draft, so the card is answering again rather than
+    // offering the pair; the words are still a question, so Answer offers it once more - this
+    // time with nothing holding it, and the answer it sends is the one the picture is in.
+    expect(view.queryByRole("button", { name: "Answer with it anyway" })).not.toBeInTheDocument();
+    await user.click(view.getByRole("button", { name: "Answer" }));
+    const choiceAgain = await view.findByRole("group", { name: "Question-shaped answer" });
+    const anywayAgain = within(choiceAgain).getByRole("button", { name: "Answer with it anyway" });
+    expect(anywayAgain.hasAttribute("disabled")).toBe(false);
+    expect(
+      within(choiceAgain).getByRole("button", { name: "Ask back instead" }).hasAttribute("disabled")
+    ).toBe(false);
+    await user.click(anywayAgain);
+    await waitFor(() =>
+      expect(submitted).toEqual([{ expected_edited_at: null, selected: [], text }])
+    );
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+  }
+});
+
 test("an approval-kind ask labels itself Approval requested and has one reason field", async () => {
   const input = ask({
     kind: "approval",
@@ -2624,5 +2699,70 @@ test("AskCard compact variant hands focus to the row when Answer disables under 
     await view.findByRole("img", { name: "Selected" });
   } finally {
     view.unmount();
+  }
+});
+
+// The lone Answer a compact card draws over a closed note is held by the picture that note is
+// still taking: the upload is the card's own, above the disclosure, so the pick that closes the
+// note - picking an option with nothing typed - cannot leave that send ungated. The answer once
+// the upload lands carries the picture.
+test("the compact card's lone Answer waits for a picture its closed note is still taking", async () => {
+  const user = userEvent.setup();
+  const submitted: AnswerAskInput[] = [];
+  const { promise: landed, resolve: land } = Promise.withResolvers<void>();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockImplementation(async () => {
+    await landed;
+    return { artifact: { name: "shot.png", slug: "shot-png" }, version: { number: 1 } } as never;
+  });
+  const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const { view } = renderCard(
+    <AskCard
+      answerAsk={async (_id, submission) => {
+        submitted.push(submission);
+        return answered(input, submission.selected, submission.text ?? null);
+      }}
+      ask={input}
+      getAskThread={emptyThread(input)}
+      variant="compact"
+    />
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    await user.click(
+      await within(card).findByRole("button", { name: "Add a note or answer in your own words" })
+    );
+    const note = within(card).getByLabelText("Your answer");
+    // user-event's paste carries text, never the file this row uploads.
+    fireEvent.paste(note, { clipboardData: { files: [png("shot.png")] } });
+    await within(card).findByText("Uploading file…");
+
+    // Picking an option with nothing typed closes the note, taking the box the picture was
+    // pasted into off the screen; the lone Answer is all that is left to send by.
+    await user.click(within(card).getByRole("radio", { name: "Ship" }));
+    expect(within(card).queryByLabelText("Your answer")).not.toBeInTheDocument();
+    const answer = within(card).getByRole("button", { name: "Answer" });
+    expect(answer.hasAttribute("disabled")).toBe(true);
+    // What holds it is still on screen, though the box it was pasted into is not.
+    expect(within(card).getByText("Uploading file…")).toBeTruthy();
+    await user.click(answer);
+    await Bun.sleep(20);
+    expect(submitted).toEqual([]);
+
+    land();
+    await waitFor(() => expect(answer.hasAttribute("disabled")).toBe(false));
+    await user.click(answer);
+    await waitFor(() =>
+      expect(submitted).toEqual([
+        {
+          expected_edited_at: null,
+          selected: ["Ship"],
+          text: "![shot.png](dispatch://CORE-1/artifact/shot-png@v1)",
+        },
+      ])
+    );
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
   }
 });

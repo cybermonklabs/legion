@@ -545,8 +545,8 @@ export function AgentThread({
   const uploadOwner = useMemo(() => ({ session: sessionId }), [sessionId]);
   // The picture is in the draft only once the upload lands, so a message sent before that would
   // go without it and the picture's line would join whatever is typed next. Send says the upload
-  // is what holds it, and Enter stands down with it (`submitMode`), so neither way out of this
-  // box sends a message the picture would miss - the rule every upload host keeps
+  // is what holds it and the form refuses the send under it, so neither way out of this box
+  // sends a message the picture would miss - the rule every upload host keeps
   // (`packages/dispatch/AGENTS.md`, `MentionComposer`, `AskAnswerArea`).
   const uploading = upload.pending > 0;
   return (
@@ -626,6 +626,13 @@ export function AgentThread({
           onDragOver={(event) => event.preventDefault()}
           onDrop={(event) => upload.drop(event, uploadOwner)}
           onPaste={(event) => upload.paste(event, uploadOwner)}
+          // Where both ways out of this box arrive - the button's press and Enter, which
+          // assistant-ui's input turns into this form's own submit - so this is the one place a
+          // picture still uploading holds the message: the composer root runs its send only
+          // where this handler has not prevented the default (`composeEventHandlers`).
+          onSubmit={(event) => {
+            if (uploading) event.preventDefault();
+          }}
         >
           <SlashCommands commands={commands ?? []} modes={modes} onPickMode={onPickMode} />
           <div className="flex items-end gap-2">
@@ -633,10 +640,10 @@ export function AgentThread({
               className={`min-h-11 flex-1 rounded-lg px-3 py-2 text-sm ${inputClasses(false)}`}
               placeholder={placeholder}
               rows={1}
-              // `none` while an upload is out: the key reaches assistant-ui's send directly,
-              // which nothing else here can refuse, so the only way to hold it is to take it
-              // out of the box's own keys until the picture is in the draft.
-              submitMode={uploading ? "none" : "enter"}
+              // Enter stays the send's key while a picture uploads: taking it off the box would
+              // hand the reader a stray line break in their message instead of the reason the
+              // send waits, which the form's own refusal above gives them (`onSubmit`).
+              submitMode="enter"
             />
             {/* A submit button, so a click and Enter both reach the form's submit, which the
                 composer root turns into assistant-ui's own send: one way out for a message. */}

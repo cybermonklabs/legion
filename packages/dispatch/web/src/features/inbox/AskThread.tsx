@@ -13,6 +13,7 @@ import {
   textMutedOnSurfaceMuted,
   textPrimaryOnSurfaceMuted,
 } from "../../theme/classes";
+import { appendToDraft, useDraftUpload } from "../artifacts/ArtifactUpload";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -105,6 +106,13 @@ export function AskReplyComposer({
 }): ReactNode {
   const queryClient = useQueryClient();
   const [draft, setDraft] = useReplyDraft(ask.id);
+  // The uploads behind the reply, held by the composer rather than by the box it writes in, as
+  // the ask card holds its answer's (`AskCard.tsx`): the send is this composer's, so what holds
+  // the send is too.
+  const upload = useDraftUpload((text) =>
+    setDraft((current) => ({ ...current, text: appendToDraft(current.text, text) }))
+  );
+  const uploading = upload.pending > 0;
   // Keyed by the ask, so the send outlives the composer that started it and any composer for the
   // ask sees it in flight.
   const mutationKey = ["ask-reply", ask.id];
@@ -142,7 +150,7 @@ export function AskReplyComposer({
       }}
     >
       <AskAnswerArea
-        actions={({ reasonId, uploading }) => (
+        actions={({ reasonId }) => (
           <RefusableButton
             busy={sending ? "Replying…" : uploading ? "Reply" : undefined}
             className="self-start"
@@ -160,6 +168,7 @@ export function AskReplyComposer({
         label="Reply"
         onDraftChange={setDraft}
         refusals={{ reply: refusal }}
+        upload={upload}
         uploadOwner={uploadOwner}
       />
       {submit.isError ? (

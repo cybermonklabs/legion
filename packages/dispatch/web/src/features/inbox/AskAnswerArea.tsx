@@ -10,7 +10,7 @@ import {
 import type { ArtifactOwner } from "../../api/client";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { textMutedOnSurface } from "../../theme/classes";
-import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { type DraftUpload, DraftUploadStatus } from "../artifacts/ArtifactUpload";
 import {
   MentionField,
   type MentionFieldHandle,
@@ -19,22 +19,24 @@ import {
 import type { Draft } from "./draft-store";
 
 /** What the buttons under the area are given: the id of the line already showing each refusal the
- *  host named, by the name the host knows it by, and whether a file the field took is still
- *  uploading. Generic over those names, so a host that reads `reasonId.askBack` where it named
- *  `askback` is a type error rather than a button that silently loses its description. */
+ *  host named, by the name the host knows it by. Generic over those names, so a host that reads
+ *  `reasonId.askBack` where it named `askback` is a type error rather than a button that
+ *  silently loses its description. Whether a picture is still out is the host's own, since the
+ *  upload is (`upload`): a host draws sends this area never sees. */
 export interface AskAnswerActions<Name extends string = string> {
   readonly reasonId: Readonly<Record<Name, string>>;
-  readonly uploading: boolean;
 }
 
 /**
  * The one answer area of an ask: the Conversation tab's own body field and `@` picker
- * (`features/conversation/MentionField.tsx`), the draft behind it, the uploads a file pasted or
- * dropped into it starts, and the line that says why a send refuses. Its two hosts differ only in
- * what they send it with, which they pass as `actions`: the open card's Answer and Ask back
- * (`AskCard.tsx`, which answers through `useAskAnswerForm`), and the reply box under an answered
- * ask (`AskThread.tsx`). The draft itself is the host's - the ask's answer draft or its reply
- * draft (`answer-drafts.ts`, `reply-drafts.ts`) - because the host is what sends it.
+ * (`features/conversation/MentionField.tsx`), the draft behind it, the line that says why a send
+ * refuses, and the host's uploads, which a file pasted or dropped into the field starts. Its two
+ * hosts differ only in what they send it with, which they pass as `actions`: the open card's
+ * Answer and Ask back (`AskCard.tsx`, which answers through `useAskAnswerForm`), and the reply
+ * box under an answered ask (`AskThread.tsx`). The draft itself is the host's - the ask's answer
+ * draft or its reply draft (`answer-drafts.ts`, `reply-drafts.ts`) - and so is the upload behind
+ * it, because the host is what sends them: a compact card's lone Answer stands where this area
+ * is not mounted, and an upload the area held would have left that send ungated.
  *
  * A picked session is stored as a `session:` mention on the draft and goes to the wire as
  * `CreateCommentInput.mentions`, so the comment reaches that session. An answer carries no
@@ -53,6 +55,7 @@ export function AskAnswerArea<Name extends string>({
   onDraftChange,
   placeholder,
   refusals,
+  upload,
   uploadOwner,
 }: {
   readonly actions: (state: AskAnswerActions<Name>) => ReactNode;
@@ -77,6 +80,11 @@ export function AskAnswerArea<Name extends string>({
    *  by: each reason is shown on one line under the field, and `actions` is handed that line's id
    *  for the button's `refusalShownBy`. */
   readonly refusals: Readonly<Record<Name, string | null>>;
+  /** The uploads behind this draft, which the host holds (`useDraftUpload`): a file pasted or
+   *  dropped into the field starts one, the line under the field says one is still out, and the
+   *  host holds its own sends while `upload.pending > 0` - including the ones it draws where
+   *  this area is not mounted. */
+  readonly upload: DraftUpload;
   /** Where a file pasted or dropped into the box goes: the ask's issue, or its document's
    *  project. Without one the field takes a paste as text. */
   readonly uploadOwner?: ArtifactOwner;
@@ -94,9 +102,6 @@ export function AskAnswerArea<Name extends string>({
   );
   const ownFieldRef = useRef<MentionFieldHandle>(null);
   const field = fieldRef ?? ownFieldRef;
-  const upload = useDraftUpload((text) =>
-    onDraftChange((current) => ({ ...current, text: appendToDraft(current.text, text) }))
-  );
   const uploading = upload.pending > 0;
   // One area can be on the page twice (a decision block and the margin sheet, a card and its
   // drawer), so the line each button names is this instance's.
@@ -138,7 +143,7 @@ export function AskAnswerArea<Name extends string>({
           </p>
         )
       )}
-      {actions({ reasonId, uploading })}
+      {actions({ reasonId })}
     </div>
   );
 }

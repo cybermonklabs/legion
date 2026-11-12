@@ -35,6 +35,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
 import type { MentionFieldHandle } from "../conversation/MentionField";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -412,6 +413,16 @@ export function AskCard({
     setAnswerDraft(next);
     setQuestionChoice(false);
   };
+  // The uploads behind this card's answer, held here rather than in the box they are started
+  // in (`AskAnswerArea`): the compact variant unmounts that box when its note disclosure
+  // closes - which is what picking an option with nothing typed does - and an upload that went
+  // with it left the lone Answer drawn over the closed note sending an answer without the
+  // picture (dispatch://INFRA-341, R2). Every send this card draws reads the one `uploading`
+  // below, wherever the button stands.
+  const upload = useDraftUpload((text) =>
+    changeDraft((current) => ({ ...current, text: appendToDraft(current.text, text) }))
+  );
+  const uploading = upload.pending > 0;
   const answerFieldRef = useRef<MentionFieldHandle>(null);
   // Picking Request changes moves the person straight to the field the server insists
   // on. Keyed on the field actually being mounted, not just on the option: the compact variant
@@ -549,8 +560,10 @@ export function AskCard({
   const answerBusy = mutation.isPending ? (changing ? "Saving…" : "Answering…") : undefined;
   /** Answer, in each place this card draws it: inside the answer area, and as the lone button a
    *  compact card shows over a closed note disclosure. Only its own send, or an upload the draft
-   *  is waiting on, disables it; every other reason it cannot be pressed it states and refuses. */
-  const submitButton = (shownBy: string | undefined, uploading: boolean) => (
+   *  is waiting on, disables it; every other reason it cannot be pressed it states and refuses.
+   *  The upload it waits on is the card's (`uploading`), not the box's, so both places are held
+   *  by the same picture and neither can be drawn without the gate. */
+  const submitButton = (shownBy: string | undefined) => (
     <RefusableButton
       busy={answerBusy ?? (uploading ? answerLabel : undefined)}
       className="min-h-11"
@@ -561,15 +574,15 @@ export function AskCard({
       {answerLabel}
     </RefusableButton>
   );
-  const answerActions = ({
-    reasonId,
-    uploading,
-  }: AskAnswerActions<AnswerRefusalName>): ReactNode =>
+  const answerActions = ({ reasonId }: AskAnswerActions<AnswerRefusalName>): ReactNode =>
     questionChoice ? (
+      // The pair a question-shaped answer offers is two more sends of this card, so a picture
+      // the draft is still taking holds them both, in the shape their siblings keep: the label
+      // stands and the press is taken away until the upload lands (`submitButton`, Ask back).
       <fieldset aria-label="Question-shaped answer" className="flex gap-2">
         <button
           className={`min-h-11 ${primaryButton}`}
-          disabled={isSubmitting}
+          disabled={isSubmitting || uploading}
           onClick={sendClarification}
           ref={(node) => node?.focus()}
           type="button"
@@ -577,7 +590,7 @@ export function AskCard({
           {clarification.isPending ? "Sending…" : "Ask back instead"}
         </button>
         <RefusableButton
-          busy={mutation.isPending ? "Answering…" : undefined}
+          busy={mutation.isPending ? "Answering…" : uploading ? "Answer with it anyway" : undefined}
           look="secondary"
           onPress={() => sendAnswer(answerText)}
           refusal={answerRefusal}
@@ -588,7 +601,7 @@ export function AskCard({
       </fieldset>
     ) : (
       <div className="flex gap-2">
-        {submitButton(reasonId.answer, uploading)}
+        {submitButton(reasonId.answer)}
         {changing ? (
           <button
             className={secondaryButton}
@@ -611,10 +624,10 @@ export function AskCard({
         )}
       </div>
     );
-  /** The card's half of the one answer area (`AskAnswerArea.tsx`): the field, the `@` picker,
-   *  the draft and the uploads are the area's, and these submits are the card's, because Answer,
-   *  Save answer and Ask back all post through `useAskAnswerForm` rather than as a comment of
-   *  the box's own. */
+  /** The card's half of the one answer area (`AskAnswerArea.tsx`): the field, the `@` picker and
+   *  the draft are the area's, and these submits are the card's, because Answer, Save answer and
+   *  Ask back all post through `useAskAnswerForm` rather than as a comment of the box's own. The
+   *  upload is the card's too, since a send of the card's stands where this area does not. */
   const answerArea = (
     <AskAnswerArea
       actions={answerActions}
@@ -638,6 +651,7 @@ export function AskCard({
               askBack: changing ? null : clarificationRefusal,
             }
       }
+      upload={upload}
       uploadOwner={uploadOwner}
     />
   );
@@ -841,14 +855,17 @@ export function AskCard({
           <>
             {selected.length === 0 || ownWordsOpen ? null : (
               // Over a closed disclosure there is no box and so no area: the lone Answer still
-              // says why it refuses, on a line of this card's own.
+              // says why it refuses, and what holds it, on lines of this card's own. The upload
+              // outlives the box it was started in, so the picture still being taken says so
+              // here rather than disappearing with the note it was pasted into.
               <div className="space-y-2">
+                <DraftUploadStatus upload={upload} />
                 {answerRefusal === null ? null : (
                   <p className={`text-xs ${textMutedOnSurface}`} id={loneAnswerReasonId}>
                     {answerRefusal}
                   </p>
                 )}
-                {submitButton(loneAnswerReasonId, false)}
+                {submitButton(loneAnswerReasonId)}
               </div>
             )}
             <div>

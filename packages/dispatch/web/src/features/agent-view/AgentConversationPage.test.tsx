@@ -1966,9 +1966,9 @@ test("with an empty box Send is refused, says why on screen, and sends nothing",
 
 // A picture still uploading is not in the draft yet, so a message sent then would go without it
 // and the picture's line would land in the next, empty draft. Send names the upload and takes no
-// press, and the box's Enter stands down with it - it adds a line to the draft, as it does in
-// every composer whose send is a modified Enter - so neither way out sends. The message once the
-// upload lands carries the picture.
+// press, and Enter - the send's own key in this one box - is refused by the form it submits
+// rather than handed back to the box, so the reader gets the reason the send waits instead of a
+// stray line break in their message. The message once the upload lands carries the picture.
 test("the live view's send waits for a pasted picture still uploading, by Send and by Enter", async () => {
   const user = userEvent.setup();
   const createAgentMessage = acceptSends();
@@ -2001,10 +2001,13 @@ test("the live view's send waits for a pasted picture still uploading, by Send a
   await user.keyboard("{Enter}");
   await Bun.sleep(50);
   expect(createAgentMessage).not.toHaveBeenCalled();
-  expect(composerInput().value).toBe("Look\n");
+  // The key the send owns is refused, not given to the box: nothing is typed into the draft.
+  expect(composerInput().value).toBe("Look");
+  // And what holds the send is on screen under the box the picture was pasted into.
+  expect(within(composer()).getByRole("status").textContent).toBe("Uploading file…");
 
   land();
-  const body = `Look\n![shot.png](dispatch://agent/${SESSION}/artifact/shot-png@v1)`;
+  const body = `Look ![shot.png](dispatch://agent/${SESSION}/artifact/shot-png@v1)`;
   await waitFor(() => expect(composerInput().value).toBe(body));
   await user.click(composerInput());
   await user.keyboard("{Enter}");
