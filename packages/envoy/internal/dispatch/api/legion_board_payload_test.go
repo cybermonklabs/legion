@@ -45,6 +45,12 @@ func boardAtInfraSize(t *testing.T, options testServerOptions) (http.Handler, *s
 	return handler, database, fixture
 }
 
+// boardFactsBuild is the build the consumer below runs under: the string it records against
+// each project it reads whole and compares on the passes after that (legionfacts.Deps.Build).
+// One string for one process, as a build is, and never the empty string, which the loop
+// refuses.
+const boardFactsBuild = "legion-envoy-v0.0.0-board-test-build"
+
 // runLegionFactsConsumer runs the facts consumer (legionfacts.Run, the loop the server runs)
 // until the project holds want stored rows, then stops it and waits for it to return. Every
 // measurement after it reads rows that loop wrote and that no loop is rewriting.
@@ -60,6 +66,7 @@ func runLegionFactsConsumer(t *testing.T, database *store.Store, project string,
 		defer close(stopped)
 		legionfacts.Run(ctx, legionfacts.Deps{
 			Pool:    database.Pool,
+			Build:   boardFactsBuild,
 			Horizon: events.NewHorizon(database.Pool),
 			Leases:  leases,
 		})

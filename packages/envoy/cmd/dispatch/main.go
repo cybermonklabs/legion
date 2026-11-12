@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -19,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -79,15 +81,28 @@ var buildCommit string
 // legionProjects says why a pass under a build that record does not name reads the project
 // whole again.
 //
-// It is buildCommit where the image build stamped one. Every other build leaves buildCommit
-// empty and takes buildversion.String(), which answers one string for as long as the process
-// runs.
-func processBuild() string {
+// It is buildCommit where the image build stamped one. Every process of one release then
+// answers that one commit, so the fleet reads each project whole once per release and sweeps
+// it after that.
+//
+// Every other build leaves buildCommit empty, and the string is then what buildversion answers
+// with a suffix this process drew at its start. buildversion answers the release tag where a
+// release stamped one, `devel (<commit>)` where go build read a checkout, and `devel` where it
+// read none, which is every image a local compose file builds. Each of those names a binary
+// rather than a run of it, so two runs of one unstamped binary would be one build without the
+// suffix. The suffix makes them two builds: a developer who edits the phase-work rule
+// (legion/session_title.go, legion.PhaseWorkKeys) and restarts has every project read whole
+// under the edited rule, rather than swept against the record the run before it left. What that
+// read costs is in legionfacts/scope.go's legionProjects.
+//
+// It answers one string for as long as the process runs: the loop compares the string it
+// recorded, and a process that answered two would read every project whole on every pass.
+var processBuild = sync.OnceValue(func() string {
 	if buildCommit != "" {
 		return buildCommit
 	}
-	return buildversion.String()
-}
+	return buildversion.String() + " " + rand.Text()
+})
 
 type bootConfig struct {
 	DatabaseURL string

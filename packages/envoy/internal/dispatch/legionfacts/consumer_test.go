@@ -12,9 +12,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 )
 
-// testBuild is the build every test's loop runs under unless the test moves it: one string for
-// one process, as a build is (Deps.Build). A test that needs two builds over one database sets
-// run.deps.Build before each pass (build_identity_test.go).
+// testBuild is the build every test's loop runs under: one string for one process, as a build
+// is (Deps.Build), and never the empty string, which the loop refuses (run). A check that needs
+// a second build writes that build into the project's record instead of moving this one
+// (build_whole_read_test.go's otherBuild), and the check of the build a released binary carries
+// starts two stamped binaries rather than one process
+// (cmd/dispatch's TestASecondReleaseReadsTheProjectWholeAndRecordsItsOwnCommit).
 const testBuild = "legion-envoy-v0.0.0-test-build"
 
 // consumer is one test's loop: the seeded history, the Deps a pass reads through, and the clock

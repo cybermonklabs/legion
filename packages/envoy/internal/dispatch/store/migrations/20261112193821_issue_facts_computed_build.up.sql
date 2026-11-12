@@ -7,11 +7,14 @@
 -- (legionfacts.legionProjects).
 --
 --   computed_build  the build that made the whole read: the commit the image build stamped into
---                   the binary, 40 hex characters, and for a build no release stamped the
---                   string internal/buildversion answers (cmd/dispatch's processBuild, which
---                   hands it to the consumer). It is written in the same transaction as
---                   computed_at, as that pass's rows and as its cursors, so a pass that failed
---                   leaves the build of the pass before it.
+--                   the binary, 40 hex characters, and for a build no release stamped, a
+--                   string of that one process (cmd/dispatch's processBuild, which hands it to
+--                   the consumer). It is written in the same transaction as computed_at, as
+--                   that pass's rows and as its cursors, so a pass that failed leaves the
+--                   build of the pass before it. It is null on every row this migration finds,
+--                   and on no row a pass writes: the consumer refuses an empty build where its
+--                   loop starts and writes the build the pass ran under
+--                   (legionfacts.Deps.Build, legionfacts.markComputedWhole).
 --
 -- The rule that decides which issues carry Legion phase work lives in the build: the role names
 -- and the title shape of legion/session_title.go, which legion.ParseSessionTitle reads, and
@@ -29,18 +32,20 @@
 -- and then fails every consumer pass on the missing column. This migration reaches that
 -- database and the fresh one alike.
 --
--- The default is the empty string, which no deployed build answers: processBuild gives the
--- image's commit, and every other build gives what internal/buildversion answers, which is
--- never empty. Every row this migration fills with the default therefore holds a build that is
--- not the build of any pass, so each project is read whole once under the first build to work
--- it after this migration, and is swept from then on. That is the pass R9 asks of a project
--- whose mark names no build the running process is.
+-- The column has no default, so every row that already exists reads null for it. The pass
+-- compares with `is distinct from`, and null is distinct from every build string, so each of
+-- those projects is read whole once under the first build to work it after this migration and
+-- is swept from then on. That is the pass R9 asks of a project whose mark names no build the
+-- running process is. The column holds no "no build" string of its own, because any string it
+-- held would be a value a pass could carry: a pass under that same string would compare equal
+-- to a migrated row and sweep the project R9 says to read whole. Null is a value no pass can
+-- carry, and the consumer refuses the empty string, so the two forms of "no build" are one.
 --
--- One column with a constant default: Postgres records the default in the catalog and rewrites
--- no row, and the migration reads none. The release before this one neither reads nor writes
+-- One column with no default: Postgres records the column in the catalog and rewrites no row,
+-- and the migration reads none. The release before this one neither reads nor writes
 -- issue_facts_computed, because that table arrives with this release, so the two builds roll
 -- together. The census answers 0, and rolling back past it is an image rollback alone. While a
 -- release after this one rolls, the old build and the new one take the consumer's lease in turn
 -- and this one column holds one build, so each pass reads the projects whole again under its
 -- own build until the older process stops (legionfacts.legionProjects says what that costs).
-alter table issue_facts_computed add column computed_build text not null default '';
+alter table issue_facts_computed add column computed_build text;

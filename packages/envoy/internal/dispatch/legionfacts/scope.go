@@ -60,12 +60,23 @@ import (
 // are two commits, so a release compares different from the record the release before it left,
 // and reads each project whole once under its own commit.
 //
-// A build no release stamped answers one string of its own, which cmd/dispatch reads from
-// internal/buildversion (processBuild). A developer's `go run`, a `go build` with no ldflags
-// and a test binary therefore all answer something, and that answer holds for as long as the
-// process runs. Two such builds may answer the same string. That costs them one whole read of
-// each project and nothing after it, because a developer's database is not the deployment this
-// rule protects.
+// A build no release stamped answers a string of that one process: cmd/dispatch takes what
+// internal/buildversion answers - `devel` for a build made outside a checkout, which is every
+// image a local compose file builds - and adds a suffix drawn when the process starts
+// (processBuild). A developer's `go run`, a `go build` with no ldflags and a test binary
+// therefore each answer a string no other process answers, and each start reads every project
+// whole once before it sweeps.
+//
+// That costs a developer one whole read per project per restart, which is 286 ms over the 252
+// issues measured below. It buys the thing the comparison is for: the rule that decides which
+// issues carry Legion phase work lives in the binary, so a developer who edits
+// legion/session_title.go or legion.PhaseWorkKeys and restarts reads every project whole under
+// the edited rule. Were the string the same across restarts, that developer's next process
+// would find its own record, sweep every project, and read facts the rule before the edit
+// wrote, with nothing on screen to say so. 286 ms a restart is the cheaper of the two
+// mistakes, so the suffix errs on reading rather than on sweeping. A stamped build is the
+// other side of it: its string is the image's commit, which every process of that release
+// shares, so the second of them to start sweeps the projects the first read whole.
 //
 // A settled deployment pays one whole project read per build per project: the build that read a
 // project whole sweeps that project on every pass after it. Over the pod's test Postgres a

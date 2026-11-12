@@ -102,11 +102,12 @@ type Deps struct {
 	Horizon *events.Horizon
 	// Build names the build this process is, which the loop records against each project it
 	// reads whole and compares on every pass after that (legionProjects). The server gives it
-	// the commit the image build stamped into the binary, and every other build gives it the
-	// string internal/buildversion answers (cmd/dispatch's processBuild). A Deps that leaves
-	// it empty names no build at all, as a test rig does: the loop then reads each project
-	// whole once and sweeps it from then on, because one empty string compares equal to the
-	// next.
+	// the commit the image build stamped into the binary, and a build no release stamped gives
+	// it a string of that one process (cmd/dispatch's processBuild). The empty string is no
+	// build: the loop refuses it where it starts (run), because a pass that carried it would
+	// record "no build" against every project it read whole, and the next process to carry it
+	// - another binary, holding another phase-work rule - would compare equal to that record
+	// and sweep the projects R9 says to read whole.
 	Build string
 	// Leases is the pool a pass takes its lease connection from (duty.Exclusive).
 	Leases duty.Leases
@@ -164,6 +165,15 @@ func Run(ctx context.Context, deps Deps) {
 }
 
 func run(ctx context.Context, deps Deps, sched schedule) {
+	// The build is what every pass compares and records. A loop with no build records "no
+	// build" against each project it reads whole, and the next process that also carries none
+	// finds its own record and sweeps those projects, although another binary holds another
+	// phase-work rule. It is a caller's mistake and never a deployment's: cmd/dispatch's
+	// processBuild answers a commit or a string of its own process, and neither is empty.
+	// Refusing it here keeps a rig from passing it as well.
+	if deps.Build == "" {
+		panic("legionfacts: Deps.Build is empty, and the loop needs the build this process is")
+	}
 	ctx = store.WithTransactionTracking(ctx)
 	duty.RunWoken(ctx, duty.WokenLoop{
 		Lease:  Lease,
