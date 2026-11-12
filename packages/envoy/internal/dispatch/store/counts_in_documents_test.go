@@ -133,9 +133,10 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 // written from the constants too. Nothing of the sum is a literal here, so the day a pool moves
 // the entry moves with it and the sentence is held to the new value rather than to the old one.
 //
-// The generated count is asserted rather than assumed: a loop that produced no entry, or one
-// entry too few, would leave the sum unread while every other row passed, which is the quietest
-// way a guard stops guarding.
+// How many terms the sum has is read from the document rather than from the loop below, because
+// a guard whose expectation and whose observation come from one source cannot fail: a term added
+// to the README and not to this list would leave the sum unread while every other row passed,
+// which is the quietest way a guard stops guarding.
 func sumTerms(t *testing.T, root, readme, number string) []docnumbers.Stated {
 	t.Helper()
 	terms := []struct {

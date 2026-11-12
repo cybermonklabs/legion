@@ -388,6 +388,10 @@ RULES = {
         ("docs/site/src/content/docs/dispatch/running-dispatch.md",
          "internal/dispatch/processes/counts_in_documents_test.go reads it: the cadences it "
          "states must equal processes.HeartbeatInterval and processes.LiveWindow")),
+    f"{ENVOY}/internal/pgmigrate/counts_in_documents_test.go": reads(
+        ("docs/site/src/content/docs/dispatch/running-dispatch.md",
+         "internal/pgmigrate/counts_in_documents_test.go reads it: how long a migration waits "
+         "for its lock, which that page states and pgmigrate.LockTimeout decides")),
     f"{ENVOY}/internal/smoke/rdsbundle_test.go": [
         run(ENVOY, ["./internal/smoke/systemroots"], "internal/smoke/rdsbundle_test.go:36-41 cmdtest.BuildCommand ./systemroots CGO_ENABLED=0 GOOS=linux",
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"}),
