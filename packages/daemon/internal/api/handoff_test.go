@@ -1289,37 +1289,66 @@ func TestHandoffCompleteRefusesAREADYPacketDispatchWouldRefuseAndAppliesTheShort
 }
 
 // The packet the route measures is the post the outbox makes of it: the packet with the row's own
-// marker after it (record.MessagePost.Posted). Two packets Dispatch takes on their own make a
-// post it refuses — one of as many lines with text in them as Dispatch holds a body to blocks,
-// where the marker is one block more, and one ending inside an open code fence, where the marker
-// is code inside the last block — and each is refused at the merger's completion with nothing
-// recorded, so the issue stays in merging and the shortened packet is applied.
-func TestHandoffCompleteRefusesAREADYPacketTheOutboxsMarkerCarriesOverTheBounds(t *testing.T) {
+// marker after it (record.MessagePost.Posted), and the code it answers is the one that post
+// earns. Two packets Dispatch takes on their own make a post it refuses — one of as many lines
+// with text in them as Dispatch holds a body to blocks, where the marker is one block more, and
+// one ending inside an open code fence, where the marker is code inside the last block — and each
+// is READY_PACKET_TOO_LONG. A packet holding a decision block is READY_PACKET_DECISION_BLOCK
+// however short it is, since a question in a message is one nobody can answer; that refusal names
+// the block and where the question belongs, and asks neither for a shorter packet nor for less of
+// what the packet quotes (INFRA-1201). Its post is refused too, and for the same block: the
+// marker the outbox appends is an HTML comment, which the document parser refuses, and the
+// server reads a refused body for the card its reader would draw all the same
+// (pmdoc.FindDecisionCard). Each refusal records nothing — no fact and no outbox row — so the
+// issue stays in merging and the corrected packet is applied.
+func TestHandoffCompleteRefusesAREADYPacketForWhatItsPostHolds(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h, facts := newHandoffHarness(t, github, nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Merging)
 	seedPullRequest(t, h, "LEGION-208", headSHA)
 	seedApproval(t, h, "LEGION-208", approvedSHA)
 	merger := newLiveClaim(t, h, "LEGION-208", claim.RoleMerger)
-	for _, tc := range []struct{ name, summary, want string }{
-		{"a packet of as many lines with text in them as Dispatch holds a body to blocks",
-			strings.TrimSuffix(strings.Repeat("y\n\n", dispatchbody.ItemBlocks), "\n\n"),
-			fmt.Sprintf("body is 1 blocks over the %d-block limit", dispatchbody.ItemBlocks)},
-		{"a packet that ends inside an open code fence",
-			"see log\n\n```\n" + strings.Repeat("y", 31980),
-			fmt.Sprintf("block 2 (code_block) is 28 characters over the %d-character block limit", dispatchbody.BlockUnits)},
+	for _, tc := range []struct {
+		name, summary, code   string
+		takenAlone, postTaken bool
+		want, absent          []string
+	}{
+		{name: "a packet of as many lines with text in them as Dispatch holds a body to blocks",
+			summary: strings.TrimSuffix(strings.Repeat("y\n\n", dispatchbody.ItemBlocks), "\n\n"), code: "READY_PACKET_TOO_LONG", takenAlone: true,
+			want: []string{fmt.Sprintf("body is 1 blocks over the %d-block limit", dispatchbody.ItemBlocks)}},
+		{name: "a packet that ends inside an open code fence",
+			summary: "see log\n\n```\n" + strings.Repeat("y", 31980), code: "READY_PACKET_TOO_LONG", takenAlone: true,
+			want: []string{fmt.Sprintf("block 2 (code_block) is 28 characters over the %d-character block limit", dispatchbody.BlockUnits)}},
+		{name: "a packet holding a decision block",
+			summary: "Verification stands at the head.\n\n" + theDecisionBlock + "\n", code: "READY_PACKET_DECISION_BLOCK",
+			want: []string{"the READY packet holds a decision block", "body block 2 (ask) holds a decision block, which nobody can answer where it stands",
+				"ask the question in the issue's own document, as a decision block there, or open an ask with `dispatch ask`"},
+			absent: []string{"shorten", "quot"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if over := dispatchbody.Check(record.ReadyPacket(tc.summary, "")); over != nil {
-				t.Fatalf("the packet on its own = %v, want a body Dispatch takes: the post is what passes the bound", over)
+			if onItsOwn := dispatchbody.Check(record.ReadyPacket(tc.summary, "")); (onItsOwn == nil) != tc.takenAlone {
+				t.Fatalf("the packet on its own = %v, want Dispatch taking it alone %t", onItsOwn, tc.takenAlone)
+			}
+			if post := dispatchbody.Check(record.LongestPost(record.ReadyPacket(tc.summary, ""))); (post == nil) != tc.postTaken {
+				t.Fatalf("the post of the packet = %v, want Dispatch taking the post %t", post, tc.postTaken)
 			}
 			refusal := refused(t, h.complete(HandoffCompleteRequest{GrantID: merger.grant(t), Summary: tc.summary, Ready: true, Commit: headSHA}),
-				http.StatusBadRequest, "READY_PACKET_TOO_LONG")
-			if !strings.Contains(refusal, tc.want) {
-				t.Fatalf("refusal = %q, want it naming %q", refusal, tc.want)
+				http.StatusBadRequest, tc.code)
+			for _, want := range tc.want {
+				if !strings.Contains(refusal, want) {
+					t.Fatalf("refusal = %q, want it naming %q", refusal, want)
+				}
+			}
+			for _, absent := range tc.absent {
+				if strings.Contains(refusal, absent) {
+					t.Fatalf("refusal = %q, want no word of %q: the packet is refused for what it holds, not for its length", refusal, absent)
+				}
 			}
 			if got := facts.recorded(); len(got) != 0 {
 				t.Fatalf("handoff facts after the refusal = %#v, want none recorded", got)
+			}
+			if rows := outboxRowsOf(t, h, "LEGION-208"); rows != 0 {
+				t.Fatalf("outbox rows after the refused completion = %d, want none", rows)
 			}
 		})
 	}
