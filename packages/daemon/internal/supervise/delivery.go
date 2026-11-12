@@ -1012,17 +1012,12 @@ const (
 	taskUnread = false
 )
 
-// ordinaryEnd is interrupted's outOfMemory at a call site that is no report of a pod's end. Two
-// of them end the turn of a process that is still running — one replaced mid-turn, and one a
-// held suspension's deadline stops — where nothing ended the pod's container, so the end was
-// not the pod running out of memory. The third ends the turn of a process the daemon has
-// already found gone, where the suspension of a claim no process stands behind takes that
-// turn's task back (suspendOverADeadProcess): the verdict that found the process gone is not
-// kept, so whether that pod ran out of memory cannot be read here, and the task goes back
-// without the note. The window where that costs anything is narrow — the take-back died could
-// not write, since a take-back that landed left the task unconfirmed and this one writes
-// nothing (interrupted). A death and a displacement pass the observation's own OutOfMemory
-// instead.
+// ordinaryEnd is interrupted's outOfMemory at a call site that ends the turn of a process still
+// running — one replaced mid-turn, for a stale address, a stale plugin, a stalled turn or a paced
+// launch whose turn has come, or one a held suspension's deadline stops — where nothing ended the
+// pod's container, so the end was not the pod running out of memory. A death and a displacement
+// pass the observation's own OutOfMemory instead, and the suspension that lands over a process a
+// report found gone passes what that report recorded (suspendOverADeadProcess, goneOutOfMemory).
 const ordinaryEnd = false
 
 // markRead and clearReadMark are the only writers of the pending task's read mark: its

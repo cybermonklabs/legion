@@ -1444,12 +1444,14 @@ func TestWhatTheRuntimeLastReportedOfTheKeptProcessGoesWithEveryPathThatChangesI
 // and not the other (judge, reportedProcess). The window that turns on it is a park a stale
 // address raised — that verdict found the process alive, so it cleared the record — over a
 // process that then dies. If the park's own turn is refused, the claim is left stored working
-// over a dead process, and this record is the whole of what tells it from a claim in a turn
-// (Claim.ProcessGone, api's refuseState and freshSession).
+// over a dead process, and this record is what the machine's own side tells it from a claim in
+// a turn by: a suspension reaching it lands where it arrives rather than being held for a turn
+// that will never end (Claim.ProcessGone, holdSuspension). The recovery doors read the process
+// itself at the request (ReadProcess), so they do not turn on this record.
 //
 // The negative control is the record put back behind the guard (judge's launchWaits): the
-// claim then reports its process running after a death the park dropped, and both recovery
-// doors answer it "in a turn" until the next sweep.
+// claim then reports its process running after a death the park dropped, and a suspension of
+// it is held for a turn nothing is running until the next sweep reports the death again.
 func TestADeathReportedWhileALaunchWaitsItsTurnIsRecordedForTheClaimItMayLeave(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateWorking)

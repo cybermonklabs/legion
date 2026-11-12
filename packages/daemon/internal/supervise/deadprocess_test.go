@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -224,6 +225,81 @@ func TestASuspendOverADeadProcessAfterARestartLandsOnceTheReadFindsItGone(t *tes
 		t.Errorf("the claim holds %+v, want the task of the dead turn back unconfirmed and marked interrupted", p)
 	}
 	h.wantBudgets(Budgets{})
+}
+
+// The recovery's read can be the first report of a death there is: no sweep has reported it yet,
+// or a restart forgot the one that did. No death was judged then (died), so the suspension that
+// lands over the process does died's work for it (suspendOverADeadProcess): it sends the clean
+// stop of the dead process's Envoy session (sessionGone), and it takes the dead turn's task back
+// with the note of the end the read found (goneOutOfMemory). A pod that ran out of memory is the
+// commonest end of a process in that window, so both verdicts of gone are asked, in both windows.
+//
+// The negative controls are the stop dropped from the suspension, where the listener would keep
+// the dead session's role and issue claims while the fresh session forgets its id, and the
+// verdict's OutOfMemory not recorded, where the out-of-memory row would send the task back
+// without its note.
+func TestASuspendOverAProcessTheReadFoundGoneStopsTheDeadSessionAndKeepsTheEndsNote(t *testing.T) {
+	for _, window := range []struct {
+		name    string
+		restart bool
+	}{
+		{"before any sweep reported the death", false},
+		{"after a restart forgot the report", true},
+	} {
+		for _, verdict := range []struct {
+			name        string
+			outOfMemory bool
+		}{
+			{"the process is gone", false},
+			{"the pod ran out of memory", true},
+		} {
+			t.Run(window.name+": "+verdict.name, func(t *testing.T) {
+				h, stopped := sessionStops(t)
+				h.reach(StateWorking)
+				if window.restart {
+					h.restart()
+				}
+				h.wantState(StateWorking)
+				held := h.pending()
+				if held.ConfirmedAt.IsZero() || held.Interrupted {
+					t.Fatalf("the claim holds %+v, want the task of a turn in flight, confirmed", held)
+				}
+				if len(*stopped) != 0 {
+					t.Fatalf("stopped sessions %v before the read, want none: no death has been judged", *stopped)
+				}
+				h.rt.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone, OutOfMemory: verdict.outOfMemory})
+				if got := h.m.ReadProcess(h.ctx); got != ProcessGone {
+					t.Fatalf("the read of the claim's process answered %q, want %q", got, ProcessGone)
+				}
+
+				if err := h.handle(RequestSuspend{Claim: testToken, Reason: "a fresh session was asked for",
+					By: SuspendedByOperator, NeverHold: true}); err != nil {
+					t.Fatalf("the suspension over the process the read found gone returned %v, want it landed", err)
+				}
+
+				h.wantState(StateSuspended)
+				if !slices.Equal(*stopped, []string{session}) {
+					t.Errorf("stopped sessions %v, want the dead process's own session once", *stopped)
+				}
+				p := h.pending()
+				if p.ID == held.ID || !p.ConfirmedAt.IsZero() || !p.Interrupted || p.OutOfMemory != verdict.outOfMemory {
+					t.Errorf("the claim holds %+v, want the dead turn's task back under a new id, unconfirmed, interrupted and marked out of memory %v",
+						p, verdict.outOfMemory)
+				}
+				want := interruptedTask + held.Task
+				if verdict.outOfMemory {
+					want = interruptedTask + outOfMemoryTask + held.Task
+				}
+				if got := p.message(); got != want {
+					t.Errorf("the task taken back is sent as %q, want %q", got, want)
+				}
+				if stored := h.store.load(testToken).Pending; stored == nil || stored.OutOfMemory != verdict.outOfMemory {
+					t.Errorf("the stored task is %+v, want it marked out of memory %v", stored, verdict.outOfMemory)
+				}
+				h.wantBudgets(Budgets{})
+			})
+		}
+	}
 }
 
 // A claim whose process is running keeps the answers it has today, which is what the landing

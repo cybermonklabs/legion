@@ -335,18 +335,31 @@ func (m *Machine) endHeld(ctx context.Context) error {
 // what a death with a suspension already held does (died, endHeld), in the order died does it and
 // for a suspension that arrives after the death rather than before it.
 //
-// The task of the dead turn goes back to waiting first, unconfirmed and under a new id, exactly as
-// a death in a turn takes it back (interrupted): the turn ran, the agent read the task, and no
-// process finished it. A take-back the store will not write stops everything — nothing is stopped
-// and the claim is left as it stands, as died leaves it — so the caller's next request takes it
-// back then, rather than this leaving a suspended claim holding a task settle would retire as a
-// finished turn.
+// The clean stop of the dead process's Envoy session is sent first, as died sends it
+// (sessionGone). The report that found the process gone may be no death died judged: where the
+// recovery's own read is the first to find it (ReadProcess) — after a restart, or before any
+// sweep has reported it — this is the one place the stop is sent, and without it the listener
+// would keep the dead session's role and issue claims while the fresh session forgets that
+// session's id. Where died did judge the death, the stop goes again for a registration already
+// ended, which tells the listener nothing new.
 //
-// Nothing is charged, as endHeld charges nothing: the death this claim stands over was charged
-// where it was judged, or found to have nothing to charge (died, Claim.DeathCharged), and a
-// suspension is no launch failure of its own.
+// The task of the dead turn goes back to waiting next, unconfirmed and under a new id, exactly as
+// a death in a turn takes it back (interrupted): the turn ran, the agent read the task, and no
+// process finished it. It carries the note of a pod that ran out of memory where the report that
+// found the process gone said so (goneOutOfMemory), as died's take-back does. A take-back the
+// store will not write stops everything — nothing is stopped and the claim is left as it stands,
+// as died leaves it — so the caller's next request takes it back then, rather than this leaving
+// a suspended claim holding a task settle would retire as a finished turn.
+//
+// Nothing is charged, as endHeld charges nothing. Where died judged the death it was charged
+// there, or found to have nothing to charge (Claim.DeathCharged). Where the read is the first to
+// find it no judgement ran, and that death is charged nothing at all: the suspension is an
+// operator's or a controller's explicit act of recovery, and charging it would walk the claim
+// toward the deaths limit for a death the daemon is being asked to recover from. A suspension is
+// no launch failure of its own either.
 func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSuspend) error {
-	if err := m.interrupted(ctx, "the process the task's turn ran on is gone", ordinaryEnd); err != nil {
+	m.sessionGone()
+	if err := m.interrupted(ctx, "the process the task's turn ran on is gone", m.goneOutOfMemory); err != nil {
 		return err
 	}
 	return m.letProcessGoFor(ctx, request)

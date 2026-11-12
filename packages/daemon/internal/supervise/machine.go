@@ -717,12 +717,13 @@ type Deps struct {
 	// the machine's decision, so it returns at once.
 	TaskConfirmed func(c Claim)
 	// SessionGone is told the Envoy session a claim recorded, once a probe has judged the agent
-	// process behind it gone (died): the daemon's clean stop of that session's registration, which
-	// makes the listener read it `gone` at once rather than at the end of its live window
-	// (dispatch://INFRA-392). The claim's own session id is what it carries, read before any path
-	// that clears it (forgetSession). Nil tells no one — a daemon with no Envoy listener — and a
-	// claim that recorded no session tells nothing. It is called inside the machine's decision, so
-	// it returns at once and does the call elsewhere.
+	// process behind it gone (died), or a suspension has landed over a process a report found
+	// gone that no such judgement reached (suspendOverADeadProcess): the daemon's clean stop of
+	// that session's registration, which makes the listener read it `gone` at once rather than at
+	// the end of its live window (dispatch://INFRA-392). The claim's own session id is what it
+	// carries, read before any path that clears it (forgetSession). Nil tells no one — a daemon
+	// with no Envoy listener — and a claim that recorded no session tells nothing. It is called
+	// inside the machine's decision, so it returns at once and does the call elsewhere.
 	SessionGone func(session string)
 	// StallBackstopped is told of each turn the daemon's stall backstop did something to
 	// (backstopStalledTurn), with the record it acted on and the end it made: the owner's notice
@@ -1008,6 +1009,14 @@ type Machine struct {
 	// death is the claim's own and durable, because a restart must not charge it again
 	// (Claim.DeathCharged).
 	processGone bool
+	// goneOutOfMemory is whether the report that set processGone found that process's pod ended
+	// for running out of memory (runtime.Observation.OutOfMemory), and false wherever processGone
+	// is: written and cleared with it (reportedProcess, letGo). It is kept for the one path that
+	// takes the dead turn's task back after the report rather than at it — a suspension that
+	// reaches the claim over that process (suspendOverADeadProcess) — so the task goes back with
+	// the note the death would have given it (interrupted, outOfMemoryTask). It is memory only,
+	// as processGone is, and for the same reason.
+	goneOutOfMemory bool
 	// previous is the incarnation the claim last ran and no longer records — stopped by a
 	// suspension, retired, failed on, or found dead — which every launch of the same session hands
 	// the runtime to wait out until one starts. letGo is the one way a process gets here. It is
@@ -2103,10 +2112,11 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // with the deaths it charged in the same statement: a claim restored from the store is charged
 // exactly what the daemon before it charged (Claim.DeathCharged).
 //
-// This is the one judgement that the agent behind the claim's Envoy session has ended, so it is
-// where the session's clean stop is sent (sessionGone): a connection closing is not — a daemon
-// restart closes every stream while the agents run on — and the probe that reaches here is what
-// tells the two apart.
+// This is the judgement that the agent behind the claim's Envoy session has ended, so it is where
+// the session's clean stop is sent (sessionGone): a connection closing is not — a daemon restart
+// closes every stream while the agents run on — and the probe that reaches here is what tells the
+// two apart. The one other place the stop is sent is the suspension that lands over a process a
+// report found gone, for a death no judgement here reached (suspendOverADeadProcess).
 func (m *Machine) died(ctx context.Context, observation runtime.Observation) error {
 	m.log.Warn("supervise: process died", "incarnation", m.claim.Locator.Incarnation, "observed", string(observation.Kind),
 		"detail", observation.Detail, "chargedBefore", m.claim.DeathCharged)
@@ -2291,7 +2301,7 @@ func (m *Machine) letGo() {
 	m.unseenTurn = false
 	m.turnsDelivery = ""
 	m.compacting = nil
-	m.processGone, m.claim.DeathCharged = false, false
+	m.processGone, m.goneOutOfMemory, m.claim.DeathCharged = false, false, false
 	if enrollment := ClearEnrollment(&m.claim); enrollment != nil {
 		m.revoke(*enrollment)
 	}
@@ -2347,7 +2357,7 @@ func (m *Machine) letGo() {
 // where it failed, and the claim's next decision makes it good (owes, repair), as died's is;
 // the sweep observes the process again at its next pass, and that report is judged whole.
 func (m *Machine) judge(ctx context.Context, observation runtime.Observation, alive func(context.Context) error, again TimerKind, after time.Duration) error {
-	if m.reportedProcess(observation.Kind) {
+	if m.reportedProcess(observation) {
 		if err := m.persist(ctx); err != nil {
 			return err
 		}
@@ -2394,26 +2404,31 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 // claim in a turn (processGone, Claim.ProcessGone, which states what that is for). It runs for
 // every report the machine judges, so one report is never read against a process an older one
 // was about: the fence drops an observation of any other process (Machine.fence), and letGo
-// clears this with the process the claim lets go.
+// clears this with the process the claim lets go. The verdict is read as the one read of a
+// claim's process reads it (processReadOf), so the machine and its callers group the kinds
+// one way.
 //
-// A verdict that found the process running clears it, the stale address among them: that
-// process is alive, holding an address a process launched now is not handed (repoint), and the
-// relaunch it raises can be refused at its turn exactly as a death's can — read as gone, such a
-// claim would be refused "its process is gone" while its live process ran a turn of its own.
-// A runtime that could not answer says nothing either way, so an uncertain verdict leaves what
-// the last answer found standing until one comes (judge's uncertain verdict, probe).
+// A verdict that found the process gone records, beside that, whether its pod ran out of memory
+// (goneOutOfMemory), for the suspension that takes the dead turn's task back later
+// (suspendOverADeadProcess). A verdict that found the process running clears both, the stale
+// address among them: that process is alive, holding an address a process launched now is not
+// handed (repoint), and the relaunch it raises can be refused at its turn exactly as a death's
+// can — read as gone, such a claim would be refused "its process is gone" while its live
+// process ran a turn of its own. A runtime that could not answer says nothing either way, so an
+// uncertain verdict leaves what the last answer found standing until one comes (judge's
+// uncertain verdict, probe).
 //
 // Such a verdict clears what was charged for that process's death with it (Claim.DeathCharged),
 // and reports that it did so, for judge to write: the process is running, so the death a later
 // report of it finds is a death of its own. Here and letGo clear both records of a running
 // machine, and NormalizeClaim clears the charge of a claim read back recording no process.
-func (m *Machine) reportedProcess(kind runtime.ObservationKind) (clearedCharge bool) {
-	switch kind {
-	case runtime.Gone, runtime.NotRecordedProcess:
-		m.processGone = true
-	case runtime.Alive, runtime.StaleAddress:
+func (m *Machine) reportedProcess(observation runtime.Observation) (clearedCharge bool) {
+	switch processReadOf(observation.Kind) {
+	case ProcessGone:
+		m.processGone, m.goneOutOfMemory = true, observation.OutOfMemory
+	case ProcessRuns:
 		clearedCharge = m.claim.DeathCharged
-		m.processGone, m.claim.DeathCharged = false, false
+		m.processGone, m.goneOutOfMemory, m.claim.DeathCharged = false, false, false
 	}
 	return clearedCharge
 }

@@ -57,9 +57,10 @@ const processReadBound = 5 * time.Second
 // Two claims are asked nothing, and each answers ProcessNotRead. A claim that records no process
 // has none to read, and a claim whose paced launch waits over the process it records has one
 // whose fate is already decided: its turn lets that process go and starts the next (wakeNow,
-// launchNow). probe leaves both alone for those same reasons, and the caller meets neither here
-// by surprise — the route reads the parked launch before it ever calls this (api's
-// relaunchWaits), and a claim recording no process is no claim anyone asks this about.
+// launchNow). probe leaves both alone for those same reasons. The route reads the parked launch
+// before it calls this (api's relaunchWaits), and reads it again on this answer, since a park
+// can be raised between its view and this lock; a claim recording no process is no claim
+// anyone asks this about.
 //
 // What the read finds is recorded exactly as the sweep's own report of the same process is
 // recorded (reportedProcess), and written where that record clears a charge, which is what judge
@@ -94,7 +95,7 @@ func (m *Machine) ReadProcess(ctx context.Context) ProcessRead {
 			"incarnation", m.claim.Locator.Incarnation, "error", err)
 		return ProcessUnanswered
 	}
-	if m.reportedProcess(observation.Kind) {
+	if m.reportedProcess(observation) {
 		// The read found the process running, and the charge standing in the store is of a death
 		// that is over (Claim.DeathCharged, reportedProcess). It is written here as judge writes
 		// it, and a store that will not take it leaves the clear in memory and the write owed.
@@ -105,19 +106,30 @@ func (m *Machine) ReadProcess(ctx context.Context) ProcessRead {
 	}
 	m.log.Info("supervise: the claim's process was read at the caller's request",
 		"incarnation", m.claim.Locator.Incarnation, "observed", string(observation.Kind), "detail", observation.Detail)
-	switch observation.Kind {
-	case runtime.Gone, runtime.NotRecordedProcess:
-		return ProcessGone
-	case runtime.Alive, runtime.StaleAddress:
-		return ProcessRuns
-	case runtime.Uncertain:
-		return ProcessUnanswered
-	default:
+	read := processReadOf(observation.Kind)
+	if read == ProcessUnanswered && observation.Kind != runtime.Uncertain {
 		// A verdict this daemon has no word for is read as no answer rather than as a process
 		// gone: the caller suspends a claim on gone, and a kind nobody here understands must not
 		// stop a worker. The runtime and this package move together, so it says so in the log.
 		m.log.Error("supervise: the runtime answered the read with a verdict this daemon does not know; reading it as no answer",
 			"incarnation", m.claim.Locator.Incarnation, "observed", string(observation.Kind))
+	}
+	return read
+}
+
+// processReadOf is what a verdict of the runtime says of the process it is about, and the one
+// grouping of the kinds there is: the read answers it (ReadProcess), and the machine records it
+// as what the last report of the process found (reportedProcess), so the two cannot part on a
+// kind. Nothing there and something that is not the process the locator recorded are both a
+// process gone; a live process and one alive at a stale address both run; and a verdict of
+// Uncertain, or a kind this daemon has no word for, says nothing of the process either way.
+func processReadOf(kind runtime.ObservationKind) ProcessRead {
+	switch kind {
+	case runtime.Gone, runtime.NotRecordedProcess:
+		return ProcessGone
+	case runtime.Alive, runtime.StaleAddress:
+		return ProcessRuns
+	default:
 		return ProcessUnanswered
 	}
 }
