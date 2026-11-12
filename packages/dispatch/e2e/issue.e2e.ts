@@ -2177,24 +2177,19 @@ test("a pick stands while a list answers, and the newest pick is the one the ser
     await nextFrames(page);
     expect(held, "a pick made while a save is out waits its turn, not sent").toHaveLength(1);
 
-    // The list is asked to read again while that save is still held. The server still holds the
-    // seeded priority, so an answer composed now would put it back over the pick; what must
-    // happen instead is that no read goes out at all while a write of one of this project's
-    // issues may still land (dispatch://INFRA-299/spec#b-r7), and the row keeps the pick.
+    // The list is asked to read again while that save is still held. Nothing is held back: the
+    // read goes out and its answer lands, carrying the other issue's new title, and the write,
+    // still live, shows its own change again over that answer, so the reader's row keeps the
+    // pick (dispatch://INFRA-299/spec#b-r7). At the commit the change is built on the answer
+    // puts the server's priority back on the row, which is how this row measures the fault.
     await navigateInApp(page, "/projects/CORE/issues");
     await expect(listRow).toBeVisible();
     const readsBefore = listReads();
     await patchIssue(other.key, { title: RETITLED });
-    // The one wait of this row: the read it must not make would go out within a frame or two of
-    // the event that asks for it, so the row gives it the time to happen and then reads that it
-    // did not. At the commit the change is built on the read goes out here and its answer puts
-    // the server's priority on the row, which is how this row measures the fault.
-    await page.waitForTimeout(2000);
-    expect(listReads(), "a list read goes out while a write of its issues is unanswered").toBe(
-      readsBefore
-    );
+    await expect.poll(listReads).toBeGreaterThan(readsBefore);
+    await expect(page.locator(`[data-issue-row="${other.key}"]`)).toContainText(RETITLED);
+    await nextFrames(page);
     await expect(listPriority).toHaveValue(String(secondPick));
-    await expect(page.locator(`[data-issue-row="${other.key}"]`)).not.toContainText(RETITLED);
 
     // And the issue page stands on the same pick.
     await navigateInApp(page, `/issues/${issue.key}`);
@@ -2233,9 +2228,9 @@ test("a pick stands while a list answers, and the newest pick is the one the ser
     expect(saved.at(-1), "the last value the server is sent is the third pick").toBe(thirdPick);
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: thirdPick });
 
-    // And once the line is quiet the held read goes out: the list carries the other issue's new
-    // title, which it could not have had while the write held its fetch, and the reader's own
-    // row stands on the pick the server was sent last.
+    // And once every save has settled, no write of this issue is live and the list stands on
+    // what the server holds: the other issue's new title, and the reader's own row on the pick
+    // the server was sent last.
     await navigateInApp(page, "/projects/CORE/issues");
     await expect(page.locator(`[data-issue-row="${other.key}"]`)).toContainText(RETITLED);
     await expect(listPriority).toHaveValue(String(thirdPick));
