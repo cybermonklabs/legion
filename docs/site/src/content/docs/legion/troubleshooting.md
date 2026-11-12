@@ -640,8 +640,10 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
 
 - **`suspendedWorkers`** (a suspended phase worker): the move depends on who suspended it, which
   `legion claims list --json` shows as `suspendedBy`, and `legion state` points there too.
-  Only an architect is sent a catch-up, so a worker resumed with no task relaunches with nothing to
-  do, and once it runs the list stops naming it.
+  Only an architect is sent a catch-up; a worker resumed behind the entry its role's phases row
+  names is sent that entry's work, which the daemon does on every admission pass and on a sweep
+  each minute, and one already at that entry relaunches with nothing to do. Once it runs the list
+  stops naming it.
 
   - **`suspendedBy: unknown`** (suspended before this release recorded who did): let the
     workflow start it. Stop the project's daemon, mark the claim as the daemon's, and start the
@@ -946,14 +948,15 @@ These arrive as messages on the Dispatch issue:
   working ended under that turn, and the role has since been handed the phase's work again: the
   issue left the phase and came back, or CI settled red while the tester tested, while the reviewer
   reviewed a round it had not completed, or while the merger worked toward its `READY`. The daemon
-  ends no turn, so the turn reporting the completion is the earlier assignment's and nothing is
-  recorded. The refusal names the issue, the role and the phase: the worker ends that turn without
-  completing, and reports that commit and that verdict no further. The phase was entered again, so
-  the task the daemon queued for the assignment it hands the role now — which arrives as the
-  session's next prompt — is work of its own: a testing assignment after a red is for the head the
-  fix pushed, and the verdict on the head before it answers for nothing there. The worker does that
-  task's work, writes a handoff of its own for it, and completes in its turn. When no such task is
-  queued for it, the refusal says so and the worker tells its architect.
+  ends no turn, so the turn reporting the completion is the earlier entry's and nothing is
+  recorded. The refusal names the issue, the role and the phase, the entry the completion is of
+  and the entry the role's phases row is on: the worker ends that turn without completing, and
+  reports that commit and that verdict no further. The phase was entered again, so the task of
+  the entry the role is on now — which arrives as the session's next prompt — is work of its own:
+  a testing entry after a red is for the head the fix pushed, and the verdict on the head before
+  it answers for nothing there. The worker does that task's work, writes a handoff of its own for
+  it, and completes in its turn. When that task has not reached the session yet, the refusal says
+  the daemon sends it by itself, which it does on every admission pass and on a sweep each minute.
 
 An issue back in `in_progress` from `retro` or `merging` had a required check or workflow turn red
 on the head: the daemon sent it back to the implementer and told the architect which checks. From
@@ -961,10 +964,10 @@ on the head: the daemon sent it back to the implementer and told the architect w
 from `merging` the merger kept its turn, its jobs, its process and its session. Neither turn was
 interrupted: each role was told on its own Envoy role topic that its phase had ended and that the
 workspace is the implementer's now. The implementer's retro completion after the move reports the
-assignment retro handed it while the phase holds the implementing one, so it is refused
+entry retro handed it while its phases row is on the implementing one, so it is refused
 (`HANDOFF_STALE_ASSIGNMENT`), and the implementer fixes the red in the implementing task's own turn
-and completes that work with a handoff of its own, never retro's commit; the merger's row
-still names the assignment merging gave it, so a completion it sends for the phase it lost is
+and completes that work with a handoff of its own, never retro's commit; the merger's phases row
+still names the entry merging gave it, so a completion it sends for the phase it lost is
 refused (`HANDOFF_NOT_CURRENT_PHASE`). One back in `in_progress` after its `READY`,
 while it awaited its merge, had a required check or workflow turn red on the head itself, its
 head conflicts with its base (GitHub computes no merge ref for a conflicting head and runs no

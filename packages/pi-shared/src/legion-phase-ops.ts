@@ -231,9 +231,9 @@ export function legionToolDescription(host: {
     "The daemon refuses " +
     "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
     "write this phase's handoff), " +
-    "HANDOFF_STALE_ASSIGNMENT (the issue left your phase and came back while your turn ran, so this completion is of the assignment before the one " +
-    "the phase hands you now: end the turn without completing; the task of the assignment it hands you now is work of its own, so do that work and " +
-    "complete it with a handoff of its own, never this record or verdict again), the implementer's completion of implementing with no open " +
+    "HANDOFF_STALE_ASSIGNMENT (this completion is of an earlier phase entry than the one the phase hands you now, which the issue reached while " +
+    "your turn ran: end the turn without completing; the daemon sends the current entry's task by itself, and that task is work of its own, so do " +
+    "that work and complete it with a handoff of its own, never this record or verdict again), the implementer's completion of implementing with no open " +
     "pull request on `legion/<issue>` and none recorded " +
     "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide) and, for READY, each " +
     "refusal the merger's role names; a refused completion changed nothing, so fix what it names and complete again. An accepted READY whose `note` " +

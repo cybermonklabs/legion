@@ -142,13 +142,14 @@ func midPhaseChild(t *testing.T, pool *pgxpool.Pool, root, key string, stands ph
 // names its worker as a claim nothing will wake.
 //
 // Two assertions of the table in internal/workflow (owed_start_test.go) read differently here,
-// and the rule is the re-admission's. A resume hands the worker the phase it is already on, so it
-// mints no assignment, and the re-admission has cleared the generation's handoffs with the
-// assignments on their rows (record.ClearTreeGeneration); both sides of the completion fence are
-// then empty, which api/handoff.go compares only when both name one, so no completion in flight
-// is refused for an assignment nothing ever delivered. And the claim this start brings back is
-// the suspended one the tree's close left: the promotion itself stops and resumes nothing, and
-// the start row is what resumes it, when the child's slot comes.
+// and the rule is the re-admission's. The re-admission cleared the work each role's entry named
+// with the rest of the generation (record.ClearTreeGeneration), so the promotion raises the
+// entry and writes the resume task it hands the role as the work of that entry
+// (workflow.StartPromotedWorker): the row names the entry the start carries, and no completion
+// in flight is refused for an entry nothing ever delivered, since every earlier entry is below
+// it. And the claim this start brings back is the suspended one the tree's close left: the
+// promotion itself stops and resumes nothing, and the start row is what resumes it, when the
+// child's slot comes.
 func TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot(t *testing.T) {
 	const root, testing_, retro = "LEGION-208", "LEGION-209", "LEGION-211"
 	pool := migratedPool(t)
@@ -189,8 +190,10 @@ func TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot(t *testing.T) {
 		if stands := issue(t, pool, child); stands.Phase != workflow.ResumePhase(stands) || stands.Generation != 1 {
 			t.Fatalf("%s stands at %s on generation %d, want its own phase on its own generation", child, stands.Phase, stands.Generation)
 		}
-		if got := assignmentOf(t, pool, child, role); got != "" {
-			t.Fatalf("the %s's row of %s carries assignment %q, want none: the re-admission cleared the generation's handoffs", role, child, got)
+		entry, work := entryOf(t, pool, child, role)
+		if entry != 1 || work == "" {
+			t.Fatalf("the %s's row of %s is at entry %d naming the work %q, want the first entry of this run carrying the task its start hands the role",
+				role, child, entry, work)
 		}
 		var owed, taskless []midPhaseStart
 		for _, row := range startsOf(t, pool, child) {
@@ -263,13 +266,14 @@ func assertMidPhaseChildrenAreNotStranded(t *testing.T, pool *pgxpool.Pool, root
 	})
 }
 
-// assignmentOf is the assignment role's phases row of issue carries.
-func assignmentOf(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) string {
+// entryOf is the phase entry role's phases row of issue is on and the work that entry names.
+func entryOf(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) (int64, string) {
 	t.Helper()
-	var assignment string
-	if err := pool.QueryRow(context.Background(), `select coalesce(assignment, '') from phases where issue = $1 and role = $2`,
-		issue, string(role)).Scan(&assignment); err != nil {
-		t.Fatalf("read the %s's assignment on %s: %v", role, issue, err)
+	var entry int64
+	var task string
+	if err := pool.QueryRow(context.Background(), `select entry, entry_task from phases where issue = $1 and role = $2`,
+		issue, string(role)).Scan(&entry, &task); err != nil {
+		t.Fatalf("read the %s's entry on %s: %v", role, issue, err)
 	}
-	return assignment
+	return entry, task
 }

@@ -75,6 +75,7 @@ type roleForReader struct {
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
 var roleForReaders = map[roleForSite]roleForReader{
+	{file: "cmd/legion/main.go", fn: "entriesBehind"}:                       {calls: 1, test: "TestPlainStateNamesTheRolesNotGivenTheirPhaseEntry"},
 	{file: "internal/admit/admit.go", fn: "Admission.startMidPhaseMembers"}: {calls: 1, test: "TestReadmissionStartsTheTreesMidPhaseChildren"},
 	{file: "internal/admit/admit.go", fn: "Admission.resumeSlottedWorkers"}: {calls: 1, test: "TestASlotWhoseWorkerHasNoTaskIsStartedAgain"},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}:                {calls: 1, test: "TestACarriedRootResumesFromTheApprovedHeadAndTheHold"},

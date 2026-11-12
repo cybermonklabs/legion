@@ -161,6 +161,10 @@ type overrides struct {
 	// that came due (workflowRuntime.idleTick, both ticks); zero is the production minute. A test
 	// of release and wake shortens it, so it waits out its own period rather than the daemon's.
 	idleTick time.Duration
+	// entrySweep is how often the daemon converges the phase entries with no fact arriving
+	// (workflowRuntime.entrySweep); zero is the production minute, entrySweepInterval. A test of
+	// the sweep shortens it, so it waits out its own period rather than the daemon's.
+	entrySweep time.Duration
 	// gate stands in for the plugin gate when runtime is replaced: nil is none, since a replaced
 	// runtime launches no Oh My Pi to gate. With the tmux runtime, the gate is always the real one.
 	gate func(ctx context.Context) error
@@ -321,7 +325,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		var cancelAfterMint context.CancelFunc
 		boot, cancelAfterMint = context.WithTimeout(context.WithoutCancel(ctx), bootTimeout)
 		defer cancelAfterMint()
-		workflow.controllerFirstWake, workflow.idleTick = o.controllerFirstWake, o.idleTick
+		workflow.controllerFirstWake, workflow.idleTick, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.entrySweep
 		plan.identity = workflow.identity
 		plan.repository = workflow.issueRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
@@ -2152,6 +2156,19 @@ func (s projectRecords) Enqueue(ctx context.Context, tx pgx.Tx, row record.Outbo
 	return nil
 }
 
+// EnqueueStart wakes the row's lane as Enqueue does: a phase worker's start is written through
+// this statement since the start became a row of its own (workflow.StartOrOwe,
+// record.Store.EnqueueStart), so without the wake here the worker whose phase has just been
+// handed its work would wait for the lane's next sweep, up to one outbox lease after its
+// transition committed.
+func (s projectRecords) EnqueueStart(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error {
+	if err := s.Store.EnqueueStart(ctx, tx, row); err != nil {
+		return err
+	}
+	s.wakeOnCommit(ctx, row)
+	return nil
+}
+
 // EnqueueID wakes the row's lane as Enqueue does: a start or catch-up naming kept decisions is
 // written with its id (workflow.EnqueueNaming), so the row it claims them for waits for no sweep.
 func (s projectRecords) EnqueueID(ctx context.Context, tx pgx.Tx, row record.OutboxRow) (int64, error) {
@@ -2241,7 +2258,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	claims = ofProject(claims, s.projectToken)
 	records := projectRecords{Store: s.records, project: s.project}
 	now := time.Now().UTC()
-	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, s.reports(), now)
+	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, s.reports(), phaseRole, now)
 	if err != nil {
 		return api.State{}, nil, err
 	}

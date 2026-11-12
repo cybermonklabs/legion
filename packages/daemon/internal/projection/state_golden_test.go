@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this package pins")
@@ -120,7 +121,7 @@ func TestTheStateWithTheControllersClaimGolden(t *testing.T) {
 				StartedAt: admitted.Add(55 * time.Second),
 			},
 		},
-	}, reports, admitted.Add(time.Minute))
+	}, reports, workflow.RoleFor, admitted.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}

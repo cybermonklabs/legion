@@ -118,7 +118,9 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 // handler runs first: it records every live-tree child, leaving admission to record only a
 // still-unrecorded root or orphan. A release's adoption of children it cannot adopt
 // (adoptChildren) is the one fact admission refuses. A Dispatch issue fact's Reread is written
-// first (applyReread), before anything of the fact itself is recorded or promoted.
+// first (applyReread), before anything of the fact itself is recorded or promoted. The entry
+// sweep (intake.EntrySweep) is the one fact that promotes nothing: it converges the phase
+// entries and does no more (convergeEntries).
 func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	released, refusal, err := a.applyFact(ctx, tx, fact)
 	if err != nil {
@@ -136,6 +138,12 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 	if position, ok := fact.(intake.DispatchConsumerPosition); ok {
 		released, err := a.release(ctx, tx, position)
 		return released, nil, err
+	}
+	if _, ok := fact.(intake.EntrySweep); ok {
+		// The sweep converges the entries and does no more: it promotes nothing, since a pass
+		// that promotes runs on every fact and on the tick, and it releases no slot, so it
+		// reports none.
+		return nil, nil, a.convergeEntries(ctx, tx)
 	}
 	if _, ok := fact.(intake.ControllerTick); ok {
 		_, returned, err := a.promote(ctx, tx)
@@ -1482,11 +1490,31 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				}
 				task := workflow.ArchitectStartTask(workflow.ArchitectStart{Root: issue, Carried: carried,
 					Gate: facts.Gates[issue.Tree], Launch: launches[issue.Tree], Decided: decided})
+				// The start hands the architect work it was not on, so it raises the architect's
+				// phase entry and writes that task as the work of it on the architect's phases
+				// row, in this transaction (workflow.Engine.EnterArchitect), and carries the
+				// number itself (record.SuperviseRequest.Entry). A root's architect holds that
+				// row exactly as every phase worker does: the work is a fact of the record rather
+				// than of the one outbox row that carried it, so a start that reaches no claim
+				// loses none of it, and the outbox reads the entry off this row as it does for
+				// every other role.
+				//
+				// A root the derivation serves no task — one past admitted under its own power,
+				// with nothing decided while its tree could not hear it — is handed nothing, so
+				// it raises no entry: the start carries no task, nothing is delivered for it, and
+				// an entry raised for it would leave the architect's row above what its claim was
+				// ever given with no work to send it.
+				var entry int64
+				if task != "" {
+					if entry, err = a.engine.EnterArchitect(ctx, tx, issue, task); err != nil {
+						return admitted, released, fmt.Errorf("raise the phase entry of %s's architect: %w", issue.Key, err)
+					}
+				}
 				// The architect start is not one of the starts that wait for a slot: this very
 				// transaction grants the tree whatever slot it needs, and an architect starts no
 				// phase worker.
 				if err := a.engine.EnqueueNaming(ctx, tx, issue.Key, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree,
-					Role: claim.RoleArchitect, Generation: issue.Generation, Task: task, Kept: kept}, kept, now); err != nil {
+					Role: claim.RoleArchitect, Generation: issue.Generation, Task: task, Entry: entry, Kept: kept}, kept, now); err != nil {
 					return admitted, released, fmt.Errorf("enqueue the architect start of %s: %w", issue.Key, err)
 				}
 				if err := a.startMidPhaseMembers(ctx, tx, issue, append(issues, issue), now); err != nil {
@@ -2063,12 +2091,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			if !workflow.StartFor(run, root, member.Generation, member.Phase) {
 				continue
 			}
-			task, err := workflow.ResumeTask(ctx, a.store, tx, member, held.role)
-			if err != nil {
-				return err
-			}
-			if err := workflow.StartOrOwe(ctx, tx, a.store, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree,
-				Role: held.role, Generation: member.Generation, Phase: member.Phase, Task: task, ResumeTask: true}, now); err != nil {
+			if err := a.engine.StartPromotedWorker(ctx, tx, member, held.role); err != nil {
 				return err
 			}
 		}
@@ -2076,20 +2099,25 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 	return nil
 }
 
-// resumeSlottedWorkers is the repair of a slot whose worker has no task: an issue holding a slot
-// in a worker phase for which no start is queued and no delivery the claim is still working
-// (workflow.StartFor, the pending delivery's StillWorked). That can happen where a start row was
-// finished without acting while the slot stayed — a row the outbox fenced out, a row
-// finishFencedStarts finished earlier in this pass — and nothing else would ever start that
-// worker again, so the issue would hold its slot for ever doing nothing. Each one gets the start
-// a retry of a held phase gives (workflow's restart): the assignment its phases row already
-// names, so no completion in flight is refused for an assignment the worker was never given, and
-// the phase's resume task.
+// resumeSlottedWorkers sends every role of an issue at work that is behind the entry its phases
+// row names the work of that entry (workflow.OwedEntry, workflow's SendOwedEntry): the task that
+// entry was raised with, at that entry, so no completion in flight is refused for an entry the
+// worker was never given, and the phase's resume task where the record holds no task of that
+// entry.
 //
-// It runs after the cap loop on every pass admission makes, over at most the cap's worth of
-// slotted issues, through one batched RoleRuns read rather than a read per slot. Running after
-// the fence repair rather than before it is what repairs a slot whose start row the fences
-// rejected on the pass that rejected it, instead of a pass later.
+// The difference it closes is the one the record carries on its own: the transition raises the
+// entry and writes its work in its own transaction, the outbox records the entry as given when
+// it queues the task, and between the two nothing else reads the two numbers. So this repairs
+// the slot whose worker has no task it was written for — a start row finished without acting
+// while the slot stayed, one the outbox fenced out, one finishFencedStarts ended earlier in this
+// pass — and, by the same rule and without asking why, every other role whose claim never got
+// the work its entry names, whatever state that claim is in.
+//
+// It runs after the cap loop on every pass admission makes, and on the entry sweep's own fact
+// (convergeEntries), over at most the cap's worth of slotted issues, through one batched RoleRuns
+// read rather than a read per slot and one read of each holder's phase rows. Running after the
+// fence repair rather than before it is what repairs a slot whose start row the fences rejected
+// on the pass that rejected it, instead of a pass later.
 //
 // A slot no longer says a worker of its issue has work: an issue keeps its row through phases
 // no worker of it works (record.KeepsSlot), so a holder record.AtWork answers false for is
@@ -2159,18 +2187,30 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 	}
 	for _, held := range holders {
 		run := runs[held.token]
-		if !workflow.StartFor(run, held.root, held.issue.Generation, held.issue.Phase) {
+		entry, err := a.phaseEntry(ctx, tx, held.issue.Key, held.role)
+		if err != nil {
+			return err
+		}
+		if !workflow.OwedEntry(run, held.root, entry) {
 			continue
 		}
 		if c := run.Claim; c != nil && c.Pending != nil && c.Pending.StillWorked(held.issue.Generation, held.issue.Phase, c.State) {
 			continue
 		}
-		// A claim whose pod the idle rule released holds no task because its turn ended and its
-		// process was stopped, which is the release working rather than a slot with no worker:
-		// the wake brings the pod back and gives the role the one task that says so (workflow's
-		// wakeRow), so starting its phase again here would hand the woken role a second task for
-		// work it already holds.
-		if c := run.Claim; c != nil && c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByReleased {
+		// A claim whose pod the idle rule released has no skip of its own, and the entry rule
+		// above is why: while the entry it was given is the entry its row names, the rule
+		// answers false and the release stands — its turn ended and its process was stopped,
+		// which is the release working rather than a worker that lost its task, and the wake
+		// brings the pod back with the one task that says so (workflow's wakeRow). One below
+		// that entry is behind like any other claim: no wake is armed for work it was never
+		// given, and sending that entry's task is what brings its pod back.
+
+		// A claim an operator suspended is passed over whatever entry it stands on: `legion
+		// claims stop` stopped that worker and only the operator's own resume starts it again
+		// (supervise's RuleHolds, which no start the daemon queues gets past). A claim the
+		// daemon itself suspended is repaired, which is what the idle rule's release and the
+		// daemon's own suspend both leave behind.
+		if c := run.Claim; c != nil && c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByOperator {
 			continue
 		}
 		// A retired claim was stopped, and two stops reach this repair: an operator's `legion
@@ -2189,15 +2229,50 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 		if c := run.Claim; c != nil && c.State == supervise.StateRetired {
 			continue
 		}
-		if err := a.engine.ResumeSlottedWorker(ctx, tx, held.issue, held.role); err != nil {
+		if err := a.engine.SendOwedEntry(ctx, tx, held.issue, held.role); err != nil {
 			return fmt.Errorf("start the worker of slotted issue %s again: %w", held.issue.Key, err)
 		}
+		var given int64
+		if c := run.Claim; c != nil {
+			given = c.GivenEntry
+		}
 		intake.OnCommit(ctx, func() {
-			a.log.Warn("admission: a slot held an issue whose worker had no task, so its phase is started again",
-				"issue", held.issue.Key, "role", held.role, "phase", held.issue.Phase)
+			a.log.Warn("admission: a role was behind the entry its phases row names, so that entry's work is sent again",
+				"issue", held.issue.Key, "role", held.role, "phase", held.issue.Phase, "entry", entry, "given", given)
 		})
 	}
 	return nil
+}
+
+// phaseEntry is the phase entry role's phases row of issue names (record.PhaseRow.Entry), and 0
+// where the record holds no row of that role — a role no transition has ever handed work on,
+// which is owed none. It is the number resumeSlottedWorkers weighs a claim against, and the one
+// workflow's SendOwedEntry then sends the work of, read from the same rows.
+func (a *Admission) phaseEntry(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (int64, error) {
+	rows, err := a.store.Phases(ctx, tx, issue)
+	if err != nil {
+		return 0, fmt.Errorf("read the phase rows of %s: %w", issue, err)
+	}
+	for _, row := range rows {
+		if row.Role == role {
+			return row.Entry, nil
+		}
+	}
+	return 0, nil
+}
+
+// convergeEntries is the entry sweep's whole work (intake.EntrySweep, the fact the daemon's own
+// ticker applies): it reads the project's issues, its slots and its line facts as every pass
+// reads them (reread) and sends each role behind the entry its phases row names that entry's
+// work (resumeSlottedWorkers). It promotes nothing and wakes nobody — a tick already does both,
+// on a period of its own — so what the sweep adds is the one convergence, run when no fact of
+// the project arrives to run it.
+func (a *Admission) convergeEntries(ctx context.Context, tx pgx.Tx) error {
+	issues, slots, facts, err := a.reread(ctx, tx)
+	if err != nil {
+		return err
+	}
+	return a.resumeSlottedWorkers(ctx, tx, issues, slots, facts)
 }
 
 // finishFencedStarts is the repair of a held start row that has outlived the fences the outbox
@@ -2309,10 +2384,11 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 // That second term compares write marks and not row ids, and both sides take their numbers from
 // one sequence (store's putClaim, whose doc holds what that sequence orders and what it does
 // not): a row's write mark is the write that last set its payload, and the claim's is the write
-// that recorded its retirement. An id cannot stand in for it, because record.Store.ReplaceOwedStart
-// rewrites the start an issue already owes in place and keeps its id — so a start written after a
-// stop can carry an id from before it, which is exactly what `legion claims stop` and then
-// `legion claims retry`, with no admission pass between them, writes.
+// that recorded its retirement. A creation time cannot stand in for it, because
+// record.Store.EnqueueStart writes the start an issue already owes as a row of its own carrying
+// the earlier row's creation time — so a start written after a stop can carry a creation time
+// from before it, which is exactly what `legion claims stop` and then `legion claims retry`,
+// with no admission pass between them, writes.
 func stopOutlivedStart(held *record.RoleClaim, owed record.OwedStart) bool {
 	// The retired state says the worker was ended.
 	if held == nil || held.State != supervise.StateRetired {

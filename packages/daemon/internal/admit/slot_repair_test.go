@@ -16,11 +16,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// seededAssignment is the assignment a row's phases row carries before the pass. The repair of a
-// slot is a restart, which hands the role the assignment its phases row already names and mints
-// none (workflow's restart), so a start carrying anything else is a worker given an assignment a
-// completion in flight would be refused for.
-func seededAssignment(issue string) string { return "assignment-" + issue }
+// seededEntry is the phase entry a row's phases row is on before the pass, and seededEntryTask
+// the work that entry names. The repair of a slot sends the role the work its entry names, at
+// that entry, raising none (workflow's SendOwedEntry), so a start carrying anything else is a
+// worker given work its record does not name and an entry a completion in flight would be
+// refused for.
+const seededEntry = 3
+
+func seededEntryTask(issue string) string { return "Carry the work of " + issue + " on." }
 
 // putWorkerClaim records the claim of key's role on the tree root, in state and suspended by by,
 // in the columns every claim fixture of this package writes (owed_start_test.go's midPhaseChild).
@@ -91,28 +94,41 @@ func markStopAfterTheRow(t *testing.T, pool *pgxpool.Pool, issue string, token c
 	}
 }
 
-// taskedStartAssignments is the assignment each start row of issue that carries a task names, in
-// the order the rows were written. startsOf reads every other field of those rows; the assignment
-// is read here because what the repair hands back is the whole point of the row.
-func taskedStartAssignments(t *testing.T, pool *pgxpool.Pool, issue string) []string {
+// markGivenEntry records entry as the phase entry token's claim was last queued a task of
+// (claims.given_entry, which the supervisor writes with the delivery and the outbox writes when
+// it holds a task back: supervise's queue and EntryGiven). It is what the pass weighs the entry
+// the role's phases row names against (workflow.OwedEntry), so a fixture that leaves it at the
+// column's default, 0, is a claim that was given nothing.
+func markGivenEntry(t *testing.T, pool *pgxpool.Pool, token claim.Token, entry int64) {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select coalesce(payload->>'assignment', '') from outbox
+	if _, err := pool.Exec(context.Background(), `update claims set given_entry = $2 where token = $1`,
+		string(token), entry); err != nil {
+		t.Fatalf("record the entry %d the claim %s was given: %v", entry, token, err)
+	}
+}
+
+// taskedStartEntries is the entry each start row of issue that carries a task is of, in the
+// order the rows were written. startsOf reads every other field of those rows; the entry is read
+// here because what the repair hands back is the whole point of the row.
+func taskedStartEntries(t *testing.T, pool *pgxpool.Pool, issue string) []int64 {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select coalesce((payload->>'entry')::bigint, 0) from outbox
 		where issue = $1 and kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') <> ''
 		order by id`, issue)
 	if err != nil {
-		t.Fatalf("list the assignments the starts of %s name: %v", issue, err)
+		t.Fatalf("list the entries the starts of %s are of: %v", issue, err)
 	}
 	defer rows.Close()
-	var named []string
+	var named []int64
 	for rows.Next() {
-		var assignment string
-		if err := rows.Scan(&assignment); err != nil {
-			t.Fatalf("read an assignment a start of %s names: %v", issue, err)
+		var entry int64
+		if err := rows.Scan(&entry); err != nil {
+			t.Fatalf("read an entry a start of %s is of: %v", issue, err)
 		}
-		named = append(named, assignment)
+		named = append(named, entry)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("list the assignments the starts of %s name: %v", issue, err)
+		t.Fatalf("list the entries the starts of %s are of: %v", issue, err)
 	}
 	return named
 }
@@ -161,8 +177,8 @@ func seedTreeAndMember(t *testing.T, pool *pgxpool.Pool, root, key string, stand
 
 // slotRepairRow is one row of the repair of a slot whose worker has no task. Every row is the
 // same fixture — a running tree, a member of it holding a slot mid-phase, the phases row that
-// names the role's assignment, and a claim with no task it still works — and each row changes the
-// one thing it is about, which why names.
+// names the role's phase entry and the work of it, and a claim with no task it still works — and
+// each row changes the one thing it is about, which why names.
 type slotRepairRow struct {
 	name string
 	// root and key are the tree's root and the member holding the slot.
@@ -182,8 +198,12 @@ type slotRepairRow struct {
 	// and confirmed whether the claim confirmed it. The task's phase is always the member's.
 	taskGeneration uint64
 	confirmed      bool
-	// queuedStart queues a start of the member's own phase before the pass, which is what says
-	// the role is already started (workflow.StartFor).
+	// given is the entry the claim was last queued a task of (record.RoleClaim.GivenEntry), 0
+	// for a claim given none: a claim below the row's seededEntry is one the pass owes that
+	// entry's work (workflow.OwedEntry).
+	given int64
+	// queuedStart queues a start of the member's own phase, of the entry its phases row names,
+	// before the pass: the row that already carries this entry's work.
 	queuedStart bool
 	// repaired is whether the pass starts the member's phase again, and slotGivenBack whether
 	// the pass takes the member's slot back before the repair reads the slots at all
@@ -204,10 +224,13 @@ func seedSlotRepairRow(t *testing.T, pool *pgxpool.Pool, row slotRepairRow) {
 	token := putWorkerClaim(t, pool, row.root, row.key, role, row.generation, row.state, row.suspendedBy)
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: row.key, Role: role,
-			Claim: token, Assignment: seededAssignment(row.key)}); err != nil {
+			Claim: token, Entry: seededEntry, EntryTask: seededEntryTask(row.key), EntryRaisedAt: fixedNow}); err != nil {
 			t.Fatalf("record the %s's phases row of %s: %v", role, row.key, err)
 		}
 	})
+	if row.given != 0 {
+		markGivenEntry(t, pool, token, row.given)
+	}
 	if row.taskGeneration != 0 {
 		putWorkerTask(t, pool, token, row.taskGeneration, row.stands, row.confirmed)
 	}
@@ -215,7 +238,7 @@ func seedSlotRepairRow(t *testing.T, pool *pgxpool.Pool, row slotRepairRow) {
 		inTx(t, pool, func(tx pgx.Tx) {
 			if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), row.key, record.SuperviseRequest{
 				Op: "start", Tree: row.root, Role: role, Generation: row.generation, Phase: row.stands,
-				Task: "Carry on.", Assignment: seededAssignment(row.key)}, fixedNow); err != nil {
+				Task: "Carry on.", Entry: seededEntry}, fixedNow); err != nil {
 				t.Fatalf("queue the start %s already has: %v", row.key, err)
 			}
 		})
@@ -260,7 +283,7 @@ func seedOwedRepairRow(t *testing.T, pool *pgxpool.Pool, row owedRepairRow) {
 		putWorkerTask(t, pool, token, 1, row.stands, false)
 	}
 	request := record.SuperviseRequest{Op: "start", Tree: row.root, Role: role, Generation: 1, Phase: row.stands,
-		Task: "Carry on.", Assignment: seededAssignment(row.key)}
+		Task: "Carry on.", Entry: seededEntry}
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), row.key, request, fixedNow); err != nil {
 			t.Fatalf("owe %s its start through the workflow's own writer: %v", row.key, err)
@@ -276,8 +299,9 @@ func seedOwedRepairRow(t *testing.T, pool *pgxpool.Pool, row owedRepairRow) {
 
 // capFiller records key as a member of its own running tree, holding a slot with a claim at work.
 // It keeps the cap full, so the pass promotes nothing and every row of its group stands where its
-// fixture put it. The repair of a slot passes over it because a live claim is a role already
-// started (workflow.StartFor), so it writes no start of its own either.
+// fixture put it. The repair of a slot passes over it because no transition ever handed its
+// tester work: it has no phases row, so the entry its role stands on is 0 and its claim, given
+// nothing, is behind none of it (workflow.OwedEntry).
 func capFiller(t *testing.T, pool *pgxpool.Pool, root, key string) {
 	t.Helper()
 	seedTreeAndMember(t, pool, root, key, phase.Testing, 1, false)
@@ -291,7 +315,7 @@ func capFiller(t *testing.T, pool *pgxpool.Pool, root, key string) {
 // The repair of a slot whose worker has no task (resumeSlottedWorkers) starts the phase of a
 // slotted member again whenever nothing else will, and the skip of a worker an operator stopped
 // takes nothing else with it. The first group is the whole of that rule: four slots it still
-// repairs, each getting the phase's resume task and the assignment its phases row already names,
+// repairs, each sent the work its phase entry names, at the entry its phases row already holds,
 // and four it passes over. The four it repairs are what hold the new skip to the retired state
 // alone — a claim suspended by the daemon, a failed one, a queued one and one holding a task of
 // an older run are every other claim that holds no task it still works — and the row of the
@@ -337,10 +361,10 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 				generation: 2, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
 				taskGeneration: 1, repaired: true,
 				why: "the task the claim holds is of the run before this one, which no claim still works whatever its state (supervise.Delivery.StillWorked)"},
-			{name: "a claim the idle rule suspended", root: "LEGION-550", key: "LEGION-551", stands: phase.Testing,
+			{name: "a claim the idle rule released, level with its entry", root: "LEGION-550", key: "LEGION-551", stands: phase.Testing,
 				generation: 1, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByReleased,
-				taskGeneration: 1, confirmed: true,
-				why: "this row changes suspended_by alone, from the daemon to the idle rule's release of the pod: the wake gives the role the one task that says its pod came back, so a start here would be a second task for work it already holds"},
+				taskGeneration: 1, confirmed: true, given: seededEntry,
+				why: "this row changes suspended_by and the entry the claim was given together, to the idle rule's release of a pod that holds its row's own entry: the wake gives the role the one task that says its pod came back, so a start here would be a second task for work it already holds. A released claim below that entry is sent it, which converge_entry_test.go reads"},
 			{name: "an architect's role", root: "LEGION-560", key: "LEGION-561", stands: phase.Accepting,
 				generation: 1, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
 				taskGeneration: 1, confirmed: true,
@@ -352,7 +376,7 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 			{name: "a role with a start already queued", root: "LEGION-580", key: "LEGION-581", stands: phase.Testing,
 				generation: 1, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
 				taskGeneration: 1, confirmed: true, queuedStart: true,
-				why: "this row changes the queued rows alone, adding the start the workflow has already written: the worker is started by that row when its slot comes, and a second start would give the phase two tasks (workflow.StartFor)"},
+				why: "this row changes the queued rows alone, adding the start the workflow has already written for this very entry: the worker is started by that row when its slot comes, and a second start would give the phase two tasks (workflow.OwedEntry)"},
 		}
 		pool := migratedPool(t)
 		before := make(map[string][]midPhaseStart, len(rows))
@@ -397,18 +421,18 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 					t.Fatalf("the start %s carries a task on after the pass = %+v, want the %s's, held for the issue's own slot: the repair starts the worker of the phase the issue stands in, and its task waits for the slot as every phase worker's start does",
 						row.key, tasked[0], role)
 				}
-				if want := workflow.ResumePhaseTask(issue(t, pool, row.key)); tasked[0].task != want {
-					t.Fatalf("the task the start of %s carries = %q, want %q: the repair is the held phase's retry, which tells the worker to carry the phase's work on rather than to begin it",
+				if want := seededEntryTask(row.key); tasked[0].task != want {
+					t.Fatalf("the task the start of %s carries = %q, want the %q its phase entry names: the repair sends the work the record holds for that entry, so the worker is given the task it is owed rather than one composed again",
 						row.key, tasked[0].task, want)
 				}
-				named := taskedStartAssignments(t, pool, row.key)
-				onRow := assignmentOf(t, pool, row.key, role)
-				if onRow != seededAssignment(row.key) {
-					t.Fatalf("the %s's assignment on %s after the pass = %q, want the %q its phases row already named: the repair mints none, so a completion still in flight is never refused for an assignment nothing delivered",
-						role, row.key, onRow, seededAssignment(row.key))
+				named := taskedStartEntries(t, pool, row.key)
+				onRow, work := entryOf(t, pool, row.key, role)
+				if onRow != seededEntry || work != seededEntryTask(row.key) {
+					t.Fatalf("the %s's row of %s after the pass is at entry %d naming %q, want the entry %d and work %q it already named: the repair raises none, so a completion still in flight is never refused for an entry nothing delivered",
+						role, row.key, onRow, work, seededEntry, seededEntryTask(row.key))
 				}
 				if len(named) != 1 || named[0] != onRow {
-					t.Fatalf("the assignments the starts of %s name = %q, want the one %q its phases row names: %s",
+					t.Fatalf("the entries the starts of %s are of = %d, want the one %d its phases row names: %s",
 						row.key, named, onRow, row.why)
 				}
 			})
@@ -528,17 +552,17 @@ func theOwedStart(t *testing.T, pool *pgxpool.Pool, key string) record.OwedStart
 // An operator's retry of a worker they stopped, written before any admission pass has run,
 // leaves the issue owing the start the retry wrote, and the pass keeps that row.
 //
-// It is the case the stop rule must tell apart by the write and never by the row. `legion claims
-// stop` hands the machine RequestStop and applies no fact, so no pass runs between the stop and
-// what follows and the mark the retirement takes is above the row the issue already owes. The
+// It is the case the stop rule must tell apart by the write and never by the row's place. `legion
+// claims stop` hands the machine RequestStop and applies no fact, so no pass runs between the stop
+// and what follows and the mark the retirement takes is above the row the issue already owes. The
 // retry then reaches the workflow (api's retryStart, restartWorkedPhase, intake.RestartPhase,
-// workflow's restart and started), whose one write is StartOrOwe's, and that rewrites the row
-// the issue already owes in place (record.Store.ReplaceOwedStart): the row keeps the id and
-// created_at that hold the issue's place in the waiting line, and takes a write mark of its own.
-// Weighed by its id, the retry's start would read as a row from before the stop and the pass
-// would end it — which costs the issue the line with nothing left to start its phase, the repair
-// of a slot passing over a retired claim on purpose (resumeSlottedWorkers) and the retry having
-// already answered its 202.
+// workflow's restart and started), whose one write is StartOrOwe's, and that takes out the row the
+// issue already owes and writes its own in its place (record.Store.EnqueueStart): the row written
+// keeps the created_at that holds the issue's place in the waiting line, and takes a write mark of
+// its own. Weighed by that created_at, the retry's start would read as a row from before the
+// stop and the pass would end it — which costs the issue the line with nothing left to start
+// its phase, the repair of a slot passing over a retired claim on purpose
+// (resumeSlottedWorkers) and the retry having already answered its 202.
 //
 // The fixture is the third group's own stopped worker, with the retry's write between the stop
 // and the pass.
@@ -553,19 +577,19 @@ func TestTheRetryOfAStoppedWorkerKeepsTheStartItWrote(t *testing.T) {
 	seedOwedRepairRow(t, pool, row)
 	stopped := theOwedStart(t, pool, row.key)
 
-	// The retry's own write, before any pass. It carries the assignment the role's phases row
-	// already names, as restart does, and the task of the phase the worker is to work.
+	// The retry's own write, before any pass. It is of the entry the role's phases row already
+	// names, as restart is, and carries the task of the phase the worker is to work.
 	retry := record.SuperviseRequest{Op: "start", Tree: row.root, Role: workflow.RoleFor(row.stands),
-		Generation: 1, Phase: row.stands, Task: retriedTask, Assignment: seededAssignment(row.key)}
+		Generation: 1, Phase: row.stands, Task: retriedTask, Entry: seededEntry}
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), row.key, retry, fixedNow); err != nil {
 			t.Fatalf("write the operator's retry of %s through the workflow's own writer: %v", row.key, err)
 		}
 	})
 	rewritten := theOwedStart(t, pool, row.key)
-	if rewritten.ID != stopped.ID || !rewritten.CreatedAt.Equal(stopped.CreatedAt) {
-		t.Fatalf("after the retry %s owes row %d created at %s, want the row %d created at %s it already owed: the rewrite is in place, which is what keeps the issue its place in the waiting line",
-			row.key, rewritten.ID, rewritten.CreatedAt, stopped.ID, stopped.CreatedAt)
+	if !rewritten.CreatedAt.Equal(stopped.CreatedAt) {
+		t.Fatalf("after the retry %s owes a row created at %s, want the %s the row it already owed was created at: the replacement keeps the issue its place in the waiting line",
+			row.key, rewritten.CreatedAt, stopped.CreatedAt)
 	}
 	// Reported rather than fatal: a build whose rewrite takes no mark of its own goes on to the
 	// pass below and reads what that costs, which is the whole point of the case.

@@ -134,12 +134,13 @@ type OwedStart struct {
 	CreatedAt time.Time
 	ID        int64
 	// WriteMark is the number outbox_write_mark_seq handed the write that last put this payload
-	// in the row: the insert that queued it, or the rewrite that replaced it in place and left
-	// its id and created_at where they were (Store.ReplaceOwedStart). It is the row's side of
-	// the stop rule, which weighs it against the mark a claim's retirement took (store's
-	// putClaim) to tell a start written after the stop from one the stop outlived (admit's
-	// stopOutlivedStart). The id cannot do that work: a rewrite keeps it, which is how the issue
-	// keeps its place in the line.
+	// in the row: the insert that queued it, which takes one through the column's own default,
+	// whether that insert is an issue's first start or the one written in place of the start it
+	// already owed (Store.EnqueueStart). It is the row's side of the stop rule, which weighs it
+	// against the mark a claim's retirement took (store's putClaim) to tell a start written
+	// after the stop from one the stop outlived (admit's stopOutlivedStart). The created_at
+	// cannot do that work: a start written in place of an owed one carries that row's
+	// created_at, which is how the issue keeps its place in the line.
 	WriteMark  int64
 	Role       claim.Role
 	Phase      phase.Phase
@@ -583,14 +584,13 @@ type SuperviseRequest struct {
 	// finishes without acting. It is empty for the architect, which serves every phase, and for a
 	// suspend or a tree's close, which must still act after the issue moves on.
 	Phase phase.Phase `json:"phase,omitempty"`
-	// Assignment is the task the issue's current phase hands the role, as the workflow minted it
-	// for this start (workflow.Engine.start): the same token stands on the role's phases row,
-	// written in the transition's transaction. It travels to the claim's delivery and, once a
-	// confirmed delivery is retired, onto the claim, so a completion can be held to the assignment
-	// the turn reporting it was given (api/handoff.go, HANDOFF_STALE_ASSIGNMENT) rather than to the
-	// run alone, whose value every phase entry of one run shares. Empty for a start that hands no
-	// new task — a resume, a production check's look — and for every other operation.
-	Assignment string `json:"assignment,omitempty"`
+	// Entry is the phase entry this start's task is of, as the transition raised it on the role's
+	// phases row in its own transaction (record.PhaseRow.Entry). It travels to the claim's
+	// delivery and, once a confirmed delivery is retired, onto the claim, so a completion can be
+	// held to the entry the turn reporting it was given (api/handoff.go) rather than to the run
+	// alone, whose value every phase entry of one run shares. Zero for a start that hands no new
+	// task — a resume, a production check's look — and for every other operation.
+	Entry int64 `json:"entry,omitempty"`
 	// ResumeTask marks Task as the phase's resume task (workflow.ResumePhaseTask), the one a
 	// re-admitted tree's promotion gives a mid-phase child: a claim that already holds a task for
 	// the same generation and phase is given it once it is ready, so the start delivers none.
@@ -602,7 +602,7 @@ type SuperviseRequest struct {
 	// NeedsSlot marks a phase worker's start as one that waits for its issue's admission slot.
 	// The cap counts the issues the daemon has started, so what it must bound is the start that
 	// puts a worker to work; everything else the transition writes — the phase, the Dispatch
-	// status, the assignment on the role's phases row, the notices — is written in the
+	// status, the entry and its task on the role's phases row, the notices — is written in the
 	// transition's own transaction and waits for nothing. The hold is on this row's claimability
 	// alone (store.go's outboxInOrder): a row that is merely unclaimable takes no lease, so none
 	// of its issue's later rows is held behind it. The row carries the worker's task whether or
@@ -619,6 +619,19 @@ type SuperviseRequest struct {
 	// retries for ever. The validation rule below is kept with it, so such a row still passes
 	// the check the decode makes. The release after this one may delete both.
 	Relaunch bool `json:"relaunch,omitempty"`
+	// Assignment is written by nothing. It carried the token the release before the phase entry
+	// minted for a start and wrote on the role's phases row, which Entry above replaced
+	// (INFRA-2800); the outbox decodes it now and acts on it nowhere.
+	//
+	// It is kept for one release for the reason Relaunch above is, and the upgrade cannot be made
+	// without it: the start a role was owed when that release stopped is still in the outbox when
+	// this one boots, and the migration's fill reads exactly that row's task as the work of entry
+	// 1 (migrations/20261111225552_phase_entry.up.sql). A decoder that refuses the field leaves
+	// that row retrying for ever and fails every admission pass of its issue besides, since
+	// record.Postgres.RoleRuns strictly decodes every supervise row of the issues it reads. No
+	// validation rule names it: the start it rides on passes the checks above as it stands. The
+	// release after this one may delete it.
+	Assignment string `json:"assignment,omitempty"`
 	// Linger is the root generation whose linger a tree close expires. A member keeps its
 	// generation across re-admission, so the close acts only while its tree lingers at that root
 	// generation: never in the tree's next run, nor in a later linger of it.
