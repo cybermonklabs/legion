@@ -136,6 +136,14 @@ a re-run below, and reads the counted set again when the wake brings it back.
 
 ## The act and the wait
 
+**A red the role has only been told of is not yet a red to act on.** A task that names a failing
+check, a notice, or another role's word is not the counted set. Until the counted set reports
+that check `completed`, the role presses no re-run and ends no round on it: it subscribes to the
+pull request's topic and ends the turn, as below, and reads the counted set again when the wake
+brings it back. GitHub fills a head's checks over seconds and minutes, so a counted set that is
+silent about a check it has been told of is one that has not caught up, and a re-run pressed
+there spends the head's one re-run on a run nobody counted.
+
 The role runs `gh run rerun <run id> --failed` in the head's own `pull_request` run. Then, in the
 same turn, it does these two things and nothing else:
 
