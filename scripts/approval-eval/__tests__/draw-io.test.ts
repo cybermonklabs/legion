@@ -84,6 +84,7 @@ function draw(overrides: Partial<DrawRecord> = {}): DrawRecord {
       cached: 0,
       inputTokens: 10,
       outputTokens: 5,
+      renderingChecked: "The text put to the rule was not checked for an approval of it.",
     },
     excluded: {
       held: { total: 0, byKind: {}, cases: [] },
@@ -128,6 +129,15 @@ describe("readDraw", () => {
       groupKey: "issue",
       roots: draw().backlogLegionRoots.issues,
     });
+  });
+
+  test("reads a draw written before the rule's own record carried what checked it", async () => {
+    const now = draw();
+    const { renderingChecked, ...older } = now.rule;
+    expect(renderingChecked).not.toBe("");
+    expect(await readDraw(await written({ ...now, rule: older }))).toEqual(
+      await readDraw(await written(now))
+    );
   });
 
   test("carries no fact the draw does not record, and none that is no such fact", async () => {

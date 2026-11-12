@@ -145,6 +145,21 @@ const ISSUE_PAGE = 250;
 /** How many case ids of each slice the command prints. */
 const IDS_SHOWN = 10;
 
+/**
+ * What `rule.renderingChecked` records in every draw this command writes. The reader this is
+ * for is the one who meets the rule's answers in `excluded.held` and takes them for a judgement
+ * made over checked text; the comment beside the call reaches whoever edits the call, and this
+ * reaches whoever uses what the call produced.
+ */
+const RENDERING_CHECKED =
+  "The text put to the rule was not checked for an approval of the document it judges, as a " +
+  "text put to a judge of the person's own decision is. The rule asks what a document " +
+  "requests - a destructive act, a credential, an owner-only setting, an outside message or " +
+  "account, or a change of a skill - and an approval quoting a version answers none of that, " +
+  "so an approval in the text cannot decide this rule's answer. That holds while the question " +
+  "does: a reading that asks this rule what the person decided, or that puts its answer into " +
+  "the agreement measurement, needs that check first.";
+
 interface Flags {
   corpus: string;
   cut: string;
@@ -528,6 +543,8 @@ async function drawCaseOf(
       // a skill change, and an approval trailer quoting a version carries no answer to that. The
       // bound is what makes it safe: if this rule is ever asked to predict what the person
       // decided, or its answer is ever fed to the agreement measurement, it is guarded first.
+      // Every draw records that bound as well, under `rule.renderingChecked`, because the reader
+      // who would break it reads the holds rather than this call.
       hold: await neverDecide(
         {
           text,
@@ -724,9 +741,10 @@ async function draw(flags: Flags): Promise<number> {
     // shows later.
     backlogLegionRootsRead: roots.issues.length,
     backlogLegionRoots: roots,
-    // What the rule was, for this draw: the prose it applied and what applying it cost. A
-    // change of one byte of that prose changes every cache key, so a later draw over the same
-    // corpus and seed with another definition is a different reading and says so here.
+    // What the rule was, for this draw: the prose it applied, what applying it cost, and what
+    // checked the text it was applied to. A change of one byte of that prose changes every
+    // cache key, so a later draw over the same corpus and seed with another definition is a
+    // different reading and says so here.
     rule: {
       model: DEFAULT_NEVER_DECIDE_MODEL,
       definitionSha256: createHash("sha256").update(definition, "utf8").digest("hex"),
@@ -735,6 +753,7 @@ async function draw(flags: Flags): Promise<number> {
       cached,
       inputTokens: holds.reduce((total, one) => total + (one.inputTokens ?? 0), 0),
       outputTokens: holds.reduce((total, one) => total + (one.outputTokens ?? 0), 0),
+      renderingChecked: RENDERING_CHECKED,
     },
     excluded: {
       held: { total: drawn.held.length, byKind: drawn.heldByKind, cases: drawn.held },
