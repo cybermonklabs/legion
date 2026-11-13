@@ -104,6 +104,10 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `recorded the ${event.payload.phase} handoff, version ${event.payload.version}`;
     case "artifact.created":
       return `added ${event.payload.artifact.name}`;
+    case "artifact.renamed":
+      return `renamed ${event.payload.previous_name} to ${event.payload.artifact.name}`;
+    case "artifact.removed":
+      return `removed ${event.payload.artifact.name}`;
     case "artifact.version":
       return `saved ${event.payload.name} v${event.payload.version.number}`;
     case "artifact.human_edited":

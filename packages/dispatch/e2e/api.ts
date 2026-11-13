@@ -659,6 +659,12 @@ export function createIssueArtifact(
   return post("/api/v1/issues/{key}/artifacts", { body: input, params: { key: issue } }, options);
 }
 
+/** `GET /api/v1/issues/{key}/artifacts`: every artifact the issue holds, as the Documents tab's
+ *  own `["artifacts", key]` read lists them, each with its role and its versions. */
+export function listIssueArtifacts(issue: string, options: ApiOptions = {}) {
+  return get("/api/v1/issues/{key}/artifacts", { params: { key: issue } }, options);
+}
+
 export function getProjectArtifact(project: string, slug: string, options: ApiOptions = {}) {
   return get(
     "/api/v1/projects/{key}/artifacts/{slug}",
