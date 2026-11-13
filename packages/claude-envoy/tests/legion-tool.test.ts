@@ -1,7 +1,8 @@
-import { expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { expect, mock, test } from "bun:test"
+import * as fs from "node:fs"
+import * as fsPromises from "node:fs/promises"
+import { readFile } from "node:fs/promises"
+import { resolve } from "node:path"
 import type { LegionRole } from "@legion/contracts"
 import type { LegionPhase } from "@legion/contracts/legion-api"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
@@ -417,13 +418,33 @@ test("refuses before the claim registered, an operation a phase worker has not, 
 })
 
 // R6: a role reads which plugin build its own process runs. The build is this module's own
-// manifest, so a stale copy at the image's own path changes nothing about the answer.
+// manifest, never the image's copy at `/opt/legion/claude-envoy`, which a relaunch never updates.
+// For this case alone a read of that copy through `node:fs` `readFileSync` or
+// `node:fs/promises` `readFile` answers a manifest with a version and a contract of its own, so
+// the answer below fails wherever the build is read from that path, whatever the image holds.
 test("read_build answers the package and version this process loaded, both contract numbers, and reads no project state", async () => {
-  const stale = await mkdtemp(join(tmpdir(), "claude-envoy-image-path-"))
-  await writeFile(
-    join(stale, "package.json"),
-    JSON.stringify({ name: "@sjawhar/claude-envoy", version: "0.0.0-stale", legion: {} }),
-  )
+  const IMAGE_MANIFEST = "/opt/legion/claude-envoy/package.json"
+  const atImagePath = JSON.stringify({
+    name,
+    version: "0.0.0-image",
+    legion: { daemonApiVersion: legion.daemonApiVersion - 1 },
+  })
+  const realFs = { ...fs }
+  const realFsPromises = { ...fsPromises }
+  mock.module("node:fs", () => ({
+    ...realFs,
+    readFileSync: (
+      file: Parameters<typeof fs.readFileSync>[0],
+      options?: Parameters<typeof fs.readFileSync>[1],
+    ) => (String(file) === IMAGE_MANIFEST ? atImagePath : realFs.readFileSync(file, options)),
+  }))
+  mock.module("node:fs/promises", () => ({
+    ...realFsPromises,
+    readFile: async (
+      file: Parameters<typeof fsPromises.readFile>[0],
+      options?: Parameters<typeof fsPromises.readFile>[1],
+    ) => (String(file) === IMAGE_MANIFEST ? atImagePath : realFsPromises.readFile(file, options)),
+  }))
   try {
     const { client, requests } = await daemon({ daemonContract: legion.daemonApiVersion + 1 })
     const runtime = {
@@ -444,14 +465,9 @@ test("read_build answers the package and version this process loaded, both contr
     })
     // The health route alone, read for its header: no project state is asked for.
     expect(requests.map(({ path }) => path)).toEqual(["/healthz"])
-
-    const atImagePath = JSON.parse(await readFile(join(stale, "package.json"), "utf8")) as {
-      version: string
-    }
-    expect(atImagePath.version).toBe("0.0.0-stale")
-    expect(version).not.toBe(atImagePath.version)
   } finally {
-    await rm(stale, { recursive: true, force: true })
+    mock.module("node:fs", () => realFs)
+    mock.module("node:fs/promises", () => realFsPromises)
   }
 })
 
