@@ -111,7 +111,7 @@ export const issueFields = {
   rank: z.string(),
   labels: z.array(z.string()),
   parent: z.string().nullable(),
-  /** Issue keys in the same project this issue waits on, sorted. */
+  /** Issue keys this issue waits on, of any project, sorted. */
   blocked_by: z.array(z.string()),
   /** Lowercase email of the person who answers this issue's asks; null when unassigned. */
   assignee: z.string().nullable(),
