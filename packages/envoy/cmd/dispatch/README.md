@@ -2594,6 +2594,8 @@ The last frame before the ending is `proposal`: the arguments of each offered ac
 The server performs it in-process as the caller, through its own route table with only the caller's `Authorization`, `Cookie`, `Origin`, `Sec-Fetch-Site` and `Dispatch-Login` headers, so every check a route makes runs as on the caller's own request.
 It reads the value before just before the write and the value after just after it, and appends the write, refused or not, to the run.
 It refuses `auto` for `dispatch_send_to_agent` and `dispatch_issue`, which always ask, for any action but the one the decision chose at or above its threshold (`409 GOING_APPROVAL_REQUIRED`), and while the caller's `confirm_writes` is on (`409 GOING_CONFIRMATION_REQUIRED`).
+Each invocation of a run is written once: a request for an invocation whose write went through writes nothing and answers `200` with that write's line as the run recorded it, and two requests for one invocation at once take turns under a lock keyed by the run, the offer and the invocation, so the second answers the first's line.
+An invocation whose write was refused made nothing and may be written again.
 `GET` and `PUT /api/v1/me/going/settings` read and write `confirm_writes`, the person's own setting, which the server holds (`user_going_settings`) and which is false until the person sets it.
 `POST /api/v1/going/runs/{id}/undo` undoes every write of the run that went through and that no undo settled, newest first, in-process as the caller, by the undo its catalogue row states: `write_back`, `reverse`, `close_created` or `trace`.
 A field another writer changed since the write is left as it is and its undo is refused `409 GOING_UNDO_CHANGED`, and the rest of the turn is undone.

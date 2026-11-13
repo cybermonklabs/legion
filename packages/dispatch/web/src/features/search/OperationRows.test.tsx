@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { answerRoute } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
-import { api, type WriteBounds } from "../../api/client";
+import { ApiError, api, type WriteBounds } from "../../api/client";
 import type {
   ArtifactUploadResponse,
   GoingDecisionEvent,
@@ -42,24 +42,26 @@ let spies: GoingBarSpies;
 type WriteAnswer = (run: string, input: GoingWriteInput, bounds: WriteBounds) => Promise<unknown>;
 let written: Mock<WriteAnswer>;
 
+/** Dispatch's line for a write of `input` that landed: a status change of the item it names. */
+function landedLine(input: GoingWriteInput): GoingWriteLine {
+  return {
+    action: input.offer,
+    before: { status: "todo" },
+    field: "status",
+    item: `LEGION-${3 + (input.invocation ?? 0)}`,
+    now: { status: "in_progress" },
+    outcome: { code: "", message: "", ok: true, status: 200 },
+    write_id: `write-${input.invocation ?? 0}`,
+  };
+}
+
 beforeEach(() => {
   jest.useFakeTimers();
   spies = spyOnGoingBar();
   streams = spies.streams;
   settings = spyOn(api, "myGoingSettings").mockResolvedValue({ confirm_writes: false });
   written = answerRoute<WriteAnswer>("POST", "/api/v1/going/runs/*/writes");
-  written.mockImplementation(async (_run, input) => {
-    const line: GoingWriteLine = {
-      action: input.offer,
-      before: { status: "todo" },
-      field: "status",
-      item: `LEGION-${3 + (input.invocation ?? 0)}`,
-      now: { status: "in_progress" },
-      outcome: { code: "", message: "", ok: true, status: 200 },
-      write_id: `write-${input.invocation ?? 0}`,
-    };
-    return line;
-  });
+  written.mockImplementation(async (_run, input) => landedLine(input));
 });
 
 afterEach(() => {
@@ -172,6 +174,80 @@ test("at or above the threshold the operation is a row above the hits the highli
     expect(lines[1]).toHaveTextContent("LEGION-4 · status: todo → in_progress");
     // The operation ran, so its row is gone and no second submit runs it again.
     expect(screen.queryByRole("option", { name: /^Run issue update/ })).not.toBeInTheDocument();
+  } finally {
+    bar.unmount();
+  }
+});
+
+test("a submit pressed again while the turn's writes are out, and again once they landed, writes each invocation once", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await ask(user, "astrolabe");
+    stream(decision(true, ["dispatch_issue_update"]), proposal, ended);
+    await screen.findByRole("option", { name: /^Run issue update/ });
+    const first = Promise.withResolvers<GoingWriteLine>();
+    written.mockImplementation((_run, input) =>
+      input.invocation === 0 ? first.promise : Promise.resolve(landedLine(input))
+    );
+
+    await submit(user);
+    // The first invocation is out, the second waits behind it on the run's line.
+    await waitFor(() => expect(written).toHaveBeenCalledTimes(1));
+    await submit(user);
+    first.resolve(landedLine({ approved: "auto", invocation: 0, offer: "dispatch_issue_update" }));
+    const lines = await screen.findAllByTestId("going-write-line");
+    await waitFor(() =>
+      expect(lines.map((line) => line.getAttribute("data-state"))).toEqual(["done", "done"])
+    );
+    await submit(user);
+    await tick(1000);
+
+    expect(sent()).toEqual([
+      { approved: "auto", invocation: 0, offer: "dispatch_issue_update" },
+      { approved: "auto", invocation: 1, offer: "dispatch_issue_update" },
+    ]);
+    expect(screen.getAllByTestId("going-write-line")).toHaveLength(2);
+  } finally {
+    bar.unmount();
+  }
+});
+
+test("a submit pressed again after Dispatch refused one invocation makes that one again, and only it", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await ask(user, "astrolabe");
+    stream(decision(true, ["dispatch_issue_update"]), proposal, ended);
+    await screen.findByRole("option", { name: /^Run issue update/ });
+    let refuse = true;
+    written.mockImplementation(async (_run, input) => {
+      if (input.invocation === 1 && refuse) {
+        refuse = false;
+        throw new ApiError(409, { code: "ISSUE_CLAIMED", error: "LEGION-4 is claimed" });
+      }
+      return landedLine(input);
+    });
+
+    await submit(user);
+    await waitFor(() =>
+      expect(
+        screen.getAllByTestId("going-write-line").map((line) => line.getAttribute("data-state"))
+      ).toEqual(["done", "refused"])
+    );
+    await submit(user);
+
+    await waitFor(() =>
+      expect(
+        screen.getAllByTestId("going-write-line").map((line) => line.getAttribute("data-state"))
+      ).toEqual(["done", "done"])
+    );
+    await tick(1000);
+    expect(sent()).toEqual([
+      { approved: "auto", invocation: 0, offer: "dispatch_issue_update" },
+      { approved: "auto", invocation: 1, offer: "dispatch_issue_update" },
+      { approved: "auto", invocation: 1, offer: "dispatch_issue_update" },
+    ]);
   } finally {
     bar.unmount();
   }
@@ -369,7 +445,8 @@ test("a new issue the run made is the issue its write names, with no read of it 
 
 test("a send through the run whose delivery failed answers why, as the direct send does", async () => {
   const words = "tell the agent";
-  const answer: GoingAnswer = {
+  // Each send is its own run's: a run writes each of its invocations once.
+  const answerOf = (runId: string): GoingAnswer => ({
     block: undefined,
     changed: undefined,
     cut: undefined,
@@ -389,16 +466,18 @@ test("a send through the run whose delivery failed answers why, as the direct se
     },
     replayed: false,
     roster: undefined,
-    runId: "run-1",
+    runId,
     state: "ended",
     text: "",
     unreachable: undefined,
     words,
-  };
+  });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const hook = renderHook(
-    () => useGoingOperations({ answer, askNow: () => false, hits: [], words }),
+    ({ runId }: { readonly runId: string }) =>
+      useGoingOperations({ answer: answerOf(runId), askNow: () => false, hits: [], words }),
     {
+      initialProps: { runId: "run-1" },
       wrapper: ({ children }: { readonly children: ReactNode }) => (
         <QueryClientProvider client={client}>{children}</QueryClientProvider>
       ),
@@ -418,7 +497,8 @@ test("a send through the run whose delivery failed answers why, as the direct se
           write_id: "write-send",
         }) satisfies GoingWriteLine
     );
-  const send = async () => {
+  const send = async (runId: string) => {
+    hook.rerender({ runId });
     const sendToAgent = hook.result.current.sendToAgent;
     expect(sendToAgent).toBeDefined();
     let said: string | undefined;
@@ -438,11 +518,11 @@ test("a send through the run whose delivery failed answers why, as the direct se
       delivery_state: "failed",
       id: "m-1",
     });
-    expect(await send()).toBe("the session takes no aside");
+    expect(await send("run-1")).toBe("the session takes no aside");
     delivered({ delivery_error: null, delivery_state: "failed", id: "m-2" });
-    expect(await send()).toBe("Dispatch gave no reason.");
+    expect(await send("run-2")).toBe("Dispatch gave no reason.");
     delivered({ delivery_error: null, delivery_state: "delivered", id: "m-3" });
-    expect(await send()).toBeUndefined();
+    expect(await send("run-3")).toBeUndefined();
   } finally {
     hook.unmount();
     client.clear();

@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -694,6 +695,155 @@ func TestGoingWritesAnswerARouteRefusalAsTheRouteDoesAndRecordIt(t *testing.T) {
 	writes := rig.record(t, "alice", run).Writes
 	if len(writes) != 1 || writes[0].Outcome.OK || writes[0].Outcome.Status != http.StatusConflict || writes[0].Outcome.Code != "ISSUE_CLAIMED" {
 		t.Fatalf("the run keeps %+v, want the refusal as the write's outcome", writes)
+	}
+}
+
+// keyedWrite sends one write of the run as alice's browser, under the Idempotency-Key key.
+func (rig goingWritesRig) keyedWrite(t *testing.T, run, key string, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	return goingRequestTo(t, rig.network, http.MethodPost, "/api/v1/going/runs/"+run+"/writes", body,
+		map[string]string{"Origin": testServerURL, contracts.IdempotencyKeyHeader: key}, rig.cookie(t, "alice"))
+}
+
+// goingLineOf is the line a write answered, which must be a 200.
+func goingLineOf(t *testing.T, response *httptest.ResponseRecorder) goingWriteLine {
+	t.Helper()
+	if response.Code != http.StatusOK {
+		t.Fatalf("the write answered status=%d body=%s, want 200", response.Code, response.Body.String())
+	}
+	return decodeBody[goingWriteLine](t, response)
+}
+
+// sameGoingLine fails the test unless got is the line want is: the same write, item, field and
+// outcome, and the same values before and now.
+func sameGoingLine(t *testing.T, got, want goingWriteLine) {
+	t.Helper()
+	if got.WriteID != want.WriteID || got.Action != want.Action || got.Item != want.Item || got.Field != want.Field ||
+		got.Outcome != want.Outcome || !jsonEqual(t, got.Before, string(want.Before)) || !jsonEqual(t, got.Now, string(want.Now)) {
+		t.Fatalf("the line is %+v, want the first write's %+v", got, want)
+	}
+}
+
+// goingCommentsSaying is how many comments of issue say body.
+func (rig goingWritesRig) goingCommentsSaying(t *testing.T, issue, body string) int {
+	t.Helper()
+	comments := decodeBody[[]model.Comment](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/issues/"+issue+"/comments", nil))
+	return len(slices.DeleteFunc(comments, func(comment model.Comment) bool { return comment.Body != body }))
+}
+
+// TestGoingWritesOfAnInvocationThatWentThroughWriteItOnce: a second request for an invocation the
+// run already wrote, under a key of its own, makes no second write and answers the first write's
+// line; a repeat under the first request's own key, whose answer the client never read, is
+// answered that answer again.
+func TestGoingWritesOfAnInvocationThatWentThroughWriteItOnce(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Written once", "The spec.\n").Key
+	const body = "The grease is on order."
+	write := map[string]any{"offer": "dispatch_comment", "invocation": 0, "approved": goingApprovedPerson}
+
+	t.Run("a second press under a key of its own", func(t *testing.T) {
+		run := rig.proposed(t, "alice", true, "dispatch_comment", map[string]any{"issue": issue, "body": body})
+		first := goingLineOf(t, rig.keyedWrite(t, run, "press-1", write))
+		again := goingLineOf(t, rig.keyedWrite(t, run, "press-2", write))
+		sameGoingLine(t, again, first)
+		if writes := rig.record(t, "alice", run).Writes; len(writes) != 1 || writes[0].ID != first.WriteID {
+			t.Fatalf("the run keeps %+v, want the first write alone", writes)
+		}
+		if count := rig.goingCommentsSaying(t, issue, body); count != 1 {
+			t.Fatalf("the issue holds %d comments saying %q, want 1", count, body)
+		}
+	})
+
+	t.Run("a repeat under the key of a write whose answer was lost", func(t *testing.T) {
+		other := rig.issue(t, "Written once under one key")
+		run := rig.proposed(t, "alice", true, "dispatch_comment", map[string]any{"issue": other, "body": body})
+		// The first answer never reaches the client, which asks again under the same key.
+		lost := rig.keyedWrite(t, run, "press-lost", write)
+		repeat := rig.keyedWrite(t, run, "press-lost", write)
+		if repeat.Code != lost.Code || repeat.Body.String() != lost.Body.String() ||
+			repeat.Header().Get(contracts.IdempotencyReplayedHeader) != "?1" {
+			t.Fatalf("the repeat answered %d %s replayed=%q, want the first answer %d %s replayed",
+				repeat.Code, repeat.Body.String(), repeat.Header().Get(contracts.IdempotencyReplayedHeader), lost.Code, lost.Body.String())
+		}
+		sameGoingLine(t, goingLineOf(t, repeat), goingLineOf(t, lost))
+		if writes := rig.record(t, "alice", run).Writes; len(writes) != 1 {
+			t.Fatalf("the run keeps %+v, want one write", writes)
+		}
+		if count := rig.goingCommentsSaying(t, other, body); count != 1 {
+			t.Fatalf("the issue holds %d comments saying %q, want 1", count, body)
+		}
+	})
+}
+
+// TestGoingWritesOfOneInvocationAtOnceMakeOneWrite: two requests for one invocation that arrive
+// together take turns, so one writes and the other answers its line.
+func TestGoingWritesOfOneInvocationAtOnceMakeOneWrite(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Pressed twice at once", "The spec.\n").Key
+	const body = "Both presses at once."
+	run := rig.proposed(t, "alice", true, "dispatch_comment", map[string]any{"issue": issue, "body": body})
+	write := map[string]any{"offer": "dispatch_comment", "invocation": 0, "approved": goingApprovedPerson}
+	cookie := rig.cookie(t, "alice")
+
+	// The invocation's lock, held so both requests are under way before either may take it.
+	hold, err := rig.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the hold: %v", err)
+	}
+	t.Cleanup(func() { _ = hold.Rollback(context.Background()) })
+	if _, err := hold.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended($1, 0))`, "going-write:"+run+":0:dispatch_comment"); err != nil {
+		t.Fatalf("hold the invocation's lock: %v", err)
+	}
+	presses := make([]*pendingRequest, 2)
+	for index := range presses {
+		presses[index] = startRequest(func() *httptest.ResponseRecorder {
+			return goingRequestTo(t, rig.network, http.MethodPost, "/api/v1/going/runs/"+run+"/writes", write, pageOrigin, cookie)
+		})
+	}
+	awaitLockWaits(t, ctx, rig.database, "the two writes never both waited on the invocation's lock", func(waiting func(string) int) bool {
+		return waiting("%pg_advisory_xact_lock(hashtextextended%") == 2
+	})
+	if err := hold.Rollback(ctx); err != nil {
+		t.Fatalf("release the hold: %v", err)
+	}
+	lines := make([]goingWriteLine, 0, len(presses))
+	for _, press := range presses {
+		select {
+		case <-press.done:
+		case <-ctx.Done():
+			t.Fatalf("the two writes (%s, %s) never both finished", presses[0], presses[1])
+		}
+		lines = append(lines, goingLineOf(t, press.response))
+	}
+	sameGoingLine(t, lines[1], lines[0])
+	if writes := rig.record(t, "alice", run).Writes; len(writes) != 1 {
+		t.Fatalf("the run keeps %+v, want one write", writes)
+	}
+	if count := rig.goingCommentsSaying(t, issue, body); count != 1 {
+		t.Fatalf("the issue holds %d comments saying %q, want 1", count, body)
+	}
+}
+
+// TestGoingWritesOfAnInvocationTheRouteRefusedRunAgain: a write its route refused made nothing, so
+// the invocation is written again when asked, and the run keeps both.
+func TestGoingWritesOfAnInvocationTheRouteRefusedRunAgain(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Held, then let go", "The spec.\n").Key
+	rig.fixture(t, "bob", http.MethodPost, "/api/v1/issues/"+issue+"/claim", map[string]any{})
+	run := rig.proposed(t, "alice", true, "dispatch_claim", map[string]any{"issue": issue})
+	write := map[string]any{"offer": "dispatch_claim", "invocation": 0, "approved": goingApprovedPerson}
+	if refused := rig.write(t, "alice", run, write); refused.Code != http.StatusConflict {
+		t.Fatalf("a claim bob holds: status=%d body=%s, want 409", refused.Code, refused.Body.String())
+	}
+	rig.fixture(t, "bob", http.MethodDelete, "/api/v1/issues/"+issue+"/claim", nil)
+
+	line := rig.wrote(t, "alice", run, write)
+
+	writes := rig.record(t, "alice", run).Writes
+	if len(writes) != 2 || writes[0].Outcome.OK || !writes[1].Outcome.OK || writes[1].ID != line.WriteID {
+		t.Fatalf("the run keeps %+v, want the refusal and then the claim", writes)
 	}
 }
 

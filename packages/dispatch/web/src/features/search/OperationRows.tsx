@@ -204,7 +204,9 @@ export interface GoingOperations {
  * A submit before the proposal arrives says it is preparing and runs when the proposal lands; one
  * with no run yet asks at once. An invocation missing one argument asks for it first, and with
  * the person's setting on (`GET /api/v1/me/going/settings`) every write asks first and is sent
- * confirmed. Each invocation is one write (`runGoingWrite`), and each write one line.
+ * confirmed. Each invocation is one write (`runGoingWrite`), and each write one line; a submit
+ * pressed again, while the turn's writes are out or once they landed, writes none of them again,
+ * and makes again only one Dispatch refused.
  */
 export function useGoingOperations({
   answer,

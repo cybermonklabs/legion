@@ -82,9 +82,9 @@ type goingUndoAnswer struct {
 // record does not hold, or that is older than thirty days - a run gone with its record - is 404
 // GOING_RUN_NOT_FOUND. A run with nothing left to undo answers no line: a write already undone,
 // or whose undo was refused for what another writer changed, is not tried again. Two undos of one
-// run take turns (lockGoingUndo), so the second reads what the first recorded and undoes nothing
-// twice. The run is read once before the lock, so only its owner ever holds the lock and a
-// connection for it, and once more under it, which is the read the undo goes by.
+// run take turns (lockGoing, keyed by the run), so the second reads what the first recorded and
+// undoes nothing twice. The run is read once before the lock, so only its owner ever holds the
+// lock and a connection for it, and once more under it, which is the read the undo goes by.
 func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -98,7 +98,7 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	release, err := s.lockGoingUndo(r.Context(), owned.ID)
+	release, err := s.lockGoing(r.Context(), "going-undo:"+owned.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -143,19 +143,20 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, goingUndoAnswer{Lines: lines})
 }
 
-// lockGoingUndo holds the undo of run until release is called: a transaction-scoped advisory lock
-// keyed by the run, on a connection of its own mark, so the undo's in-process writes and its
-// appends to the run - each on connections of their own - are not held by it, and a second undo
-// of the same run waits for the first to finish before it reads the run.
-func (s *server) lockGoingUndo(ctx context.Context, run string) (func(), error) {
+// lockGoing holds the lock named key until release is called: a transaction-scoped advisory
+// lock, on a connection of its own mark, so the in-process writes and the appends to the run made
+// under it - each on connections of their own - are not held by it. An undo holds one keyed by
+// its run, so a second undo of the same run waits for the first to finish before it reads the
+// run; a write holds one keyed by its run, offer and invocation (createGoingWrite).
+func (s *server) lockGoing(ctx context.Context, key string) (func(), error) {
 	locking := store.ForConcurrentWorker(ctx)
 	tx, err := s.begin(locking)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(locking, `select pg_advisory_xact_lock(hashtextextended('going-undo:' || $1, 0))`, run); err != nil {
+	if _, err := tx.Exec(locking, `select pg_advisory_xact_lock(hashtextextended($1, 0))`, key); err != nil {
 		_ = tx.Rollback(context.WithoutCancel(locking))
-		return nil, fmt.Errorf("take the run's undo lock: %w", err)
+		return nil, fmt.Errorf("take the lock %s: %w", key, err)
 	}
 	return func() { _ = tx.Rollback(context.WithoutCancel(locking)) }, nil
 }

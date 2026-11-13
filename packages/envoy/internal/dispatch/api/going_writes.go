@@ -180,15 +180,20 @@ type goingWriteLine struct {
 
 // createGoingWrite is POST /api/v1/going/runs/{id}/writes: one write of the caller's own run. A
 // run that is not the caller's, that the record does not hold, or that is older than thirty days
-// is 404 GOING_RUN_NOT_FOUND, one answer for all three. The run must have proposed or ended
-// (409 GOING_RUN_UNPROPOSED), and the action and the invocation must be in its proposal (409
+// is 404 GOING_RUN_NOT_FOUND, one answer for all three. An invocation the run already wrote, and
+// whose write went through, is not written again: the request writes nothing and answers that
+// write's line as the run recorded it. Two writes of one invocation take turns under a lock keyed
+// by the run, the offer and the invocation, taken once the run is known to be the caller's, so the
+// second reads the first off the run; a write that was refused made nothing, and does not stop
+// another. A repeat under the write's own Idempotency-Key is answered by the keyed layer from the
+// first answer, as every keyed write's is. The run must have proposed or ended (409
+// GOING_RUN_UNPROPOSED), and the action and the invocation must be in its proposal (409
 // GOING_NOT_PROPOSED). `auto` is refused, 409 GOING_APPROVAL_REQUIRED, for the two writes that
-// always ask and for any but the action the decision chose at or above the action
-// threshold, and 409 GOING_CONFIRMATION_REQUIRED where the caller turned confirm_writes on. The
-// value before is read, the write performed and the value after read, each in-process as the
-// caller; the write, refused or not, is appended to the run. A refusal by the
-// route the write ran through, or by a read the write needed, is answered as that route answered
-// it, status, code and all.
+// always ask and for any but the action the decision chose at or above the action threshold, and
+// 409 GOING_CONFIRMATION_REQUIRED where the caller turned confirm_writes on. The value before is
+// read, the write performed and the value after read, each in-process as the caller; the write,
+// refused or not, is appended to the run. A refusal by the route the write ran through, or by a
+// read the write needed, is answered as that route answered it, status, code and all.
 func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -203,8 +208,26 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, codeGoingInput, http.StatusBadRequest, "approved must be auto, person or confirmed")
 		return
 	}
+	owned, ok := s.readCallersGoingRun(w, r, caller.ID)
+	if !ok {
+		return
+	}
+	release, err := s.lockGoing(r.Context(), fmt.Sprintf("going-write:%s:%d:%s", owned.ID, input.Invocation, input.Offer))
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	defer release()
+	// The read the write goes by, under the lock: a write of this invocation that went through
+	// before it is on the run by now.
 	run, ok := s.readCallersGoingRun(w, r, caller.ID)
 	if !ok {
+		return
+	}
+	if index := slices.IndexFunc(run.Writes, func(write goingRunWrite) bool {
+		return write.Outcome.OK && write.Action == input.Offer && write.Invocation == input.Invocation
+	}); index >= 0 {
+		WriteJSON(w, http.StatusOK, goingWriteLineOf(run.Writes[index]))
 		return
 	}
 	if !run.Finished && len(run.Proposal) == 0 {
@@ -235,7 +258,7 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, refused)
 		return
 	}
-	write := goingRunWrite{ID: uuid.NewString(), Action: input.Offer, Approved: input.Approved}
+	write := goingRunWrite{ID: uuid.NewString(), Action: input.Offer, Invocation: input.Invocation, Approved: input.Approved}
 	if named != "" {
 		// The session the person named for a row addressing the caller's own session, read off
 		// the roster as the person may read it.
@@ -289,10 +312,15 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		s.writeGoingRunAppendError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, goingWriteLine{
+	WriteJSON(w, http.StatusOK, goingWriteLineOf(write))
+}
+
+// goingWriteLineOf is the line a write of the run answers, from the write as the run records it.
+func goingWriteLineOf(write goingRunWrite) goingWriteLine {
+	return goingWriteLine{
 		WriteID: write.ID, Action: write.Action, Item: write.Target, Field: write.Field,
 		Before: write.Before, Now: write.After, Outcome: write.Outcome,
-	})
+	}
 }
 
 // refuseGoingWrite answers a write refused once it was the caller's to make: by the route it ran

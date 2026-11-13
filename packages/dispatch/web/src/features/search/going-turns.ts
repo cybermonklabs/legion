@@ -96,6 +96,11 @@ let lastUndo: LastUndo | undefined;
 /** The runs whose undo, out now, the shell says as it goes: an undo the key made, or one already
  *  out from a turn's Undo that the key was pressed during. */
 const followed = new Set<string>();
+/** Each write of a turn this page has made that is queued, out or landed, by run and line key
+ *  (`run\naction:invocation`): a second submit of the turn answers it rather than writing it
+ *  again. A write refused, or stopped before it was sent, leaves it, so making the write again is
+ *  the person's. */
+const made = new Map<string, Promise<GoingWriteLine | null>>();
 const listeners = new Set<() => void>();
 
 function publish(): void {
@@ -151,6 +156,7 @@ export function forgetTurns(): void {
   turns = new Map();
   lastUndo = undefined;
   followed.clear();
+  made.clear();
   publish();
 }
 
@@ -242,16 +248,20 @@ export interface GoingWriteSpec {
  * Makes one write of a turn and keeps its line: one write of the store on the run's line, inline
  * since the line says its refusal itself. Answers Dispatch's line for it (`null` for a landing it
  * had no answer to give for) or rejects with its refusal, or with `WriteDiscardedError` where an
- * undo stopped it before it was sent.
+ * undo stopped it before it was sent. An invocation of the run this page already has queued, out
+ * or landed is not written again: the call answers that write's own answer, and sends nothing.
  */
 export function runGoingWrite(
   writes: Writes,
   spec: GoingWriteSpec
 ): Promise<GoingWriteLine | null> {
+  const key = `${spec.action}:${spec.invocation}`;
+  const invocation = `${spec.runId}\n${key}`;
+  const already = made.get(invocation);
+  if (already !== undefined) return already;
   const named: Record<string, unknown> = { ...spec.arguments, ...spec.replace };
   if (spec.fill !== undefined) named[spec.fill.field] = spec.fill.value;
   const target = targetOf(named);
-  const key = `${spec.action}:${spec.invocation}`;
   const line: TurnLine = {
     action: spec.action,
     change: changeOf(named, target),
@@ -273,7 +283,7 @@ export function runGoingWrite(
     ...(spec.replace === undefined ? {} : { arguments: { ...spec.replace } }),
     ...(spec.fill === undefined ? {} : { fill: spec.fill.value }),
   };
-  return writes
+  const write: Promise<GoingWriteLine | null> = writes
     .run({
       detail: null,
       inline: true,
@@ -305,9 +315,12 @@ export function runGoingWrite(
                 state: "refused",
               }
         );
+        if (made.get(invocation) === write) made.delete(invocation);
         throw error;
       }
     );
+  made.set(invocation, write);
+  return write;
 }
 
 /** Makes every write of `specs`, in order on the run's line, each line saying how it went. */
