@@ -650,6 +650,12 @@ type SuperviseRequest struct {
 	Tree string      `json:"tree"`
 	Role claim.Role  `json:"role"`
 	Task string      `json:"task,omitempty"`
+	// Origin is the source that queued Task — phase-start, resume, wake, notice, operator,
+	// check-look — carried onto the claim's delivery (supervise.RequestDeliver.Origin), so a task's
+	// origin comes from the row that wrote it and never from its text. A row that names none is
+	// read as a phase start where it names a phase and an operator's task otherwise
+	// (supervise's originOf).
+	Origin string `json:"origin,omitempty"`
 	// Kept is what an architect start's Task named of the decisions its root keeps
 	// (workflow.Engine.ParkedDecisionTask). The start settles them once it has run (the outbox's
 	// settleKept): a task the root architect's claim queued forgets them

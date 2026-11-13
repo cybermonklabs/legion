@@ -1189,11 +1189,11 @@ func TestTheWorkflowsTreeCloseIsNotPutToTheOperatorsPredicate(t *testing.T) {
 }
 
 // The daemon wires phaseHolds into every claim's machine, and one path a delivery takes rewrites
-// the delivery: a prompt acknowledged and then refused is taken back under a new id
-// (supervise.promptFailed). That is exactly the state a late foreign turn leaves behind, which is
-// the state this drop exists for, so the workflow's own task must still be dropped after the
-// rewrite once its issue has left the phase the task was queued for. A predicate that reads
-// anything the retry rewrites answers this wrong in production and green in a test that skips it.
+// the delivery: a take a compaction stopped before its turn started is taken back, its take gone
+// (supervise's takeBack). The workflow's own task must still be dropped after that rewrite once
+// its issue has left the phase the task was queued for: the worker's next take of it is answered
+// dropped. A predicate that reads anything the take-back rewrites answers this wrong in production
+// and green in a test that skips it.
 func TestAWorkflowTaskIsDroppedAfterItsRetryRewritesTheDelivery(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -1240,41 +1240,34 @@ func TestAWorkflowTaskIsDroppedAfterItsRetryRewritesTheDelivery(t *testing.T) {
 			t.Fatalf("handle %T: %v", ev, err)
 		}
 	}
-	testwait.Eventually(t, "the phase's task to be acknowledged", func() bool {
-		p := machine.Claim().Pending
-		return p != nil && !p.DeliveredAt.IsZero()
+	testwait.Eventually(t, "the phase's task to be queued", func() bool {
+		return machine.Claim().Pending != nil
 	})
-	queued := machine.Claim().Pending.ID
+	queued := machine.Claim().Pending
 
-	// A turn the task did not start, and the agent then refusing the prompt it had acknowledged:
-	// the delivery is taken back under a new id, and the foreign turn ends.
-	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
-		t.Fatalf("start the foreign turn: %v", err)
+	// The worker takes the task, and a compaction takes it back before its turn starts: the
+	// delivery is rewritten, its number kept.
+	acceptTake(ctx, t, machine)
+	if err := machine.Compact(ctx, "Write the summary as text."); err != nil {
+		t.Fatalf("compact: %v", err)
 	}
-	if err := machine.Handle(ctx, supervise.StreamLateRefusal{Claim: token, DeliveryID: queued,
-		Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."}); err != nil {
-		t.Fatalf("refuse the acknowledged prompt: %v", err)
-	}
-	if rotated := machine.Claim().Pending; rotated == nil || rotated.ID == queued {
-		t.Fatalf("pending delivery after the refusal = %+v, want it kept under a new id", rotated)
+	machine.Wait()
+	if back := machine.Claim().Pending; back == nil || back.Number != queued.Number || !back.ConfirmedAt.IsZero() {
+		t.Fatalf("pending delivery after the compaction = %+v, want task %d taken back under its number", back, queued.Number)
 	}
 
-	// The phase ends while the retry waits: the work the task asks for is done.
+	// The phase ends meanwhile: the work the task asks for is done.
 	putOutboxIssue(t, pool, records, record.Issue{
 		Key: issue.Key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: issue.Project, Tree: issue.Tree, Title: issue.Title, Phase: phase.Testing, Generation: 1, Status: "testing",
 	})
-	prompts := len(conn.Prompts())
 
-	endTurn(ctx, t, machine, token)
-
+	c := machine.Claim()
+	answer, err := machine.Take(ctx, supervise.RequestTake{Claim: token, Generation: c.Generation, Session: c.Session, Number: queued.Number})
+	if err != nil || answer.Outcome != supervise.TakeOutcomeDropped {
+		t.Fatalf("the take of the finished phase's task = %+v, %v, want it dropped", answer, err)
+	}
 	if got := machine.Claim().Pending; got != nil {
 		t.Fatalf("the finished phase's task is still pending as %+v, want it dropped", got)
-	}
-	// A send runs on its own goroutine, so counting the prompts as Handle returns can only ever
-	// see none. The machine's own wait is what says every goroutine this event started is done.
-	machine.Wait()
-	if got := len(conn.Prompts()) - prompts; got != 0 {
-		t.Fatalf("the finished worker was handed its own finished task %d more times, want none", got)
 	}
 }
 

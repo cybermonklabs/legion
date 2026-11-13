@@ -443,7 +443,7 @@ func TestBootSuspendsAStaleClaimWhoseSuspensionIsHeldAtItsTurnsEnd(t *testing.T)
 		Token: token, Project: project, Tree: "LEGION-1", Issue: "LEGION-1", Role: claim.RoleImplementer,
 		Generation: 1, State: supervise.StateWorking, Session: "ses_impl", SessionFile: "/sessions/impl.jsonl",
 		PluginContract: 1, Locator: pluginTestLocator(token),
-		Pending: &supervise.Delivery{ID: "delivery-1", Task: "implement the plan", QueuedAt: now, DeliveredAt: now, ConfirmedAt: now},
+		Pending: &supervise.Delivery{ID: "delivery-1", Task: "implement the plan", QueuedAt: now, ConfirmedAt: now},
 	}
 	if _, err := sup.restore(context.Background(), []supervise.Claim{c}); err != nil {
 		t.Fatalf("restore: %v", err)

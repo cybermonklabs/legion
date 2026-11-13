@@ -119,44 +119,45 @@ func TestEveryAbandonmentIsRecordedWithItsOwnReason(t *testing.T) {
 	}
 }
 
-// A prompt the agent refused reached nobody, so the abandoned session is still owed to the fresh
-// agent: the task goes back in the queue and the claim and the store both still record the
-// sentence as untold. The prompt the agent does acknowledge carries it again, and that
-// acknowledgement is what marks it told, so the task after it is the task alone. Marking it where
-// the send started instead left the first task the fresh session actually read without the
-// branch, the handoffs and the sentence that says an older session existed at all
-// (dispatch://INFRA-714).
-func TestARefusedPromptLeavesTheAbandonedSessionStillToBeTold(t *testing.T) {
+// A take a hold refused reached nobody, so the abandoned session is still owed to the fresh agent:
+// the task waits for its next take, and the claim and the store both still record the sentence as
+// untold. The take that is accepted is answered with it, and that acceptance is what marks it
+// told, so the task after it is the task alone. A take of the same number sent again is answered
+// the same text, sentence and all, and marks nothing again. Marking it where a take was refused
+// instead would leave the first task the fresh session actually read without the branch, the
+// handoffs and the sentence that says an older session existed at all (dispatch://INFRA-714).
+func TestTakeRefusedLeavesTheAbandonedSessionStillToBeTold(t *testing.T) {
 	h := newHarness(t)
 	refusal := "the provider ended the turn with an error at 226k tokens of context"
 	h.abandonSession(refusal)
 	h.registerFresh()
+	h.manualTakes()
 	base := len(h.prompts())
-	h.conn.RefusePrompt("the agent will not take it")
 
+	// A turn of the fresh agent's own is running when the task arrives, so its take is refused.
+	h.must(StreamTurnStart{Claim: h.token})
 	h.must(RequestDeliver{Claim: h.token, Task: "Continue Workflow. Issue: LEGION-209. Phase: implementing."})
-
-	if first := h.wantPrompts(base + 1)[base].Message; !strings.Contains(first, session) {
-		t.Fatalf("the refused prompt is %q, want it to name the abandoned session %q", first, session)
-	}
+	h.wantRefused(HoldInTurn)
 	if told, stored := h.claim().Abandoned.Told, h.store.load(h.token).Abandoned.Told; told || stored {
-		t.Fatalf("after the refusal the claim records the abandonment told = %v and the store %v, want it untold in both: the agent the prompt was refused by never read it", told, stored)
+		t.Fatalf("after the refusal the claim records the abandonment told = %v and the store %v, want it untold in both: the take was refused", told, stored)
 	}
 
-	// The shim's next hello sends the task again, and this time the agent takes it.
-	h.conn.FailPrompt(nil)
-	h.must(StreamHello{Claim: h.token, Generation: h.generation()})
-
-	taken := h.wantPrompts(base + 2)[base+1].Message
+	// The turn ends, the value is written again, and this time the take is accepted.
+	h.must(StreamTurnEnd{Claim: h.token})
+	taken := h.mustTake()
 	for _, want := range []string{session, "abandoned", refusal, "legion/LEGION-209",
 		"dispatch handoff-read --issue LEGION-209 --phase", handoffWordsClause()} {
 		if !strings.Contains(taken, want) {
-			t.Errorf("the task the agent acknowledged does not name %q:\n%s", want, taken)
+			t.Errorf("the accepted take's text does not name %q:\n%s", want, taken)
 		}
 	}
 	if told, stored := h.claim().Abandoned.Told, h.store.load(h.token).Abandoned.Told; !told || !stored {
-		t.Fatalf("after the acknowledgement the claim records the abandonment told = %v and the store %v, want it told in both", told, stored)
+		t.Fatalf("after the accepted take the claim records the abandonment told = %v and the store %v, want it told in both", told, stored)
 	}
+	if again := h.mustTake(); again != taken {
+		t.Fatalf("the take sent again was answered %q, want the same text %q", again, taken)
+	}
+	h.wantPrompts(base + 2)
 
 	// That task's turn is over, so the one after it is the task alone.
 	h.must(StreamTurnStart{Claim: h.token})
@@ -164,8 +165,8 @@ func TestARefusedPromptLeavesTheAbandonedSessionStillToBeTold(t *testing.T) {
 
 	h.must(RequestDeliver{Claim: h.token, Task: "the next task"})
 
-	if next := h.wantPrompts(base + 3)[base+2].Message; next != "the next task" {
-		t.Errorf("the task after the one the agent acknowledged is %q, want the task alone", next)
+	if next := h.mustTake(); next != "the next task" {
+		t.Errorf("the task after the one the agent took is %q, want the task alone", next)
 	}
 }
 

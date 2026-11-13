@@ -440,7 +440,7 @@ func takeStart(t *testing.T, h *harness, token claim.Token, issue string, role c
 }
 
 // takeTask ends whatever turn the claim is in, which retires the task it held, and gives it task
-// of entry in a turn of its own: a worker taking the next phase's work.
+// of entry, taken by its worker, in a turn of its own: a worker taking the next phase's work.
 func takeTask(t *testing.T, h *harness, token claim.Token, id, task string, entry int64, generation uint64) {
 	t.Helper()
 	queueTask(t, h, token, id, task, entry, generation)
@@ -448,14 +448,15 @@ func takeTask(t *testing.T, h *harness, token claim.Token, id, task string, entr
 	if !ok {
 		t.Fatalf("no machine for %s", token)
 	}
-	if err := machine.Handle(context.Background(), supervise.StreamTurnStart{Claim: token, DeliveryID: id}); err != nil {
+	acceptTake(t, machine)
+	if err := machine.Handle(context.Background(), supervise.StreamTurnStart{Claim: token}); err != nil {
 		t.Fatalf("start the turn of %s: %v", token, err)
 	}
 }
 
-// queueTask is takeTask's delivery without the turn that confirms it: the task waits on the claim
-// unacknowledged, as one the outbox sent and the worker has not read, so the claim goes on serving
-// the entry its last confirmed task carried (supervise.Claim.ServingEntry).
+// queueTask is takeTask's delivery without the take: the task waits on the claim untaken, as one
+// the outbox queued and the worker has not taken, so the claim goes on serving the entry its last
+// taken task carried (supervise.Claim.ServingEntry).
 func queueTask(t *testing.T, h *harness, token claim.Token, id, task string, entry int64, generation uint64) {
 	t.Helper()
 	ctx := context.Background()

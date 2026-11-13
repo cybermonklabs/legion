@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -106,6 +107,8 @@ type mainPathRig struct {
 	ran  int64
 	seq  int64
 	tick int
+	// taken is every take of the architect's worker the daemon accepted, in order.
+	taken []fake.Prompt
 }
 
 func newMainPathRig(t *testing.T, wired bool) *mainPathRig {
@@ -347,7 +350,26 @@ func (r *mainPathRig) waitMachine() {
 	}
 }
 
-func (r *mainPathRig) prompts() []fake.Prompt { return r.conn.Prompts() }
+// prompts is every task the architect's worker took, in order. The rig's worker takes the task the
+// claim holds whenever the test reads what reached it, as a worker takes once its host is idle; a
+// take a hold refuses leaves the task where it is.
+func (r *mainPathRig) prompts() []fake.Prompt {
+	r.t.Helper()
+	if machine, found := r.sup.Machine(r.token); found {
+		c := machine.Claim()
+		if p := c.Pending; p != nil && p.ConfirmedAt.IsZero() && (c.State == supervise.StateReady || c.State == supervise.StateIdle) {
+			answer, err := machine.Take(r.ctx, supervise.RequestTake{Claim: c.Token, Generation: c.Generation, Session: c.Session, Number: p.Number})
+			if err != nil {
+				r.t.Fatalf("the architect's take of task %d: %v", p.Number, err)
+			}
+			machine.Wait()
+			if answer.Outcome == supervise.TakeOutcomeAccepted {
+				r.taken = append(r.taken, fake.Prompt{DeliveryID: p.ID, Message: answer.Text})
+			}
+		}
+	}
+	return slices.Clone(r.taken)
+}
 
 // mainPath is one way main's own code gives a tree-root architect a task of a run that names no
 // phase, which is the only delivery Deps.RootHears is asked about.
@@ -525,8 +547,8 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 		rig.park()
 		rig.bringUp()
 		pending := rig.machine().Claim().Pending
-		if pending == nil || !strings.Contains(pending.Task, ref) || !pending.DeliveredAt.IsZero() {
-			t.Fatalf("the parked root's task = %#v, want it pending and unsent on the ready claim", pending)
+		if pending == nil || !strings.Contains(pending.Task, ref) || !pending.ConfirmedAt.IsZero() {
+			t.Fatalf("the parked root's task = %#v, want it pending and untaken on the ready claim", pending)
 		}
 		if got := rig.prompts(); len(got) != 0 {
 			t.Fatalf("the architect of a parked root was prompted %+v, want nothing: no run of the root owns it", got)

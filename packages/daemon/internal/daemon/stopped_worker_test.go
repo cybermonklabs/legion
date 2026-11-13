@@ -230,7 +230,7 @@ func TestAnOperatorsStopOfASlottedWorkerHolds(t *testing.T) {
 			State: supervise.StateWorking, Session: "ses_implementer", SessionFile: filepath.Join(cfg.StateDir, "implementer.jsonl"),
 			PluginContract: api.DaemonAPIVersion, Locator: workingPane(implementer),
 			Pending: &supervise.Delivery{ID: "outbox:11", Task: "Carry on implementing.", Generation: 1, Phase: phase.Implementing,
-				QueuedAt: now, DeliveredAt: now, ConfirmedAt: now}})
+				QueuedAt: now, ConfirmedAt: now}})
 	writePrompt(t, cfg, implementer)
 	d := startDaemon(t, cfg, o)
 

@@ -444,33 +444,6 @@ func TestTheWriteATurnStartOwedIsMadeAtTheClaimsNextDecision(t *testing.T) {
 		}
 	})
 
-	// A write of the delivery alone, made while the claim write is still owed, leaves the mark
-	// standing. This is why the mark is its own field and not the unsaved flag: a task queued
-	// here writes the delivery and clears unsaved, and a claim write carried on that flag would
-	// be dropped by this write without a word — the row would stay ready, and the next restart
-	// would read a claim whose agent was in a turn as one waiting for work.
-	t.Run("a write of the delivery alone leaves the mark standing", func(t *testing.T) {
-		h, counted := owedTurnStart(t)
-		attempted := counted.mark()
-
-		h.must(RequestDeliver{Claim: testToken, Task: "the task"})
-
-		// The repair at the head of this decision was refused by the same outage; the task's own
-		// delivery write went to a table the outage is not on.
-		if asked := counted.writes()[attempted:]; !slices.Equal(asked, []string{"PutClaim", "PutDelivery"}) {
-			t.Fatalf("the deliver decision asked for %v, want the owed claim write and the delivery's own", asked)
-		}
-		if _, ok := h.store.delivery(testToken); !ok {
-			t.Fatal("the task's delivery was not written")
-		}
-		if h.m.unsaved {
-			t.Fatal("the delivery reads unsaved after its own write landed")
-		}
-		if h.m.owedWrite == nil {
-			t.Fatal("the delivery's write cleared the mark the claim write left")
-		}
-	})
-
 	// The repair writes the claim as the machine holds it then, not a copy taken when the write
 	// failed. The claim went on deciding while the database was away — the turn it started has
 	// ended since — and a copy would write working over an idle claim, which is a claim a restart

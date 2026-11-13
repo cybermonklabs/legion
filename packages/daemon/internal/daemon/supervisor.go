@@ -51,6 +51,17 @@ type supervisor struct {
 	// mu, replaces the slice with a longer copy, and the stop's log lines read it without mu, which
 	// Create holds through a store write.
 	all atomic.Pointer[[]*supervise.Machine]
+	// issues is the lock of each issue a take that adopts the working copy holds from its in-turn
+	// check to its answer (lockIssue, supervise's Deps.LockIssue), counted by its holders and
+	// waiters so an issue no take is asking about holds no entry.
+	issuesMu sync.Mutex
+	issues   map[string]*issueLock
+}
+
+// issueLock is one issue's take lock, and how many takes hold it or wait for it.
+type issueLock struct {
+	sync.Mutex
+	takes int
 }
 
 // member is one claim's machine, the queue its events wait in, and the issue the claim is of.
@@ -80,14 +91,14 @@ func (s *supervisor) Machine(token claim.Token) (*supervise.Machine, bool) {
 }
 
 // claimInTurn names a claim of issue other than except whose agent is in a turn now, or is about
-// to be, for the adoption a phase task makes of the working copy an issue's roles share
-// (supervise's Deps.IssueInTurn). A claim counts when its published state is StateWorking, a turn
-// in flight, and when its machine has a send in flight (supervise.ClaimView.SendInFlight): the
-// prompt that starts that turn is on its way and the adoption it goes behind may be rewriting the
-// shared working copy at this moment, which is the very thing this answer guards. Without it two
-// phase tasks to two roles of one issue each read the other as idle and adopt together
-// (dispatch://INFRA-314), and a turn's end wakes a held claim whose own next send has already
-// started.
+// to be, for the adoption a phase task's take makes of the working copy an issue's roles share
+// (supervise's Deps.IssueInTurn). A claim counts when its published claim says so
+// (supervise.Claim.InTurn): its state is StateWorking, a turn in flight, or a take of its task was
+// accepted and that task's turn has not started, which its worker starts at once on the answer.
+// Without the second, two phase tasks of two roles of one issue would each read the other as idle
+// and adopt together (dispatch://INFRA-314), the take of one landing between the other's accepted
+// take and its turn. The issue's take lock (lockIssue) keeps two takes from passing this check at
+// the same moment.
 //
 // It reads each machine's published claim rather than any record of turns kept beside them, and
 // it iterates the lock-free snapshot of the machines (supervised) rather than taking s.mu:
@@ -104,11 +115,39 @@ func (s *supervisor) claimInTurn(issue string, except claim.Token) (claim.Token,
 		if view.Token == except || view.Issue != issue {
 			continue
 		}
-		if view.State == supervise.StateWorking || view.SendInFlight {
+		if view.InTurn() {
 			return view.Token, true
 		}
 	}
 	return "", false
+}
+
+// lockIssue takes issue's take lock and answers what lets it go (supervise's Deps.LockIssue). A
+// take holds it from its in-turn check to its answer, adoption included, so two roles of one
+// issue cannot both find the other in no turn and both adopt the working copy they share. It is
+// taken before the taking claim's own machine lock and never under any other lock of the
+// supervisor's, so it is the outermost lock a take holds.
+func (s *supervisor) lockIssue(issue string) func() {
+	s.issuesMu.Lock()
+	if s.issues == nil {
+		s.issues = map[string]*issueLock{}
+	}
+	l, ok := s.issues[issue]
+	if !ok {
+		l = &issueLock{}
+		s.issues[issue] = l
+	}
+	l.takes++
+	s.issuesMu.Unlock()
+	l.Lock()
+	return func() {
+		l.Unlock()
+		s.issuesMu.Lock()
+		if l.takes--; l.takes == 0 {
+			delete(s.issues, issue)
+		}
+		s.issuesMu.Unlock()
+	}
 }
 
 // wakeIssue tells the issue's other claims that token's turn has ended, once token's own machine
@@ -413,7 +452,10 @@ func (s *supervisor) helloResolver(tokens *api.BootTokens, timeout time.Duration
 }
 
 // superviseEvent is the machine's event for a worker stream event: every agent fact the stream
-// reports has one.
+// reports has one, but the two a prompt drew — its result and its refusal — which no machine
+// takes since the daemon sends no prompt (a task is taken, supervise's take.go). A shim older
+// than that still replays them from its backlog, and they are dropped here: a nil event with no
+// error is one the pump skips.
 func superviseEvent(ev stream.Event) (supervise.Event, error) {
 	switch ev := ev.(type) {
 	case stream.Hello:
@@ -423,19 +465,14 @@ func superviseEvent(ev stream.Event) (supervise.Event, error) {
 		}
 		return hello, nil
 	case stream.TurnStart:
-		return supervise.StreamTurnStart{Claim: ev.Claim, DeliveryID: ev.DeliveryID}, nil
+		return supervise.StreamTurnStart{Claim: ev.Claim}, nil
 	case stream.TurnEnd:
 		return supervise.StreamTurnEnd{Claim: ev.Claim}, nil
 	case stream.ToolStep:
 		return supervise.StreamToolStep{Claim: ev.Claim, Tool: ev.Tool, CallID: ev.CallID,
 			ArgsBytes: ev.ArgsBytes, ArgsHash: ev.ArgsHash, End: ev.End, ConnSequence: ev.ConnSequence}, nil
-	case stream.PromptResult:
-		return supervise.StreamPromptResult{Claim: ev.Claim, DeliveryID: ev.DeliveryID,
-			AgentInvoked: ev.AgentInvoked, Error: ev.Error, Retryable: ev.Retryable,
-			HTTPStatus: ev.HTTPStatus, Provider: ev.Provider, Model: ev.Model}, nil
-	case stream.LateRefusal:
-		return supervise.StreamLateRefusal{Claim: ev.Claim, DeliveryID: ev.DeliveryID, Error: ev.Error, Replayed: ev.Replayed,
-			ConnSequence: ev.ConnSequence}, nil
+	case stream.PromptResult, stream.LateRefusal:
+		return nil, nil
 	case stream.Closed:
 		return supervise.StreamClosed{Claim: ev.Claim}, nil
 	}
@@ -452,10 +489,6 @@ func claimOf(ev supervise.Event) claim.Token {
 	case supervise.StreamTurnEnd:
 		return ev.Claim
 	case supervise.StreamToolStep:
-		return ev.Claim
-	case supervise.StreamPromptResult:
-		return ev.Claim
-	case supervise.StreamLateRefusal:
 		return ev.Claim
 	case supervise.StreamClosed:
 		return ev.Claim

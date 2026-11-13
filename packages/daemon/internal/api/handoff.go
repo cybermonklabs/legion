@@ -165,13 +165,13 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	serving, entry := c.ServingRun(), c.ServingEntry()
-	// A claim that has retired no run and holds a task its agent neither confirmed nor was marked
-	// as reading is working that held task: that is exactly the state a busy refusal, a late
-	// refusal, a lost prompt or a failed adoption leaves behind while the agent goes on and does
-	// the phase's work in a turn of its own, and refusing its completion costs the issue a phase
-	// for nothing. So the run and the entry are taken from the task the claim is holding: that
-	// task names the generation and the phase itself, so the route can answer from it rather
-	// than from the turn that never announced itself.
+	// A claim that has retired no run and holds a task no take of its worker's holds or held is
+	// working that held task: that is exactly the state a take a hold refused, or one whose
+	// adoption failed, leaves behind while the agent goes on and does the phase's work in a turn
+	// of its own, and refusing its completion costs the issue a phase for nothing. So the run and
+	// the entry are taken from the task the claim is holding: that task names the generation and
+	// the phase itself, so the route can answer from it rather than from the turn that never
+	// announced itself.
 	//
 	// The fallback applies only when that task is the issue's own current work. A task of another
 	// run, of another phase, or of no phase at all — an operator's own, which carries generation 0
@@ -182,9 +182,9 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 	// never describe a rule this route does not apply.
 	//
 	// What the narrowness does not buy is a claim with no earlier run to confuse this completion
-	// with. Nothing on this route confirms a delivery or retires a run, so a claim whose held task
-	// stays unconfirmed still answers from that same task after a completion this fallback
-	// admitted, and a later entry of the same generation and the same phase takes it again. What
+	// with. Nothing on this route takes a task or retires a run, so a claim whose held task stays
+	// untaken still answers from that same task after a completion this fallback admitted, and a
+	// later entry of the same generation and the same phase takes it again. What
 	// keeps such an entry's completion from being the entry before it is the held task's own
 	// entry — each entry hands the role a task of its own number, and the entry fence below
 	// compares the task's against the row's — and, for a phase that ends with a handoff record,
@@ -198,7 +198,7 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 	// record's own checks, the implementer's pull-request check and the idempotency key, whose
 	// run is the issue's generation, are untouched.
 	var notCurrent string
-	if c.ServingGeneration == 0 && (c.Pending == nil || (c.Pending.ConfirmedAt.IsZero() && c.Pending.DeliveredAt.IsZero())) {
+	if c.ServingGeneration == 0 && (c.Pending == nil || (c.Pending.ConfirmedAt.IsZero() && !c.Pending.TakenWith(c))) {
 		if notCurrent = heldTaskNotCurrent(grant.Issue, issue.Generation, issue.Phase, c.Pending); notCurrent == "" {
 			serving, entry = c.Pending.Generation, c.Pending.Entry
 		} else {

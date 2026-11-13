@@ -313,9 +313,9 @@ func newLiveClaimIn(t *testing.T, h *harness, tree, issue string, role claim.Rol
 	return c
 }
 
-// working hands the claim a task of the run the issue is on and starts its turn, which is what a
-// pane looks like when it calls handoff complete. A test that wants a worker still holding an
-// older run's task delivers that one itself.
+// working hands the claim a task of the run the issue is on, has its worker take it, and starts
+// the take's turn, which is what a pane looks like when it calls handoff complete. A test that
+// wants a worker still holding an older run's task delivers that one itself.
 func working(t *testing.T, h *harness, token claim.Token, issue string) {
 	t.Helper()
 	machine, ok := h.supervisor.Machine(token)
@@ -330,7 +330,8 @@ func working(t *testing.T, h *harness, token claim.Token, issue string) {
 	if err := machine.Handle(context.Background(), supervise.RequestDeliver{Claim: token, Task: "the task", ID: id, Generation: generation}); err != nil {
 		t.Fatalf("deliver to %s: %v", token, err)
 	}
-	if err := machine.Handle(context.Background(), supervise.StreamTurnStart{Claim: token, DeliveryID: id}); err != nil {
+	acceptTake(t, machine)
+	if err := machine.Handle(context.Background(), supervise.StreamTurnStart{Claim: token}); err != nil {
 		t.Fatalf("start the turn on %s: %v", token, err)
 	}
 }

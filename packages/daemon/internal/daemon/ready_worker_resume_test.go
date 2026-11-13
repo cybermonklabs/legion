@@ -122,12 +122,12 @@ func (r *readyWorkerRig) boot() {
 	r.machine.Wait()
 }
 
-// workTheTask runs the turn the delivered task starts and ends it, then sends the prompt's own
-// result, which is what retires the task: with background work on, an agent_end names no prompt —
-// a background result wakes a settled session and starts turns the daemon never prompted — so a
-// delivery's life ends at its StreamPromptResult rather than at any turn end. The tester is then
-// the phase holder the issue waits on, idle with nothing pending, where CI, a review or an
-// operator's resume leaves one.
+// workTheTask has the worker take the delivered task, runs the turn the take answers and ends it,
+// then sends the turn-outcome report naming the task, which is what finishes it: with background
+// work on, an agent_end names no task — a background result wakes a settled session and starts
+// turns the daemon never gave a task — so a task's life ends at the report of its number rather
+// than at any turn end. The tester is then the phase holder the issue waits on, idle with nothing
+// pending, where CI, a review or an operator's resume leaves one.
 func (r *readyWorkerRig) workTheTask() {
 	r.t.Helper()
 	ctx := context.Background()
@@ -135,10 +135,11 @@ func (r *readyWorkerRig) workTheTask() {
 	if pending == nil {
 		r.t.Fatal("the tester holds no task to work")
 	}
+	acceptTake(ctx, r.t, r.machine)
 	for _, ev := range []supervise.Event{
 		supervise.StreamTurnStart{Claim: r.token},
 		supervise.StreamTurnEnd{Claim: r.token},
-		supervise.StreamPromptResult{Claim: r.token, DeliveryID: pending.ID, AgentInvoked: true},
+		supervise.RequestTurnOutcome{Claim: r.token, Generation: r.claim().Generation, Sequence: turnSequence.Add(1), Task: pending.Number},
 	} {
 		if err := r.machine.Handle(ctx, ev); err != nil {
 			r.t.Fatalf("work the task: handle %T: %v", ev, err)
@@ -226,9 +227,9 @@ func TestEveryComeBackToReadyGivesAPhaseHolderItsTaskWithinTwoMinutes(t *testing
 			if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue) || held.Phase != phase.Testing {
 				t.Fatalf("after the come-back the tester holds %+v, want the testing phase's resume task", held)
 			}
-			if held.DeliveredAt.IsZero() || held.DeliveredAt.Before(last) || held.DeliveredAt.Sub(last) > taskWithinOfReady {
-				t.Fatalf("the task was acknowledged at %s, %s after the claim became ready at %s; want it within %s of that ready",
-					held.DeliveredAt, held.DeliveredAt.Sub(last), last, taskWithinOfReady)
+			if held.QueuedAt.IsZero() || held.QueuedAt.Before(last) || held.QueuedAt.Sub(last) > taskWithinOfReady {
+				t.Fatalf("the task was queued at %s, %s after the claim became ready at %s; want it within %s of that ready",
+					held.QueuedAt, held.QueuedAt.Sub(last), last, taskWithinOfReady)
 			}
 		})
 	}

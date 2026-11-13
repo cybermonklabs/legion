@@ -186,6 +186,7 @@ func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T
 		}
 	}
 	machine.Wait()
+	acceptTake(ctx, t, machine)
 	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: planner}); err != nil {
 		t.Fatalf("start the planning turn: %v", err)
 	}
@@ -278,15 +279,13 @@ func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T
 	}
 	endTurn(ctx, t, machine, planner)
 	const question = "Why does the plan keep the old API?"
-	prompted := len(conn.Prompts())
 	if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: planner, Task: question}); err != nil {
 		t.Fatalf("deliver the architect's question: %v", err)
 	}
-	testwait.Eventually(t, "the architect's question to reach the planner", func() bool { return len(conn.Prompts()) > prompted })
-	if sent := conn.Prompts()[prompted]; sent.Message != question {
-		t.Fatalf("the planner was sent %q, want the architect's question", sent.Message)
+	if text := acceptTake(ctx, t, machine); text != question {
+		t.Fatalf("the planner took %q, want the architect's question", text)
 	}
-	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: planner, DeliveryID: machine.Claim().Pending.ID}); err != nil {
+	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: planner}); err != nil {
 		t.Fatalf("answer the architect's question: %v", err)
 	}
 	endTurn(ctx, t, machine, planner)
@@ -456,6 +455,7 @@ func TestAConflictStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.
 				t.Fatalf("deliver the %s's task: %v", role, err)
 			}
 			machine.Wait()
+			acceptTake(ctx, t, machine)
 			if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
 				t.Fatalf("start the %s's turn: %v", role, err)
 			}
@@ -463,7 +463,7 @@ func TestAConflictStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.
 		return machine, conn
 	}
 	// The implementer finished implementing and is idle; the tester is in its testing turn.
-	implementer, implementerConn := boot(claim.RoleImplementer, "", "")
+	implementer, _ := boot(claim.RoleImplementer, "", "")
 	tester, _ := boot(claim.RoleTester, "Continue Workflow. Issue: LEGION-208. Phase: testing.", phase.Testing)
 	before := tester.Claim()
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
@@ -482,11 +482,22 @@ func TestAConflictStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.
 		}
 		implementer.Wait()
 	}
+	// conflictTasks has the implementer's worker take the task its claim holds, as it does once its
+	// host is idle, and counts the conflict tasks it has taken.
+	var taken []string
 	conflictTasks := func() int {
 		t.Helper()
+		implementer.Wait()
+		if c := implementer.Claim(); c.Pending != nil && c.Pending.ConfirmedAt.IsZero() &&
+			(c.State == supervise.StateReady || c.State == supervise.StateIdle) {
+			answer, err := implementer.Take(ctx, supervise.RequestTake{Claim: c.Token, Generation: c.Generation, Session: c.Session, Number: c.Pending.Number})
+			if err == nil && answer.Outcome == supervise.TakeOutcomeAccepted {
+				taken = append(taken, answer.Text)
+			}
+		}
 		count := 0
-		for _, prompt := range implementerConn.Prompts() {
-			if strings.Contains(prompt.Message, "Phase: implementing.") && strings.Contains(prompt.Message, "the head conflicts with main") {
+		for _, text := range taken {
+			if strings.Contains(text, "Phase: implementing.") && strings.Contains(text, "the head conflicts with main") {
 				count++
 			}
 		}
@@ -838,13 +849,14 @@ func TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase(t *testing.T) {
 	}
 	conn := fake.NewConn()
 	sup.deps.Conns.(*fake.Conns).Register(token, conn)
-	// takeTask is the agent starting a turn on a task it was sent and has not yet taken.
+	// takeTask is the agent taking a task it was given and starting the take's turn.
 	takeTask := func() {
 		t.Helper()
 		machine, _ := sup.Machine(token)
 		for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-			if p := machine.Claim().Pending; p != nil && !p.DeliveredAt.IsZero() && p.ConfirmedAt.IsZero() {
-				if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: token, DeliveryID: p.ID}); err != nil {
+			if p := machine.Claim().Pending; p != nil && p.ConfirmedAt.IsZero() && (machine.Claim().State == supervise.StateReady || machine.Claim().State == supervise.StateIdle) {
+				acceptTake(ctx, t, machine)
+				if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
 					t.Fatalf("start the turn: %v", err)
 				}
 				return
@@ -991,7 +1003,8 @@ func TestAStopSupersededByANewerStartNeverActs(t *testing.T) {
 	if pending := machine.Claim().Pending; pending.Generation != 2 {
 		t.Fatalf("the task being served names generation %d, want the new run's 2", pending.Generation)
 	}
-	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: token, DeliveryID: machine.Claim().Pending.ID}); err != nil {
+	acceptTake(ctx, t, machine)
+	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
 		t.Fatalf("start the new task's turn: %v", err)
 	}
 	if pending := machine.Claim().Pending; pending == nil || pending.ConfirmedAt.IsZero() || pending.Generation != 2 {
@@ -1130,7 +1143,7 @@ func TestARetryOfAClaimWhoseKeptTasksTurnWasOverDeliversItsTask(t *testing.T) {
 	putOutboxIssue(t, pool, records, issue)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	kept := supervise.Delivery{ID: "kept-task", Task: "Continue Workflow. Issue: LEGION-208. Phase: implementing.",
-		Phase: phase.Implementing, Generation: issue.Generation, QueuedAt: time.Now(), DeliveredAt: time.Now(), ConfirmedAt: time.Now()}
+		Phase: phase.Implementing, Generation: issue.Generation, QueuedAt: time.Now(), ConfirmedAt: time.Now()}
 	machine := heldImplementer(t, sup, issue, kept)
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir()}
 
@@ -1171,9 +1184,9 @@ func TestARetryOfAClaimThatKeptOtherWorkStillDeliversItsTask(t *testing.T) {
 }
 
 // An operator's suspension keeps the claim's queued phase task, and a re-admission can restart
-// the issue in the phase it stood in. The operator's resume then must not send the run that is
-// over's task into the new run: it is dropped (phaseHolds compares the run), and the new run's
-// start gives the worker its own task.
+// the issue in the phase it stood in. The operator's resume then must not give the run that is
+// over's task to the new run: the relaunched worker's take of it is answered dropped (phaseHolds
+// compares the run), and the new run's start gives the worker its own task.
 func TestAnOperatorResumeAfterAReadmissionDropsTheOldRunsTask(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -1205,8 +1218,16 @@ func TestAnOperatorResumeAfterAReadmissionDropsTheOldRunsTask(t *testing.T) {
 	}
 	readyClaimOf(t, sup, tester, claim.RoleTester)
 	machine.Wait()
+	c := machine.Claim()
+	if c.Pending == nil {
+		t.Fatal("after the resume the tester holds no task; want generation 1's kept for its worker to take")
+	}
+	answer, err := machine.Take(ctx, supervise.RequestTake{Claim: tester, Generation: c.Generation, Session: c.Session, Number: c.Pending.Number})
+	if err != nil || answer.Outcome != supervise.TakeOutcomeDropped {
+		t.Fatalf("the relaunched worker's take of generation 1's task = %+v, %v, want it dropped", answer, err)
+	}
 	if pending := machine.Claim().Pending; pending != nil {
-		t.Fatalf("after the resume pending %+v, want generation 1's task dropped", pending)
+		t.Fatalf("after the take pending %+v, want generation 1's task dropped", pending)
 	}
 
 	clock := time.Now()
@@ -1218,7 +1239,7 @@ func TestAnOperatorResumeAfterAReadmissionDropsTheOldRunsTask(t *testing.T) {
 		t.Fatalf("run generation 2's start: %v", err)
 	}
 	machine.Wait()
-	if pending := machine.Claim().Pending; outboxRows(t, pool) != 0 || pending == nil || pending.Generation != 2 || pending.Task != "Test generation 2." || pending.DeliveredAt.IsZero() {
-		t.Fatalf("after generation 2's start: %d rows, pending %+v; want the start run and its task sent", outboxRows(t, pool), pending)
+	if pending := machine.Claim().Pending; outboxRows(t, pool) != 0 || pending == nil || pending.Generation != 2 || pending.Task != "Test generation 2." {
+		t.Fatalf("after generation 2's start: %d rows, pending %+v; want the start run and its task queued", outboxRows(t, pool), pending)
 	}
 }

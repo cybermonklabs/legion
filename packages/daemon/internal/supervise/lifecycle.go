@@ -142,23 +142,19 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 
 // watchAgain arms again what watches the process the claim records, where that is not armed: the
 // timers the claim's state calls for, which are the ones a restart reading this claim back from
-// the store would arm for it (NewMachine), and the bound an acknowledged prompt waits for its
-// turn on. Its one caller is the refusal a parked launch's turn meets (runWake), over a claim
-// that keeps its process with the launch that was to replace it gone: the park disarmed the boot
-// interval, the registration deadline, the probe interval and the turn bound of that process
-// (parkWake), the claim keeps it and the wake is spent, so a booting process whose agent never
-// registers would meet no deadline and a prompt the agent acknowledged would wait for its turn
-// on nothing.
+// the store would arm for it (NewMachine). Its one caller is the refusal a parked launch's turn
+// meets (runWake), over a claim that keeps its process with the launch that was to replace it
+// gone: the park disarmed the boot interval, the registration deadline and the probe interval of
+// that process (parkWake), the claim keeps it and the wake is spent, so a booting process whose
+// agent never registers would meet no deadline.
 //
 // A claim still coming up is watched by its boot interval and its registration deadline, a
 // registered one by the deadline alone, and a claim whose agent is ready by neither: a live
 // session is watched by the runtime's sweep (observe) and by its own connection, and the probe
 // interval is an uncertain answer's retry rather than a watch of the claim's — the sweep asks
-// again at its own pass. The turn bound goes with them for a prompt Oh My Pi acknowledged and no
-// turn has started on (acked, awaitingResult), for the same RPC wait that prompt was given, so
-// one the agent read and never turned on still fails rather than waiting for ever (noTurn).
+// again at its own pass.
 //
-// A timer already armed keeps the moment it already holds: the park takes only the four timers
+// A timer already armed keeps the moment it already holds: the park takes only the three timers
 // above, so whatever the claim still holds is a watch nothing of this launch disturbed, and
 // arming again over it would hand the process a fresh boot interval and a fresh deadline at
 // every refusal.
@@ -182,9 +178,6 @@ func (m *Machine) watchAgain() {
 		if !armed(TimerRegistration) {
 			m.armRegistration()
 		}
-	}
-	if p := m.claim.Pending; p != nil && p.ID == m.awaitingResult && p.ConfirmedAt.IsZero() && !armed(TimerTurn) {
-		m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
 	}
 }
 

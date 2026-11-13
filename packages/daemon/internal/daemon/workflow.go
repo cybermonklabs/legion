@@ -1691,11 +1691,13 @@ func (w *workflowRuntime) claimReady(c supervise.Claim) {
 }
 
 // taskConfirmed applies the fact that a role's agent took the work the daemon gave it
-// (supervise's Deps.TaskConfirmed): admission decides on it whether a root whose architect owed
-// that task now waits on a person (workflow's ReconcileAwaiting), which otherwise waits for the
-// next tick. The machine calls it inside its own decision, so the fact is applied on a goroutine
-// of its own, bounded by readyReleaseTimeout; a failure is logged and not the daemon's end, since
-// the tick decides the same thing again.
+// (supervise's Deps.TaskConfirmed, at an accepted take): admission decides on it whether a root
+// whose architect owed that task now waits on a person (workflow's ReconcileAwaiting), which
+// otherwise waits for the next tick. The machine calls it inside its own decision, so the fact is
+// applied on a goroutine of its own, bounded by readyReleaseTimeout; a failure is logged and not
+// the daemon's end, since the tick decides the same thing again. The event id names the claim's
+// task number, which is the task's own whatever takes of it are made, so a task taken again after
+// it was taken back is applied once.
 func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 	if c.Issue == "" || c.Role == claim.RoleController {
 		return
@@ -1707,7 +1709,10 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 		defer cancel()
 		fact := intake.TaskConfirmed{Issue: c.Issue, Role: c.Role, Generation: c.Generation}
 		id := fmt.Sprintf("task-confirmed:%s:%d", c.Token, c.Generation)
-		if p := c.Pending; p != nil {
+		switch p := c.Pending; {
+		case p != nil && p.Number != 0:
+			id = fmt.Sprintf("task-confirmed:%s:task-%d", c.Token, p.Number)
+		case p != nil:
 			id = fmt.Sprintf("task-confirmed:%s:%s", c.Token, p.ID)
 		}
 		if _, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...); err != nil {

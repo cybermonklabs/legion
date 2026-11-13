@@ -102,10 +102,11 @@ type fleetRig struct {
 	// handoffs is the Dispatch that route reads a completion's handoff record back from.
 	handoffs *fleetHandoffs
 	tokens   map[fleetClaim]claim.Token
-	// workers is the connection each claim's agent is reached over, which records every prompt
-	// the daemon sends it.
+	// workers is the connection each claim's agent is reached over.
 	workers map[claim.Token]*fake.Conn
-	pods    map[string]string
+	// taken is every task each claim's worker took and the daemon accepted, in order (sent).
+	taken map[claim.Token][]fake.Prompt
+	pods  map[string]string
 	// noPod is every issue whose claims a sweep reads as recording no pod (podless).
 	noPod map[string]bool
 	// wire is what the rig set on its supervisor's Deps before any machine was made
@@ -373,13 +374,31 @@ func (r *fleetRig) handle(issue string, role claim.Role, ev supervise.Event) {
 	}
 }
 
-// sent waits for every send the machine of issue's role has in flight to be over, the prompt's
-// acknowledgement or refusal decided with it. A decision that sends runs the prompt on a
-// goroutine of its own (supervise's startSend), so what the agent was sent is read only once this
-// has returned.
+// sent waits for the decision the machine of issue's role is making to be over, and then has its
+// worker take the task its claim holds where it may, as its plugin does once its host is idle: a
+// take the daemon accepts is recorded with the text it answered (prompts), and one a hold refuses
+// is left for a later call. An adoption the take makes runs inside the take, so what the agent was
+// given is read only once this has returned.
 func (r *fleetRig) sent(issue string, role claim.Role) {
 	r.t.Helper()
-	r.machineOf(issue, role).Wait()
+	m := r.machineOf(issue, role)
+	m.Wait()
+	c := m.Claim()
+	p := c.Pending
+	if p == nil || !p.ConfirmedAt.IsZero() || (c.State != supervise.StateReady && c.State != supervise.StateIdle) {
+		return
+	}
+	answer, err := m.Take(r.ctx, supervise.RequestTake{Claim: c.Token, Generation: c.Generation, Session: c.Session, Number: p.Number})
+	if err != nil {
+		r.t.Fatalf("%s's %s took task %d: %v", issue, role, p.Number, err)
+	}
+	if answer.Outcome == supervise.TakeOutcomeAccepted {
+		if r.taken == nil {
+			r.taken = map[claim.Token][]fake.Prompt{}
+		}
+		r.taken[c.Token] = append(r.taken[c.Token], fake.Prompt{DeliveryID: p.ID, Message: answer.Text})
+	}
+	m.Wait()
 }
 
 func (r *fleetRig) machineOf(issue string, role claim.Role) *supervise.Machine {
@@ -391,10 +410,10 @@ func (r *fleetRig) machineOf(issue string, role claim.Role) *supervise.Machine {
 	return m
 }
 
-// prompts is every prompt the daemon sent the agent of issue's role, in order.
+// prompts is every task the worker of issue's role took, in order (sent).
 func (r *fleetRig) prompts(issue string, role claim.Role) []fake.Prompt {
 	r.t.Helper()
-	return r.workers[r.token(issue, role)].Prompts()
+	return slices.Clone(r.taken[r.token(issue, role)])
 }
 
 // fleetHandoffs is the Dispatch the completion route reads a handoff record back from: the
@@ -832,12 +851,14 @@ func TestPodUpdateTheRoundsAsksAdoptNothingWhileTheImplementerIsInATurn(t *testi
 			c.UpdateTaskedAt, c.Pending)
 	}
 
-	// The turn ends as Oh My Pi reports it, through the inbox the worker's stream feeds: the
+	// The turn ends as the worker reports it, through the inbox the worker's stream feeds: the
 	// agent_end, which the daemon tells the issue's other claims of (wakeIssue), and behind it the
-	// result of the prompt whose turn it was, which retires the phase task. The slot that frees is
-	// the round's (takeSlotForUpdate), and its ask goes with no adoption either.
+	// turn-outcome report naming the phase task, which finishes it. The slot that frees is the
+	// round's (takeSlotForUpdate), and its ask goes with no adoption either.
+	working := rig.claimOf(fleetIssueA, claim.RoleImplementer)
 	rig.sup.post(implementer, supervise.StreamTurnEnd{Claim: implementer})
-	rig.sup.post(implementer, supervise.StreamPromptResult{Claim: implementer, DeliveryID: phaseTask, AgentInvoked: true})
+	rig.sup.post(implementer, supervise.RequestTurnOutcome{Claim: implementer, Generation: working.Generation,
+		Sequence: turnSequence.Add(1), Task: working.Pending.Number})
 	testwait.Eventually(t, "the implementer's round ask to take the slot its turn freed", func() bool {
 		c := rig.claimOf(fleetIssueA, claim.RoleImplementer)
 		return c.Pending != nil && strings.HasPrefix(c.Pending.ID, ask) && c.UpdateTaskedAt != nil

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
@@ -338,10 +339,10 @@ func TestAWorkerThatEndsItselfForAStallIsRelaunchedToItsCapAndFailedAtTheDeathLi
 		h.wantBudgets(Budgets{Deaths: exit})
 		resent := h.wantPrompts(1 + exit)[exit]
 		if want := interruptedTask(h.claim().LastDeathCause) + "implement the plan"; resent.Message != want {
-			t.Fatalf("stall exit %d: the task was re-sent as %q, want %q", exit, resent.Message, want)
+			t.Fatalf("stall exit %d: the take was answered %q, want %q", exit, resent.Message, want)
 		}
-		if p := h.pending(); p.ID != resent.DeliveryID || !p.ConfirmedAt.IsZero() {
-			t.Fatalf("stall exit %d: pending %+v, want the re-sent task still owed", exit, p)
+		if p := h.pending(); p.ID != resent.DeliveryID || !p.awaitsTurn() {
+			t.Fatalf("stall exit %d: pending %+v, want the task taken again and still owed", exit, p)
 		}
 		h.must(StreamTurnStart{Claim: testToken}) // the relaunched worker walks into the same stall
 		h.wantState(StateWorking)
@@ -382,25 +383,25 @@ func TestADeathBeforeReadyIsALaunchFailureNotADeath(t *testing.T) {
 
 // A turn that ends is the end of the work the deaths were charged against, whatever started that
 // turn: an agent that got through a turn after being killed is making progress, and only deaths
-// that keep a turn from ending should ever fail a claim. A notice's turn colliding with the
-// re-send is refused busy and leaves the interrupted task still waiting, and its end clears the
-// deaths all the same (dispatch://INFRA-714 R6).
+// that keep a turn from ending should ever fail a claim. A notice's turn that the relaunched
+// worker runs before it takes the interrupted task leaves that task still waiting, and its end
+// clears the deaths all the same (dispatch://INFRA-714 R6).
 func TestATurnThatEndsClearsTheDeathsEvenWhenItNeverRanTheTask(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
 	h.must(StreamTurnStart{Claim: testToken})
 	h.observe(runtime.Gone)
+	// The relaunched worker's notice turn comes before its take of the task.
+	h.manualTakes()
 	h.relaunched()
-	resent := h.wantPrompts(2)[1].DeliveryID
 	h.wantBudgets(Budgets{Deaths: 1})
 
 	h.must(StreamTurnStart{Claim: testToken})
-	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: resent, Error: "Agent is already processing a request"})
 	h.must(StreamTurnEnd{Claim: testToken})
 
-	if p := h.pending(); !p.ConfirmedAt.IsZero() {
-		t.Fatalf("pending %+v, want the task still waiting", p)
+	if p := h.pending(); p.taken() {
+		t.Fatalf("pending %+v, want the task still waiting for its take", p)
 	}
 	h.wantBudgets(Budgets{})
 }
@@ -686,25 +687,23 @@ func TestAResumeTheRuntimeRefusesIsALaunchFailure(t *testing.T) {
 	h.wantCalls("Resume", 2)
 }
 
-// Three acknowledged prompts that start no turn — each retried at the next sweep — retire the
+// Three refused adoptions of the task's take — each offered again at the next sweep — retire the
 // pane and relaunch the same session; the second time the budget runs out, the retirement is
 // terminal.
-func TestPromptFailuresRetireAndRelaunchThenFail(t *testing.T) {
+func TestTakeRefusedAdoptionsRetireAndRelaunchThenFail(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	retiring := h.locator()
-	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
-	h.advance(testRPC)
-	h.observe(runtime.Alive)
-	h.advance(testRPC)
+	refuseAdoptions(h)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing, Generation: 7})
 	h.observe(runtime.Alive)
 	h.wantBudgets(Budgets{PromptFailures: 2})
-	h.wantPrompts(3)
+	h.wantPrompts(0)
 
-	h.advance(testRPC)
+	h.observe(runtime.Alive)
 
 	if suspend := h.wantCalls("Suspend", 1)[0]; suspend.Locator != retiring {
-		t.Errorf("suspended %+v, want the pane that took the prompts", suspend.Locator)
+		t.Errorf("suspended %+v, want the pane whose adoptions were refused", suspend.Locator)
 	}
 	resume := h.wantCalls("Resume", 1)[0]
 	if resume.Previous == nil || *resume.Previous != retiring || resume.Spec.ResumeSessionFile != sessionFile {
@@ -712,43 +711,35 @@ func TestPromptFailuresRetireAndRelaunchThenFail(t *testing.T) {
 	}
 	h.wantState(StateLaunching)
 	h.wantBudgets(Budgets{PromptRetires: 1})
-	if queued := h.pending(); queued.Task != "the task" || !queued.ConfirmedAt.IsZero() {
-		t.Fatalf("pending %+v, want the task still queued", queued)
+	if queued := h.pending(); queued.Task != "the task" || queued.taken() {
+		t.Fatalf("pending %+v, want the task still untaken", queued)
 	}
 
-	h.relaunched()
-	sent := h.wantPrompts(4)[3]
-	if sent.DeliveryID != h.pending().ID {
-		t.Errorf("sent %+v after the relaunch, want the queued delivery", sent)
-	}
-	h.advance(testRPC)
+	h.relaunched() // the relaunched worker's take, refused again
 	h.observe(runtime.Alive)
-	h.advance(testRPC)
 	h.observe(runtime.Alive)
-	h.advance(testRPC)
 
 	h.wantState(StateFailed)
 	h.wantBudgets(Budgets{PromptFailures: 3, PromptRetires: 2})
 	h.wantCalls("Suspend", 2)
 	h.wantCalls("Resume", 1)
+	h.wantCalls("AdoptWorkingCopy", 6)
 	if h.pending().Task != "the task" {
-		t.Errorf("pending %+v, want the undelivered task kept on the failed claim", h.pending())
+		t.Errorf("pending %+v, want the untaken task kept on the failed claim", h.pending())
 	}
 }
 
-// A retirement whose suspension fails charges nothing; the rotated delivery goes out again at the
-// next sweep, and the next failure retries the retirement.
+// A retirement whose suspension fails charges nothing; the task is offered again at the next
+// sweep, and the next refused adoption retries the retirement.
 func TestASuspendThatFailsAtThePromptLimitChargesNothing(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.rt.FailSuspend(errBoom)
-	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
-	h.advance(testRPC)
-	h.observe(runtime.Alive)
-	h.advance(testRPC)
+	refuseAdoptions(h)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing, Generation: 7})
 	h.observe(runtime.Alive)
 
-	h.advance(testRPC)
+	h.observe(runtime.Alive)
 
 	h.wantCalls("Suspend", 1)
 	h.wantBudgets(Budgets{PromptFailures: 2})
@@ -756,28 +747,32 @@ func TestASuspendThatFailsAtThePromptLimitChargesNothing(t *testing.T) {
 	if lines := h.logs.lines("suspend"); len(lines) == 0 || !strings.Contains(strings.Join(lines, "\n"), errBoom.Error()) {
 		t.Errorf("logged %v, want the failed suspension named", lines)
 	}
-	h.observe(runtime.Alive)
-	h.wantPrompts(4)
 
 	h.rt.FailSuspend(nil)
-	h.advance(testRPC)
+	h.observe(runtime.Alive)
 	h.wantCalls("Suspend", 2)
 	h.wantBudgets(Budgets{PromptRetires: 1})
 	h.wantState(StateLaunching)
 }
 
-func TestAStartedTurnResetsBothPromptBudgets(t *testing.T) {
+// A take resets no budget: the refused adoptions before it and the retirement they made stand
+// until the take's own turn starts, and that start puts both prompt budgets back to zero, in
+// memory and in the store (R5).
+func TestTakeResetsNoBudgetAndItsTurnStartResetsBoth(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
-	for range 2 {
-		h.advance(testRPC)
-		h.observe(runtime.Alive)
-	}
-	h.advance(testRPC)
-	h.relaunched()
-	h.advance(testRPC)
+	refuseAdoptions(h)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing, Generation: 7})
 	h.observe(runtime.Alive)
+	h.observe(runtime.Alive) // the third charge: the retirement
+	h.relaunched()           // the relaunched worker's take, refused once more
+	h.wantBudgets(Budgets{PromptFailures: 1, PromptRetires: 1})
+
+	h.rt.FailAdoptWorkingCopy(nil)
+	h.observe(runtime.Alive)
+	if p := h.pending(); !p.awaitsTurn() {
+		t.Fatalf("pending %+v, want the take the sweep offered accepted", p)
+	}
 	h.wantBudgets(Budgets{PromptFailures: 1, PromptRetires: 1})
 
 	h.must(StreamTurnStart{Claim: testToken})
@@ -788,6 +783,9 @@ func TestAStartedTurnResetsBothPromptBudgets(t *testing.T) {
 	}
 }
 
+// The limits and the timeouts are the constructor's: an end frame's bound is the RPC timeout the
+// machine was built with, and a prompt budget of one retires and fails at the first refused
+// adoption.
 func TestEveryLimitAndTimeoutIsAConstructorParameter(t *testing.T) {
 	h := newBareHarness(t)
 	h.deps.Limits = Limits{LaunchFailures: 1, PromptFailures: 1, PromptRetires: 1}
@@ -798,10 +796,20 @@ func TestEveryLimitAndTimeoutIsAConstructorParameter(t *testing.T) {
 	h.start(queuedClaim())
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	h.must(StreamTurnStart{Claim: testToken})
+	h.mustQuiet(StreamTurnEnd{Claim: testToken})
 
 	h.advance(testRPC)
-	h.wantBudgets(Budgets{})
+	if h.claim().Pending == nil {
+		t.Fatal("the task was finished at the harness's RPC timeout, want the machine's own")
+	}
 	h.advance(testRPC)
+	if p := h.claim().Pending; p != nil {
+		t.Fatalf("pending %+v past the machine's RPC timeout, want the task finished by its end frame", p)
+	}
+
+	refuseAdoptions(h)
+	h.must(RequestDeliver{Claim: testToken, Task: "the next task", Phase: phase.Implementing, Generation: 7})
 
 	h.wantState(StateFailed)
 	h.wantBudgets(Budgets{PromptFailures: 1, PromptRetires: 1})
@@ -940,19 +948,14 @@ func TestRetryWaitsOutTheProcessTheClaimLastRan(t *testing.T) {
 	t.Run("failed when prompt retirements ran out", func(t *testing.T) {
 		h := newHarness(t)
 		h.reach(StateReady)
-		h.must(RequestDeliver{Claim: testToken, Task: "the task"})
-		for range 2 {
-			h.advance(testRPC)
-			h.observe(runtime.Alive)
-		}
-		h.advance(testRPC)
+		refuseAdoptions(h)
+		h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing, Generation: 7})
+		h.observe(runtime.Alive)
+		h.observe(runtime.Alive)
 		h.relaunched()
 		last := h.locator()
-		for range 2 {
-			h.advance(testRPC)
-			h.observe(runtime.Alive)
-		}
-		h.advance(testRPC)
+		h.observe(runtime.Alive)
+		h.observe(runtime.Alive)
 		h.wantState(StateFailed)
 		wantRetryWaitsOut(t, h, last)
 	})

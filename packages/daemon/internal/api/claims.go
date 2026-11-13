@@ -699,8 +699,8 @@ func (s *server) readRegisterBody(w http.ResponseWriter, r *http.Request, into *
 // starts, not when the daemon decides on it.
 //
 // supervise's own reader of the shared rule adds no such term, because the one place it is
-// asked has answered it already: a pending delivery is handed to no claim that is not ready or
-// idle (supervise's staleRefusesClaim, sendPending).
+// asked has answered it already: a pending task is given by no take to a claim that is not ready
+// or idle (supervise's staleRefusesClaim, claimHold).
 func (s *server) staleClaim(c supervise.Claim) (int, bool) {
 	return c.PluginContract, supervise.StaleRefusesCalls(c, DaemonAPIVersion, s.pluginRelaunchable, s.noPluginInstall) &&
 		c.State != supervise.StateWorking

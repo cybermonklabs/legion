@@ -1187,8 +1187,10 @@ func TestRunSupervisesWithTheConfiguredLimitsAndTimeouts(t *testing.T) {
 	}
 }
 
-// Every agent fact the worker stream reports reaches the claim's machine as its own event — the
-// late refusal included, which the stream added after the contract was first written.
+// Every agent fact the worker stream reports reaches the claim's machine as its own event, and
+// the two frames of the prompt the daemon no longer sends — a prompt's result and its late
+// refusal, which an older shim still replays — reach none: the pump drops them (supervisor's
+// superviseEvent answers no event and no error).
 func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 	const token = claim.Token("legion-legion-legion-1-tester")
 	cases := []struct {
@@ -1196,7 +1198,7 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 		want supervise.Event
 	}{
 		{stream.Hello{Claim: token, Generation: 3}, supervise.StreamHello{Claim: token, Generation: 3}},
-		{stream.TurnStart{Claim: token, DeliveryID: "d1"}, supervise.StreamTurnStart{Claim: token, DeliveryID: "d1"}},
+		{stream.TurnStart{Claim: token, DeliveryID: "d1"}, supervise.StreamTurnStart{Claim: token}},
 		{stream.TurnEnd{Claim: token}, supervise.StreamTurnEnd{Claim: token}},
 		{stream.ToolStep{Claim: token, Tool: "bash", CallID: "toolu_turn1_0",
 			ArgsBytes: 21, ArgsHash: "1eab1ef18bb109ae", ConnSequence: 4},
@@ -1204,14 +1206,8 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 				ArgsBytes: 21, ArgsHash: "1eab1ef18bb109ae", ConnSequence: 4}},
 		{stream.ToolStep{Claim: token, Tool: "bash", CallID: "toolu_turn1_0", End: true, ConnSequence: 4},
 			supervise.StreamToolStep{Claim: token, Tool: "bash", CallID: "toolu_turn1_0", End: true, ConnSequence: 4}},
-		{stream.PromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true},
-			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true}},
-		{stream.PromptResult{Claim: token, DeliveryID: "d1", Error: "no model"},
-			supervise.StreamPromptResult{Claim: token, DeliveryID: "d1", Error: "no model"}},
-		{stream.LateRefusal{Claim: token, DeliveryID: "d1", Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."},
-			supervise.StreamLateRefusal{Claim: token, DeliveryID: "d1", Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."}},
-		{stream.LateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Replayed: true, ConnSequence: 3},
-			supervise.StreamLateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Replayed: true, ConnSequence: 3}},
+		{stream.PromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true}, nil},
+		{stream.LateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Replayed: true, ConnSequence: 3}, nil},
 		{stream.Closed{Claim: token}, supervise.StreamClosed{Claim: token}},
 	}
 	mapped := map[string]bool{}
@@ -1227,25 +1223,48 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 	}
 }
 
-// endTurn ends the turn a machine is in as the agent really ends one: the agent_end, and behind
-// it the prompt_result of the prompt whose turn it was (shimwire.PromptResult), which Oh My Pi
-// writes milliseconds later and which the Claude Code bridge writes too. The delivery retires on
-// that result rather than on the agent_end alone, because with background work on a role's own
-// background result starts turns the daemon never prompted and an agent_end names no prompt at
-// all. A turn no confirmed delivery of the daemon's was running in ends with no
-// result behind it, exactly as such a turn does on the wire.
+// acceptTake is the claim's worker taking the task its claim holds, as its plugin does once its
+// host is idle: the take of the pending number at the value the bucket holds, which must be
+// accepted. It answers the text the take was answered with.
+func acceptTake(ctx context.Context, t *testing.T, machine *supervise.Machine) string {
+	t.Helper()
+	c := machine.Claim()
+	if c.Pending == nil {
+		t.Fatalf("%s holds no task to take", c.Token)
+	}
+	request := supervise.RequestTake{Claim: c.Token, Generation: c.Generation, Session: c.Session, Number: c.Pending.Number}
+	if current, err := machine.CurrentTask(ctx); err != nil {
+		t.Fatalf("read the task value of %s: %v", c.Token, err)
+	} else if current.Value != nil {
+		request.Epoch, request.Revision = current.Value.Epoch, current.Value.Revision
+	}
+	answer, err := machine.Take(ctx, request)
+	if err != nil || answer.Outcome != supervise.TakeOutcomeAccepted {
+		t.Fatalf("the take of task %d on %s = %+v, %v, want it accepted", c.Pending.Number, c.Token, answer, err)
+	}
+	return answer.Text
+}
+
+// turnSequence is the sequence the worker's turn-outcome reports carry, which only rises.
+var turnSequence atomic.Uint64
+
+// endTurn ends the turn a machine is in as the agent really ends one: the agent_end, and behind it
+// the worker's turn-outcome report naming the task whose take's turn it was, which is what
+// finishes that task. A turn no take of the daemon's was running in ends with no report behind
+// it, exactly as such a turn does from a worker whose turn had no task.
 func endTurn(ctx context.Context, t *testing.T, machine *supervise.Machine, token claim.Token) {
 	t.Helper()
 	pending := machine.Claim().Pending
 	if err := machine.Handle(ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
 		t.Fatalf("end the turn of %s: %v", token, err)
 	}
-	if pending == nil || pending.ConfirmedAt.IsZero() {
+	if pending == nil || pending.ConfirmedAt.IsZero() || pending.TakenText != "" {
 		return
 	}
-	result := supervise.StreamPromptResult{Claim: token, DeliveryID: pending.ID, AgentInvoked: true}
-	if err := machine.Handle(ctx, result); err != nil {
-		t.Fatalf("report the end of the prompt %s ran: %v", token, err)
+	report := supervise.RequestTurnOutcome{Claim: token, Generation: machine.Claim().Generation,
+		Sequence: turnSequence.Add(1), Task: pending.Number}
+	if err := machine.Handle(ctx, report); err != nil {
+		t.Fatalf("report the end of the turn of task %d on %s: %v", pending.Number, token, err)
 	}
 }
 

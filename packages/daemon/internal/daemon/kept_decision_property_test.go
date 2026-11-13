@@ -451,96 +451,17 @@ func (r *keptRuntime) refused() int {
 	return r.refusals
 }
 
-// keptConn is an architect's connection with one prompt held open on demand: the send is in
-// flight, the daemon has had no answer, and the step that armed the gate runs what it likes
-// before that answer comes (keptGate). Every other prompt goes straight to the connection
-// underneath, which records it as the run reads it (fake.Conn.Prompts).
-//
-// A prompt the agent refuses busy is recorded nowhere: Oh My Pi answers that way exactly when a
-// turn of its own is already running, so the frame reached no agent and told it nothing
-// (supervise's agentBusy, and its own "the agent never read this task"). The run reads tellings
-// from the frames the connection kept, so a refused one must not stand among them.
+// keptConn is an architect's connection, the runtime's own double: the run registers it for the
+// claim so the daemon reaches the process, and reads from it whether the agent answers get_state
+// in a turn (SetStreaming). What the architect was told the run reads from its worker's takes
+// (keptTree.takes), not from anything sent here.
 type keptConn struct {
 	*fake.Conn
-	mu   sync.Mutex
-	gate *keptGate
 }
 
 var _ runtime.Conn = (*keptConn)(nil)
 
-// keptGate is one prompt held open: arrived is closed by the prompt that met the gate, release by
-// the step that armed it, and refusal is the answer that prompt is then given — Oh My Pi's busy
-// answer, or "" to let the frame through.
-type keptGate struct {
-	arrived chan struct{}
-	release chan struct{}
-	refusal string
-}
-
-// keptBusyRefusal is Oh My Pi's own answer to a prompt arriving while a turn runs, worded as it
-// words it: the daemon reads it as the agent being busy rather than refusing the work, and charges
-// it nothing (supervise's agentBusy).
-const keptBusyRefusal = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
-
-// keptSendBound is how long a step that armed the gate waits for the prompt. A send starts inside
-// the event that triggers it, on a goroutine of the machine's own, so the wait is a safety net
-// rather than a step's pace: the step that arms the gate first reads whether the send has anything
-// to carry (heldForItsTree), and takes its gate back when none came.
-const keptSendBound = 5 * time.Second
-
 func newKeptConn() *keptConn { return &keptConn{Conn: fake.NewConn()} }
-
-// hold arms the gate for the next prompt, which is held open until the step releases it.
-func (c *keptConn) hold(refusal string) *keptGate {
-	gate := &keptGate{arrived: make(chan struct{}), release: make(chan struct{}), refusal: refusal}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.gate = gate
-	return gate
-}
-
-// standDown takes an armed gate back and says whether no prompt had met it: a send the daemon
-// decided against leaves the gate armed, and nothing later must be caught by it.
-func (c *keptConn) standDown(gate *keptGate) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.gate != gate {
-		return false
-	}
-	c.gate = nil
-	return true
-}
-
-func (c *keptConn) Prompt(ctx context.Context, deliveryID, message string) error {
-	c.mu.Lock()
-	gate := c.gate
-	c.gate = nil
-	c.mu.Unlock()
-	if gate == nil {
-		return c.Conn.Prompt(ctx, deliveryID, message)
-	}
-	close(gate.arrived)
-	select {
-	case <-gate.release:
-	case <-ctx.Done():
-		// The send's own deadline (supervise.Timeouts.RPC) ran out while the gate held it, which
-		// the daemon reads as the transport losing the frame.
-		return ctx.Err()
-	}
-	if gate.refusal != "" {
-		return keptRefusal{reason: gate.refusal}
-	}
-	return c.Conn.Prompt(ctx, deliveryID, message)
-}
-
-// keptRefusal is the agent answering a prompt `success: false`, as the runtime's own double writes
-// one (fake.Conn.RefusePrompt): an error that is runtime.ErrPromptRefused and carries the reason
-// the daemon reads to tell a busy agent from one that will not take the work.
-type keptRefusal struct{ reason string }
-
-func (r keptRefusal) Error() string         { return r.reason + ": " + runtime.ErrPromptRefused.Error() }
-func (r keptRefusal) Is(target error) bool  { return target == runtime.ErrPromptRefused }
-func (r keptRefusal) RefusalReason() string { return r.reason }
 
 // keptCounts is what a run's injected failures drove, reported at the run's end so the operations
 // the generator chose are shown to have fired rather than assumed.
@@ -589,15 +510,9 @@ type keptCounts struct {
 	// re-hold queues. Either way what the row claims is handed to a fresh catch-up
 	// (notice_exceptions.go's reholdNotice, supersededKept and spentKept).
 	supersededTimeouts int
-	// refusedConfirmations is every send a turn of the agent's own confirmed while it was in
-	// flight and the agent then answered busy, so the machine took that confirmation back
-	// (supervise's refused); lateRefusals every replayed refusal that took back a confirmation a
-	// foreign turn had made (takesBackConfirmed); and interruptedTasks every task taken back
-	// because the process running its turn died (interrupted). Each of the three is answered by
-	// sending the task again.
-	refusedConfirmations int
-	lateRefusals         int
-	interruptedTasks     int
+	// interruptedTasks is every task taken back because the process running its turn died
+	// (interrupted), which its worker then takes again.
+	interruptedTasks int
 	// publishes is how many catch-up publishes each listener mode answered.
 	publishes [keptModes]int
 }
@@ -622,8 +537,6 @@ func (c *keptCounts) add(other keptCounts) {
 	c.handedInPublish += other.handedInPublish
 	c.handedBeforeConfirm += other.handedBeforeConfirm
 	c.supersededTimeouts += other.supersededTimeouts
-	c.refusedConfirmations += other.refusedConfirmations
-	c.lateRefusals += other.lateRefusals
 	c.interruptedTasks += other.interruptedTasks
 	for mode := range c.publishes {
 		c.publishes[mode] += other.publishes[mode]
@@ -638,14 +551,13 @@ func (c keptCounts) String() string {
 		"%d parks left a merge-ready child behind a lingering root that is not done, of which %d members such a close handed over, "+
 		"%d restarts met a streaming agent, %d foreign turns, %d receipt timeouts the re-hold queued no copy for, "+
 		"%d hand-overs inside a catch-up's publish, %d hand-overs between a held task and its confirmation; "+
-		"%d sends refused busy after a turn of the agent's own confirmed them, %d replayed refusals took a confirmation back, "+
 		"%d processes died in a task's turn; "+
 		"catch-up publishes answered: %d delivered, %d no-holder, %d refused, %d receipt-timeout, %d denied, %d delivery-failed",
 		c.refusedLaunches, c.failedClaim, c.retriedFailed, c.endedCatchUps, c.endedByFailure,
 		c.raced, c.together, c.handovers, c.handoversWithoutRun, c.orphans, c.adoptions, c.closes,
 		c.mergeReadyParks, c.mergeReadyHandOvers,
 		c.streamed, c.foreign, c.supersededTimeouts, c.handedInPublish, c.handedBeforeConfirm,
-		c.refusedConfirmations, c.lateRefusals, c.interruptedTasks,
+		c.interruptedTasks,
 		c.publishes[keptDelivers], c.publishes[keptNoHolder], c.publishes[keptRefuses],
 		c.publishes[keptReceiptTimeout], c.publishes[keptDenied], c.publishes[keptDeliveryFailed])
 }
@@ -661,7 +573,9 @@ type keptTree struct {
 	token claim.Token
 	conn  *keptConn
 	topic string
-	// prompts is how many of the connection's prompts observe has read.
+	// takes is every take of the architect's worker the daemon accepted, in order, and prompts
+	// how many of them observe has read.
+	takes   []fake.Prompt
 	prompts int
 	// handed is whether this issue has left the tree it started in for one of its own: a
 	// hand-over at the linger's end, with its run or without it, or a person's todo that orphaned
@@ -828,12 +742,10 @@ type keptRun struct {
 // (closeTree), one due supervise or notice row of a driven tree run in no particular order
 // (finished, or its finish lost to a crash), several due rows run at once, one catch-up run with
 // its publish held open for another operation, an architect's agent coming up on its launch, the
-// ready fact the daemon's terminal hook then tells the workflow, its turn on the task it holds, a
-// turn the agent started on its own while a task nobody sent waits on the claim, the send a turn
-// of the agent's own confirmed and the agent then answered busy, which takes that confirmation
-// back (busyRefusalAfterAConfirmation), the shim's replayed refusal that takes back a
-// confirmation a foreign turn made (lateRefusalAfterAConfirmation), the death of the process
-// running a task's turn, which takes the task back for the relaunch (deathInTheTasksTurn),
+// ready fact the daemon's terminal hook then tells the workflow, its worker's take of the task it
+// holds and that take's turn, a turn the agent started on its own while a task nobody took waits
+// on the claim, the death of the process running a task's turn, which takes the task back for the
+// relaunch (deathInTheTasksTurn),
 // the daemon's restart, the restart whose agent then answers get_state in a turn, the forget's
 // failure switched on and off, the runtime's refusal of every launch switched on and off, and the
 // listener switched between delivering, holding no session, refusing the delivery mode, not
@@ -1196,12 +1108,6 @@ func (r *keptRun) enabled() []func() {
 		}
 		if r.heldTask(tree) {
 			ops = append(ops, func() { r.foreignTurn(tree) }, func() { r.restartStreaming(tree) })
-		}
-		if r.busyRefusalEnabled(tree) {
-			ops = append(ops, func() { r.busyRefusalAfterAConfirmation(tree) })
-		}
-		if r.lateRefusalEnabled(tree) {
-			ops = append(ops, func() { r.lateRefusalAfterAConfirmation(tree) })
 		}
 		if r.deathEnabled(tree) {
 			ops = append(ops, func() { r.deathInTheTasksTurn(tree) })
@@ -2488,7 +2394,7 @@ func (r *keptRun) turnEnabled(tree *keptTree) bool {
 	if pending == nil {
 		return false
 	}
-	if !pending.DeliveredAt.IsZero() && pending.ConfirmedAt.IsZero() {
+	if !pending.ConfirmedAt.IsZero() && pending.TakenText != "" {
 		return true
 	}
 	return held.State == supervise.StateWorking && !pending.ConfirmedAt.IsZero()
@@ -2520,8 +2426,9 @@ func (r *keptRun) turn(tree *keptTree) {
 func (r *keptRun) endTurn(tree *keptTree, machine *supervise.Machine) {
 	pending := machine.Claim().Pending
 	r.handle(machine, supervise.StreamTurnEnd{Claim: tree.token})
-	if pending != nil && !pending.ConfirmedAt.IsZero() {
-		r.handle(machine, supervise.StreamPromptResult{Claim: tree.token, DeliveryID: pending.ID, AgentInvoked: true})
+	if pending != nil && !pending.ConfirmedAt.IsZero() && pending.TakenText == "" {
+		r.handle(machine, supervise.RequestTurnOutcome{Claim: tree.token, Generation: machine.Claim().Generation,
+			Sequence: turnSequence.Add(1), Task: pending.Number})
 	}
 }
 
@@ -2602,7 +2509,7 @@ func (r *keptRun) heldTask(tree *keptTree) bool {
 	}
 	held := machine.Claim()
 	pending := held.Pending
-	return pending != nil && pending.ConfirmedAt.IsZero() && pending.DeliveredAt.IsZero() && pending.Generation != 0 &&
+	return pending != nil && pending.ConfirmedAt.IsZero() && pending.Generation != 0 &&
 		(held.State == supervise.StateReady || held.State == supervise.StateIdle)
 }
 
@@ -2637,73 +2544,6 @@ func (r *keptRun) restartStreaming(tree *keptTree) {
 		tree.key, r.sup.count(), keptClaimState(r.claimState(tree)))
 }
 
-// busyRefusalEnabled is whether this tree's architect can be given the send a turn of the agent's
-// own overtakes: it holds a task of a run nobody has sent, a connection is registered to send it
-// through, and its root hears — or is the root this run re-admits, which is what makes it hear.
-// The task must still carry a decision of this tree (heldForItsTree): the send narrows it to what
-// the record still shows standing in the claim's tree (supervise's Deps.RootTask, the daemon's
-// rootTask), and a task narrowed to nothing is retired rather than sent, so no prompt would come.
-func (r *keptRun) busyRefusalEnabled(tree *keptTree) bool {
-	if !r.heldTask(tree) || !r.connected(tree) {
-		return false
-	}
-	if !r.architectToHear(tree.key) && !(tree.key == keptRoot && r.parkedOrWaiting()) {
-		return false
-	}
-	return r.heldForItsTree(tree) > 0
-}
-
-// busyRefusalAfterAConfirmation is the send a turn of the agent's own overtakes. The task held on
-// the claim is sent, and its prompt waits at the gate — in flight, unanswered, exactly where the
-// daemon holds no lock. While it is out the agent starts a turn of its own (an Envoy notice's, a
-// person's message in its pane), which the machine takes for this task's and confirms, telling
-// every decision the task names (the claim store's tellKeptDecisions). Oh My Pi then answers that
-// very prompt busy, since the turn it is in is not this task's: the machine takes the
-// confirmation back, charges nothing (supervise's refused), and the write that records it puts
-// back every mark the confirmation told (the claim store's putBackARetakenConfirmation). The
-// turn ends, and the task is sent again under the id it kept, which the shim and this run read
-// as the same telling.
-func (r *keptRun) busyRefusalAfterAConfirmation(tree *keptTree) {
-	machine, found := r.sup.Machine(tree.token)
-	if !found {
-		r.fatalf("the architect claim of %s is gone", tree.key)
-	}
-	if !r.architectToHear(tree.key) {
-		r.readmit()
-	}
-	gate := tree.conn.hold(keptBusyRefusal)
-	// A turn the agent started itself, whose end is what sends the task the claim holds
-	// (turnEnded's sendPending).
-	r.handle(machine, supervise.StreamTurnStart{Claim: tree.token})
-	r.handle(machine, supervise.StreamTurnEnd{Claim: tree.token})
-	if !keptArrived(gate) {
-		if tree.conn.standDown(gate) {
-			r.waitMachines()
-			r.tracef("busy-refusal tree=%s: nothing was sent, so no prompt met the gate; pending=%s state=%s",
-				tree.key, keptPendingID(machine.Claim()), machine.Claim().State)
-			return
-		}
-		<-gate.arrived
-	}
-	sent := keptPendingID(machine.Claim())
-	// The turn of the agent's own, which the machine takes for the task's while its send is in
-	// flight (table.go's turnStarted) and confirms.
-	r.handle(machine, supervise.StreamTurnStart{Claim: tree.token})
-	confirmed := machine.Claim().Pending != nil && !machine.Claim().Pending.ConfirmedAt.IsZero()
-	// The agent's busy answer to the prompt held open, which takes that confirmation back.
-	close(gate.release)
-	r.waitMachines()
-	r.noteTakeBack(tree, sent)
-	// The turn ends, and its end sends the task again.
-	r.handle(machine, supervise.StreamTurnEnd{Claim: tree.token})
-	r.waitMachines()
-	if confirmed {
-		r.counts.refusedConfirmations++
-	}
-	r.tracef("busy-refusal tree=%s delivery=%s confirmed-in-flight=%t pending=%s state=%s", tree.key, sent,
-		confirmed, keptPendingID(machine.Claim()), machine.Claim().State)
-}
-
 // awaitingItsTurn is whether this tree's architect holds a task its agent acknowledged and no turn
 // has started on: the prompt was answered, the machine waits for the turn it opens (TimerTurn),
 // and the next agent_start is taken for this task's and confirms it (table.go's turnStarted). It
@@ -2719,7 +2559,7 @@ func (r *keptRun) awaitingItsTurn(tree *keptTree) bool {
 		return false
 	}
 	pending := held.Pending
-	return pending != nil && !pending.DeliveredAt.IsZero() && pending.ConfirmedAt.IsZero()
+	return pending != nil && !pending.ConfirmedAt.IsZero() && pending.TakenText != ""
 }
 
 // takenBackOnce is whether the task this tree's architect holds is one the machine has already
@@ -2738,53 +2578,6 @@ func (r *keptRun) takenBackOnce(tree *keptTree) bool {
 	}
 	_, minted := r.resent[pending.ID]
 	return minted
-}
-
-// lateRefusalEnabled is whether a replayed refusal can take this tree's architect's confirmation
-// back (supervise's takesBackConfirmed): the architect holds an acknowledged task a turn is about
-// to confirm, nothing has taken that task back before, and a connection is registered for the
-// shim to redial on. No send is in flight — every step waits for the sends it started — so the
-// refusal reaches that branch rather than the read mark's.
-func (r *keptRun) lateRefusalEnabled(tree *keptTree) bool {
-	return r.awaitingItsTurn(tree) && r.connected(tree) && !r.takenBackOnce(tree)
-}
-
-// lateRefusalAfterAConfirmation is the shim redialing and replaying its backlog. A turn of the
-// agent's own starts while the machine waits for this task's, so the machine takes it for the
-// task's and confirms, telling every decision the task names (tellKeptDecisions). The agent's own
-// answer to the prompt that task was sent under then arrives from the backlog of the connection
-// that replaced the one it was sent through, and says the agent was busy: that turn was not this
-// task's and the task was never read, so the machine takes the confirmation back under a new id
-// the shim has no record of (supervise's takesBackConfirmed, takeBackPending), and the write that
-// records it puts back every mark the confirmation told. The turn ends and the task goes again:
-// the same decisions reach the same architect a second time, the accepted lesser fault — the
-// daemon cannot know whether the agent read the first (held).
-func (r *keptRun) lateRefusalAfterAConfirmation(tree *keptTree) {
-	machine, found := r.sup.Machine(tree.token)
-	if !found {
-		r.fatalf("the architect claim of %s is gone", tree.key)
-	}
-	sent := keptPendingID(machine.Claim())
-	r.handle(machine, supervise.StreamTurnStart{Claim: tree.token})
-	r.waitMachines()
-	if !r.confirmedPending(tree) {
-		r.endTurnUnconfirmed(tree, machine, "late-refusal", sent)
-		return
-	}
-	// The shim redialed: its connection is registered again, newer than the one the task was sent
-	// through, which is what says the turn that confirmed the task was no prompt of this
-	// connection's (supervise's sentThrough).
-	r.sup.deps.Conns.(*fake.Conns).Register(tree.token, tree.conn)
-	r.handle(machine, supervise.StreamLateRefusal{Claim: tree.token, DeliveryID: sent, Error: keptBusyRefusal,
-		Replayed: true, ConnSequence: tree.conn.Sequence()})
-	r.waitMachines()
-	r.noteTakeBack(tree, sent)
-	// The turn the agent was in ends, and its end sends the task again.
-	r.handle(machine, supervise.StreamTurnEnd{Claim: tree.token})
-	r.waitMachines()
-	r.counts.lateRefusals++
-	r.tracef("late-refusal tree=%s delivery=%s pending=%s state=%s", tree.key, sent,
-		keptPendingID(machine.Claim()), machine.Claim().State)
 }
 
 // deathEnabled is whether this tree's architect can be given the death of the process running its
@@ -2887,18 +2680,8 @@ func (r *keptRun) noteTakeBack(tree *keptTree, before string) {
 		pending.ID, row)
 }
 
-// keptArrived waits for the prompt a gate holds open, false for a send that never came.
-func keptArrived(gate *keptGate) bool {
-	select {
-	case <-gate.arrived:
-		return true
-	case <-time.After(keptSendBound):
-		return false
-	}
-}
-
-// connected is whether a connection is registered for the tree's architect, without which no
-// delivery is sent at all (supervise's sendPending).
+// connected is whether a connection is registered for the tree's architect, without which its
+// process is not there to take anything (workerTakes).
 func (r *keptRun) connected(tree *keptTree) bool {
 	_, registered := r.sup.deps.Conns.Conn(tree.token)
 	return registered
@@ -3265,7 +3048,7 @@ func keptRefs(decisions []record.ParkedDecision) string {
 func (r *keptRun) observe() {
 	for _, tree := range r.roots {
 		generation := r.storedGeneration(tree.key)
-		prompts := tree.conn.Prompts()
+		prompts := tree.takes
 		for ; tree.prompts < len(prompts); tree.prompts++ {
 			prompt := prompts[tree.prompts]
 			if r.sent[prompt.DeliveryID] {
@@ -3664,14 +3447,35 @@ func (r *keptRun) waitsForItsSlot(tree *keptTree) bool {
 	return waits
 }
 
-// waitMachines waits for every send each architect's machine started to have had its outcome
-// handled, which is what makes a prompt and its acknowledgement part of the step that caused them.
+// waitMachines waits for every decision each architect's machine started to have been made, and
+// then has each architect's worker take the task its claim holds where it may (workerTakes), which
+// is what makes a take part of the step that queued its task.
 func (r *keptRun) waitMachines() {
 	for _, tree := range r.roots {
 		if machine, found := r.sup.Machine(tree.token); found {
 			machine.Wait()
+			r.workerTakes(tree, machine)
 		}
 	}
+}
+
+// workerTakes is the architect's worker taking the task its claim holds once its host is idle and
+// its process is connected, as its plugin does: the take of the pending number, recorded where the
+// daemon accepted it. A take a hold refuses leaves the task where it is, and a take the daemon
+// answered with nothing but a failure — a store this run is refusing — is made again at the next
+// wait.
+func (r *keptRun) workerTakes(tree *keptTree, machine *supervise.Machine) {
+	c := machine.Claim()
+	p := c.Pending
+	if p == nil || !p.ConfirmedAt.IsZero() || (c.State != supervise.StateReady && c.State != supervise.StateIdle) || !r.connected(tree) {
+		return
+	}
+	answer, err := machine.Take(r.ctx, supervise.RequestTake{Claim: c.Token, Generation: c.Generation, Session: c.Session, Number: p.Number})
+	machine.Wait()
+	if answer.Outcome == supervise.TakeOutcomeAccepted {
+		tree.takes = append(tree.takes, fake.Prompt{DeliveryID: p.ID, Message: answer.Text})
+	}
+	r.tracef("take tree=%s delivery=%s outcome=%s hold=%s err=%v", tree.key, p.ID, answer.Outcome, answer.Hold, err)
 }
 
 func (r *keptRun) handle(machine *supervise.Machine, ev supervise.Event) {

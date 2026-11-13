@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -144,21 +145,23 @@ func (r *unansweredSuspend) Suspend(ctx context.Context, loc runtime.Locator) er
 	return r.Runtime.Suspend(ctx, loc)
 }
 
-// refuseLate is the agent answering its acknowledged prompt a failure with no turn of its own
-// running, which charges the prompt (lateRefused).
-func refuseLate(h *harness) error {
+// refuseAdoptions has the shim refuse every adoption of the working copy the claim's takes make,
+// which charges each take's prompt budget (refusedAdoption).
+func refuseAdoptions(h *harness) {
 	h.t.Helper()
-	return h.handle(StreamLateRefusal{Claim: h.token, DeliveryID: h.pending().ID, Error: "No API key found for anthropic."})
+	h.m.deps.Identity = func(context.Context, claim.Role, string) (runtime.GitIdentity, error) {
+		return runtime.GitIdentity{Name: "legion-architect[bot]"}, nil
+	}
+	h.rt.FailAdoptWorkingCopy(adoptRefusal(staleLockRefusal))
 }
 
-// A retirement whose relaunch the tree lifecycle refuses — the registration deadline's, or a prompt
-// retirement's, whichever of the prompt's outcomes reached the limit: a turn that never started, a
-// refusal of the prompt, or a late refusal of it — never leaves a live claim with no process for the
-// rows that act on one. A lifecycle that already refuses retires nothing: the claim keeps its process
-// and is charged nothing more. One that begins to refuse while the stop waits out its grace refuses
-// a relaunch whose process is gone: the claim is left suspended by the daemon, running nothing.
-// Either way the operator's suspend, the root's exit, and a stale plugin found once launches are
-// allowed again are handled as on any claim in that state.
+// A retirement whose relaunch the tree lifecycle refuses — the registration deadline's, or the
+// prompt retirement the third refused adoption of a take makes — never leaves a live claim with no
+// process for the rows that act on one. A lifecycle that already refuses retires nothing: the
+// claim keeps its process and is charged nothing more. One that begins to refuse while the stop
+// waits out its grace refuses a relaunch whose process is gone: the claim is left suspended by the
+// daemon, running nothing. Either way the operator's suspend, the root's exit, and a stale plugin
+// found once launches are allowed again are handled as on any claim in that state.
 func TestARetirementWhoseRelaunchTheTreeLifecycleRefusesLeavesNoLiveClaimWithoutAProcess(t *testing.T) {
 	retirements := []struct {
 		name string
@@ -176,47 +179,17 @@ func TestARetirementWhoseRelaunchTheTreeLifecycleRefusesLeavesNoLiveClaimWithout
 			state:  StateRegistered, kept: Budgets{}, retired: Budgets{},
 		},
 		{
-			name: "a prompt retirement",
+			name: "a refused adoption's retirement",
 			reach: func(h *harness) {
 				h.reach(StateReady)
-				h.must(RequestDeliver{Claim: h.token, Task: "the task"})
-				for range testLimits().PromptFailures - 1 {
-					h.advance(testRPC)
-					h.observe(runtime.Alive)
-				}
-			},
-			retire: func(h *harness) { h.advance(testRPC) },
-			state:  StateReady, kept: Budgets{PromptFailures: 2}, retired: Budgets{PromptRetires: 1},
-		},
-		{
-			name: "a refused prompt's retirement",
-			reach: func(h *harness) {
-				h.reach(StateReady)
-				h.conn.RefusePrompt("the model provider refused the request")
-				h.must(RequestDeliver{Claim: h.token, Task: "the task"})
+				refuseAdoptions(h)
+				// The worker's take of the phase task, and the take the sweep offers again after
+				// it: two charges.
+				h.must(RequestDeliver{Claim: h.token, Task: "the task", Phase: phase.Implementing, Generation: 7})
 				h.observe(runtime.Alive)
 			},
 			retire: func(h *harness) { h.observe(runtime.Alive) },
 			state:  StateReady, kept: Budgets{PromptFailures: 2}, retired: Budgets{PromptRetires: 1},
-		},
-		{
-			name: "a late refusal's retirement",
-			reach: func(h *harness) {
-				h.reach(StateReady)
-				h.must(RequestDeliver{Claim: h.token, Task: "the task"})
-				for range testLimits().PromptFailures - 1 {
-					if err := refuseLate(h); err != nil {
-						h.t.Fatalf("refuse the acknowledged prompt: %v", err)
-					}
-					h.observe(runtime.Alive)
-				}
-			},
-			retire: func(h *harness) {
-				if err := refuseLate(h); err != nil && strings.Contains(err.Error(), "outside") {
-					h.t.Errorf("the late refusal's retirement: %v", err)
-				}
-			},
-			state: StateReady, kept: Budgets{PromptFailures: 2}, retired: Budgets{PromptRetires: 1},
 		},
 	}
 	refusals := []struct {
@@ -335,14 +308,17 @@ func TestARetirementWhoseRelaunchTheStoreDoesNotCheckKeepsItsTaskAndRelaunchesAt
 			name: "a prompt retirement",
 			reach: func(h *harness) {
 				h.reach(StateReady)
-				h.must(RequestDeliver{Claim: h.token, Task: "the task", Phase: phase.Implementing})
-				for range testLimits().PromptFailures - 1 {
-					h.advance(testRPC)
+				refuseAdoptions(h)
+				h.must(RequestDeliver{Claim: h.token, Task: "the task", Phase: phase.Implementing, Generation: 7})
+				for range testLimits().PromptFailures - 2 {
 					h.observe(runtime.Alive)
 				}
 			},
-			retire: func(h *harness) { h.advance(testRPC) },
-			left:   Budgets{PromptRetires: 1}, relaunched: Budgets{PromptRetires: 1},
+			retire: func(h *harness) {
+				h.observe(runtime.Alive)
+				h.rt.FailAdoptWorkingCopy(nil)
+			},
+			left: Budgets{PromptRetires: 1}, relaunched: Budgets{PromptRetires: 1},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -396,7 +372,7 @@ func TestARetirementWhoseRelaunchTheStoreDoesNotCheckKeepsItsTaskAndRelaunchesAt
 			}
 			h.relaunched()
 			if prompts := h.prompts(); len(prompts) == 0 || !strings.Contains(prompts[len(prompts)-1].Message, "the task") {
-				t.Errorf("the relaunched agent was prompted %+v, want the phase's task", prompts)
+				t.Errorf("the relaunched agent took %+v, want the phase's task", prompts)
 			}
 		})
 	}
@@ -545,25 +521,24 @@ func TestWhatLetsAWaitingRelaunchsClaimGoDropsTheRelaunchWithItsTimer(t *testing
 
 // A prompt retirement whose relaunch the tree lifecycle refuses keeps the process and leaves its
 // prompt count one short of the limit (chargePrompt), so once launches are allowed again the next
-// prompt failure retires the process and relaunches the same session.
+// refused adoption retires the process and relaunches the same session.
 func TestAPromptRetirementTheTreeLifecycleRefusesIsTriedAgainAtTheNextPromptFailure(t *testing.T) {
 	store := &epochStore{epoch: 1}
 	h := lifecycleHarness(t, store, queuedClaim())
 	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: h.token, Task: "the task", Phase: phase.Implementing})
-	for range testLimits().PromptFailures - 1 {
-		h.advance(testRPC)
+	refuseAdoptions(h)
+	h.must(RequestDeliver{Claim: h.token, Task: "the task", Phase: phase.Implementing, Generation: 7})
+	for range testLimits().PromptFailures - 2 {
 		h.observe(runtime.Alive)
 	}
 	store.reserved = true
-	h.advance(testRPC)
+	h.observe(runtime.Alive)
 	h.wantCalls("Suspend", 0)
 	h.wantState(StateReady)
 	h.wantBudgets(Budgets{PromptFailures: testLimits().PromptFailures - 1})
 
 	store.reserved = false
-	h.observe(runtime.Alive) // the sweep sends the task again
-	h.advance(testRPC)       // and its prompt starts no turn either
+	h.observe(runtime.Alive) // the sweep offers the task again, and its adoption is refused too
 
 	h.wantCalls("Suspend", 1)
 	h.wantCalls("Resume", 1)

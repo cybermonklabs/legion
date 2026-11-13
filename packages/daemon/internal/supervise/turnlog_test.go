@@ -1,11 +1,9 @@
 package supervise
 
 import (
-	"context"
 	"log/slog"
 	"testing"
 
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -17,14 +15,28 @@ const (
 	endedLine   = "supervise: a turn ended"
 )
 
+// turnLines is every record of line that is a turn line: the turn-outcome report writes the same
+// end message with a sequence attribute of its own (turnoutcome.go), and a reader counting a
+// turn's start against its end skips it, as the daemon's cost reading does (T14 of
+// dispatch://INFRA-2811).
+func turnLines(h *harness, line string) []loggedRecord {
+	var kept []loggedRecord
+	for _, r := range h.records.of(line) {
+		if _, reported := r.attr("sequence"); !reported {
+			kept = append(kept, r)
+		}
+	}
+	return kept
+}
+
 // wantTurnLine is the one record of line, read from the records the handler kept rather than from
 // the text the handler printed: what this holds is the attributes' own values, and one of them —
-// the claim — is an attribute of the machine's logger rather than of the call site. delivery is
-// the turn's task where it has one; empty means the line must carry no delivery key at all,
+// the claim — is an attribute of the machine's logger rather than of the call site. task is the
+// number of the turn's task where it has one; 0 means the line must carry no task key at all,
 // which is how a turn that is no task's is told from one whose task is unnamed.
-func wantTurnLine(t *testing.T, h *harness, line string, generation uint64, delivery string) {
+func wantTurnLine(t *testing.T, h *harness, line string, generation uint64, task uint64) {
 	t.Helper()
-	kept := h.records.of(line)
+	kept := turnLines(h, line)
 	if len(kept) != 1 {
 		t.Fatalf("%q was written %d times, want once", line, len(kept))
 	}
@@ -38,97 +50,53 @@ func wantTurnLine(t *testing.T, h *harness, line string, generation uint64, deli
 	if got, ok := r.attr("generation"); !ok || got.Uint64() != generation {
 		t.Fatalf("%q carries generation %v (present %v), want %d", line, got, ok, generation)
 	}
-	got, ok := r.attr("delivery")
+	got, ok := r.attr("task")
 	switch {
-	case delivery == "" && ok:
-		t.Fatalf("%q carries delivery %v; a turn that is no task's names none", line, got)
-	case delivery != "" && !ok:
-		t.Fatalf("%q carries no delivery, want %s", line, delivery)
-	case delivery != "" && got.String() != delivery:
-		t.Fatalf("%q carries delivery %v, want %s", line, got, delivery)
+	case task == 0 && ok:
+		t.Fatalf("%q carries task %v; a turn that is no task's names none", line, got)
+	case task != 0 && !ok:
+		t.Fatalf("%q carries no task, want %d", line, task)
+	case task != 0 && got.Uint64() != task:
+		t.Fatalf("%q carries task %v, want %d", line, got, task)
 	}
 }
 
 // A turn's start and its end are the pair an operator counts against each other to read what the
-// daemon did between them, so each of the three paths that put a claim in working writes the
-// start, under the one message, and the turn's end writes the close. The line goes before the
-// write that records the turn, never after it: the decision these lines exist for is a turn start
-// whose claim write failed, and a line written after the write would leave exactly that decision
+// daemon did between them, so each of the two paths that put a claim in a turn writes the start,
+// under the one message, and the turn's end writes the close. The line goes before the write that
+// records the turn, never after it: the decision these lines exist for is a turn start whose
+// claim write failed, and a line written after the write would leave exactly that decision
 // silent.
 func TestTheTurnLogLinesAreWrittenOnEveryPathIntoATurn(t *testing.T) {
-	// The first path: an agent_start this daemon read in a ready claim, which is the task's own
-	// turn, so the line names the delivery. Its end closes the pair under the same task.
+	// The first path: an agent_start this daemon read in a ready claim after the worker's take of
+	// the task was accepted, which is the take's own turn, so the line names the task's number.
+	// Its end closes the pair under the same task.
 	t.Run("a turn of the task's own in a ready claim", func(t *testing.T) {
 		h := newHarness(t)
 		h.reach(StateReady)
 		h.must(RequestDeliver{Claim: testToken, Task: "the task"})
-		delivery := h.pending().ID
+		number := h.pending().Number
 
 		h.must(StreamTurnStart{Claim: testToken})
 
 		h.wantState(StateWorking)
-		wantTurnLine(t, h, startedLine, h.generation(), delivery)
+		wantTurnLine(t, h, startedLine, h.generation(), number)
 
 		h.must(StreamTurnEnd{Claim: testToken})
 
-		wantTurnLine(t, h, endedLine, h.generation(), delivery)
+		wantTurnLine(t, h, endedLine, h.generation(), number)
 	})
 
-	// A turn the daemon prompted nothing for — an Envoy notice, a person's steer — is no task's,
-	// and the line names none rather than naming an empty one.
-	t.Run("a turn that is no task's names no delivery", func(t *testing.T) {
+	// A turn the worker took nothing for — an Envoy notice, a person's steer — is no task's, and
+	// the line names none rather than naming an empty one.
+	t.Run("a turn that is no task's names no task", func(t *testing.T) {
 		h := newHarness(t)
 		h.reach(StateReady)
 
 		h.must(StreamTurnStart{Claim: testToken})
 
 		h.wantState(StateWorking)
-		wantTurnLine(t, h, startedLine, h.generation(), "")
-	})
-
-	// The second path: a restored claim asks the agent whether it is in a turn, and the agent
-	// answers that it is. That turn is the delivery an earlier daemon sent, so the claim moves to
-	// working with no agent_start of this daemon's own ever read, and the line is the only record
-	// of a turn that started before this process existed.
-	t.Run("a restored claim whose agent answers that it is streaming", func(t *testing.T) {
-		restored := fixture(StateReady)
-		h := newHarnessOf(t, restored)
-		if err := h.store.PutDelivery(h.ctx, testToken, *restored.Pending); err != nil {
-			t.Fatalf("seed the restored delivery: %v", err)
-		}
-		h.conns.Register(testToken, h.conn)
-		h.conn.SetStreaming(true)
-		h.start(restored)
-
-		h.must(RequestReady{Claim: testToken, Generation: restored.Generation, Session: session})
-
-		h.wantState(StateWorking)
-		wantTurnLine(t, h, startedLine, restored.Generation, restored.Pending.ID)
-	})
-
-	// The third path: the restored claim's task is dropped for its phase, and the same ask finds
-	// the agent in a turn of its own. Nothing is pending, so the turn is no task's and the line
-	// names no delivery; without it the claim's move to working would be the one such move the
-	// log never recorded.
-	t.Run("a claim whose task was dropped and whose agent is in a turn of its own", func(t *testing.T) {
-		restored := fixture(StateReady)
-		restored.Pending.Phase = phase.Implementing
-		h := newHarnessOf(t, restored)
-		if err := h.store.PutDelivery(h.ctx, testToken, *restored.Pending); err != nil {
-			t.Fatalf("seed the restored delivery: %v", err)
-		}
-		h.conns.Register(testToken, h.conn)
-		h.conn.SetStreaming(true)
-		h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return false, nil }
-		h.start(restored)
-
-		h.must(RequestReady{Claim: testToken, Generation: restored.Generation, Session: session})
-
-		h.wantState(StateWorking)
-		if p := h.claim().Pending; p != nil {
-			t.Fatalf("pending = %+v, want the finished phase's task dropped", p)
-		}
-		wantTurnLine(t, h, startedLine, restored.Generation, "")
+		wantTurnLine(t, h, startedLine, h.generation(), 0)
 	})
 
 	// A turn start whose claim write the database did not take writes its line all the same, with
@@ -138,7 +106,7 @@ func TestTheTurnLogLinesAreWrittenOnEveryPathIntoATurn(t *testing.T) {
 	t.Run("a start whose claim write failed, and the lines that follow it", func(t *testing.T) {
 		h, _ := owedTurnStart(t)
 
-		wantTurnLine(t, h, startedLine, h.generation(), "")
+		wantTurnLine(t, h, startedLine, h.generation(), 0)
 		owed := h.records.of("supervise: a claim write the database did not take")
 		if len(owed) != 1 {
 			t.Fatalf("the owed line was written %d times, want once", len(owed))
@@ -193,7 +161,7 @@ func TestTheTurnLogLinesAreWrittenOnEveryPathIntoATurn(t *testing.T) {
 			t.Fatalf("the turn under the compaction wrote %d start lines and %d end lines, want them paired",
 				len(starts), len(ends))
 		}
-		wantTurnLine(t, h, startedLine, h.generation(), "")
-		wantTurnLine(t, h, endedLine, h.generation(), "")
+		wantTurnLine(t, h, startedLine, h.generation(), 0)
+		wantTurnLine(t, h, endedLine, h.generation(), 0)
 	})
 }

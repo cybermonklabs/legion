@@ -449,15 +449,15 @@ func TestAHeldPhasesRetryReachesAWorkerThatFinishedTheEntrysTask(t *testing.T) {
 			t.Fatalf("handle %T: %v", ev, err)
 		}
 	}
-	testwait.Eventually(t, "entry 1's task to be acknowledged", func() bool {
-		p := machine.Claim().Pending
-		return p != nil && !p.DeliveredAt.IsZero()
+	testwait.Eventually(t, "entry 1's task to be queued", func() bool {
+		return machine.Claim().Pending != nil
 	})
-	worked := machine.Claim().Pending.ID
+	acceptTake(ctx, t, machine)
+	worked := machine.Claim().Pending.Number
 	for _, ev := range []supervise.Event{
-		supervise.StreamTurnStart{Claim: rig.token, DeliveryID: worked},
-		supervise.StreamPromptResult{Claim: rig.token, DeliveryID: worked, AgentInvoked: true},
+		supervise.StreamTurnStart{Claim: rig.token},
 		supervise.StreamTurnEnd{Claim: rig.token},
+		supervise.RequestTurnOutcome{Claim: rig.token, Generation: generation, Sequence: turnSequence.Add(1), Task: worked},
 	} {
 		if err := machine.Handle(ctx, ev); err != nil {
 			t.Fatalf("handle %T: %v", ev, err)
@@ -609,12 +609,12 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 			t.Fatalf("handle %T: %v", ev, err)
 		}
 	}
-	testwait.Eventually(t, "entry 1's task to be acknowledged", func() bool {
-		p := machine.Claim().Pending
-		return p != nil && !p.DeliveredAt.IsZero()
+	testwait.Eventually(t, "entry 1's task to be queued", func() bool {
+		return machine.Claim().Pending != nil
 	})
+	acceptTake(ctx, t, machine)
 	worked := machine.Claim().Pending.ID
-	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: tester, DeliveryID: worked}); err != nil {
+	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: tester}); err != nil {
 		t.Fatalf("start the turn of entry 1's task: %v", err)
 	}
 
@@ -712,11 +712,11 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	if got := machine.Claim(); got.Pending == nil || got.Pending.Entry != 2 || got.Pending.Task != row.EntryTask || got.GivenEntry != 2 {
 		t.Fatalf("the claim after the sweep's start row = %+v, want it queued entry 2's task and given entry 2", got)
 	}
-	testwait.Eventually(t, "entry 2's task to be acknowledged", func() bool {
-		p := machine.Claim().Pending
-		return p != nil && !p.DeliveredAt.IsZero()
+	testwait.Eventually(t, "entry 2's task to be queued", func() bool {
+		return machine.Claim().Pending != nil
 	})
-	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: tester, DeliveryID: machine.Claim().Pending.ID}); err != nil {
+	acceptTake(ctx, t, machine)
+	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: tester}); err != nil {
 		t.Fatalf("start the turn of entry 2's task: %v", err)
 	}
 	// Entry 2's task is work of its own, so the turn that works it writes a handoff record of its

@@ -1427,8 +1427,12 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
 			memoryInstructions: p.memoryInstructions, memoryGroup: treeMemoryGroup(st),
 		},
-		Identity:                adoptIdentity(p.identity, p.repository),
-		IssueInTurn:             sup.claimInTurn,
+		Identity:    adoptIdentity(p.identity, p.repository),
+		IssueInTurn: sup.claimInTurn,
+		LockIssue:   sup.lockIssue,
+		// T4 wires the bucket: until the daemon's task bucket (taskbucket.go) is built here, no
+		// value is written, and a worker is told its task by nothing.
+		TaskValues:              nil,
 		Secrets:                 p.secretsEnroller,
 		PhaseHolds:              p.phaseHolds,
 		RootHears:               p.rootHears,
@@ -1441,8 +1445,8 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		SessionGone:             cleanSessionStop(supervising, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
 		Clock:                   p.clock,
 		Log:                     log,
-		// A timer that fires and a prompt's send each apply their decision on a goroutine of
-		// their own, beside the machine's feeding goroutine, so each takes a hold mark of its own.
+		// A timer that fires applies its decision on a goroutine of its own, beside the machine's
+		// feeding goroutine, so each takes a hold mark of its own.
 		Worker: store.ForConcurrentWorker,
 		Limits: supervise.Limits{
 			LaunchFailures: cfg.LaunchFailureLimit,
@@ -1655,6 +1659,10 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 				s.log.Error("worker stream: an event no machine can take", "error", err)
 				continue
 			}
+			if mapped == nil {
+				// A frame of the prompt no daemon sends any more, which an older shim replays.
+				continue
+			}
 			s.supervisor.post(claimOf(mapped), mapped)
 		}
 	}()
@@ -1681,11 +1689,12 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 // or ends a plugin round at all (reconcilePodUpdates reads pod rounds). So the boot ends them,
 // once, over the claims it read from the store (dispatch://INFRA-2712 R5).
 //
-// The end takes the claim out of the round whole: the ask the round left unread goes, every
-// round field goes, the claim is written, and the task the round was holding back is sent
-// (supervise's endPodUpdate, leaveRound). A claim with no agent is sent nothing by that last
-// step and needs nothing more — sendPending hands nothing to a claim that is not ready or idle
-// — so the suspended and the failed claims of a round are served by this same post.
+// The end takes the claim out of the round whole: the ask the round left untaken goes, every
+// round field goes, the claim is written, and the value of the task the round was holding back is
+// written again (supervise's endPodUpdate, leaveRound, offerPending). A claim with no agent takes
+// nothing after that last step and needs nothing more — no take is accepted from a claim that is
+// not ready or idle — so the suspended and the failed claims of a round are served by this same
+// post.
 //
 // It runs before the stale-plugin pass rather than after it, and one machine's inbox is FIFO
 // (supervisor.inbox: "unbounded … and in order, so a claim sees its events as its sources

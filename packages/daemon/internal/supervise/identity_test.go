@@ -11,15 +11,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// A phase task first hands the agent's working copy its role's App identity for the claim's
-// issue, so a commit the task makes is authored by the bot rather than by whoever the workspace
-// last named. A send the adoption stops never reaches the agent, and what the claim is charged
-// for it is the split refused makes (table.go): the shim's own refusal of the working copy is the
+// A take of a phase task first hands the agent's working copy its role's App identity for the
+// claim's issue, so a commit the task makes is authored by the bot rather than by whoever the
+// workspace last named. A take the adoption stops is refused, and what the claim is charged for it
+// is the split refusedAdoption makes (take.go): the shim's own refusal of the working copy is the
 // far side's answer about this workspace and spends the prompt budget, while a transport failure
-// under the frame and a failure to mint the role's App identity — which never leaves the daemon,
+// under the call and a failure to mint the role's App identity — which never leaves the daemon,
 // and is an outage of the App rather than a fault of this workspace — spend nothing and are
-// retried for ever (INFRA-1480).
-func TestAPhaseTaskAdoptsTheRoleIdentityBeforeThePrompt(t *testing.T) {
+// offered again for ever (INFRA-1480).
+func TestTakeAdoptsTheRoleIdentityBeforeItIsAccepted(t *testing.T) {
 	bot := runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}
 	for _, tc := range []struct {
 		name string
@@ -65,8 +65,8 @@ func TestAPhaseTaskAdoptsTheRoleIdentityBeforeThePrompt(t *testing.T) {
 				t.Fatalf("identity asked for %v, want once for %q, the claim's role and issue", asked, want)
 			}
 			h.wantBudgets(tc.budgets)
-			if p := h.pending(); p.Task != "implement the plan" || !p.ConfirmedAt.IsZero() {
-				t.Fatalf("pending %+v, want the task still queued for the next send", p)
+			if p := h.pending(); p.Task != "implement the plan" || p.taken() != (tc.prompts == 1) {
+				t.Fatalf("pending %+v, want the task taken only where the adoption was made", p)
 			}
 		})
 	}
@@ -77,11 +77,11 @@ func TestAPhaseTaskAdoptsTheRoleIdentityBeforeThePrompt(t *testing.T) {
 // test red rather than leaving the check counting nothing.
 const (
 	adoptedLine      = "supervise: the working copy was adopted for the phase task"
-	adoptRefusedLine = "supervise: the shim refused to adopt the working copy; the prompt was never sent"
+	adoptRefusedLine = "supervise: the shim refused to adopt the working copy; the take is refused"
 )
 
 // An adoption the shim answers ok writes one Info line, because it was the one end of an adoption
-// the log kept no word of: a refusal is logged (table.go's refused) and an ok was not, so nothing
+// the log kept no word of: a refusal is logged (take.go's refusedAdoption) and an ok was not, so nothing
 // told which tasks adopted the working copy — which is what the production check reads to see that
 // only phase tasks adopt (dispatch://INFRA-2695). The line names the task, its phase and the App
 // by its git name, never a token, and the machine's own logger adds the claim. A task of no phase
@@ -237,8 +237,9 @@ func TestATesterPhaseTaskWaitsForTheImplementersTurnToEnd(t *testing.T) {
 
 			h.wantPrompts(0)
 			h.wantCalls("AdoptWorkingCopy", 0)
-			if p := h.pending(); p.Prompted || !p.ConfirmedAt.IsZero() {
-				t.Fatalf("pending %+v, want the task held, unprompted, while the implementer's turn is open", p)
+			if p := h.pending(); p.taken() || h.claim().TaskTakeState != TakeRefused {
+				t.Fatalf("pending %+v with take state %q, want the worker's take refused while the implementer's turn is open",
+					p, h.claim().TaskTakeState)
 			}
 
 			implementing = false

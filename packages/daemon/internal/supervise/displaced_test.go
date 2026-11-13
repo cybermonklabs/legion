@@ -57,28 +57,28 @@ func TestAProcessEndedWithAPodTheDaemonReplacedIsRelaunchedChargingNothing(t *te
 
 // A process the daemon's replacement ends mid-turn gives its task back (interrupted), as a death in
 // a turn does, but counts no death with work outstanding: more replacements in a row than the launch
-// failure limit leave the claim relaunched each time, its task re-sent, never failed.
-func TestReplacementsMidTurnInterruptTheTaskWithoutEverFailingTheClaim(t *testing.T) {
+// failure limit leave the claim relaunched each time, its task taken again under its number, never
+// failed.
+func TestTakeBackByAReplacementKeepsTheNumberWithoutEverFailingTheClaim(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan"})
 	h.must(StreamTurnStart{Claim: testToken})
-	sent := h.wantPrompts(1)[0].DeliveryID
+	first := h.wantPrompts(1)[0]
 
 	for replaced := 1; replaced <= testLimits().LaunchFailures+1; replaced++ {
 		h.observeDisplaced(runtime.NotRecordedProcess)
 
 		h.wantState(StateLaunching)
 		h.wantBudgets(Budgets{})
-		if p := h.pending(); !p.Interrupted || p.ID == sent || !p.ConfirmedAt.IsZero() {
-			t.Fatalf("pending after replacement %d = %+v, want the task taken back, unconfirmed and interrupted", replaced, p)
+		if p := h.pending(); !p.Interrupted || p.ID != first.DeliveryID || p.Number != first.Number || p.taken() {
+			t.Fatalf("pending after replacement %d = %+v, want task %d taken back under its number and interrupted", replaced, p, first.Number)
 		}
 		h.relaunched()
-		resent := h.wantPrompts(1 + replaced)[replaced]
-		if !strings.HasSuffix(resent.Message, "implement the plan") {
-			t.Fatalf("re-sent %+v after replacement %d, want the task", resent, replaced)
+		again := h.wantPrompts(1 + replaced)[replaced]
+		if !strings.HasSuffix(again.Message, "implement the plan") || again.Number != first.Number {
+			t.Fatalf("took %+v after replacement %d, want task %d again", again, replaced, first.Number)
 		}
-		sent = resent.DeliveryID
 		h.must(StreamTurnStart{Claim: testToken})
 	}
 }

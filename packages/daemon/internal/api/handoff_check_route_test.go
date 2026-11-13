@@ -65,7 +65,8 @@ func (c liveClaim) worksLook(t *testing.T, look int, openedAt time.Time) {
 		Generation: issueGeneration(t, c.h, c.issue), CheckLook: supervise.CheckLook{Look: look, OpenedAt: openedAt}}); err != nil {
 		t.Fatalf("deliver look %d to %s: %v", look, c.token, err)
 	}
-	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: c.token, DeliveryID: id}); err != nil {
+	acceptTake(t, machine)
+	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: c.token}); err != nil {
 		t.Fatalf("start look %d's turn on %s: %v", look, c.token, err)
 	}
 	if got := machine.Claim().ServingCheck(); got.Look != look {
@@ -172,17 +173,15 @@ func TestATestingVerdictAfterTheMergedCloseIsNoReportOnTheProductionCheck(t *tes
 }
 
 // The same trace one turn later, which the claim's own look field cannot tell apart on its own.
-// The tester's testing turn ends, which retires its task and leaves the claim serving run 1 and
-// entry 1; look 1's task is then sent and acknowledged, and no turn starts within
-// the daemon's wait for it (the wait and its take-back are driven in internal/supervise, where
-// the clock moves: TestOnlyTheTurnBoundLeavesTheTaskMarkedAsRead). An Envoy notice — a CI answer —
-// then starts a turn of the tester's own, which confirms nothing, and the tester reports the
-// testing verdict it still owes in it.
+// The tester's testing turn ends, which leaves the claim serving run 1 and entry 1; look 1's
+// task is then queued and its value written, and the tester has not taken it. An Envoy notice —
+// a CI answer — then starts a turn of the tester's own, which takes nothing, and the tester
+// reports the testing verdict it still owes in it.
 //
-// A look the claim has only had sent to it is no look it serves: read as one, this verdict would
-// close the production check as a pass with nobody having looked at production, which is the
-// whole of what the fallback for an unread task must not do. So the completion reports on no
-// look, and a done issue runs no phase for it to complete either: it is refused
+// A look the claim has only had queued for it is no look it serves: read as one, this verdict
+// would close the production check as a pass with nobody having looked at production, which is
+// the whole of what the fallback for an untaken task must not do. So the completion reports on
+// no look, and a done issue runs no phase for it to complete either: it is refused
 // CHECK_LOOK_NOT_SERVED, before the phase path, with nothing recorded and the check left open at
 // its look.
 func TestATestingVerdictBehindAnUnreadLooksTaskIsNoReportOnTheProductionCheck(t *testing.T) {
@@ -197,12 +196,9 @@ func TestATestingVerdictBehindAnUnreadLooksTaskIsNoReportOnTheProductionCheck(t 
 		Generation: 1, CheckLook: look}); err != nil {
 		t.Fatalf("deliver look 1 to the tester: %v", err)
 	}
-	if err := machine.Handle(ctx, supervise.PromptAcked{Claim: tester.token, Generation: machine.Claim().Generation, DeliveryID: id}); err != nil {
-		t.Fatalf("acknowledge the look's prompt: %v", err)
-	}
 	c := machine.Claim()
-	if p := c.Pending; p == nil || p.DeliveredAt.IsZero() || !p.ConfirmedAt.IsZero() || p.CheckLook != look {
-		t.Fatalf("the tester's delivery is %+v, want look 1's task read and unconfirmed", p)
+	if p := c.Pending; p == nil || !p.ConfirmedAt.IsZero() || p.CheckLook != look {
+		t.Fatalf("the tester's delivery is %+v, want look 1's task queued and untaken", p)
 	}
 	if c.ServingRun() != 1 || c.ServingEntry() != 1 || c.ServingCheck() != (supervise.CheckLook{}) {
 		t.Fatalf("the tester serves run %d, entry %d, look %+v; want run 1, entry 1 and no look: one serving, not three",

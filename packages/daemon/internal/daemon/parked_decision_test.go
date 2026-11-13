@@ -478,10 +478,10 @@ func TestARetriedStartDeliversItsTaskOnce(t *testing.T) {
 			t.Fatalf("handle %T: %v", ev, err)
 		}
 	}
-	testwait.Eventually(t, "the start's task to be acknowledged", func() bool {
-		p := machine.Claim().Pending
-		return p != nil && !p.DeliveredAt.IsZero()
+	testwait.Eventually(t, "the start's task to be queued", func() bool {
+		return machine.Claim().Pending != nil
 	})
+	acceptTake(ctx, t, machine)
 	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
 		t.Fatalf("start the task's turn: %v", err)
 	}
@@ -558,10 +558,10 @@ func TestAStartWhoseForgetFailedIsNotDeliveredAgainAfterItsTurn(t *testing.T) {
 			t.Fatalf("handle %T: %v", ev, err)
 		}
 	}
-	testwait.Eventually(t, "the start's task to be acknowledged", func() bool {
-		p := machine.Claim().Pending
-		return p != nil && !p.DeliveredAt.IsZero()
+	testwait.Eventually(t, "the start's task to be queued", func() bool {
+		return machine.Claim().Pending != nil
 	})
+	acceptTake(ctx, t, machine)
 	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
 		t.Fatalf("start the task's turn: %v", err)
 	}

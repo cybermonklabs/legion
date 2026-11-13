@@ -1539,7 +1539,7 @@ func TestAResumeStartMeetingATaskADeathTookBackDeliversNothingMore(t *testing.T)
 				t.Fatal(err)
 			}
 			interrupted := supervise.Delivery{ID: "interrupted-task", Task: "Implement it.", Phase: phase.Implementing, Generation: issue.Generation,
-				QueuedAt: time.Now(), DeliveredAt: time.Now(), Interrupted: true}
+				QueuedAt: time.Now(), Interrupted: true}
 			held := supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key, Role: claim.RoleImplementer, State: tc.state,
 				Generation: 3, Session: "ses-impl", SessionFile: "/tmp/impl.jsonl", Pending: &interrupted}
 			if tc.state == supervise.StateFailed {
@@ -1814,8 +1814,8 @@ func TestOutboxRetryStartForAPhaseTheIssueLeftRelaunchesNothing(t *testing.T) {
 	// with still pending.
 	machine, _, err := sup.Create(ctx, supervise.Claim{
 		Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key, Role: claim.RoleImplementer, State: supervise.StateFailed,
-		Generation: 3, Session: "ses-impl", SessionFile: "/tmp/impl.jsonl",
-		Pending: &supervise.Delivery{ID: "outbox:60", Task: "Continue Workflow. Issue: LEGION-208. Phase: implementing.", QueuedAt: time.Now()},
+		Generation: 3, Session: "ses-impl", SessionFile: "/tmp/impl.jsonl", TaskWritten: 1,
+		Pending: &supervise.Delivery{ID: "outbox:60", Number: 1, Task: "Continue Workflow. Issue: LEGION-208. Phase: implementing.", QueuedAt: time.Now()},
 	}, "")
 	if err != nil {
 		t.Fatalf("create the held implementer: %v", err)
@@ -1861,10 +1861,10 @@ func TestOutboxRetryStartForAPhaseTheIssueLeftRelaunchesNothing(t *testing.T) {
 			t.Fatalf("handle %T: %v", ev, err)
 		}
 	}
-	testwait.Eventually(t, "the relaunched implementer's task to be acknowledged", func() bool {
-		p := machine.Claim().Pending
-		return p != nil && !p.DeliveredAt.IsZero()
+	testwait.Eventually(t, "the relaunched implementer's task to be queued", func() bool {
+		return machine.Claim().Pending != nil
 	})
+	acceptTake(ctx, t, machine)
 	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
 		t.Fatalf("start the turn: %v", err)
 	}
@@ -1997,8 +1997,7 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			if err != nil {
 				t.Fatalf("tester claim token: %v", err)
 			}
-			conn := fake.NewConn()
-			sup.deps.Conns.(*fake.Conns).Register(implementer, conn)
+			sup.deps.Conns.(*fake.Conns).Register(implementer, fake.NewConn())
 
 			// The reviewer asks for round 2, and the implementer starts on its task.
 			apply("review:round-2", intake.PullRequestReview{Repo: "acme/widgets", Number: 118, State: "CHANGES_REQUESTED", CommitID: head, HeadSHA: head, Author: reviewApp,
@@ -2026,26 +2025,27 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 				}
 			}
 			ready()
-			testwait.Eventually(t, "the round-2 task to be acknowledged", func() bool {
-				p := machine.Claim().Pending
-				return p != nil && !p.DeliveredAt.IsZero()
+			testwait.Eventually(t, "the round-2 task to be queued", func() bool {
+				return machine.Claim().Pending != nil
 			})
+			roundTwo := machine.Claim().Pending.Number
 
-			// The agent is already in the turn a human's steer started: that turn confirms the task,
-			// and the agent then refuses the acknowledged prompt, which takes the task back.
+			// The agent is already in the turn a human's steer started, before its worker took the
+			// round-2 task: that turn is no take's.
 			if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: implementer}); err != nil {
 				t.Fatalf("start the steer's turn: %v", err)
 			}
-			if err := machine.Handle(ctx, supervise.StreamLateRefusal{Claim: implementer, DeliveryID: machine.Claim().Pending.ID,
-				Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."}); err != nil {
-				t.Fatalf("refuse the acknowledged prompt: %v", err)
-			}
 
 			// Inside that turn the implementer finishes round 2, and its turn ends after the issue
-			// moved to testing: the round-2 task still pending is the finished phase's, and is dropped.
+			// moved to testing: the round-2 task still pending is the finished phase's, and the
+			// worker's take of it is answered dropped.
 			apply("handoff:implementer:implementing:2", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RoleImplementer, Claim: implementer, Commit: "impl-round-2", HandoffRecord: "implement-round-2", HandoffVersion: 2})
 			due("the move to testing")
 			endTurn(ctx, t, machine, implementer)
+			c := machine.Claim()
+			if answer, err := machine.Take(ctx, supervise.RequestTake{Claim: implementer, Generation: c.Generation, Session: c.Session, Number: roundTwo}); err != nil || answer.Outcome != supervise.TakeOutcomeDropped {
+				t.Fatalf("the take of the round-2 task after the move to testing = %+v, %v, want it dropped", answer, err)
+			}
 			if got := machine.Claim(); got.State != supervise.StateIdle || got.Pending != nil || len(rt.CallsOf("Suspend")) != 0 {
 				t.Fatalf("after round 2's turn the implementer is %s holding %+v with %d suspensions, want idle, holding nothing, never stopped",
 					got.State, got.Pending, len(rt.CallsOf("Suspend")))
@@ -2073,21 +2073,32 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 				return n
 			}
 			launches := implementerLaunches()
-			prompted := len(conn.Prompts())
 			due("the implementer's next start")
 			if got := implementerLaunches() - launches; got != 0 {
 				t.Fatalf("the implementer's next start launched it %d times, want none: the implementer is still live", got)
 			}
 			due("the rows still waiting")
-			testwait.Eventually(t, "the resident implementer to be handed a task", func() bool { return len(conn.Prompts()) > prompted })
-
-			handed := conn.Prompts()[prompted:]
-			if !strings.Contains(handed[0].Message, tc.want) {
-				t.Fatalf("for its next start, the implementer was first handed %q, want the task naming %q", handed[0].Message, tc.want)
+			// The resident implementer's worker takes the task its claim holds once its host is
+			// idle, which is what hands it the task.
+			var handed []string
+			testwait.Eventually(t, "the resident implementer to be handed a task", func() bool {
+				machine.Wait()
+				c := machine.Claim()
+				if c.Pending == nil || !c.Pending.ConfirmedAt.IsZero() || (c.State != supervise.StateReady && c.State != supervise.StateIdle) {
+					return false
+				}
+				answer, err := machine.Take(ctx, supervise.RequestTake{Claim: implementer, Generation: c.Generation, Session: c.Session, Number: c.Pending.Number})
+				if err == nil && answer.Outcome == supervise.TakeOutcomeAccepted {
+					handed = append(handed, answer.Text)
+				}
+				return len(handed) > 0
+			})
+			if !strings.Contains(handed[0], tc.want) {
+				t.Fatalf("for its next start, the implementer was first handed %q, want the task naming %q", handed[0], tc.want)
 			}
-			for _, p := range handed {
-				if strings.Contains(p.Message, "round 2") {
-					t.Fatalf("for its next start, the implementer was handed the finished round's task %q", p.Message)
+			for _, text := range handed {
+				if strings.Contains(text, "round 2") {
+					t.Fatalf("for its next start, the implementer was handed the finished round's task %q", text)
 				}
 			}
 		})

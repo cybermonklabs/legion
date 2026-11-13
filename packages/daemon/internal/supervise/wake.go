@@ -72,7 +72,7 @@ const (
 // stale-plugin refresh's relaunch, and not the outbox's catch-up, which wakes a session that is
 // already running. It is the question every decision about a waiting wake really asks, and each
 // of them asks it here rather than naming a kind — the delivery held back from a process a wake
-// is about to let go (sendPending), the observations and the probe that wake stands in for
+// is about to let go (claimHold), the observations and the probe that wake stands in for
 // (judge, probe), the compaction refused for it (compactStart), the held suspension it ends
 // (wakeNow), the lifecycle recheck and the turn take-back its run makes (runWake), the parked
 // launch an operator's own delivery runs at once (runParkedLaunchNow), the second relaunch a
@@ -249,9 +249,9 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, run, again func(
 // no process is written launching and persisted, which is what reserveWake states. A claim that
 // still records its process is left exactly as it stands.
 //
-// What that claim does not keep is the four timers that watch the process this wake replaces: its
-// boot interval and its registration deadline (armBoot, armRegistration), the probe interval an
-// uncertain answer armed (judge), and the wait for the turn an acknowledged prompt began (acked).
+// What that claim does not keep is the three timers that watch the process this wake replaces:
+// its boot interval and its registration deadline (armBoot, armRegistration), and the probe
+// interval an uncertain answer armed (judge).
 // The process is kept until the turn, so every one of those timers would otherwise fire into the
 // wait — the boot interval of a process that died while it booted charging a launch failure of
 // its own at each one, which is a claim failing before launch_failure_limit real failures
@@ -282,7 +282,7 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Durati
 	m.wake = waiting
 	m.arm(TimerWake, after, "")
 	if m.claim.Locator != nil {
-		for _, kind := range []TimerKind{TimerBoot, TimerRegistration, TimerProbe, TimerTurn} {
+		for _, kind := range []TimerKind{TimerBoot, TimerRegistration, TimerProbe} {
 			m.disarm(kind)
 		}
 		return nil
@@ -335,8 +335,8 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Durati
 //     live process, and that process can have confirmed a task since: letting it go without the
 //     take-back would leave a confirmed task in a launching claim, which settle retires as served
 //     though no turn of it ever finished (retirePending). The other half of that race is a
-//     delivery sent inside the wait, which sendPending holds back for as long as a launch waits
-//     over the process it would reach (launchWaits, delivery.go).
+//     take accepted inside the wait, which claimHold refuses for as long as a launch waits
+//     over the process it would reach (launchWaits, take.go).
 func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 	waiting := m.wake
 	m.wake = nil
@@ -545,8 +545,8 @@ func WakeRanFields(kind WakeKind, paced bool, waitedFor time.Duration, rate, bur
 // That park changed neither the claim nor the process, so every row already decides it as it
 // stands, and the wake still holds the only thing that retires that process: a launch whose turn
 // lets it go and arms the next process's timers (wakeNow, parkWake). The one request that may
-// not wait for the turn — an operator's task, which the send holds back while a launch waits
-// (sendPending's launchWaits) — runs that launch where it arrives rather than dropping it
+// not wait for the turn — an operator's task, whose take is refused while a launch waits
+// (claimHold's launchWaits) — runs that launch where it arrives rather than dropping it
 // (runParkedLaunchNow).
 //
 // The dropped wake's token is not handed back, since the limiter charges on the reserve, so every
@@ -579,7 +579,7 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // the task they have just given the claim, so it may not wait out a paced turn that is tens of
 // minutes away in a wave; and the task may not reach the process that launch is about to let go,
 // since the launch would kill the turn it had just begun and settle would retire the task as
-// served (sendPending's launchWaits, retirePending). Running the launch here leaves the claim
+// served (claimHold's launchWaits, retirePending). Running the launch here leaves the claim
 // exactly where an unpaced daemon's would have left it — launching, over a process let go, with
 // the next one's timers armed — so the row the task then reaches queues it for the process this
 // launch starts (deliverLater), and it goes at that process's ready.
@@ -602,7 +602,7 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // would replace a live process for a request the claim answers with nothing. And a claim
 // holding a suspension is left to its hold: the turn of such a claim ends the suspension rather
 // than launching (wakeNow, endHeld), which is not what a task asks for, and the task is queued
-// and kept until the hold lifts whichever process the claim is running (sendPending).
+// and kept until the hold lifts whichever process the claim is running (claimHold).
 //
 // The one pending task that is not that refusal is the task a provider error took back while
 // the ladder's wait stands for it and nothing works it (replaceable): a newer task takes its

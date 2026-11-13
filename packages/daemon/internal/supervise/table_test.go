@@ -146,12 +146,9 @@ func samples(t *testing.T) map[string][]Event {
 		"StreamTurnStart":      {StreamTurnStart{}},
 		"StreamTurnEnd":        {StreamTurnEnd{}},
 		"IssueTurnEnded":       {IssueTurnEnded{}},
-		"StreamPromptResult":   {StreamPromptResult{}},
 		"StreamToolStep":       {StreamToolStep{}},
 		"StreamClosed":         {StreamClosed{}},
-		"StreamLateRefusal":    {StreamLateRefusal{}},
-		"PromptAcked":          {PromptAcked{}},
-		"PromptRefused":        {PromptRefused{}},
+		"TakeAdopted":          {TakeAdopted{}},
 		"PodUpdateOpen":        {PodUpdateOpen{}},
 		"PodUpdateEnded":       {PodUpdateEnded{}},
 		"StalePlugin":          {StalePlugin{}},
@@ -174,6 +171,8 @@ func samples(t *testing.T) map[string][]Event {
 		"RequestDeliver":       {RequestDeliver{}},
 		"RequestExit":          {RequestExit{}},
 		"RequestTurnOutcome":   {RequestTurnOutcome{}},
+		"RequestTaskSeen":      {RequestTaskSeen{}},
+		"RequestTake":          {RequestTake{}},
 		"RequestCompact":       {RequestCompact{}},
 		"CompactEnded":         {CompactEnded{}},
 	}
@@ -244,12 +243,13 @@ func TestNoTwoEventTypesShareAKind(t *testing.T) {
 
 // fixture is a claim restored in state with everything an event needs to pass its fences: the
 // generation, a recorded session, a locator for the states that have a process, and a pending
-// delivery (confirmed while working, as a delivered turn leaves it).
+// delivery numbered 1 (taken with its turn running while working, as a task's turn leaves it).
 func fixture(state ClaimState) Claim {
 	c := queuedClaim()
 	c.State = state
 	c.Generation = 3
-	c.Pending = &Delivery{ID: "delivery-1", Task: "the task", QueuedAt: epoch}
+	c.Pending = &Delivery{ID: "delivery-1", Task: "the task", QueuedAt: epoch, Number: 1}
+	c.TaskWritten = 1
 	switch state {
 	case StateQueued:
 		c.Generation = 0
@@ -266,7 +266,7 @@ func fixture(state ClaimState) Claim {
 		c.Session, c.SessionFile = session, sessionFile
 	}
 	if state == StateWorking {
-		c.Pending.DeliveredAt, c.Pending.ConfirmedAt = epoch, epoch
+		c.Pending.ConfirmedAt, c.TaskTaken = epoch, 1
 	}
 	return c
 }
@@ -291,19 +291,13 @@ func fenced(ev Event, c Claim) Event {
 		return StreamTurnEnd{Claim: c.Token}
 	case IssueTurnEnded:
 		return IssueTurnEnded{Claim: c.Token}
-	case StreamPromptResult:
-		return StreamPromptResult{Claim: c.Token, DeliveryID: c.Pending.ID, AgentInvoked: true}
 	case StreamClosed:
 		return StreamClosed{Claim: c.Token}
 	case StreamToolStep:
 		return StreamToolStep{Claim: c.Token, Tool: "bash", CallID: "toolu_turn1_0",
 			ArgsBytes: len(toolArgs), ArgsHash: toolArgsHash(toolArgs)}
-	case StreamLateRefusal:
-		return StreamLateRefusal{Claim: c.Token, DeliveryID: c.Pending.ID, Error: "busy"}
-	case PromptAcked:
-		return PromptAcked{Claim: c.Token, Generation: c.Generation, DeliveryID: c.Pending.ID}
-	case PromptRefused:
-		return PromptRefused{Claim: c.Token, Generation: c.Generation, DeliveryID: c.Pending.ID, Err: errBoom}
+	case TakeAdopted:
+		return TakeAdopted{Claim: c.Token, Generation: c.Generation, Number: c.Pending.Number}
 	case Timer:
 		return Timer{Claim: c.Token, Kind: ev.Kind, Generation: c.Generation, Seq: 7777, DeliveryID: c.Pending.ID}
 	case StalePlugin:
@@ -344,6 +338,12 @@ func fenced(ev Event, c Claim) Event {
 		return RequestExit{Claim: c.Token, Generation: c.Generation, Session: session, Reason: "done"}
 	case RequestTurnOutcome:
 		return RequestTurnOutcome{Claim: c.Token, Generation: c.Generation, Sequence: 1}
+	case RequestTaskSeen:
+		return RequestTaskSeen{Claim: c.Token, Generation: c.Generation, Session: c.Session,
+			Number: c.Pending.Number, Epoch: testEpoch, Revision: 1}
+	case RequestTake:
+		return RequestTake{Claim: c.Token, Generation: c.Generation, Session: c.Session,
+			Number: c.Pending.Number, Epoch: testEpoch, Revision: 1}
 	case RequestCompact:
 		return RequestCompact{Claim: c.Token}
 	case CompactEnded:
@@ -405,8 +405,8 @@ func TestEveryNamedIgnoreChangesNothingAndRefusesARequest(t *testing.T) {
 					if calls := h.rt.Methods(); len(calls) > 0 {
 						t.Errorf("asked the runtime %v", calls)
 					}
-					if prompts := h.conn.Prompts(); len(prompts) > 0 {
-						t.Errorf("prompted the agent %+v", prompts)
+					if writes := h.values.written(); len(writes) > 0 {
+						t.Errorf("wrote the task value %+v", writes)
 					}
 					if got := len(h.store.history()); got != puts {
 						t.Errorf("wrote the claim %d times", got-puts)
@@ -457,7 +457,7 @@ func wantsRefusal(ev Event) bool {
 	switch ev.(type) {
 	case RequestSpawn, RequestRegister, RequestReady, RequestSuspend, RequestResume, RequestStop,
 		RequestRetry, RequestOperatorRetry, RequestForgetSession, RequestDeliver, RequestExit, RequestCompact,
-		RequestTurnOutcome, PodUpdateSignalled:
+		RequestTurnOutcome, RequestTaskSeen, RequestTake, PodUpdateSignalled:
 		return true
 	}
 	return false

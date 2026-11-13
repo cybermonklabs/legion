@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -225,6 +226,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 			PluginContract:     DaemonAPIVersion,
 			PluginRelaunchable: relaunchable,
 			RefreshGate:        supervise.NewRefreshGate(0),
+			TaskValues:         supervisetest.NewTaskValues(),
 			// The daemon's own wiring: a tree a workflow issue backs does not close here.
 			TreeClosable: func(ctx context.Context, c supervise.Claim) (bool, error) {
 				var issue *record.Issue
@@ -530,3 +532,48 @@ func (h *harness) openTree(t *testing.T, project, tree string) {
 		t.Fatalf("open the tree lifecycle of %s: %v", tree, err)
 	}
 }
+
+// acceptTake is the claim's worker taking the task its claim holds, as its plugin does once its host
+// is idle: the take of the pending number at the value the bucket holds, which must be accepted.
+// It answers the text the take was answered with.
+func acceptTake(t *testing.T, machine *supervise.Machine) string {
+	t.Helper()
+	c := machine.Claim()
+	if c.Pending == nil {
+		t.Fatalf("%s holds no task to take", c.Token)
+	}
+	current, err := machine.CurrentTask(context.Background())
+	if err != nil {
+		t.Fatalf("read the task value of %s: %v", c.Token, err)
+	}
+	request := supervise.RequestTake{Claim: c.Token, Generation: c.Generation, Session: c.Session, Number: c.Pending.Number}
+	if current.Value != nil {
+		request.Epoch, request.Revision = current.Value.Epoch, current.Value.Revision
+	}
+	answer, err := machine.Take(context.Background(), request)
+	if err != nil || answer.Outcome != supervise.TakeOutcomeAccepted {
+		t.Fatalf("the take of task %d on %s = %+v, %v, want it accepted", c.Pending.Number, c.Token, answer, err)
+	}
+	return answer.Text
+}
+
+// finishTurn ends the turn of the claim's taken task as its worker does: the agent_end, and behind
+// it the turn-outcome report naming the task, which is what finishes it.
+func finishTurn(t *testing.T, machine *supervise.Machine) {
+	t.Helper()
+	c := machine.Claim()
+	if err := machine.Handle(context.Background(), supervise.StreamTurnEnd{Claim: c.Token}); err != nil {
+		t.Fatalf("end the turn of %s: %v", c.Token, err)
+	}
+	if c.Pending == nil {
+		return
+	}
+	turns++
+	if err := machine.Handle(context.Background(), supervise.RequestTurnOutcome{Claim: c.Token, Generation: c.Generation,
+		Sequence: turns, Task: c.Pending.Number}); err != nil {
+		t.Fatalf("report the turn of task %d on %s: %v", c.Pending.Number, c.Token, err)
+	}
+}
+
+// turns is the sequence the workers' turn-outcome reports carry, which only rises.
+var turns uint64

@@ -51,7 +51,7 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 //     process and its capability.
 //   - A stop the runtime refuses keeps it held and tries again every probe interval (suspendHeld),
 //     so the deadline bounds the wait only while the runtime can stop the process. A claim
-//     whose turn ended stays idle meanwhile and is handed nothing (sendPending); a turn it starts
+//     whose turn ended stays idle meanwhile and a take of it is refused (claimHold); a turn it starts
 //     anyway is cut off at the next try.
 //   - A process that dies first, or is found at a stale address (repoint), leaves the claim
 //     suspended, charged nothing (endHeld). A prompt retirement meanwhile is the held stop itself

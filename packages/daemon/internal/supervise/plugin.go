@@ -524,7 +524,7 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 // staleClaim adds that the claim is in no turn, because a worker in a turn is served so that it
 // can push what that turn holds before the relaunch its end releases (holdStaleRelaunch);
 // staleRefusesClaim below adds nothing, because the one place it is asked has answered that
-// term already (sendPending). Holding the three shared terms here is what keeps the two from
+// term already (claimHold). Holding the three shared terms here is what keeps the two from
 // drifting apart: drift one way and a task is held back for a claim the API serves, which waits
 // for a relaunch nothing is making; drift the other and a task reaches a claim whose every
 // `legion` call is refused, which buys a model turn the worker can do nothing in and puts the
@@ -537,7 +537,7 @@ func StaleRefusesCalls(c Claim, daemonContract int, pluginRelaunchable bool, noP
 }
 
 // staleRefusesClaim is whether this daemon would refuse the claim's own `legion` calls because
-// its plugin is stale, and it is what holds a pending delivery back (sendPending): a task handed
+// its plugin is stale, and it is what refuses a take of a pending task (claimHold): a task handed
 // to a claim whose every `legion` call is refused buys a model turn in which the worker can read
 // the task and do nothing with it — no grant, no handoff, no phase op — and the turn puts the
 // claim in a turn, which postpones the one thing the claim is waiting for, the relaunch this
@@ -547,7 +547,7 @@ func StaleRefusesCalls(c Claim, daemonContract int, pluginRelaunchable bool, noP
 // states the rule and what each caller adds to it), rather than a second copy of it or a
 // question put to internal/api, which imports this package and not the other way round.
 // staleClaim's fourth term, that the claim is in no turn, is answered before this is asked:
-// sendPending hands nothing to a claim that is not ready or idle, so every claim that reaches
+// claimHold refuses a take of a claim that is not ready or idle first, so every claim that reaches
 // this is out of a turn, which is the claim staleClaim refuses.
 func (m *Machine) staleRefusesClaim() bool {
 	return StaleRefusesCalls(m.claim, m.deps.PluginContract, m.deps.PluginRelaunchable, m.deps.NoPluginInstall)

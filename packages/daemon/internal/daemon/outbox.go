@@ -1766,8 +1766,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// claim finishes the turn it is in; its completion of the earlier entry is refused
 			// 409 with nothing recorded, which is right, since the phase was entered again. A
 			// failed claim is in no turn at all: the state switch above relaunched it
-			// (supervise.RequestRetry), and the relaunch hands it the earlier entry's task,
-			// which it still holds unconfirmed (supervise's sendPending), so its first
+			// (supervise.RequestRetry), and the relaunch's worker takes the earlier entry's
+			// task, which it still holds untaken (supervise's Take), so its first
 			// completion is the one refused instead. Either way the admission pass sends the
 			// row's own entry's task on the first pass after that task is retired, since it
 			// passes over a claim whose pending delivery is still worked (admit's
@@ -1808,7 +1808,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			}
 			if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: payload.Task, Phase: payload.Phase, Generation: payload.Generation,
 				Entry: payload.Entry, ResendEntry: payload.ResendEntry, CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
-				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept}); err != nil {
+				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, Origin: payload.Origin}); err != nil {
 				return fmt.Errorf("deliver to claim %s: %w", token, err)
 			}
 			gave = true
@@ -1958,11 +1958,12 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 }
 
 // keepsStartTask says whether held still holds a task of this start's phase and run that it will
-// work: one not yet confirmed — a failed claim keeps the task it held, and a death in a turn takes
-// the task back unconfirmed — or one confirmed in the turn the claim is working
-// (supervise.Delivery.StillWorked). A confirmed task on a claim not working is over: the claim's
-// next decision retires it. A start naming no phase holds none, which is what a production check's
-// look is: each look's task is delivered whatever the claim holds.
+// work: one whose turn is still to come — untaken, taken back, or taken and awaiting its turn; a
+// failed claim keeps the task it held, and a death in a turn takes the task back — or one whose
+// turn the claim is working (supervise.Delivery.StillWorked). A task whose turn started on a claim
+// not working is over: its report, or the end of its turn, finishes it. A start naming no phase
+// holds none, which is what a production check's look is: each look's task is delivered whatever
+// the claim holds.
 func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool {
 	pending := held.Pending
 	return pending != nil && payload.Phase != "" && pending.StillWorked(payload.Generation, payload.Phase, held.State)

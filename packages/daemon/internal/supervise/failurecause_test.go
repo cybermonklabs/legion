@@ -1,11 +1,13 @@
 package supervise
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
@@ -153,22 +155,26 @@ func TestAFailedClaimCarriesItsCause(t *testing.T) {
 			name: "prompt retirements that run out",
 			drive: func(t *testing.T) (*harness, time.Time) {
 				h := newHarness(t)
+				h.deps.Identity = func(context.Context, claim.Role, string) (runtime.GitIdentity, error) {
+					return runtime.GitIdentity{Name: "legion-implementer[bot]"}, nil
+				}
+				h.start(h.store.load(h.token))
+				h.rt.FailAdoptWorkingCopy(adoptRefusal(staleLockRefusal))
 				h.reach(StateReady)
-				h.must(RequestDeliver{Claim: h.token, Task: "the task"})
-				// Two prompts the agent acknowledges and starts no turn on, then the third,
-				// which retires the process and relaunches the same session.
+				// The worker's take, whose adoption the shim refuses, and the two takes the sweep
+				// offers after it: the third charge retires the process and relaunches the same
+				// session.
+				h.must(RequestDeliver{Claim: h.token, Task: "the task", Phase: phase.Implementing, Generation: 7})
 				for range testLimits().PromptFailures - 1 {
-					h.advance(testRPC)
 					h.observe(runtime.Alive)
 				}
-				h.advance(testRPC)
+				// The relaunched worker takes at its ready, and is refused again.
 				h.relaunched()
-				for range testLimits().PromptFailures - 1 {
-					h.advance(testRPC)
+				for range testLimits().PromptFailures - 2 {
 					h.observe(runtime.Alive)
 				}
 				at := h.clock.Now()
-				h.advance(testRPC)
+				h.observe(runtime.Alive)
 				return h, at
 			},
 			cause:   CausePromptRetiresExhausted,
@@ -179,7 +185,7 @@ func TestAFailedClaimCarriesItsCause(t *testing.T) {
 			drive: func(t *testing.T) (*harness, time.Time) {
 				h := workingClaim(t)
 				at := h.clock.Now()
-				h.errorTurn(StreamPromptResult{Error: "invalid_request_error", HTTPStatus: 400})
+				h.errorTurn(ProviderError{Message: "invalid_request_error", Status: 400})
 				return h, at
 			},
 			cause:   CauseProviderError,

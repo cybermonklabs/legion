@@ -13,10 +13,10 @@ import (
 // that carries none.
 const testCompactInstructions = "Write the summary as text."
 
-// ladderStuck is the claim the provider-errors notice names, idle between the ladder's sends:
+// ladderStuck is the claim the provider-errors notice names, idle between the ladder's takes:
 // six turns of it in a row ended in a provider error, so the project's controller has been told
-// once, the task it owes is unconfirmed on the claim, and the ladder's next step is ten minutes
-// away. ladderSends is how many prompts the connection has seen by then. set, when it is given,
+// once, the task it owes is taken back on the claim, and the ladder's next step is ten minutes
+// away. ladderSends is how many takes the worker has had accepted by then. set, when it is given,
 // changes the dependencies before the machine is built, as workingClaim's own does.
 const ladderSends = providerErrorRunTold
 
@@ -26,7 +26,7 @@ func ladderStuck(t *testing.T, notices *int, set ...func(*Deps)) *harness {
 		d.ProviderErrorRunReached = func(Claim, string) { *notices++ }
 	}}, set...)...)
 	for turn := range providerErrorRunTold {
-		h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+		h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
 		if turn+1 < providerErrorRunTold {
 			h.climbs(turn+1, promptRetryDelay(turn+1))
 		}
@@ -61,6 +61,7 @@ func TestACompactionStartsTheRunOfProviderErrorsAgainSoTheControllerIsToldASecon
 		t.Fatalf("compact: %v", err)
 	}
 	h.m.Wait()
+	h.workerAsks()
 
 	if got := h.claim().ProviderErrorRun; got != 0 {
 		t.Fatalf("the run of provider errors is %d after the compaction, want 0", got)
@@ -78,7 +79,7 @@ func TestACompactionStartsTheRunOfProviderErrorsAgainSoTheControllerIsToldASecon
 	h.must(StreamTurnStart{Claim: h.token})
 
 	for turn := range providerErrorRunTold {
-		h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+		h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
 		if turn+1 < providerErrorRunTold {
 			h.climbs(sent+1+turn, promptRetryMax)
 		}
@@ -104,6 +105,7 @@ func TestACompactionThatWasRefusedKeepsTheRunOfProviderErrors(t *testing.T) {
 		t.Fatalf("compact answered %v, want Oh My Pi's own refusal", err)
 	}
 	h.m.Wait()
+	h.workerAsks()
 	if got := h.claim().ProviderErrorRun; got != providerErrorRunTold {
 		t.Errorf("the run of provider errors is %d, want the %d it carried: nothing was compacted", got, providerErrorRunTold)
 	}
@@ -148,6 +150,7 @@ func TestAClaimBeingCompactedIsBusyUntilTheCompactionEnds(t *testing.T) {
 		t.Fatalf("compact: %v", err)
 	}
 	h.m.Wait()
+	h.workerAsks()
 	if got := h.state(); got != StateIdle {
 		t.Fatalf("the claim is %s after the compaction, want idle", got)
 	}
@@ -194,6 +197,7 @@ func TestATurnThatEndsDuringACompactionLeavesTheClaimWorking(t *testing.T) {
 		t.Fatalf("compact: %v", err)
 	}
 	h.m.Wait()
+	h.workerAsks()
 	h.wantPrompts(sent + 1)
 }
 
@@ -217,45 +221,48 @@ func TestACompactionWithNoInstructionsIsRefusedBeforeAnythingIsSent(t *testing.T
 	}
 }
 
-// The ladder has just sent the owed task and the prompt is in flight — acknowledged, with the
-// wait for its turn armed — when the compaction is taken. Oh My Pi runs one thing at a time, so
-// the compaction aborts the turn that prompt started, and the result of an aborted turn carries
-// no error of its own: read as a turn that worked, it would confirm the task and the end of the
-// compaction would retire it unsent. The task is taken back instead, and the end of the
-// compaction sends it again.
-func TestACompactionTakenWhileTheOwedPromptIsInFlightSendsTheTaskAgainAfterIt(t *testing.T) {
+// The ladder has just written the owed task's value again and the worker's take of it is
+// accepted, its turn still to come, when the compaction is taken. Oh My Pi runs one thing at a
+// time, so the compaction aborts the turn that take was about to start: left taken, the task would
+// wait on a turn its worker never runs. The task is taken back under its number instead, and the
+// end of the compaction writes its value again, which the worker takes.
+func TestTakeBackByACompactionKeepsTheNumberAndTheTaskIsTakenAgainAfterIt(t *testing.T) {
 	notices := 0
 	h := ladderStuck(t, &notices)
-	h.advance(promptRetryMax) // the ladder's next step sends the owed task
-	sent := h.wantPrompts(ladderSends + 1)[ladderSends].DeliveryID
+	h.advance(promptRetryMax) // the ladder's next step writes the owed task's value again
+	sent := h.wantPrompts(ladderSends + 1)[ladderSends]
 	if got := h.state(); got != StateIdle {
-		t.Fatalf("after the ladder's send the claim is %s, want it idle waiting for the turn", got)
+		t.Fatalf("after the ladder's take the claim is %s, want it idle waiting for the turn", got)
 	}
 	release := h.conn.HoldCompact()
 	compacted := make(chan error, 1)
 	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
 	waitForCompacting(t, h)
+	if p := h.claim().Pending; p == nil || p.taken() {
+		t.Fatalf("pending %+v under the compaction, want the task taken back", p)
+	}
 
 	h.must(StreamTurnStart{Claim: h.token})
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
-	h.must(StreamPromptResult{Claim: h.token, DeliveryID: sent, AgentInvoked: true})
 
 	release()
 	if err := <-compacted; err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 	h.m.Wait()
+	h.workerAsks()
 	owed := h.claim().Pending
 	if owed == nil {
-		t.Fatal("the compaction retired the task whose turn it aborted: the claim owes nothing, and nothing sends it again")
+		t.Fatal("the compaction retired the task whose turn it aborted: the claim owes nothing, and nothing gives it again")
 	}
-	if owed.ID == sent {
-		t.Fatalf("the task kept the id %q its aborted prompt carried; a task taken back goes under a new one, so that prompt's result names nothing", sent)
+	if owed.ID != sent.DeliveryID || owed.Number != sent.Number {
+		t.Fatalf("the owed task is %s, number %d; want the task the take was of, %s, number %d: a take-back keeps its number",
+			owed.ID, owed.Number, sent.DeliveryID, sent.Number)
 	}
 	prompts := h.wantPrompts(ladderSends + 2)
-	if prompts[ladderSends+1].DeliveryID != owed.ID {
-		t.Fatalf("the send after the compaction carried %q, want the task the claim still owes, %q",
-			prompts[ladderSends+1].DeliveryID, owed.ID)
+	if prompts[ladderSends+1].Number != owed.Number {
+		t.Fatalf("the take after the compaction was of task %d, want the task the claim still owes, %d",
+			prompts[ladderSends+1].Number, owed.Number)
 	}
 }
 
@@ -932,8 +939,8 @@ func TestARestartWhileASessionIsBeingCompactedSendsNothingWhileItsAgentIsInATurn
 
 	h.wantState(StateWorking)
 	h.wantPrompts(ladderSends)
-	if got := h.pending(); got.ID != owed || !got.ConfirmedAt.IsZero() {
-		t.Fatalf("the claim holds %+v, want the task %s still owed and unconfirmed", got, owed)
+	if got := h.pending(); got.ID != owed || got.taken() {
+		t.Fatalf("the claim holds %+v, want the task %s still owed and untaken", got, owed)
 	}
 
 	// Oh My Pi is done and the turn the agent reported ends.
@@ -942,7 +949,7 @@ func TestARestartWhileASessionIsBeingCompactedSendsNothingWhileItsAgentIsInATurn
 	h.wantState(StateIdle)
 	prompts := h.wantPrompts(ladderSends + 1)
 	if prompts[ladderSends].DeliveryID != owed {
-		t.Fatalf("the send after that turn carried %q, want the task the claim owed, %q", prompts[ladderSends].DeliveryID, owed)
+		t.Fatalf("the take after that turn carried %q, want the task the claim owed, %q", prompts[ladderSends].DeliveryID, owed)
 	}
 }
 
@@ -955,9 +962,8 @@ func TestARestartWhileASessionIsBeingCompactedSendsNothingWhileItsAgentIsInATurn
 // frame tells the new daemon a compaction is in flight (restartedMidCompaction), so the agent's
 // own answer is the whole of what it has to go on, and a daemon that distrusted that answer
 // would hold the claim working with nothing left to end it — the stuck worker this issue is
-// about. What the recovery must not do is lose the task, and it does not: the task stays
-// pending and unconfirmed under the id it was sent as, so a prompt a compaction swallows starts
-// no turn and the sweep that follows sends it again (observe).
+// about. What the recovery must not do is lose the task, and it does not: the task is taken
+// under the id and the number it was owed as, and its turn is the take's whenever it starts.
 func TestARestartWhileASessionIsBeingCompactedSendsTheOwedTaskWhenItsAgentSaysNoTurnIsRunning(t *testing.T) {
 	h := restartedMidCompaction(t)
 	owed := h.pending().ID
@@ -968,9 +974,9 @@ func TestARestartWhileASessionIsBeingCompactedSendsTheOwedTaskWhenItsAgentSaysNo
 	h.wantState(StateIdle)
 	prompts := h.wantPrompts(ladderSends + 1)
 	if prompts[ladderSends].DeliveryID != owed {
-		t.Fatalf("the send after the restart's question carried %q, want the task the claim owed, %q", prompts[ladderSends].DeliveryID, owed)
+		t.Fatalf("the take after the restart's question carried %q, want the task the claim owed, %q", prompts[ladderSends].DeliveryID, owed)
 	}
-	if got := h.pending(); got.ID != owed || !got.ConfirmedAt.IsZero() {
-		t.Fatalf("the claim holds %+v, want the task %s kept unconfirmed: a prompt the compaction swallows starts no turn, and the sweep sends it again", got, owed)
+	if got := h.pending(); got.ID != owed || !got.awaitsTurn() {
+		t.Fatalf("the claim holds %+v, want the task %s taken and its turn still to come", got, owed)
 	}
 }

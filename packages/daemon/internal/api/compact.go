@@ -22,14 +22,14 @@ import (
 // sent it the task it owes again, or nothing when it owes none (supervise's compactEnded). So
 // this answer always carries the claim back, whatever it says of the compaction, and the CLI
 // prints both halves of it in one line (cmd/legion's printCompaction). What it promises of the
-// owed task is that nothing of the daemon's is left holding it: either the send ran, or the
-// claim came back into something whose own end sends it, and none of those ends leaves the
-// worker stopped. There are two shapes of that. A turn Oh My Pi started under the compaction
-// leaves the claim working for it and the end sends nothing at all: that turn's end gives the
-// claim back and sends the task (supervise's compactEnded, turnEnded). Where the end does
-// reach the send, the send itself can hold the task back — the paced turn of a launch parked
-// over the process, an open update round the worker has answered — and each of those ends of
-// the daemon's own accord with the task sent (supervise's sendPending).
+// owed task is that nothing of the daemon's is left holding it: either its value was written
+// again, or the claim came back into something whose own end writes it, and none of those ends
+// leaves the worker stopped. There are two shapes of that. A turn Oh My Pi started under the
+// compaction leaves the claim working for it and the end writes nothing at all: that turn's end
+// gives the claim back and writes the task's value (supervise's compactEnded, turnEnded). Where
+// the end does reach the write, a hold can still refuse the take — the paced turn of a launch
+// parked over the process, an open update round the worker has answered — and each of those ends
+// of the daemon's own accord with the value written again (supervise's offerPending).
 //
 // Every other outcome is a failure status and gives the claim back nothing here: a refusal made
 // before anything was asked — a claim in no state to be compacted, a Claude Code claim, a role

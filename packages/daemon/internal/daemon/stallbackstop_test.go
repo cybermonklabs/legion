@@ -164,7 +164,7 @@ func (r *backstopRig) claim(role claim.Role, issue string, silent time.Duration,
 		State: supervise.StateWorking, Session: "ses_" + string(role), SessionFile: "/sessions/" + string(role) + ".jsonl",
 		PluginContract: api.DaemonAPIVersion, Locator: pluginTestLocator(token),
 		Pending: &supervise.Delivery{ID: "delivery-" + string(role), Task: "work the phase",
-			QueuedAt: at.Add(-time.Hour), DeliveredAt: at.Add(-time.Hour), ConfirmedAt: at.Add(-time.Hour)},
+			QueuedAt: at.Add(-time.Hour), ConfirmedAt: at.Add(-time.Hour)},
 		Step: supervise.StepRecord{TurnStartedAt: at},
 	}
 	if call {

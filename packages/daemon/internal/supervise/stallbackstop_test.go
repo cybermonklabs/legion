@@ -72,13 +72,14 @@ func (h *harness) workingOnATask(task string) string {
 
 // A claim in a turn whose recorded last step is older than its role's bound has that turn ended
 // by the daemon: the process is replaced, the session is resumed on the new one, and the task it
-// was serving is still owed to it — taken back unconfirmed and marked interrupted, kept in the
-// store, and sent again under a new id once the replacement is ready. Nothing is charged: no
-// launch failure, and no death with work outstanding, which is what would fail the claim at the
-// launch budget if a stall repeated.
+// was serving is still owed to it — taken back under its number and marked interrupted, kept in
+// the store, and taken again once the replacement is ready. Nothing is charged: no launch failure,
+// and no death with work outstanding, which is what would fail the claim at the launch budget if a
+// stall repeated.
 func TestTheBackstopEndsAStalledTurnAndLeavesTheTaskOwed(t *testing.T) {
 	h := newHarness(t)
 	sent := h.workingOnATask("implement the plan")
+	number := h.pending().Number
 	h.advance(time.Minute)
 	h.stepped("bash", "toolu_turn1_0", toolArgs, false)
 	last := h.clock.Now()
@@ -88,8 +89,8 @@ func TestTheBackstopEndsAStalledTurnAndLeavesTheTaskOwed(t *testing.T) {
 
 	h.wantState(StateLaunching)
 	h.wantBudgets(Budgets{})
-	if p := h.pending(); !p.Interrupted || p.ID == sent || !p.ConfirmedAt.IsZero() {
-		t.Fatalf("pending after the backstop = %+v, want the task taken back, unconfirmed and interrupted", p)
+	if p := h.pending(); !p.Interrupted || p.ID != sent || p.Number != number || p.taken() {
+		t.Fatalf("pending after the backstop = %+v, want task %d taken back and interrupted", p, number)
 	}
 	stored := h.store.load(h.token)
 	if stored.Pending == nil || stored.ServingGeneration != 0 {
@@ -100,8 +101,8 @@ func TestTheBackstopEndsAStalledTurnAndLeavesTheTaskOwed(t *testing.T) {
 	}
 
 	h.relaunched()
-	if resent := h.wantPrompts(2)[1]; resent.DeliveryID == sent {
-		t.Fatalf("re-sent %+v under the id the stalled turn ran under", resent)
+	if again := h.wantPrompts(2)[1]; again.Number != number {
+		t.Fatalf("took %+v after the relaunch, want task %d again", again, number)
 	}
 	if h.store.load(h.token).Session != session {
 		t.Fatalf("session after the backstop = %q, want the same session brought back", h.store.load(h.token).Session)
@@ -507,8 +508,8 @@ func TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce(t *testing.T)
 	working := stalePluginClaim(wakeClaim(secondToken, StateWorking), h.deps.PluginContract)
 	working.State = StateWorking
 	working.Step = StepRecord{At: stepped, TurnStartedAt: stepped, Tool: "bash", CallID: "toolu_turn1_0", StartedAt: stepped}
-	working.Pending = &Delivery{ID: "outbox:7", Task: "implement the plan", QueuedAt: stepped,
-		DeliveredAt: stepped, ConfirmedAt: stepped}
+	working.TaskWritten, working.TaskTaken = 1, 1
+	working.Pending = &Delivery{ID: "outbox:7", Number: 1, Task: "implement the plan", QueuedAt: stepped, ConfirmedAt: stepped}
 	stalled := h.machineFor(working)
 
 	// The harness's own claim takes the limiter's one token, so the backstop's own relaunch
@@ -525,7 +526,7 @@ func TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce(t *testing.T)
 	if c := stalled.Claim(); c.State != StateWorking || c.Locator == nil {
 		t.Fatalf("the claim is %s with locator %+v, want it left in its turn until the wake's turn comes", c.State, c.Locator)
 	}
-	if c := stalled.Claim(); c.Pending == nil || !c.Pending.Interrupted || !c.Pending.ConfirmedAt.IsZero() {
+	if c := stalled.Claim(); c.Pending == nil || !c.Pending.Interrupted || c.Pending.taken() || c.Pending.Number != 1 {
 		t.Fatalf("the claim's task after the park = %+v, want it taken back and owed: this is what the owner is told of", c.Pending)
 	}
 	h.wantStarts(secondToken, 0)
