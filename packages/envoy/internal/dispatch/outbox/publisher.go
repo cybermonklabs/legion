@@ -896,10 +896,12 @@ type graphWrite struct {
 	claims []graphstore.Claim
 }
 
-// resolvedRole is a role of a batch as its resolution left it: the lowest event id that routed
-// to it, which is the cause the store records; the session holding it, empty for a role read
-// unclaimed or whose holder is gone; and whether the resolution reached the claim at all. A
-// claim that could not be read states nothing, and the role keeps the holder the store holds.
+// resolvedRole is a role of a batch as its resolution left it: the event that first routed to it
+// in the order the batch reads its events, or, for a role no destination of the batch names, the
+// event that first named it in its payload (addressedRoles), which is the cause the store records;
+// the session holding it, empty for a role read unclaimed or whose holder is gone; and whether the
+// resolution reached the claim at all, which a role only a payload names never does. A claim that
+// could not be read states nothing, and the role keeps the holder the store holds.
 type resolvedRole struct {
 	event    int64
 	holder   string
@@ -954,7 +956,14 @@ type resolvedRole struct {
 //
 // The roles and their pages are written whatever a row says of their holders, because their own
 // row side is there: `comment_deliveries.target`, `messages.target` and `issues.route` each hold
-// the role a delivery was routed by (graphcensus's addressedRoles).
+// the role something was addressed to now, and the event log holds every role an event ever
+// addressed (graphcensus's addressedRoles). A node is history and never goes, so each event's
+// own roles are written beside the routes the batch resolved (addressedRoles): the route an
+// issue event records, which an agent's write wakes nobody for and a re-route read in the same
+// batch would leave unrouted, the target of a targeted message, which no route reaches, and the
+// role a comment's mention names on an issue routed elsewhere. Nothing read such a role's claim,
+// so it is written with its page and the page's part_of and no held_by; a role a destination of
+// the batch resolved keeps that resolution.
 func deliveredGraph(events []*batchEvent, inARole map[string]struct{}, at time.Time) graphWrite {
 	roles := map[string]resolvedRole{}
 	var roleOrder []string
@@ -1000,6 +1009,17 @@ func deliveredGraph(events []*batchEvent, inARole map[string]struct{}, at time.T
 			recordSession(session, cause)
 			write.tuples = append(write.tuples,
 				deliveredTo(commentNodeKind, comment, graphstore.KindSession, session, at, cause))
+		}
+	}
+	// After every destination, so that a role a destination resolved keeps its resolution and a
+	// role only an event's payload names is written unresolved.
+	for _, event := range events {
+		for _, role := range addressedRoles(event.event) {
+			if _, held := roles[role]; held {
+				continue
+			}
+			roles[role] = resolvedRole{event: event.event.ID}
+			roleOrder = append(roleOrder, role)
 		}
 	}
 	held := map[string]struct{}{}
@@ -1062,6 +1082,34 @@ func resolvedHolder(forward *roleForward) (string, bool) {
 		return "", false
 	}
 	return forward.holder, true
+}
+
+// addressedRoles are the roles an event addresses by its payload, whether or not the batch routes
+// it to them: the route an issue event records the issue under (model.IssueEventPayload), the
+// target of a message event (model.MessageEventPayload), and the target of each mention a new
+// comment names (model.CommentEventPayload). graphcensus's addressedRoles reads the same fields
+// of the same events as a role's row side, so the census holds a role to a node exactly where
+// this writes one.
+func addressedRoles(event model.Event) []string {
+	var roles []string
+	add := func(target string) {
+		if role, found := strings.CutPrefix(target, "role:"); found && role != "" {
+			roles = append(roles, role)
+		}
+	}
+	switch event.Type {
+	case "issue.created", "issue.updated", "issue.closed":
+		add(payloadString(event.Payload, "route"))
+	case "message.created", "message.answered":
+		add(payloadString(event.Payload, "target"))
+	case "comment.created":
+		values, _ := event.Payload.(map[string]any)
+		mentions, _ := values["mentions"].([]any)
+		for _, mention := range mentions {
+			add(payloadString(mention, "target"))
+		}
+	}
+	return roles
 }
 
 // deliveredTo is one delivery: the thing delivered, pointing at the session or the role it

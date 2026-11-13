@@ -28,7 +28,8 @@ const reportedDifferences = 20
 // directions, so a row with no node and a node with no row are each a difference.
 //
 // A kind with no projection table takes the set of actors the projected tables name as its rows
-// (people and agents below), which is the side that exists for it.
+// (people and agents below), which is the side that exists for it; a role takes the roles the
+// event log ever named as well (addressedRoles).
 type projection struct {
 	// name is the kind as graph_store_cutover and the report name it, nodeKind the kind of
 	// graph_nodes row it projects and table the relation its rows come from, for the report.
@@ -41,6 +42,9 @@ type projection struct {
 	rows string
 	// nodes is the live nodes of the kind. It names no state: liveNodes wraps it.
 	nodes string
+	// addressed says rows reads the roles addressedRoles names as $1, which the census reads once
+	// for the run (readAddressedRoles) rather than once in every statement that reads the rows.
+	addressed bool
 }
 
 // KindReport is one kind's census: how many rows and how many live nodes it read, and what the
@@ -209,23 +213,26 @@ var projections = []projection{{
 }, {
 	name:     graphstore.KindRole,
 	nodeKind: graphstore.KindRole,
-	table:    "comment_deliveries.target, messages.target, issues.route",
-	note:     "no table projects a role, so the row side is the roles those tables address",
+	table:    "comment_deliveries.target, messages.target, issues.route, events.payload",
+	note: "no table projects a role, so the row side is the roles those tables address now and every role" +
+		" an issue event's route, a message event's target or a new comment's mention ever named",
 	rows: `
 		select 'role ' || r.name, '` + graphstore.KindRole + `', r.name, ''
-		from (` + addressedRoles + `) r`,
+		from unnest($1::text[]) r (name)`,
+	addressed: true,
 	nodes: `
 		select n.id, '' from graph_nodes n where n.kind = '` + graphstore.KindRole + `'`,
 }, {
 	name:     graphstore.KindPage,
 	nodeKind: graphstore.KindPage,
-	table:    "comment_deliveries.target, messages.target, issues.route",
-	note: "a role's page, whose id is its role's: the row side is the pages of the roles those tables address," +
-		" and a session's own page is no part of this census",
+	table:    "comment_deliveries.target, messages.target, issues.route, events.payload",
+	note: "a role's page, whose id is its role's: the row side is the pages of the roles those tables address" +
+		" now and the event log ever named, and a session's own page is no part of this census",
 	rows: `
 		select 'page ' || '` + graphstore.KindRole + `/' || r.name, '` + graphstore.KindPage + `',
 		       '` + graphstore.KindRole + `/' || r.name, ''
-		from (` + addressedRoles + `) r`,
+		from unnest($1::text[]) r (name)`,
+	addressed: true,
 	nodes: `
 		select n.id, '' from graph_nodes n
 		where n.kind = '` + graphstore.KindPage + `' and n.id like '` + graphstore.KindRole + `/%'`,
@@ -320,19 +327,73 @@ const recordedSessions = `
 	) sessions
 	where id is not null and id <> ''`
 
-// addressedRoles are the roles the records a delivery is routed by name: a comment mention's
-// target, a message's target and an issue's route. The publisher makes a role's node when a
-// batch resolves a destination that names it, and those are the three places a destination can
-// name one.
+// addressedRoles are the roles a row of the store addresses now or an event of the log has ever
+// addressed (R19), each once, with the first event that named it, null for a role only a row
+// names. The rows are a comment mention's target, a message's target and an issue's route as they
+// stand now. The events are the route every issue event recorded the issue under, the target
+// every message event recorded, and the target of each mention a new comment's event named. A
+// node is history and never goes, so an issue routed to one role and then re-routed to another
+// still owes the first its node and its page: issues.route names only the second, and the
+// issue's own events name both.
+//
+// It is one definition read by two: the census's role and page row side (readAddressedRoles)
+// and the backfill's role pass (backfillRoles), so the roles the backfill gives a node are
+// exactly the roles the census holds to one. The publisher writes a role's node and its page from
+// those same fields of those same events (outbox.addressedRoles), whether or not it routed
+// anything to the role. Every role a row names now was named by the event its write appended, so
+// the two sides agree once the outbox has read the log; a role named by an event the outbox has
+// not read yet is a row with no node until it does.
+//
+// It reads every event of six types, which no index narrows, so a census reads it once and binds
+// the names into every statement that reads the role and page rows.
 const addressedRoles = `
-	select distinct name from (
-		select substring(d.target from 6) as name from comment_deliveries d where d.target like 'role:%'
-		union
-		select substring(m.target from 6) from messages m where m.target like 'role:%'
-		union
-		select substring(i.route from 6) from issues i where i.route like 'role:%'
+	select name, min(event) as event from (
+		select substring(d.target from 6) as name, null::bigint as event
+		from comment_deliveries d where d.target like 'role:%'
+		union all
+		select substring(m.target from 6), null from messages m where m.target like 'role:%'
+		union all
+		select substring(i.route from 6), null from issues i where i.route like 'role:%'
+		union all
+		select substring(addressed.target from 6), e.id
+		from events e
+		cross join lateral (
+			select e.payload->>'route' where e.type in ('issue.created', 'issue.updated', 'issue.closed')
+			union all
+			select e.payload->>'target' where e.type in ('message.created', 'message.answered')
+			union all
+			select mention->>'target'
+			from jsonb_array_elements(case when e.type = 'comment.created'
+			                                and jsonb_typeof(e.payload->'mentions') = 'array'
+			                               then e.payload->'mentions' end) mention
+		) addressed (target)
+		where e.type in ('issue.created', 'issue.updated', 'issue.closed',
+		                 'message.created', 'message.answered', 'comment.created')
+		  and addressed.target like 'role:%'
 	) roles
-	where name <> ''`
+	where name <> ''
+	group by name`
+
+// readAddressedRoles reads the role row side once for a run of the census: the name of every
+// role addressedRoles names, in one statement, so the event log is scanned once however many
+// statements then read the role and page rows. It runs inside the census's snapshot, so every
+// statement after it reads the names that snapshot holds.
+func readAddressedRoles(ctx context.Context, tx pgx.Tx) ([]string, error) {
+	rows, err := tx.Query(ctx, `select addressed.name from (`+addressedRoles+`) addressed`)
+	if err != nil {
+		return nil, fmt.Errorf("read the roles the store addresses: %w", err)
+	}
+	defer rows.Close()
+	names := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("read a role the store addresses: %w", err)
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
 
 // StoreCensus reads the node and tuple store against the tables that project it, in one
 // read-only repeatable-read transaction on a connection of its own. It writes nothing: the
@@ -370,8 +431,19 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 	}
 	defer tx.Rollback(ctx)
 	report := &StoreReport{}
+	// The roles are read before the first kind that binds them and kept for every kind after it.
+	var addressed []string
 	for _, held := range projections {
-		kind, err := censusOfKind(ctx, tx, held)
+		var args []any
+		if held.addressed {
+			if addressed == nil {
+				if addressed, err = readAddressedRoles(ctx, tx); err != nil {
+					return nil, err
+				}
+			}
+			args = []any{addressed}
+		}
+		kind, err := censusOfKind(ctx, tx, held, args)
 		if err != nil {
 			return nil, err
 		}
@@ -398,30 +470,31 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 }
 
 // censusOfKind reads one kind: how many rows and live nodes there are, and the differences in
-// each direction with the first reportedDifferences of them.
+// each direction with the first reportedDifferences of them. args are what the kind's rows bind,
+// none but for a kind that reads the addressed roles.
 //
 // The four counts are four scalar subqueries of one statement rather than four round trips, so
 // a census of seven kinds costs seven reads here and not twenty-eight. Each subquery is the
 // statement it was on its own, so each is planned and streamed exactly as before.
-func censusOfKind(ctx context.Context, tx pgx.Tx, held projection) (KindReport, error) {
+func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (KindReport, error) {
 	kind := KindReport{Kind: held.name, NodeKind: held.nodeKind, Table: held.table, Note: held.note}
 	if err := tx.QueryRow(ctx, `select
 		(select count(*) from (`+held.rows+`) rows (row_label, node_kind, node_address, digest)),
 		(select count(*) from (`+liveNodes(held)+`) nodes (id, digest)),
 		(select count(*) from (`+rowDifferences(held)+`) rows_found),
-		(select count(*) from (`+nodeDifferences(held)+`) nodes_found)`,
+		(select count(*) from (`+nodeDifferences(held)+`) nodes_found)`, args...,
 	).Scan(&kind.Rows, &kind.Nodes, &kind.RowDifferences, &kind.NodeDifferences); err != nil {
 		return KindReport{}, fmt.Errorf("census of %s: %w", held.name, err)
 	}
 	var err error
 	if kind.RowDifferences > 0 {
-		kind.ReportedRows, err = readDifferences(ctx, tx, held.name, rowDifferences(held))
+		kind.ReportedRows, err = readDifferences(ctx, tx, held.name, rowDifferences(held), args)
 		if err != nil {
 			return KindReport{}, err
 		}
 	}
 	if kind.NodeDifferences > 0 {
-		kind.ReportedNodes, err = readDifferences(ctx, tx, held.name, nodeDifferences(held))
+		kind.ReportedNodes, err = readDifferences(ctx, tx, held.name, nodeDifferences(held), args)
 		if err != nil {
 			return KindReport{}, err
 		}
@@ -474,8 +547,8 @@ func nodeDifferences(held projection) string {
 		order by 2`
 }
 
-func readDifferences(ctx context.Context, tx pgx.Tx, kind, sql string) ([]Difference, error) {
-	rows, err := tx.Query(ctx, sql+` limit `+strconv.Itoa(reportedDifferences))
+func readDifferences(ctx context.Context, tx pgx.Tx, kind, sql string, args []any) ([]Difference, error) {
+	rows, err := tx.Query(ctx, sql+` limit `+strconv.Itoa(reportedDifferences), args...)
 	if err != nil {
 		return nil, fmt.Errorf("read the differences of %s: %w", kind, err)
 	}
