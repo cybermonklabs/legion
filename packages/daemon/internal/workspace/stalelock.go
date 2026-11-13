@@ -16,9 +16,14 @@ import (
 // its lock, and every later write of that file fails on it until someone deletes it. It walks the
 // clone's git directory, apart from its worktrees subtree, and then each worktree entry under
 // .git/worktrees whose gitdir names workspace.Dir, in the order gitWorktreeEntries lists them;
-// another workspace's entry keeps its locks. A directory that does not exist holds no locks and is
-// no error. A .git or .git/worktrees that is a symlink is refused before anything is answered, as
-// gitWorktreeEntries refuses it.
+// another workspace's entry keeps its locks, and one whose gitdir cannot be read is passed over.
+// A directory that does not exist holds no locks and is no error. A .git or .git/worktrees that
+// is a symlink is refused before anything is answered, as gitWorktreeEntries refuses it.
+//
+// The one entry it cannot read and still answers for is the workspace's own, the one its .git
+// names: unswept names that entry and the cause, and the locks answered are the rest of the
+// clone's, the git directory's among them, since one unreadable file of the entry is no reason
+// to leave every other lock of the clone where it is. A caller reports unswept and goes on.
 //
 // The walk is answered only once the layout guard has held the workspace and its clone to the
 // directories Location names (guardWorkspace, refuseSymlinkedLayout), and this is the only way to
@@ -47,27 +52,26 @@ import (
 // holds it open and it is older than a guard, and fails the container for nothing. A lock some
 // process still holds must never be removed: two writers would then replace one file, so a
 // caller that cannot rule a holder out must rule it out per lock.
-func GitLocksOf(workspace Workspace) ([]string, error) {
+func GitLocksOf(workspace Workspace) (locks []string, unswept error, err error) {
 	if _, err := guardWorkspace(workspace.Dir, workspace.Clone, false); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	own, err := gitWorktreeEntries(workspace.Clone, workspace.Dir)
+	own, unswept, err := gitWorktreeEntries(workspace.Clone, workspace.Dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	gitDir := filepath.Join(workspace.Clone, ".git")
 	skip := filepath.Join(gitDir, "worktrees")
-	var locks []string
 	for _, dir := range append([]string{gitDir}, own...) {
 		err := walkLocks(dir, skip, func(path string, _ fs.DirEntry) error {
 			locks = append(locks, path)
 			return nil
 		})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return locks, nil
+	return locks, unswept, nil
 }
 
 // RemoveStaleGitLocks removes every git lock file in workspace's clone that git or jj could take
@@ -75,7 +79,9 @@ func GitLocksOf(workspace Workspace) ([]string, error) {
 // anything is removed): the ones under the clone's git directory, apart from its worktree
 // entries, and the ones under the clone's worktree entries for workspace, another workspace's
 // entry keeping its locks. Each removal is logged with the lock's path and age, and a lock it
-// cannot remove is an error naming it, which fails the provisioning.
+// cannot remove is an error naming it, which fails the provisioning. The workspace's own entry,
+// when its gitdir cannot be read, is a line naming it and the cause after the removals, and fails
+// nothing: the clone's other locks are gone, and the entry's are left where they are.
 //
 // A lock some process still holds must never be removed: two writers would then replace one file.
 // This caller removes each lock unasked because no process of the issue can hold one yet: it is a
@@ -87,7 +93,7 @@ func GitLocksOf(workspace Workspace) ([]string, error) {
 // are flock(2) locks the kernel releases with their holder, so a lock file one leaves blocks no
 // jj.
 func RemoveStaleGitLocks(workspace Workspace, now time.Time, log func(string)) error {
-	locks, err := GitLocksOf(workspace)
+	locks, unswept, err := GitLocksOf(workspace)
 	if err != nil {
 		return err
 	}
@@ -96,6 +102,9 @@ func RemoveStaleGitLocks(workspace Workspace, now time.Time, log func(string)) e
 		if err := removeStaleLock(path, now, log, why); err != nil {
 			return err
 		}
+	}
+	if unswept != nil {
+		log(fmt.Sprintf("left the git locks of the workspace %s's own git worktree entry where they are: %v", workspace.Dir, unswept))
 	}
 	return nil
 }

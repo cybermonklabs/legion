@@ -2956,11 +2956,15 @@ architect, planner, implementer, tester, reviewer, merger):
    the container's restart policy is `Always` and its disk outlives it, so a launcher that read those files after a restart would read what the last container's roles left there, and would send its first pass, which removes at any age, wherever they point.
    A workspace that layout does not account for is a line naming that workspace and, where the layout can say it, the directory `Location` would have put it in — no clone was derived, so the line names none.
    A layout directory below the state directory that is a symlink — the workspace, the clone, or a directory above either up to the state directory — is a line naming that directory (`refuseSymlinkedLayout`).
-   A derived clone with no git directory is a line naming the `.git` that is missing and the error of reading it, and a derived git directory holding no git worktree entry for the workspace is a line naming that git directory and the workspace it serves no worktree of.
-   Each of the four is no sweep at all.
+   A derived clone with no git directory is a line naming the missing `.git` and the read's error.
+   A workspace whose own worktree entry (the one its `.git` names) has a `gitdir` the sweep cannot read is a line naming the entry and the cause: a fifo, a symlink, larger than 4096 bytes, a directory, or the error.
+   A derived git directory with no other entry for the workspace is a line naming it and the workspace.
+   Each of the five is no sweep at all.
    What the derivation settles is the text of a path, which no role can write; the directories that text names are on the issue's disk, which the `roles` container mounts read-write and where every role writes as the pod's uid.
    So every pass holds that path to the layout again before it walks it, through the check the init container's sweep runs too (`workspace.GitLocksOf`, `refuseSymlinkedLayout` in `internal/workspace/config.go`):
    a role that renames the clone away and leaves a symlink to a directory of its own where it stood is refused in one line, that pass removes nothing, and the launcher goes on serving its roles.
+   The workspace's own entry made unreadable while the pod runs is one line, not one a minute, and each pass still sweeps the rest of the clone;
+   a sibling entry's unreadable `gitdir` is skipped without a line.
    What is left open runs from that check through the whole walk to each lock's first read (`read`): `WalkDir` goes down by path, so a directory inside `.git` swapped for a link during the walk is followed, and the recheck, the second read below, only ties the removal to what that first read found.
    That gap is a known limit of the sweep: closing it takes `openat` and `unlinkat` down every component of every path the sweep touches.
    The first pass runs when the launcher starts, before it serves any role start and so before the pod's one bundle restore, and no age bound applies to it.

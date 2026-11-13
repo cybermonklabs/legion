@@ -40,47 +40,57 @@ const rootHeadRef = "ref: refs/jj/root"
 // none. A clone whose .git or .git/worktrees is a symlink is refused, the refusal naming the
 // clone's git directory: git never creates either as one, and each caller writes or removes files
 // in the entries, which a symlink a tree agent planted would place outside the clone.
-func gitWorktreeEntries(cloneDir, dir string) ([]string, error) {
+//
+// An entry whose gitdir is missing names no worktree and is passed over. So is one whose gitdir
+// readGitdir refuses or fails to read, with one exception, which is answered as unread: the entry
+// dir's own .git names (`gitdir: <clone>/.git/worktrees/<id>`, read through readGitdir as well,
+// since a role can write it too, and parsed as restoreGitWorktree parses it, gitPointerTarget).
+// That entry is dir's, and its locks are ones a caller meant to reach and cannot, so unread names
+// the entry and the cause. Every other entry is another workspace's or nobody's: one role that
+// makes a sibling's gitdir unreadable — a fifo, a `chmod 000` — must not turn off a walk of every
+// other entry, so its failure is no error and no line. A .git of dir's that cannot be read, or
+// that names no entry, picks none out, and every unreadable entry is then passed over.
+func gitWorktreeEntries(cloneDir, dir string) (own []string, unread error, err error) {
 	gitDir := filepath.Join(cloneDir, ".git")
 	admin := filepath.Join(gitDir, "worktrees")
 	for _, path := range []string{gitDir, admin} {
 		info, err := os.Lstat(path)
 		switch {
 		case err == nil && info.Mode()&fs.ModeSymlink != 0:
-			return nil, fmt.Errorf("refusing the git worktrees of %s: %s is a symlink, which git never creates", gitDir, path)
+			return nil, nil, fmt.Errorf("refusing the git worktrees of %s: %s is a symlink, which git never creates", gitDir, path)
 		case err != nil && !errors.Is(err, fs.ErrNotExist):
-			return nil, fmt.Errorf("read git worktrees: %w", err)
+			return nil, nil, fmt.Errorf("read git worktrees: %w", err)
 		}
 	}
 	entries, err := os.ReadDir(admin)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read git worktrees: %w", err)
+		return nil, nil, fmt.Errorf("read git worktrees: %w", err)
 	}
 	// git writes a relative gitdir (jj asks for relative worktree paths; git 2.48 and later honour
 	// it) between real paths, so it is resolved from the entry's real directory.
 	if admin, err = filepath.EvalSymlinks(admin); err != nil {
-		return nil, fmt.Errorf("resolve git worktrees: %w", err)
+		return nil, nil, fmt.Errorf("resolve git worktrees: %w", err)
 	}
 	resolved, err := resolvedPath(dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	want := []string{filepath.Join(filepath.Clean(dir), ".git"), filepath.Join(resolved, ".git")}
-	var own []string
+	pointer := filepath.Join(dir, ".git")
+	named := pointedEntry(dir)
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 		entryDir := filepath.Join(admin, entry.Name())
-		gitdir, names, err := readGitdir(filepath.Join(entryDir, "gitdir"))
+		gitdir, err := readGitdir(filepath.Join(entryDir, "gitdir"))
 		if err != nil {
-			return nil, fmt.Errorf("read git worktree %s: %w", entryDir, err)
-		}
-		if !names {
-			// No worktree git could name: nobody's to claim (readGitdir).
+			if entryDir == named && !errors.Is(err, fs.ErrNotExist) {
+				unread = fmt.Errorf("the git worktree entry %s, which %s names, cannot be read: %w", entryDir, pointer, err)
+			}
 			continue
 		}
 		target := strings.TrimSuffix(gitdir, "\n")
@@ -91,7 +101,44 @@ func gitWorktreeEntries(cloneDir, dir string) ([]string, error) {
 			own = append(own, entryDir)
 		}
 	}
-	return own, nil
+	return own, unread, nil
+}
+
+// pointedEntry is the worktree entry the workspace at dir's .git file names, resolved as
+// gitWorktreeEntries resolves the entries it lists, or nothing when that file cannot be read
+// (readGitdir) or names no entry (gitPointerTarget).
+func pointedEntry(dir string) string {
+	pointer, err := readGitdir(filepath.Join(dir, ".git"))
+	if err != nil {
+		return ""
+	}
+	target, _, err := gitPointerTarget(dir, []byte(pointer))
+	if err != nil {
+		return ""
+	}
+	return target
+}
+
+// gitPointerTarget is the git worktree entry a workspace's .git file names, pointer being that
+// file's content and dir the workspace: the path after `gitdir: `, a relative one taken from dir's
+// real directory, with the symlinks of its longest existing prefix resolved. It answers dir's real
+// directory too, which restoreGitWorktree writes into the entry it restores. Both readers of the
+// file parse it here, so the two cannot disagree about which entry is a workspace's own.
+func gitPointerTarget(dir string, pointer []byte) (target, realDir string, err error) {
+	target, ok := strings.CutPrefix(strings.TrimSpace(string(pointer)), "gitdir: ")
+	if !ok {
+		return "", "", fmt.Errorf("%s/.git names no git worktree: %q", dir, pointer)
+	}
+	if realDir, err = filepath.EvalSymlinks(dir); err != nil {
+		return "", "", fmt.Errorf("resolve the workspace: %w", err)
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(realDir, target)
+	}
+	if target, err = resolvedPath(target); err != nil {
+		return "", "", err
+	}
+	return target, realDir, nil
 }
 
 // gitdirLimit bounds how much of a worktree entry's gitdir file readGitdir reads: one path git
@@ -99,49 +146,48 @@ func gitWorktreeEntries(cloneDir, dir string) ([]string, error) {
 // any git wrote.
 const gitdirLimit = 4096 + 1
 
-// readGitdir is the content of the gitdir file at path, and whether it names a worktree at all.
-// The file is under <clone>/.git/worktrees on the issue's volume, which every role of the pod
-// writes as the pod's uid, and both of the pod's sweeps read every entry's — the launcher's in
-// PID 1 of the roles container, where a read that never ends stalls every pass behind the sweep's
-// lock and a read that runs away ends the process. So it is opened without following a link,
-// blocking on a special file or taking a terminal for PID 1's own, held to a regular file by the
-// descriptor it opened, and read only up to gitdirLimit, as Created reads the workspace's creation
-// record.
+// readGitdir is the content of the gitdir file at path, or why it holds no path git wrote. The
+// file is under <clone>/.git/worktrees on the issue's volume, which every role of the pod writes
+// as the pod's uid, and both of the pod's sweeps read every entry's — the launcher's in PID 1 of
+// the roles container, where a read that never ends stalls every pass behind the sweep's lock and
+// a read that runs away ends the process. So it is opened without following a link, blocking on a
+// special file or taking a terminal for PID 1's own, held to a regular file by the descriptor it
+// opened, and read only up to gitdirLimit, as Created reads the workspace's creation record. A
+// workspace's own .git, the pointer to its entry, is on the same volume and is read here too
+// (pointedEntry).
 //
-// Anything git does not write there — a symlink (which O_NOFOLLOW answers with ELOOP, a link to
-// /dev/zero among them), a fifo, a socket (which open answers with ENXIO), a device, a directory,
-// a file that fills the bound — names no worktree, exactly as a missing file does, and the entry
-// is skipped rather than the walk refused. That keeps the sweep inside the clone: a skip only
-// ever narrows the walk, so a pass removes less and never more; another workspace's entry skipped
-// is one that was not this workspace's to sweep anyway; and this workspace's own entry skipped
-// leaves its locks unswept for that pass, while the derivation (WorkspaceOf), which requires an
-// entry naming the workspace, refuses it at the next derivation, which is the safe direction. A
-// skip writes no line, so a planted fifo is not a line in PID 1's log a minute for the pod's
-// life. Any other failure to read the file is answered as the error it is.
-func readGitdir(path string) (string, bool, error) {
+// Anything git does not write there is refused in words, naming the file: a symlink (which
+// O_NOFOLLOW answers with ELOOP, a link to /dev/zero among them), a socket (which open answers
+// with ENXIO), a fifo, a device, a directory, or a file larger than the bound. A missing file is
+// the open's own error, and any other failure to read it is the error it is. None of them is a
+// refusal of the walk: gitWorktreeEntries passes such an entry over and reports it only when it
+// is the workspace's own.
+func readGitdir(path string) (string, error) {
 	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_NOCTTY|syscall.O_CLOEXEC, 0)
 	switch {
-	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ELOOP), errors.Is(err, syscall.ENXIO):
-		return "", false, nil
+	case errors.Is(err, syscall.ELOOP):
+		return "", fmt.Errorf("%s is a symlink", path)
+	case errors.Is(err, syscall.ENXIO):
+		return "", fmt.Errorf("%s is a socket", path)
 	case err != nil:
-		return "", false, err
+		return "", err
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 	if !info.Mode().IsRegular() {
-		return "", false, nil
+		return "", fmt.Errorf("%s is a %s", path, fileKind(info.Mode()))
 	}
 	body, err := io.ReadAll(io.LimitReader(file, gitdirLimit))
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 	if len(body) == gitdirLimit {
-		return "", false, nil
+		return "", fmt.Errorf("%s is larger than %d bytes", path, gitdirLimit-1)
 	}
-	return string(body), true, nil
+	return string(body), nil
 }
 
 // WorkspaceOf is the jj workspace at dir and the shared clone it is a workspace of, derived from
@@ -167,15 +213,17 @@ func readGitdir(path string) (string, bool, error) {
 // Location, which this inverts, and both walk it through GitLocksOf — so the two cannot
 // disagree about the directory they sweep.
 //
-// Four things are refused, each naming the path it derived, and none falls back to the
+// Five things are refused, each naming the path it derived, and none falls back to the
 // workspace's own files: a dir the layout does not account for, a layout directory below the
 // state directory that is a symlink (guardWorkspace, which every later pass runs again), a
-// derived clone with no git directory, and a derived git directory serving no git worktree of
-// dir. The last is a check on the derivation and not what holds anything out — the path is the
-// layout's, not a file's — and it costs the two real layouts it refuses: a colocated clone whose
-// own working copy is dir, which git keeps as the main worktree and registers under no entry,
-// and a jj that colocates no workspace at all (0.44, gitWorktreeEntries). Such a workspace is one
-// a caller is answered a reason for rather than one it sweeps.
+// derived clone with no git directory, a derived git directory whose entry for dir — the one
+// dir's .git names — cannot be read, which is refused naming that entry and the cause
+// (gitWorktreeEntries), and a derived git directory serving no git worktree of dir otherwise.
+// The last two are a check on the derivation and not what holds anything out — the path is the
+// layout's, not a file's — and the last costs the two real layouts it refuses: a colocated clone
+// whose own working copy is dir, which git keeps as the main worktree and registers under no
+// entry, and a jj that colocates no workspace at all (0.44, gitWorktreeEntries). Such a
+// workspace is one a caller is answered a reason for rather than one it sweeps.
 func WorkspaceOf(dir string) (Workspace, error) {
 	dir = filepath.Clean(dir)
 	if !filepath.IsAbs(dir) {
@@ -188,11 +236,14 @@ func WorkspaceOf(dir string) (Workspace, error) {
 	if _, err := guardWorkspace(workspace.Dir, workspace.Clone, false); err != nil {
 		return Workspace{}, err
 	}
-	own, err := gitWorktreeEntries(workspace.Clone, dir)
+	own, unread, err := gitWorktreeEntries(workspace.Clone, dir)
 	if err != nil {
 		return Workspace{}, err
 	}
 	if len(own) == 0 {
+		if unread != nil {
+			return Workspace{}, fmt.Errorf("the clone of %s: %w", dir, unread)
+		}
 		gitDir := filepath.Join(workspace.Clone, ".git")
 		if _, err := os.Stat(gitDir); err != nil {
 			return Workspace{}, fmt.Errorf("the clone of %s has no git directory at %s: %w", dir, gitDir, err)
@@ -225,7 +276,7 @@ func resolvedPath(path string) (string, error) {
 // removeGitWorktree deletes the shared clone's git worktree entry for dir, whose directory is gone:
 // what `git worktree prune` does to that one entry, locked or not, and nothing to any other.
 func removeGitWorktree(cloneDir, dir string) error {
-	own, err := gitWorktreeEntries(cloneDir, dir)
+	own, _, err := gitWorktreeEntries(cloneDir, dir)
 	if err != nil {
 		return err
 	}
@@ -241,7 +292,7 @@ func removeGitWorktree(cloneDir, dir string) error {
 // so a bare `git worktree prune` from a process that cannot see dir skips it. An entry already
 // locked keeps its lock and reason.
 func lockGitWorktree(cloneDir, dir string) error {
-	own, err := gitWorktreeEntries(cloneDir, dir)
+	own, _, err := gitWorktreeEntries(cloneDir, dir)
 	if err != nil {
 		return err
 	}
@@ -282,18 +333,8 @@ func restoreGitWorktree(ctx context.Context, run Runner, workspace Workspace, lo
 	if err != nil {
 		return fmt.Errorf("read the workspace's git pointer: %w", err)
 	}
-	target, ok := strings.CutPrefix(strings.TrimSpace(string(pointer)), "gitdir: ")
-	if !ok {
-		return fmt.Errorf("%s/.git names no git worktree: %q", workspace.Dir, pointer)
-	}
-	dir, err := filepath.EvalSymlinks(workspace.Dir)
+	target, dir, err := gitPointerTarget(workspace.Dir, pointer)
 	if err != nil {
-		return fmt.Errorf("resolve the workspace: %w", err)
-	}
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(dir, target)
-	}
-	if target, err = resolvedPath(target); err != nil {
 		return err
 	}
 	present, err := pathExists(target)

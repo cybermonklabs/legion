@@ -1503,9 +1503,9 @@ func TestGitWorktreeEntriesResolveACloneSymlinkOutsideTheWorkspace(t *testing.T)
 		t.Fatal(err)
 	}
 
-	got, err := gitWorktreeEntries(logicalClone, workspace)
-	if err != nil {
-		t.Fatalf("gitWorktreeEntries(%s, %s): %v", logicalClone, workspace, err)
+	got, unread, err := gitWorktreeEntries(logicalClone, workspace)
+	if err != nil || unread != nil {
+		t.Fatalf("gitWorktreeEntries(%s, %s): %v (unread: %v)", logicalClone, workspace, err, unread)
 	}
 	if !slices.Equal(got, []string{entry}) {
 		t.Errorf("gitWorktreeEntries(%s, %s) = %q, want %q", logicalClone, workspace, got, []string{entry})

@@ -171,8 +171,9 @@ type gitLockSweep struct {
 // from the daemon to know which clone is its own. A working directory that cannot be read, or
 // whose clone cannot be derived from it — a directory outside the runtime's workspace layout, a
 // directory of that layout below the state directory that is a symlink, a derived clone with no
-// git directory and a derived git directory serving no worktree of this workspace alike, which
-// is every failure of workspace.WorkspaceOf — leaves the sweep without one: it writes that here,
+// git directory, a derived git directory whose entry for this workspace cannot be read (named
+// with its cause) and one serving no worktree of this workspace otherwise alike, which is every
+// failure of workspace.WorkspaceOf — leaves the sweep without one: it writes that here,
 // once, and takes the workspace from the first role start it serves instead, which carries
 // LEGION_WORKSPACE. A working directory that did supply it is recorded as having done so
 // (fromWorkDir), so a role start finds there is nothing to learn without taking the sweep's lock.
@@ -318,33 +319,46 @@ func (s *gitLockSweep) pass(ctx context.Context, first bool) bool {
 // nothing to sweep and ends here without a line: either it never learned a workspace, or the one
 // derivation it made failed and wrote its reason where it was made (newGitLockSweep, learn).
 //
+// A pass that listed the locks without this workspace's own worktree entry, whose gitdir it could
+// not read (workspace.GitLocksOf's unswept), decides the locks it did list, the clone's git
+// directory's among them, and then writes that entry and the cause through refuse, so the entry
+// is one line while it stays unreadable and not a line a minute. A refusal of the same pass comes
+// first: it is the line that pass writes, and the entry's follows at the first pass that gets
+// past it.
+//
 // The stored refusal is forgotten here, and only by a pass that made every read it meant to: a
-// pass that listed the locks and then could not read /proc would otherwise clear the very reason
-// it is about to write again, and refuse's rule — the same reason once, rather than once a minute
-// for the pod's life — would hold for no pass at all.
+// pass that listed the locks and then could not read /proc, or could not read the workspace's
+// own entry, would otherwise clear the very reason it is about to write again, and refuse's rule
+// — the same reason once, rather than once a minute for the pod's life — would hold for no pass
+// at all. An entry that is readable again is therefore forgotten by the first pass that reads it,
+// and written again if it goes bad again.
 func (s *gitLockSweep) sweep(ctx context.Context, first bool) bool {
 	if s.ws.Dir == "" {
 		return false
 	}
-	reason, stopped := s.decide(ctx, first)
+	paths, unswept, err := workspace.GitLocksOf(s.ws)
+	if err != nil {
+		s.refuse(fmt.Sprintf("the clone of %s: %v", s.ws.Dir, err))
+		return false
+	}
+	reason, stopped := s.decide(ctx, first, paths)
 	switch {
 	case reason != "":
 		s.refuse(reason)
+	case unswept != nil:
+		s.refuse(fmt.Sprintf("the clone of %s: %v; the pass swept the rest of the clone and left that entry's locks where they are", s.ws.Dir, unswept))
 	case !stopped:
 		s.refusal = ""
 	}
 	return stopped
 }
 
-// decide is the body of one pass: it answers the reason the pass was refused for, or no reason at
-// all, and whether it stopped on ctx with locks left undecided. The clock is read once, so every
-// line of one pass dates the locks it found from the same instant. No lock at all is no line: a
-// pass a minute for a pod's life has nothing to say about a clone nobody wedged.
-func (s *gitLockSweep) decide(ctx context.Context, first bool) (string, bool) {
-	paths, err := workspace.GitLocksOf(s.ws)
-	if err != nil {
-		return fmt.Sprintf("the clone of %s: %v", s.ws.Dir, err), false
-	}
+// decide is the body of one pass over the locks the walk listed: it answers the reason the pass
+// was refused for, or no reason at all, and whether it stopped on ctx with locks left undecided.
+// The clock is read once, so every line of one pass dates the locks it found from the same
+// instant. No lock at all is no line: a pass a minute for a pod's life has nothing to say about a
+// clone nobody wedged.
+func (s *gitLockSweep) decide(ctx context.Context, first bool, paths []string) (string, bool) {
 	if len(paths) == 0 {
 		return "", false
 	}
@@ -557,11 +571,11 @@ func (s *gitLockSweep) line(verb string, lock gitLock, now time.Time) string {
 		now.Sub(lock.info.ModTime()).Round(time.Second))
 }
 
-// refuse writes one line for a pass that could not run, and never the same reason twice in a row:
-// a clone the sweep cannot read is a line a minute for the pod's whole life otherwise, which
-// buries every other line the roles write. The reason goes out quoted, for the reason a lock's
-// path does (line): it carries the paths the walk of the clone stopped on, which are names a
-// role of the pod wrote.
+// refuse writes one line for a pass that could not run, or that could not read this workspace's
+// own worktree entry (sweep), and never the same reason twice in a row: a clone the sweep cannot
+// read is a line a minute for the pod's whole life otherwise, which buries every other line the
+// roles write. The reason goes out quoted, for the reason a lock's path does (line): it carries
+// the paths the walk of the clone stopped on, which are names a role of the pod wrote.
 func (s *gitLockSweep) refuse(reason string) {
 	if reason == s.refusal {
 		return

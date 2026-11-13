@@ -1345,7 +1345,16 @@ func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.
 // to its end runs the launcher out of memory, and a read of a fifo waits for a writer for ever
 // with the sweep's lock held, so a role start that learns waits behind it. Such an entry names
 // no workspace and is skipped (internal/workspace's readGitdir): the pass returns, removes this
-// workspace's own stale locks as ever, leaves the entry's and writes nothing of it.
+// workspace's own stale locks as ever, leaves the entry's and writes nothing of it. A gitdir the
+// launcher may not open at all (a `chmod 000`) is skipped the same way rather than refusing the
+// pass: one role must not be able to switch the sweep off with a sibling's entry.
+//
+// Each of readGitdir's guards has a row here that fails with that guard alone reverted: the
+// link that names this workspace's .git (O_NOFOLLOW: followed, the sibling is taken for this
+// workspace's entry and its lock removed), the fifo a writer holds open (the regular-file check:
+// read, it waits for ever), and the terabyte whose first bytes name this workspace (read without
+// the bound, it runs away; read to the bound and not refused there, those bytes name this
+// workspace and the sibling's lock is removed).
 //
 // The sweep is built where the launcher builds it, from its own working directory, after the
 // entry is planted: that is a roles container restarting on a volume a role planted one on,
@@ -1354,19 +1363,22 @@ func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.
 //
 // The row bounds itself, so a read that runs away or waits fails the row and not the run: the
 // derivation and the pass run in a goroutine the row waits for under a deadline, a read of
-// /dev/zero is ended by endDevZeroReads, which the row fails on, and a reader the fifo holds is
-// let go once the row has failed, so nothing of the row is left running.
+// /dev/zero, or of the gitdir past a mebibyte, is ended by endRunawayReads, which the row fails
+// on, and a reader the fifo holds is let go once the row has failed, so nothing of the row is
+// left running.
 func TestTheSweepSkipsAWorktreeEntryWhoseGitdirIsNoFileGitWrote(t *testing.T) {
+	// writer is the descriptor the held fifo's row keeps open on it, which its unstick closes.
+	var writer *os.File
 	for _, row := range []struct {
 		name string
 		// plant makes gitdir what the row is about; unstick lets go a read of it that is
 		// waiting, for a row that has already failed.
-		plant   func(t *testing.T, gitdir string)
+		plant   func(t *testing.T, c *lockClone, gitdir string)
 		unstick func(gitdir string)
 	}{
 		{
 			name: "a gitdir that links to /dev/zero",
-			plant: func(t *testing.T, gitdir string) {
+			plant: func(t *testing.T, _ *lockClone, gitdir string) {
 				if err := os.Symlink("/dev/zero", gitdir); err != nil {
 					t.Fatal(err)
 				}
@@ -1375,7 +1387,7 @@ func TestTheSweepSkipsAWorktreeEntryWhoseGitdirIsNoFileGitWrote(t *testing.T) {
 		},
 		{
 			name: "a gitdir that is a fifo",
-			plant: func(t *testing.T, gitdir string) {
+			plant: func(t *testing.T, _ *lockClone, gitdir string) {
 				if err := syscall.Mkfifo(gitdir, 0o600); err != nil {
 					t.Fatal(err)
 				}
@@ -1388,6 +1400,76 @@ func TestTheSweepSkipsAWorktreeEntryWhoseGitdirIsNoFileGitWrote(t *testing.T) {
 				}
 			},
 		},
+		{
+			// A fifo with a writer that writes nothing: a read of it waits for the writer, so
+			// only the regular-file check keeps the walk from reading it.
+			name: "a gitdir that is a fifo a writer holds open",
+			plant: func(t *testing.T, _ *lockClone, gitdir string) {
+				if err := syscall.Mkfifo(gitdir, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				// Read-write, so the open needs no reader to be waiting.
+				file, err := os.OpenFile(gitdir, os.O_RDWR, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				writer = file
+				t.Cleanup(func() { _ = file.Close() })
+			},
+			// With its last writer gone, a waiting read ends at once with no content.
+			unstick: func(string) { _ = writer.Close() },
+		},
+		{
+			name: "a gitdir that is a directory",
+			plant: func(t *testing.T, _ *lockClone, gitdir string) {
+				if err := os.Mkdir(gitdir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			unstick: func(string) {},
+		},
+		{
+			name: "a gitdir the launcher may not open",
+			plant: func(t *testing.T, c *lockClone, gitdir string) {
+				c.write(gitdir, filepath.Join(filepath.Dir(c.dir), "infra-2", ".git")+"\n")
+				if err := os.Chmod(gitdir, 0); err != nil {
+					t.Fatal(err)
+				}
+				if file, err := os.Open(gitdir); err == nil {
+					_ = file.Close()
+					t.Fatalf("%s is readable at mode 000, so this row would prove nothing (is the test running as root?)", gitdir)
+				}
+			},
+			unstick: func(string) {},
+		},
+		{
+			// The link itself is no file git writes; what it names is a regular file holding
+			// this workspace's .git, which a walk that followed it would take for this
+			// workspace's own entry, and walk.
+			name: "a gitdir that links to a file naming this workspace",
+			plant: func(t *testing.T, c *lockClone, gitdir string) {
+				named := filepath.Join(t.TempDir(), "gitdir")
+				c.write(named, filepath.Join(c.dir, ".git")+"\n")
+				if err := os.Symlink(named, gitdir); err != nil {
+					t.Fatal(err)
+				}
+			},
+			unstick: func(string) {},
+		},
+		{
+			// A sparse regular file of a terabyte, which a regular-file check accepts and
+			// O_NOFOLLOW does not touch. Its first gitdirBound bytes are this workspace's .git
+			// behind enough slashes to fill them, a newline last: a read that stops at the bound
+			// and takes what it read finds this workspace's entry there.
+			name: "a gitdir of a terabyte whose first bytes name this workspace",
+			plant: func(t *testing.T, c *lockClone, gitdir string) {
+				c.write(gitdir, boundFillingGitdir(c))
+				if err := os.Truncate(gitdir, 1<<40); err != nil {
+					t.Fatal(err)
+				}
+			},
+			unstick: func(string) {},
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			c := newLockClone(t)
@@ -1396,12 +1478,12 @@ func TestTheSweepSkipsAWorktreeEntryWhoseGitdirIsNoFileGitWrote(t *testing.T) {
 			sibling := filepath.Join(c.gitDir, "worktrees", "infra-2")
 			theirs := c.plant(filepath.Join(sibling, "index.lock"), "nobody's", time.Hour)
 			gitdir := filepath.Join(sibling, "gitdir")
-			row.plant(t, gitdir)
+			row.plant(t, c, gitdir)
 			t.Chdir(c.dir)
 			log := &lockedBuffer{}
 			proc := procRoot(t, os.Getpid())
 			stop := make(chan struct{})
-			ranAway := endDevZeroReads(t, stop)
+			ranAway := endRunawayReads(t, stop, gitdir)
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
@@ -1429,7 +1511,7 @@ func TestTheSweepSkipsAWorktreeEntryWhoseGitdirIsNoFileGitWrote(t *testing.T) {
 			}
 			close(stop)
 			if ended := <-ranAway; ended > 0 {
-				t.Fatalf("the sweep read /dev/zero through %s and %d such read(s) had to be ended at end of file; the sweep's log:\n%s", gitdir, ended, log.String())
+				t.Fatalf("the sweep read %s past where any gitdir ends, and %d such read(s) had to be ended at end of file; the sweep's log:\n%s", gitdir, ended, log.String())
 			}
 			requireRemoved(t, log, ours)
 			requireRemoved(t, log, entry)
@@ -1443,17 +1525,38 @@ func TestTheSweepSkipsAWorktreeEntryWhoseGitdirIsNoFileGitWrote(t *testing.T) {
 	}
 }
 
-// endDevZeroReads ends every read of /dev/zero this process makes until stop closes, and then
-// answers how many it ended. A descriptor of the process that has /dev/zero open is replaced, in
-// place, with one of /dev/null, so the read that is running on it reaches end of file at its next
-// call rather than filling memory until the runtime ends the process: what a row that would
-// otherwise run away costs is the memory it read in a millisecond, and its failure.
-func endDevZeroReads(t *testing.T, stop <-chan struct{}) <-chan int {
+// gitdirBound is internal/workspace's gitdirLimit, which this package cannot read: the most of a
+// worktree entry's gitdir the walk reads, one byte more than PATH_MAX.
+const gitdirBound = 4096 + 1
+
+// boundFillingGitdir is a gitdir of exactly gitdirBound bytes that names this workspace's .git:
+// its path behind as many slashes as fill the bound, which a path's cleaning drops, and a
+// newline. A walk that read it to the bound and took what it read would find this workspace's
+// entry in it; the walk refuses it for reaching the bound.
+func boundFillingGitdir(c *lockClone) string {
+	own := filepath.Join(c.dir, ".git")
+	return strings.Repeat("/", gitdirBound-1-len(own)) + own + "\n"
+}
+
+// endRunawayReads ends every read this process makes of /dev/zero, and every read of the file at
+// gitdir once it has gone a mebibyte in — far past gitdirBound, where a bounded read stops —
+// until stop closes, and then answers how many it ended. A descriptor of the process open on
+// either is replaced, in place, with one of /dev/null, so the read that is running on it reaches
+// end of file at its next call rather than filling memory until the runtime ends the process:
+// what a row that would otherwise run away costs is the memory it read in a millisecond, and its
+// failure. A bounded read of gitdir never reaches the mebibyte, so it is never ended.
+func endRunawayReads(t *testing.T, stop <-chan struct{}, gitdir string) <-chan int {
 	t.Helper()
 	null, err := os.Open(os.DevNull)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A descriptor's link names the file by its real path.
+	parent, err := filepath.EvalSymlinks(filepath.Dir(gitdir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitdir = filepath.Join(parent, filepath.Base(gitdir))
 	ended := make(chan int, 1)
 	go func() {
 		defer null.Close()
@@ -1472,12 +1575,19 @@ func endDevZeroReads(t *testing.T, stop <-chan struct{}) <-chan int {
 				continue
 			}
 			for _, fd := range fds {
-				if target, err := os.Readlink(filepath.Join("/proc/self/fd", fd.Name())); err != nil || target != "/dev/zero" {
+				target, err := os.Readlink(filepath.Join("/proc/self/fd", fd.Name()))
+				if err != nil || (target != "/dev/zero" && target != gitdir) {
 					continue
 				}
 				number, err := strconv.Atoi(fd.Name())
 				if err != nil {
 					continue
+				}
+				if target == gitdir {
+					// A fifo has no offset to read, and is never a read that runs away.
+					if offset, err := unix.Seek(number, 0, unix.SEEK_CUR); err != nil || offset <= 1<<20 {
+						continue
+					}
 				}
 				if unix.Dup2(int(null.Fd()), number) == nil {
 					count++
@@ -1486,6 +1596,176 @@ func endDevZeroReads(t *testing.T, stop <-chan struct{}) <-chan int {
 		}
 	}()
 	return ended
+}
+
+// unreadableGitdirs is each way a role can leave this workspace's own worktree entry's gitdir
+// unreadable to the walk (internal/workspace's readGitdir), and the cause the sweep's line names
+// for it, given the gitdir's path. Each is planted where the row's gitdir was (breakGitdir), and
+// repairGitdir puts back the gitdir git wrote.
+var unreadableGitdirs = []struct {
+	name  string
+	plant func(t *testing.T, c *lockClone, gitdir string)
+	cause func(gitdir string) string
+}{
+	{
+		name: "a fifo",
+		plant: func(t *testing.T, _ *lockClone, gitdir string) {
+			if err := syscall.Mkfifo(gitdir, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		cause: func(gitdir string) string { return gitdir + " is a fifo" },
+	},
+	{
+		name: "a symlink to a file naming this workspace",
+		plant: func(t *testing.T, c *lockClone, gitdir string) {
+			named := filepath.Join(t.TempDir(), "gitdir")
+			c.write(named, filepath.Join(c.dir, ".git")+"\n")
+			if err := os.Symlink(named, gitdir); err != nil {
+				t.Fatal(err)
+			}
+		},
+		cause: func(gitdir string) string { return gitdir + " is a symlink" },
+	},
+	{
+		name:  "a file that fills the bound",
+		plant: func(_ *testing.T, c *lockClone, gitdir string) { c.write(gitdir, boundFillingGitdir(c)) },
+		cause: func(gitdir string) string { return gitdir + " is larger than 4096 bytes" },
+	},
+	{
+		name: "a directory",
+		plant: func(t *testing.T, _ *lockClone, gitdir string) {
+			if err := os.Mkdir(gitdir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+		cause: func(gitdir string) string { return gitdir + " is a directory" },
+	},
+	{
+		name: "a file the launcher may not open",
+		plant: func(t *testing.T, c *lockClone, gitdir string) {
+			c.write(gitdir, filepath.Join(c.dir, ".git")+"\n")
+			if err := os.Chmod(gitdir, 0); err != nil {
+				t.Fatal(err)
+			}
+			if file, err := os.Open(gitdir); err == nil {
+				_ = file.Close()
+				t.Fatalf("%s is readable at mode 000, so this row would prove nothing (is the test running as root?)", gitdir)
+			}
+		},
+		cause: func(gitdir string) string { return "open " + gitdir + ": permission denied" },
+	},
+}
+
+// breakGitdir replaces the gitdir of this workspace's own worktree entry with plant's, and
+// repairGitdir puts back the one git wrote.
+func (c *lockClone) breakGitdir(t *testing.T, plant func(*testing.T, *lockClone, string)) {
+	t.Helper()
+	gitdir := filepath.Join(c.worktree, "gitdir")
+	if err := os.RemoveAll(gitdir); err != nil {
+		t.Fatal(err)
+	}
+	plant(t, c, gitdir)
+}
+
+func (c *lockClone) repairGitdir(t *testing.T) {
+	t.Helper()
+	gitdir := filepath.Join(c.worktree, "gitdir")
+	if err := os.RemoveAll(gitdir); err != nil {
+		t.Fatal(err)
+	}
+	c.write(gitdir, filepath.Join(c.dir, ".git")+"\n")
+}
+
+// unreadableEntry is the reason the walk gives for this workspace's own entry when its gitdir
+// cannot be read for cause, as both the derivation's refusal and a pass's line carry it.
+func (c *lockClone) unreadableEntry(cause string) string {
+	return fmt.Sprintf("the clone of %s: the git worktree entry %s, which %s names, cannot be read: %s",
+		c.dir, c.worktree, filepath.Join(c.dir, ".git"), cause)
+}
+
+// This workspace's own worktree entry, the one its .git names, holds the workspace's index,
+// HEAD and refs, and its gitdir is a file a role of the pod can make unreadable while the pod
+// runs, as it can any other entry's. Passed over in silence, as a sibling's is, the entry's locks
+// — an index.lock that wedges every role's git — would stay for the container's life with no
+// line saying why. The pass names the entry and the cause instead, once while the entry stays
+// unreadable rather than once a minute, and sweeps the rest of the clone on every pass all the
+// same: the git directory's own stale lock goes each time. An entry readable again is swept
+// again and forgotten, so a second break is a second line.
+//
+// The sweep is the launcher's own, built from its working directory while the entry is sound,
+// which is a running pod whose role breaks the entry after the derivation.
+func TestTheSweepNamesThisWorkspacesUnreadableWorktreeEntryOnceAndSweepsTheRest(t *testing.T) {
+	for _, bad := range unreadableGitdirs {
+		t.Run(bad.name, func(t *testing.T) {
+			c := newLockClone(t)
+			t.Chdir(c.dir)
+			log := &lockedBuffer{}
+			s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef)
+			if s.ws.Dir == "" {
+				t.Fatalf("the launcher derived no workspace from a sound clone; its log:\n%s", log.String())
+			}
+			s.proc, s.recheck = procRoot(t, os.Getpid()), time.Millisecond
+			c.breakGitdir(t, bad.plant)
+			line := fmt.Sprintf("launcher: the git lock sweep: %q",
+				c.unreadableEntry(bad.cause(filepath.Join(c.worktree, "gitdir")))+"; the pass swept the rest of the clone and left that entry's locks where they are")
+			entry := c.worktreeLock("index.lock", "ours", time.Hour)
+			for range 3 {
+				stale := c.lock("index.lock", "stale", time.Hour)
+				s.pass(context.Background(), false)
+				requireSwept(t, log, stale)
+				if swept(entry) {
+					t.Fatalf("the sweep removed %s, under an entry it could not read; its log:\n%s", entry, log.String())
+				}
+			}
+			requireLine(t, log, line)
+			if count := strings.Count(log.String(), line); count != 1 {
+				t.Fatalf("three passes wrote the entry's line %d times, want once:\n%s", count, log.String())
+			}
+
+			t.Run("a repaired entry is swept, and a second break is a second line", func(t *testing.T) {
+				c.repairGitdir(t)
+				s.pass(context.Background(), false)
+				requireRemoved(t, log, entry)
+				if count := strings.Count(log.String(), line); count != 1 {
+					t.Fatalf("the pass that read the repaired entry wrote its line again (%d in all):\n%s", count, log.String())
+				}
+				c.breakGitdir(t, bad.plant)
+				s.pass(context.Background(), false)
+				if count := strings.Count(log.String(), line); count != 2 {
+					t.Fatalf("the entry broken a second time was written %d times in all, want twice:\n%s", count, log.String())
+				}
+			})
+		})
+	}
+}
+
+// The same entry unreadable before the launcher starts — a roles container restarting on a
+// volume where a role broke it — is the derivation's refusal, and the refusal names the entry and
+// the cause. "Serves no git worktree of it" would be false there: the entry is in place, and what
+// is wrong with it is what the line says. The first role start's derivation refuses with the
+// same cause.
+func TestTheDerivationNamesThisWorkspacesUnreadableWorktreeEntry(t *testing.T) {
+	for _, bad := range unreadableGitdirs {
+		t.Run(bad.name, func(t *testing.T) {
+			c := newLockClone(t)
+			c.breakGitdir(t, bad.plant)
+			reason := c.unreadableEntry(bad.cause(filepath.Join(c.worktree, "gitdir")))
+			t.Chdir(c.dir)
+			log := &lockedBuffer{}
+			s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef)
+			requireLine(t, log, fmt.Sprintf("launcher: the git lock sweep's working directory %q is no jj workspace it can sweep (%q); it takes its workspace from the first role start",
+				c.dir, reason))
+			if s.ws.Dir != "" {
+				t.Fatalf("a launcher whose own worktree entry is unreadable gave its sweep the workspace %q; log:\n%s", s.ws.Dir, log.String())
+			}
+			s.learn(context.Background(), c.dir)
+			requireLine(t, log, fmt.Sprintf("launcher: the git lock sweep: %q", "the workspace "+c.dir+": "+reason))
+			if strings.Contains(log.String(), "serves no git worktree") {
+				t.Fatalf("the refusal says the clone serves no worktree of a workspace whose entry is in place:\n%s", log.String())
+			}
+		})
+	}
 }
 
 // A clone whose git directory is a symbolic link is refused before anything is answered, and the
