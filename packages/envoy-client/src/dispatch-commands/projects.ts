@@ -1,6 +1,13 @@
-import type { ArchitectureSource, Project } from "@legion/contracts";
-import { type CommandContext, type DispatchToolResult, optionalString, stringArg } from "./context";
+import type { ArchitectureSource, CreatedProject } from "@legion/contracts";
+import {
+  type CommandContext,
+  type DispatchToolResult,
+  defined,
+  optionalString,
+  stringArg,
+} from "./context";
 import { refusalWithCode } from "./failures";
+import { namedPerson } from "./render-item";
 
 /** One source's answer to `dispatch architecture-sync`: its imported commit, or the recorded
  *  failure and what of that source's model stays up. A source re-saved on another branch has no
@@ -26,22 +33,40 @@ function architectureSyncLines(project: string, source: ArchitectureSource): str
 /** `dispatch project`: open a project. */
 export async function projectCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, linkBase } = context;
-  let project: Project;
+  let project: CreatedProject;
   try {
     project = await client.createProject({
       key: stringArg(args, "key"),
       name: stringArg(args, "name"),
+      ...defined("default_assignee", optionalString(args, "default_assignee")),
       actor,
     });
   } catch (error) {
     // PROJECT_EXISTS and INVALID_PROJECT ask for different things, and the description names
-    // both by code.
+    // both by code. The INVALID_PROJECT that names default_assignee says what the call must
+    // carry, so the server's own words reach the agent unchanged.
     throw refusalWithCode(error);
   }
   const href = new URL(`/projects/${encodeURIComponent(project.key)}`, linkBase).toString();
+  // Every project names a default assignee and the create answers it, so it is absent only from
+  // a Dispatch older than that answer, and the output then names nobody rather than a person it
+  // was not given.
+  const projectDefault = namedPerson(project.default_assignee);
   return {
-    text: `Created project ${project.key} (${project.name}) at ${project.created_at}: ${href}`,
-    details: { project: project.key, name: project.name, created_at: project.created_at },
+    // The default assignee is on the create's own line: the project's unowned work lands on
+    // that person, and every question on an issue nobody holds reaches them, so the agent
+    // reads who that is without a second command.
+    text:
+      `Created project ${project.key} (${project.name}) at ${project.created_at}: ${href}` +
+      (projectDefault === undefined
+        ? ""
+        : `\nIts unowned work lands on ${projectDefault}: a question on an issue nobody holds reaches them.`),
+    details: {
+      project: project.key,
+      name: project.name,
+      created_at: project.created_at,
+      ...defined("default_assignee", projectDefault),
+    },
   };
 }
 

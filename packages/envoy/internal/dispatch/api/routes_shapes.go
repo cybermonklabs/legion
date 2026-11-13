@@ -482,7 +482,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: markdownRoundTripResponse{}, Request: markdownRoundTripInput{},
 	},
 	"GET /api/v1/projects":  {Status: http.StatusOK, Response: []model.Project{}},
-	"POST /api/v1/projects": {Status: http.StatusCreated, Response: model.Project{}, Request: createProjectInput{}},
+	"POST /api/v1/projects": {Status: http.StatusCreated, Response: createdProject{}, Request: createProjectInput{}},
 	"GET /api/v1/projects/{key}/artifacts": {
 		Status: http.StatusOK, Response: []artifactRead{}, Params: projectArtifactsQuery{},
 	},

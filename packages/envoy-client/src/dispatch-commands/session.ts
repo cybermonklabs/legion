@@ -67,7 +67,7 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // The session Dispatch records the writes as: the one the credential proved, else this host's.
   const session = proved ?? sessionId;
   const unowned =
-    "no owner, so an issue you create without an assignee takes its parent's assignee, else the project's default assignee, else nobody.";
+    "no owner, so an issue you create without an assignee takes its parent's assignee, else the project's default assignee, which every project names, so the issue always has one.";
   // A broker token is the one credential that proves a session of its own, so a caller that
   // names a service and proves a session is the kind Dispatch refuses every write with
   // SIGN_IN_REQUIRED. whoami is where a person asks what their credential may do, so it says
