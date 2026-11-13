@@ -272,8 +272,8 @@ func linkReason(waitsOn []string) string {
 // ladder is given its sentence here; given none, it reads the fallback, which says less than the
 // row beside it knows. dispatch_blocker and children_first have no sentence here, because every
 // issue the ladder gives either word stands in `admission.blocked` and reads blockedReason
-// (whyStates). at_work, the word of an issue in a phase that keeps no admission slot, has its
-// sentence, though it cannot run today: no issue reads at_work (record.HeldAtWork).
+// (whyStates). at_work has its sentence, though no issue reads that word today
+// (record.HeldAtWork).
 //
 // And the fallback, for unclassified, the ladder's own last word, which says that no rule of
 // the held list names what the issue waits for; a key the held list carries no row for at all

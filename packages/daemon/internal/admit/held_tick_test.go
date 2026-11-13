@@ -113,8 +113,7 @@ func TestTheTickNoticeCarriesTheHeldIssues(t *testing.T) {
 	// registered, so its child waits for the gate.
 	seedSlotted(t, pool, gated, "B")
 	putIssue(t, pool, member(gatedChild, gated, phase.Admitted, "todo"))
-	// No subject stands for `at_work`: cybermonklabs/legion#2539 deleted the phase
-	// `awaiting_merge`, so no phase holds no admission slot and nothing produces that word today.
+	// No subject stands for `at_work`, which no issue reads (record.HeldAtWork).
 	approved := 1
 	// A tree whose root a person took out of the workflow at triage, with a person's approval
 	// standing on its design gate. Its root stands at phase done, so the tick's live read leaves

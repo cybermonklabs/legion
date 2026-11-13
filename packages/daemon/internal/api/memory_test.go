@@ -143,20 +143,20 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		steps   bool
 		wakes   bool
 		retired bool
-		// stall is whether the caller is served the claim views' `step` (stallRecordContract),
-		// the contract twenty-nine below this daemon's own, so a pod at 57 is served the record
-		// and a pod still running an older plugin is not.
+		// stall is whether the caller is served the claim views' `step` (stallRecordContract,
+		// 57), so a pod at 57 or above is served the record and a pod still running an older
+		// plugin is not.
 		stall bool
 		// line is whether the caller is served each waiting issue's place in the admission line
-		// (waitingLineContract), twenty-eight contracts below this daemon's own, so a pod at it
-		// is served the places and a pod still running an older plugin is not.
+		// (waitingLineContract, 58), so a pod at 58 or above is served the places and a pod still
+		// running an older plugin is not.
 		line bool
 		// moves is whether the caller is served each worker's counts of the moves back its issue
-		// has made (backwardMovesContract), the contract twenty-four below this daemon's own.
+		// has made (backwardMovesContract, 62).
 		moves bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count of claims the
-		// stale-plugin lane has left (claimsToRefreshContract), the contract thirteen below this
-		// daemon's own, so a pod at 73 or above is served the count and every older pod is not.
+		// stale-plugin lane has left (claimsToRefreshContract, 73), so a pod at 73 or above is
+		// served the count and every older pod is not.
 		refresh bool
 		// failure is whether the caller is served the nine keys recordFieldsContract added
 		// together: a claim view's `servingGeneration`, `updateReasons`, `providerErrorRun`,
@@ -167,13 +167,13 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// is served none of the nine, whatever this daemon declares.
 		failure bool
 		// answers is whether the caller is served each issue's one rendered answer and the
-		// waiting line's own fields beside each member's place (whyAndLineFieldsContract, the
-		// contract below this daemon's own): one strip takes both, so a pod below it reads
-		// every member with its `place` and its `length` alone and no issue with a `why`.
+		// waiting line's own fields beside each member's place (whyAndLineFieldsContract, 85):
+		// one strip takes both, so a pod below it reads every member with its `place` and its
+		// `length` alone and no issue with a `why`.
 		answers bool
 		// held is whether the caller is served `admission.held`, the issues the record holds in
-		// the workflow that stand in neither `active` nor `waiting` (heldContract), this
-		// daemon's own contract, so a pod at 94 is served the list and every older pod is not.
+		// the workflow that stand in neither `active` nor `waiting` (heldContract, 94), so a pod
+		// at 94 or above is served the list and every older pod is not.
 		held bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},

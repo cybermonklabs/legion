@@ -433,10 +433,9 @@ type Admission struct {
 	// issue key. It is the other half of the three lists above — a reader that has `active`,
 	// `waiting` and this one has every issue of the workflow and what each is doing — so the
 	// list names no issue `active` or `waiting` names. `heldBy` is absent where no issue holds
-	// the one that waits: a root whose Legion label is off, an issue none of the other words is
-	// true of, and an issue in a phase that keeps no slot, which no phase is since
-	// cybermonklabs/legion#2539 took awaiting_merge away. Never
-	// null; empty when every issue of the workflow runs or waits in the line.
+	// the one that waits: a root whose Legion label is off, or an issue none of the other words
+	// is true of; `at_work` names no issue today (record.HeldAtWork). Never null; empty when
+	// every issue of the workflow runs or waits in the line.
 	Held []HeldIssue `json:"held,omitzero"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
 	// the contract that added Trees (api's withoutTrees, below server.go's treeContract): that

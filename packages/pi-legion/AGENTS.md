@@ -98,11 +98,11 @@ number is the one `DaemonAPIVersion` declares, last bumped by contract 94's held
 (dispatch://INFRA-3107: `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
 record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`,
 each row carrying the issue, one word for why nothing of it runs — a closed list of eleven words
-the daemon reads in one order, of which `at_work` names no issue today, since no phase has held
-no admission slot since cybermonklabs/legion#2539 took `awaiting_merge` away — and `heldBy`, the
-issues that hold it, absent where no issue holds the one that waits; the strict reader this
-plugin parses the state through takes the key as optional, because a caller from a pod whose
-claims record a contract under 94 is served the admission block without it (`api.stateFor`,
+the daemon reads in one order, of which `at_work` names no issue today (see
+`record.HeldAtWork`) — and `heldBy`, the issues that hold it, absent where no issue holds the one
+that waits; the strict reader this plugin parses the state through takes the key as optional,
+because a caller from a pod whose claims record a contract under 94 is served the admission
+block without it (`api.stateFor`,
 `withoutHeld`), and the controller's tick notice carries the same rows), after contract 86
 (dispatch://INFRA-714: the phase vocabulary loses `awaiting_merge`, a pull request carries
 `mergeState` in place of `checksVerdict`, a phase carries `pass`, every claim view carries

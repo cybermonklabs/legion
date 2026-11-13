@@ -55,8 +55,8 @@ func shutGate(root string) map[record.DesignStep]record.DesignGate {
 // whose root waits on a person, a member under a shut design gate, a child an unfinished Dispatch
 // link holds, a parent whose own children are still open, an issue beneath an accepted ancestor,
 // and an issue none of the ten is true of — and the rows are read from the projected state, which
-// is where a reader meets them. No issue stands for at_work: cybermonklabs/legion#2539 deleted the
-// phase awaiting_merge, so no phase holds no admission slot and nothing produces that word today.
+// is where a reader meets them. No issue stands for at_work, which no issue reads
+// (record.HeldAtWork).
 //
 // Five controls stand beside them, each an issue that must take no held row. Two are the shapes
 // the requirement names: a slot holder, and a root a person answered, which stands in active and
@@ -103,10 +103,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	// Dispatch shows under it, and its members carry three of the words. The issue in merging is
 	// an ancestor the daemon has accepted (record.Accepted) and holds its slot, the issue under it
 	// starts at its close, the issue at work that holds no row is the one the pass names nowhere,
-	// and the issue at work that holds one is the plain slot holder. The accepted ancestor stood
-	// at awaiting_merge, which held no slot and read at_work, until cybermonklabs/legion#2539
-	// deleted that phase; it stands in merging now, the accepted phase that still exists, so it
-	// holds a slot row and stands in active, and the issue under it reads what it read before.
+	// and the issue at work that holds one is the plain slot holder.
 	openRoot := treeRoot("LEGION-170", "todo", phase.Admitted)
 	blockedChild := treeMember("LEGION-171", "LEGION-170", "LEGION-170", "todo", phase.Admitted)
 	merging := treeMember("LEGION-172", "LEGION-170", "LEGION-170", "needs_review", phase.Merging)
@@ -178,8 +175,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 		t.Fatalf("admission.held = %#v, want %#v", got.Admission.Held, wantHeld)
 	}
 
-	// LEGION-172, the accepted ancestor in merging, holds the last slot row: it stood at
-	// awaiting_merge, which held none, until cybermonklabs/legion#2539 deleted that phase.
+	// LEGION-172, the accepted ancestor in merging, holds the last slot row.
 	wantActive := []string{"LEGION-150", "LEGION-160", "LEGION-170", "LEGION-175", "LEGION-180", "LEGION-190", "LEGION-172"}
 	if !reflect.DeepEqual(got.Admission.Active, wantActive) {
 		t.Fatalf("admission.active = %#v, want %#v: every issue holding a slot row, the three roots a hold keeps out of the line among them",
@@ -221,9 +217,9 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	}
 
 	// heldBy is absent where no issue holds the one that waits — a root whose label is off, an
-	// issue in a phase that keeps no slot (none since cybermonklabs/legion#2539), an issue the
-	// pass names nowhere — which is a nil slice the wire
-	// form then omits, and not an empty array.
+	// issue the pass names nowhere — which is a nil slice the wire form then omits, and not an
+	// empty array. The check names at_work beside them, though no issue reads it
+	// (record.HeldAtWork).
 	for _, row := range got.Admission.Held {
 		wire, err := json.Marshal(row)
 		if err != nil {
@@ -363,8 +359,7 @@ func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 		{
 			// dispatch_blocker before accepted_ancestor: both hold the child at admitted, and the
 			// link is the nearer wait, which a person can end by closing the issue it names. The
-			// ancestor stood at awaiting_merge until cybermonklabs/legion#2539 deleted that phase;
-			// it stands in merging now, the accepted phase that still exists (record.Accepted).
+			// ancestor stands in merging, an accepted phase (record.Accepted).
 			name: "a child a link holds under an accepted ancestor",
 			store: projectionStore{
 				issues: []record.Issue{openRoot,

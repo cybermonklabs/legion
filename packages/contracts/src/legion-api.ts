@@ -716,9 +716,7 @@ const legionBlockedIssue = z.object({
 
 /**
  * `record.HeldReason` — the eleven words of `admission.held`, in `record.HeldReasons`' order.
- * `at_work` is the word of an issue in a phase that holds no admission slot; no phase has held no
- * slot since cybermonklabs/legion#2539 took `awaiting_merge` away, so the state carries no row with
- * it today.
+ * `at_work` names no issue today; `record.HeldAtWork` says why.
  */
 export const LEGION_HELD_REASONS = [
   "tree_closed",
@@ -740,11 +738,10 @@ export const LEGION_HELD_REASONS = [
  * list one ladder reads in one order) and which issues hold it (`heldBy`). A row names no issue
  * of `active` or `waiting`: the three lists are one partition of the issues the record holds in
  * the workflow, so a reader with all three has every issue and what each is doing. `heldBy` is
- * absent, never empty, where no
- * issue holds the one that waits — a root whose Legion label is off, an issue whose own work is
- * finished and whose merge is what is left — and a key it names may be one the state's `issues`
- * does not hold, as `blockedBy` may today, since an issue the daemon has not observed holds work
- * all the same. */
+ * absent, never empty, where no issue holds the one that waits — a root whose Legion label is
+ * off, or an issue none of the other words is true of — and a key it names may be one the state's
+ * `issues` does not hold, as `blockedBy` may today, since an issue the daemon has not observed
+ * holds work all the same. */
 const legionHeldIssue = z.object({
   issue: issueKey,
   reason: z.enum(LEGION_HELD_REASONS),

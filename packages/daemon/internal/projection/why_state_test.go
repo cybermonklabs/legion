@@ -25,10 +25,7 @@ import (
 //     LEGION-301, whose own blocked_by link holds it under its parent, the open children below
 //     LEGION-300, and the Dispatch links LEGION-110 waits on — and LEGION-601, which both of
 //     the last two hold at once and which reads both sentences, the children and then the link;
-//   - unlisted, the issue whose cause the record carries (LEGION-401). The second fill this
-//     test had, an issue waiting only for its merge, went with the phase it read: on this
-//     contract no issue stands in `awaiting_merge`, since the merger merges the head it reads
-//     and the daemon closes the issue when it reads that merge (dispatch://INFRA-714 R2).
+//   - unlisted, the issue whose cause the record carries (LEGION-401).
 //
 // And four issues carry no answer at all: LEGION-500, at work in a slot with its implementer
 // running; LEGION-501, at phase.Held, which holds a slot and so stands among the issues at work;

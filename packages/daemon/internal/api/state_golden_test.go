@@ -571,10 +571,8 @@ func populatedState(t *testing.T) State {
 			// tree at admitted whose record says the Legion label is off, so the admission queue
 			// does not carry it, it stands in neither `active` nor `waiting`, and its word is
 			// `label_off`, which record.HeldReasonOf answers for that shape (measured against the
-			// ladder, not assumed). It was a child of LEGION-210's tree at awaiting_merge reading
-			// `at_work` until cybermonklabs/legion#2539 deleted that phase, and that word was wrong
-			// even then: LEGION-210's gate is unregistered, so the ladder read `design_gate` for
-			// it. Its tree is no live tree and no draw reached it, so it carries no memory group.
+			// ladder, not assumed). Its tree is no live tree and no draw reached it, so it carries
+			// no memory group.
 			"LEGION-214": {
 				Key:           "LEGION-214",
 				Generation:    1,

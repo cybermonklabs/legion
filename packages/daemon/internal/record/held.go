@@ -45,9 +45,10 @@ const (
 	// HeldAcceptedAncestor is an issue beneath an ancestor the daemon has already accepted,
 	// which waits for that ancestor to close (HeldUnderAccepted).
 	HeldAcceptedAncestor HeldReason = "accepted_ancestor"
-	// HeldAtWork is an issue that keeps none of the cap's slots where it stands (KeepsSlot): its
-	// workers run as they did, and no other issue holds it. No phase has kept no slot since
-	// cybermonklabs/legion#2539 took awaiting_merge away, so the word names no issue today.
+	// HeldAtWork is the ladder's `!KeepsSlot(issue)`: an issue that keeps none of the cap's
+	// slots where it stands, whose workers run as they did and which no other issue holds.
+	// KeepsSlot is InWorkflow, and HeldList keeps only InWorkflow candidates, so no issue reads
+	// this word today. This is the one statement of that; every other reader points here.
 	HeldAtWork HeldReason = "at_work"
 	// HeldUnclassified is an issue none of the ten words above is true of (C2). The record holds
 	// it in the workflow and no rule here says what it waits for, which is a gap in the words
@@ -82,11 +83,11 @@ var HeldReasons = []HeldReason{
 // the state's admission.held and the controller's tick notice carry one shape rather than two
 // that could drift.
 //
-// heldBy is absent where no issue holds the one that waits — a root whose label is off, an issue
-// none of the other words is true of, an issue in a phase that keeps no slot — so the field carries omitempty and this row gets no MarshalJSON writing an
-// empty array for it. That is the one way the row differs from BlockedIssue, whose MarshalJSON
-// writes [] for blockedBy because every row of that list names at least one blocker and a reader
-// of it would have to answer for a null.
+// heldBy is absent where no issue holds the one that waits — a root whose label is off, or an
+// issue none of the other words is true of — so the field carries omitempty and this row gets no
+// MarshalJSON writing an empty array for it. That is the one way the row differs from
+// BlockedIssue, whose MarshalJSON writes [] for blockedBy because every row of that list names at
+// least one blocker and a reader of it would have to answer for a null.
 type HeldIssue struct {
 	Issue  string     `json:"issue"`
 	Reason HeldReason `json:"reason"`

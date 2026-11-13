@@ -212,13 +212,13 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// still running an older plugin is not.
 		stall bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count
-		// claimsToRefreshContract added, the contract thirteen below this daemon's own, so a pod
-		// at 73 or above is served the count and a pod still running an older plugin is not.
+		// claimsToRefreshContract added at 73, so a pod at 73 or above is served the count and a
+		// pod still running an older plugin is not.
 		refresh bool
 		// held is whether the caller is served `admission.held`, the issues the record holds in
-		// the workflow that stand in neither `active` nor `waiting`, the list heldContract
-		// added: this daemon's own contract, so a pod at it is served the key and a pod still
-		// running an older plugin is not.
+		// the workflow that stand in neither `active` nor `waiting`, the list heldContract added
+		// at 94, so a pod at 94 or above is served the key and a pod still running an older
+		// plugin is not.
 		held bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
