@@ -2985,6 +2985,10 @@ jobs:
               - 'packages/contracts/src/**'
               # The pmdoc fixture check runs pmdoc/gen, which imports the editor.
               - 'packages/proof-editor/**'
+              # The web app's display-tree fixture, which the fixture step's --check reads
+              # (internal/dispatch/pmdoc/web_fixtures_test.go:40-45). envoy-go's unit step skips
+              # that test, so the fixture is this job's alone.
+              - 'packages/dispatch/web/src/features/refs/__fixtures__/display-trees.json'
               # Its pack step writes each archive's notices, for each target the list names.
               - 'scripts/go-third-party-notices.sh'
               - '.github/go-release-targets.json'

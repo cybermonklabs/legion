@@ -2341,6 +2341,14 @@ GATES = [
         (CONTRACTS_SRC, "packages/contracts/scripts/gen-go.ts's imports of ../src/*"),
         (f"{ENVOY}/internal/dispatch/pmdoc/gen/**", f"{at('envoy-go-checks', 'Check pmdoc fixtures are up to date')} (gen.ts --check)"),
         ("packages/proof-editor/src/**", "packages/envoy/internal/dispatch/pmdoc/gen/gen.ts:4-6 imports @legion/proof-editor (exports -> src/lib.ts, src/lib-headless.ts, src/document-reading.ts)"),
+        # The web app's display-tree fixture, which the fixture step's --check compares the trees it
+        # builds with. Declared on this step and not as a RULES row keyed on web_fixtures_test.go: a
+        # row keyed on the file would put the fixture into every job that compiles pmdoc's tests,
+        # envoy-go's unit step among them, which skips this test (WEB_FIXTURE_TESTS) and never reads
+        # the file.
+        ("packages/dispatch/web/src/features/refs/__fixtures__/display-trees.json",
+         f"{at('envoy-go-checks', FIXTURE_STEP)}: internal/dispatch/pmdoc/web_fixtures_test.go:40-45 "
+         "webFixturePath joins it under pmdocSourceDir, and --check reads it to compare"),
         (f"{ENVOY}/loadtest/run-step.test.sh", at("envoy-go-checks", LOADTEST_RUN_STEP)),
         (f"{ENVOY}/loadtest/run-step.sh", "packages/envoy/loadtest/run-step.test.sh runs it"),
         (f"{ENVOY}/loadtest/run-series.sh", "packages/envoy/loadtest/run-step.test.sh runs it"),
