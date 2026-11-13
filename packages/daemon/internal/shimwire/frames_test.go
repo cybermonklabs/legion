@@ -509,17 +509,18 @@ func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T)
 	}
 }
 
-// rescueUnpushedAtMain is RescueUnpushed as a shim built before the issue's one rescue branch
-// decodes it: the frame's four fields at 9542c6fbbe, with no target among them.
-type rescueUnpushedAtMain struct {
+// rescueUnpushedBeforeTarget is RescueUnpushed as a shim built before the issue's one rescue
+// branch decodes it: the frame's four fields at 9542c6fbbe, with no target among them.
+type rescueUnpushedBeforeTarget struct {
 	ID                 string `json:"id"`
 	Branch             string `json:"branch"`
 	WorkspaceTimeoutMs int    `json:"workspaceTimeoutMs"`
 	TimeoutMs          int    `json:"timeoutMs"`
 }
 
-// rescueBranchAtMain is RescueBranch as a daemon built before the branch's commits decodes it.
-type rescueBranchAtMain struct {
+// rescueBranchBeforeCommits is RescueBranch as a daemon built before the branch's commits decodes
+// it.
+type rescueBranchBeforeCommits struct {
 	Name   string `json:"name"`
 	Commit string `json:"commit"`
 }
@@ -540,11 +541,11 @@ func TestARescueUnpushedFrameReadByAnOlderShimKeepsThePerPodPrefix(t *testing.T)
 	if !strings.Contains(string(line), `"target":"legion/LEGION-484-rescue"`) {
 		t.Fatalf("the frame is %s, want it to carry the issue's one rescue branch in target", line)
 	}
-	var old rescueUnpushedAtMain
+	var old rescueUnpushedBeforeTarget
 	if err := json.Unmarshal(line, &old); err != nil {
 		t.Fatalf("an older shim's decode of %s: %v", line, err)
 	}
-	want := rescueUnpushedAtMain{ID: "r6", Branch: "legion/LEGION-484-rescue-9d3f0c7a", WorkspaceTimeoutMs: 120_000, TimeoutMs: 300_000}
+	want := rescueUnpushedBeforeTarget{ID: "r6", Branch: "legion/LEGION-484-rescue-9d3f0c7a", WorkspaceTimeoutMs: 120_000, TimeoutMs: 300_000}
 	if old != want {
 		t.Fatalf("an older shim read %s as %+v, want %+v: the pod's own prefix in branch, the target dropped", line, old, want)
 	}
@@ -555,11 +556,11 @@ func TestARescueUnpushedFrameReadByAnOlderShimKeepsThePerPodPrefix(t *testing.T)
 	if err != nil {
 		t.Fatalf("Marshal(%#v): %v", branch, err)
 	}
-	var read rescueBranchAtMain
+	var read rescueBranchBeforeCommits
 	if err := json.Unmarshal(line, &read); err != nil {
 		t.Fatalf("an older daemon's decode of %s: %v", line, err)
 	}
-	if read != (rescueBranchAtMain{Name: branch.Name, Commit: branch.Commit}) {
+	if read != (rescueBranchBeforeCommits{Name: branch.Name, Commit: branch.Commit}) {
 		t.Fatalf("an older daemon read %s as %+v, want the branch's name and commit", line, read)
 	}
 }

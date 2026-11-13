@@ -1,4 +1,6 @@
 kind: Fixed
+custom:
+  Issue: pr3977
 body: |-
   The push check before an update round replaces an issue pod pushes only the issue's own unpushed
   work: its working copy's line, its bookmark, its git HEAD and the files no commit holds. It

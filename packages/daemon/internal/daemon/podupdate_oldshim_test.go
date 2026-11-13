@@ -22,9 +22,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
-// rescueRequestAtMain is the push check's request as a shim built before the issue's one rescue
+// olderShimRequest is the push check's request as a shim built before the issue's one rescue
 // branch decodes the frame: shimwire.RescueUnpushed's four fields at 9542c6fbbe, with no target.
-type rescueRequestAtMain struct {
+type olderShimRequest struct {
 	ID                 string `json:"id"`
 	Branch             string `json:"branch"`
 	WorkspaceTimeoutMs int    `json:"workspaceTimeoutMs"`
@@ -41,19 +41,19 @@ const olderShimWorkspace = "/legion/workspaces/sjawhar/legion/legion-484"
 // whose name starts with `<branch>-`, in ls-remote's order, plus each branch it pushed. The
 // workspace holds nothing its remote lacks, so the shim pushes nothing and the second half is
 // empty.
-func olderShimRescue(request runtime.RescueRequest, remote map[string]string) (rescueRequestAtMain, []runtime.WorkspaceRescue, error) {
+func olderShimRescue(request runtime.RescueRequest, remote map[string]string) (olderShimRequest, []runtime.WorkspaceRescue, error) {
 	frame := shimwire.RescueUnpushed{ID: "older-shim", Branch: request.Branch, Target: request.Target,
 		WorkspaceTimeoutMs: int(request.WorkspaceTimeout.Milliseconds()), TimeoutMs: int(request.Timeout.Milliseconds())}
 	if err := frame.Validate(); err != nil {
-		return rescueRequestAtMain{}, nil, err
+		return olderShimRequest{}, nil, err
 	}
 	line, err := json.Marshal(frame)
 	if err != nil {
-		return rescueRequestAtMain{}, nil, err
+		return olderShimRequest{}, nil, err
 	}
-	var read rescueRequestAtMain
+	var read olderShimRequest
 	if err := json.Unmarshal(line, &read); err != nil {
-		return rescueRequestAtMain{}, nil, err
+		return olderShimRequest{}, nil, err
 	}
 	w := shimwire.RescueWorkspace{Dir: olderShimWorkspace, Status: rescue.Clean}
 	for _, name := range slices.Sorted(maps.Keys(remote)) {

@@ -805,11 +805,11 @@ func TestAnotherWorktreeOfTheCloneIsNotRescued(t *testing.T) {
 	pushedNothing(t, d, only(t, d, d.Check(context.Background(), prefix, target)), before, commit, notes)
 }
 
-// The clone's own working tree is left out of the walk. An issue pod's clone holds no working
-// tree at all (workspace.feedClone), while its git HEAD and its index still name every file of
-// the default branch, so a check that took the clone's directory would read the whole tree as
-// deleted and push that deletion as a rescue branch. The clone is no agent's workspace, and
-// nothing of it is recorded or pushed.
+// The check reads only the workspace, never the clone's own directory. An issue pod's clone holds
+// no working tree at all (workspace.feedClone), while its git HEAD and its index still name every
+// file of the default branch, so a check that took the clone's directory would read the whole
+// tree as deleted and push that deletion as a rescue branch. The clone is no agent's workspace,
+// and nothing of it is pushed.
 func TestTheClonesOwnDirectoryIsNotChecked(t *testing.T) {
 	d := rescuetest.NewWithoutCloneTree(t, issue)
 	if files := d.Run(d.Clone, "git", "ls-files"); files != "base.txt" {

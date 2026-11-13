@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // The statuses a workspace's check ends in, the runtime's own words for them.
@@ -101,6 +102,13 @@ func jjString(name string) string {
 // the second run costs is time, and the budget holds both runs (GuardReserve).
 var gitPins = []string{"--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
 
+// Target is the issue's one rescue branch, `legion/<KEY>-rescue`, which the check pushes each
+// workspace's own work to (Request.Target) and which only moves forward. It is no issue's branch
+// (claim.BranchIssue), so nothing the daemon keeps follows it.
+func Target(issue string) string {
+	return claim.IssueBranch(issue) + "-rescue"
+}
+
 // Request is one check of every workspace on a pod's disk.
 type Request struct {
 	// StateDir is the disk's root: workspaces under <StateDir>/workspaces/<owner>/<repo>/<issue>,
@@ -140,7 +148,7 @@ func Report(workspaces []shimwire.RescueWorkspace) []runtime.WorkspaceRescue {
 			if len(b.Commits) > 0 {
 				branch.Commits = make([]runtime.RescuedCommit, len(b.Commits))
 				for j, c := range b.Commits {
-					branch.Commits[j] = runtime.RescuedCommit{ID: c.ID, Subject: c.Subject}
+					branch.Commits[j] = runtime.RescuedCommit(c)
 				}
 			}
 			report[i].Branches = append(report[i].Branches, branch)
@@ -179,13 +187,10 @@ func Run(ctx context.Context, req Request) []shimwire.RescueWorkspace {
 	return results
 }
 
-// removingSuffix ends the name of a workspace directory that workspace.Remove renamed aside to
-// delete (workspace's own removingSuffix). Its removal already let its work go.
-const removingSuffix = ".removing"
-
 // workspaces is every workspace directory on the disk: a real directory three levels below
 // workspaces/, never a symlink, never a file an agent left beside its workspace, and never a
-// directory renamed aside for removal (removingSuffix).
+// directory workspace.Remove renamed aside to delete (workspace.RemovingSuffix), whose removal
+// already let its work go.
 func workspaces(stateDir string) ([]string, error) {
 	if stateDir == "" || !filepath.IsAbs(stateDir) {
 		return nil, fmt.Errorf("the disk's root %q is not an absolute path", stateDir)
@@ -196,7 +201,7 @@ func workspaces(stateDir string) ([]string, error) {
 	}
 	var dirs []string
 	for _, match := range matches {
-		if strings.HasSuffix(match, removingSuffix) {
+		if strings.HasSuffix(match, workspace.RemovingSuffix) {
 			continue
 		}
 		if info, err := os.Lstat(match); err == nil && info.IsDir() {
@@ -207,13 +212,13 @@ func workspaces(stateDir string) ([]string, error) {
 	return dirs, nil
 }
 
-// rescueBranch is the branch the check pushes dir's work to, and the issue whose workspace dir is:
+// pushBranch is the branch the check pushes dir's work to, and the issue whose workspace dir is:
 // Target, or Branch when Target is empty (Request). The branch must be that issue's:
 // `legion/<KEY>-rescue`, or a per-pod `legion/<KEY>-rescue-<pod>`. Any other branch is an error
 // that names both keys, and so is a directory whose name is no issue key. A rescue branch must
 // never hold the work of another issue. Provisioning lays out one workspace for each issue key
 // (workspace.Location), so such a directory is a fault to show, not a case to serve.
-func rescueBranch(req Request, dir string) (branch, issue string, err error) {
+func pushBranch(req Request, dir string) (branch, issue string, err error) {
 	branch = cmp.Or(req.Target, req.Branch)
 	owner := "no issue's"
 	if base, _, ok := strings.Cut(branch, "-rescue"); ok {
@@ -225,7 +230,7 @@ func rescueBranch(req Request, dir string) (branch, issue string, err error) {
 	if !claim.IsIssueKey(issue) {
 		return "", "", fmt.Errorf("the workspace directory %s names no issue key, and the rescue branch %q is %s: nothing of it is pushed", dir, branch, owner)
 	}
-	one := claim.IssueBranch(issue) + "-rescue"
+	one := Target(issue)
 	if branch != one && (!strings.HasPrefix(branch, one+"-") || len(branch) == len(one)+1) {
 		return "", "", fmt.Errorf("the workspace %s is issue %s's, and the rescue branch %q is %s: its work is not pushed under the name of another issue", dir, issue, branch, owner)
 	}
@@ -236,7 +241,7 @@ func rescueBranch(req Request, dir string) (branch, issue string, err error) {
 // (its common git directory), so a directory under workspaces/ that is no git worktree is an error
 // rather than a pass: whatever it holds, nothing can push it.
 //
-// The branch is the issue's (rescueBranch), and the work is the issue's own: the heads of the
+// The branch is the issue's (pushBranch), and the work is the issue's own: the heads of the
 // workspace's own line in jj (ownHeads), the issue's git branch, the workspace's git HEAD, and the
 // workspace's files that no commit holds, as one commit on that HEAD (edits). Nothing else on the
 // disk is pushed: no other local branch or bookmark, no visible head off that line, no tag, no
@@ -274,7 +279,7 @@ func check(ctx context.Context, req Request, dir string) shimwire.RescueWorkspac
 	if filepath.Base(common) == ".git" {
 		clone = filepath.Dir(common)
 	}
-	branch, issue, err := rescueBranch(req, dir)
+	branch, issue, err := pushBranch(req, dir)
 	if err != nil {
 		return fail(err)
 	}
@@ -436,7 +441,24 @@ func check(ctx context.Context, req Request, dir string) shimwire.RescueWorkspac
 			workingCopy = mapped[0]
 		}
 	}
-	bookmarks, err := run.bookmarks(dir, clone, own, jj, ownBranch, remoteBranches)
+	// The local bookmarks of the workspace's own line: jj's listing, or, in a workspace with no jj,
+	// the issue's git branch alone.
+	var local []bookmark
+	switch {
+	case jj:
+		out, err := run.jj(dir, "bookmark", "list", "-r", ownLine(own), "-T", bookmarkTemplate)
+		if err != nil {
+			return fail(err)
+		}
+		for line := range strings.Lines(out) {
+			if name, commit, ok := strings.Cut(strings.TrimSpace(line), " "); ok {
+				local = append(local, bookmark{name: name, commit: commit})
+			}
+		}
+	case ownBranch != "":
+		local = []bookmark{{name: own, commit: ownBranch}}
+	}
+	bookmarks, err := run.bookmarks(clone, own, local, remoteBranches)
 	if err != nil {
 		return fail(err)
 	}
@@ -756,35 +778,19 @@ const bookmarkTemplate = `if(remote, "", if(conflict, ` +
 	`added_targets.map(|c| name ++ " " ++ c.commit_id() ++ "\n").join(""), ` +
 	`if(normal_target, name ++ " " ++ normal_target.commit_id() ++ "\n")))`
 
-// bookmarks is every local bookmark of the workspace's own line, in name order: the issue's own,
-// own, always, and each other bookmark on that line (ownLine) less each that the remote advertises
-// under the same name at the same commit. A put-back that set such a bookmark would only move it
-// to where the remote has it, which can be behind what the new pod fetched, and `main` is one of
-// them. A bookmark ahead of the remote, or one the remote does not have, is the issue's work. A
-// workspace with no jj has the issue's git branch, ownBranch, alone.
+// bookmarks is the bookmarks of listed — the local bookmarks of the workspace's own line
+// (ownLine) — that a rescue commit's trailers name, in name order: the issue's own, own, always,
+// and each other less each that the remote advertises under the same name at the same commit. A
+// put-back that set such a bookmark would only move it to where the remote has it, which can be
+// behind what the new pod fetched, and `main` is one of them. A bookmark ahead of the remote, or
+// one the remote does not have, is the issue's work.
 //
 // Each bookmark is named at the commit that holds its work (standsFor), as the working copy is,
 // and only then compared with the remote. `legion/<KEY>` on jj's empty working-copy commit with no
 // description, where provisioning sets it and where a read that takes no snapshot still sees it
 // while the role's edits are in no commit, is so named at the commit under it: the empty commit
 // is in no push and on no remote, and a put-back could not find it.
-func (r runner) bookmarks(dir, clone, own string, jj bool, ownBranch string, remoteBranches map[string]string) ([]bookmark, error) {
-	var listed []bookmark
-	if !jj {
-		if ownBranch != "" {
-			listed = append(listed, bookmark{name: own, commit: ownBranch})
-		}
-	} else {
-		out, err := r.jj(dir, "bookmark", "list", "-r", ownLine(own), "-T", bookmarkTemplate)
-		if err != nil {
-			return nil, err
-		}
-		for line := range strings.Lines(out) {
-			if name, commit, ok := strings.Cut(strings.TrimSpace(line), " "); ok {
-				listed = append(listed, bookmark{name: name, commit: commit})
-			}
-		}
-	}
+func (r runner) bookmarks(clone, own string, listed []bookmark, remoteBranches map[string]string) ([]bookmark, error) {
 	commits := make([]string, len(listed))
 	for i, b := range listed {
 		commits[i] = b.commit

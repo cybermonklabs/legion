@@ -55,16 +55,10 @@ for arg; do
     value=0
   else
     case "$arg" in
-      -C | -c | --git-dir | --work-tree | --namespace | --config-env | --attr-source | --shallow-file)
-        value=1
-        ;;
+      -C | -c | --git-dir | --work-tree | --namespace | --config-env | --attr-source | --shallow-file) value=1 ;;
       -*) ;;
-      *)
-        case "$arg" in
-          push | send-pack) push=1 ;;
-        esac
-        break
-        ;;
+      push | send-pack) push=1; break ;;
+      *) break ;;
     esac
   fi
   ahead=$((ahead + 1))

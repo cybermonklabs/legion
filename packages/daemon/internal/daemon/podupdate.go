@@ -664,6 +664,11 @@ type rescuedBranch struct {
 	repository string
 }
 
+// fromOlderShim is whether a shim that predates the branch's commits reported b: a shim of this
+// daemon reports at least one commit for every branch it reports (the commit it pushed, or the
+// commits only the branch holds), and an older shim reports none (runtime.RescuedBranch).
+func (b rescuedBranch) fromOlderShim() bool { return len(b.Commits) == 0 }
+
 // branches is every rescue branch the check reports, in the order reported, each once for each
 // repository. Each repository of the issue has a `legion/<KEY>-rescue` of its own, so the name
 // alone would hide all but the first. An older shim reports a branch of its pod again from every
@@ -698,19 +703,13 @@ func rescueRepository(dir string) string {
 
 // rescueBranch is the prefix of every rescue branch of a pod's replacement:
 // `legion/<KEY>-rescue-<first 8 of the pod's uid>`, which a shim that predates the issue's one
-// rescue branch (rescueTarget) numbers from 1. It is no issue's branch (claim.BranchIssue), so
-// nothing the daemon keeps follows it.
+// rescue branch (rescue.Target) numbers from 1. It is no issue's branch (claim.BranchIssue), so
+// nothing the daemon keeps follows it. The request names the issue's one branch in a field of its
+// own, beside this prefix rather than in its place: an older shim reports every remote branch that
+// starts with `<branch>-` as its own, so the one branch's name there would have it report every
+// earlier pod's rescue branches (shimwire.RescueUnpushed).
 func rescueBranch(issue, pod string) string {
-	return claim.IssueBranch(issue) + "-rescue-" + pod[:min(8, len(pod))]
-}
-
-// rescueTarget is the issue's one rescue branch, `legion/<KEY>-rescue`, which only moves forward.
-// The request names it in a field of its own, beside rescueBranch rather than in its place: an
-// older shim reports every remote branch that starts with `<branch>-` as its own, so this name
-// there would have it report every earlier pod's rescue branches (shimwire.RescueUnpushed). Like
-// rescueBranch, it is no issue's branch (claim.BranchIssue).
-func rescueTarget(issue string) string {
-	return claim.IssueBranch(issue) + "-rescue"
+	return rescue.Target(issue) + "-" + pod[:min(8, len(pod))]
 }
 
 // checkUnpushed runs the push check of the round's pod (runtime.Runtime.RescueUnpushed) through a
@@ -741,7 +740,7 @@ func (s *supervision) checkUnpushed(ctx context.Context, issue, round, pod strin
 	if timeout <= 0 {
 		return fmt.Errorf("%w: the replacement has no time left to run it in", errPushCheckFailed)
 	}
-	request := runtime.RescueRequest{Branch: rescueBranch(issue, pod), Target: rescueTarget(issue),
+	request := runtime.RescueRequest{Branch: rescueBranch(issue, pod), Target: rescue.Target(issue),
 		WorkspaceTimeout: min(rescueWorkspaceTimeout, timeout), Timeout: timeout}
 	var refused []string
 	for _, c := range rescuers(group, round) {
@@ -877,10 +876,10 @@ func rescueArtifactName(round string) string {
 func rescueSummary(round string, branches []rescuedBranch, link string, listed int) string {
 	var carried, older []rescuedBranch
 	for _, b := range branches {
-		if len(b.Commits) > 0 {
-			carried = append(carried, b)
-		} else {
+		if b.fromOlderShim() {
 			older = append(older, b)
+		} else {
+			carried = append(carried, b)
 		}
 	}
 	var text strings.Builder
@@ -921,30 +920,28 @@ func rescueSummary(round string, branches []rescuedBranch, link string, listed i
 // branch holds.
 func rescueBranchSummary(b rescuedBranch, listed int) string {
 	var text strings.Builder
-	if b.Pushed {
-		fmt.Fprintf(&text, "In the repository `%s`, the push check pushed %s to the branch `%s`. The tip of the branch is now `%s`.",
-			b.repository, rescueCount(len(b.Commits), "commit", "commits"), b.Name, b.Commit)
-		if b.Previous == "" {
-			text.WriteString(" This is a new branch.")
-		} else {
-			fmt.Fprintf(&text, " The tip before the push was `%s`.", b.Previous)
-		}
+	if !b.Pushed {
+		fmt.Fprintf(&text, "In the repository `%s`, the branch `%s` already holds this work from an earlier rescue. Its tip is `%s`. The issue branch does not have this work. %s only on this branch",
+			b.repository, b.Name, b.Commit, rescueCount(len(b.Commits), "commit is", "commits are"))
 		if listed > 0 {
-			if len(b.Commits) == 1 {
-				fmt.Fprintf(&text, " The commit is %s.", rescueIDs(b.Commits, listed))
-			} else {
-				fmt.Fprintf(&text, " The commits are %s.", rescueIDs(b.Commits, listed))
-			}
+			text.WriteString(": " + rescueIDs(b.Commits, listed))
 		}
+		text.WriteString(".")
 		return text.String()
 	}
-	fmt.Fprintf(&text, "In the repository `%s`, the branch `%s` already holds this work from an earlier rescue. Its tip is `%s`. The issue branch does not have this work.",
-		b.repository, b.Name, b.Commit)
-	only := rescueCount(len(b.Commits), "commit is", "commits are")
-	if listed > 0 {
-		fmt.Fprintf(&text, " %s only on this branch: %s.", only, rescueIDs(b.Commits, listed))
+	fmt.Fprintf(&text, "In the repository `%s`, the push check pushed %s to the branch `%s`. The tip of the branch is now `%s`.",
+		b.repository, rescueCount(len(b.Commits), "commit", "commits"), b.Name, b.Commit)
+	if b.Previous == "" {
+		text.WriteString(" This is a new branch.")
 	} else {
-		fmt.Fprintf(&text, " %s only on this branch.", only)
+		fmt.Fprintf(&text, " The tip before the push was `%s`.", b.Previous)
+	}
+	if listed > 0 {
+		commits := "commits are"
+		if len(b.Commits) == 1 {
+			commits = "commit is"
+		}
+		fmt.Fprintf(&text, " The %s %s.", commits, rescueIDs(b.Commits, listed))
 	}
 	return text.String()
 }
@@ -992,7 +989,7 @@ func rescueList(issue, round string, branches []rescuedBranch) string {
 		}
 		lines = append(lines, "repository: "+b.repository, "branch: "+b.Name, "tip: "+b.Commit)
 		switch {
-		case len(b.Commits) == 0:
+		case b.fromOlderShim():
 			lines = append(lines, "tip before: not reported, because the pod's shim is older than the daemon")
 		case !b.Pushed:
 			lines = append(lines, "tip before: the push check pushed nothing, and these commits are only on this branch")
@@ -1001,7 +998,7 @@ func rescueList(issue, round string, branches []rescuedBranch) string {
 		default:
 			lines = append(lines, "tip before: "+b.Previous)
 		}
-		if len(b.Commits) > 0 {
+		if !b.fromOlderShim() {
 			lines = append(lines, "commits: "+strconv.Itoa(len(b.Commits)))
 		}
 		for _, c := range b.Commits {
