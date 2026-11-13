@@ -6,6 +6,7 @@ import type { BlockSchema } from "../../api/types";
 import type { MarkdownEngine, RenderSpecWithAttrs } from "./markdown-engine";
 import type { DocumentJSON } from "./markdown-parse.worker";
 import { buildDispatchReference, pictureReference, referenceHref } from "./routes";
+import { SEARCH_HIGHLIGHT_ATTRIBUTE } from "./search-highlight";
 
 /**
  * The half of the Markdown engine written against ProseMirror's own classes, behind the same
@@ -83,7 +84,7 @@ const DISPLAY_HIGHLIGHT_MARK = "searchHighlight";
 function displaySchemaOf(schema: Schema): Schema {
   return new Schema({
     marks: schema.spec.marks.addToEnd(DISPLAY_HIGHLIGHT_MARK, {
-      toDOM: () => ["mark", { "data-search-highlight": "" }],
+      toDOM: () => ["mark", { [SEARCH_HIGHLIGHT_ATTRIBUTE]: "" }],
     }),
     nodes: schema.spec.nodes,
     topNode: schema.spec.topNode,

@@ -251,6 +251,103 @@ test("a search for an issue key names the issue in every hit that cites it, mark
   }
 });
 
+// The same pass, held to what the link pass links, over Postgres's own marks. A mark grows over a
+// reference only where that reference names something and is drawn as a link: `ts_headline`
+// marks `<b>SHA</b>-256`, `<b>UTF</b>-8`, `#<b>general</b>`, `#<b>1234</b>`, `<b>COVID</b>-19`
+// and, for an issue that does not exist, `<b>CORE</b>-99`, and none of those is a reference that
+// links, so each keeps the mark the server sent. The `COVID-19` body also cites an issue that
+// does exist, so the link pass runs over it and its filter is what holds the mark. The query
+// `CORE` marks `<b>CORE</b>-1` of that issue, and that mark grows to the whole key, which reads
+// as the issue's name. (`ts_headline` starts its fragment a word in, so no row reads the
+// sentence's first word.)
+// SLOW(>=2s): seven seeded comments and seven searches, each answered by Postgres's headline.
+test("a search mark grows over a reference only where it links, and stays as the server sent it elsewhere", async ({
+  browser,
+}) => {
+  // Each soft read that fails waits out its own 15 s, and a run against a wrong pass should name
+  // every body whose marks moved, so the row has room for all twelve.
+  test.setTimeout(240_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Bench work" });
+  const missing = "CORE-99";
+  const bodies = [
+    {
+      query: "sha",
+      text: "We hash every upload with SHA-256 before it reaches the bucket on the storage side.",
+      marks: ["SHA"],
+      refs: 0,
+      shows: "SHA-256",
+    },
+    {
+      query: "utf",
+      text: "Store every name as UTF-8 throughout the pipeline so nothing is lost on the way.",
+      marks: ["UTF"],
+      refs: 0,
+      shows: "UTF-8",
+    },
+    {
+      query: "general",
+      text: "The question was posted in #general this morning by the person who owns the board.",
+      marks: ["general"],
+      refs: 0,
+      shows: "#general",
+    },
+    {
+      query: "1234",
+      text: "We merged the fix in PR #1234 for the patch release that shipped last week.",
+      marks: ["1234"],
+      refs: 0,
+      shows: "#1234",
+    },
+    {
+      query: "CORE",
+      text: `The release is blocked on ${missing} until the vendor answers our question on Friday.`,
+      marks: ["CORE"],
+      refs: 0,
+      shows: missing,
+    },
+    {
+      query: "covid",
+      text: `The COVID-19 notice that ${issue.key} tracks goes out to every office on Monday morning.`,
+      marks: ["COVID"],
+      refs: 1,
+      shows: "COVID-19",
+    },
+  ];
+  for (const body of bodies) {
+    await createComment(issue.key, { body: body.text });
+  }
+  await createComment(issue.key, {
+    body: `The launch is waiting on ${issue.key} until the vendor answers our question on Friday.`,
+  });
+  const context = await asUser(browser, "alice");
+
+  try {
+    const page = await context.newPage();
+    await openSearchFromRail(page, false);
+    const search = page.getByRole("combobox", { name: "Search" });
+    const dialog = page.getByRole("dialog", { name: "Search" });
+    for (const body of bodies) {
+      await search.fill(body.query);
+      const hit = dialog.getByRole("option", { name: /^comment / }).filter({ hasText: body.shows });
+      await expect(hit, body.query).toHaveCount(1);
+      // Soft, so a run names every body whose marks moved rather than the first alone.
+      await expect.soft(hit.locator("mark"), body.query).toHaveText(body.marks);
+      await expect.soft(hit.locator("[data-dispatch-ref]"), body.query).toHaveCount(body.refs);
+    }
+    // The query that marks a part of a real key, which the link pass links.
+    await search.fill("CORE");
+    const linked = dialog
+      .getByRole("option", { name: /^comment / })
+      .filter({ hasText: "is waiting on" });
+    await expect(linked).toHaveCount(1);
+    await expect(linked.locator("mark")).toHaveText([`${issue.key} Bench work`]);
+    await expect(linked.locator("mark [data-dispatch-ref]")).toHaveCount(1);
+  } finally {
+    await context.close();
+  }
+});
+
 // SLOW(>=2s): a seeded project document, issue and message, and the two routes the palette's
 // hits open - a Conversation turn and the document, which mounts its editor.
 test("a project-document hit is grouped under the document and opens it; a message hit opens its Conversation turn", async ({

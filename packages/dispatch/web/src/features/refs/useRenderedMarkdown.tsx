@@ -417,17 +417,17 @@ function keepTheReadersPlace(element: HTMLElement): ReadersPlace {
  * same-origin dashboard URL is already a real link by then (GFM autolinked it, or the author
  * wrote it as Markdown link syntax). Either way, every reference anchor gets its href rewritten
  * to the SPA route and its text handed to a portal-mounted `RefLink` for the resolved title.
- * `decorate` runs last, on the fallback text as on a painted element, so a `<mark>` it adds
- * never splits a reference before the link pass sees it, and a plain lead it prepends is never
- * read as a reference; it leaves every anchor where the link pass put it. Each Dispatch
- * picture's placeholder is found after it, wherever the paint left one, and gets a portal-mounted
- * `DispatchPicture` in the shape `pictures` names. Where the app provides a decision card
- * (`TextAskCard`), each `ask` shell a parsed `paint` drew gets one, mounted in the same commit
- * (`collectAskHosts`); the card is a dependency, so a new provider value renders again. On a
- * painted body, each fenced `mermaid` block then draws as its diagram (`drawMermaidDiagrams`,
- * which draws a source it has not drawn before late, once its worker answers; the paint that
- * replaces it, and the unmount, cancel that). It runs after every other pass, so a `dispatch://`
- * in a diagram's label is never wrapped as a link or collected as a reference.
+ * `decorate` runs last, on the fallback text as on a painted element, so a plain lead it
+ * prepends is never read as a reference; it leaves every anchor where the link pass put it. Each
+ * Dispatch picture's placeholder is found after it, wherever the paint left one, and gets a
+ * portal-mounted `DispatchPicture` in the shape `pictures` names. Where the app provides a
+ * decision card (`TextAskCard`), each `ask` shell a parsed `paint` drew gets one, mounted in the
+ * same commit (`collectAskHosts`); the card is a dependency, so a new provider value renders
+ * again. On a painted body, each fenced `mermaid` block then draws as its diagram
+ * (`drawMermaidDiagrams`, which draws a source it has not drawn before late, once its worker
+ * answers; the paint that replaces it, and the unmount, cancel that). It runs after every other
+ * pass, so a `dispatch://` in a diagram's label is never wrapped as a link or collected as a
+ * reference.
  * `onRendered` fires after each render lands; the newest callback is the one called, and a new
  * callback alone re-renders nothing. `paint` and `decorate` are dependencies: a caller passes a
  * module-level function or memoises one on what it reads. The options object itself is not one,

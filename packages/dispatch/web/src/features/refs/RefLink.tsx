@@ -9,7 +9,8 @@ import {
   referenceHref,
   referenceRouteFromHref,
 } from "./routes";
-import { readTextReferences, type TextReferenceFacts } from "./text-references";
+import { SEARCH_HIGHLIGHT_SELECTOR, searchMark } from "./search-highlight";
+import { readTextReferences, type TextReference, type TextReferenceFacts } from "./text-references";
 
 export interface ReferenceAnchor {
   /** The element the `RefLink` portal renders into: the `<a>` itself, or whatever a surface put
@@ -116,17 +117,140 @@ export function RefLink({
 
 const excludedRefAncestorTags: Record<string, true> = { A: true, CODE: true, PRE: true };
 
-function isInsideExcludedAncestor(node: Node, root: Node): boolean {
-  for (
-    let current = node.parentNode;
-    current !== null && current !== root;
-    current = current.parentNode
-  ) {
+/** Whether the link pass reads what `node` holds: no link, code span or code block of `root`
+ *  holds it, `node` itself included. A text node is read where this answers for it. */
+function linkPassReads(node: Node, root: Node): boolean {
+  for (let current: Node | null = node; current !== null && current !== root; ) {
     if (current instanceof HTMLElement && excludedRefAncestorTags[current.tagName] === true) {
-      return true;
+      return false;
+    }
+    current = current.parentNode;
+  }
+  return true;
+}
+
+/** Whether the link pass links `reference`: the one filter both its passes read. */
+function linksReference(reference: TextReference, cited: ReadonlySet<string>): boolean {
+  return (
+    reference.reference !== undefined &&
+    cited.has(reference.reference) &&
+    // A reference that opens no page of this dashboard - a person, whom nothing in Dispatch
+    // shows - stays the words its author wrote: there would be nothing behind the link.
+    // The same gate `collectReferenceAnchors` writes the href behind, so the two agree.
+    (reference.route === undefined || referenceHref(reference.route) !== undefined)
+  );
+}
+
+/** One node of a run of words a search mark can cut: a text node, or a search mark holding
+ *  nothing but text, which is how the serializer draws the highlight over a run (it is the
+ *  schema's last mark, so its element is the innermost over the words). */
+interface RunPiece {
+  readonly text: string;
+  readonly marked: boolean;
+}
+
+function runPiece(node: ChildNode): RunPiece | undefined {
+  if (node instanceof Text) {
+    return { marked: false, text: node.data };
+  }
+  if (
+    node instanceof HTMLElement &&
+    node.matches(SEARCH_HIGHLIGHT_SELECTOR) &&
+    Array.from(node.childNodes).every((child) => child instanceof Text)
+  ) {
+    return { marked: true, text: node.textContent ?? "" };
+  }
+  return undefined;
+}
+
+/**
+ * Puts each reference the link pass will link, where a search mark falls in it, under one mark
+ * of its own, whole. Postgres's `ts_headline` marks the words it matched, and it cuts an address
+ * or a key into its own words to do so: a search for `CORE-1` answers
+ * `dispatch://<b>CORE</b><b>-1</b>` and `<b>CORE</b><b>-1</b>`, and one for `CORE` answers
+ * `<b>CORE</b>-1` (measured against the pod's Postgres, 2026-11-13, INFRA-1702). The snippet's
+ * tree then holds the reference in more than one text node, and the link pass reads one text
+ * node at a time, so it would find no reference there and the hit would show the raw address.
+ *
+ * So each run of adjacent text nodes and search marks the link pass reads is read as the one
+ * text it is, with the link pass's own reader, facts and filter (`linksReference`). A reference
+ * it would link that holds a marked character is marked from its first character to its last,
+ * and the run is written again as one node per stretch of marked or unmarked words. Nothing else
+ * moves: a mark over a word the link pass does not link - `SHA-256`, `UTF-8`, `#general`,
+ * `#1234`, the key of an issue that does not exist - stays exactly where the server put it, and
+ * a run whose marks touch no linked reference, or a body with no search mark at all, is left as
+ * it was.
+ */
+function markLinkedReferencesWhole(root: HTMLElement, { cited, facts }: ReferenceLinking): void {
+  if (root.querySelector(SEARCH_HIGHLIGHT_SELECTOR) === null) {
+    return;
+  }
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+  const containers: HTMLElement[] = [root];
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    if (node instanceof HTMLElement && linkPassReads(node, root)) {
+      containers.push(node);
     }
   }
-  return false;
+  for (const container of containers) {
+    let run: ChildNode[] = [];
+    for (const child of Array.from(container.childNodes)) {
+      if (runPiece(child) === undefined) {
+        markRunReferencesWhole(container, run, child, cited, facts);
+        run = [];
+      } else {
+        run.push(child);
+      }
+    }
+    markRunReferencesWhole(container, run, null, cited, facts);
+  }
+}
+
+/** `markLinkedReferencesWhole` over one run of `container`'s children, the run ending before
+ *  `next` (`null` at the container's end). */
+function markRunReferencesWhole(
+  container: HTMLElement,
+  run: readonly ChildNode[],
+  next: ChildNode | null,
+  cited: ReadonlySet<string>,
+  facts: TextReferenceFacts
+): void {
+  const pieces = run.flatMap((node) => runPiece(node) ?? []);
+  if (!pieces.some((piece) => piece.marked)) {
+    return;
+  }
+  const text = pieces.map((piece) => piece.text).join("");
+  // One entry per UTF-16 unit, which is what a reference's `start` and `end` count.
+  const marked = pieces.flatMap((piece) =>
+    Array.from({ length: piece.text.length }, () => piece.marked)
+  );
+  let widened = false;
+  for (const reference of readTextReferences(text, facts).references) {
+    if (
+      linksReference(reference, cited) &&
+      marked.slice(reference.start, reference.end).includes(true)
+    ) {
+      marked.fill(true, reference.start, reference.end);
+      widened = true;
+    }
+  }
+  if (!widened) {
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  for (let from = 0; from < text.length; ) {
+    let to = from + 1;
+    while (to < text.length && marked[to] === marked[from]) {
+      to += 1;
+    }
+    const words = document.createTextNode(text.slice(from, to));
+    fragment.append(marked[from] === true ? searchMark(words) : words);
+    from = to;
+  }
+  for (const node of run) {
+    node.remove();
+  }
+  container.insertBefore(fragment, next);
 }
 
 /**
@@ -149,28 +273,28 @@ function isInsideExcludedAncestor(node: Node, root: Node): boolean {
  * backslash of an escaped `\#q2` and resolves the `&#35;` that writes a `#`. So a candidate
  * links only while the body's own source cites it (`ReferenceLinking.cited`), which is what the
  * server indexed for the same body.
+ *
+ * A search mark the server put inside a reference it will link is widened to the whole
+ * reference first (`markLinkedReferencesWhole`), so a reference a search split is still one
+ * text node when this pass reads it.
  */
-export function linkifyDispatchRefs(root: HTMLElement, { cited, facts }: ReferenceLinking): void {
+export function linkifyDispatchRefs(root: HTMLElement, linking: ReferenceLinking): void {
+  const { cited, facts } = linking;
   if (cited.size === 0) {
     return;
   }
+  markLinkedReferencesWhole(root, linking);
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const candidates: Text[] = [];
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    if (node instanceof Text && !isInsideExcludedAncestor(node, root)) {
+    if (node instanceof Text && linkPassReads(node, root)) {
       candidates.push(node);
     }
   }
   for (const textNode of candidates) {
     const value = textNode.data;
-    const found = readTextReferences(value, facts).references.filter(
-      (reference) =>
-        reference.reference !== undefined &&
-        cited.has(reference.reference) &&
-        // A reference that opens no page of this dashboard - a person, whom nothing in Dispatch
-        // shows - stays the words its author wrote: there would be nothing behind the link.
-        // The same gate `collectReferenceAnchors` writes the href behind, so the two agree.
-        (reference.route === undefined || referenceHref(reference.route) !== undefined)
+    const found = readTextReferences(value, facts).references.filter((reference) =>
+      linksReference(reference, cited)
     );
     if (found.length === 0) {
       continue;
