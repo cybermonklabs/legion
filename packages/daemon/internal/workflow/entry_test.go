@@ -123,7 +123,10 @@ func TestEveryPhaseStartRaisesTheRolesEntryAndWritesItsTask(t *testing.T) {
 // A resume hands no new task: it is the task the worker already holds, said again for a session
 // that may have forgotten it (ResumePhaseTask). It raises no entry, so the row keeps the number,
 // the work and the moment its phase's own start wrote, and the resumed worker's in-flight
-// completion is never refused.
+// completion is never refused. The claim here stands level with the entry its phases row names,
+// which is the claim a resume is for: one standing behind that entry is sent the work of that
+// entry instead, and raises no entry either
+// (TestTheBootsResumeOfAWorkerBehindItsEntrySendsThatEntrysWork).
 func TestTheBootsResumeRaisesNoEntry(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := t.Context()
@@ -145,6 +148,9 @@ func TestTheBootsResumeRaisesNoEntry(t *testing.T) {
 		string(token), project); err != nil {
 		t.Fatalf("seed the suspended implementer: %v", err)
 	}
+	// The claim was last queued a task of the entry its row names, so the boot owes it no work
+	// of that entry (OwedEntry) and the resume is the whole of what it needs.
+	seedGivenEntry(t, pool, token, seededEntry)
 
 	if _, err := intake.ApplyFact(ctx, pool, "daemon", "boot:LEGION:1", intake.DaemonBooted{Boot: 1},
 		testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {

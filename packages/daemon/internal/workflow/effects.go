@@ -389,13 +389,24 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 //
 // It is exported for admission, which repairs a slot whose worker has no task with it
 // (resumeSlottedWorkers) and sweeps the claims left behind their role's entry: every other way
-// back into a phase is a transition with a task of its own.
+// back into a phase is a transition with a task of its own. Its start carries no mark, which is
+// what a sweep's and a ready's start carry; a door that marks its start calls sendOwedEntry.
 func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow) error {
+	return e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{})
+}
+
+// sendOwedEntry is the body SendOwedEntry and the boot's resume by rule (resume.go's booted)
+// share, with the marks of the door the start comes through (startMarks). A mark names that
+// door and not the task's text, so what a claim behind its entry is sent is composed in one
+// place however the start is made, and the boot's resume of a claim the daemon suspended by
+// rule goes on telling the outbox whose launch budget is at risk.
+func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow,
+	marks startMarks) error {
 	task := row.EntryTask
 	if task == "" {
 		task = ResumePhaseTask(issue)
 	}
-	return e.started(ctx, tx, issue, role, task, row.Entry, startMarks{})
+	return e.started(ctx, tx, issue, role, task, row.Entry, marks)
 }
 
 // StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
@@ -425,7 +436,7 @@ type startMarks struct {
 	// resend says the start hands the role the work of the entry its phases row already names
 	// rather than a new entry, so the claim's given entry does not decline the task
 	// (record.SuperviseRequest.ResendEntry). The held phase's retry sets it (restart), because
-	// the claim it reaches may hold that very entry as its given one; SendOwedEntry sends the
+	// the claim it reaches may hold that very entry as its given one; sendOwedEntry sends the
 	// entry its row names too and sets it not, because the claim it reaches is behind that entry
 	// and the entry test passes the task on its own.
 	resend bool
@@ -436,9 +447,12 @@ type startMarks struct {
 	resumeTask bool
 	// ruleResume says the start is the boot's resume by rule, so the outbox finishes the row
 	// rather than retrying the claim it resumed when that claim spends its launch budget
-	// (record.SuperviseRequest.RuleResume). The boot sets it (booted), and that start alone: it
-	// is the one start built here that carries no entry, since the boot hands the role no work
-	// it was not already on.
+	// (record.SuperviseRequest.RuleResume). The boot sets it (booted), and that start alone: the
+	// mark names the door the start comes through — the boot's resume of a claim the daemon
+	// suspended by rule, where the outbox finishes the row rather than retrying a claim that is
+	// spending its launch budget — and not the task's text. So the boot carries it on the work
+	// of the entry its role's phases row names as well as on the phase's resume task
+	// (sendOwedEntry), and changing what the task says does not change whose budget is at risk.
 	ruleResume bool
 	// freshSession says the start must not resume the session the claim records but begin one of
 	// its own (record.SuperviseRequest.FreshSession). Only the operator's `legion claims retry
@@ -448,20 +462,23 @@ type startMarks struct {
 }
 
 // started enqueues the start each of its five callers makes, each of which has held role to one
-// that works a phase and composed the task itself, at the entry that task is of — 0 for the
-// boot's resume by rule, which hands the role no new work (booted) — and each of which names its
-// own marks. It is the one place a start of a phase worker is built, so a reader asking what
-// such a row carries reads this request and no other, and a field added here reaches every one
-// of those starts. It goes through StartOrOwe, so the worker comes back on the one row that
-// carries its new task, and that row waits for the issue's admission slot: a transition's start
-// puts a worker to work, which is exactly what the cap counts.
+// that works a phase and composed the task itself, at the entry that task is of — 0 for a
+// resume that hands the role no new work, which is the boot's resume of a claim level with the
+// entry its phases row names (booted) — and each of which names its own marks. It is the one
+// place a start of a phase worker is built, so a reader asking what such a row carries reads
+// this request and no other, and a field added here reaches every one of those starts. It goes
+// through StartOrOwe, so the worker comes back on the one row that carries its new task, and
+// that row waits for the issue's admission slot: a transition's start puts a worker to work,
+// which is exactly what the cap counts.
 //
-// One of the five is called from outside the engine's own transitions: SendOwedEntry, which
-// admission calls for the claims it sweeps and for the slot it repairs (admit's owedEntryRoles
-// and resumeSlottedWorkers), and which readyWorkerTask calls for a worker whose agent has just
-// reported ready while its claim stands below the entry its phases row names (catch_up.go). A
-// ready worker level with that row is given the phase's resume task instead, and that one start
-// is enqueued directly rather than built here, for the reason StartOrOwe's own comment gives.
+// One of the five is called from outside the engine's own transitions: sendOwedEntry, which
+// admission calls through SendOwedEntry for the claims it sweeps and for the slot it repairs
+// (admit's owedEntryRoles and resumeSlottedWorkers), which readyWorkerTask calls for a worker
+// whose agent has just reported ready while its claim stands below the entry its phases row
+// names (catch_up.go), and which the boot's resume by rule calls for a suspended claim standing
+// below it (booted). A ready worker level with that row is given the phase's resume task
+// instead, and that one start is enqueued directly rather than built here, for the reason
+// StartOrOwe's own comment gives.
 func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, entry int64, marks startMarks) error {
 	return StartOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
