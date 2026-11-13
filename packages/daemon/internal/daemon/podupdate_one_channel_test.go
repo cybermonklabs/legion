@@ -127,7 +127,9 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 // c-early-release terms case). A later sweep that reads other drift for the same pod writes no
 // new reasons over the open round, and the ask the sweep publishes names the reasons the round
 // opened with: the ask a role reads and the record an operator reads name one thing for one
-// round id.
+// round id. The late-round notice names them too: an operator's suspension holds the round past
+// its bound while the pod still reads the later drift, and the notice names the reasons recorded
+// at the round's open, not that drift.
 func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
@@ -160,6 +162,17 @@ func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T
 		if ask.Text != text {
 			t.Errorf("the ask to the %s says:\n%s\nwant the round's own terms:\n%s", ask.Role, ask.Text, text)
 		}
+	}
+
+	rig.suspendByOperator(claim.RoleTester)
+	rig.clockAt(podUpdateBound)
+	rig.tick()
+	notices := rig.notices()
+	if len(notices) != 1 || notices[0].Update == nil {
+		t.Fatalf("at the bound %s the controller was told %+v, want one update-stalled notice", rig.clock.Now(), notices)
+	}
+	if got := notices[0].Update.Reasons; got != podUpdateDrift {
+		t.Errorf("the late-round notice names reasons %q, want the %q the round opened with", got, podUpdateDrift)
 	}
 }
 

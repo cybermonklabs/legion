@@ -1344,18 +1344,7 @@ func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
 // taken back here, so there is no mark to make again, and the next tick's call writes the stamp
 // it makes then.
 func (m *Machine) PodUpdateTold(ctx context.Context, round string) (bool, error) {
-	m.mu.Lock()
-	defer m.unlock()
-	if m.claim.UpdateRound != round || m.claim.UpdateToldAt != nil {
-		return false, nil
-	}
-	told := m.deps.Clock.Now()
-	m.claim.UpdateToldAt = &told
-	if err := m.putClaim(ctx); err != nil {
-		m.claim.UpdateToldAt = nil
-		return false, err
-	}
-	return true, nil
+	return m.markRound(ctx, round, &m.claim.UpdateToldAt)
 }
 
 // PodUpdateAsked marks that the daemon's sweep enqueued this claim's ask of its open update round
@@ -1369,15 +1358,23 @@ func (m *Machine) PodUpdateTold(ctx context.Context, round string) (bool, error)
 // the sweep publishes the ask again at the next tick rather than lose it, as PodUpdateTold does
 // for the notice.
 func (m *Machine) PodUpdateAsked(ctx context.Context, round string) (bool, error) {
+	return m.markRound(ctx, round, &m.claim.UpdateTaskedAt)
+}
+
+// markRound stamps mark, one of this claim's own update-round marks, at the clock, for round
+// (PodUpdateTold, PodUpdateAsked). It stamps nothing and reports false when the claim is not in
+// round or the mark is already set. A write the store refuses takes the stamp back and is
+// returned with false.
+func (m *Machine) markRound(ctx context.Context, round string, mark **time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.unlock()
-	if m.claim.UpdateRound != round || m.claim.UpdateTaskedAt != nil {
+	if m.claim.UpdateRound != round || *mark != nil {
 		return false, nil
 	}
-	asked := m.deps.Clock.Now()
-	m.claim.UpdateTaskedAt = &asked
+	at := m.deps.Clock.Now()
+	*mark = &at
 	if err := m.putClaim(ctx); err != nil {
-		m.claim.UpdateTaskedAt = nil
+		*mark = nil
 		return false, err
 	}
 	return true, nil
@@ -1674,10 +1671,10 @@ func (m *Machine) stoppingProcess() func() {
 // every locked section that can change the wake, the credit or the intent ends in unlock, and a
 // section that takes mu without it reads the claim or counts goroutines and changes none of the
 // three. The sections that defer it are Handle, which every event and every timer of this package
-// comes through, ReleaseUncertainLaunch, PodUpdateTold, PodUpdateAsked, StartedBy and Retree; the
-// sections that take mu without it are Claim, OnDurableState, Wait, compaction and the two
-// goroutine tails in delivery.go and secrets.go. It is that rule a section added later has to
-// keep, rather than this list of the sections there are now.
+// comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold, PodUpdateAsked), StartedBy
+// and Retree; the sections that take mu without it are Claim, OnDurableState, Wait, compaction
+// and the two goroutine tails in delivery.go and secrets.go. It is that rule a section added
+// later has to keep, rather than this list of the sections there are now.
 func (m *Machine) unlock() {
 	m.endRefreshLane()
 	m.publish()

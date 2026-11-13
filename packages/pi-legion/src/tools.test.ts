@@ -1472,7 +1472,7 @@ function controllerTool(daemon: () => LegionDaemonClient, minted: string[]): Reg
       throw new Error("a controller completes no phase");
     },
     onUpdateAnswered: () => {
-      throw new Error("a controller answers no update task");
+      throw new Error("a controller answers no update message");
     },
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,

@@ -195,21 +195,17 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		}
 		return nil
 	}
-	joined := strings.Join(reasons, ", ")
-	if len(reasons) == 0 {
-		// The drift this round was opened for has gone away — an operator rolled the release
-		// back — and the round replaces the pod all the same. The round has already asked every
-		// worker in that pod to push its work and to start no new work, each has answered or is
-		// about to, and no path is left that lets a worker carry on in the pod it was told would
-		// be replaced. Replacing it is one restart of each worker in its own session, which the
-		// alternative — a release of the answered workers that the daemon alone knows about —
-		// is not.
-		//
-		// What the ask the worker reads and the notice the operator reads name is the round's
-		// own recorded reasons: the live drift says nothing now, and both of them must say why
-		// the round was opened.
-		joined = roundReasons(group, open)
-	}
+	// The drift this tick read opens a round and decides nothing of a round already open: a
+	// round's terms are fixed at its open (dispatch://INFRA-2981 R9), so what an open round's
+	// notices and its replacement name is its own recorded reasons (roundReasons). That holds
+	// where the drift has gone away too — an operator rolled the release back — and the round
+	// replaces the pod all the same. The round has already asked every role in that pod to push
+	// its work and to start no new work, and no path is left that lets a role carry on in the pod
+	// it was told would be replaced. Replacing it is one restart of each role in its own session,
+	// which the alternative — a release of the answered roles that the daemon alone knows about —
+	// is not.
+	round := supervise.PodRound(pod)
+	terms := strings.Join(reasons, ", ")
 	// One live read, given to both decisions below, so the claims the replacement waits on and
 	// the claims the post asks again are one set. Read live by the replacement and from the
 	// snapshot by the post, a claim whose session registered after the tick's read would block
@@ -219,8 +215,11 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	var live []supervise.Claim
 	if open != "" {
 		live = s.liveGroup(group)
-		if replace, decided := s.completePodUpdate(ctx, issue, group, live, open, pod, joined, now); decided {
+		if replace, decided := s.completePodUpdate(ctx, issue, group, live, open, pod, roundReasons(group, open), now); decided {
 			return replace
+		}
+		if open == round {
+			terms = roundReasons(group, open)
 		}
 	}
 	// A round the claims do not already record is an opening, and the project's limits may hold
@@ -233,7 +232,6 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	// that same ask again rather than a new one, and no limit holds that back either
 	// (podUpdateSweep.reasks): it is in a round for the sweep's record, and nothing more is
 	// charged for it.
-	round := supervise.PodRound(pod)
 	opening := open != round && !sweep.reasks(issue, round)
 	if opening && sweep.holds(issue) {
 		return nil
@@ -241,7 +239,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	if open == "" {
 		live = s.liveGroup(group)
 	}
-	if s.openPodUpdate(ctx, issue, live, pod, joined, now) && opening {
+	if s.openPodUpdate(ctx, issue, live, pod, terms, now) && opening {
 		s.recordPodUpdateOpening(sweep, issue, round, now)
 	}
 	return nil
@@ -387,10 +385,9 @@ func (e roundEnd) bounded() bool {
 }
 
 // readRoundEnd is the round's end as group reads at now, under the round's bound (roundBound).
-// No bound — no claim of group records when the round opened — is a bound that has not come.
 func readRoundEnd(group []supervise.Claim, round string, bound *time.Time, now time.Time) roundEnd {
 	return roundEnd{
-		past:       bound != nil && !now.Before(*bound),
+		past:       pastBound(bound, now),
 		answered:   answeredClaims(group, round),
 		unanswered: waitingClaims(group, round),
 		working:    workingClaims(group),
@@ -407,6 +404,12 @@ func roundBound(group []supervise.Claim, round string, grace time.Duration) *tim
 	}
 	bound := opened.Add(grace)
 	return &bound
+}
+
+// pastBound is whether now is at or past bound (roundBound). No bound — no claim of the group
+// records when the round opened — is a bound that has not come.
+func pastBound(bound *time.Time, now time.Time) bool {
+	return bound != nil && !now.Before(*bound)
 }
 
 // readReplacement takes the five readings that hold a round's pod replacement back over one live
@@ -584,14 +587,14 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 			s.log.Error("supervise: the push check before this update round's replacement failed; nothing was replaced and the round stays open",
 				"issue", issue, "round", round, "pod", pod, "rescued", checked.rescued(), "error", err)
 			s.tellLateRound(ctx, issue, live, round, pod, reasons, now,
-				fmt.Sprintf("The bound of the update round is past. The check for unpushed work before the replacement failed, so the daemon did not replace the pod: %v", err))
+				fmt.Sprintf(boundPastReason+"The check for unpushed work before the replacement failed, so the daemon did not replace the pod: %v", err))
 			return
 		}
 		if ctx.Err() == nil {
 			s.log.Error("supervise: replace the pod of a finished update round; retrying at the next sweep",
 				"issue", issue, "round", round, "pod", pod, "error", err)
 			s.tellLateRound(ctx, issue, live, round, pod, reasons, now,
-				fmt.Sprintf("The bound of the update round is past. The runtime refused the pod replacement: %v", err))
+				fmt.Sprintf(boundPastReason+"The runtime refused the pod replacement: %v", err))
 		}
 		return
 	}
@@ -615,18 +618,22 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 	s.endPodUpdates(live)
 }
 
-// The reasons the late-round notice gives for the three readings that hold a round past its
-// bound and name no claim of their own (tellLateRound). The controller reads them, so they
-// follow ASD-STE100.
+// boundPastReason opens every reason the late-round notice gives (tellLateRound,
+// tellPodlessRound): the notice is told only once the round's bound has come.
+const boundPastReason = "The bound of the update round is past. "
+
+// The reasons the late-round notice gives for the two readings that hold a round past its bound
+// and name no claim of their own (tellLateRound). The controller reads them, so they follow
+// ASD-STE100.
 const (
-	noProcessReason = "The bound of the update round is past. No claim of the issue records a process in the pod of the round. The daemon has no process to replace the pod through."
-	twoPodsReason   = "The bound of the update round is past. The claims of the issue record two pods. A replacement is in flight, and the round waits for it."
+	noProcessReason = boundPastReason + "No claim of the issue records a process in the pod of the round. The daemon has no process to replace the pod through."
+	twoPodsReason   = boundPastReason + "The claims of the issue record two pods. A replacement is in flight, and the round waits for it."
 )
 
 // operatorHoldReason is the reason the late-round notice gives for a round an operator's
 // suspension holds past its bound, naming each claim the suspension holds.
 func operatorHoldReason(held []supervise.Claim) string {
-	return fmt.Sprintf("The bound of the update round is past. An operator suspended %s. The daemon does not replace the pod until the operator resumes each of them.",
+	return fmt.Sprintf(boundPastReason+"An operator suspended %s. The daemon does not replace the pod until the operator resumes each of them.",
 		roleStates(held))
 }
 
@@ -891,8 +898,9 @@ func rescuers(group []supervise.Claim, round string) []supervise.Claim {
 // hold another session's commits, and a role that takes such a branch whole can merge another
 // tree's work into its own pull request. The message therefore tells the reader to read each
 // commit before it takes any, and names the push check's own commit (internal/rescue's "Edits
-// left in the workspace"), which carries no session trailer. supervise.UpdateTask gives the ask
-// the same warning. Another agent reads it, so it follows ASD-STE100.
+// left in the workspace"), which carries no session trailer: supervise.RescueBranchWarning, the
+// warning supervise.UpdateTask gives the ask too. Another agent reads it, so it follows
+// ASD-STE100.
 func rescueMessage(round string, checked pushCheck) string {
 	if checked.unchecked != "" {
 		return fmt.Sprintf("The daemon replaced the pod of this issue (update round %s). It did not check the pod's workspaces for work that was not pushed: %s. Work that a worker did not push is lost with the pod.", round, checked.unchecked)
@@ -910,9 +918,7 @@ func rescueMessage(round string, checked pushCheck) string {
 
 The issue branch does not have this work, and the new pod starts from the issue branch. Take the commits that you need from each branch into the issue branch, or delete the branch if its work is not necessary.
 
-A rescue branch has the name of the pod, not of a session. A rescue branch can hold commits of another session. Before you take a commit from a rescue branch, read each commit on it. Read the subject of each commit. For a commit that an agent made, read its Omp-Session trailer. The trailer names the session that made the commit.
-
-One commit on a rescue branch can be the daemon's own commit. Its subject starts with "Edits left in the workspace". It has no Omp-Session trailer. Read its files to know whose work it holds. Its author does not tell you that.`, round, strings.Join(lines, "\n"))
+`, round, strings.Join(lines, "\n")) + supervise.RescueBranchWarning
 }
 
 // viewedGroup is every claim of the issue a round weighs, as the store names them and as each
@@ -1003,10 +1009,9 @@ func (s *supervision) roundGroup(group []supervise.Claim, mask bool) []supervise
 // the round, so the list says what each role said rather than whom the round waits for. It is
 // never empty while the round asks a claim, which the store requires of the notice
 // (record.UpdateStalled). A round that asks no claim at all is told nothing: there is no role to
-// name.
+// name. A round that group already records as told is told nothing again and read no further.
 func (s *supervision) tellLateRound(ctx context.Context, issue string, group []supervise.Claim, round, pod, reasons string, now time.Time, why string) {
-	bound := roundBound(group, round, s.cfg.PodUpdateGrace)
-	if bound == nil || now.Before(*bound) {
+	if !pastBound(roundBound(group, round, s.cfg.PodUpdateGrace), now) || roundTold(group, round) {
 		return
 	}
 	told := s.noticeGroup(group)
@@ -1037,32 +1042,24 @@ func (s *supervision) tellLateRound(ctx context.Context, issue string, group []s
 // do anything about such a round — it ends once a role of the issue runs in a pod again — so
 // telling the controller only opens a finding ask over a round that needs no one.
 //
-// The notice lists every claim the round asks, each with whether it answered, read unmasked
-// (noticeGroup), as every late-round notice does (tellLateRound).
+// The sweep's snapshot decides first whether the bound has come and whether the round was told,
+// so a round before its bound costs no read of the machines. The rest is tellLateRound's, with no
+// pod to name.
 func (s *supervision) tellPodlessRound(ctx context.Context, issue string, group []supervise.Claim, round string, now time.Time) {
+	if !pastBound(roundBound(group, round, s.cfg.PodUpdateGrace), now) || roundTold(group, round) {
+		return
+	}
 	told := s.noticeGroup(group)
 	held := heldByOperator(told, round)
 	if len(held) == 0 && len(waitingClaims(told, round)) == 0 {
 		return
 	}
-	bound := roundBound(told, round, s.cfg.PodUpdateGrace)
-	if bound == nil || now.Before(*bound) {
-		return
-	}
-	waiting := waitingOf(round, askedClaims(told))
-	if len(waiting) == 0 {
-		return
-	}
-	why := "The bound of the update round is past. No claim of this issue records a process in a pod. The round waits for a claim of the issue to run again."
+	why := boundPastReason + "No claim of this issue records a process in a pod. The round waits for a claim of the issue to run again."
 	if len(held) > 0 {
-		why = fmt.Sprintf("The bound of the update round is past. No claim of this issue records a process in a pod. An operator suspended %s. The round waits for the operator to resume a claim.",
+		why = fmt.Sprintf(boundPastReason+"No claim of this issue records a process in a pod. An operator suspended %s. The round waits for the operator to resume a claim.",
 			roleStates(held))
 	}
-	s.tellUpdateStalled(ctx, updateStall{
-		issue: issue, round: round, reasons: roundReasons(told, round), group: told,
-		waiting: waiting,
-		reason:  why,
-	})
+	s.tellLateRound(ctx, issue, group, round, "", roundReasons(group, round), now, why)
 }
 
 // podWentWithoutItsRound is the round's pod gone before the round could finish: the message the
@@ -1287,8 +1284,8 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 		return
 	}
 	endsAt := now.Add(s.cfg.PodUpdateGrace)
-	if opened := roundOpenedAt(group, round); opened != nil {
-		endsAt = opened.Add(s.cfg.PodUpdateGrace)
+	if bound := roundBound(group, round, s.cfg.PodUpdateGrace); bound != nil {
+		endsAt = *bound
 	}
 	text := supervise.UpdateTask(round, roundReasons(group, round), endsAt)
 	rows := make([]record.OutboxPayload, len(asking))

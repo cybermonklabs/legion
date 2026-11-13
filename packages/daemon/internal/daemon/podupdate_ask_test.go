@@ -58,7 +58,7 @@ func askRow(t *testing.T, id int64, role claim.Role) record.OutboxRow {
 // since the architect's process runs in the pod too. The message is the sweep's text unchanged,
 // under the row's own key, so a retried row is one delivery. When the publisher has taken it, the
 // executor writes the one line the production check greps for, with the row, the issue, the round,
-// the claim, the role and the topic.
+// the pod, the claim, the role and the topic.
 func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 	for i, role := range []claim.Role{claim.RoleTester, claim.RoleArchitect} {
 		t.Run(string(role), func(t *testing.T) {
@@ -81,7 +81,7 @@ func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 			if len(lines) != 1 {
 				t.Fatalf("lines %q = %d in\n%s\nwant one", askPublishedLine, len(lines), logs.String())
 			}
-			want := map[string]any{"row": float64(row.ID), "issue": "LEGION-208", "round": askedRound, "claim": string(token), "role": string(role), "topic": topic}
+			want := map[string]any{"row": float64(row.ID), "issue": "LEGION-208", "round": askedRound, "pod": askedPod, "claim": string(token), "role": string(role), "topic": topic}
 			for field, value := range want {
 				if lines[0][field] != value {
 					t.Errorf("the line's %s = %v, want %v", field, lines[0][field], value)
@@ -106,8 +106,8 @@ func TestPodUpdateAskNobodyHoldsFinishesTheRow(t *testing.T) {
 		t.Fatalf("the ask no session holds = %v, want the row finished", err)
 	}
 	lines := loggedLines(t, logs.String(), `"msg":"`+askNoHolderLine+`"`)
-	if len(lines) != 1 || lines[0]["level"] != "INFO" || lines[0]["row"] != float64(row.ID) || lines[0]["round"] != askedRound {
-		t.Fatalf("lines %q = %v in\n%s\nwant one Info line naming row %d and its round", askNoHolderLine, lines, logs.String(), row.ID)
+	if len(lines) != 1 || lines[0]["level"] != "INFO" || lines[0]["row"] != float64(row.ID) || lines[0]["round"] != askedRound || lines[0]["pod"] != askedPod {
+		t.Fatalf("lines %q = %v in\n%s\nwant one Info line naming row %d, its round and its pod", askNoHolderLine, lines, logs.String(), row.ID)
 	}
 	if published := loggedLines(t, logs.String(), `"msg":"`+askPublishedLine+`"`); len(published) != 0 {
 		t.Fatalf("the ask nobody took logged %v, want no published line", published)
@@ -140,8 +140,8 @@ func TestPodUpdateAskForARoundTheClaimLeftPublishesNothing(t *testing.T) {
 			}
 			lines := loggedLines(t, logs.String(), `"msg":"`+askLeftLine+`"`)
 			if len(lines) != 1 || lines[0]["level"] != "INFO" || lines[0]["row"] != float64(row.ID) ||
-				lines[0]["round"] != askedRound || lines[0]["current"] != tc.current {
-				t.Fatalf("lines %q = %v in\n%s\nwant one Info line naming row %d, its round and the claim's %q", askLeftLine, lines, logs.String(), row.ID, tc.current)
+				lines[0]["round"] != askedRound || lines[0]["pod"] != askedPod || lines[0]["current"] != tc.current {
+				t.Fatalf("lines %q = %v in\n%s\nwant one Info line naming row %d, its round, its pod and the claim's %q", askLeftLine, lines, logs.String(), row.ID, tc.current)
 			}
 		})
 	}

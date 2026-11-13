@@ -1540,7 +1540,7 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	}
 	if current := r.supervisedClaim(token).UpdateRound; current != payload.Round {
 		r.log.Info("outbox update ask finished without a publish: the claim no longer records its round",
-			"row", row.ID, "issue", row.Issue, "round", payload.Round, "current", current, "claim", string(token), "role", payload.Role)
+			"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "current", current, "claim", string(token), "role", payload.Role)
 		return nil
 	}
 	topic := notify.RoleTopicPrefix + string(token)
@@ -1548,14 +1548,14 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	published := r.notices.Publish(ctx, topic, message, message, record.OutboxKey(row.ID))
 	if errors.Is(published, notify.ErrNoHolder) {
 		r.log.Info("outbox update ask finished undelivered: no live session holds the role",
-			"row", row.ID, "issue", row.Issue, "round", payload.Round, "claim", string(token), "role", payload.Role, "topic", topic)
+			"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic)
 		return nil
 	}
 	if published != nil {
 		return fmt.Errorf("publish the ask of round %s for %s to its %s: %w", payload.Round, row.Issue, payload.Role, published)
 	}
 	r.log.Info("outbox update ask published to the role topic",
-		"row", row.ID, "issue", row.Issue, "round", payload.Round, "claim", string(token), "role", payload.Role, "topic", topic)
+		"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic)
 	return nil
 }
 

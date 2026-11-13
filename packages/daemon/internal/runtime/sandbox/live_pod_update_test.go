@@ -243,8 +243,8 @@ func (r *liveRig) checkPodUpdate() error {
 	return nil
 }
 
-// answerUpdate is one worker's answer to the update task, carried out as that role's own agent
-// (asAgent), since the pod's stub agent reads no task: it writes the work it holds into the
+// answerUpdate is one worker's answer to the update message, carried out as that role's own agent
+// (asAgent), since the pod's stub agent reads no message: it writes the work it holds into the
 // issue's workspace, commits it there, pushes it to the issue's branch through the clone's own
 // `legion git-credential` helper — its own App's credentials, never the harness's — and reports
 // that branch's head at origin, which is the `head` the op carries. The head it reports is read
@@ -253,7 +253,7 @@ func (r *liveRig) checkPodUpdate() error {
 // (deleteBranchAt), so a run never deletes a branch it did not write.
 func (r *liveRig) answerUpdate(c *liveClaim, dir workspace.Workspace) (string, error) {
 	url := "https://github.com/" + r.env.repo.String()
-	work := fmt.Sprintf("%s's work on %s, unpushed until its update task, at %s", c.role, c.issue, time.Now().UTC().Format(time.RFC3339Nano))
+	work := fmt.Sprintf("%s's work on %s, unpushed until its update message, at %s", c.role, c.issue, time.Now().UTC().Format(time.RFC3339Nano))
 	script := strings.Join([]string{
 		"set -e",
 		"cd " + shellQuote(dir.Dir),
@@ -354,7 +354,7 @@ func (r *liveRig) holdDriftedPod(name, uid string, workers []*liveClaim, mark in
 }
 
 // assertNoTurnCut is the promise the round exists for, which no other check of the rig makes: no
-// worker was ended uncharged while it was working on the update task. An end observed without
+// worker was ended uncharged while it was working on the update message. An end observed without
 // Displaced — Gone, or the NotRecordedProcess the supervisor treats identically — between the mark
 // where a worker was tasked and the mark where it answered is a turn the daemon cut, and with it
 // whatever that worker had not pushed.
@@ -369,7 +369,7 @@ func (r *liveRig) assertNoTurnCut(turns []*liveTurn) error {
 				continue
 			}
 			if o.Kind == runtime.Gone || o.Kind == runtime.NotRecordedProcess {
-				return fmt.Errorf("%s was observed %s without Displaced at %s while it held the update task: %s — a turn the round cut",
+				return fmt.Errorf("%s was observed %s without Displaced at %s while it held the update message: %s — a turn the round cut",
 					turn.claim.name, o.Kind, o.Locator.Incarnation, oneLine(firstLine(o.Detail)))
 			}
 		}

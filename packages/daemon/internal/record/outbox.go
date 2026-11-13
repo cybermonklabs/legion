@@ -577,17 +577,19 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // the three (skill://legion-controller, "Free slots"). A tick is the daemon's periodic wake, whose
 // issue is the project key. An unslotted notice names a root admission found in the workflow with
 // neither a slot nor a place in the waiting line, which it took out of the workflow; its reason
-// names the status the root stood at. An update-stalled notice names an issue whose pod the
-// daemon opened an update round over and cannot replace: a worker has not answered within
-// `pod_update_grace_minutes`, a turn that will not end holds the replacement, or the replacement
-// itself keeps failing (the daemon's reconcilePodUpdates). A provider-errors notice names an
-// issue whose role has ended six turns in a row in a provider error: its Role is that role, and
-// its Reason the model and the HTTP status the provider answered, where it answered one, in
-// words built from structured fields alone (supervise's tellControllerOfProviderErrors). It is
-// told once, and not again until a turn with no error puts that run back to zero; nothing is
-// held and nothing is bounded, because a chain's bottom refusing deterministically costs one
-// request every ten minutes. When admission sends each is its rule (admit.Admission.wakeController and its
-// callers, admit's releaseUnslotted, admit.Admission.TellController).
+// names the status the root stood at. An update-stalled notice names an issue whose update round
+// has passed its bound (`pod_update_grace_minutes` after it opened) while something still holds
+// it: an operator's suspension of a role the round asks, a failed push check, a ReplacePod the
+// runtime refused, no claim recording a process in the round's pod (or in any pod), or claims
+// recording two pods. It is told once per round (the daemon's reconcilePodUpdates). A
+// provider-errors notice names an issue whose role has ended six turns in a row in a provider
+// error: its Role is that role, and its Reason the model and the HTTP status the provider
+// answered, where it answered one, in words built from structured fields alone (supervise's
+// tellControllerOfProviderErrors). It is told once, and not again until a turn with no error puts
+// that run back to zero; nothing is held and nothing is bounded, because a chain's bottom
+// refusing deterministically costs one request every ten minutes. When admission sends each is
+// its rule (admit.Admission.wakeController and its callers, admit's releaseUnslotted,
+// admit.Admission.TellController).
 //
 // A parked-decision notice names a person's decision on a tree Legion is not running, which
 // nobody inside the tree will hear: a spec decision the notice executor could not deliver to the
@@ -1059,8 +1061,8 @@ func (p HookPrompt) Message(issue string) string {
 // the daemon opened Round over Pod and will replace that pod, and Text is the whole ask, as the
 // sweep built it with supervise.UpdateTask from the round's recorded reasons and its recorded
 // opening. Role is the recipient: a phase worker or the issue's architect, since every role whose
-// process runs in the pod loses that process at the replacement. Pod is empty for a round that
-// records no pod.
+// process runs in the pod loses that process at the replacement. Pod is the pod the round was
+// opened over: the sweep asks only a round whose claims record one.
 //
 // The row carries the finished text rather than the facts to build it from, for two reasons.
 // record does not import supervise, which owns the words. And the round's terms are fixed when

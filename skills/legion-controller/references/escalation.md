@@ -102,10 +102,11 @@ for any failed role, and yours once the architect escalates the hold
 Before it replaces the pod, the daemon checks every workspace on the pod's disk for work the
 remote lacks, a failed claim's included, and pushes what it finds to a rescue branch of its own,
 `legion/<KEY>-rescue-<pod>-<n>`. When it pushed one, it writes the issue a message naming each
-rescue branch and its commit, for the issue's roles to merge into the issue branch; that message
-asks nothing of you. A pod whose shim is older than the check is replaced unchecked, and the
-daemon writes that on the issue. Everything else of the pod's disk goes with the pod: the round's
-message tells each role to put any scratch evidence it still needs on Dispatch before it answers.
+rescue branch and its commit. The issue's roles read each commit on the rescue branch and take
+only the commits they need into the issue branch. That message asks nothing of you. A pod whose
+shim is older than the check is replaced unchecked, and the daemon writes that on the issue.
+Everything else of the pod's disk goes with the pod: the round's message tells each role to put
+any scratch evidence it still needs on Dispatch before it answers.
 One round wakes you once, however many sweeps find it open, so handle it when it arrives.
 Read `read_state` and the issue first, as for every wake: a round that finished since needs
 nothing.

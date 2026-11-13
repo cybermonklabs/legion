@@ -702,6 +702,18 @@ func TestPodUpdateRoundsPerMinute(t *testing.T) {
 			asked[prev] = *c.UpdateTaskedAt
 		}
 	}
+	// The last key opened is asked at the sweep after its opening, as every key before it was.
+	rig.clock.advance(time.Minute)
+	rig.tick()
+	for _, key := range keys {
+		c := rig.claimOf(key, claim.RoleArchitect)
+		if c.UpdateTaskedAt == nil {
+			t.Fatalf("%s holds the round with no ask recorded a sweep after the last opening: %+v", key, c)
+		}
+		if at, ok := asked[key]; ok && !c.UpdateTaskedAt.Equal(at) {
+			t.Errorf("%s was asked at %v, want the first ask at %v: the limit asks no open round again", key, c.UpdateTaskedAt, at)
+		}
+	}
 
 	for _, key := range keys {
 		if held := rig.claimOf(key, claim.RoleArchitect); held.UpdateRound != rig.round(key) {

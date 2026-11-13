@@ -275,10 +275,10 @@ type PodUpdateOpen struct {
 // predates the check is not checked. A rescue branch is named for the pod rather than for a
 // session, so it can hold another session's commits: the text tells the role to read a branch's
 // commits before it takes any, and names the daemon's own commit ("Edits left in the
-// workspace", internal/rescue), whose files say whose work it holds and whose author does not.
-// The daemon's rescueMessage gives the issue the same warning.
+// workspace", internal/rescue), whose files say whose work it holds and whose author does not
+// (RescueBranchWarning, which the daemon's rescueMessage gives the issue too).
 //
-// The text is built in three pieces, and reasons goes in a piece of its own. A reason is the JSON
+// The text is built in pieces, and reasons goes in a piece of its own. A reason is the JSON
 // the daemon read of a pod (internal/runtime/sandbox's shapeValue), so a reason can hold a quote
 // character. A value put between two constant pieces that both hold that same quote reads as the
 // end of a quoted word of the text around it (CodeQL go/unsafe-quoting). The sentence that holds
@@ -323,13 +323,22 @@ The push check pushes them to a rescue branch. The name of a rescue branch is th
 
 The daemon does not run the push check on a pod whose shim is older than the push check. On such a pod, work that you do not push is lost.
 
-A rescue branch has the name of the pod, not of a session. A rescue branch can hold commits of another session. Before you take a commit from a rescue branch, read each commit on it. Read the subject of each commit. For a commit that an agent made, read its Omp-Session trailer. The trailer names the session that made the commit.
+`,
+			round, ends, ends, round, ends) +
+		RescueBranchWarning + `
 
-One commit on a rescue branch can be the daemon's own commit. Its subject starts with "Edits left in the workspace". It has no Omp-Session trailer. Read its files to know whose work it holds. Its author does not tell you that.
-
-The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`,
-			round, ends, ends, round, ends)
+The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`
 }
+
+// RescueBranchWarning is the two paragraphs that tell a role how to read a rescue branch before
+// it takes a commit from it. A rescue branch is named for the pod rather than for a session, so it
+// can hold another session's commits, and one of its commits can be the push check's own. The
+// round's ask (UpdateTask) and the daemon's message after a rescue (internal/daemon's
+// rescueMessage) both end with it, so the two say the same thing. Another agent reads it, so it
+// follows ASD-STE100.
+const RescueBranchWarning = `A rescue branch has the name of the pod, not of a session. A rescue branch can hold commits of another session. Before you take a commit from a rescue branch, read each commit on it. Read the subject of each commit. For a commit that an agent made, read its Omp-Session trailer. The trailer names the session that made the commit.
+
+One commit on a rescue branch can be the daemon's own commit. Its subject starts with "Edits left in the workspace". It has no Omp-Session trailer. Read its files to know whose work it holds. Its author does not tell you that.`
 
 // PodUpdateEnded is the update round over for this claim: every update_* field goes, the task the
 // round held back is released, and nothing is relaunched for it. A pod's round: the pod it was
@@ -2621,13 +2630,14 @@ func (m *Machine) clearUpdate() {
 // verifies. It changes no state: the round's own sweep is what reads the signal and replaces the
 // process, once every claim the round asks has answered and no turn runs, or at the round's bound.
 //
-// The answer counts for one round only: the one whose task the worker read, which that task
-// named and which the answer carries back (UpdateTask). An answer for any other round is
+// The answer counts for one round only: the one whose update message the worker read, which that
+// message named and which the answer carries back (UpdateTask). An answer for any other round is
 // refused and records nothing — a worker whose round was replaced while it worked answers the
 // round it read, and the round that replaced it promises something else of the pod and the disk,
 // so counting that answer would replace a pod no worker has pushed for. A claim in no round at
 // all is the same case: every answer names a round it is not in. The refusal names both rounds,
-// and tells the worker to end its turn and answer the task the daemon then sends.
+// and tells the worker to answer the round the newest update message names, or to end its turn
+// (foreignRoundRefusal).
 //
 // An answer counts only from a process in the round's own pod. A claim the daemon started again
 // in another pod answers for work the dead pod's disk held and that process never saw
@@ -2688,7 +2698,7 @@ func foreignRoundRefusal(c Claim, answered string) error {
 }
 
 // leftPodRoundRefusal is what a worker reads when it answers a round its claim has left
-// (podUpdateSignalled). Another agent reads it, so it follows ASD-STE100 as the task it answers
+// (podUpdateSignalled). Another agent reads it, so it follows ASD-STE100 as the ask it answers
 // does: one instruction per sentence, active voice, and no word that has a second reading.
 //
 // It names one round, the round the claim left, which is the round the answer carries. It names
