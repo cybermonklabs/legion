@@ -42,12 +42,11 @@ legion({ op: "sign_off", issue: "LEGION-40" })
   `done` nor a park under that rule, and hold the acceptance until they answer. Hold it too, for
   the root and for the issue you moved an unreleased child under, until the person answers the ask
   on the root about that child (`skill://legion-architect`, section 3): release the child when they
-  say to run it, and when they say to stop it, close it or park it under the rule, citing their
-  answer. A parent: sign off
-  only after its last round (below). The
-  daemon then closes a parent that is not the root at its own merge, which under this rule comes
-  after its children's. One issue beneath never holds it: one the daemon itself holds at
-  `admitted` under an ancestor it has already accepted, which starts when that ancestor closes.
+  say to run it; when they say to stop it, close it, or move it to `icebox` under the rule when
+  they say its work should wait, citing their answer. A parent: sign off only after its last round
+  (below). The daemon then closes a parent that is not the root at its own merge, which under this
+  rule comes after its children's. One issue beneath never holds it: one the daemon itself holds
+  at `admitted` under an ancestor it has already accepted, which starts when that ancestor closes.
 - `request_backward_move` names the issue, because your grant serves the tree; the daemon starts
   that phase's role with your reason in its task.
 - `handoff_complete` from you in `accepting` is refused `ACCEPTANCE_IS_SIGN_OFF`. CI red at the head

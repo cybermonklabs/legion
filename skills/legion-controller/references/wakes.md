@@ -81,10 +81,12 @@ So read the issue's record for every entry rather than taking its architect as t
 `read_state`'s `issues.<KEY>` gives its phase and each role's claim, and says whether the worker
 has moved since the tick was queued.
 Where the architect of that issue is itself a claim that is not answering, a notice sent to it
-reaches nobody and the work stands still. When the Envoy registry shows its session gone,
-`fresh_session` on that architect. When its claim reads `failed`, act as the `worker-died` section
-below says: restart the tree when you find no cause or its cause is gone, and otherwise ask the
-person whether to park it, with no relaunch while the cause stays.
+reaches nobody and the work stands still. When the tree's architect claim reads `failed`
+(`issues.<ROOT>.architect.state`, `<ROOT>` being the silent issue's `tree`), act as the
+`worker-died` section below says, with `<ROOT>` as its `<KEY>`: restart the tree when you find no
+cause or its cause is gone, and otherwise ask the person whether to park it, with no relaunch
+while the cause stays. When its claim does not read `failed` and the Envoy registry shows its
+session gone, `fresh_session` on that architect.
 Name each silent issue in the day's report, with its role and the length of its silence.
 
 ## `unslotted on <KEY>` (`{kind: "unslotted", reason}`)
