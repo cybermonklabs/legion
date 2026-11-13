@@ -2,7 +2,7 @@
  * Delivery and Pipeline pages keep themselves current over. It subscribes one view under a bearer
  * token and writes one JSON line per frame Dispatch sends, applying each to the body it holds with
  * the page's own `applyDelta` and `applyRevs`. It reconnects as the page does, and each new
- * connection resumes from the last change it applied. What bounds each part of the watch:
+ * connection resumes from the last change it applied. What bounds each wait of the probe:
  *
  *  - Before the first open, `--open-within` seconds from the first dial, 45 s unless given: the
  *    page's silence rule (`LIVE_SOCKET_SILENT_MS`, three heartbeats). A dial that has not opened
@@ -12,9 +12,20 @@
  *  - Between reconnects, the delay `reconnectDelayMs` draws: none after Dispatch's rotation
  *    (4001), up to 2 s after Dispatch's restart close (1012), and up to 30 s with backoff after
  *    any other close. `--minutes` ends the watch during that delay as well.
- *  - A silent socket, after the first open: one that has carried no frame for 45 s, a
- *    reconnect's dial that never opens included, is replaced by a new dial, and `--minutes` still
- *    ends the watch.
+ *  - A silent socket, after the first open: one that has carried no frame for more than 45 s, a
+ *    reconnect's dial that never opens included, is replaced by a new dial at the next check,
+ *    which runs each second, and `--minutes` still ends the watch.
+ *  - Each `--compare` read, while Dispatch sends nothing: `--read-within` seconds, 30 s unless
+ *    given, the page's own deadline on a GET's silence (`REQUEST_DEADLINE_MS`). The time starts
+ *    at the request and starts over as the headers arrive and as each piece of the body does, so
+ *    a read that keeps sending goes on however slowly, and one that sends nothing for that long
+ *    fails the probe. The reads run one after another, two for a timeline view and one for any
+ *    other.
+ *
+ *  No flag takes a time longer than the longest delay a timer keeps, 2^31-1 ms (about 24.9 days).
+ *  Reading `--token-file` and writing `--body-file` wait as long as the named file makes them, as
+ *  a FIFO with no writer or no reader does; whoever named the file ends that wait. The probe takes
+ *  such a file, since `--token-file <(...)` and `/dev/stdin` are uses it serves.
  *
  *  Ctrl-C or SIGTERM ends the watch at any time, and Dispatch refusing the view ends it at once.
  *  Then `--body-file` writes the body it holds, and `--compare` reads the matching GET routes for
@@ -25,12 +36,14 @@
  *      --view '{"kind":"timeline","window":{"preset":28},"query":""}' --minutes 10 --compare
  *
  *  It exits 0 when every comparison is equal or none was asked for; 1 when one is not, a read
- *  fails, the first connection is refused or does not open within `--open-within`, Dispatch
- *  refuses the view, or a frame breaks the contract; 2 on a usage error. */
+ *  fails or receives nothing for `--read-within`, the first connection is refused or does not
+ *  open within `--open-within`, Dispatch refuses the view, or a frame breaks the contract; 2 on a
+ *  usage error. */
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
 
+import { REQUEST_DEADLINE_MS } from "../web/src/api/client";
 import { LIVE_SOCKET_SILENT_MS, reconnectDelayMs } from "../web/src/api/live-socket";
 import type {
   DeliveryLiveBody,
@@ -133,7 +146,7 @@ export interface ProbeHeld {
 }
 
 const USAGE =
-  "usage: bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> --view <json> --minutes <n> [--open-within <seconds>] [--compare] [--body-file <file>]";
+  "usage: bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> --view <json> --minutes <n> [--open-within <seconds>] [--read-within <seconds>] [--compare] [--body-file <file>]";
 
 /** The probe's one subscription. */
 const SUB = "probe";
@@ -146,6 +159,10 @@ const REPLACED = 4000;
  *  either answer, so the watch ends; any other code (DELIVERY_NOT_CONFIGURED) is answered again
  *  once Dispatch can, and the watch goes on. */
 const REFUSALS: Readonly<Record<string, true>> = { INVALID_FRAME: true, INVALID_QUERY: true };
+
+/** The largest delay `setTimeout` keeps, 2^31-1 ms: a longer one does not fit its 32-bit signed
+ *  field, and bun sets it to 1 ms instead, so a watch of more `--minutes` would end at once. */
+const LONGEST_TIMER_MS = 2_147_483_647;
 
 const MAPS = [
   "issue_titles",
@@ -200,9 +217,12 @@ interface Options {
   readonly url: URL;
   readonly tokenFile: string;
   readonly view: DeliveryLiveView;
-  readonly minutes: number;
+  /** How long the watch runs from its first open, in milliseconds. */
+  readonly minutesMs: number;
   /** How long the first dial has to open, in milliseconds. */
   readonly openWithinMs: number;
+  /** How long each `--compare` read may receive nothing, in milliseconds. */
+  readonly readWithinMs: number;
   readonly compare: boolean;
   readonly bodyFile: string | undefined;
 }
@@ -245,6 +265,7 @@ function readArgs(argv: readonly string[]) {
         compare: { type: "boolean" },
         minutes: { type: "string" },
         "open-within": { type: "string" },
+        "read-within": { type: "string" },
         "token-file": { type: "string" },
         url: { type: "string" },
         view: { type: "string" },
@@ -259,6 +280,23 @@ function readArgs(argv: readonly string[]) {
 function required(value: string | undefined, flag: string): string {
   if (value === undefined || value === "") throw new UsageError(`${flag} is required`);
   return value;
+}
+
+/** `raw`, a number of `unit`, in milliseconds: above 0 and no longer than `LONGEST_TIMER_MS`. */
+function duration(flag: string, raw: string, unit: "minutes" | "seconds"): number {
+  const unitMs = unit === "minutes" ? 60_000 : 1_000;
+  const ms = Number(raw) * unitMs;
+  if (!Number.isFinite(ms) || ms <= 0) {
+    throw new UsageError(`${flag} is a number of ${unit} above 0, not ${raw}`);
+  }
+  if (ms > LONGEST_TIMER_MS) {
+    // Rounded down to six decimals, so the value named is one the flag takes.
+    const largest = Math.floor((LONGEST_TIMER_MS / unitMs) * 1e6) / 1e6;
+    throw new UsageError(
+      `${flag} is at most ${largest} ${unit}, the longest delay a timer keeps, not ${raw}`
+    );
+  }
+  return ms;
 }
 
 /** The view `--view` names. The probe checks what it reads itself (the kind, a timeline or
@@ -311,22 +349,20 @@ function parseOptions(argv: readonly string[]): Options {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new UsageError(`--url is Dispatch's http or https address, not ${rawUrl}`);
   }
-  const rawMinutes = required(values.minutes, "--minutes");
-  const minutes = Number(rawMinutes);
-  if (!Number.isFinite(minutes) || minutes <= 0) {
-    throw new UsageError(`--minutes is a number of minutes above 0, not ${rawMinutes}`);
-  }
   const rawOpenWithin = values["open-within"];
-  const openWithinMs =
-    rawOpenWithin === undefined ? LIVE_SOCKET_SILENT_MS : Number(rawOpenWithin) * 1000;
-  if (!Number.isFinite(openWithinMs) || openWithinMs <= 0) {
-    throw new UsageError(`--open-within is a number of seconds above 0, not ${rawOpenWithin}`);
-  }
+  const rawReadWithin = values["read-within"];
   return {
     bodyFile: values["body-file"],
     compare: values.compare === true,
-    minutes,
-    openWithinMs,
+    minutesMs: duration("--minutes", required(values.minutes, "--minutes"), "minutes"),
+    openWithinMs:
+      rawOpenWithin === undefined
+        ? LIVE_SOCKET_SILENT_MS
+        : duration("--open-within", rawOpenWithin, "seconds"),
+    readWithinMs:
+      rawReadWithin === undefined
+        ? REQUEST_DEADLINE_MS
+        : duration("--read-within", rawReadWithin, "seconds"),
     tokenFile: required(values["token-file"], "--token-file"),
     url,
     view: parseView(required(values.view, "--view")),
@@ -509,7 +545,7 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
       if (socket !== next) return;
       if (!opened) {
         clearTimeout(timer);
-        timer = setTimeout(stop, options.minutes * 60_000);
+        timer = setTimeout(stop, options.minutesMs);
       }
       opened = true;
       lastFrameAt = Date.now();
@@ -701,11 +737,46 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
   }
 }
 
-async function compareRead(base: URL, token: string, route: Read): Promise<ProbeCompareLine> {
-  const response = await fetch(new URL(route.route, base), {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  const text = await response.text();
+/** One route read and compared. Dispatch has `withinMs` to send something, as the page gives a
+ *  GET: the time starts over as the headers arrive and as each piece of the body does, so a body
+ *  that keeps coming is read however slowly, and one that stops fails the read. */
+async function compareRead(
+  base: URL,
+  token: string,
+  route: Read,
+  withinMs: number
+): Promise<ProbeCompareLine> {
+  const silence = new AbortController();
+  let timer = setTimeout(() => silence.abort(), withinMs);
+  const arrived = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => silence.abort(), withinMs);
+  };
+  let response: Response;
+  let text = "";
+  try {
+    response = await fetch(new URL(route.route, base), {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: silence.signal,
+    });
+    arrived();
+    if (response.body !== null) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+        arrived();
+        text += decoder.decode(chunk.value, { stream: true });
+      }
+      text += decoder.decode();
+    }
+  } catch (error) {
+    if (!silence.signal.aborted) throw error;
+    throw new Error(
+      `the read of ${route.route} received nothing for ${withinMs / 1000} s (--read-within)`
+    );
+  } finally {
+    clearTimeout(timer);
+  }
   const refused = (code: string, reason: string): ProbeCompareLine => ({
     at: now(),
     equal: false,
@@ -750,7 +821,7 @@ async function compareRead(base: URL, token: string, route: Read): Promise<Probe
 async function compare(options: Options, token: string, held: ProbeHeld): Promise<boolean> {
   let equal = true;
   for (const route of readsFor(options.view, held.body)) {
-    const line = await compareRead(options.url, token, route);
+    const line = await compareRead(options.url, token, route, options.readWithinMs);
     write(line);
     equal &&= line.equal;
   }

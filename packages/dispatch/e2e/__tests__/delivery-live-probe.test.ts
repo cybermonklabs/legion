@@ -625,3 +625,140 @@ test(
   },
   rowLimit("short")
 );
+
+/** A Dispatch on a loopback port of its own that sends each subscribe the fixture snapshot and
+ *  answers each GET with `answer`, and the paths read. Bun.serve closes a connection silent for
+ *  10 s unless told not to, which would answer a read with a reset; the fake Dispatch keeps that
+ *  default, so the rows that hold a read open use this one. */
+function slowDispatch(answer: (url: URL) => Response | Promise<Response>) {
+  const reads: string[] = [];
+  const server = Bun.serve({
+    fetch(request, srv) {
+      const url = new URL(request.url);
+      if (url.pathname === "/ws/live") {
+        return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
+      }
+      reads.push(url.pathname);
+      return answer(url);
+    },
+    hostname: "127.0.0.1",
+    idleTimeout: 0,
+    port: 0,
+    websocket: {
+      message(socket, raw) {
+        // The probe's own frame, a subscribe.
+        const frame = JSON.parse(String(raw)) as LiveClientFrame;
+        if (frame.type === "subscribe") socket.send(forSub(snapshot, frame.sub));
+      },
+    },
+  });
+  kills.push(() => server.stop(true));
+  return { reads, url: `http://127.0.0.1:${server.port}` };
+}
+
+/** The probe's argv for a watch of `url` that compares once it ends, each read given
+ *  `readWithin` seconds of silence. */
+function compareArgs(url: string, readWithin: string): string[] {
+  const argv = args(probeDispatch({ onSubscribe() {} }));
+  argv[argv.indexOf("--url") + 1] = url;
+  argv.push("--compare", "--read-within", readWithin);
+  return argv;
+}
+
+// A `--compare` read that receives nothing for `--read-within` fails the probe, naming its route,
+// where without that bound the probe waits on the read for good.
+test(
+  "a --compare read that receives nothing fails the probe with exit 1, naming the route",
+  async () => {
+    // Takes every GET and never answers it.
+    const dispatch = slowDispatch(() => new Promise<Response>(() => {}));
+    const run = runProbe(compareArgs(dispatch.url, "1"));
+    await run.until(() => run.lines.some((line) => line.type === "snapshot"));
+    run.kill("SIGINT");
+    expect(await run.exited()).toBe(1);
+    expect(dispatch.reads).toEqual(["/api/v1/delivery/timeline"]);
+    const stderr = run.stderr.join("\n");
+    expect(stderr).toContain("the read of /api/v1/delivery/timeline?");
+    expect(stderr).toContain("received nothing for 1 s (--read-within)");
+  },
+  {
+    // This row drives the probe: it waits for the snapshot line and sends SIGINT, and the read
+    // runs after that. A bound at the child would kill a process this row still uses.
+    timeout: 30_000,
+  }
+);
+
+// `--read-within` bounds a read's silence, not its length: a body that arrives in 16 pieces,
+// 0.25 s apart, takes longer than a bound of 3 s and is read whole under it, and compared. Each
+// gap is 2.75 s inside the bound, so a pod that stalls a process for a second still passes.
+test(
+  "a --compare read whose body keeps arriving is read whole, however long it takes",
+  async () => {
+    const text = JSON.stringify(heldBody);
+    const count = 16;
+    const pieces = Array.from({ length: count }, (_, index) =>
+      text.slice((index * text.length) / count, ((index + 1) * text.length) / count)
+    );
+    let startedAt = 0;
+    let endedAt = 0;
+    const dispatch = slowDispatch((url) => {
+      if (url.pathname === "/api/v1/delivery/measures") return Response.json(heldBody.measures);
+      let sent = 0;
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          // A real delay: the probe's silence timer runs in its own process, which no fake
+          // timer here reaches.
+          if (sent > 0) await Bun.sleep(250);
+          else startedAt = performance.now();
+          controller.enqueue(encoder.encode(pieces[sent] ?? ""));
+          sent += 1;
+          if (sent === pieces.length) {
+            endedAt = performance.now();
+            controller.close();
+          }
+        },
+      });
+      return new Response(body, { headers: { "content-type": "application/json" } });
+    });
+    const run = runProbe(compareArgs(dispatch.url, "3"));
+    await run.until(() => run.lines.some((line) => line.type === "snapshot"));
+    run.kill("SIGINT");
+    expect(await run.exited()).toBe(0);
+    // The body took longer than the bound: the bound is on silence, not on the whole read.
+    expect(endedAt - startedAt).toBeGreaterThan(3_000);
+    expect(dispatch.reads).toEqual(["/api/v1/delivery/timeline", "/api/v1/delivery/measures"]);
+    expect(comparisons(run.lines).map((line) => [line.route.split("?")[0], line.equal])).toEqual([
+      ["/api/v1/delivery/timeline", true],
+      ["/api/v1/delivery/measures", true],
+    ]);
+  },
+  {
+    // This row drives the probe: it waits for the snapshot line and sends SIGINT, and the 4 s
+    // read runs after that. A bound at the child would kill a process this row still uses.
+    timeout: 30_000,
+  }
+);
+
+// A delay longer than 2^31-1 ms does not fit `setTimeout`'s 32-bit field, and bun sets it to
+// 1 ms, which would end a watch at once. Each flag that sets a timer refuses a value that long
+// with a usage error that names the largest value it takes.
+for (const [flag, value, refusal] of [
+  ["--minutes", "40000", "--minutes is at most 35791.394116 minutes"],
+  ["--open-within", "3000000", "--open-within is at most 2147483.647 seconds"],
+  ["--read-within", "3000000", "--read-within is at most 2147483.647 seconds"],
+] as const) {
+  test(
+    `${flag} longer than a timer keeps is a usage error, exit 2`,
+    async () => {
+      const dispatch = probeDispatch({ onSubscribe() {} });
+      const argv =
+        flag === "--minutes" ? args(dispatch, TOKEN, value) : [...args(dispatch), flag, value];
+      const run = await runProbeToEnd(argv);
+      expect(run.code).toBe(2);
+      expect(run.stderr).toContain(refusal);
+      expect(dispatch.upgrades).toEqual([]);
+    },
+    rowLimit("short")
+  );
+}
