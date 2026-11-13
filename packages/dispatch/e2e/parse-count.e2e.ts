@@ -215,6 +215,14 @@ function surfaces(seeded: Seeded): Surface[] {
       show: async (page) => {
         await page.goto(`/issues/${seeded.issueKey}`);
         await expect(bold(page, "spec")).toBeVisible();
+        // The margin's card of the open ask draws a stored text too, and it is the text whose
+        // parse the control row below counts: the live editor draws the Spec from its document,
+        // not from the markdown. The margin waits for the Spec's first block
+        // (`web/src/features/shell/content-drawn.ts`), so a Spec on screen does not tell that
+        // the card has drawn, and the row waits for the card's own bold word. Before that hold
+        // the margin drew before the Spec, and the wait for the Spec was enough. Run 43367787934
+        // read the counts between the two and found no parse.
+        await expect(bold(page, "open")).toBeVisible();
       },
     },
     {
@@ -469,9 +477,9 @@ test("the counter sees the parse a text served with no reading costs", async ({
     // draws nothing from one, fails under its own surface's name here too: the fallback is a
     // rule of the whole list rather than of the views someone has fixed so far.
     for (const surface of pages) counted.push(await parsesOf(alice, surface));
-    // And the counter sees the parse a page with no reading has to make: the issue page holds
-    // the spec's markdown alone and reads it itself, which is what says the zeros the row above
-    // counts are pages that could have parsed and did not.
+    // And the counter sees the parse a page with no reading has to make: the issue page's
+    // margin holds the open ask's markdown alone and parses it itself, which is what says the
+    // zeros the row above counts are pages that could have parsed and did not.
     expect(counted.find((page) => page.surface === "the issue page")?.display).toBeGreaterThan(0);
   } finally {
     await alice.close();

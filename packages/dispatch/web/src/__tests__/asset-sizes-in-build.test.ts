@@ -105,7 +105,7 @@ test("a build whose entry is the budget exactly passes, and the larger chunks be
   // The arm that passes, and what keeps this budget the entry's alone: the Mermaid worker and
   // the ECharts chunk are larger than the entry and no landing fetches either, so the reading
   // takes the file `index.html` names and not the largest file of the build. This head's own
-  // build is this arm: `bun run build:web` writes an entry of 494,716 bytes against a budget of
+  // build is this arm: `bun run build:web` writes an entry of 495,036 bytes against a budget of
   // 500,000 (measured 2026-11-13), and `bun run check:asset-sizes` prints the passing line.
   const dir = distDir("/assets/index-080_OX6C.js", {
     "assets/index-080_OX6C.js": MAX_ENTRY_BYTES,

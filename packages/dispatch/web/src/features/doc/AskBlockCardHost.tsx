@@ -1,7 +1,4 @@
-import { lazy, type ReactNode, Suspense } from "react";
-
-import { renderChunk } from "../shell/DeploymentResilience";
-import type { AskBlockCardProps } from "./AskBlockCard";
+import { chunk, chunkComponent } from "../shell/chunk-component";
 
 /**
  * The decision card a live or past document draws on each of its decision blocks, and where the
@@ -19,20 +16,16 @@ import type { AskBlockCardProps } from "./AskBlockCard";
  * chunk's arrival, the editor's own node view draws the decision block (`ask-block.ts`), and its
  * header and footer slots are empty until the card fills them. That is the same frame
  * `TextAskCardHost.tsx` gives a decision block in a Markdown body.
+ *
+ * The card draws as soon as its chunk is in, and not 300 ms later, as a `lazy` card under a
+ * `Suspense` did (`features/shell/chunk-component.tsx`). A card that draws above the block a
+ * reader went to moves that block, and the reader can already have gone there: the Inbox's
+ * Skip to the answer did, and the card above the answer then pushed it out of place
+ * (`e2e/inbox-pane-scroll.e2e.ts`). Each card portals into the slots of its own block, so a card
+ * whose chunk is not in holds back that card alone and never the document.
  */
-// Under `renderChunk`, like every chunk a render waits on: a reader is in front of the block
-// this card is to draw, so a download that fails must spend one of the tab's recovery reloads
-// rather than be read as the entry's prefetch (`features/shell/DeploymentResilience.tsx`).
-const AskBlockCard = lazy(() =>
-  renderChunk(() => import("./AskBlockCard").then((module) => ({ default: module.AskBlockCard })))
+const askBlockCardChunk = chunk(() =>
+  import("./AskBlockCard").then((module) => module.AskBlockCard)
 );
 
-/** One `Suspense` per card, as `TextAskCardHost` has: each card portals into the slots of its
- *  own block, so a boundary here holds back that card alone and never the document. */
-export function AskBlockCardHost(props: AskBlockCardProps): ReactNode {
-  return (
-    <Suspense fallback={null}>
-      <AskBlockCard {...props} />
-    </Suspense>
-  );
-}
+export const AskBlockCardHost = chunkComponent(askBlockCardChunk, null);

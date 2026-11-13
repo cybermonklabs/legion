@@ -1,8 +1,6 @@
 import {
   type ComponentType,
-  lazy,
   type ReactNode,
-  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -35,8 +33,8 @@ import {
   type IssueTab,
   parseIssuePath,
 } from "../refs/routes";
+import { chunkComponent } from "../shell/chunk-component";
 import { contentDrawn } from "../shell/content-drawn";
-import { renderChunk } from "../shell/DeploymentResilience";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
@@ -47,32 +45,52 @@ import { stateForIssue } from "./pins";
 import { SpecRequirements } from "./SpecRequirements";
 import { SpecToolbar } from "./SpecToolbar";
 import {
-  loadActivityTab,
-  loadArtifactsTab,
-  loadChildrenTab,
-  loadCollaboratorsTab,
-  loadConversationTab,
-  loadDecisionsTab,
-  loadPlanTab,
-  loadVerificationTab,
+  activityTabChunk,
+  artifactsTabChunk,
+  childrenTabChunk,
+  collaboratorsTabChunk,
+  conversationTabChunk,
+  decisionsTabChunk,
+  planTabChunk,
+  verificationTabChunk,
 } from "./tab-chunks";
 import { useIssueDetail } from "./useIssueDetail";
 import { useIssuePriority } from "./useIssuePriority";
 import { type ItemLanding, type ItemRoute, isItemRoute, useItemLanding } from "./useItemLanding";
 
 // Every panel but the Spec's is a chunk of its own, fetched when its tab first opens
-// (`tab-chunks.ts` says why). Under `renderChunk`, like every chunk a render waits on: a reader
-// who opened the tab is in front of a panel that cannot draw until the chunk arrives, so a
-// download that fails must spend one of the tab's recovery reloads
-// (`features/shell/DeploymentResilience.tsx`).
-const ConversationTab = lazy(() => renderChunk(loadConversationTab));
-const ActivityTab = lazy(() => renderChunk(loadActivityTab));
-const ChildrenTab = lazy(() => renderChunk(loadChildrenTab));
-const DecisionsPanel = lazy(() => renderChunk(loadDecisionsTab));
-const CollaboratorsTab = lazy(() => renderChunk(loadCollaboratorsTab));
-const VerificationTab = lazy(() => renderChunk(loadVerificationTab));
-const PlanTab = lazy(() => renderChunk(loadPlanTab));
-const ArtifactRoutePanel = lazy(() => renderChunk(loadArtifactsTab));
+// (`tab-chunks.ts` says why). Each panel draws its skeleton until its chunk is in. It is not a
+// `lazy` under a `Suspense`, because React shows a suspended panel no sooner than 300 ms after
+// its skeleton, also when the chunk is already in (`features/shell/chunk-component.tsx`).
+const ConversationTab = chunkComponent(
+  conversationTabChunk,
+  <LoadingSkeleton label="Loading the conversation" />
+);
+const ActivityTab = chunkComponent(
+  activityTabChunk,
+  <LoadingSkeleton label="Loading the activity" />
+);
+const ChildrenTab = chunkComponent(
+  childrenTabChunk,
+  <LoadingSkeleton label="Loading the children" />
+);
+const DecisionsPanel = chunkComponent(
+  decisionsTabChunk,
+  <LoadingSkeleton label="Loading the decisions" />
+);
+const CollaboratorsTab = chunkComponent(
+  collaboratorsTabChunk,
+  <LoadingSkeleton label="Loading the collaborators" />
+);
+const VerificationTab = chunkComponent(
+  verificationTabChunk,
+  <LoadingSkeleton label="Loading the verification tab" />
+);
+const PlanTab = chunkComponent(planTabChunk, <LoadingSkeleton label="Loading the plan tab" />);
+const ArtifactRoutePanel = chunkComponent(
+  artifactsTabChunk,
+  <LoadingSkeleton label="Loading the artifacts" />
+);
 
 export function IssuePage(): ReactNode {
   const { pathname, search } = useLocation();
@@ -223,20 +241,18 @@ function RoleDocumentPanel({
       role="tabpanel"
     >
       {activated ? (
-        <Suspense fallback={<LoadingSkeleton label={`Loading the ${tab} tab`} />}>
-          <Tab artifact={artifact} issueKey={issueKey}>
-            {artifact === undefined ? null : (
-              <ArtifactDocument
-                artifact={artifact}
-                isClosed={isClosed}
-                owner={{ key: issueKey, kind: "issue" }}
-                onVersionChange={(version) => onVersionChange(artifact, version)}
-                showDiff={false}
-                version={undefined}
-              />
-            )}
-          </Tab>
-        </Suspense>
+        <Tab artifact={artifact} issueKey={issueKey}>
+          {artifact === undefined ? null : (
+            <ArtifactDocument
+              artifact={artifact}
+              isClosed={isClosed}
+              owner={{ key: issueKey, kind: "issue" }}
+              onVersionChange={(version) => onVersionChange(artifact, version)}
+              showDiff={false}
+              version={undefined}
+            />
+          )}
+        </Tab>
       ) : null}
     </div>
   );
@@ -573,17 +589,15 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         role="tabpanel"
       >
         {activatedTabs.conversation ? (
-          <Suspense fallback={<LoadingSkeleton label="Loading the conversation" />}>
-            <ConversationTab
-              issueArtifacts={issueArtifacts}
-              focusItemId={conversationFocusItemId}
-              isClosed={isClosed}
-              issueKey={issueKey}
-              onFirstPlacement={forgetConversationScroll}
-              state={state.data}
-              visible={activeTab === "conversation"}
-            />
-          </Suspense>
+          <ConversationTab
+            issueArtifacts={issueArtifacts}
+            focusItemId={conversationFocusItemId}
+            isClosed={isClosed}
+            issueKey={issueKey}
+            onFirstPlacement={forgetConversationScroll}
+            state={state.data}
+            visible={activeTab === "conversation"}
+          />
         ) : null}
       </div>
       <div
@@ -593,11 +607,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         id="issue-children-panel"
         role="tabpanel"
       >
-        {activatedTabs.children ? (
-          <Suspense fallback={<LoadingSkeleton label="Loading the children" />}>
-            <ChildrenTab issue={issue.data} />
-          </Suspense>
-        ) : null}
+        {activatedTabs.children ? <ChildrenTab issue={issue.data} /> : null}
       </div>
       <div
         aria-hidden={activeTab !== "artifacts"}
@@ -607,36 +617,34 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         role="tabpanel"
       >
         {activatedTabs.artifacts ? (
-          <Suspense fallback={<LoadingSkeleton label="Loading the artifacts" />}>
-            <ArtifactRoutePanel
-              artifact={selectedArtifact}
-              artifactRoute={artifactRoute}
-              isClosed={isClosed}
-              isPrimaryArtifactRoute={isPrimaryArtifactRoute}
-              onShowDiffChange={setArtifactShowDiff}
-              route={route}
-              showDiff={artifactShowDiff}
-              toolbar={artifactToolbar}
-            >
-              {selectedArtifact?.kind === "doc" ? (
-                <ArtifactDocument
-                  artifact={selectedArtifact}
-                  askId={askId}
-                  commentId={commentId}
-                  highlightTerm={highlightTerm}
-                  isClosed={isClosed}
-                  onToolbarChange={handleArtifactToolbarChange}
-                  owner={{ key: issueKey, kind: "issue" }}
-                  onVersionChange={(version) => {
-                    setArtifactShowDiff(false);
-                    selectDocumentVersion(selectedArtifact, version);
-                  }}
-                  showDiff={artifactShowDiff}
-                  version={artifactRoute?.version}
-                />
-              ) : null}
-            </ArtifactRoutePanel>
-          </Suspense>
+          <ArtifactRoutePanel
+            artifact={selectedArtifact}
+            artifactRoute={artifactRoute}
+            isClosed={isClosed}
+            isPrimaryArtifactRoute={isPrimaryArtifactRoute}
+            onShowDiffChange={setArtifactShowDiff}
+            route={route}
+            showDiff={artifactShowDiff}
+            toolbar={artifactToolbar}
+          >
+            {selectedArtifact?.kind === "doc" ? (
+              <ArtifactDocument
+                artifact={selectedArtifact}
+                askId={askId}
+                commentId={commentId}
+                highlightTerm={highlightTerm}
+                isClosed={isClosed}
+                onToolbarChange={handleArtifactToolbarChange}
+                owner={{ key: issueKey, kind: "issue" }}
+                onVersionChange={(version) => {
+                  setArtifactShowDiff(false);
+                  selectDocumentVersion(selectedArtifact, version);
+                }}
+                showDiff={artifactShowDiff}
+                version={artifactRoute?.version}
+              />
+            ) : null}
+          </ArtifactRoutePanel>
         ) : null}
       </div>
       <div
@@ -646,11 +654,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         id="issue-activity-panel"
         role="tabpanel"
       >
-        {activatedTabs.activity ? (
-          <Suspense fallback={<LoadingSkeleton label="Loading the activity" />}>
-            <ActivityTab issueKey={issueKey} state={state.data} />
-          </Suspense>
-        ) : null}
+        {activatedTabs.activity ? <ActivityTab issueKey={issueKey} state={state.data} /> : null}
       </div>
       <div
         aria-hidden={activeTab !== "decisions"}
@@ -660,13 +664,11 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         role="tabpanel"
       >
         {activatedTabs.decisions ? (
-          <Suspense fallback={<LoadingSkeleton label="Loading the decisions" />}>
-            <DecisionsPanel
-              artifacts={issue.data?.artifacts ?? []}
-              isClosed={isClosed}
-              issueKey={issueKey}
-            />
-          </Suspense>
+          <DecisionsPanel
+            artifacts={issue.data?.artifacts ?? []}
+            isClosed={isClosed}
+            issueKey={issueKey}
+          />
         ) : null}
       </div>
       <div
@@ -676,11 +678,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         id="issue-collaborators-panel"
         role="tabpanel"
       >
-        {activatedTabs.collaborators ? (
-          <Suspense fallback={<LoadingSkeleton label="Loading the collaborators" />}>
-            <CollaboratorsTab issueKey={issueKey} />
-          </Suspense>
-        ) : null}
+        {activatedTabs.collaborators ? <CollaboratorsTab issueKey={issueKey} /> : null}
       </div>
     </section>
   );
