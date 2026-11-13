@@ -310,13 +310,17 @@ subjects and objects, in the present, the past and the future:
   problem, the cause, the work and the like). Its subject is a text, a change or an approach,
   never a thing that literally displays, carries, holds or pays (a plan, a log, a page, an
   output, a table, a report, a queue). The pays faults have subjects that pay no money (a
-  branch, a cache, a scan). The other verbs are *frame*, *capture*, *surface*, *anchor*, *land*,
-  *carry*, *unblock*, *bridge*, *drive*, *own*, *close*, *track*, *signal*, *reflect*, *move*,
-  *hold*, *shape* and *back*, used figuratively, taken in turn in a seeded order.
+  branch, a cache, a scan). The other verbs are *frame*, *capture*, *surface*, *anchor*, *carry*,
+  *unblock*, *bridge*, *drive*, *own*, *close*, *track*, *signal*, *reflect*, *move*, *hold* and
+  *shape*, used figuratively, taken in turn in a seeded order. *land* and *back* were dropped:
+  each has a literal reading a labeller takes for a fact.
   `TestFaultsHaveNoLiteralReadingAndStateNoValue` checks the subjects and objects.
 - A control uses the same verb in a sentence that states the fact (a value, a holder, a date, an
   amount or an observed event), or in its literal sense with a fact, as the definition's boundary
-  cases allow. For example: "The config file names `us-west1` as the region."
+  cases allow. Every control states a fact of software work (a file, a command, a test, a build,
+  a config value, a count, a person or a date), so a reader of a software write cannot take its
+  subject for a thing of another domain. For example: "The config file names `us-west1` as the
+  region."
 
 No sentence is planted twice in one run.
 
@@ -326,7 +330,19 @@ family's writes in a seeded order, so every family with a body is drawn from. A 
 paragraph start of the main field drawn by the seed. Its control goes into a second copy of the
 same write at the same paragraph start. A paragraph start is used only when the prose reader reads
 the planted sentence there as one sentence of the main field, which the field holds nowhere else.
-When no start of a write is usable, the next write is taken.
+
+A planted sentence must not read as someone's relayed or quoted words, so these starts are not
+drawn:
+
+- the start right after a block quote, a paragraph that holds a quotation mark (`"`, `“`, `”`,
+  `„`, `«`, `»`, `‘`), or a paragraph that ends in a colon;
+- the start right before a block quote or a paragraph that holds a quotation mark;
+- every start after a paragraph that attributes words to a person (`From X:`; *wrote*, *said*,
+  *asked*, *replied*, *answered*; *writes*, *says*, *asks*, *replies* followed by a colon or a
+  quotation mark), up to the next heading.
+
+When no other start serves, the first start of the main field is used, and the manifest line holds
+`next_to_relayed: true`. When no start of a write serves at all, the next write is taken.
 
 Output, in `--out`:
 

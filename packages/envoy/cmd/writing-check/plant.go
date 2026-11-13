@@ -9,7 +9,9 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/prose"
 )
@@ -102,47 +104,46 @@ var plantVerbs = []plantVerb{
 			{"The second pass", false}, {"The migration", false}, {"Each rebuild", false}, {"Both passes", true}, {"The two scans", true}},
 		faultRests: []string{"the merge clash a second time.", "the scan twice.", "the full build again.",
 			"off.", "the work twice.", "the risk up front.", "the problem a second time.", "the wait up front."},
-		controlSubjects: []subject{{"The team", false}, {"The customer", false}, {"Our lab", false},
-			{"The company", false}, {"The client", false}, {"Both teams", true}},
+		controlSubjects: []subject{{"The team", false}, {"The customer", false}, {"The platform team", false},
+			{"The company", false}, {"Our finance team", false}, {"Both teams", true}},
 		controlRests: []string{"$120 a month for the build runners.", "$4,300 for the license.", "the vendor $2,500 for the audit.",
 			"$45 for each extra seat.", "an invoice of $860 to the host.", "$15 an hour for the test machines."},
 	},
+	// The controls of the other verbs state a fact of software work: a file, a command, a test, a
+	// build, a config value, a count, a person or a date, so no reader takes the subject for a
+	// thing of another domain.
 	otherVerb("frame", "frames", "framed", []string{"the risk.", "the problem."},
-		one("The protocol", "The encoder"), []string{"each message with a 4-byte length header.", "every packet with a 2-byte checksum."}),
+		one("The RPC protocol", "The `wire` encoder"), []string{"each message with a 4-byte length header.", "every packet with a 2-byte checksum."}),
 	otherVerb("capture", "captures", "captured", []string{"the intent.", "the lesson."},
 		one("The script", "The test runner"), []string{"the exit code `3` in `run.log`.", "the full output of `make test` in `out.txt`."}),
 	otherVerb("surface", "surfaces", "surfaced", []string{"the tension.", "the risk."},
-		one("The submarine", "The diver"), []string{"at 06:10 near the north dock.", "200 m from the boat."}),
+		one("The `deploy` command", "The CLI"), []string{"the error `quota exceeded` on stderr.", "the warning `disk 91% full` in its first line of output."}),
 	otherVerb("anchor", "anchors", "anchored", []string{"the approach.", "the discussion."},
-		one("The crew", "The captain"), []string{"the boat 200 m offshore.", "the ship in 12 m of water."}),
-	otherVerb("land", "lands", "landed", []string{"the work.", "the idea."},
-		one("The flight", "The plane"), []string{"at 14:05 on Friday.", "on runway 2 at 09:30."}),
+		one("The pattern `^v[0-9]+`", "The regex in `tags.go`"), []string{"each match to the start of the tag name.", "the match at offset 0 of each line."}),
 	otherVerb("carry", "carries", "carried", []string{"the idea forward.", "the work forward."},
-		one("The truck", "The van"), []string{"40 boxes of paper.", "1,200 kg of cement."}),
+		one("The commit", "The merge commit"), []string{"the line `Dispatch: KEY-1`.", "the trailer `Signed-off-by: kim`."}),
 	otherVerb("unblock", "unblocks", "unblocked", []string{"the work.", "progress."},
 		one("The admin", "The moderator"), []string{"the user `jdoe` at 10:15.", "the account `ops-bot` on Monday."}),
 	otherVerb("bridge", "bridges", "bridged", []string{"the gap.", "the difference."},
-		one("The crew", "The cable"), []string{"the 12 m stream with steel beams.", "pins `3` and `4` on the board."}),
+		one("The `socat` command", "The proxy in `bridge.yml`"), []string{"port `5432` to `/tmp/pg.sock`.", "port `8080` to the `api` container."}),
 	otherVerb("drive", "drives", "drove", []string{"the outcome.", "the alignment."},
-		one("Ana", "The courier"), []string{"the van to the depot every Tuesday.", "120 km to the plant each day."}),
+		one("The load script", "The `k6` test"), []string{"500 requests a second at the `/search` route.", "the browser through 12 login steps."}),
 	otherVerb("own", "owns", "owned", []string{"the outcome.", "the follow-through."},
-		one("The lab", "Our team"), []string{"12 GPUs.", "the domain `example.org`."}),
+		one("Kim", "The infra team"), []string{"the 12 GPUs in the `gpu-a` pool.", "the domain `example.org`."}),
 	otherVerb("close", "closes", "closed", []string{"the loop.", "the gap."},
-		one("The store", "The office"), []string{"at 21:00 on weekdays.", "for two days in December."}),
+		one("Kim", "The release manager"), []string{"issue `ABC-12` at 10:15 on Monday.", "pull request #482 on Friday."}),
 	otherVerb("track", "tracks", "tracked", []string{"the intent.", "the spirit of the work."},
-		one("The GPS unit", "The tracker"), []string{"the truck's position every 30 seconds.", "each parcel by its code `PX-114`."}),
+		one("The exporter", "The `metrics` job"), []string{"the queue depth every 30 seconds.", "each request by its trace id `PX-114`."}),
 	otherVerb("signal", "signals", "signaled", []string{"the direction.", "a shift."},
-		one("The driver", "The cyclist"), []string{"a left turn at the junction.", "a stop 30 m before the light."}),
+		one("The supervisor", "The `stop.sh` script"), []string{"`SIGTERM` to the worker after 30 seconds.", "the `nginx` process with `SIGHUP` at 02:00."}),
 	otherVerb("reflect", "reflects", "reflected", []string{"the thinking.", "the new reality."},
-		one("The mirror", "The panel"), []string{"90% of the light.", "about 40% of the heat."}),
+		one("The `version` field", "The status badge"), []string{"the tag `v2.4.1`.", "the last run's exit code `2`."}),
 	otherVerb("move", "moves", "moved", []string{"the needle.", "the work forward."},
-		one("The crane", "The sync script"), []string{"4-ton containers to dock 3.", "`out.log` to `archive/` every night."}),
+		one("The migration", "The sync script"), []string{"4,000 rows to the `archive` table.", "`out.log` to `archive/` every night."}),
 	otherVerb("hold", "holds", "held", []string{"the line.", "the balance."},
 		one("The list", "The array"), []string{"three users: `alice`, `bob` and `carol`.", "two values: `7` and `9`."}),
 	otherVerb("shape", "shapes", "shaped", []string{"the outcome.", "the work."},
-		one("The press", "The lathe"), []string{"40 steel panels an hour.", "each rod to a 12 mm thread."}),
-	otherVerb("back", "backs", "backed", []string{"the direction.", "the approach."},
-		one("The bank", "The fund"), []string{"the loan with $2 million.", "the startup with $500,000."}),
+		one("The rate limiter", "The `tc` rule in `net.sh`"), []string{"traffic to 40 requests a second.", "egress on `eth0` to 12 Mbit/s."}),
 }
 
 func otherVerb(base, third, past string, faultRests []string, controlSubjects []subject, controlRests []string) plantVerb {
@@ -222,7 +223,10 @@ type plantedCase struct {
 	Position      int    `json:"position"`
 	Boundary      int    `json:"boundary"`
 	Boundaries    int    `json:"boundaries"`
-	Seed          int64  `json:"seed"`
+	// NextToRelayed marks a sentence planted at the field's first start because every start
+	// was next to relayed or quoted words (relayedStarts).
+	NextToRelayed bool  `json:"next_to_relayed,omitempty"`
+	Seed          int64 `json:"seed"`
 }
 
 func runPlant(args []string, stdout, stderr io.Writer) int {
@@ -410,10 +414,11 @@ func plant(refs []*writeRef, keys []writeKey, seed int64, perShape, nolist int, 
 }
 
 // place copies a write once for each sentence and plants the sentence, as its own paragraph, at
-// one paragraph start of the main field drawn by rng, the same start for every sentence. A start
-// is taken only when, in every copy, the prose reader reads the planted sentence as one sentence
-// of the main field that the field holds nowhere else; place tries the starts in a seeded order
-// and answers false when none is clean.
+// one paragraph start of the main field drawn by rng, the same start for every sentence. It tries
+// the starts that relayedStarts does not mark, in a seeded order, and then, where none of them
+// serves, the first start of the field. A start serves only when, in every copy, the prose reader
+// reads the planted sentence as one sentence of the main field that the field holds nowhere else.
+// place answers false when no start serves.
 func place(cases []Case, ref *writeRef, sentences []string, rng *rand.Rand) ([][]Case, []plantedCase, bool) {
 	if len(cases) == 0 {
 		return nil, nil, false
@@ -421,7 +426,16 @@ func place(cases []Case, ref *writeRef, sentences []string, rng *rand.Rand) ([][
 	m := mainCase(cases)
 	field := cases[m]
 	starts := paragraphStarts(field.Text)
-	order := rng.Perm(len(starts))
+	relayed := relayedStarts(field.Text, starts)
+	var order []int
+	for _, b := range rng.Perm(len(starts)) {
+		if !relayed[b] {
+			order = append(order, b)
+		}
+	}
+	if len(starts) > 0 && relayed[0] {
+		order = append(order, 0)
+	}
 	readAs := make([]string, len(sentences))
 	for j, s := range sentences {
 		read := prose.ProseSentences(field.Field, s)
@@ -447,6 +461,7 @@ func place(cases []Case, ref *writeRef, sentences []string, rng *rand.Rand) ([][
 				Sentence: s, SentenceProse: readAs[j],
 				EventID: ref.Key.EventID, SourceID: ref.Key.SourceID, Family: ref.Family, Project: ref.Project,
 				Field: field.Field, Surface: field.Surface, Position: at, Boundary: b, Boundaries: len(starts),
+				NextToRelayed: relayed[b],
 			}
 		}
 		if clean {
@@ -454,6 +469,81 @@ func place(cases []Case, ref *writeRef, sentences []string, rng *rand.Rand) ([][
 		}
 	}
 	return nil, nil, false
+}
+
+// Signs that a paragraph relays or quotes someone's words.
+var (
+	// quoteMarks are the quotation marks a quoted paragraph holds. A straight or curly apostrophe
+	// is not one: contractions hold it.
+	quoteMarks = `"“”„«»‘`
+	// attribution is a line that attributes words to a person: "X wrote:", "X said …",
+	// "From X:", "X asks: …".
+	attribution = regexp.MustCompile(`(?im)^\s*from\s+[^:\n]{1,80}:|\b(?:wrote|said|asked|replied|answered)\b|\b(?:writes|says|asks|replies)\s*(?::|["“])`)
+	heading     = regexp.MustCompile(`^\s{0,3}#{1,6}\s`)
+)
+
+// textBlock is a run of non-blank lines, by its byte offsets.
+type textBlock struct{ start, end int }
+
+// relayedStarts marks each paragraph start of text at which a planted sentence could be read as
+// someone's relayed or quoted words: the start right after a block quote, a paragraph holding a
+// quotation mark, or a paragraph ending in a colon (a colon-introduced quotation); the start right
+// before a block quote or a paragraph holding a quotation mark; and every start after a line
+// that attributes words to a person (attribution), up to the next heading.
+func relayedStarts(text string, starts []int) []bool {
+	var blocks []textBlock
+	for offset, open := 0, -1; offset <= len(text); {
+		end := strings.IndexByte(text[offset:], '\n')
+		next := len(text) + 1
+		if end >= 0 {
+			next = offset + end + 1
+		}
+		line := text[offset:min(next, len(text))]
+		switch blank := strings.TrimSpace(line) == ""; {
+		case !blank && open < 0:
+			open = offset
+		case blank && open >= 0:
+			blocks = append(blocks, textBlock{open, offset})
+			open = -1
+		}
+		if next > len(text) {
+			if open >= 0 {
+				blocks = append(blocks, textBlock{open, len(text)})
+			}
+			break
+		}
+		offset = next
+	}
+	quoted := func(b textBlock) bool {
+		p := text[b.start:b.end]
+		return strings.HasPrefix(strings.TrimSpace(p), ">") || strings.ContainsAny(p, quoteMarks)
+	}
+	introduces := func(b textBlock) bool {
+		return strings.HasSuffix(strings.TrimSpace(text[b.start:b.end]), ":")
+	}
+	marks := make([]bool, len(starts))
+	for i, s := range starts {
+		relay := false
+		var prev, next *textBlock
+		for k := range blocks {
+			b := &blocks[k]
+			if b.start >= s {
+				next = b
+				break
+			}
+			prev = b
+			switch {
+			case heading.MatchString(text[b.start:b.end]):
+				relay = false
+			case attribution.MatchString(text[b.start:b.end]):
+				relay = true
+			}
+		}
+		marks[i] = relay ||
+			prev != nil && (quoted(*prev) || introduces(*prev)) ||
+			next != nil && quoted(*next)
+	}
+	return marks
 }
 
 // count is how many sentences read exactly text.

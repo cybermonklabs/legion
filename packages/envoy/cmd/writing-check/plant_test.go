@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"math/rand/v2"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -174,5 +175,41 @@ func TestPlantPutsOneSentenceInEachCopyAndPairsEachFaultWithAControl(t *testing.
 	}
 	if len(families) != 4 {
 		t.Errorf("planted in families %v, want the 4 with a body", families)
+	}
+}
+
+func TestRelayedStartsMarksStartsNextToRelayedOrQuotedWords(t *testing.T) {
+	text := "Intro para.\n\nKim wrote:\n\nWe should ship it.\n\nSecond relayed para.\n\n## Next\n\nPlain one.\n\n" +
+		"> quoted\n\nAfter quote.\n\nHe said \"go\".\n\nLast."
+	starts := paragraphStarts(text)
+	got := relayedStarts(text, starts)
+	want := []bool{false, false, true, true, true, false, true, true, true, true, true}
+	if !slices.Equal(got, want) {
+		var opens []string
+		for _, s := range starts {
+			opens = append(opens, strings.SplitN(text[s:], "\n", 2)[0])
+		}
+		t.Errorf("relayed starts = %v, want %v (starts open %q)", got, want, opens)
+	}
+}
+
+func TestPlaceFallsBackToTheFirstStartWhenEveryStartIsRelayed(t *testing.T) {
+	cases := []Case{{Field: "body", Surface: surfaceComment, Text: "\"Ship it,\" the reviewer wrote.\n\nThen \"more\" came."}}
+	ref := &writeRef{Key: writeKey{EventID: 1, SourceID: "c"}, Family: "comment"}
+	rng := rand.New(rand.NewPCG(1, 2))
+	copies, rows, ok := place(cases, ref, []string{"The new section names the risk."}, rng)
+	if !ok || rows[0].Boundary != 0 || rows[0].Position != 0 || !rows[0].NextToRelayed {
+		t.Fatalf("place = ok %v, rows %+v", ok, rows)
+	}
+	if !strings.HasPrefix(copies[0][0].Text, "The new section names the risk.\n\n\"Ship it,\"") {
+		t.Errorf("copy = %q", copies[0][0].Text)
+	}
+	// Only the start before "Kim wrote:" is clear of the relayed words.
+	cases[0].Text = "Kim wrote:\n\nWe should ship it.\n\nThe build passed on Monday."
+	for seed := range uint64(20) {
+		_, rows, ok := place(cases, ref, []string{"The new section names the risk."}, rand.New(rand.NewPCG(seed, 1)))
+		if !ok || rows[0].NextToRelayed || rows[0].Boundary != 0 {
+			t.Errorf("seed %d: planted at start %d (relayed %v), want start 0", seed, rows[0].Boundary, rows[0].NextToRelayed)
+		}
 	}
 }
