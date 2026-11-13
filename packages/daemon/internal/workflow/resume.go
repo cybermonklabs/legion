@@ -35,14 +35,16 @@ import (
 // a drain made before the upgrade, so both are left as they are. A released claim is the one ByRule
 // source the boot leaves too: the daemon released its idle pod, and what brings the pod and its
 // bundled work back is the next wake for its role, not a daemon restart, so a boot that started it
-// would raise a pod nothing asked for. One boot step does start a released claim, once per project
-// and never again: the cutover's repair (cutoverMergerRepair), a fact of its own that the boot
-// applies before its consumers start, owes a start to each merger the `awaiting_merge` cutover
-// left released with no wake to come.
+// would raise a pod nothing asked for. Two other boot steps can start a released claim. Admission's
+// pass at the boot sends the work of an entry to a released claim that stands behind the entry its
+// phases row names (admit's owedEntryRoles), as each of its passes does. And the cutover's repair
+// (cutoverMergerRepair), a fact of its own that the boot applies once per project, before its
+// consumers start, owes a start to each merger the `awaiting_merge` cutover left released with no
+// wake to come.
 //
 // The claims it weighs are the suspended owners of the project's unfinished phases in running
-// trees (suspendedPhaseOwners), the one read by which a boot step picks the owner of a phase to
-// start, and it starts each of them whose claim a ByRule source suspended. Each is given the start
+// trees (suspendedPhaseOwners), the read the cutover's repair picks its mergers from too, and it
+// starts each of them whose claim a ByRule source suspended. Each is given the start
 // admission gives a re-admitted tree's mid-phase child, built where every start of a phase worker
 // is built (Engine.started) and so written through the outbox's start like every other
 // (StartOrOwe), and what that start carries is decided by the entry the role's phases row names,
@@ -121,12 +123,13 @@ type phaseOwners struct {
 }
 
 // suspendedPhaseOwners reads, for each issue of the project, the suspended owner of its phase
-// while that phase is unfinished and the issue's tree runs. It is the one rule by which a boot
-// step picks the owner of a phase to start: the boot's resume by rule (booted) and the cutover's
-// repair of the mergers the `awaiting_merge` cutover left stopped (cutoverMergerRepair) both read
-// their owners here, and each narrows them by terms of its own, booted to a claim a ByRule source
-// suspended and the repair to a merger the idle release suspended. So a change to how the boot
-// picks a suspended owner reaches both. It writes nothing.
+// while that phase is unfinished and the issue's tree runs. The boot's resume by rule (booted) and
+// the cutover's repair of the mergers the `awaiting_merge` cutover left stopped
+// (cutoverMergerRepair) both read their owners here, and each narrows them by terms of its own,
+// booted to a claim a ByRule source suspended and the repair to a merger the idle release
+// suspended, so a change to how either picks a suspended owner reaches both. Admission's pass at
+// the boot reads its phase workers by a read of its own (admit's phaseWorkers) and sends only the
+// work of an entry a claim stands behind (owedEntryRoles). It writes nothing.
 //
 // The phase's owner is the role that works the issue's phase (phase.RoleFor) on an issue in the
 // workflow whose tree is running — this generation of it, by the one rule every reader of that

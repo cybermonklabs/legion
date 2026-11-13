@@ -20,7 +20,11 @@ import (
 // mergeQueueRead runs a merge-queue read (record.MergeQueueRead): the daemon's one read of a pull
 // request that GitHub reported leaving the merge queue at the row's head. GitHub's event names no
 // reason for the removal, and GitHub's merge queue reports a removal in the same second as the
-// merge it makes, so this read is what tells the merge from a removal.
+// merge it makes, so this read is what tells the merge from a removal once GitHub reports the
+// merge. A read made before GitHub reports it answers the pull request open, and the merger is
+// told of a removal that was the merge: step 5 of its role prompt reads that removal's `merged`
+// reason as no removal, and the issue closes on the merge's own event (plan D12 of
+// dispatch://INFRA-3274, which adds no second read for it).
 //
 // Each attempt first reads the issue, its tree's root and its pull request record, and finishes
 // the row without reading GitHub once the issue has left merging at the row's head (mergingAt,

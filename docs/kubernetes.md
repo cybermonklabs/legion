@@ -1861,7 +1861,9 @@ delete from outbox where kind in ('merge_queue_read', 'merge_queue_removal');
 Each deleted row costs one thing: a merger is not told of one removal from the merge queue.
 A deleted `merge_queue_read` row makes no read of GitHub, so the daemon writes no message for that removal.
 A deleted `merge_queue_removal` row is a message that nobody delivers.
-In both cases the merger reads the merge queue itself at its next turn (step 5 of `packages/daemon/internal/prompts/roles/merger.md`).
+After the rollback, the merger runs the earlier release's role prompt, and that prompt does not read the merge queue on the pod's `gh`.
+Step 5 of `merger.md` in each release from `legion-v20.5.0` up to this one watches with `gh pr view <n> --json state,mergedAt,isInMergeQueue,mergeStateStatus`, and the pod's `gh` 2.98.0 refuses the field `isInMergeQueue` (`Unknown JSON field`).
+So after the rollback a merger learns of a removal only when it reads the pull request on GitHub with a command of its own.
 
 The kind check keeps both names after the rollback, and the rollback needs no statement for it: an earlier release never writes either kind, so the check refuses nothing that release writes.
 This release's one-time start of the mergers that the `awaiting_merge` cutover left stopped ([Idle release](#idle-release)) adds no outbox kind and no payload field, and its one `processed_events` row is harmless to a rollback.

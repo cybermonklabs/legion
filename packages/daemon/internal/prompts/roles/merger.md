@@ -66,7 +66,7 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
      - `DIRTY`: the head conflicts with the base. Send the issue back with `request_backward_move` (step 6).
      - `UNKNOWN`: run the watch again on your own backoff for up to five minutes. Then decide in the same way by the state that it reads.
      - Any other state: the head conflicted with an entry ahead of it in the queue. Enqueue the same head one more time (step 4). Record that enqueue in a `dispatch comment` on the issue.
-   - `manual`: if the `actor` is your own App and you removed the pull request because the design gate closed, the removal is your own act. Follow "A closed design gate" below. Any other `manual` removal is a person's dequeue. It is that person's decision. Report it to the architect with `envoy_publish` to its encoded role token.
+   - `manual`: if the `actor` is your own App and you removed the pull request because the design gate closed, the removal is your own act. Follow "A closed design gate" below. The timeline gives an App's login without the `[bot]` at its end, so compare the `actor` login with your App's login with `[bot]` taken off. Any other `manual` removal is a person's dequeue. It is that person's decision. Report it to the architect with `envoy_publish` to its encoded role token.
    - Any other reason: tell the architect with `envoy_publish` to its encoded role token. Quote the reason.
 
    A removal is never a merge.
