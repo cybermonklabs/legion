@@ -2591,22 +2591,24 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		defer cancel()
 		// One read and one merge decide this registration's topics, which are both the row it
 		// stores and the filter of the session's own consumer (store.Registry.PlanInterest). The
-		// roles the session holds are read for the topics the body names and for the row it
-		// already holds together, since either may name its own project's controller notice lane
-		// (notifications.legion.<project>.controller, the daemon's notify.ControllerTopic),
-		// which its holder registers because a Legion controller receives that lane from its own
-		// consumer now and from no core subscription of its own (INFRA-771): a heartbeat whose
-		// body leaves the lane out therefore keeps it in the filter and in the row alike, and
-		// the write below stores this plan rather than deciding it a second time
-		// (store.Registry.UpsertPlanned).
+		// claim of the controller role behind a project's notice lane
+		// (notifications.legion.<project>.controller, the daemon's notify.ControllerTopic) is read
+		// for the topics the body names and for the row it already holds together, since either
+		// may name that lane, which its holder registers because a Legion controller receives
+		// that lane from its own consumer now and from no core subscription of its own
+		// (INFRA-771): a heartbeat whose body leaves the lane out therefore keeps it in the filter
+		// and in the row alike, and the write below stores this plan rather than deciding it a
+		// second time (store.Registry.UpsertPlanned).
 		//
-		// The roles are read only when one of the two names such a lane, so no other
-		// registration is refused while that view cannot answer (store.ErrRoleViewNotReady), and
-		// one that does is refused the bus-unavailable 503 rather than stored without the lane:
-		// the stored topics are the consumer's filter, and a notice published while the lane is
-		// out of it reaches the controller on no later path. The row's own read is the registry
-		// cache's on every heartbeat, and one that fails refuses the registration as the write
-		// it precedes would.
+		// The session holds that role when the role's claim record names it, read from the claim
+		// bucket and not from this listener's copy of the claims, which can lack a claim the
+		// store gives the session or name one the store has moved to another session. The claim
+		// is read only when one of the two names such a lane, so no other registration waits on
+		// it, and a registration whose claim read did not answer or failed is refused the
+		// bus-unavailable 503 rather than stored without the lane: the stored topics are the
+		// consumer's filter, and a notice published while the lane is out of it reaches the
+		// controller on no later path. The row's own read is the registry cache's on every
+		// heartbeat, and one that fails refuses the registration as the write it precedes would.
 		requested := append(slices.Clone(body.Topics), contracts.AgentSubject(body.SessionID))
 		// The topics that would deliver to no session are split off once, here
 		// (splitUncapturedTopics): they are neither planned, stored nor filtered on, and the

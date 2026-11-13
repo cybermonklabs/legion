@@ -1274,11 +1274,12 @@ func TestRemove_ColdCacheReadsFromKV(t *testing.T) {
 }
 
 // A heartbeat whose body leaves out the controller notice lane its row holds keeps that lane in
-// both the plan and the row written from it: PlanInterest reads the session's roles for the
-// stored row as well as for the topics the registration names, so the filter the listener builds
-// from the plan and the row its write stores are one set. Until INFRA-771's review the route read
-// the roles for the body's topics alone, so such a heartbeat dropped the lane from the filter
-// while the write, reading them again for the row, kept it in the row.
+// both the plan and the row written from it: PlanInterest reads the controller's claim for the
+// stored row's lane as well as for the topics the registration names, so the filter the listener
+// builds from the plan and the row its write stores are one set. Until INFRA-771's review the
+// route read the roles for the body's topics alone, so such a heartbeat dropped the lane from the
+// filter while the write, reading them again for the row, kept it in the row. The plan reads the
+// claim record the grant wrote, so nothing waits for the role claim copy to follow it.
 func TestPlanInterestKeepsTheControllerLaneAHeartbeatOmits(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
@@ -1296,10 +1297,6 @@ func TestPlanInterestKeepsTheControllerLaneAHeartbeatOmits(t *testing.T) {
 	if _, err := reg.SetRole(sessionID, "m1", role, false); err != nil {
 		t.Fatalf("SetRole: %v", err)
 	}
-	waitFor(t, 5*time.Second, func() bool {
-		held, err := reg.RolesHeldBy(sessionID)
-		return err == nil && slices.Contains(held, role)
-	})
 	ctx := context.Background()
 	registered, err := reg.PlanInterest(ctx, sessionID, []string{lane, own})
 	if err != nil {

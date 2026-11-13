@@ -1,7 +1,9 @@
 // The renewal reads its set from the interest record the registration's own write returned and
 // from the role claim copy, and renews each role only as its claim record says; and the renewals
 // that fail are recorded, by role and holder session, until one of them writes
-// (Registry.RenewRoleClaims, Registry.RecordRenewalFailures, Registry.RenewalFailedWithin).
+// (Registry.RenewRoleClaims, Registry.RecordRenewalFailures, Registry.RenewalFailedWithin). The
+// last two tests hold every act of the store that turns on who holds a role to that role's claim
+// record: the renewal, the release, and the controller notice lane a registration keeps.
 
 package store
 
@@ -136,6 +138,40 @@ func registered(t *testing.T, reg *Registry, sessionID string, topics ...string)
 		t.Fatalf("register %s: %v", sessionID, err)
 	}
 	return row
+}
+
+// controllerRegistration is one registration of sessionID naming topics as the listener's route
+// makes its interest half: the plan (PlanInterest), whose topics are the filter of the session's
+// consumer, and the write of that plan (UpsertPlanned). It returns the three topic sets that
+// registration left, by name: the planned ones, the ones the write returned, and the ones of the
+// row the interest bucket now holds.
+func controllerRegistration(t *testing.T, rig *repairRig, sessionID string, topics ...string) map[string][]string {
+	t.Helper()
+	ctx := context.Background()
+	plan, err := rig.reg.PlanInterest(ctx, sessionID, topics)
+	if err != nil {
+		t.Fatalf("plan %s's registration of %v: %v", sessionID, topics, err)
+	}
+	row, err := rig.reg.UpsertPlanned(ctx, Interest{SessionID: sessionID, MachineID: "m1"}, plan)
+	if err != nil {
+		t.Fatalf("write %s's registration of %v: %v", sessionID, topics, err)
+	}
+	return map[string][]string{"planned": plan.Topics, "written": row.Topics, "stored": storedInterest(t, rig.conn, sessionID).Topics}
+}
+
+// requireLane fails the test, saying why, unless every topic set of a registration
+// (controllerRegistration) holds lane when kept is set, and none of them does when it is not.
+func requireLane(t *testing.T, sets map[string][]string, lane string, kept bool, why string) {
+	t.Helper()
+	want := "without"
+	if kept {
+		want = "with"
+	}
+	for name, topics := range sets {
+		if slices.Contains(topics, lane) != kept {
+			t.Fatalf("the %s topics are %v, want them %s %s: %s", name, topics, want, lane, why)
+		}
+	}
 }
 
 // assertNoRenewalFailure fails the test if a renewal failure is recorded of role's claim for
@@ -492,7 +528,7 @@ func TestARenewalFailureRecordIsKeyedByHolderAndPrunedPastTheLiveWindow(t *testi
 // Every act that turns on who holds a role reads that role's claim record, in both directions the
 // copy can be wrong in: a surplus copy names the session where the store names another session or
 // none, and a lost copy lacks a claim the store gives the session. Each act is required to do what
-// the store's claim says. The controller lane adds its case beside the renewal's and the release's.
+// the store's claim says: the renewal, the release, and the registration's controller notice lane.
 func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 	t.Run("renewal", func(t *testing.T) {
 		const (
@@ -645,11 +681,83 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 			}
 		})
 	})
+
+	// A registration keeps a Legion controller notice lane in its plan, which is the filter of the
+	// session's consumer, and in the row its write stores exactly while the project's controller
+	// claim record names the session (controllerLaneRoles), and it reads that record once.
+	t.Run("controller lane", func(t *testing.T) {
+		const (
+			role   = "legion-DIRECTION-controller"
+			lane   = "notifications.legion.DIRECTION.controller"
+			holder = "ses_direction_controller"
+			other  = "ses_direction_controller_other"
+		)
+		own := contracts.AgentTopicPrefix + holder
+
+		// The copy names the session for a claim the store gives another session, or no session:
+		// no record, or a record this build cannot decode, which names no holder. The session's
+		// stored row holds the lane, as a registration made while it held the role left it, and
+		// the registration names the lane again: the lane leaves both.
+		t.Run("surplus", func(t *testing.T) {
+			for name, seed := range map[string]func(t *testing.T, rig *repairRig) uint64{
+				"another session": func(t *testing.T, rig *repairRig) uint64 {
+					claimRoleAs(t, rig.reg, other, "m1", role, roleClaimInstance)
+					return storedRoleClaim(t, rig.reg, role).Revision
+				},
+				"no claim": func(*testing.T, *repairRig) uint64 { return 0 },
+				"a claim this build cannot decode": func(t *testing.T, rig *repairRig) uint64 {
+					revision, err := rig.roles.Put(role, []byte(`{"holder_session_id":""}`))
+					if err != nil {
+						t.Fatalf("store a claim of %s naming no holder: %v", role, err)
+					}
+					return revision
+				},
+			} {
+				t.Run(name, func(t *testing.T) {
+					rig := newRepairRig(t, nil)
+					revision := seed(t, rig) + 1
+					putInterest(t, rig.interests, Interest{SessionID: holder, MachineID: "m1", Topics: []string{own, lane}})
+					settle(rig)
+					rig.reg.applyRoleClaim(roleClaimEntry(role, holder, revision))
+					if got := heldRoles(t, rig.reg, holder); !slices.Equal(got, []string{role}) {
+						t.Fatalf("with the surplus claim in the copy, RolesHeldBy(%s) = %v, want [%s]", holder, got, role)
+					}
+					claims := countRoleReads(rig.reg)
+
+					requireLane(t, controllerRegistration(t, rig, holder, lane, own), lane, false, "the store's claim of "+role+" ("+name+") does not name "+holder)
+					if reads := claims.reads(); reads != 1 {
+						t.Fatalf("the registration read %s's claim %d times, want once for the lane its body and its row both name", role, reads)
+					}
+				})
+			}
+		})
+
+		// The store gives the session the role and the copy lost the claim: the registration that
+		// names the lane keeps it, and so does the heartbeat after it that leaves the lane out of
+		// its body, which reads the claim for the lane its row holds.
+		t.Run("lost", func(t *testing.T) {
+			rig := newRepairRig(t, nil)
+			claimRoleAs(t, rig.reg, holder, "m1", role, roleClaimInstance)
+			settle(rig)
+			loseRoleClaim(rig.reg, role)
+			if got := heldRoles(t, rig.reg, holder); len(got) != 0 {
+				t.Fatalf("with its claim taken out of the copy, RolesHeldBy(%s) = %v, want nothing", holder, got)
+			}
+			claims := countRoleReads(rig.reg)
+
+			requireLane(t, controllerRegistration(t, rig, holder, lane, own), lane, true, "the store gives "+role+" to "+holder)
+			requireLane(t, controllerRegistration(t, rig, holder, own), lane, true, "the heartbeat's row holds the lane of a role the store gives "+holder)
+			if reads := claims.reads(); reads != 2 {
+				t.Fatalf("the registration and the heartbeat read %s's claim %d times, want once each", role, reads)
+			}
+		})
+	})
 }
 
 // An act whose claim read fails does not act as if the read had answered: it holds, says so, and
 // leaves the claim as the store holds it. The control of each is the same drive with the read
-// working, which acts. The controller lane adds its case beside the renewal's and the release's.
+// working, which acts. The acts are the renewal, the release, and the registration's controller
+// notice lane.
 func TestTheActHoldsOnAFailedRead(t *testing.T) {
 	t.Run("renewal", func(t *testing.T) {
 		const (
@@ -725,5 +833,83 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 				}
 			})
 		}
+	})
+
+	// A registration naming a controller notice lane whose claim read fails is refused before
+	// anything is stored: the plan the listener filters the session's consumer on, the plan made
+	// again after a conflict and the merging write each return the read's error, naming the
+	// role, and the bucket holds the session's row at the revision it held before. The copy names
+	// the session, so only the claim record refuses. With the read working the same registration
+	// plans the lane and stores it.
+	t.Run("controller lane", func(t *testing.T) {
+		const (
+			role   = "legion-HELD-controller"
+			lane   = "notifications.legion.HELD.controller"
+			holder = "ses_controller_held_on_failed_read"
+		)
+		own := contracts.AgentTopicPrefix + holder
+		for name, fails := range map[string]bool{"failed read": true, "reads working": false} {
+			t.Run(name, func(t *testing.T) {
+				rig := newRepairRig(t, nil)
+				claimRoleAs(t, rig.reg, holder, "m1", role, roleClaimInstance)
+				settle(rig)
+				if got := heldRoles(t, rig.reg, holder); !slices.Equal(got, []string{role}) {
+					t.Fatalf("RolesHeldBy(%s) = %v, want [%s]: the copy must name the session", holder, got, role)
+				}
+				before, err := rig.interests.Get(holder)
+				if err != nil {
+					t.Fatalf("read %s's interest record: %v", holder, err)
+				}
+				claims := countRoleReads(rig.reg)
+				claims.failGets.Store(fails)
+				if !fails {
+					requireLane(t, controllerRegistration(t, rig, holder, lane, own), lane, true, "the claim read answered and names "+holder)
+					return
+				}
+
+				ctx := context.Background()
+				requested := []string{lane, own}
+				for call, write := range map[string]func() error{
+					"PlanInterest": func() error {
+						_, err := rig.reg.PlanInterest(ctx, holder, requested)
+						return err
+					},
+					"PlanInterestAfterConflict": func() error {
+						_, err := rig.reg.PlanInterestAfterConflict(ctx, holder, requested)
+						return err
+					},
+					"UpsertWithin": func() error {
+						_, err := rig.reg.UpsertWithin(ctx, Interest{SessionID: holder, MachineID: "m1"}, requested)
+						return err
+					},
+				} {
+					if err := write(); !errors.Is(err, errClaimReadFailed) || !strings.Contains(err.Error(), role) {
+						t.Fatalf("%s of a registration whose controller claim read failed answered %v, want an error naming %s and carrying %v", call, err, role, errClaimReadFailed)
+					}
+				}
+				claims.failGets.Store(false)
+				after, err := rig.interests.Get(holder)
+				if err != nil {
+					t.Fatalf("read %s's interest record after the refused registration: %v", holder, err)
+				}
+				if after.Revision() != before.Revision() {
+					t.Fatalf("%s's interest record moved from revision %d to %d, want nothing stored by a registration whose controller claim read failed", holder, before.Revision(), after.Revision())
+				}
+			})
+		}
+
+		// A lane whose role is a key NATS refuses has a claim no read can tell the holder of, which
+		// is no failed read: the registration plans and stores the rest of its row without that
+		// lane, rather than being refused at every heartbeat.
+		t.Run("a key NATS refuses", func(t *testing.T) {
+			const refused = "notifications.legion.HELD:bad.controller"
+			if role, lane := bus.ControllerNoticeRole(refused); !lane || role != "legion-HELD:bad-controller" {
+				t.Fatalf("ControllerNoticeRole(%s) = %q, %v; want legion-HELD:bad-controller, a controller notice lane", refused, role, lane)
+			}
+			rig := newRepairRig(t, nil)
+			sets := controllerRegistration(t, rig, holder, refused, own)
+			requireLane(t, sets, refused, false, "no read can tell the holder of a claim under a key NATS refuses")
+			requireLane(t, sets, own, true, "the rest of the registration is stored")
+		})
 	})
 }
