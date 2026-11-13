@@ -259,19 +259,20 @@ describe("app-logins.ts", () => {
 
   test("a token command runs as the daemon runs it: no NATS seed, stdin closed, owner and read-only set empty, and no inherited LEGION_GITHUB_ value", async () => {
     // An unset variable prints `unset`, so a set-empty owner and read-only flag each print
-    // nothing. LEGION_GITHUB_REPOS is the name this change deleted, and any other name under that
-    // prefix reads the same: the runner drops what it inherited, as the daemon does, so a command
-    // never reads a narrowing value no mint gave it.
+    // nothing. The third name is any name under the LEGION_GITHUB_ prefix that no mint sets: the
+    // runner drops what it inherited there, as the daemon does, so a command never reads a
+    // narrowing value no mint gave it. The name this change deleted is one such name, and it is
+    // written nowhere in this tree (INFRA-2543 R7), which is why this row writes another.
     const probe =
       // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
-      'printf "%s|%s|%s|%s|%s|%s|%s" "$NATS_NKEY_SEED" "$NATS_DAEMON_NKEY_SEED" "$NATS_NKEY_SEED_FILE" "${LEGION_GITHUB_OWNER-unset}" "${LEGION_GITHUB_READ_ONLY-unset}" "${LEGION_GITHUB_REPOS-unset}" "$(cat)" >&2; exit 4';
+      'printf "%s|%s|%s|%s|%s|%s|%s" "$NATS_NKEY_SEED" "$NATS_DAEMON_NKEY_SEED" "$NATS_NKEY_SEED_FILE" "${LEGION_GITHUB_OWNER-unset}" "${LEGION_GITHUB_READ_ONLY-unset}" "${LEGION_GITHUB_INHERITED-unset}" "$(cat)" >&2; exit 4';
     const { code, stderr } = await run(config(app("101", probe), app("202")), {
       NATS_NKEY_SEED: "pane-seed",
       NATS_DAEMON_NKEY_SEED: "daemon-seed",
       NATS_NKEY_SEED_FILE: "/seed-file",
       LEGION_GITHUB_OWNER: "leaked-owner",
       LEGION_GITHUB_READ_ONLY: "1",
-      LEGION_GITHUB_REPOS: "leaked-owner/leaked-repo",
+      LEGION_GITHUB_INHERITED: "leaked-owner/leaked-repo",
     });
     expect(code).toBe(1);
     expect(stderr).toBe(
