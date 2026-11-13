@@ -1101,7 +1101,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   `tree_closed`, `tree_parked`, `label_off`, `ancestry`, `root_awaiting_person`, `design_gate`,
   `dispatch_blocker`, `children_first`, `accepted_ancestor`, `at_work` and `unclassified`. The
   daemon reads them in that order and takes the first that is true of the issue, so one issue is
-  counted once, and the line lists the words in that same order. No issue reads `at_work`
+  counted once, and the line lists the words in that same order; a word this `legion` binary
+  does not know, which a newer daemon can send, follows them with its count, sorted by the word,
+  so the counts always add up to the total. No issue reads `at_work`
   today (`record.HeldAtWork` says why). An issue in `admission.held` holds no slot, so this
   count never moves the `admission` line's count against the cap. The `held lifecycle rows` line
   further down the block is a different thing: one issue's
@@ -1217,10 +1219,11 @@ Closing the terminal leaves the project without one, and the daemon logs
   line; `blocked`, an issue of `admission.blocked`, which a Dispatch link or an open child below
   it holds; `unlisted`, an issue the record holds in the workflow that stands in none of
   `admission.active`, `admission.waiting` and `admission.blocked`, and so in `admission.held` —
-  and a `reason` sentence, which for an issue of `admission.held` is its held word's sentence,
-  under `blocked` as well where the word is one the daemon reads before `dispatch_blocker`,
-  except that under `blocked` a child whose own `blocked_by` link holds it under an ancestor in
-  its tree (a children-first cycle) reads the cycle sentence, whatever its held word; an
+  and a `reason` sentence, which for an issue of `admission.held` that no stranded claim names
+  is its held word's sentence, under `blocked` as well where the word is one the daemon reads
+  before `dispatch_blocker`, except that under `blocked` a child whose own `blocked_by` link
+  holds it under an ancestor in its tree (a children-first cycle) reads the cycle sentence,
+  whatever its held word, and a held issue a stranded claim names reads `claim_stopped`; an
   issue holding an admission slot carries no `why` unless it also stands in `admission.waiting`
   or `admission.blocked`, or a stranded claim names it: an answered root reads `waiting`, a root
   whose open children hold its own first phase reads `blocked`, and an issue at work whose

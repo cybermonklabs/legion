@@ -1,0 +1,5 @@
+kind: Fixed
+body: |-
+  `legion state`'s `admission.held` line counts a reason word this binary does not know, after
+  the words it knows and sorted by the word, so the counts always add up to the total. Before, a
+  binary older than the daemon it asked left such rows out of the counts.

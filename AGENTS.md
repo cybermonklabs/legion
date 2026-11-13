@@ -917,10 +917,9 @@ Under a tree root whose linger was ever armed — a root that closed, was parked
 The daemon starts no held issue while its word stands.
 The end of one hold starts nothing where a later word is true of the issue, since that word then holds it;
 once no word holds the issue, it goes into the waiting line, where it waits for a slot.
-An architect's `release_children` adopts a member of a closed tree only when the member stands at `admitted` and holds no admission slot, and its root's record says `done` with that root's linger ended, as the adoption rule below says.
+An architect's `release_children` can adopt a member of a closed tree, as the adoption rule below says.
 A person's `todo` on the root re-admits a parked tree, and a person's label puts back a root whose label is off.
-A linger's own expiry hands members over, as the hand-over rule below says:
-a root that stayed `done` hands every member it leaves in the workflow, whatever its phase, to Legion as a root of its own, and a parked root's linger hands over only a member at `merging` whose pull request is still open.
+A linger's own expiry hands members over, as the hand-over rule below says.
 A handed-over issue queues for a slot of its own; the daemon does not start it at once.
 
 **Children first:** an issue's first phase does not start while Dispatch shows an open child under it, which a child the architect has filed and not released yet is, and the tree's architect is told once per issue and run of its tree with a `children-first` notice naming the parent and each open child with its Dispatch status.
@@ -1006,7 +1005,7 @@ admitting its old root again never takes it back, no other tree adopts it, and n
 `release_children` adopts a joinable child the same way before it answers `released`, naming it under `held` when it waits on an unfinished issue, and refuses one it cannot, writing nothing.
 It refuses first, before it reads the child's record, a child Dispatch shows in any status but `triage`, `backlog`, `icebox` or `todo`, with `ISSUE_ALREADY_RELEASED`, so a member of another tree that is at work reads that refusal and neither of the two below;
 `CHILD_NOT_ADOPTABLE` for a root that ran as a tree of its own, carries a run of its own, or left another tree as a root of its own, and for a member of a closed tree that the rule below would adopt but that holds an admission slot;
-`CHILD_IN_OTHER_TREE` for every other member of another tree: a member of a live tree, which is another architect's work, a member of a parked tree, a member of a tree still in its linger, and a member past `admitted` that Dispatch shows in one of those four statuses.
+`CHILD_IN_OTHER_TREE` for every other member of another tree but a member of a root the same release adopts, which joins with that root: a member of a live tree, which is another architect's work, a member of a tree whose root is not `done` (a parked tree, or one a person moved to `triage`), a member of a tree still in its linger, and a member past `admitted` that Dispatch shows in one of those four statuses.
 A child recorded in another tree is adopted instead only when it stands at the phase `admitted` and holds no admission slot, and its root's record says `done` with that root's linger ended:
 it joins the releasing tree with its repository unchanged and its generation raised by one, at `admitted` when its status is `todo`, and otherwise as a parked child at `done`, which a `todo` runs again.
 A labelled `todo` issue whose parent is not recorded, or is recorded as a root of its own, and whose Dispatch chain reaches a live tree (a child that tree's architect has not released, or a root parked under it) is held under that unreleased child, the ancestry hold:
@@ -1024,7 +1023,7 @@ the daemon sets it `todo` with the label in one Dispatch write, and the write's 
 A child that never started is handed over too, carrying no run, whatever held it where it stood — an unfinished Dispatch issue, an ancestor the daemon had accepted, or one that closed during the linger:
 the expiry reads the child's own state rather than the reason it waited, so every member the tree leaves in the workflow at `todo` and `admitted` becomes a root of its own.
 A child a person has taken out of the workflow, and one the architect has filed and not released, is in no such state and stays where it is.
-A root that does not stay `done` through its linger, one a person or a controller parked, hands over only a child standing at `merging` whose pull request is still open and whose own status is in the workflow:
+A root that does not stay `done` through its linger, one a person or a controller parked or one a person moved to `triage`, hands over only a child standing at `merging` whose pull request is still open and whose own status is in the workflow:
 the daemon re-admits no root left parked, so the child comes back in `merging` under a tree of its own, and its merger merges the head it reads, whose merge closes it.
 Ask the person whether that child's merge must wait for its parked root.
 A child whose old root had no gate (cleared by a reopen in its linger) carries none:

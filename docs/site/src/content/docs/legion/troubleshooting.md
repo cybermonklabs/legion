@@ -259,11 +259,12 @@ legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {why, waitingL
 which a Dispatch link or an open child below it holds, and `unlisted` for one the record holds
 in the workflow that stands in none of `admission.active`, `admission.waiting` and
 `admission.blocked`, and so in `admission.held`; `why.reason` is the sentence. For an issue of
-`admission.held` the sentence is its held word's, under `blocked` as well where the word is one
-of the six the daemon reads before `dispatch_blocker`, since closing the links would not start
-it while that word stands. One child reads otherwise: under `blocked`, a child whose own
-`blocked_by` link holds it under an ancestor in its tree (a children-first cycle) reads the cycle
-sentence, whatever its held word, and `admission.held` still names that word. An issue
+`admission.held` that no stranded claim names, the sentence is its held word's, under `blocked`
+as well where the word is one of the six the daemon reads before `dispatch_blocker`, since
+closing the links would not start it while that word stands; a held issue a stranded claim names
+reads `claim_stopped` and that claim's sentence. One child reads otherwise: under `blocked`, a
+child whose own `blocked_by` link holds it under an ancestor in its tree (a children-first cycle)
+reads the cycle sentence, whatever its held word, and `admission.held` still names that word. An issue
 holding an admission slot carries no `why` unless it also stands in `admission.waiting` or
 `admission.blocked`, or a
 stranded claim names it: an answered root reads `waiting`, a root whose open children hold its
@@ -363,23 +364,22 @@ table reads in the order the daemon reads the words:
 
 | `reason` | `heldBy` | What ends the hold |
 | --- | --- | --- |
-| `tree_closed` | the tree root | The daemon's record of the root says `done`, or the root's linger is still running after it left the workflow. A parked root lingers too, so a member of a parked tree reads this word until that linger runs out. At the linger's expiry, a root that stayed `done` hands every member it leaves in the workflow, whatever its phase, to Legion as a root of its own, and a parked root hands over only a member at `merging` whose pull request is still open. A handed-over issue queues for a slot of its own; the daemon does not start it at once. Once a `done` root's linger has ended, **no pass of the daemon ends this hold:** an architect of a live tree takes the issue, by writing its Dispatch parent to an issue of that tree and then releasing it. That release adopts only a member at the phase `admitted` that holds no admission slot. The member joins that tree with its repository unchanged and its generation one higher: at `admitted` when its status is `todo`, and otherwise as a parked child at `done`, which a `todo` runs again. The release refuses first, with `ISSUE_ALREADY_RELEASED`, a member Dispatch shows in any status but `triage`, `backlog`, `icebox` or `todo`, which is a member at work. Of the rest, it refuses a member of a tree still in its linger, a member of a parked tree and a member past `admitted` with `CHILD_IN_OTHER_TREE`, and a member that holds a slot with `CHILD_NOT_ADOPTABLE`. |
+| `tree_closed` | the tree root | The daemon's record of the root says `done`, or the root's linger is still running after it left the workflow. A parked root lingers too, and so does a root a person moved to `triage`, so a member of such a tree reads this word until that linger runs out. At the linger's expiry, a root that stayed `done` hands every member it leaves in the workflow, whatever its phase, to Legion as a root of its own, and a root that did not stay `done` — parked, or moved to `triage` — hands over only a member at `merging` whose pull request is still open. A handed-over issue queues for a slot of its own; the daemon does not start it at once. Once a `done` root's linger has ended, **no pass of the daemon ends this hold:** an architect of a live tree takes the issue, by writing its Dispatch parent to an issue of that tree and then releasing it. That release adopts only a member at the phase `admitted` that holds no admission slot. The member joins that tree with its repository unchanged and its generation one higher: at `admitted` when its status is `todo`, and otherwise as a parked child at `done`, which a `todo` runs again. The release refuses first, with `ISSUE_ALREADY_RELEASED`, a member Dispatch shows in any status but `triage`, `backlog`, `icebox` or `todo`, which is a member at work. Of the rest, it refuses with `CHILD_IN_OTHER_TREE` a member of a tree still in its linger, a member of a tree whose root is not `done` and a member past `admitted`, and with `CHILD_NOT_ADOPTABLE` any other member that holds a slot. |
 | `tree_parked` | the tree root | The root left the workflow to `backlog` or `icebox`, and its linger has run out; while that linger runs, the member reads `tree_closed`. **No pass of the daemon ends this hold,** no linger moves a member that reads it, and no release takes it. Only a `todo` on the root re-admits the tree: a person's, or the controller's where the park was its own hold and a person's decision gives the work a next step ([A parked tree did not come back after a decision](#a-parked-tree-did-not-come-back-after-a-decision)). |
 | `label_off` | absent | The record says the `legion` label on this root is off. **No pass of the daemon ends this hold:** a person took the issue out of Legion, and a person putting the label back is what moves it. |
 | `ancestry` | the live roots its chain reaches | The issue is the unreleased work of one of those trees. An architect of such a tree releases the issue, or the unreleased child above it on the Dispatch chain, or no live tree is left on that chain. |
 | `root_awaiting_person` | the tree root | A person answers the root, which resumes it ([A tree waits on a person](#a-tree-waits-on-a-person)). |
 | `design_gate` | the tree root | A person approves the document of each step the deployment gates, at its current version, which opens the gate. |
 | `dispatch_blocker` | the unfinished blockers | The last issue a Dispatch `blocked_by` link names reaches `done`, or that link is taken off, by a person or by the tree's architect. A blocker parked in `backlog` or `icebox` counts as unfinished, so for that one the link is the only way out. |
-| `children_first` | the open children | The last open child Dispatch shows under the issue leaves the workflow, which is the tree architect's work. |
+| `children_first` | the open children | Each open child Dispatch shows under the issue is released and then leaves the workflow, is closed, is moved to `icebox`, or is moved out from under the issue. A child the architect filed and has not released is open, so releasing and finishing the children is the tree architect's work. |
 | `accepted_ancestor` | the accepted ancestor | That ancestor closes, which the merge of its pull request writes. |
 | `at_work` | absent | None today: no issue reads this word (`record.HeldAtWork` says why). |
 | `unclassified` | absent | No word above names the hold. Read the tree root's status first: a member whose root a person moved to `triage` reads `tree_closed` while that root's linger runs, and this word only once the linger has run out and no later word above is true of it. Otherwise report the issue (below). |
 
-`unclassified` means that no rule of the held list names what the issue waits for. It is a known
-state as well as a possible gap: a member whose tree root a person moved to `triage` reads it once
-that root's linger has run out, where no other word holds it. Otherwise report the issue with its key, its `phase` and its
-`status`, so a person can read what the daemon could not say. The daemon carries the issue all
-the same and logs the word once for that issue and run.
+`unclassified` means that no rule of the held list names what the issue waits for. Outside the
+`triage` case of the table, report the issue with its key, its `phase` and its `status`, so a
+person can read what the daemon could not say. The daemon carries the issue all the same and
+logs the word once for that issue and run.
 
 ## A tree waits on a person
 
