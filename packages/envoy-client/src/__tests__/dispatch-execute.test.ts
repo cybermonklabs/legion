@@ -7963,9 +7963,11 @@ describe("executeDispatchTool", () => {
   });
 
   // A check CI proves prints as one line: its derived result, or why it has none, in the sentence
-  // Dispatch wrote. The pull-request body line Dispatch wrote for it follows, since the implementer
-  // copies that line. A recorded result beside it prints exactly as it always has.
-  test("dispatch_results prints a check CI proves as one line, with its pull request line", async () => {
+  // Dispatch wrote. Whether a pass of it stands follows, from the same pass_stands and in the same
+  // words as a recorded check, so the gate reads both kinds alike. The pull-request body line
+  // Dispatch wrote for it follows, since the implementer copies that line. A recorded result
+  // beside it prints exactly as it always has.
+  test("dispatch_results prints a check CI proves as one line, whether a pass stands and its pull request line", async () => {
     const recorded = threeResults.checks[0];
     const derived = {
       ...recorded,
@@ -8078,15 +8080,18 @@ describe("executeDispatchTool", () => {
         "    Reading: bun test: 1598 pass, 0 fail.",
         "",
         "- k5 (before_merge): pass at 1111111111111111111111111111111111111111 by ci (CI run contracts, success), that commit is the head of pull request #3530. The contracts job passes at the head.",
+        "  A pass stands: yes, from ci.",
         "  Pull request line: - Check k5 (before_merge): pass at 1111111111111111111111111111111111111111, from CI run contracts. The contracts job passes at the head.",
         "  Reading: conclusion: success",
         "All checks passed",
         "https://github.com/owner/repo/actions/runs/7/job/9001",
         "",
         "- k6 (before_merge): no result: CI run e2e is in_progress at 1111111111111111111111111111111111111111, the head of owner/repo#3530, and has not concluded. The e2e job passes at the head.",
+        "  A pass stands: no.",
         "  Pull request line: - Check k6 (before_merge): CI run e2e has no result (not_completed)",
         "",
         "- k7 (before_merge): no result: GitHub could not be read for the check runs of owner/repo at 1111111111111111111111111111111111111111: 500 Internal Server Error. The lint job passes at the head.",
+        "  A pass stands: not known.",
         "  Pull request line: - Check k7 (before_merge): CI run lint has no result (github_unreadable)",
       ].join("\n")
     );

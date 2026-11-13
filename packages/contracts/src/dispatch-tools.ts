@@ -1657,10 +1657,11 @@ export const dispatchToolSpecs = [
       "issue's open pull request of the highest number, else at the head of its merged one of " +
       "the highest number. Its one result prints as `- <id> (before_merge): <verdict> at " +
       "<commit> by ci (CI run <name>, <conclusion>), <where that commit stands>. <the check's " +
-      "words>`, then `Pull request line:` and the line to write into the pull-request body " +
-      "unchanged, then the reading: the conclusion, the run's output title and summary, and its " +
-      "URL. A run that proves nothing prints `- <id> (before_merge): no result:`, the sentence " +
-      "that names why, and the check's words, then `Pull request line:` and `- Check <id> " +
+      "words>`, then the `A pass stands:` line a recorded check prints, then `Pull request line:` " +
+      "and the line to write into the pull-request body unchanged, then the reading: the " +
+      "conclusion, the run's output title and summary, and its URL. A run that proves nothing " +
+      "prints `- <id> (before_merge): no result:`, the sentence that names why, and the check's " +
+      "words, then the `A pass stands:` line, then `Pull request line:` and `- Check <id> " +
       "(before_merge): CI run <name> has no result (<case>)`. That is a run that has not " +
       "concluded, one that concluded neutral, skipped or cancelled, one absent at the head, an " +
       "issue with no pull request head, or GitHub not read, with what GitHub answered. " +

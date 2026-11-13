@@ -1192,9 +1192,11 @@ type CheckResultRetraction struct {
 
 // CheckBlock is one `check` block of a Verification document as a result read shows it: where it
 // lives, its attributes, the version its words last changed in and their digest, and every
-// result recorded against it from any issue, newest first. CICheck is the GitHub check run its
-// `ci_check` names, "" when it names none. CI is what Dispatch read of that run, set only for a
-// check CI proves; such a check's one result is the one derived from that run.
+// result recorded against it from any issue, newest first. CICheck is the block's `ci_check` as
+// stored, spaces included. A blank value is served as stored, not as "", so CICheck is "" only
+// where the block stores no `ci_check` or an empty one. CI is what Dispatch read of the run that
+// `ci_check` names, set only for a check CI proves, and CI.Run is that run's name. Such a check's
+// one result is the one derived from that run.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
