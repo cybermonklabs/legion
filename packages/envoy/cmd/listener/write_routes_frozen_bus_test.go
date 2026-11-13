@@ -52,7 +52,10 @@ func newWriteRouteRig(t *testing.T) *writeRouteRig {
 		t.Fatalf("open the session registry: %v", err)
 	}
 	mux := http.NewServeMux()
-	registerV1Routes(mux, withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions}), "test-machine", logging.New("test"))
+	// The session consumers connect to the server directly, not through the relay: the freeze
+	// under test is the store's, and a registration reaches the store only once it has its
+	// consumer.
+	registerV1Routes(mux, withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)}), "test-machine", logging.New("test"))
 	return &writeRouteRig{relay: relay, registry: registry, sessions: sessions, mux: mux}
 }
 
@@ -107,10 +110,13 @@ func wantWriteBusUnanswered(t *testing.T, route string, recorder *httptest.Respo
 //
 // The record each frozen request needs is not in the interest cache, so the read it makes first
 // goes to the bucket; for subscribe and unsubscribe a second request names a session whose record
-// is cached, so the read is answered from memory and the write itself is what meets the silent bus.
-// POST /v1/roles/set's first bucket call is the claimant's registration write, and DELETE
-// /v1/sessions/<session_id>'s the session bucket's read-then-delete. The negative control is each
-// route asked before the freeze, on the same rig, for a session of its own: each is served.
+// is cached, so the plan or the unsubscribe's first read is answered from memory and the write's
+// own work is what meets the silent bus - the row read a registration's compare-and-swap is built
+// from and fenced on (store.Registry.UpsertPlanned), and the unsubscribe's write itself. POST
+// /v1/roles/set's first bucket call is the read the claimant's registration write is built from
+// (store.Registry.UpsertWithin), and DELETE /v1/sessions/<session_id>'s the session bucket's
+// read-then-delete. The negative control is each route asked before the freeze, on the same rig,
+// for a session of its own: each is served.
 func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.T) {
 	const (
 		topic         = "notifications.team.write-routes"
@@ -134,7 +140,7 @@ func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.
 		}
 	}
 	subscribe := func(id, topic string) string {
-		return `{"session_id":"` + id + `","topics":["` + topic + `"],"self_subscribed":true}`
+		return `{"session_id":"` + id + `","topics":["` + topic + `"],"self_subscribed":true,"delivery":{"consumer":true,"epoch":"e"}}`
 	}
 	unsubscribe := func(id, topic string) string {
 		return `{"session_id":"` + id + `","topics":["` + topic + `"]}`
