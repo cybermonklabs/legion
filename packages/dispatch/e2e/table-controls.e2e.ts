@@ -987,6 +987,96 @@ test("the selection bar gone from the keyboard hands the focus to the row marked
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
+// SLOW(>=2s): two widths, a thread dismissed from the bar and moved back to the Inbox from it.
+test("a thread dismissed from the selection bar, or moved back to the Inbox from it, hands the focus to the first row or the search box, never the body", async ({
+  page,
+}) => {
+  await seedLongInbox();
+  // Two threads the reader wrote in, each with a reply under it: the Inbox lists each as a row a
+  // reader can mark and dismiss from the bar.
+  for (const title of ["Nightly mirror", "Weekly digest"]) {
+    const issue = await createIssue({ project: "CORE", title });
+    await seedCommentThread(issue.key, `${title}: when does it run?`, "It moved to 03:00.");
+  }
+  const main = page.getByTestId("main-content");
+  const rows = main.locator("[data-inbox-row]");
+  const bar = main.locator(`[data-control="${CONTROL.selectionBar}"]`);
+  const threads = main.locator('[data-inbox-row^="reply:"]');
+  const wrong: string[] = [];
+  /** The focused element's name, or the tag of what holds the focus when it is no control. */
+  const focused = () =>
+    page.evaluate(() => {
+      const element = document.activeElement;
+      if (!(element instanceof HTMLElement) || element === document.body) {
+        return element?.tagName ?? "nothing";
+      }
+      return element.getAttribute("aria-label") ?? element.textContent?.trim() ?? element.tagName;
+    });
+  /** The focus once it lands on `wanted` within two seconds, or wherever it is then. */
+  const settled = async (wanted: string) =>
+    expect
+      .poll(focused, { timeout: 2_000 })
+      .toBe(wanted)
+      .then(() => wanted)
+      .catch(() => focused());
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    const where = `Inbox at ${size.width}x${size.height}`;
+
+    // Dismiss: the marked thread leaves this view with the bar, so the focus goes to the first
+    // row's checkbox - the row marked last is gone.
+    await page.goto("/");
+    await expect(threads, `${where}: no thread row is listed`).toHaveCount(2);
+    const thread = await threads.first().getAttribute("data-inbox-row");
+    await threads.first().getByRole("checkbox").first().check();
+    const dismiss = bar.getByRole("button", { exact: true, name: "Dismiss selected threads" });
+    await dismiss.focus();
+    await page.keyboard.press("Enter");
+    await expect(main.locator(`[data-inbox-row="${thread}"]`)).toHaveCount(0);
+    await expect(bar, `${where}: Dismiss left the bar up`).toHaveCount(0);
+    const first = await rows.first().getByRole("checkbox").first().getAttribute("aria-label");
+    // The hand-off may land a moment after the bar goes, so the focus is read until it settles.
+    const afterDismiss = await settled(first ?? "");
+    if (afterDismiss !== first) {
+      wrong.push(
+        `${where}: after Enter on Dismiss the focus is on ${afterDismiss}, not on "${first}"`
+      );
+    }
+
+    // Move to Inbox, from the dismissed view: the thread leaves that view with the bar, so the
+    // focus goes to the first row left there, or to the search box when none is.
+    await page.goto("/?show=dismissed");
+    const back = main.locator(`[data-inbox-row="${thread}"]`);
+    await expect(back, `${where}: the dismissed thread is not listed`).toHaveCount(1);
+    await back.getByRole("checkbox").first().check();
+    const restore = bar.getByRole("button", {
+      exact: true,
+      name: "Move to Inbox selected threads",
+    });
+    await restore.focus();
+    await page.keyboard.press("Enter");
+    await expect(back).toHaveCount(0);
+    await expect(bar, `${where}: Move to Inbox left the bar up`).toHaveCount(0);
+    const left = await rows.count();
+    const target =
+      left > 0
+        ? ((await rows.first().getByRole("checkbox").first().getAttribute("aria-label")) ?? "")
+        : "Search asks";
+    const afterRestore = await settled(target);
+    if (afterRestore !== target) {
+      wrong.push(
+        `${where}: after Enter on Move to Inbox the focus is on ${afterRestore}, not on "${target}"`
+      );
+    }
+  }
+  // The ruling the bar's hand-off is built to: a focus the bar held goes to the row marked last,
+  // then the first row, then the search box, and never to the body.
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
 /** The project List's narrowable columns and what shape each one's panel takes. No column of
  *  either table is a date or a number that narrows by two ends: Created and Updated narrow by
  *  the age bands they are grouped into, and Open asks by its own counts, so both are columns of
