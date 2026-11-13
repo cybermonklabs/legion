@@ -84,7 +84,8 @@ export function approvalAsk(version: number, requestedVersion: number, summary =
     edited_at: null,
     // The person this ask waits on, who handed it there and when: null on an ask nobody has
     // handed on, which is what these fixtures are. An empty asked_of waits on the issue's
-    // assignee, and every ask read carries all three.
+    // assignee, else, on an issue nobody holds, on the project's default assignee, and every ask
+    // read carries all three.
     asked_of: null,
     asked_of_by: null,
     asked_of_at: null,

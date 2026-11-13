@@ -36,11 +36,11 @@ const whyNoCheck = "the shared public leak check could not be found"
 
 // CheckVar is the environment variable that names the shared check, the first place Resolve
 // looks. It is exported because the daemon tells a pane the check it resolved under this name
-// (runtime/tmux's panePairs), the Kubernetes runtime tells every role's container the installed
-// copy under it (runtime/sandbox's mainEnvironment, which owns the name against an operator's
-// own value), the shim names its own install under it for everything it starts where the
-// environment names none (internal/shim's spawnOnce), and a second copy of the string in any of
-// them is one an edit here would silently part from.
+// (runtime/tmux's panePairs), the Kubernetes runtime tells every role's container the copy the
+// pod's launcher installed under it (runtime/sandbox's mainEnvironment, which owns the name
+// against an operator's own value), the shim names that install under it for everything it
+// starts where the environment names none (internal/shim's spawnOnce, through Installed), and a
+// second copy of the string in any of them is one an edit here would silently part from.
 const CheckVar = "PUBLIC_LEAK_CHECK"
 
 // checkName is the shared check's file name, which is how it is found on PATH.

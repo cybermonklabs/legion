@@ -25,6 +25,7 @@ import type {
   CreateArtifactInput,
   CreateAskInput,
   CreateCommentInput,
+  CreatedProject,
   CreateIssueInput,
   CreateMessageInput,
   CreateProjectInput,
@@ -1132,9 +1133,10 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "credential-requests"], undefined, { approver: "me" });
   }
 
-  /** `POST /api/v1/projects`: create a project. A key that already exists is 409
+  /** `POST /api/v1/projects`: create a project. It answers the project with the default assignee
+   *  the create stored, which the project list leaves out. A key that already exists is 409
    *  PROJECT_EXISTS, and a key that is not a project key or an empty name 400 INVALID_PROJECT. */
-  async createProject(input: CreateProjectInput): Promise<Project> {
+  async createProject(input: CreateProjectInput): Promise<CreatedProject> {
     return this.#json("POST", ["api", "v1", "projects"], input);
   }
 
@@ -1737,9 +1739,12 @@ export class DispatchClient {
     return { status: response.status, payload: await this.#response<T>(method, url, response) };
   }
 
-  /** An upload to an owner's artifact route: inline content as JSON, a file as multipart. */
+  /** An upload to an owner's artifact route: a file as multipart, and everything else as JSON -
+   *  inline content, and a name alone, which makes an empty document. */
   async #upload<T>(path: readonly string[], input: CreateArtifactInput, key?: string): Promise<T> {
-    if ("content" in input) return this.#json("POST", path, input, undefined, undefined, key);
+    if (input.file === undefined) {
+      return this.#json("POST", path, input, undefined, undefined, key);
+    }
     const form = new FormData();
     form.set("name", input.name);
     if (input.summary !== undefined) form.set("summary", input.summary);

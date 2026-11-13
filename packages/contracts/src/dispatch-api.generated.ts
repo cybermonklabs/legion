@@ -183,10 +183,12 @@ export interface paths {
     get: operations["getApiV1ArtifactsById"];
     put?: never;
     post?: never;
-    delete?: never;
+    /** @description Remove a document of an issue that is still untouched: made by typing a title and never written in. It answers 204 and appends artifact.removed on the issue, and it leaves no row behind. A document that holds writing or a later version, an edit that has not settled, or a comment, ask, review, approval request, check result, read mark or link from anything in Dispatch is 409 ARTIFACT_NOT_UNTOUCHED, saying which of those it is; the issue's spec, a document that plays a role and an artifact that is no document read the same refusal; and a project's document is 400 ARTIFACT_PROJECT_DOCUMENT, since a project document's events are its own and its removal event would need the row the removal deletes. */
+    delete: operations["deleteApiV1ArtifactsById"];
     options?: never;
     head?: never;
-    patch?: never;
+    /** @description Correct a document's title: {name}. It writes the name alone - the slug, the reference key it gives and the role the document plays do not move - and answers the document as it now is. The owner's name it already holds is 409 ARTIFACT_NAME_TAKEN, a name whose slug is one of the documents Dispatch makes itself, on a document that is not that one, 400 ARTIFACT_ROLE_NAME, the issue's spec 400 ARTIFACT_PRIMARY, an artifact that is no document 400 ARTIFACT_KIND_MISMATCH, and a name that is empty or too long 400 INVALID_ARTIFACT. */
+    patch: operations["patchApiV1ArtifactsById"];
     trace?: never;
   };
   "/api/v1/artifacts/{id}/_test/hold-persistence": {
@@ -1260,7 +1262,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|<email> filter on the person each ask waits on - whoever it was handed to, and the assignee of its issue until somebody hands it on (unassigned is every ask nobody waits on, a document ask among them; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED). */
+    /** @description Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|<email> filter on the person each ask waits on, which is three steps resolved as the ask is read: the person the question was handed to, then the issue's assignee, then the project's default assignee (unassigned is every ask nobody waits on; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED). */
     get: operations["getApiV1Inbox"];
     put?: never;
     post?: never;
@@ -1280,7 +1282,7 @@ export interface paths {
     /** @description List issues; filters project, status, parent, label, priority (repeatable: 0-3, or none for unset), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
     get: operations["getApiV1Issues"];
     put?: never;
-    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee when that still names a person who has signed in. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
+    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
     post: operations["postApiV1Issues"];
     delete?: never;
     options?: never;
@@ -2173,10 +2175,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List projects. */
+    /** @description List projects. A project's default assignee is not listed here: GET /api/v1/settings/project-default-assignees reads it, with the person scope. */
     get: operations["getApiV1Projects"];
     put?: never;
-    /** @description Create a project {key, name}: any signed-in person or agent session; a bearer names its session in actor. A key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF); combining marks, format characters, private-use characters and whitespace don't count) is 400 INVALID_PROJECT; a name over 80 characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS. */
+    /** @description Create a project {key, name, default_assignee}: any signed-in person or agent session; a bearer names its session in actor. Every project names the person its unowned work lands on, the last step of the chain that decides who a question reaches: default_assignee is the email of a person who has signed in, and a call that names none takes the person creating the project, else the person its credential acts for. A credential that acts for nobody and names no default_assignee is 400 INVALID_PROJECT; a login nobody has signed in with, the one the call names or the one its credential acts for, is 400 ASSIGNEE_NOT_ALLOWED. A key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF); combining marks, format characters, private-use characters and whitespace don't count) is 400 INVALID_PROJECT; a name over 80 characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS. The answer is the project with the default_assignee the create stored. */
     post: operations["postApiV1Projects"];
     delete?: never;
     options?: never;
@@ -2449,7 +2451,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Set a project's default assignee {assignee} (the email of a person who has signed in, or null to clear it): who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none. */
+    /** @description Move a project's default assignee to another person {assignee} (the email of a person who has signed in): who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to, and who a question on an issue nobody holds reaches. A project always names a person, so an assignee that is absent, null or blank is 400 INVALID_PROJECT and the default cannot be cleared. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none. */
     put: operations["putApiV1ProjectsByKeyDefaultAssignee"];
     post?: never;
     delete?: never;
@@ -2705,7 +2707,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List every project that names a default assignee, by project key: the last step of a create's assignee chain. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none. */
+    /** @description List every project with the person it defaults to, by project key: every project names one, and that person is the last step of the chain that decides who a question reaches. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none. */
     get: operations["getApiV1SettingsProjectDefaultAssignees"];
     put?: never;
     post?: never;
@@ -3957,6 +3959,7 @@ export interface components {
     };
     CreateProjectInput: {
       actor?: components["schemas"]["Actor"] | null;
+      default_assignee?: string;
       key: string;
       name: string;
     };
@@ -3976,6 +3979,15 @@ export interface components {
       revoked_at: null | string;
       scopes: string[] | null;
       token: string;
+    };
+    CreatedProject: {
+      /** Format: date-time */
+      created_at: string;
+      default_assignee: string;
+      gated_steps: string[] | null;
+      key: string;
+      name: string;
+      open_asks: number;
     };
     CredentialCapabilities: {
       machine_code_page: boolean;
@@ -5095,7 +5107,7 @@ export interface components {
     };
     JsonArtifactUpload: {
       actor?: components["schemas"]["Actor"] | null;
-      content: null | string;
+      content?: null | string;
       name: string;
       /** @description refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): an artifact is made the issue's spec at issue creation and never by an upload */
       primary?: boolean;
@@ -5423,11 +5435,11 @@ export interface components {
       open_asks: number;
     };
     ProjectDefaultAssignee: {
-      assignee: null | string;
+      assignee: string;
       project: string;
     };
     ProjectDefaultAssigneeInput: {
-      assignee: string | null;
+      assignee: string;
     };
     ProjectGatedSteps: {
       project: string;
@@ -5560,6 +5572,9 @@ export interface components {
       to: null | string;
       total: number;
       total_ms: components["schemas"]["RelatedCheckTiming"];
+    };
+    RenameArtifactInput: {
+      name: string;
     };
     ReplyBlock: {
       block_id: string;
@@ -6398,6 +6413,76 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ArtifactWithTrees"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  deleteApiV1ArtifactsById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  patchApiV1ArtifactsById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RenameArtifactInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Artifact"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11502,7 +11587,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Project"];
+          "application/json": components["schemas"]["CreatedProject"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -13186,6 +13271,7 @@ export type CreatePlanReviewInput = components["schemas"]["CreatePlanReviewInput
 export type CreateProjectInput = components["schemas"]["CreateProjectInput"];
 export type CreateVersionInput = components["schemas"]["CreateVersionInput"];
 export type CreatedAgentToken = components["schemas"]["CreatedAgentToken"];
+export type CreatedProject = components["schemas"]["CreatedProject"];
 export type CredentialCapabilities = components["schemas"]["CredentialCapabilities"];
 export type CredentialDecisionInput = components["schemas"]["CredentialDecisionInput"];
 export type CredentialPendingResponse = components["schemas"]["CredentialPendingResponse"];
@@ -13365,6 +13451,7 @@ export type ReferencedBy = components["schemas"]["ReferencedBy"];
 export type RelatedCheckInput = components["schemas"]["RelatedCheckInput"];
 export type RelatedCheckTiming = components["schemas"]["RelatedCheckTiming"];
 export type RelatedChecksReport = components["schemas"]["RelatedChecksReport"];
+export type RenameArtifactInput = components["schemas"]["RenameArtifactInput"];
 export type ReplyBlockWithTrees = components["schemas"]["ReplyBlockWithTrees"];
 export type RepoProject = components["schemas"]["RepoProject"];
 export type RequirementCoverage = components["schemas"]["RequirementCoverage"];

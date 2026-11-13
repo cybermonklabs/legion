@@ -77,9 +77,11 @@ export const ASK_IS_FOR_A_PERSON =
 
 /** Whom an open ask waits on, and who may move it: the companion of ASK_IS_FOR_A_PERSON, carried
  *  by the same texts. The person it waits on is the server's `waiting_on_person`, which every ask
- *  read carries. */
+ *  read carries, resolved in three steps (`askedOfPersonExpression` in
+ *  `packages/envoy/internal/dispatch/api/ask_rows.go`). Every project names a default assignee,
+ *  so the third step always names a person and no ask reaches nobody. */
 export const ASK_WAITS_ON_THE_ASSIGNEE =
-  "An ask waits on the issue's assignee until a person hands it on. No agent can hand one on.";
+  "An ask waits on its asked-of person, else the issue's assignee, else the project's default assignee; no agent hands one on.";
 
 const HUMAN_AGREED_TO_DOCUMENT = "the human has agreed to every point in the document";
 
@@ -111,7 +113,8 @@ function documentOwnerValidation(
   };
 }
 
-const ARTIFACT_SOURCE_RULE = "Exactly one of path or content is required.";
+const ARTIFACT_SOURCE_RULE =
+  "Give at most one of path and content. A call with neither makes an empty document under the name, which a person or an agent writes in afterwards with dispatch doc-edit.";
 const ARTIFACT_OWNER_AND_SOURCE_RULE = `${ARTIFACT_SOURCE_RULE} Exactly one of issue and project is required; with project, artifact names the document.`;
 
 /** Joins the parts of a rule a call broke, so a refusal never names a part the call kept. */
@@ -123,10 +126,13 @@ function brokenParts(parts: ReadonlyArray<readonly [boolean, string]>): string |
 const CONTENT_IS_MARKDOWN =
   "content is stored as a Markdown document, which rewrites other text (a JSONL file's lines come back joined into one paragraph)";
 
+const DOCUMENT_IS_MARKDOWN =
+  "a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph)";
+
 export const PATH_KEEPS_BYTES =
   "path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged";
 
-const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so with content the name ends in .md or .markdown or has no extension; upload any other file (.jsonl, .tsv, .json, .txt) with ${PATH_KEEPS_BYTES}.`;
+const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so a document's name ends in .md or .markdown or has no extension, under content and under neither flag alike; upload any other file (.jsonl, .tsv, .json, .txt) with ${PATH_KEEPS_BYTES}.`;
 
 /**
  * What `dispatch artifact` says of a name the owner already holds. The command refuses it before
@@ -170,8 +176,10 @@ export function pathKeepsBytesOf(name: string): boolean {
 const artifactOwner = documentOwnerValidation(false);
 
 /** The refusal of the part of dispatch_artifact's rule `value` breaks, or undefined when it keeps
- *  the rule. Inline content is always stored as Markdown, so it goes only under a name that says
- *  Markdown or says nothing: a .jsonl stored that way reads back with its lines joined. */
+ *  the rule. A call without path writes a document, whose text is always Markdown, so it goes
+ *  only under a name that says Markdown or says nothing: a .jsonl stored that way reads back with
+ *  its lines joined. The name alone makes an empty document and is held to the same rule, since
+ *  what the writer types into it afterwards is Markdown too. */
 function artifactProblem(value: unknown): string | undefined {
   const input = value as {
     readonly name?: unknown;
@@ -180,16 +188,13 @@ function artifactProblem(value: unknown): string | undefined {
   };
   const ownerOrSourceProblem = brokenParts([
     [artifactOwner.check(value), artifactOwner.message],
-    [
-      (typeof input.path === "string") !== (typeof input.content === "string"),
-      ARTIFACT_SOURCE_RULE,
-    ],
+    [typeof input.path !== "string" || typeof input.content !== "string", ARTIFACT_SOURCE_RULE],
   ]);
   if (ownerOrSourceProblem !== undefined) return ownerOrSourceProblem;
-  if (typeof input.content !== "string" || typeof input.name !== "string") return undefined;
+  if (typeof input.path === "string" || typeof input.name !== "string") return undefined;
   const extension = NAME_EXTENSION.exec(input.name.trim())?.[1];
   if (extension === undefined || MARKDOWN_EXTENSION.test(extension)) return undefined;
-  return `${CONTENT_IS_MARKDOWN}, and ${JSON.stringify(input.name)} is not a Markdown name. Upload the file under the same name with ${PATH_KEEPS_BYTES}; content takes a name ending in .md or .markdown or with no extension.`;
+  return `${DOCUMENT_IS_MARKDOWN}, and ${JSON.stringify(input.name)} is not a Markdown name. Upload the file under the same name with ${PATH_KEEPS_BYTES}; a document takes a name ending in .md or .markdown or with no extension.`;
 }
 
 const documentEditOwner = documentOwnerValidation(true);
@@ -700,7 +705,7 @@ export const dispatchToolSpecs = [
       assignee: z
         .string()
         .describe(
-          "Email of the person who answers this issue's asks (someone who has signed in to Dispatch); defaults to your owner when you act for a person, else the parent's assignee, else the project's default assignee when it still names a person who has signed in, else unassigned. Set it only when a person said who owns the issue."
+          "Email of the person who answers this issue's asks (someone who has signed in to Dispatch); defaults to your owner when you act for a person, else the parent's assignee, else the project's default assignee. Every project names a default assignee, so a new issue always has one. A question on it reaches the person it was handed to, else the issue's assignee, else the project's default assignee. Set it only when a person said who owns the issue."
         )
         .optional(),
       components: componentsArgument(z).optional(),
@@ -745,7 +750,10 @@ export const dispatchToolSpecs = [
       "included, waits for the reopen. " +
       "priority is yours to set and a human overrides it. assignee is the person who answers " +
       "this issue's asks, and every ask on it waits on them until a person hands that ask on. " +
-      "Passing null unassigns the issue. Set the assignee when a person said who owns the work, as you " +
+      "Passing null unassigns the issue, and every ask on it then waits on the project's default " +
+      "assignee: a question reaches the person it was handed to, else the issue's assignee, else " +
+      "the project's default assignee, so every question reaches a person. " +
+      "Set the assignee when a person said who owns the work, as you " +
       "file the issue or hand it over. before and after move the issue on " +
       "its project's board: before puts it above that issue, after below, and both together " +
       "land it between them. A project's board order is one agent's to keep; in a Legion " +
@@ -785,7 +793,7 @@ export const dispatchToolSpecs = [
         .nullable()
         .optional()
         .describe(
-          "Email of the person who answers this issue's asks (someone who has signed in to Dispatch); null unassigns the issue. Set it only when a person said who owns the issue, never to move a question off the person holding it."
+          "Email of the person who answers this issue's asks (someone who has signed in to Dispatch); null unassigns the issue, and every ask on it then waits on the project's default assignee. Set it only when a person said who owns the issue, never to move a question off the person holding it."
         ),
       external_links: z
         .array(z.string({ min: 1 }))
@@ -1453,7 +1461,11 @@ export const dispatchToolSpecs = [
       "Ask a human to approve a document at its current version. Before calling, have a fresh read-only reader check the spec against the code and the human's words, then resolve every finding; a Legion architect runs `plan-gap-analyst` and `plan-reviewer`. Opens an approval ask (Approve / " +
       "Request changes) in the human's Inbox whose question names the document and version, " +
       "followed by the summary; the answer pins a review to that version and arrives as " +
-      "artifact.approved or artifact.changes_requested. An open request follows the document: a " +
+      "artifact.approved or artifact.changes_requested. " +
+      "The request reaches the person it was handed to, else the issue's assignee, else the " +
+      "project's default assignee, so it always reaches a person, and this tool's answer names " +
+      "that person. " +
+      "An open request follows the document: a " +
       "later version moves it to that version and leaves it waiting on you, as a human's reply in " +
       "its thread does. Only the first move since the request was opened or handed back sends an " +
       "event, and never to the session whose version made it; dispatch doc-read shows whom it " +
@@ -1676,9 +1688,11 @@ export const dispatchToolSpecs = [
     name: "dispatch_artifact",
     example: { issue: "DSP-1", name: "design.md", content: "# Design\n" },
     description:
-      "Attach a local file or inline text as an issue artifact or project document. Do not use it to edit a live document; use " +
-      "dispatch doc-edit instead. Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. Exactly one of path or content is required; a markdown document is at most 1 MiB and any other file at most 25 MiB. " +
-      `${ARTIFACT_NAME_EXISTS_RULE} ` +
+      "Attach a local file or inline text as an issue artifact or project document, or make an empty document from its name alone. Do not use it to edit a live document; use " +
+      "dispatch doc-edit instead. Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. " +
+      `${ARTIFACT_SOURCE_RULE} ` +
+      `${ARTIFACT_NAME_EXISTS_RULE} A call that stores nothing - no path, and content absent or blank - is refused under a held name even with force, so a title typed twice never empties the document that holds it. ` +
+      "A markdown document is at most 1 MiB and any other file at most 25 MiB. " +
       `${ARTIFACT_CONTENT_NAME_RULE} ${ARTIFACT_STORED_TEXT_RULE} ` +
       "Markdown is also refused with 413 CAP_EXCEEDED when it makes more than 65,536 elements (a block weighs 3, and an empty list item, quote, footnote definition or typed block 3 more for the empty paragraph it holds; a table cell 4, a hard line break 3, an image 3, a piece of inline HTML 2, an autolink 2, a footnote reference 2; inline syntax, marks, lines of text and backslash escapes or character references 1 each), or when a new version would leave the document's stored markdown (what its text reads back as) longer than 1 MiB or making more than 65,536 elements, and longer or heavier than before; shorten it or split it across documents. " +
       "In a table row, write every | in a cell as \\|, in code too: a | after two backslashes ends the cell, and a row with more cells than its table is refused. " +
@@ -1965,7 +1979,13 @@ export const dispatchToolSpecs = [
       "A key that already exists is refused " +
       "with 409 PROJECT_EXISTS whoever created it, so after a retry it can mean the first call made the project. " +
       `A key that is not a project key (${PROJECT_KEY_RULE}) or an empty name is refused with 400 ` +
-      `INVALID_PROJECT, and a name over ${PROJECT_NAME_MAX} characters with 400 CAP_EXCEEDED. When no person ` +
+      `INVALID_PROJECT, and a name over ${PROJECT_NAME_MAX} characters with 400 CAP_EXCEEDED. ` +
+      "Every project names a default assignee, the person its unowned work lands on: the login " +
+      "default_assignee names, else the person creating the project, else the person your " +
+      "credential acts for. A call that names none under a credential acting for no person is " +
+      "refused with 400 INVALID_PROJECT naming default_assignee, so ask a person who it should " +
+      "be rather than choosing one. A login nobody has signed in with is refused with 400 " +
+      "ASSIGNEE_NOT_ALLOWED. The answer names the default the project took. When no person " +
       "asked for a project and an existing project already covers the work, do not create a project. File an " +
       "issue in that project with dispatch issue.",
     arguments: (z) => ({
@@ -1975,6 +1995,12 @@ export const dispatchToolSpecs = [
         .describe(
           `The project's name, shown beside its key, at most ${PROJECT_NAME_MAX} characters.`
         ),
+      default_assignee: z
+        .string()
+        .describe(
+          "Email of the person the project's unowned work lands on: a new issue with no assignee, and every question on an issue nobody holds. It must name a person who has signed in to Dispatch. Left out, it falls to the person creating the project, else the person your credential acts for; a credential that acts for nobody must name it."
+        )
+        .optional(),
     }),
     strict: true,
   },
@@ -2057,7 +2083,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_whoami",
     example: {},
     description:
-      "Who Dispatch takes this session for: {session, owner, service, project}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee and then to the project's default assignee. service is the subject of the verified service-account token that authenticated you, or the fleet a broker token naming no person belongs to, or null. A broker token that names a service may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with. project is the one project key your credential may write, or null when it names none.",
+      "Who Dispatch takes this session for: {session, owner, service, project}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee and then to the project's default assignee, which every project names, so every issue you create has an assignee. A question on an issue reaches the person it was handed to, else the issue's assignee, else the project's default assignee. service is the subject of the verified service-account token that authenticated you, or the fleet a broker token naming no person belongs to, or null. A broker token that names a service may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with. project is the one project key your credential may write, or null when it names none.",
     arguments: () => ({}),
     strict: true,
   },

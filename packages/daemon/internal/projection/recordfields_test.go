@@ -105,8 +105,11 @@ func at(document map[string]any, path string) (any, bool) {
 // servedKeys holds a projected document to the table: every key the table says is served stands
 // in it, and every key it carries is one the table names or one built from another record
 // (beside, named by the caller). The document is of a record with every field set, so a key the
-// table names and the document does not carry is a field served under a wrong name.
-func servedKeys(t *testing.T, name string, document map[string]any, table []api.RecordFieldDecision, beside []string) {
+// table names and the document does not carry is a field served under a wrong name — unless one
+// of the elsewhere documents carries it, which is how a field of the claim record the issue's
+// own view serves (`givenEntry`, api.Issue.GivenEntry) is read where it stands rather than
+// where its record's own view would.
+func servedKeys(t *testing.T, name string, document map[string]any, table []api.RecordFieldDecision, beside []string, elsewhere ...map[string]any) {
 	t.Helper()
 	var served []string
 	for _, entry := range table {
@@ -114,11 +117,18 @@ func servedKeys(t *testing.T, name string, document map[string]any, table []api.
 			continue
 		}
 		for _, key := range entry.Keys {
-			if _, carried := at(document, key); !carried {
-				t.Errorf("%s.%s is served under %q, which the projected document does not carry: %s",
-					name, entry.Field, key, canonical(t, document))
+			if _, carried := at(document, key); carried {
+				served = append(served, strings.Split(key, ".")[0])
+				continue
 			}
-			served = append(served, strings.Split(key, ".")[0])
+			if slices.ContainsFunc(elsewhere, func(other map[string]any) bool {
+				_, carried := at(other, key)
+				return carried
+			}) {
+				continue
+			}
+			t.Errorf("%s.%s is served under %q, which no projected document carries: %s",
+				name, entry.Field, key, canonical(t, document))
 		}
 	}
 	for key := range document {
@@ -221,7 +231,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		Token: token, Project: "OTHER", Tree: root, Issue: root, Role: claim.RoleImplementer,
 		Generation: 3, TreeEpoch: 2,
 		Session: "ses_implementer_500", SessionFile: "/var/lib/legion/sessions/ses_implementer_500.jsonl",
-		ServingGeneration: 2, ServingAssignmentID: "assignment-7",
+		ServingGeneration: 2, GivenEntry: 7, ServedEntry: 6,
 		ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: openedAt},
 		LastStartRow:     811, DeliveredRows: []int64{809, 811},
 		Locator:    locator,
@@ -229,10 +239,11 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		State:      supervise.StateFailed,
 		Budgets:    supervise.Budgets{LaunchFailures: 4, Deaths: 1, PromptFailures: 2, PromptRetires: 3},
 		Failure:    "launch failures ran out", FailureCause: supervise.CauseDied, FailedAt: failedAt,
-		PendingCause: supervise.CauseDied,
+		PendingCause:   supervise.CauseDied,
+		LeakCheckCause: "the shared public leak check could not be installed: the tarball of theorem-labs/agent-infra at leak-check-v3 holds no leak-check directory",
 		Pending: &supervise.Delivery{
 			ID: "dlv-9", Task: "implement the change, which no agent surface carries",
-			Generation: 3, Assignment: "assignment-8", Phase: phase.Implementing, QueuedAt: queuedAt,
+			Generation: 3, Entry: 8, Phase: phase.Implementing, QueuedAt: queuedAt,
 			SendFailures: 2, LastSendFailureAt: projectedAt.Add(-5 * time.Minute),
 			LastSendError: "post to the worker stream: connection refused",
 		},
@@ -278,7 +289,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		document := wire(t, worker.Claim)
 		// `capabilities` is no field of the claim record — it is what the claim's session last
 		// reported — so the claim built here carries none and the view's keys are the record's.
-		servedKeys(t, "supervise.Claim", document, api.ClaimRecordFields, nil)
+		servedKeys(t, "supervise.Claim", document, api.ClaimRecordFields, nil, wire(t, state.Issues[root]))
 
 		want := wire(t, map[string]any{
 			"session":           current.Session,
@@ -321,7 +332,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 					"promptRetires":  current.Budgets.PromptRetires,
 				},
 			},
-			"pendingCause": current.PendingCause,
+			"pendingCause":   current.PendingCause,
+			"leakCheckCause": current.LeakCheckCause,
 		})
 		if got, wanted := canonical(t, document), canonical(t, want); got != wanted {
 			t.Errorf("the claim view is %s, want the record's own values, %s", got, wanted)

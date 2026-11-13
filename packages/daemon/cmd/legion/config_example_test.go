@@ -135,6 +135,49 @@ func TestShippedLegionYAMLExamplesFirstHookIsTheShippedDefault(t *testing.T) {
 	}
 }
 
+// The example's commented worker_silence_minutes, uncommented with a value one minute under the
+// floor, is refused by the same check, which names the key, the value and the floor. The shipped
+// line is where an operator reads what the key takes, so a floor it stated wrongly would be an
+// operator's file refused on their first check; here it is this test that fails instead. The line
+// stays commented in the file itself: an active key would change the stdout
+// TestShippedLegionYAMLExamplePassesCheckConfig holds exactly.
+func TestShippedLegionYAMLExampleRefusesAWorkerSilenceUnderTheFloor(t *testing.T) {
+	config := stageShippedExample(t, func(example string) string {
+		example = uncommentExample(t, example, "# worker_silence_minutes: 30")
+		return strings.Replace(example, "worker_silence_minutes: 30", "worker_silence_minutes: 15", 1)
+	})
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+
+	want := "legion start: worker_silence_minutes (15m0s) is below the 16m0s floor under it: a healthy phase worker that answers its reminder with a WAITING line is quiet for the 15m that reply buys before the reminder comes again (DEFAULT_STALL_LIMITS.waitingMs), so a shorter bound would send a second task for work the worker already holds, to a worker whose own reminder is about to start a turn\n"
+	if code != 1 || out.Len() != 0 || errb.String() != want {
+		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
+	}
+}
+
+// The example's commented worker_background_hours, uncommented with a value at the silence bound
+// the file ships commented beside it, is refused by the check that holds the two to their
+// relation, which names both keys and both values. The shipped line is where an operator reads
+// what the key takes, so a relation it stated wrongly would be an operator's file refused on
+// their first check; here it is this test that fails instead. The line stays commented in the
+// file itself, as the silence key's does, for the same reason: an active key would change the
+// stdout TestShippedLegionYAMLExamplePassesCheckConfig holds exactly.
+func TestShippedLegionYAMLExampleRefusesAWorkerBackgroundAtTheSilenceBound(t *testing.T) {
+	config := stageShippedExample(t, func(example string) string {
+		example = uncommentExample(t, example, "# worker_background_hours: 4")
+		return strings.Replace(example, "worker_background_hours: 4", "worker_background_hours: 0.5", 1)
+	})
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
+
+	want := "legion start: worker_background_hours (30m0s) is at or below worker_silence_minutes (30m0s): the bound on background work a worker reports must be above the bound on its silence, since a shorter one would name a job that has barely begun and would race the repair that sends the same worker its phase's task again\n"
+	if code != 1 || out.Len() != 0 || errb.String() != want {
+		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
+	}
+}
+
 // uncommentExample is the example with each named line uncommented, each line the start of one of
 // the example's own commented lines: the file comments a block out line by line, so turning it on
 // is one `# ` removed per line, and a line the example does not hold is the test's own mistake.
@@ -151,9 +194,11 @@ func uncommentExample(t *testing.T, example string, lines ...string) string {
 	return example
 }
 
-// checkShippedExample runs `legion start --check-config` on the shipped example as edit leaves
-// it, beside the files it names, and answers the file's path.
-func checkShippedExample(t *testing.T, edit func(string) string) string {
+// stageShippedExample writes the shipped example as edit leaves it beside the files it names,
+// and answers the configuration's path, ready for `legion start --check-config` to be run over
+// it: the check that passes (checkShippedExample) and the check a bad value makes fail
+// (TestShippedLegionYAMLExampleRefusesAWorkerSilenceUnderTheFloor) stage the same files.
+func stageShippedExample(t *testing.T, edit func(string) string) string {
 	t.Helper()
 	legionState(t)
 	t.Setenv("LEGION_POSTGRES_DSN", "postgres://legion:legion@127.0.0.1:1/legion")
@@ -188,6 +233,14 @@ current-context: legion-daemon
 			t.Fatal(err)
 		}
 	}
+	return config
+}
+
+// checkShippedExample runs `legion start --check-config` on the shipped example as edit leaves
+// it, beside the files it names, and answers the file's path.
+func checkShippedExample(t *testing.T, edit func(string) string) string {
+	t.Helper()
+	config := stageShippedExample(t, edit)
 
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)

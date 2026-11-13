@@ -373,6 +373,8 @@ RULES = {
         Read(g, "internal/dispatch/pmdoc/render_readback_test.go:34 bun run gen/differential.ts") for g in PMDOC_GEN],
     f"{ENVOY}/internal/dispatch/store/search_text_test.go": reads(
         (f"{ENVOY}/**", "internal/dispatch/store/search_text_test.go:102-120 walks every .md under packages/envoy (infra included)")),
+    f"{ENVOY}/internal/dispatch/text/whitespace_fixture_test.go": reads(
+        (f"{FIX}/go-unicode-isspace.json", "internal/dispatch/text/whitespace_fixture_test.go:34 os.ReadFile (goSpaceFixturePath :17, ../../../../contracts/fixtures)")),
     f"{ENVOY}/internal/smoke/rdsbundle_test.go": [
         run(ENVOY, ["./internal/smoke/systemroots"], "internal/smoke/rdsbundle_test.go:36-41 cmdtest.BuildCommand ./systemroots CGO_ENABLED=0 GOOS=linux",
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"}),
@@ -898,6 +900,7 @@ GATES = [
         ("packages/envoy-client/test/fake-dispatch.ts", "scripts/e2e/lib/agent-replay.test.ts:4-7 imports it by path"),
         ("scripts/dispatch/**", f"{at('test', 'Lint the Dispatch census script')}, typecheck and test"),
         ("scripts/github-apps/**", f"{at('test', 'Lint the GitHub App registration script')} and typecheck"),
+        ("scripts/approval-eval/**", f"{at('test', 'Lint the approval-eval statistics')}, typecheck and test"),
         (f"{FIX}/daemon-api/**", "scripts/e2e/lib/stage4b-boot-capabilities.test.ts:16"),
         (f"{DAEMON}/internal/daemon/controller.go", "scripts/e2e/lib/controller-liveness-verdict.test.ts:344-345 reads it as text"),
         (f"{DAEMON}/internal/controller/liveness.go", "scripts/e2e/lib/controller-liveness-verdict.test.ts:348"),
@@ -1014,9 +1017,15 @@ GATES = [
         (CONTRACTS_SRC, f"{at('envoy-client', 'Build contracts for Envoy client')}; tsconfig paths @legion/contracts -> ../contracts/src/index.ts"),
         (f"{FIX}/dispatch-targeted-delivery.json", "packages/envoy-client/src/__tests__/delivery.test.ts:16-17, dispatch-text.test.ts:117-118"),
         (f"{FIX}/dispatch-public-url.json", "packages/envoy-client/src/__tests__/dispatch-config.test.ts:5"),
+        (f"{FIX}/go-unicode-isspace.json", "packages/envoy-client/src/__tests__/dispatch-execute.test.ts:27"),
         (f"{ENVOY}/internal/dispatch/api/testdata/**", "packages/envoy-client/src/__tests__/askgate-new-asks.test.ts:14-21 reads the Dispatch server's table of decision-block inserts, which packages/envoy/internal/dispatch/api's TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded reads too"),
         ("skills/**", "packages/envoy-client/src/__tests__/dispatch-advice.test.ts:683-690 reads skills/<skill>/SKILL.md for every skill a notice cites"),
         ("packages/*/AGENTS.md", "packages/envoy-client/src/__tests__/dispatch-asked-of.test.ts:374-382 reads every package's AGENTS.md, and its ALLOWED names lines of four of them, so rewording one of those lines fails that test"),
+        ("packages/envoy/internal/dispatch/**", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:506-514,668-690 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
+        ("packages/dispatch/web/src/**", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:506-514,668-690 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
+        ("packages/dispatch/e2e/**", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:506-514,668-690 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
+        ("docs/site/src/**", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:506-514,668-690 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
+        ("**/AGENTS.md", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:506-514,668-690 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
         (TEST_FIXTURES_SRC, "packages/envoy-client/src/__tests__ import @legion/test-fixtures"),
         (f"{ENVOY}/internal/brokerclient/testdata/wire.json", "packages/broker-client/src/__tests__/wire.test.ts:23-29 reads the Go package's own corpus by relative path - that file itself, never a copy, so the two clients are held to one wire"),
     ) + biome(at("envoy-client", "Lint Envoy client")) + bun_job("envoy-client") + CI_SELF),

@@ -94,10 +94,26 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 86 (dispatch://INFRA-714:
-the phase vocabulary loses `awaiting_merge`, a pull request carries `mergeState` in place of
-`checksVerdict`, a phase carries `pass`, every claim view carries `lastTurnStart` and
-`lastTurnEnd`, and `handoff_complete` takes no `ready`), after contract 85's `why` and the
+number is the one `DaemonAPIVersion` declares, last bumped by contract 98's held list
+(dispatch://INFRA-3107: `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
+record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`,
+each row carrying the issue, one word for why nothing of it runs — a closed list of eleven words
+the daemon reads in one order, of which `at_work` names no issue today (see
+`record.HeldAtWork`) — and `heldBy`, the issues that hold it, absent where no issue holds the one
+that waits; the strict reader this plugin parses the state through takes the key as optional,
+because a caller from a pod whose claims record a contract under 98 is served the admission
+block without it (`api.stateFor`,
+`withoutHeld`), and the controller's tick notice carries the same rows), after contract 94
+(dispatch://INFRA-2800: each issue carries `phaseEntry` and `givenEntry`, which a caller below
+94 is served without, and a completion of an older phase entry is refused
+`HANDOFF_STALE_ENTRY`), after contract 87
+(dispatch://INFRA-3219: each claim view carries `leakCheckCause`, the sentence a launch try was
+refused with because the shared public leak check could not be installed, which a caller below
+87 is served without), after contract 86
+(dispatch://INFRA-714: the phase vocabulary loses `awaiting_merge`, a pull request carries
+`mergeState` in place of `checksVerdict`, a phase carries `pass`, every claim view carries
+`lastTurnStart` and `lastTurnEnd`, and `handoff_complete` takes no `ready`), after contract 85's
+`why` and the
 `waitingLine` fields beside it
 (INFRA-2554: each member of the line carries `part`, `kind`, `partPlace`, `partLength`,
 `holdsSlot`, `since` for a member whose work came back, `rootRank`, `ownRank` and `rootKey`
@@ -445,17 +461,24 @@ from the project's `slack_channels`, empty for none, and the claim refuses it un
 that is not a channel id; any other controller ignores it); each `set_status` then mints from the
 `/grants` controller-session form with the secret the registration was issued. What the daemon
 publishes on the controller topic is listed at `notify.ControllerTopic`
-(`packages/daemon/internal/notify`). The subscriptions last while the session holds the controller
-role (`subscribeLegionNotice`'s
+(`packages/daemon/internal/notify`). Each is registered with the listener for as long as the
+session holds the role, and that registration is the subscription: the listener builds the
+session's one JetStream consumer out of the topics it registered, and a session has no per-topic
+subscription of its own left to take a notice on (INFRA-771). The subscriptions last while the
+session holds the controller role (`subscribeLegionNotice`'s
 `whileHolding`): once another live session holds it, the heartbeat's refused re-assertion closes
-them, so a replaced controller stops taking wakes and mentions within one heartbeat, and a dropped
-connection's retries, each compared with the role's state when the connection dropped, do not
-reopen them once the role has ended. A `/new` or `/resume` keeps them open whichever extension
+them and hands them back to the listener in one unsubscribe, so a replaced controller stops
+taking wakes and mentions within one heartbeat, and neither a dropped connection's retries nor
+the registrations that follow them carry a topic whose role has ended. A `/new` or `/resume`
+keeps them open whichever extension
 handles the switch first: Oh My Pi runs the manifest's order but moves on from a handler that
 outlasts its 30-second budget, and the switch's drop of the outgoing role (`endOutgoingRole`)
-leaves a role already claimed under the new session id alone. None is ever registered with the
-listener, so a replaced controller resumed later gets them back only by claiming the role, which
-the daemon refuses its replaced capability, and a resumed controller hears the channels its own
+leaves a role already claimed under the new session id alone. A replaced controller resumed later
+gets them back only by claiming the role, which the daemon refuses its replaced capability: a
+topic the listener's registry hands a resumed session back is left out of the registration it
+makes while it holds no such role (`reachesPrivateStreamSubject`), which is what the listener
+refuses it as well (`controllerNoticeRole`, `packages/envoy/internal/bus`). So a resumed
+controller hears the channels its own
 launch names, never a list an earlier launch had. A Slack topic a session registered by hand is
 dropped too, a listed channel's included: in the daemon's controller the factory sets the
 interface's `roleClaim.slackRoleOwned`, and the Envoy entry, restoring a resumed session's
@@ -766,6 +789,6 @@ closed.
 ## Checks
 
 `bunx tsc --noEmit`, `bun run test`, `bunx biome check extensions/ src/`, each from this directory;
-`LEGION_TEST_OMP=<omp> bun test extensions/legion-phase-stall-omp.test.ts extensions/legion-role-tools-omp.test.ts` and
-`LEGION_TEST_OMP=<omp> LEGION_TEST_NATS_URL=<nats> bun test ./extensions/controller-start-omp.test.ts ./extensions/claim-boot-order-omp.test.ts` for the real binary.
+`LEGION_TEST_OMP=<omp> LEGION_TEST_NATS_URL=<nats> bun test ./extensions/claim-boot-order-omp.test.ts ./extensions/controller-start-omp.test.ts ./extensions/legion-phase-stall-omp.test.ts ./extensions/legion-role-tools-omp.test.ts ./extensions/legion-stall-watchdog-omp.test.ts`
+for the real binary: every pane registers against a real NATS server, since a session with no relay subject takes no consumer and its claim boot ends it (INFRA-771).
 The phase reminder's own unit tests live beside the machine, in `packages/pi-shared` (`bun test` there).

@@ -3,6 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import { plannerSession, setLiveSessions } from "./agents";
 import {
+  createAsk,
   createComment,
   createIssue,
   createMessage,
@@ -10,6 +11,7 @@ import {
   patchIssue,
   putArchitectureSource,
   putIssueState,
+  putProjectDefaultAssignee,
   syncArchitectureSource,
 } from "./api";
 import { blockId } from "./editor";
@@ -452,6 +454,174 @@ test("replies: a reply in a thread alice wrote in moves her Inbox count, and one
     await createComment(own.key, { body: "A reply to alice.", reply_to: ownRoot.id }, session);
     await expect(inboxCount).toHaveText(inboxCountText(1), { timeout: 2_000 });
     expect(repliesReads).toBeGreaterThan(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// The two writes that move which person a question reaches without touching the question: an
+// assignee write and a project-default write. A reader holds one unfiltered Inbox read and narrows
+// it in the browser, so her list holds every open question she can see with the person it waits
+// on, and a write is a read she is owed exactly when her list holds a row it moves. The assignee
+// write tests her rows for one of the issue (`inboxRowsOf`), and the project-default write for
+// one of the project whose person its default decides (`inboxRowsDecidedByDefault`, both in
+// `web/src/api/event-refresh.ts`); the two people either write names (`thread_logins`) read their
+// whole Inbox too, which `e2e/project-default-assignee.e2e.ts` measures. These rows read a third
+// reader, whom neither write names.
+//
+// The assignee write below moves an issue carrying no question at all, so her list holds no row
+// it moves and she owes no read. The project-default write moves the person a question in her
+// list reaches, so she owes one read, and then a second project's default, of whose questions her
+// list holds none, so she owes no more.
+//
+// SLOW(>=2s): a seeded project and three issues, an event barrier before the count and another
+// after the write, and a window drained to half a second of quiet traffic.
+test("assignee write: an assignee moved between two other people sends no read from this reader's page", async ({
+  browser,
+}, testInfo) => {
+  // CORE names carol, so nothing the shared token makes here is ever alice's.
+  await createProject({ key: "CORE", name: "Core" }, "carol");
+  // The page's own issue carries no question either, so no Inbox row names it: the barrier's
+  // title writes on an issue her list holds would be a read she is owed as well, and would
+  // count below as if the move had sent it.
+  const open = await createIssue({ project: "CORE", title: "Alice's open page" });
+  // Her one question, on an issue no write below touches: it is what the count reads, and what
+  // makes the list this row watches a list with a row in it.
+  const hers = await createIssue({ project: "CORE", title: "Alice's own" });
+  await createAsk(hers.key, { question: "Alice's decision" }, bob);
+  // The issue the write moves, which holds no question at all, for the reason above this test.
+  const theirs = await createIssue({ project: "CORE", title: "Bob's issue" }, { login: "bob" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const traffic = watchTraffic(page);
+    let inboxReads = 0;
+    page.on("request", (request) => {
+      if (request.method() === "GET" && new URL(request.url()).pathname === "/api/v1/inbox") {
+        inboxReads += 1;
+      }
+    });
+    await page.clock.install();
+    await page.goto(`/issues/${open.key}`);
+    // The shell's one Inbox number, wherever this width draws it: one question waits on her,
+    // the one on her other issue.
+    await expect(inboxCountBadge(page)).toHaveText(inboxCountText(1));
+    const title = await eventBarrier(page, traffic, open.key, open.title);
+    await settled(traffic);
+    traffic.reset();
+    inboxReads = 0;
+
+    // The write: bob's issue goes to carol. The event names those two and nobody else
+    // (`thread_logins`), and alice's page owes nothing for it - her Inbox read holds no row of
+    // this issue, and her Reply rows hold no thread on it.
+    await patchIssue(theirs.key, { assignee: "carol" }, bob);
+    // Events reach the page in order: once the barrier's write shows, the assignee write was
+    // handled.
+    await eventBarrier(page, traffic, open.key, title);
+    await drainRefreshWindow(page, traffic);
+    const window = [...traffic.gets];
+    const written = new Set([theirs.key, open.key]);
+    const untouched = window.filter((get) => {
+      const key = /^\/api\/v1\/issues\/([^/?]+)(\/summary)?(\?|$)/.exec(get)?.[1];
+      return key !== undefined && !written.has(decodeURIComponent(key));
+    });
+    console.log(
+      `REFETCH-ASSIGNEE [${testInfo.project.name}] GETs in the window: ${window.length}; Inbox reads: ${inboxReads}`
+    );
+    expect(inboxReads, "Inbox reads after an assignee move between two other people").toBe(0);
+    expect(window.length, `GETs in the window, by path:\n${byPath(window)}`).toBeLessThanOrEqual(5);
+    expect(untouched, "reads of an issue no write touched").toEqual([]);
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): two seeded projects and three issues, an event barrier before the count and one
+// after each of the two writes, and a window drained to half a second of quiet traffic after each.
+test("project default: a project's default moved between two other people reads this reader's Inbox once when it holds a question the default decides, and not at all when it holds none", async ({
+  browser,
+}, testInfo) => {
+  // CORE names bob, and the first write moves it to carol: alice is neither, and the question on
+  // the issue nobody holds, which her Inbox lists, is the one the move carries between their two
+  // lists. OPS is carol's own project, which is how she is a person who has signed in and so a
+  // person the route takes; it holds no question, and the second write moves it to bob.
+  await createProject({ key: "CORE", name: "Core" }, "bob");
+  await createProject({ key: "OPS", name: "Ops" }, "carol");
+  // The page's own issue carries no question, for the reason the row above gives.
+  const open = await createIssue({ project: "CORE", title: "Alice's open page" });
+  const hers = await createIssue({ project: "CORE", title: "Alice's own" });
+  await createAsk(hers.key, { question: "Alice's decision" }, bob);
+  // A create always lands on a person, so the issue nobody holds is created and then cleared.
+  const unheld = await createIssue({ project: "CORE", title: "Nobody holds this" }, bob);
+  await patchIssue(unheld.key, { assignee: null }, bob);
+  await createAsk(unheld.key, { question: "Anyone's decision" }, bob);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const traffic = watchTraffic(page);
+    let inboxReads = 0;
+    page.on("request", (request) => {
+      if (request.method() === "GET" && new URL(request.url()).pathname === "/api/v1/inbox") {
+        inboxReads += 1;
+      }
+    });
+    await page.clock.install();
+    await page.goto(`/issues/${open.key}`);
+    await expect(inboxCountBadge(page)).toHaveText(inboxCountText(1));
+    let title = await eventBarrier(page, traffic, open.key, open.title);
+    await settled(traffic);
+
+    // Each write, made by its project's default as themself: the route takes a person, and the
+    // default it moves is the last step of the chain that decides who a question reaches.
+    const counted = async (move: () => Promise<unknown>, label: string) => {
+      traffic.reset();
+      inboxReads = 0;
+      await move();
+      // Events reach the page in order: once the barrier's write shows, the move was handled.
+      title = await eventBarrier(page, traffic, open.key, title);
+      await drainRefreshWindow(page, traffic);
+      const window = [...traffic.gets];
+      const untouched = window.filter((get) => {
+        const key = /^\/api\/v1\/issues\/([^/?]+)(\/summary)?(\?|$)/.exec(get)?.[1];
+        return key !== undefined && decodeURIComponent(key) !== open.key;
+      });
+      console.log(
+        `REFETCH-PROJECT-DEFAULT ${label} [${testInfo.project.name}] GETs in the window: ${window.length}; Inbox reads: ${inboxReads}`
+      );
+      expect(untouched, "reads of an issue no write touched").toEqual([]);
+      return { inboxReads, window };
+    };
+
+    // 1. Her list holds the question on CORE's issue nobody holds, whose person moves from bob
+    // to carol: one read of it, and no more.
+    const core = await counted(
+      () => putProjectDefaultAssignee("CORE", { assignee: "carol" }, { as: "user", login: "bob" }),
+      "CORE"
+    );
+    expect(
+      core.inboxReads,
+      "Inbox reads after a project default holding a question in her list moved"
+    ).toBe(1);
+    expect(
+      core.window.length,
+      `GETs in the window, by path:\n${byPath(core.window)}`
+    ).toBeLessThanOrEqual(5);
+
+    // 2. Her list holds no question of OPS: nothing in it moves, and she reads nothing.
+    const ops = await counted(
+      () => putProjectDefaultAssignee("OPS", { assignee: "bob" }, { as: "user", login: "carol" }),
+      "OPS"
+    );
+    expect(
+      ops.inboxReads,
+      "Inbox reads after a project default holding no question in her list moved"
+    ).toBe(0);
+    expect(
+      ops.window.length,
+      `GETs in the window, by path:\n${byPath(ops.window)}`
+    ).toBeLessThanOrEqual(5);
   } finally {
     await alice.close();
   }

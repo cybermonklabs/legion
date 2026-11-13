@@ -78,11 +78,24 @@ It carries:
 
 - the shared public leak check those wrappers and that hook run, which is not in the image:
   it is published by tag from a private repository, and the image carries the pin alone (`ARG LEAK_CHECK_TAG`, exported as `ENV LEGION_LEAK_CHECK_TAG`), so moving the pin is an image build and no deployment's to do.
-  Each role's `legion worker-shim` installs that tag once per pod, under a lease every role of the pod takes and before it starts anything that writes, into `/legion/scratch/leak-check/` on the issue's own disk, and every role of the pod is told that copy as `PUBLIC_LEAK_CHECK` (`leakguard.Install`, and `mainEnvironment` in `packages/daemon/internal/runtime/sandbox/manifest.go`, which name one constant between them so the path installed and the path told cannot drift).
-  Where the environment names no check of its own — a pod whose image carries this install but whose daemon predates it — the shim names what it installed for everything it starts, so such a pod's writes find the check the image installed rather than being refused for a check that is in fact there; a value the runtime set wins wherever there is one (`spawnOnce`, `packages/daemon/internal/shim/shim.go`).
-  The install records the tag it landed beside the check, and a directory that already holds this pin's check is left alone while one holding another tag's is installed over, so a directory that outlives a pin change — the controller's persistent volume, which is no pod-lived scratch — never keeps an old check.
-  A pod whose install could not be made fails that launch — the fetch refused, a member of the tarball outside the check's own directory, or an unpacked check that could not name its own shapes when it was run once with `--help` — rather than starting an agent whose every write would then be refused;
-  a tmux pane installs nothing, because no pin is set there and such a machine carries the check through the check's own installer; the daemon resolves that machine's check once per launch and tells the pane where it is (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
+  The pod's launcher names that pin in its hello, and the daemon reads the check at that tag with a read-only token of its own, which its implement App mints for theorem-labs/agent-infra alone (`leakCheckToken`, `internal/daemon/kubernetes.go`).
+  The daemon reads each tag once and keeps that copy in its memory (`leakguard.Source`).
+  It pushes the check's directory to the launcher before it sends a saved workspace bundle or any start (`serveLeakCheck`, `internal/runtime/sandbox/launcher.go`).
+  The launcher installs it once per launcher process, before any role starts:
+  it unpacks the check into a staging directory, records the tag there, runs the check once with `--help` to see that it names its own shapes, and renames the result over `/legion/scratch/leak-check/` (`checkInstall`, `internal/launcher/leakcheck.go`).
+  Every role is told that copy as `PUBLIC_LEAK_CHECK` (`mainEnvironment`, `internal/runtime/sandbox/manifest.go`, which names the install's own constant).
+  Each role's `legion worker-shim` only reads the install, and starts no agent when the install is absent or records another tag (`spawnOnce`, `internal/shim/shim.go`).
+  Where the environment names no check, the shim names the install for everything it starts.
+  The pod holds no credential for that repository and reads no repository mapping.
+  A launcher whose process installed its pin says so in its hello and is pushed nothing, and a launcher of an older image names no tag and is pushed nothing.
+  A new launcher process installs over what the directory held, so the controller's persistent volume never keeps an old check.
+  A start whose check could not be installed is never sent, and is charged as a launch failure.
+  The claim then carries the refusal's sentence as `leakCheckCause`, which begins `the shared public leak check could not be installed:` and says what failed.
+  The daemon and the image pins move together, and a rollback of one is a rollback of the other:
+  an older daemon pushes nothing, and a new image's shim then refuses every start.
+  A tag of that repository is not protected, so a tag that is force-moved is served from the daemon's earlier copy until the daemon restarts.
+  A tmux pane installs nothing, because no pin is set there and such a machine carries the check through the check's own installer.
+  The daemon resolves that machine's check once per launch and tells the pane where it is (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
   What a role sees when a write is refused is a command that wrote nothing and one of two lines on standard error:
   `LEAK CHECK: refusing <the write>`, with a line under it naming the record and the class and never the text that matched, which is a name in the write; or `LEAK CHECK SETUP ERROR: <the write>: <what could not be made to run>`, which is a broken pod and not a name in the write at all.
   `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for a check it could not make run — the shared check's own statuses — and git stops the push on any of them but the first.
@@ -425,6 +438,8 @@ It ships this with Legion's other skills in its `dist/skills`:
 The Envoy plugin ships these skills in its `dist/skills`:
 
 - `agent-secrets`
+
+- `approval-review`
 
 - `asd-ste100`
 
@@ -1827,6 +1842,22 @@ The step costs an operator one statement with the daemon stopped, and it leaves 
 
 Rolling back afterwards needs nothing of those rows: the notice told an architect where its root stood in the line and that the daemon would start it again, and either release starts it again without saying so.
 
+#### Rolling back the release that names what nothing starts
+
+This release writes a new field, `held`, on the controller tick notice: every issue the daemon's record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with one word for why nothing of it runs and the issues that hold it.
+An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows no such field, so a controller notice still queued at the rollback fails on its backoff for ever and the tick reaches nobody.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+update outbox set payload = payload - 'held' where kind = 'controller_notice' and payload ? 'held';
+```
+
+What the strip costs is one line of one wake: the tick that row carries then names the blocked issues alone, which is what the earlier release's controller reads anyway, and the next tick of the daemon that runs is whole again.
+
+Nothing else of this release needs a rollback step.
+The state's own key, `admission.held`, is served by the new daemon alone: no row holds it, no pod reads it from a queue, and the route already strips it for a caller whose plugin is below the contract that added it (`api.stateFor`, `withoutHeld`).
+This change writes no column and runs no migration, so no dump and no `alter table` belong here.
+
 ### Pinning a release that drops what a running pod still uses
 
 A pod is built whole from the image pinned when it was launched, and no launch replaces a live pod for an image change alone:
@@ -2104,6 +2135,66 @@ There is no SQL to run and no column to drop: the change adds no store migration
 What the rollback costs is the line:
 a pane of the earlier release is told no key and stamps none, so every commit it makes carries the session line alone, and a base branch that requires the issue line in the commit that lands refuses such a branch until a role describes a commit of it with that line by hand.
 The commits already stamped keep their line: it is in their messages, which nothing rewrites.
+
+**The phase entry (daemon API contract 94).**
+A release at contract 94 holds the work a role is owed as numbers of the record rather than as one token carried on one outbox row.
+`phases` carries `entry`, `entry_task` and `entry_raised_at` — the entry the role of the issue's current phase stands on, the work of that entry, and when the transition raised it — and `claims` carries `given_entry` and `served_entry`, the entry of the last task the claim was queued and the entry its worker confirmed, with `pending_task_deliveries.entry` carrying the number from the start row to the claim.
+An issue of `GET /legion/v1/state` carries `phaseEntry` and `givenEntry` from those columns where `phase.RoleFor` names a role for the issue's current phase (`internal/projection/project.go`), and the daemon sends the entry's own work to every role whose claim stands below the entry its `phases` row names, on each admission pass and on a sweep of its own each minute.
+Both keys are absent together for an issue whose current phase names no phase worker role — a root at `admitted` whose design gate has never opened — and each is absent where it is 0 (`internal/api/state.go`), so an issue whose role the daemon holds no claim row of carries `phaseEntry` alone.
+A caller from a pod whose claims record a contract below 94 is served the issues without either key (`withoutPhaseEntries` in `internal/api/server.go`).
+Store migration 20261111225552_phase_entry adds the six columns, fills them from the assignment token the release before it minted at each phase change (a role that release had handed work stands at entry 1, with the task of the start row its issue still owes it), stamps that entry into the payload of each of those start rows, and drops the three columns that token was held in:
+`phases.assignment`, `claims.serving_assignment` and `pending_task_deliveries.assignment`.
+
+To roll this release back to contract 87, stop the daemon and run the eleven statements below, which leave the store at the earlier release's schema and at that release's own version, 20261112180548:
+the version the store reports is its highest recorded row (`schemaVersion` in `internal/store/store.go`), every database this release migrated records 20261112180548 above this migration's own 20261111225552, and the block deletes no row but that one.
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+alter table phases add column if not exists assignment text not null default '';
+alter table claims add column if not exists serving_assignment text not null default '';
+alter table pending_task_deliveries add column if not exists assignment text not null default '';
+update outbox set payload = payload - 'entry' - 'resendEntry'
+where kind = 'supervise' and (payload ? 'entry' or payload ? 'resendEntry');
+alter table phases drop column if exists entry;
+alter table phases drop column if exists entry_task;
+alter table phases drop column if exists entry_raised_at;
+alter table claims drop column if exists given_entry;
+alter table claims drop column if exists served_entry;
+alter table pending_task_deliveries drop column if exists entry;
+delete from schema_version where version = 20261111225552;
+commit;
+SQL
+```
+
+It prints `BEGIN`, three `ALTER TABLE`s, `UPDATE <n>`, six more `ALTER TABLE`s, `DELETE 1` and `COMMIT`;
+a rerun prints a `NOTICE` for each of the nine columns it finds as it means to leave them, the same `ALTER TABLE`s, `UPDATE 0`, `DELETE 0` and `COMMIT`, and changes nothing.
+The three `add column`s come first because the earlier release cannot read the claims table without them:
+its claim read names `serving_assignment` (`claimSelect` in `internal/store/claims.go` at contract 87), so every claim read fails and its supervisor loads nothing.
+The `update` is owed for the same reason.
+This release writes `entry` into a supervise start's payload and `resendEntry` onto a start that resends an entry, the earlier release knows neither key and decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), and its `record.Postgres.RoleRuns` decodes every supervise row of every issue an admission pass reads, so a row left carrying either key fails to decode for ever:
+the runner retries it on its backoff, and every admission pass of its issue fails with it.
+It leaves `assignment` on those payloads where it is, since the earlier release mints that token again at each role's next start and this release still reads the field.
+The six drops and the deleted row are owed to the roll-forward rather than to the earlier release, which reads none of the six columns:
+together they re-arm the migration, so the newer image's `Migrate` runs the file again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row) and fills the entries afresh from the tokens the earlier release kept current while it ran.
+What that second fill costs is the numbering:
+every role the earlier release had handed work is at entry 1 again, whatever entry it stood at before the rollback, and `entry_raised_at` reads the moment of the roll-forward.
+Nothing reads an entry across the rollback — what a role is owed is the difference between its own two numbers, both written by that one run — so the renumbering costs no more than the history it does not keep.
+Zeroing the six columns and leaving the row standing would cost more than that:
+the migration would never run again, and a role whose task the earlier release lost while it ran would read 0 against 0, owed nothing and swept nothing, holding its slot with nobody at work on it until a person noticed.
+The re-arm needs nothing of the other rows:
+`store.apply` decides each migration on its own row, so the deleted row leaves 20261111225552 unapplied whatever version stands highest.
+What the block does need is that no migration recorded after this one builds on the six columns it drops.
+Such a migration keeps its own row through the `delete`, so it never runs again, while the drops take with them whatever it built on those columns, an index or a constraint on `phases.entry`, say:
+reverse such a migration by its own way back first, and run this block after it.
+The one migration recorded above this one at this release, 20261112180548_claim_leak_check_cause, adds `claims.leak_check_cause` and touches none of the six, so the block holds over it and leaves it and its column standing.
+The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
+where that file carries another identifier in the release you roll back from, use that one.
+The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database migrated to this release's head by `internal/store`'s own `Migrate`, which applied 133 migrations and left 133 versions recorded, the highest 20261112180548, and holding four outbox rows:
+two supervise starts carrying `entry`, one of them `resendEntry` beside it, a supervise row carrying neither, and a `notice` row carrying an `entry` key of its own.
+The first run printed `BEGIN`, three `ALTER TABLE`s, `UPDATE 2`, six `ALTER TABLE`s, `DELETE 1` and `COMMIT`, and the second printed the nine `NOTICE`s with their `ALTER TABLE`s, `UPDATE 0`, `DELETE 0` and the same `COMMIT`; both exited 0.
+After them the three assignment columns stood, none of the six entry columns did, `claims.leak_check_cause` still stood, `schema_version` held 132 rows with none of 20261111225552 and its highest still at 20261112180548, the two supervise payloads had lost both keys and kept every other key they carried — the `assignment` the second of them carried among them — and the `notice` row kept its own `entry`.
+Running `Migrate` again then applied that one migration a second time, reporting one migration applied: the six entry columns stood on the three tables again, the three assignment columns were dropped again, and `schema_version` held 133 rows, 20261111225552 among them and 20261112180548 still the highest.
 
 ### Contract discipline
 

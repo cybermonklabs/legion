@@ -99,6 +99,10 @@ export const realStackReasons: Record<string, string> = {
   "conversation.e2e.ts":
     "names resolve from the live registry; an edit after load arrives live; the prefilled mention is sent and checked",
   "coverage.e2e.ts": "coverage flags are the server's computation, cleared by a write",
+  "create-document-refusals.e2e.ts":
+    "every row reads a refusal: the taken title the control checks against the owner's own list, the role slug and the duplicate the server refuses in its own words, and the closed issue's one sentence; each then reads the issue's documents again to prove nothing was written",
+  "create-document.e2e.ts":
+    "makes a document and then reads its own write - the versions it holds, the list it is listed in and the line typed into its live editor after a reload; the double press is answered by the server's idempotency key",
   "create-issue-decision-claim.e2e.ts":
     "the server's search answers the typed title, and the answered ask it lists is its ranking",
   "create-issue-related.e2e.ts": "the server's similar-issue search answers the typed title",
@@ -112,6 +116,8 @@ export const realStackReasons: Record<string, string> = {
   "doc-reload-line.e2e.ts": "the read-only admission is decided at socket open",
   "doc.e2e.ts": "every row lives in the live document room, its connections and versions",
   "document-and-comment-read-alike.e2e.ts": "each row asserts inside the live spec editor",
+  "document-way-back.e2e.ts":
+    "a correction and two removals written and then re-read on the open page, the issue's list and its Activity; the refused removal is the server's judgement that the document holds writing, which only a settled version makes true",
   "document.e2e.ts": "collaboration, uploads, marks, and the live connection dot",
   "editor-paste.e2e.ts": "pastes into the live editor, read back after a reload",
   "email-links.e2e.ts": "asserts in the live editor before the past version",
@@ -149,7 +155,6 @@ export const realStackReasons: Record<string, string> = {
   "inbox-read-state.e2e.ts": "reading writes the read mark and the row is re-read",
   "inbox-reading-pane.e2e.ts":
     "the answer is a write; approval is the server's computation; the withdrawal is the server's",
-  "inbox-search.e2e.ts": "a write in flight",
   "inbox-stability.e2e.ts":
     "rows move because writes land elsewhere and arrive live under the reader's hand",
   "inbox-thread-pane.e2e.ts":
@@ -225,6 +230,8 @@ export const realStackReasons: Record<string, string> = {
   "prefix-links.e2e.ts": "`sql`-forged id twins and the server's short-id resolution",
   "progress.e2e.ts":
     "it asserts the progress the server computes over an issue's children before it opens a page",
+  "project-default-assignee.e2e.ts":
+    "which person a question reaches is the server's own expression over three tables, and each of the two writes that move it must reach the open Inboxes, issue page and document page over the live socket with no reload",
   "project.e2e.ts": "the reference closure is the server's graph walk",
   "recipients-claim.e2e.ts": "claims and routes the server computes, with live card updates",
   "reference-cards.e2e.ts": "opens the spec's live editor and its margin thread",
