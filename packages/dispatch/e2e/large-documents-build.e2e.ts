@@ -57,6 +57,64 @@ import { settledScrollTop } from "./mermaid-helpers";
 import { expectNoneOf } from "./none-of";
 import { asUser } from "./users";
 
+// Every wait of this file for something the page draws is bounded below, so a page that never
+// draws it fails the row by name inside the leg it runs in, and each bound is sized from what
+// that wait costs and from what the leg leaves.
+//
+// The leg. These rows run in the shards, `chromium` and `iphone` four workers wide, under a step
+// of 540 s with one retry (.github/workflows/dispatch-browser.yaml). In run 43421318396 the
+// `chromium` half was in `shard (3)`, whose step took 329 s, and the `iphone` half in
+// `shard (4)`, 369 s; the longest leg of that run after the moves since (`shard (1)`) took
+// 433 s. A row that hangs runs twice, so it adds twice its failing time, less what it costs
+// when it passes, to the worker it runs on.
+//
+// What the waits cost, on this pod, one worker on two CPUs at 4x CPU throttling where a row
+// throttles (dispatch://INFRA-341), the slower of `chromium` and `iphone`, each counted from the
+// navigation or from the release: the draw's first block in the viewport 2.3 s and attached
+// 0.85 s; the landmark half-way down the smaller document 8.7 s; the whole plain document drawn
+// 7.9 s; the editor open 3.6 s after the release over the reader's place, 20.5 s over the
+// framed build, 18.8 s under the other person's words and 18.7 s under the per-frame count;
+// his words in the open editor 8.7 s after it opened; and, with no socket held, the editor open
+// 9.2 s from the navigation and its five cards 0.7 s after it. Four workers wide on CI the
+// rows cost no more than they do here: 2.6 to 29.7 s each, against 1.8 to 34.5 s.
+//
+// The bounds: `theDrawWithinMs` 20 s, `theLandmarkWithinMs` and `theWholeDrawWithinMs` 30 s,
+// `theBuildWithinMs` 45 s, `theWordsWithinMs` 20 s, `theOpenedEditorWithinMs` 30 s,
+// `theCardsWithinMs` 20 s and `theSyncedEditorWithinMs` 20 s - between twice and nine times
+// each reading. Measured with them, in a copy of this tree whose editor never opens (`chromium`,
+// one worker, one retry), each failing attempt took 22.9 to 59.4 s, the longest the per-frame
+// count's row: its seeding, its whole draw and `theBuildWithinMs`. Twice that, less the 34.5 s
+// that row costs when it passes, is 84.3 s more on one worker, which fits the 211 s `shard (3)`
+// left and the 171 s `shard (4)` left, and the 107 s of the longest leg. A page that never opens
+// its editor fails six of this file's eight rows, the first and the refused writer's passing:
+// their twelve attempts took 530.9 s, which shared four ways and less the 126.2 s those rows
+// cost passing is about 101 s more per worker - 430 s of `shard (3)` and 470 s of `shard (4)`.
+
+/** How long a row waits for the document's own draw to put its first block on the page. */
+const theDrawWithinMs = 20_000;
+
+/** How long a row waits for the landmark half-way down the smaller document to be drawn. */
+const theLandmarkWithinMs = 30_000;
+
+/** How long a row waits for the page's own draw to hold the whole plain document. */
+const theWholeDrawWithinMs = 30_000;
+
+/** How long a row waits, once the socket is let through, for the editor to open. */
+const theBuildWithinMs = 45_000;
+
+/** How long the edit row waits, once the editor is open, for every word written into it. */
+const theWordsWithinMs = 20_000;
+
+/** How long a row whose socket is never held waits for the editor to open. */
+const theOpenedEditorWithinMs = 30_000;
+
+/** How long the cards row waits, once the editor is open, for every decision card in it. */
+const theCardsWithinMs = 20_000;
+
+/** How long the syncing row waits, once the state frame is let through, for the editor that
+ *  was already built to open. */
+const theSyncedEditorWithinMs = 20_000;
+
 // The two rows below are about the draw that makes the numbers of
 // `large-documents-measured.e2e.ts` reachable at all: the document is drawn from its own
 // markdown, through the read-only headless engine, before the editor exists
@@ -78,7 +136,7 @@ test(`${documentNames.small} is on the screen before its editor is @phone`, asyn
     // and no editor (`large-documents-page.ts`): it carries `data-block-id` as the editor's
     // blocks do, and it is not the block the measurement's targets are read against.
     const firstBlock = page.locator('[aria-label="Document text"] [data-block-id]').first();
-    await expect(firstBlock).toBeInViewport({ timeout: 120_000 });
+    await expect(firstBlock).toBeInViewport({ timeout: theDrawWithinMs });
     await expect(firstBlock).toContainText(documentTitle(documentDiagrams.small));
     // And the sections below it are drawn too, not only the block the measurement reads.
     await expect(page.getByRole("heading", { name: sectionHeading(0) })).toBeVisible();
@@ -108,7 +166,7 @@ test(`the editor opens ${documentNames.small} where its reader had got to @phone
     await page.goto(path);
 
     const landmark = page.getByRole("heading", { name: landmarkText });
-    await expect(landmark).toBeAttached({ timeout: 240_000 });
+    await expect(landmark).toBeAttached({ timeout: theLandmarkWithinMs });
     // The reader stops with this section's heading at the top of their screen - the block the
     // swap reads their place from is the one the screen starts with, so this is the block the
     // row is about. The blocks the scroll passed paint as it goes and the page settles under
@@ -124,7 +182,7 @@ test(`the editor opens ${documentNames.small} where its reader had got to @phone
     expect(where?.y ?? Number.NaN).toBeLessThan(200);
 
     await transport.release();
-    await expect(documentEditor(page)).toBeVisible({ timeout: 240_000 });
+    await expect(documentEditor(page)).toBeVisible({ timeout: theBuildWithinMs });
     // The editor has replaced the draw the reader was reading, and left their own words on the
     // same line of the screen. Read once the page has stopped moving: the editor's diagrams
     // draw for seconds after it opens and its skipped blocks paint at their own heights, and
@@ -167,7 +225,7 @@ test(`the editor opens ${documentNames.small} with every block of it in the DOM 
     // The document's own draw is what the reader has while no socket has synced, and no editor
     // has been built from it yet.
     await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeAttached(
-      { timeout: 240_000 }
+      { timeout: theDrawWithinMs }
     );
     expect(await blocksBuilt(page)).toBe(0);
 
@@ -178,14 +236,10 @@ test(`the editor opens ${documentNames.small} with every block of it in the DOM 
     // The wait is this row's own reading as much as it is the build: the per-frame count of
     // `framesOfTheBuild` scans every block element the editor holds in each frame the build
     // lets the browser draw, and this wait's role selector runs over the same document again
-    // on every mutation the batches make. Measured on this pod at 4x CPU throttling, with the
-    // socket released at the draw's first block as above, the whole row costs 30 to 44 s over
-    // the AHXV6-1-shaped document, against 402 s over the larger one, which it seeded until the
-    // browser shards ran out of their nine minutes. The 900 s stands because a `chromium`
-    // lane pays about twice a phone's for the same reading, and because before the build's
-    // frontier was fixed (`packages/proof-editor/src/progressive-build.ts`) the same two
-    // readings over the larger document were 173 s and 281 s.
-    await expect(documentEditor(page)).toBeVisible({ timeout: 900_000 });
+    // on every mutation the batches make. Over the AHXV6-1-shaped document that costs 15.8 to
+    // 20.5 s from the release on this pod, against 402 s over the larger one, which it seeded
+    // until the browser shards ran out of their nine minutes (`theBuildWithinMs`).
+    await expect(documentEditor(page)).toBeVisible({ timeout: theBuildWithinMs });
 
     // Every block the server indexed the document under is in the editor's DOM, under the id a
     // `#b-<id>` link lands on, rather than only counted: two different blocks satisfy a count.
@@ -249,7 +303,7 @@ test(`an edit made while ${documentNames.small}'s editor is being built is in it
     const transport = await documentTransport(page, { holding: true });
     await page.goto(path);
     await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeAttached(
-      { timeout: 240_000 }
+      { timeout: theDrawWithinMs }
     );
 
     // Throttled here and not before the load: her build begins with the release below, and her
@@ -262,7 +316,7 @@ test(`an edit made while ${documentNames.small}'s editor is being built is in it
     // say; that his writing covered one is what the frames below prove.
     await transport.release();
     const opened = documentEditor(page)
-      .waitFor({ state: "visible", timeout: 240_000 })
+      .waitFor({ state: "visible", timeout: theBuildWithinMs })
       .then(() => true);
     const written: string[] = [];
     let open = false;
@@ -284,7 +338,9 @@ test(`an edit made while ${documentNames.small}'s editor is being built is in it
 
     // Alice's editor holds every word he wrote while it was being built, in the block he wrote
     // them in.
-    await expect(documentEditor(page)).toContainText(written.join(" "), { timeout: 240_000 });
+    await expect(documentEditor(page)).toContainText(written.join(" "), {
+      timeout: theWordsWithinMs,
+    });
     const whole = await blocksBuilt(page);
     const frames = await page.evaluate(() => window.__blocksBuilt ?? []);
     expect(
@@ -432,7 +488,7 @@ test("every block of a document is on the screen exactly once as its editor is b
       .poll(() => page.locator(drawnBlocks).count(), {
         intervals: [500],
         message: "the page never drew the whole document, so no frame holds every block of it",
-        timeout: 240_000,
+        timeout: theWholeDrawWithinMs,
       })
       .toBe(whole);
     const drewAt = await page.evaluate(() => window.__blockFrames?.length ?? 0);
@@ -442,7 +498,7 @@ test("every block of a document is on the screen exactly once as its editor is b
     // are setup (`throttleTheCpu`).
     await throttleTheCpu(page);
     await transport.release();
-    await expect(documentEditor(page)).toBeVisible({ timeout: 480_000 });
+    await expect(documentEditor(page)).toBeVisible({ timeout: theBuildWithinMs });
     const frames = (await page.evaluate(() => window.__blockFrames ?? [])).slice(drewAt);
     // Never twice: no frame held one block id on two surfaces at once, which is what a build
     // that revealed its blocks without taking the draw's copies away would show. The floor each
@@ -525,7 +581,7 @@ test("the editor is built while the document's socket is still syncing @phone", 
 
     // The state frame, at last: the editor that was already standing takes the document.
     await transport.release();
-    await expect(documentEditor(page)).toBeVisible({ timeout: 120_000 });
+    await expect(documentEditor(page)).toBeVisible({ timeout: theSyncedEditorWithinMs });
     await expect(documentEditor(page)).toContainText("The paragraph a reader meets first.");
     // The same selector, now that the document is in the editor: it does find the editor's
     // blocks, so the none it counted above was an editor holding none.
@@ -605,12 +661,12 @@ test(`each decision card of ${documentNames.small} is drawn in a task of its own
     const page = await alice.newPage();
     await drawsOfEachTask(page);
     await page.goto(path);
-    await expect(documentEditor(page)).toBeVisible({ timeout: 240_000 });
+    await expect(documentEditor(page)).toBeVisible({ timeout: theOpenedEditorWithinMs });
     // Every decision of the document is hosting its ask card, so every card this row is about
     // has been drawn and the record below is complete.
     await expect(
       documentEditor(page).locator('[data-dispatch-ask-block] article[data-testid^="ask-"]')
-    ).toHaveCount(decisionBlocks, { timeout: 240_000 });
+    ).toHaveCount(decisionBlocks, { timeout: theCardsWithinMs });
 
     const drawn = await page.evaluate(() => window.__drawnInTasks ?? []);
     const drewACard = drawn.filter((task) => task.cards > 0);

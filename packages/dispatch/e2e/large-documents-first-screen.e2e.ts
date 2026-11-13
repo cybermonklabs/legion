@@ -279,7 +279,10 @@ test("a page the server drew a document into builds no Markdown engine while its
     // for one is over the draw parses the whole document itself (`DocumentPreview`), which
     // builds the engine and posts the document to the worker. Each name above matches what
     // that page asked for, so the two empty lists are a page that asked for neither and not a
-    // name that matches nothing.
+    // name that matches nothing. The draw waits `waitsForTheBuildMs`, 5 s, before it parses;
+    // the whole row took 12.0 s on this pod with this page in it, so 30 s is the wait's own
+    // five seconds and more than twice the rest of the row, and a hung parse fails at 30 s of a
+    // shard step that has 540.
     const parsing = await alice.newPage();
     await documentTransport(parsing, { holding: true });
     await parsing.goto(path, { waitUntil: "commit" });
@@ -293,7 +296,7 @@ test("a page the server drew a document into builds no Markdown engine while its
           message:
             "a page whose editor never came never asked for a chunk by the engine's name and " +
             "the parse worker's, so neither name above is a name the build gives a chunk",
-          timeout: 120_000,
+          timeout: 30_000,
         }
       )
       .toEqual({ engine: true, worker: true });
