@@ -121,8 +121,9 @@ COPY --from=web /repo/packages/envoy/internal/contracts/generated.go ./internal/
 
 # /out/THIRD_PARTY_NOTICES, the image's /usr/share/doc/legion/THIRD_PARTY_NOTICES: the licenses of
 # the Go modules the four binaries below compile in (with the build's CGO_ENABLED and the image's
-# own GOARCH, which decide them) and of the npm packages the SPA inlines. Fails the build when a
-# module's or a package's license cannot be determined.
+# own GOARCH, which decide them), of the npm packages the SPA inlines, and of the work the writing
+# check's rules port and its tagger's model was trained on (internal/dispatch/writingcheck/NOTICE).
+# Fails the build when a module's or a package's license cannot be determined.
 COPY --from=web /repo/packages/dispatch/web/dist/THIRD_PARTY_NOTICES.txt /tmp/dispatch-web-notices
 RUN mkdir -p /out \
     && CGO_ENABLED=0 go-third-party-notices.sh /tmp/go-notices \
@@ -130,7 +131,8 @@ RUN mkdir -p /out \
     && assemble-third-party-notices.sh /out/THIRD_PARTY_NOTICES \
       "Third-party software in the Legion Envoy image, with the license of each piece. Legion's own code is under the Apache License 2.0. The Debian packages the image installs carry their terms in /usr/share/doc/<package>/copyright." \
       "Go modules compiled into /usr/local/bin/envoy-listener, envoy-dispatch, envoy-broker and agent-secrets" /tmp/go-notices \
-      "npm packages inlined into the Dispatch web app, /srv/dispatch-web (served as /THIRD_PARTY_NOTICES.txt)" /tmp/dispatch-web-notices
+      "npm packages inlined into the Dispatch web app, /srv/dispatch-web (served as /THIRD_PARTY_NOTICES.txt)" /tmp/dispatch-web-notices \
+      "The writing check in envoy-dispatch: its ported rules and its tagger's training data" ./internal/dispatch/writingcheck/NOTICE
 
 # The legion commit this image is built from, which envoy-dispatch's /healthz reports as
 # `commit`. The release workflow passes its own github.sha, for the image it publishes and for
