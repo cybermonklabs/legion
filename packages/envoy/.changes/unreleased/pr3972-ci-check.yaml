@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  A `check` block of a Verification document can carry `ci_check`, the name of the GitHub check run
+  that proves it (block schema version 4). Such a check takes no `run`, takes `when` of
+  `before_merge`, names its `negative_control`, and never gains `ci_check` while a result stands
+  against it: a documents API write that breaks a rule is refused with `400 INVALID_CI_CHECK`, and
+  settlement removes a `ci_check` a browser wrote against the rules and posts `block.invalid` with
+  `block_type: "check"`. `POST /api/v1/issues/{key}/results` refuses a result for such a check with
+  `409 CHECK_PROVED_BY_CI`. `GET /api/v1/issues/{key}/results` answers it with one result derived
+  from the named run at the issue's newest open, else merged, pull request head, and a `ci` member
+  that names the run, its state, the case that decided it and the pull request body line. Nothing is
+  stored for it.

@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  A `before_merge` check carrying `ci_check` is CI's: no role runs it or records its result, and
+  `dispatch results` derives its result from the named CI run. The new worker reference
+  `ci-checks.md` holds the rule, the worker, retro and architect skills leave such a check out of
+  every passage that orders a check run or recorded, and the architect's design-gate reference says
+  how to write one.

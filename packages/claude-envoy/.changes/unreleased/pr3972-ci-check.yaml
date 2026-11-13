@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  The Legion plugin's skills say that a `before_merge` check carrying `ci_check` is CI's: no role runs
+  it or records its result, and `dispatch results` derives its result from the named CI run.
