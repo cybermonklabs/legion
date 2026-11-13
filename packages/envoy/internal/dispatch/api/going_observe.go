@@ -11,10 +11,14 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"slices"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -168,7 +172,8 @@ var goingAskFields = []string{"question", "options", "multiple", "urgency"}
 // observe reads what the prepared write changes: before it (answer nil) and after it, where
 // answer is what the write's route answered and before what the read before saw. A write that
 // changes a value of an item already there reads that value both times; a write that makes an
-// item reads nothing before it and reads the made item off its answer.
+// item reads nothing before it and reads the made item off its answer, but for an upload, which
+// reads before it the document its name writes the next version of, where there is one.
 func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answer []byte, before goingObservation) (goingObservation, error) {
 	path, arguments := prepared.call.path, prepared.arguments
 	fields := goingFields(goingWriteFields[prepared.action])
@@ -211,6 +216,11 @@ func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answ
 			open, err := o.openApprovalAsks(ctx, path["id"])
 			return goingObservation{target: path["id"], fields: fields, issue: issue,
 				value: goingApprovalBefore{OpenAsks: open}}, err
+		}
+		if prepared.action == "dispatch_artifact" {
+			// An upload under a name its owner already holds writes that document's next
+			// version: the version it writes over is the value before it.
+			return o.uploadedOver(ctx, prepared, fields, issue)
 		}
 		// A write that makes an item: nothing of it is there before it.
 		return goingObservation{target: goingTargetOfPath(path), fields: fields, issue: issue}, nil
@@ -417,6 +427,41 @@ func (o goingObserver) openApprovalAsks(ctx context.Context, artifact string) ([
 		return nil, fmt.Errorf("read the approval asks open on %s: %w", artifact, err)
 	}
 	return open, nil
+}
+
+// goingUploadBefore is an upload's value before it where its name finds a document its owner
+// already holds: that document, and the version the upload writes its next version over.
+type goingUploadBefore struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Version int    `json:"version"`
+}
+
+// uploadedOver is what an upload finds under its name before it: the document of the owner its
+// row reaches whose name or slug the name is, as the upload's own lookup finds it
+// (findArtifactByNameOrSlug), at its latest version, and no value where the owner holds none, so
+// the upload makes one. It is read from the store, as rankPlace is, since no route answers a
+// document by the name an upload gives it.
+func (o goingObserver) uploadedOver(ctx context.Context, prepared goingPrepared, fields []string, issue string) (goingObservation, error) {
+	observed := goingObservation{target: goingTargetOfPath(prepared.call.path), fields: fields, issue: issue}
+	owner, known := goingUploadOwner(prepared.arguments, prepared.call.path["session_id"])
+	if !known {
+		return observed, nil
+	}
+	name := strings.TrimSpace(goingText(prepared.arguments, "name"))
+	artifact, err := o.s.findArtifactByNameOrSlug(ctx, o.s.deps.Store.Pool, owner, name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return observed, nil
+	}
+	if err != nil {
+		return observed, fmt.Errorf("read the document an upload named %q writes over: %w", name, err)
+	}
+	before := goingUploadBefore{ID: artifact.ID, Name: artifact.Name}
+	for _, version := range artifact.Versions {
+		before.Version = max(before.Version, version.Number)
+	}
+	observed.target, observed.value = artifact.ID, before
+	return observed, nil
 }
 
 // goingIssueFieldValue is one field of an issue's read as an update writes it.

@@ -720,3 +720,78 @@ func TestGoingWriteRecordsTheUndoOfTheRowItWentThrough(t *testing.T) {
 		}
 	}
 }
+
+// TestGoingUndoOfAnApprovalRequestWhoseRecordDoesNotDecodeRetractsNothing (review round 2,
+// finding D): an approval request whose record's list of the asks open before it does not decode
+// cannot tell whether it opened its ask, so its undo is the server's own failure, 500, which
+// settles nothing, and the ask stays open.
+func TestGoingUndoOfAnApprovalRequestWhoseRecordDoesNotDecodeRetractsNothing(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Approval, garbled", "The spec.\n").Key
+	run, opened := rig.runOne(t, "dispatch_request_approval", map[string]any{"issue": issue, "artifact": "spec", "summary": "Ready."}, nil)
+	if _, err := rig.database.Pool.Exec(context.Background(),
+		`update going_runs set writes = jsonb_set(writes, '{0,before}', '{"open_asks":"not a list"}') where id = $1::uuid`, run); err != nil {
+		t.Fatalf("garble the record's value before: %v", err)
+	}
+	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
+	if line.Outcome.Status != http.StatusInternalServerError || goingUndoSettles(line.Outcome) {
+		t.Fatalf("the undo of a request whose record does not decode answered %+v, want the server's own 500, unsettled", line.Outcome)
+	}
+	if state := decodeBody[goingAskRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/asks/"+opened.Item, nil)).Ask.State; state != "open" {
+		t.Fatalf("the approval ask is %s after the failed undo, want open", state)
+	}
+}
+
+// TestGoingUndoMadeAndNotRecordedKeepsItsClaim (review round 2, finding E): an undo that put the
+// newest write back and whose record the database refused keeps that write's undo claimed, as a
+// write whose record failed keeps its claim, while the claim of the write it never reached is
+// given up; so the next undo of the run is told one is under way and undoes nothing a second
+// time.
+func TestGoingUndoMadeAndNotRecordedKeepsItsClaim(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Undone, not recorded", "The spec.\n").Key
+	before := rig.issueRead(t, issue)
+	run := rig.proposed(t, "alice", false, "dispatch_issue_update",
+		map[string]any{"issue": issue, "labels": []any{"one"}},
+		map[string]any{"issue": issue, "title": "Renamed by the bar"})
+	titled := ""
+	for invocation := range 2 {
+		line := rig.wrote(t, "alice", run, map[string]any{"offer": "dispatch_issue_update", "invocation": invocation, "approved": goingApprovedPerson})
+		titled = line.WriteID
+	}
+	ctx := context.Background()
+	// The record takes a claim and its release, and refuses every undo recorded as made.
+	if _, err := rig.database.Pool.Exec(ctx, `
+		create function going_test_refuse_undo() returns trigger language plpgsql as $$
+		begin
+		  if exists (select 1 from jsonb_array_elements(new.undos) u where not coalesce((u->>'pending')::boolean, false)) then
+		    raise exception 'the record refuses this undo';
+		  end if;
+		  return new;
+		end $$;
+		create trigger going_test_refuse_undo before update on going_runs for each row execute function going_test_refuse_undo();
+	`); err != nil {
+		t.Fatalf("make the record refuse an undo: %v", err)
+	}
+	if first := rig.browser(t, "alice", http.MethodPost, "/api/v1/going/runs/"+run+"/undo", nil); first.Code != http.StatusInternalServerError {
+		t.Fatalf("the undo whose record failed answered %d %s, want 500", first.Code, first.Body.String())
+	}
+	if _, err := rig.database.Pool.Exec(ctx, `drop trigger going_test_refuse_undo on going_runs; drop function going_test_refuse_undo()`); err != nil {
+		t.Fatalf("let the record take an undo again: %v", err)
+	}
+	if title := rig.issueRead(t, issue).Title; title != before.Title {
+		t.Fatalf("the issue is titled %q after the undo whose record failed, want %q put back", title, before.Title)
+	}
+	undos := rig.record(t, "alice", run).Undos
+	if len(undos) != 1 || undos[0].WriteID != titled || !undos[0].Pending {
+		t.Fatalf("the run keeps the undos %+v, want the title's undo claimed alone, the labels' given up", undos)
+	}
+
+	again := rig.browser(t, "alice", http.MethodPost, "/api/v1/going/runs/"+run+"/undo", nil)
+	if again.Code != http.StatusTooManyRequests || !strings.Contains(again.Body.String(), codeGoingUndoInProgress) {
+		t.Fatalf("the next undo answered %d %s, want 429 %s", again.Code, again.Body.String(), codeGoingUndoInProgress)
+	}
+	if undos := rig.record(t, "alice", run).Undos; len(undos) != 1 || !undos[0].Pending {
+		t.Fatalf("the run keeps the undos %+v after the next undo, want the one claim and nothing undone again", undos)
+	}
+}

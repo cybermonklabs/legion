@@ -512,7 +512,7 @@ func (g *goingRunning) finish(ctx context.Context, reads *goingReadRun, decision
 		// A run whose answer came to nothing - it failed before the model answered or refused -
 		// proposes nothing either.
 		if decision != nil {
-			proposal := goingPropose(*decision, outcome.Final, g.start, g.s.goingHeldBy(ctx))
+			proposal := goingPropose(*decision, outcome.Final, g.start, g.s.goingHoldsBy(ctx))
 			if err := g.emit(going.Event{Name: contracts.GoingEventProposal, Data: proposal}); err != nil {
 				return err
 			}

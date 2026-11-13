@@ -104,6 +104,10 @@ type goingRunWrite struct {
 	// is the undo it gets: the rows of one action may state different undos. It is absent for a
 	// write that never reached a row - one refused before its row was chosen and translated.
 	Undo goingUndoKind `json:"undo,omitempty" enum:"reverse,write_back,close_created,trace"`
+	// AfterUnread is a write that landed and whose value after could not be read: After holds
+	// nothing the write left, so its undo cannot tell what to put back and undoes nothing
+	// (codeGoingUndoAfterUnread).
+	AfterUnread bool `json:"after_unread,omitempty"`
 }
 
 // goingDelivery is one delivery of a message as a send to an agent records it: its state
@@ -432,19 +436,22 @@ func (s *server) recordGoingRunUndo(ctx context.Context, id, authorLogin string,
 		id, authorLogin, string(encoded), undo.WriteID, goingRunsKept.Seconds(), claimedAt)
 }
 
-// releaseGoingRunUndos takes off every pending undo claimed at claimedAt that its request did not
-// record, so the writes it claimed are undoable again at once rather than after goingClaimBound.
-// Like the claim, it marks no Idempotency-Key committed.
-func (s *server) releaseGoingRunUndos(ctx context.Context, id, authorLogin, claimedAt string) error {
+// releaseGoingRunUndos takes off the pending undo of each of writes claimed at claimedAt, the
+// writes its request did not reach, so they are undoable again at once rather than after
+// goingClaimBound. The claim of an undo the request made and could not record is not among them:
+// it stays pending, so no undo makes it again while the request may still be running. Like the
+// claim, it marks no Idempotency-Key committed.
+func (s *server) releaseGoingRunUndos(ctx context.Context, id, authorLogin, claimedAt string, writes []string) error {
+	released := `(` + goingRunUndoPendingAt(3) + ` and u->>'write_id' = any($4::text[]))`
 	return goingReleased(s.appendToGoingRun(store.WithoutBeforeCommit(ctx), `
 		update going_runs r set undos = (
 		  select coalesce(jsonb_agg(u order by n), '[]'::jsonb)
 		  from jsonb_array_elements(r.undos) with ordinality e(u, n)
-		  where not `+goingRunUndoPendingAt(3)+`
+		  where not `+released+`
 		)
 		where r.id = $1::uuid and r.author_login = $2
-		  and exists (select 1 from jsonb_array_elements(r.undos) u where `+goingRunUndoPendingAt(3)+`)`,
-		id, authorLogin, claimedAt))
+		  and exists (select 1 from jsonb_array_elements(r.undos) u where `+released+`)`,
+		id, authorLogin, claimedAt, writes))
 }
 
 // appendToGoingRun runs one append to a run in a transaction of the shared pool, so a keyed

@@ -373,8 +373,12 @@ export function useGoingOperations({
     if (acted !== undefined) {
       sectionLabel = "Operation";
       const actedOffer = offerOf(proposal, acted);
-      const automatic = runIndexes(actedOffer, "auto");
-      if (!ran.has(acted) && (proposal === undefined || automatic.length > 0)) {
+      // The automatic invocations no write of the turn ran yet: the row stays while any is left,
+      // also once the person ran the pick row of the rest.
+      const automatic = runIndexes(actedOffer, "auto").filter(
+        (index) => !ranInvocations.has(`${acted}:${index}`)
+      );
+      if (proposal === undefined || automatic.length > 0) {
         const waiting = stage?.kind === "preparing";
         const label = rowLabel(acted, actedOffer && offerWith(actedOffer, automatic));
         options.push({

@@ -423,6 +423,34 @@ test("a pick of the offered row before any submit runs only the invocations the 
   }
 });
 
+test("after the pick row runs, the operation row stays for the automatic invocations still to run, and the submit runs them", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await ask(user, "astrolabe");
+    stream(decision(true, ["dispatch_issue_update"]), injected, ended);
+    await user.click(await screen.findByRole("option", { name: /^Run issue update on LEGION-4/ }));
+    await waitFor(() => expect(screen.getAllByTestId("going-write-line")).toHaveLength(1));
+    await tick(1000);
+
+    expect(
+      screen.getByRole("option", { name: /^Run issue update on LEGION-3(?! and)/ })
+    ).toHaveAttribute("id", OPERATION_OPTION_ID);
+    await submit(user);
+    await waitFor(() =>
+      expect(sent()).toEqual([
+        { approved: "person", invocation: 1, offer: "dispatch_issue_update" },
+        { approved: "auto", invocation: 0, offer: "dispatch_issue_update" },
+      ])
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("option", { name: /^Run issue update/ })).toBeNull()
+    );
+  } finally {
+    bar.unmount();
+  }
+});
+
 test("with the person's setting on, the confirm step lists only the automatic invocations and confirms only those", async () => {
   settings.mockResolvedValue({ confirm_writes: true });
   const user = userOnFakeClock();

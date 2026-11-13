@@ -181,7 +181,9 @@ func goingBrowserStart(t *testing.T) goingRunStart {
 }
 
 // goingFakeProposal is what a run proposes when a fake decision chose action, about the items the
-// words name, and a fake answer call wrote arguments for it: one invocation per element.
+// words name, and a fake answer call wrote arguments for it: one invocation per element. It reads
+// nothing of the store, so a hand-over or an upload's name runs at once only where the words name
+// it.
 func goingFakeProposal(t *testing.T, start goingRunStart, action string, arguments ...map[string]any) goingProposal {
 	t.Helper()
 	written, err := json.Marshal(map[string][]map[string]any{action: arguments})
@@ -189,21 +191,21 @@ func goingFakeProposal(t *testing.T, start goingRunStart, action string, argumen
 		t.Fatal(err)
 	}
 	return goingPropose(goingDecision{Context: going.ContextNamed, offered: []string{action}},
-		&going.Final{Answer: "Done.", Arguments: string(written)}, start, nil)
+		&going.Final{Answer: "Done.", Arguments: string(written)}, start, goingHolds{})
 }
 
 // proposed records a finished run of login's whose decision chose action, at or above the action
 // threshold where act, and whose proposal is the fake answer's arguments for it, and answers the
-// run's id. The run's words name every item and every hand-over the arguments name, as a person's
-// words do when they ask for a write on those items, so each invocation may run at once
-// (goingAutomatic).
+// run's id. The run's words name every item, every hand-over and every upload's name the
+// arguments name, as a person's words do when they ask for a write on those items, so each
+// invocation may run at once (goingAutomatic).
 func (rig goingWritesRig) proposed(t *testing.T, login string, act bool, action string, arguments ...map[string]any) string {
 	t.Helper()
 	start := goingBrowserStart(t)
 	start.words = "the words of " + action
 	for _, call := range arguments {
 		for argument, value := range call {
-			if goingItemArguments[argument] == "" && !goingHeldArguments[argument] {
+			if goingItemArguments[argument] == "" && !goingHeldArguments[argument] && goingUploadNames[action] != argument {
 				continue
 			}
 			values := []any{value}
@@ -536,7 +538,7 @@ func TestEveryGoingRowRefusesAnActionTheCatalogueDoesNotHoldWithNoRequest(t *tes
 	}
 	start := goingBrowserStart(t)
 	proposal := goingPropose(goingDecision{Context: going.ContextNamed, offered: []string{"dispatch_paint_widget"}},
-		&going.Final{Arguments: `{"dispatch_paint_widget":[{"widget":"7"}]}`}, start, nil)
+		&going.Final{Arguments: `{"dispatch_paint_widget":[{"widget":"7"}]}`}, start, goingHolds{})
 	if len(proposal.Offers) != 0 {
 		t.Fatalf("the proposal offers %+v, want nothing for an action the catalogue does not hold", proposal.Offers)
 	}
@@ -776,7 +778,7 @@ func TestGoingWriteThatHandsThePagesIssueOnAsOnlyStoredTextAskedIsOffered(t *tes
 			t.Fatal(err)
 		}
 		proposal := goingPropose(goingDecision{Context: going.ContextPage, offered: []string{"dispatch_issue_update"}},
-			&going.Final{Answer: "Done.", Arguments: string(written)}, start, rig.served.goingHeldBy(ctx))
+			&going.Final{Answer: "Done.", Arguments: string(written)}, start, rig.served.goingHoldsBy(ctx))
 		if len(proposal.Offers) != 1 || len(proposal.Offers[0].Invocations) != 1 {
 			t.Fatalf("the run proposed %+v, want the one update", proposal)
 		}
@@ -1191,6 +1193,159 @@ func TestGoingWritesOfAnInvocationTheRouteRefusedRunAgain(t *testing.T) {
 	writes := rig.record(t, "alice", run).Writes
 	if len(writes) != 2 || writes[0].Outcome.OK || !writes[1].Outcome.OK || writes[1].ID != line.WriteID {
 		t.Fatalf("the run keeps %+v, want the refusal and then the claim", writes)
+	}
+}
+
+// goingDocumentVersions is how many versions the document of issue whose slug is slug holds.
+func (rig goingWritesRig) goingDocumentVersions(t *testing.T, issue, slug string) int {
+	t.Helper()
+	var versions int
+	if err := rig.database.Pool.QueryRow(context.Background(), `
+		select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id
+		where a.issue_key = $1 and a.slug = $2`, issue, slug).Scan(&versions); err != nil {
+		t.Fatalf("count the versions of %s's %s: %v", issue, slug, err)
+	}
+	return versions
+}
+
+// TestGoingWriteOfAnUploadOverADocumentOnlyStoredTextNamedIsOffered (review round 2, finding A):
+// on the page's issue, which holds a document named notes, an upload the answer named notes -
+// a name the words never write - would write that document's next version, so the proposal marks
+// it an offer and a write of it sent at once is refused, 409 GOING_NOT_AUTOMATIC, writing no
+// version; an upload under a name the issue holds no document of runs at once; and the person
+// picking the upload over notes runs it, its line reading the version it wrote over as the value
+// before.
+func TestGoingWriteOfAnUploadOverADocumentOnlyStoredTextNamedIsOffered(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Kept notes", "The spec.\n").Key
+	rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]any{"name": "notes", "content": "# Notes\n\nKept.\n"})
+	var notes string
+	if err := rig.database.Pool.QueryRow(context.Background(),
+		`select id::text from artifacts where issue_key = $1 and slug = 'notes'`, issue).Scan(&notes); err != nil {
+		t.Fatalf("read the notes' id: %v", err)
+	}
+	propose := func(t *testing.T, name string) (string, goingInvocation) {
+		t.Helper()
+		start := goingBrowserStart(t)
+		start.words = "save this as a doc"
+		start.chip = &goingContext{Path: "/issues/" + issue, Project: "DEMO", Issue: issue}
+		written, err := json.Marshal(map[string][]map[string]any{"dispatch_artifact": {{"issue": issue, "name": name, "content": "# Notes\n\nWritten by the model.\n"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		proposal := goingPropose(goingDecision{Context: going.ContextPage, offered: []string{"dispatch_artifact"}},
+			&going.Final{Answer: "Saved.", Arguments: string(written)}, start, rig.served.goingHoldsBy(context.Background()))
+		if len(proposal.Offers) != 1 || len(proposal.Offers[0].Invocations) != 1 {
+			t.Fatalf("the run proposed %+v, want the one upload", proposal)
+		}
+		return rig.recorded(t, "alice", true, "dispatch_artifact", start.words, proposal), proposal.Offers[0].Invocations[0]
+	}
+
+	over, invocation := propose(t, "notes")
+	if invocation.Automatic {
+		t.Fatal("an upload over the issue's notes, a name the words never write, is automatic")
+	}
+	rig.goingWriteRefusedNotAutomatic(t, over, "dispatch_artifact", nil)
+	if versions := rig.goingDocumentVersions(t, issue, "notes"); versions != 1 {
+		t.Fatalf("the notes hold %d versions after the refused upload, want 1", versions)
+	}
+
+	fresh, invocation := propose(t, "summary")
+	if !invocation.Automatic {
+		t.Fatal("an upload under a name the issue holds no document of is not automatic")
+	}
+	rig.wrote(t, "alice", fresh, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": goingApprovedAuto})
+
+	line := rig.wrote(t, "alice", over, map[string]any{"offer": "dispatch_artifact", "invocation": 0, "approved": goingApprovedPerson})
+	if !jsonEqual(t, line.Before, `{"id":"`+notes+`","name":"notes","version":1}`) || line.Item != notes {
+		t.Fatalf("the person's upload over the notes answered %+v, want the notes at version 1 before it", line)
+	}
+	if versions := rig.goingDocumentVersions(t, issue, "notes"); versions != 2 {
+		t.Fatalf("the notes hold %d versions after the person's upload, want 2", versions)
+	}
+}
+
+// TestGoingWritesOfAnInvocationRefusedForACauseThatClearsRunAgainUnderTheSameKey (review round 2,
+// finding B): a write whose route answered a status the keyed layer keeps no answer for - a 503 or
+// a 429 - made nothing, so its refusal's record does not mark the request's Idempotency-Key
+// committed: the write store's retry under the same key writes the invocation, and the run keeps
+// the refusal and then the write.
+func TestGoingWritesOfAnInvocationRefusedForACauseThatClearsRunAgainUnderTheSameKey(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "The project's first", "The spec.\n")
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	for _, tc := range []struct {
+		status int
+		code   string
+	}{
+		{http.StatusServiceUnavailable, "DOC_SERVICE_UNAVAILABLE"},
+		{http.StatusTooManyRequests, "EDIT_QUEUE_FULL"},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			issue := rig.issue(t, "Refused "+tc.code)
+			body := "Written once " + tc.code + " cleared."
+			run := rig.proposed(t, "alice", true, "dispatch_comment", map[string]any{"issue": issue, "body": body})
+			refused := false
+			rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments") && !refused {
+					refused = true
+					w.Header().Set("Retry-After", "1")
+					writeError(w, tc.code, tc.status, "try again shortly")
+					return
+				}
+				inner.ServeHTTP(w, r)
+			})
+			write := map[string]any{"offer": "dispatch_comment", "invocation": 0, "approved": goingApprovedPerson}
+			key := "press-" + tc.code
+			if first := rig.keyedWrite(t, run, key, write); first.Code != tc.status {
+				t.Fatalf("the write the route refused answered %d %s, want %d", first.Code, first.Body.String(), tc.status)
+			}
+			line := goingLineOf(t, rig.keyedWrite(t, run, key, write))
+			if count := rig.goingCommentsSaying(t, issue, body); count != 1 {
+				t.Fatalf("the issue holds %d comments saying %q after the retry, want 1", count, body)
+			}
+			writes := rig.record(t, "alice", run).Writes
+			if len(writes) != 2 || writes[0].Outcome.OK || writes[0].Outcome.Status != tc.status || !writes[1].Outcome.OK || writes[1].ID != line.WriteID {
+				t.Fatalf("the run keeps %+v, want the refusal and then the write", writes)
+			}
+		})
+	}
+}
+
+// TestGoingWriteWhoseValueAfterWasNotReadIsNeverUndoneAsNothing (review round 2, finding F): a
+// write that landed and whose read after failed is recorded as such, and its undo is refused,
+// 409 GOING_UNDO_AFTER_UNREAD, putting nothing back, rather than answered ok with nothing undone.
+func TestGoingWriteWhoseValueAfterWasNotReadIsNeverUndoneAsNothing(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Read after, failed", "The spec.\n").Key
+	run := rig.proposed(t, "alice", false, "dispatch_issue_update", map[string]any{"issue": issue, "status": "in_progress"})
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	patched, unread := false, false
+	rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && patched && !unread {
+			unread = true
+			writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")
+			return
+		}
+		patched = patched || r.Method == http.MethodPatch
+		inner.ServeHTTP(w, r)
+	})
+	line := rig.wrote(t, "alice", run, map[string]any{"offer": "dispatch_issue_update", "invocation": 0, "approved": goingApprovedPerson})
+	rig.served.inProcess = inner
+	if !line.Outcome.OK || !unread {
+		t.Fatalf("the write answered %+v with its read after failed=%v, want it landed", line, unread)
+	}
+	if writes := rig.record(t, "alice", run).Writes; len(writes) != 1 || !writes[0].AfterUnread {
+		t.Fatalf("the run keeps %+v, want the write marked with its value after unread", writes)
+	}
+	undone := oneLine(t, rig.undo(t, "alice", run, nil), false)
+	if undone.Outcome.Status != http.StatusConflict || undone.Outcome.Code != codeGoingUndoAfterUnread || !goingUndoSettles(undone.Outcome) {
+		t.Fatalf("the undo answered %+v, want 409 %s, settled", undone.Outcome, codeGoingUndoAfterUnread)
+	}
+	if status := rig.issueRead(t, issue).Status; status != "in_progress" {
+		t.Fatalf("the issue is %s after the refused undo, want the write's in_progress left in place", status)
 	}
 }
 

@@ -340,10 +340,10 @@ type goingMissingArgument struct {
 // decision did not offer - one outside the catalogue among them - is no part of the proposal and
 // so never runs. With no structured reply (final nil), or no arguments for an
 // action, the action is offered on what the page and one prompted argument fill. Each invocation
-// is marked automatic by what the words name and what held says each issue holds now
-// (goingAutomatic); a nil held reads no issue, so a hand-over runs at once only where the words
-// name it.
-func goingPropose(decision goingDecision, final *going.Final, start goingRunStart, held goingHeld) goingProposal {
+// is marked automatic by what the words name and what holds reads of the store now
+// (goingAutomatic); a holds that reads nothing leaves a hand-over and an upload's name to run at
+// once only where the words name it.
+func goingPropose(decision goingDecision, final *going.Final, start goingRunStart, holds goingHolds) goingProposal {
 	written := map[string]json.RawMessage{}
 	if final != nil && final.Arguments != "" {
 		if err := json.Unmarshal([]byte(final.Arguments), &written); err != nil {
@@ -383,7 +383,7 @@ func goingPropose(decision goingDecision, final *going.Final, start goingRunStar
 		offer := goingOffer{Action: name, Invocations: []goingInvocation{}}
 		for _, arguments := range calls {
 			if invocation, kept := goingInvocationOf(action, arguments, chip, start.session); kept {
-				invocation.Automatic = goingAutomatic(invocation.Arguments, chip, named, held)
+				invocation.Automatic = goingAutomatic(name, invocation.Arguments, chip, start.session, named, holds)
 				offer.Invocations = append(offer.Invocations, invocation)
 			}
 		}

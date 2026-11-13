@@ -2,10 +2,12 @@ package api
 
 // going_named.go holds which invocations of a proposal may run at once, on submit (goingAutomatic):
 // only one whose every item the page's chip holds or the person's own typed words name, read as
-// Dispatch reads references in text (goingNamedBy), and whose every hand-over of the work - its
-// route, its assignee - the words name or leaves as the issue holds it. The answer model writes
-// the invocations from items any person or agent wrote, so anything only that text names is an
-// offer the person picks.
+// Dispatch reads references in text (goingNamedBy), whose every hand-over of the work - its
+// route, its assignee - the words name or leaves as the issue holds it, and whose upload makes a
+// document rather than writing over one only stored text named. The answer model writes the
+// invocations from items any person or agent wrote, so anything only that text names is an offer
+// the person picks. Every argument of the catalogue is classed here, and one that is not runs
+// nothing at once.
 
 import (
 	"context"
@@ -62,9 +64,52 @@ var goingItemArguments = func() map[string]string {
 // holds it (goingHeld).
 var goingHeldArguments = map[string]bool{"route": true, "assignee": true}
 
+// goingContentArguments are the arguments that name no item of Dispatch's: what a write says or
+// sets on the item its other arguments name - a title, a status, a body, a document's content and
+// its edits, an ask's options, a result's fields - and what places it there: a passage of the
+// issue's own document (anchor, quote), a reference written into its text or refused (ref), a
+// file path the bar refuses, a handoff's phase, which appends that phase's next version and
+// overwrites nothing, and a new project's key, which a key already taken refuses. An upload's
+// name is one of them for every action but the upload's own (goingUploadNames).
+var goingContentArguments = map[string]bool{
+	"action": true, "anchor": true, "body": true, "check": true, "commit": true, "components": true,
+	"content": true, "delivery": true, "excluded": true, "external": true, "external_links": true,
+	"failed": true, "force": true, "images": true, "include_verification": true, "key": true,
+	"kind": true, "labels": true, "multiple": true, "name": true, "negative_control": true,
+	"observed": true, "occurrence": true, "ops": true, "options": true, "path": true, "phase": true,
+	"precondition": true, "priority": true, "question": true, "quote": true, "reason": true,
+	"ref": true, "release": true, "replace_with": true, "repo": true, "role": true, "run": true,
+	"screenshots": true, "skipped": true, "spec": true, "status": true, "summary": true,
+	"surface": true, "title": true, "turn": true, "urgency": true, "verdict": true, "version": true,
+}
+
+// goingUploadNames is the argument of each action that names the document its upload writes,
+// by action: an upload whose name is the name or the slug of a document its owner already holds
+// is that document's next version (artifactByNameOrSlugSQL), so the name picks which document a
+// create writes over (goingNamed.uploads).
+var goingUploadNames = map[string]string{"dispatch_artifact": "name"}
+
 // goingHeld is what an issue holds now of goingHeldArguments, by argument, "" for none, and false
 // for an issue it could not read.
 type goingHeld func(issue string) (map[string]string, bool)
+
+// goingDocumentHeld reports whether owner holds a document whose name or slug name is, as an
+// upload finds one, and false for a read that failed.
+type goingDocumentHeld func(owner artifactTarget, name string) (held, read bool)
+
+// goingHolds is what the store holds now that a proposal's invocations are marked automatic
+// against: what each issue holds of its hand-overs (issue), and whether an upload's owner holds
+// a document of its name (document). A nil read reads nothing, so what it would have answered has
+// to be named in the words.
+type goingHolds struct {
+	issue    goingHeld
+	document goingDocumentHeld
+}
+
+// goingHoldsBy is the store's reads of goingHolds, each made once for each thing asked about.
+func (s *server) goingHoldsBy(ctx context.Context) goingHolds {
+	return goingHolds{issue: s.goingHeldBy(ctx), document: s.goingDocumentHeldBy(ctx)}
+}
 
 // goingHeldBy reads what each issue holds of goingHeldArguments from the store, once for each
 // issue asked about. A read that fails holds nothing, so the argument has to be named in the
@@ -91,22 +136,53 @@ func (s *server) goingHeldBy(ctx context.Context) goingHeld {
 	}
 }
 
-// goingAutomatic reports whether an invocation may run at once, on submit: only where every item
-// it names (goingItemArguments, each text and each text of a list) is the chip's issue or project
-// - chip is nil where the decision did not read the words as about the page - or is named in the
-// person's own typed words (goingNamed.names), and every hand-over it makes (goingHeldArguments)
-// is named in the words or leaves the issue as it is (goingNamed.holds). The one argument the bar
-// asks the person for is not among the arguments here: what the person fills is theirs.
-func goingAutomatic(arguments map[string]any, chip *goingContext, named goingNamed, held goingHeld) bool {
+// goingDocumentHeldBy reads from the store whether an owner holds a document of a name, by the
+// lookup the upload itself makes (lookupArtifactByNameOrSlug). A read that fails is logged and
+// answered false, so the upload runs at once only where the words write its name.
+func (s *server) goingDocumentHeldBy(ctx context.Context) goingDocumentHeld {
+	return func(owner artifactTarget, name string) (bool, bool) {
+		_, err := lookupArtifactByNameOrSlug(ctx, s.deps.Store.Pool, owner, name)
+		switch {
+		case err == nil:
+			return true, true
+		case errors.Is(err, pgx.ErrNoRows):
+			return false, true
+		}
+		slog.Warn("dispatch going: read whether an upload's owner holds a document of its name", "name", name, "error", err)
+		return false, false
+	}
+}
+
+// goingAutomatic reports whether an invocation of action may run at once, on submit: only where
+// every item it names (goingItemArguments, each text and each text of a list) is the chip's issue
+// or project - chip is nil where the decision did not read the words as about the page - or is
+// named in the person's own typed words (goingNamed.names), every hand-over it makes
+// (goingHeldArguments) is named in the words or leaves the issue as it is (goingNamed.holds), and
+// an upload's name (goingUploadNames) makes a document or names one the words write
+// (goingNamed.uploads); session is the caller's own, which owns an upload naming no issue and no
+// project. An argument none of these lists nor goingContentArguments classes is not automatic:
+// what an argument names is never guessed. The one argument the bar asks the person for is not
+// among the arguments here: what the person fills is theirs.
+func goingAutomatic(action string, arguments map[string]any, chip *goingContext, session string, named goingNamed, holds goingHolds) bool {
 	for argument, value := range arguments {
+		if upload, uploads := goingUploadNames[action]; uploads && upload == argument {
+			name, _ := value.(string)
+			if !named.uploads(name, arguments, session, holds.document) {
+				return false
+			}
+			continue
+		}
 		if goingHeldArguments[argument] {
-			if !named.holds(argument, value, arguments, held) {
+			if !named.holds(argument, value, arguments, holds.issue) {
 				return false
 			}
 			continue
 		}
 		kind, names := goingItemArguments[argument]
 		if !names {
+			if !goingContentArguments[argument] {
+				return false
+			}
 			continue
 		}
 		values := []any{value}
@@ -255,6 +331,37 @@ func (n goingNamed) holds(argument string, value any, arguments map[string]any, 
 	}
 	current, read := held(issue)
 	return read && current[argument] == given
+}
+
+// uploads reports whether an upload under name may run at once: the words write the name
+// (goingWordsName), so the person asked for that document whether its owner holds one or not, or
+// the owner the upload reaches (goingUploadOwner) holds no document whose name or slug it is, so
+// the upload makes one. A name the owner already holds that only stored text wrote would write
+// that document's next version, so it is an offer; so is one whose owner could not be read.
+func (n goingNamed) uploads(name string, arguments map[string]any, session string, document goingDocumentHeld) bool {
+	name = strings.TrimSpace(name)
+	if goingWordsName(n.words, name) {
+		return true
+	}
+	owner, known := goingUploadOwner(arguments, session)
+	if !known || document == nil {
+		return false
+	}
+	held, read := document(owner, name)
+	return read && !held
+}
+
+// goingUploadOwner is the owner an upload's arguments reach, as its rows are tried in order: the
+// issue it names, else the project, else the caller's own session, each key in the upper case
+// every key is spelled in; false where it names none and the caller proved no session.
+func goingUploadOwner(arguments map[string]any, session string) (artifactTarget, bool) {
+	if issue := strings.ToUpper(goingText(arguments, "issue")); issue != "" {
+		return artifactTarget{IssueKey: &issue}, true
+	}
+	if project := strings.ToUpper(goingText(arguments, "project")); project != "" {
+		return artifactTarget{Project: project}, true
+	}
+	return artifactTarget{Session: session}, session != ""
 }
 
 // goingIDOf is an item's id as the words and an argument are compared by, and whether value is an

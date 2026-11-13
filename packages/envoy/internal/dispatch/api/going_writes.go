@@ -34,6 +34,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // goingCredentialHeaders are the only headers of the caller's request an in-process write
@@ -344,9 +345,11 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 	after, err := observer.observe(ctx, prepared, answer, before)
 	if err != nil {
 		// The write landed; only the read back of it failed, which the record says rather than
-		// losing the write, in the words goingFailed gives it.
+		// losing the write, in the words goingFailed gives it, and marks, so its undo does not
+		// read the value it never read as nothing to put back.
 		after = goingObservation{target: before.target, fields: before.fields, issue: before.issue}
 		claim.write.Outcome.Message = "the write landed and the value after it could not be read: " + goingFailed(err).Message
+		claim.write.AfterUnread = true
 	}
 	claim.write.Target, claim.write.Fields = cmp.Or(after.target, before.target), after.fields
 	if len(claim.write.Fields) == 0 {
@@ -426,12 +429,17 @@ func (c goingWriteClaim) record(issue string) bool {
 // write's outcome; by its own schema or translation, 400 GOING_ARGUMENTS, which no route saw and
 // the run does not record; or by the server's own failure. Every one but a route's refusal made
 // nothing the run records, so its claim is given up and the invocation may be written again.
+// A refusal's record marks no Idempotency-Key committed (store.WithoutBeforeCommit): it makes
+// nothing a repeat must not make again, and a write the route made before it refused marked the
+// key in its own transaction. So a refusal the keyed layer keeps no answer for - a 5xx, a 401, a
+// 408 or a 429 (storedStatus) - leaves the key free, and a repeat under it writes again.
 func (c goingWriteClaim) refuse(before goingObservation, err error) {
 	var refusal goingRefusal
 	if errors.As(err, &refusal) {
 		c.write.Target, c.write.Fields = before.target, before.fields
 		c.write.Before, c.write.After = goingJSONOrNull(before.value), json.RawMessage("null")
 		c.write.Outcome = refusal.outcome()
+		c.ctx = store.WithoutBeforeCommit(c.ctx)
 		if c.record(before.issue) {
 			refusal.write(c.w)
 		}

@@ -13,7 +13,8 @@ body: |-
   `POST /api/v1/going/runs/{id}/writes` runs one offered write as the caller and records the
   value before and after it, and `POST /api/v1/going/runs/{id}/undo` undoes a turn.
   An offered write runs at once only where every item it names is the page's or named in the
-  person's own words; any other is an offer the person picks (`409 GOING_NOT_AUTOMATIC` for `auto`),
+  person's own words, and an upload over a document its owner already holds only where the words
+  write its name; any other is an offer the person picks (`409 GOING_NOT_AUTOMATIC` for `auto`),
   and each write is claimed on the run once, so a second request while it runs answers
   `429 GOING_WRITE_IN_PROGRESS`.
   `GET` and `PUT /api/v1/me/going/settings` hold a person's `confirm_writes`,
