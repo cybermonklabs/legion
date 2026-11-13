@@ -26,6 +26,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
@@ -462,7 +463,14 @@ export function AgentTokensSection(): ReactNode {
       {createToken.isError ? (
         <div className="mt-4">
           <QueryError
-            message="Couldn't create the agent token."
+            message={
+              createToken.error instanceof SendStoppedError
+                ? stoppedWriteNote("the new agent token", "made", {
+                    again: "Retry",
+                    stopped: createToken.error,
+                  })
+                : "Couldn't create the agent token."
+            }
             onRetry={createToken.retry}
             retrying={createToken.isPending}
           />

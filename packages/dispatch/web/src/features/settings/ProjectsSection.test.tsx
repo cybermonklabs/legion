@@ -8,6 +8,7 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Project } from "../../api/types";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ProjectsSection } from "./ProjectsSection";
 
 const core: Project = {
@@ -116,6 +117,98 @@ test("Retry after two stopped saves of the same default assignee goes under the 
     await tick(0);
     expect(putDefault).toHaveBeenCalledTimes(sentBeforeRetry + 1);
     expect(putDefault.mock.calls.at(-1)?.[2]?.key).toBe(secondKey);
+  } finally {
+    realClock();
+    cleanup();
+    queryClient.clear();
+    listProjects.mockRestore();
+    listDefaults.mockRestore();
+    listUsers.mockRestore();
+    putDefault.mockRestore();
+  }
+});
+
+// A create the reader stopped may have made the project, so the form does not say it failed. Its
+// Retry makes that create again under its key (`retryLast`, then `retry`), and the form says what
+// that does.
+test("a new project the reader stopped says Retry makes it again, not that it failed", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
+  const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
+  const createProject = spyOn(api, "createProject").mockRejectedValue(
+    new NetworkError("/api/v1/projects", new TypeError("Failed to fetch"))
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ProjectsSection />
+      </QueryClientProvider>
+    );
+    await screen.findByRole("cell", { name: "CORE" });
+    await user.click(screen.getByLabelText("Key"));
+    await user.paste("qa");
+    await user.click(screen.getByLabelText("Name"));
+    await user.paste("Quality");
+    await user.click(screen.getByRole("button", { name: "New project" }));
+    await stopTheLateWrite(queryClient);
+
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the new project", "made", {
+        again: "Retry",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    cleanup();
+    queryClient.clear();
+    listProjects.mockRestore();
+    listDefaults.mockRestore();
+    createProject.mockRestore();
+  }
+});
+
+// The row reads its refusal from the mutation cache, not from the write's own result, so a save
+// the reader stopped reaches it by that road: the row says the save may have been made and what
+// its Retry does, not that it failed.
+test("a default assignee save the reader stopped says Retry makes it again, not that it failed", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
+  const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice@example.com" }]);
+  const putDefault = spyOn(api, "putProjectDefaultAssignee").mockRejectedValue(
+    new NetworkError("/api/v1/projects/CORE/default-assignee", new TypeError("Failed to fetch"))
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ProjectsSection />
+      </QueryClientProvider>
+    );
+    const control = await screen.findByRole<HTMLSelectElement>("combobox", {
+      name: "Default assignee of CORE",
+    });
+    await waitFor(() => expect(control.disabled).toBe(false));
+    await user.hover(control);
+    await screen.findByRole("option", { name: "alice@example.com" });
+    await user.selectOptions(control, "alice@example.com");
+    await stopTheLateWrite(queryClient);
+
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the default assignee", "saved", {
+        again: "Retry",
+        stopped: new SendStoppedError(),
+      })
+    );
   } finally {
     realClock();
     cleanup();

@@ -22,6 +22,7 @@ import { credentialPendingQuery } from "../credentials/pending";
 import { SignInsSection } from "../credentials/SignInsSection";
 import { DeliverySettingsForm } from "../delivery/DeliverySettingsForm";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentTokensSection } from "./AgentTokensSection";
 import { ArchitectureSourcesSection } from "./ArchitectureSourcesSection";
@@ -45,7 +46,8 @@ interface MappingInput {
 }
 
 /** A mapping write the server refused or never answered, with what the page says about it: the
- *  server's reason when it gave one (a mapping issues still name, say), else a generic line. */
+ *  server's reason when it gave one (a mapping issues still name, say), what a write the reader
+ *  stopped may have done and what Retry does with it (`retry`), else a generic line. */
 type FailedAction = { readonly kind: "put" | "delete"; readonly message: string };
 
 /** The mappings with `mapping` in place of its row, and, when it is its project's default, every
@@ -86,7 +88,13 @@ export function SettingsPage(): ReactNode {
       queryClient.setQueryData(["repo-projects"], context?.previous);
       setFailedAction({
         kind: "put",
-        message: apiErrorMessage(error, `Couldn't save ${variables.repo}.`),
+        message:
+          error instanceof SendStoppedError
+            ? stoppedWriteNote(`the mapping of ${variables.repo}`, "saved", {
+                again: "Retry",
+                stopped: error,
+              })
+            : apiErrorMessage(error, `Couldn't save ${variables.repo}.`),
       });
     },
     onMutate: async (variables) => {
@@ -137,7 +145,13 @@ export function SettingsPage(): ReactNode {
       queryClient.setQueryData(["repo-projects"], context?.previous);
       setFailedAction({
         kind: "delete",
-        message: apiErrorMessage(error, `Couldn't delete ${repo}.`),
+        message:
+          error instanceof SendStoppedError
+            ? stoppedWriteNote(`the removal of ${repo}'s mapping`, "made", {
+                again: "Retry",
+                stopped: error,
+              })
+            : apiErrorMessage(error, `Couldn't delete ${repo}.`),
       });
     },
     onMutate: async (repo) => {

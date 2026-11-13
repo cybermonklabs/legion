@@ -19,6 +19,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { type KeyedPress, useKeyedWrite } from "../writes/useKeyedWrite";
 import {
@@ -206,7 +207,14 @@ export function ProjectsSection(): ReactNode {
           {createProject.isError ? (
             <div className="mt-4">
               <QueryError
-                message={apiErrorMessage(createProject.error, "Couldn't create the project.")}
+                message={
+                  createProject.error instanceof SendStoppedError
+                    ? stoppedWriteNote("the new project", "made", {
+                        again: "Retry",
+                        stopped: createProject.error,
+                      })
+                    : apiErrorMessage(createProject.error, "Couldn't create the project.")
+                }
                 onRetry={() => projectSubmitGuard.retryLast(createProject)}
                 retrying={createProject.isPending}
               />
@@ -250,7 +258,14 @@ function DefaultAssigneeCell({
       {write.error === null ? null : (
         <div className="mt-2">
           <QueryError
-            message={apiErrorMessage(write.error, "Couldn't update the default assignee.")}
+            message={
+              write.error instanceof SendStoppedError
+                ? stoppedWriteNote("the default assignee", "saved", {
+                    again: "Retry",
+                    stopped: write.error,
+                  })
+                : apiErrorMessage(write.error, "Couldn't update the default assignee.")
+            }
             onRetry={write.retry}
             retrying={write.pending}
           />

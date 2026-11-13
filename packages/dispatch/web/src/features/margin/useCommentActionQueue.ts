@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 
 import { api, apiErrorCodeIn, apiErrorMessage, type WriteBounds } from "../../api/client";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 export type CommentAction = "accept" | "reject" | "resolve" | "reopen";
@@ -27,10 +28,15 @@ const permanentRefusals = new Set([
   "INVALID_OP",
 ]);
 
+/** What the card says of a failed action. One the reader stopped may have been saved, and the
+ *  card's Retry makes it again under its key (`retryItem`). */
 function actionFailure(id: string, error: Error): CommentActionFailure {
   return {
     id,
-    message: apiErrorMessage(error, "Could not save this action."),
+    message:
+      error instanceof SendStoppedError
+        ? stoppedWriteNote("this action", "saved", { again: "Retry", stopped: error })
+        : apiErrorMessage(error, "Could not save this action."),
     retryable: !apiErrorCodeIn(error, permanentRefusals),
   };
 }

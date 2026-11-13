@@ -162,6 +162,34 @@ export function retriesUnderItsKey(refusal: Error | undefined): boolean {
   return refusal instanceof SendStoppedError && !(refusal instanceof SendExpiredError);
 }
 
+/** What a surface's control does with a write the reader stopped (`stoppedWriteNote`): `again`
+ *  names a control that makes that very press again (`retry`, `again`), and `anew` says what a
+ *  control that is a press of its own sends (`mutate`, under a key of its own). */
+export type StoppedControl =
+  | { readonly again: string; readonly stopped: SendStoppedError }
+  | { readonly anew: string };
+
+/**
+ * What a surface says of its write the reader stopped, in place of a failure it cannot know of:
+ * Dispatch has not confirmed `what`, which may have been `made`, and what pressing the surface's
+ * control does now. A control that makes the stopped press again asks under its key while
+ * Dispatch holds it (`sameKeyRetryNote`), and makes a new write once Dispatch has forgotten it
+ * (`expiredRetryNote`), as `retry` does then. A control that is a press of its own says what it
+ * sends. `SendStoppedError`'s own words are a composer's, of a message and its Retry, so a form
+ * says these instead.
+ */
+export function stoppedWriteNote(what: string, made: string, control: StoppedControl): string {
+  const unconfirmed = `Dispatch has not confirmed ${what}: it may have been ${made}.`;
+  if ("anew" in control) {
+    return `${unconfirmed} ${control.anew}`;
+  }
+  const pressed = control.again === "Retry" ? "" : ` Pressing ${control.again} again retries it.`;
+  const note = retriesUnderItsKey(control.stopped)
+    ? sameKeyRetryNote(made)
+    : expiredRetryNote(made);
+  return `${unconfirmed}${pressed} ${note}`;
+}
+
 /** What ended one attempt without Dispatch's verdict, and so makes the write again under its key:
  *  how long to wait first, and whether the page learning Dispatch can be reached again cuts that
  *  wait short. `undefined` for an answer that is Dispatch's verdict, or an error of the page's

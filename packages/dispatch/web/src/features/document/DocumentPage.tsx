@@ -20,6 +20,7 @@ import {
 } from "../refs/routes";
 import { firstHighlightTerm } from "../search/search-model";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { useProjectArtifact } from "./useProjectArtifact";
 
@@ -139,7 +140,14 @@ export function DocumentPage(): ReactNode {
         ) : null}
         {unsubscribe.isError ? (
           <QueryError
-            message="Could not unsubscribe this agent."
+            message={
+              unsubscribe.error instanceof SendStoppedError
+                ? stoppedWriteNote("this agent's unsubscribe", "made", {
+                    again: "Retry",
+                    stopped: unsubscribe.error,
+                  })
+                : "Could not unsubscribe this agent."
+            }
             onRetry={unsubscribe.retry}
             retrying={unsubscribe.isPending}
           />

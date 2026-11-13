@@ -13,7 +13,9 @@ import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { buildIssuePath } from "../refs/routes";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ArtifactHeader } from "./ArtifactHeader";
+import { stoppedCorrection } from "./DocumentWayBack";
 
 function document(overrides: Partial<Artifact> = {}): Artifact {
   return {
@@ -257,6 +259,45 @@ test("a stopped correction that reached Dispatch is not reported as a failed one
   }
 });
 
+// The heading of a page whose correction the reader stopped still shows the title the page read
+// before the press, which may no longer be the title: here the correction had reached Dispatch.
+// So the page reads the document again, and the heading shows the title Dispatch holds, which is
+// what the form's sentence sends the reader to read before pressing Save again.
+test("a stopped correction reads the document again, so the heading shows the title Dispatch holds", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  let stored = document();
+  const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
+    Promise.resolve([stored])
+  );
+  const renameArtifact = spyOn(api, "renameArtifact").mockImplementation((_id, input) => {
+    stored = { ...stored, name: input.name };
+    return Promise.reject(
+      new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed to fetch"))
+    );
+  });
+  const view = renderPage(documentPath);
+  view.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+
+  try {
+    await screen.findByRole("heading", { name: "Lauch notes" });
+    await user.click(screen.getByRole("button", { name: "Correct title" }));
+    await saveTitle(user, "Launch notes");
+    await stopTheLateWrite(view.queryClient);
+
+    expect(screen.getByRole("heading", { name: "Launch notes" })).not.toBeNull();
+    const said = screen
+      .getByRole("form", { name: "Correct title" })
+      .querySelector('[role="alert"]');
+    expect(said?.textContent).toBe(stoppedCorrection("Launch notes"));
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    renameArtifact.mockRestore();
+    realClock();
+  }
+});
+
 // Every name rule is the server's, so its refusal is shown as the sentence it came as.
 test("a refused correction shows the server's own sentence", async () => {
   const user = userEvent.setup();
@@ -395,6 +436,37 @@ test("Remove pressed again after a stopped removal makes that removal again unde
     expect(deleteArtifact.mock.calls.at(-1)?.[1]?.key).toBe(stoppedKey);
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.queryByRole("heading", { name: "Lauch notes" })).toBeNull();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    deleteArtifact.mockRestore();
+    realClock();
+  }
+});
+
+// A removal the reader stopped may have been made, so the row does not say it failed. Remove is
+// its Retry (`retry`), so the row says what a press of Remove does with the stopped removal.
+test("a removal the reader stopped says Remove makes it again, not that it failed", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue([document()]);
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed to fetch"))
+  );
+  const view = renderPage(documentPath);
+  view.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+
+  try {
+    await screen.findByRole("heading", { name: "Lauch notes" });
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await stopTheLateWrite(view.queryClient);
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the removal of “Lauch notes”", "made", {
+        again: "Remove",
+        stopped: new SendStoppedError(),
+      })
+    );
   } finally {
     view.unmount();
     listArtifacts.mockRestore();

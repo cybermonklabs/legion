@@ -9,7 +9,7 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import { SEND_DEADLINE_MS } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import {
   ArtifactDropZone,
@@ -719,6 +719,80 @@ test("a draft's Retry after a stopped upload sends that press's base under its k
     await tick(1_000);
 
     expectTheStoppedPressAgain(uploadArtifact, ownerArtifactText, stopped);
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+    realClock();
+  }
+});
+
+// A press the reader stopped may have stored the file, so the row does not say the upload failed.
+// While that file is the staged one, Upload makes the stopped press again (`confirm`), and the
+// row says so. Once the staged file is let go, uploading it again is a press of its own, under a
+// key of its own, and the row says that instead.
+test("an upload the reader stopped says what Upload does, staged and let go", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
+    markdown: "# Notes\n",
+    token: "sha256:chosen",
+    version: 1,
+  });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
+  const view = renderHarness();
+
+  try {
+    const file = new File(["content"], "notes.md", { type: "text/markdown" });
+    await user.upload(screen.getByLabelText("Upload artifact"), [file]);
+    await tick(0);
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    await stopTheLateWrite(view.queryClient);
+    expect(screen.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the upload", "stored", {
+        again: "Upload",
+        stopped: new SendStoppedError(),
+      })
+    );
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the upload", "stored", {
+        anew: "Uploading the file again is a new upload, which Dispatch may store a second time.",
+      })
+    );
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+    realClock();
+  }
+});
+
+// Under a draft's field the control is Retry, which makes the stopped press again
+// (`DraftUpload.retry`), so the field says what Retry does rather than that the upload failed.
+test("a draft's upload the reader stopped says Retry makes it again, not that it failed", async () => {
+  jest.useFakeTimers();
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
+    markdown: "# Notes\n",
+    token: "sha256:chosen",
+    version: 1,
+  });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
+  const view = renderWith(<DraftHarness />);
+
+  try {
+    const file = new File(["content"], "notes.md", { type: "text/markdown" });
+    // user-event's paste carries text, never the file this field uploads.
+    fireEvent.paste(screen.getByTestId("draft"), { clipboardData: { files: [file] } });
+    // The base is read before the write is made, so the write's own deadline starts here.
+    await tick(1_000);
+    await stopTheLateWrite(view.queryClient);
+
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the upload", "stored", { again: "Retry", stopped: new SendStoppedError() })
+    );
   } finally {
     view.unmount();
     uploadArtifact.mockRestore();

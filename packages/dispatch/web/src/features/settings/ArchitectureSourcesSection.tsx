@@ -19,6 +19,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   ownerRepoPattern,
@@ -276,10 +277,14 @@ export function ArchitectureSourcesSection(): ReactNode {
           {saveSource.isError ? (
             <div className="mt-4">
               <QueryError
-                message={apiErrorMessage(
-                  saveSource.error,
-                  "Couldn't save the architecture source."
-                )}
+                message={
+                  saveSource.error instanceof SendStoppedError
+                    ? stoppedWriteNote("the architecture source", "saved", {
+                        again: "Retry",
+                        stopped: saveSource.error,
+                      })
+                    : apiErrorMessage(saveSource.error, "Couldn't save the architecture source.")
+                }
                 onRetry={() => submitGuard.retryLast(saveSource)}
                 retrying={saveSource.isPending}
               />
@@ -288,7 +293,14 @@ export function ArchitectureSourcesSection(): ReactNode {
           {deleteSource.isError ? (
             <div className="mt-4">
               <QueryError
-                message="Couldn't delete the architecture source."
+                message={
+                  deleteSource.error instanceof SendStoppedError
+                    ? stoppedWriteNote("the removal of the architecture source", "made", {
+                        again: "Retry",
+                        stopped: deleteSource.error,
+                      })
+                    : "Couldn't delete the architecture source."
+                }
                 onRetry={deleteSource.retry}
                 retrying={deleteSource.isPending}
               />
@@ -297,10 +309,17 @@ export function ArchitectureSourcesSection(): ReactNode {
           {refreshSource.isError ? (
             <div className="mt-4">
               <QueryError
-                message={apiErrorMessage(
-                  refreshSource.error,
-                  "Couldn't refresh the architecture source."
-                )}
+                message={
+                  refreshSource.error instanceof SendStoppedError
+                    ? stoppedWriteNote("the refresh of the architecture source", "made", {
+                        again: "Retry",
+                        stopped: refreshSource.error,
+                      })
+                    : apiErrorMessage(
+                        refreshSource.error,
+                        "Couldn't refresh the architecture source."
+                      )
+                }
                 onRetry={refreshSource.retry}
                 retrying={refreshSource.isPending}
               />

@@ -11,6 +11,7 @@ import { RouteReachUnknownMarker, UnreachableRouteMarker } from "../issue/RouteR
 import { UnsubscribeDialog } from "../issue/UnsubscribeDialog";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/SessionChip";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 const removeAskFollower = (askId: string, sessionId: string, bounds: WriteBounds): Promise<void> =>
@@ -427,7 +428,14 @@ export function AskRecipients({
       {unfollow.isError ? (
         <div className="mt-2">
           <QueryError
-            message="Could not unfollow."
+            message={
+              unfollow.error instanceof SendStoppedError
+                ? stoppedWriteNote("the unfollow", "made", {
+                    again: "Retry",
+                    stopped: unfollow.error,
+                  })
+                : "Could not unfollow."
+            }
             onRetry={unfollow.retry}
             retrying={unfollow.isPending}
           />
@@ -436,7 +444,14 @@ export function AskRecipients({
       {unsubscribe.isError ? (
         <div className="mt-2">
           <QueryError
-            message="Could not unsubscribe."
+            message={
+              unsubscribe.error instanceof SendStoppedError
+                ? stoppedWriteNote("the unsubscribe", "made", {
+                    again: "Retry",
+                    stopped: unsubscribe.error,
+                  })
+                : "Could not unsubscribe."
+            }
             onRetry={unsubscribe.retry}
             retrying={unsubscribe.isPending}
           />

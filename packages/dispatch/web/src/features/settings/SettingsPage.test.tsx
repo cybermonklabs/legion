@@ -1,21 +1,28 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { api, NetworkError } from "../../api/client";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { SettingsPage } from "./SettingsPage";
 
-function renderPage() {
+/** Renders the page, and hands back its query client, which a case that stops a late write
+ *  reaches as the shell's indicator does. */
+function renderPage(): QueryClient {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <SettingsPage />
       </QueryClientProvider>
     </MemoryRouter>
   );
+  return queryClient;
 }
 
 /** Every query `SettingsPage` and its child sections issue besides the credential pending and
@@ -231,6 +238,61 @@ test("a grant with no expiry says it ends when its session ends", async () => {
     cleanup();
     getCredentialPending.mockRestore();
     getCredentialGrants.mockRestore();
+    for (const spy of Object.values(unrelated)) {
+      spy.mockRestore();
+    }
+  }
+});
+
+// A mapping's removal the reader stopped may have been made. The page keeps what it says of a
+// failed mapping write from the write's own error handler (`onError`), so a stopped one is told
+// apart there: the page says what Retry does with it, not that the removal failed.
+test("a mapping removal the reader stopped says Retry makes it again, not that it failed", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const unrelated = stubUnrelatedQueries();
+  unrelated.listProjects.mockResolvedValue([
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key: "CORE",
+      name: "Core",
+      open_asks: 0,
+    },
+  ]);
+  unrelated.listRepoProjects.mockResolvedValue([
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      created_by: { id: "alice", kind: "user" },
+      default: true,
+      project: "CORE",
+      renamed_to: null,
+      repo: "acme/api",
+    },
+  ]);
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
+  const deleteRepoProject = spyOn(api, "deleteRepoProject").mockRejectedValue(
+    new NetworkError("/api/v1/repo-projects/acme/api", new TypeError("Failed to fetch"))
+  );
+
+  try {
+    const queryClient = renderPage();
+    queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+    await user.click(await screen.findByRole("button", { name: "Delete mapping for acme/api" }));
+    await stopTheLateWrite(queryClient);
+
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the removal of acme/api's mapping", "made", {
+        again: "Retry",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    cleanup();
+    getCredentialPending.mockRestore();
+    deleteRepoProject.mockRestore();
     for (const spy of Object.values(unrelated)) {
       spy.mockRestore();
     }

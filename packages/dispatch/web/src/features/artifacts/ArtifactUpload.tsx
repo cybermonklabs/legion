@@ -37,7 +37,7 @@ import {
   textMutedOnSurfaceMuted,
 } from "../../theme/classes";
 import { buildDispatchReference, type DispatchReferenceRoute } from "../refs/routes";
-import { retriesUnderItsKey } from "../writes/keyed-write";
+import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
@@ -181,8 +181,21 @@ export const UPLOAD_BASE_UNREADABLE_REFUSAL =
 // `dispatch` command and the dashboard says what they mean to a person. They are three
 // sentences, not one - the document moved under the upload, the upload named no version where
 // Dispatch requires one, and the token could not be read at all - and a person told the wrong
-// one of those is told something untrue.
-export function uploadErrorMessage(error: unknown): string {
+// one of those is told something untrue. An upload the reader stopped is no refusal: it may have
+// been stored, and `again` names the surface's control that makes that very press again, or is
+// undefined where uploading the file again is a press of its own.
+export function uploadErrorMessage(error: unknown, again: string | undefined): string {
+  if (error instanceof SendStoppedError) {
+    return stoppedWriteNote(
+      "the upload",
+      "stored",
+      again === undefined
+        ? {
+            anew: "Uploading the file again is a new upload, which Dispatch may store a second time.",
+          }
+        : { again, stopped: error }
+    );
+  }
   if (error instanceof UploadBaseUnreadableError) {
     const said = error.cause instanceof ApiError ? ` ${error.cause.message}` : "";
     return `${UPLOAD_BASE_UNREADABLE_REFUSAL}${said}`;
@@ -384,7 +397,7 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
 }
 
 /** `Uploading file…` while any of a draft's uploads is out, and a refused one's reason with its
- *  Retry. */
+ *  Retry, which makes a press the reader stopped again (`DraftUpload.retry`). */
 export function DraftUploadStatus({ upload }: { upload: DraftUpload }): ReactNode {
   return (
     <>
@@ -395,7 +408,7 @@ export function DraftUploadStatus({ upload }: { upload: DraftUpload }): ReactNod
       ) : null}
       {upload.isError ? (
         <QueryError
-          message={uploadErrorMessage(upload.error)}
+          message={uploadErrorMessage(upload.error, "Retry")}
           onRetry={upload.retry}
           retrying={upload.isPending}
         />
@@ -436,6 +449,9 @@ export interface ArtifactUpload {
   pendingFile: File | null;
   /** Why no file can be uploaded here - its issue is closed - or null while one can. */
   refusal: string | null;
+  /** The file the newest press sent, which the refusal on screen is about; undefined before any
+   *  press. Upload makes that press again while it is the staged file (`confirm`). */
+  refusedFile: File | undefined;
   selectFile(event: ChangeEvent<HTMLInputElement>): void;
   setSummary(value: string): void;
   summary: string;
@@ -570,6 +586,7 @@ export function useArtifactUpload(
     },
     pendingFile,
     refusal,
+    refusedFile: upload.variables?.file,
     selectFile: (event) => {
       receive(event.target.files?.[0]);
       event.target.value = "";
@@ -649,7 +666,9 @@ export function ArtifactUploadRow({
   );
 }
 
-/** "Uploading artifact…" while in flight, else the upload error, else nothing. */
+/** "Uploading artifact…" while in flight, else the upload error, else nothing. A press the reader
+ *  stopped is made again by Upload while its file is the staged one (`confirm`); any other file,
+ *  or the same one picked again, is a press of its own. */
 export function ArtifactUploadStatus({ upload }: { upload: ArtifactUpload }): ReactNode {
   if (upload.isPending) {
     return (
@@ -659,9 +678,10 @@ export function ArtifactUploadStatus({ upload }: { upload: ArtifactUpload }): Re
     );
   }
   if (upload.isError) {
+    const staged = upload.pendingFile !== null && upload.pendingFile === upload.refusedFile;
     return (
       <p className={`w-full text-sm ${dangerText}`} role="alert">
-        {uploadErrorMessage(upload.error)}
+        {uploadErrorMessage(upload.error, staged ? "Upload" : undefined)}
       </p>
     );
   }

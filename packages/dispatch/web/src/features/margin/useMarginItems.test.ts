@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import type { AcceptSuggestionResponse } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
@@ -6,9 +6,12 @@ import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type {
   Artifact,
   Comment,
@@ -17,6 +20,7 @@ import type {
   DispatchEvent,
   IssueDecisions,
 } from "../../api/types";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import {
   anchoredThreadComments,
   fetchPinnedEvents,
@@ -732,6 +736,34 @@ test("a failed action carries the API's reason, and a refusal of what it writes 
     unmount();
     acceptComment.mockRestore();
     listComments.mockRestore();
+  }
+});
+
+// An action the reader stopped may have been saved, so the card does not say it failed: its Retry
+// makes that action again under its key (`retryItem`), and the card says what that does.
+test("an action the reader stopped says Retry makes it again, not that it failed", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const acceptComment = spyOn(api, "acceptComment").mockRejectedValue(
+    new NetworkError("/api/v1/comments/A/accept", new TypeError("Failed to fetch"))
+  );
+  const { listComments, queryClient, unmount } = renderActionButtons();
+  try {
+    await user.click(screen.getByRole("button", { name: "Accept A" }));
+    await stopTheLateWrite(queryClient);
+
+    expect(actionFailureShown()).toEqual({
+      message: stoppedWriteNote("this action", "saved", {
+        again: "Retry",
+        stopped: new SendStoppedError(),
+      }),
+      retryable: true,
+    });
+  } finally {
+    unmount();
+    acceptComment.mockRestore();
+    listComments.mockRestore();
+    realClock();
   }
 });
 

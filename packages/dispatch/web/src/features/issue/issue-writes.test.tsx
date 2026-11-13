@@ -1,17 +1,21 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for blur, submit, focus, one edit inside a single act batch, and one repeated identical selection
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary } from "../../api/types";
 import type { IssueStatus } from "../project/board-model";
 import { useBoardMoves } from "../project/board-moves";
 import { projectIssuesQueryKey } from "../project/issue-filters";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { IssuePage } from "./IssuePage";
 
 const issue: IssueDetails = {
@@ -77,12 +81,13 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function renderIssuePage() {
+/** Renders the issue page at `path`, its Spec tab unless a case names another. */
+function renderIssuePage(path = "/issues/CORE-1") {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
   });
   const view = render(
-    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+    <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={queryClient}>
         <Routes>
           <Route path="/issues/:key/*" element={<IssuePage />} />
@@ -1071,6 +1076,77 @@ test("IssuePage renders the server's reason inline when a parent save is refused
   } finally {
     unmount();
     restore();
+  }
+});
+
+const unreachable = new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"));
+
+/** The issue page on its Children tab, whose reads `stubIssueApi` answers: the two cases below
+ *  hold the clock through a write's whole minute, in which the Spec tab's own reads of its
+ *  document would go out unanswered. */
+const childrenTab = "/issues/CORE-1/children";
+
+// A title save the reader stopped may have been saved, so the header does not say the update
+// failed. Its Retry is the title field's own submit (`drafts.retry`): a press of its own, of what
+// the field holds now, and the header says that.
+test("IssuePage says what Retry does after a title save the reader stopped", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { patchIssue, restore } = stubIssueApi();
+  patchIssue.mockRejectedValue(unreachable);
+  const { queryClient, unmount } = renderIssuePage(childrenTab);
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+
+  try {
+    await user.click(await screen.findByRole("heading", { level: 1, name: "Review the spec" }));
+    const title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("Renamed");
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await stopTheLateWrite(queryClient);
+
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("this change to the issue", "saved", {
+        anew: "Retry sends what the field holds now as a new write.",
+      })
+    );
+  } finally {
+    unmount();
+    restore();
+    realClock();
+  }
+});
+
+// A parent save the reader stopped may have been saved. The header shows a parent save's failure
+// on a line of its own, with no Retry: saving the parent again is a press of its own, and the line
+// says that rather than that the save failed.
+test("IssuePage says what saving the parent again does after a save the reader stopped", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { patchIssue, restore } = stubIssueApi();
+  patchIssue.mockRejectedValue(unreachable);
+  const { queryClient, unmount } = renderIssuePage(childrenTab);
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
+    await user.click(await screen.findByLabelText("Parent"));
+    await user.paste("CORE-9");
+    await user.click(screen.getByRole("button", { name: "Save parent" }));
+    await stopTheLateWrite(queryClient);
+
+    expect(document.getElementById("issue-parent-error")?.textContent).toBe(
+      stoppedWriteNote("the new parent", "saved", {
+        anew: "Saving it again sends it as a new write.",
+      })
+    );
+  } finally {
+    unmount();
+    restore();
+    realClock();
   }
 });
 

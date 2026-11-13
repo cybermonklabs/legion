@@ -64,6 +64,7 @@ import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
@@ -354,9 +355,16 @@ export function IssueHeader({
     }
   };
   // A refused parent save (PARENT_INPUT, ISSUE_CLOSED) renders the server's reason inline,
-  // like a route validation error, instead of the generic update failure line.
+  // like a route validation error, instead of the generic update failure line. One the reader
+  // stopped may have been saved; the editor has closed, and saving it again is a press of its own
+  // (`requestParentSubmit`).
   const parentSaveFailed = updateIssue.isError && updateIssue.variables?.parent !== undefined;
-  const parentError = apiErrorMessage(updateIssue.error, "Could not save parent.");
+  const parentError =
+    updateIssue.error instanceof SendStoppedError
+      ? stoppedWriteNote("the new parent", "saved", {
+          anew: "Saving it again sends it as a new write.",
+        })
+      : apiErrorMessage(updateIssue.error, "Could not save parent.");
   // A title Dispatch refused (CAP_EXCEEDED past ISSUE_TITLE_MAX, ISSUE_CLOSED) shows its reason
   // with no Retry, since the same title is refused every time; any other failure keeps the generic
   // line and its Retry.
@@ -866,21 +874,42 @@ export function IssueHeader({
       ) : null}
       {updateState.isError ? (
         <QueryError
-          message="Could not save pin status."
+          message={
+            updateState.error instanceof SendStoppedError
+              ? stoppedWriteNote("the pin status", "saved", {
+                  again: "Retry",
+                  stopped: updateState.error,
+                })
+              : "Could not save pin status."
+          }
           onRetry={() => pinGuard.retryLast(updateState)}
           retrying={updateState.isPending}
         />
       ) : null}
       {unsubscribe.isError ? (
         <QueryError
-          message="Could not unsubscribe this agent."
+          message={
+            unsubscribe.error instanceof SendStoppedError
+              ? stoppedWriteNote("this agent's unsubscribe", "made", {
+                  again: "Retry",
+                  stopped: unsubscribe.error,
+                })
+              : "Could not unsubscribe this agent."
+          }
           onRetry={unsubscribe.retry}
           retrying={unsubscribe.isPending}
         />
       ) : null}
       {releaseClaim.isError ? (
         <QueryError
-          message="Could not release this claim."
+          message={
+            releaseClaim.error instanceof SendStoppedError
+              ? stoppedWriteNote("the release of this claim", "made", {
+                  again: "Retry",
+                  stopped: releaseClaim.error,
+                })
+              : "Could not release this claim."
+          }
           onRetry={releaseClaim.retry}
           retrying={releaseClaim.isPending}
         />
@@ -895,8 +924,17 @@ export function IssueHeader({
             {titleRefusal}
           </p>
         ) : (
+          // A title or a route save. Its Retry is the field's own submit (`drafts.retry`): a press
+          // of its own, of what the field holds now, so a stopped save is never made again under
+          // its key from here.
           <QueryError
-            message="Could not update this issue."
+            message={
+              updateIssue.error instanceof SendStoppedError
+                ? stoppedWriteNote("this change to the issue", "saved", {
+                    anew: "Retry sends what the field holds now as a new write.",
+                  })
+                : "Could not update this issue."
+            }
             onRetry={drafts.retry}
             retrying={updateIssue.isPending}
           />
