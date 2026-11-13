@@ -347,6 +347,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/artifacts/{id}/changes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description What changed between two stored versions of one document, ?from=<n>&to=<m>: {artifact_id, from, to, decision_only, sections, blocks}, both versions read from their stored markdown with every ask block cut out, so the block index's deferred pass is never waited for. decision_only is true when the two stored texts differ and cut to the same text; sections and blocks are empty then. sections is each `##` section whose text differs, by heading and occurrence (0 for the first section of that heading); the text outside every `##` section (the title, what stands above the first `##`, and what follows a later `#` up to the next `##`), joined in document order, is one section of its own with heading "" and occurrence 0, so a `##` heading with no words counts from occurrence 1. blocks is each typed block but an ask whose text or any attribute differs, by id and type. Each section and block is marked changed, added or removed: the later version's in its order, then what only the earlier holds. from and to must be positive and from below to (400 INVALID_VERSION); a version the document does not have is 404 NOT_FOUND, and a file or an image 400 NOT_DOCUMENT. */
+    get: operations["getApiV1ArtifactsByIdChanges"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/artifacts/{id}/comments": {
     parameters: {
       query?: never;
@@ -3181,6 +3198,20 @@ export interface components {
       token: string;
       type: string;
     };
+    ArtifactBlockChange: {
+      /** @enum {string} */
+      change: "changed" | "added" | "removed";
+      id: string;
+      type: string;
+    };
+    ArtifactChanges: {
+      artifact_id: string;
+      blocks: components["schemas"]["ArtifactBlockChange"][] | null;
+      decision_only: boolean;
+      from: number;
+      sections: components["schemas"]["ArtifactSectionChange"][] | null;
+      to: number;
+    };
     ArtifactRebuildReport: {
       /** Format: int64 */
       head: number;
@@ -3230,6 +3261,12 @@ export interface components {
       };
       state: string;
       version: number;
+    };
+    ArtifactSectionChange: {
+      /** @enum {string} */
+      change: "changed" | "added" | "removed";
+      heading: string;
+      occurrence: number;
     };
     ArtifactText: {
       blocks?: components["schemas"]["ArtifactBlock"][];
@@ -6923,6 +6960,42 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["DecisionKeep"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1ArtifactsByIdChanges: {
+    parameters: {
+      query?: {
+        from?: number;
+        to?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ArtifactChanges"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -13194,10 +13267,13 @@ export type Artifact = components["schemas"]["Artifact"];
 export type ArtifactApproval = components["schemas"]["ArtifactApproval"];
 export type ArtifactApprovalWithTrees = components["schemas"]["ArtifactApprovalWithTrees"];
 export type ArtifactBlock = components["schemas"]["ArtifactBlock"];
+export type ArtifactBlockChange = components["schemas"]["ArtifactBlockChange"];
+export type ArtifactChanges = components["schemas"]["ArtifactChanges"];
 export type ArtifactRebuildReport = components["schemas"]["ArtifactRebuildReport"];
 export type ArtifactReferences = components["schemas"]["ArtifactReferences"];
 export type ArtifactReview = components["schemas"]["ArtifactReview"];
 export type ArtifactReviewRead = components["schemas"]["ArtifactReviewRead"];
+export type ArtifactSectionChange = components["schemas"]["ArtifactSectionChange"];
 export type ArtifactText = components["schemas"]["ArtifactText"];
 export type ArtifactUploadResponse = components["schemas"]["ArtifactUploadResponse"];
 export type ArtifactVersionText = components["schemas"]["ArtifactVersionText"];

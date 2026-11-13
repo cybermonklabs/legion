@@ -1432,6 +1432,67 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/artifacts/{id}/changes": {
+      "get": {
+        "description": "What changed between two stored versions of one document, ?from=\u003cn\u003e\u0026to=\u003cm\u003e: {artifact_id, from, to, decision_only, sections, blocks}, both versions read from their stored markdown with every ask block cut out, so the block index's deferred pass is never waited for. decision_only is true when the two stored texts differ and cut to the same text; sections and blocks are empty then. sections is each `##` section whose text differs, by heading and occurrence (0 for the first section of that heading); the text outside every `##` section (the title, what stands above the first `##`, and what follows a later `#` up to the next `##`), joined in document order, is one section of its own with heading \"\" and occurrence 0, so a `##` heading with no words counts from occurrence 1. blocks is each typed block but an ask whose text or any attribute differs, by id and type. Each section and block is marked changed, added or removed: the later version's in its order, then what only the earlier holds. from and to must be positive and from below to (400 INVALID_VERSION); a version the document does not have is 404 NOT_FOUND, and a file or an image 400 NOT_DOCUMENT.",
+        "operationId": "getApiV1ArtifactsByIdChanges",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactChanges"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/artifacts/{id}/comments": {
       "get": {
         "description": "List a document's comments. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304.",
@@ -12817,6 +12878,73 @@
         ],
         "type": "object"
       },
+      "ArtifactBlockChange": {
+        "properties": {
+          "change": {
+            "enum": [
+              "changed",
+              "added",
+              "removed"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "change"
+        ],
+        "type": "object"
+      },
+      "ArtifactChanges": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactBlockChange"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "decision_only": {
+            "type": "boolean"
+          },
+          "from": {
+            "type": "integer"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactSectionChange"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "to": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "from",
+          "to",
+          "decision_only",
+          "sections",
+          "blocks"
+        ],
+        "type": "object"
+      },
       "ArtifactRebuildReport": {
         "properties": {
           "head": {
@@ -13017,6 +13145,30 @@
           "created_at",
           "content_sha256",
           "content_sha256_source"
+        ],
+        "type": "object"
+      },
+      "ArtifactSectionChange": {
+        "properties": {
+          "change": {
+            "enum": [
+              "changed",
+              "added",
+              "removed"
+            ],
+            "type": "string"
+          },
+          "heading": {
+            "type": "string"
+          },
+          "occurrence": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "heading",
+          "occurrence",
+          "change"
         ],
         "type": "object"
       },

@@ -405,6 +405,15 @@ type artifactTextQuery struct {
 	Blocks bool `query:"blocks"`
 }
 
+// artifactChangesQuery is GET /api/v1/artifacts/{id}/changes's query: the two versions of the
+// document compared. Both are required.
+type artifactChangesQuery struct {
+	// From is the earlier version, a positive number below To.
+	From int `query:"from"`
+	// To is the later version.
+	To int `query:"to"`
+}
+
 // openAsksQuery is GET /api/v1/asks/open's query: exactly one of the two scopes is required.
 type openAsksQuery struct {
 	// AuthorSession lists the open asks one session authored.
@@ -804,6 +813,9 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: artifactVersionText{},
 		Opaque:            "a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above",
 		OpaqueContentType: "application/octet-stream",
+	},
+	"GET /api/v1/artifacts/{id}/changes": {
+		Status: http.StatusOK, Response: artifactChanges{}, Params: artifactChangesQuery{},
 	},
 	"POST /api/v1/artifacts/{id}/versions": {
 		Status: http.StatusCreated, Response: model.Version{}, Request: createVersionInput{},
