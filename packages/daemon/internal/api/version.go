@@ -1332,9 +1332,10 @@ package api
 // three moments and collided four ways at 65. The heads were read at this push over the
 // `const DaemonAPIVersion` of main and of every one of the 140 open pull requests of this
 // repository at refs/pull/<n>/head, rather than over the file lists GitHub gives, which it cuts
-// short for a pull request of many files: main declares 87; #3677 declares 94; #2731 and #3573
-// declare 96; and #3708 declares 98, above the 97 this change declared before this move. So this
-// change takes 99, which is one above every one of them: a number below the highest open
+// short for a pull request of many files: main declares 87, and the highest open declarations
+// are #3708's 98, above the 97 this change declared before this move, #2731's and #3573's 96 and
+// #3677's 94; every other open head declares less than 94. So this change takes 99, which is
+// one above every one of them: a number below the highest open
 // declaration is refused by .github/scripts/check-daemon-api-contract.sh the moment one of those
 // heads lands and main itself reaches it. Read main's number and every open pull request again
 // at the next merge rather than from this line, as
