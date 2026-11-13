@@ -54,9 +54,10 @@ const inPicks: FilterFn<Item> = (row, id, value: string[]) =>
  *  registry's own ids, so a typo or a column with no rendering fails to compile. Everything
  *  else about a column — whether it filters, what a row files under, what it groups by, how
  *  wide it starts and how narrow it may go — comes from `COLUMNS` in the model, so the two
- *  never disagree. */
+ *  never disagree. A row's own checkbox tells `onMark` the row it marks. */
 const renderings = (
-  userState: UserState | undefined
+  userState: UserState | undefined,
+  onMark: (key: string) => void
 ): Record<ColumnId, Partial<ColumnDef<Item>>> => ({
   select: {
     header: ({ table }) => (
@@ -73,7 +74,10 @@ const renderings = (
         aria-label={`Select ${row.original.issue.key}`}
         checked={row.getIsSelected()}
         className={checkboxAccent}
-        onChange={row.getToggleSelectedHandler()}
+        onChange={(event) => {
+          if (event.target.checked) onMark(row.id);
+          row.toggleSelected(event.target.checked);
+        }}
         type="checkbox"
       />
     ),
@@ -245,12 +249,15 @@ const renderings = (
   },
 });
 
+/** The List's columns. `onMark` is told the row a row's own checkbox marks; it is a dependency
+ *  of the columns, so a caller hands a stable one. */
 export function useIssueTableColumns(
   userState: UserState | undefined,
-  compact: boolean
+  compact: boolean,
+  onMark: (key: string) => void
 ): ColumnDef<Item>[] {
   return useMemo<ColumnDef<Item>[]>(() => {
-    const rendering = renderings(userState);
+    const rendering = renderings(userState, onMark);
     return COLUMNS.map((column) => {
       const picks = column.filter?.kind === "picks" ? column.filter : undefined;
       return {
@@ -272,5 +279,5 @@ export function useIssueTableColumns(
         },
       };
     });
-  }, [userState, compact]);
+  }, [userState, compact, onMark]);
 }

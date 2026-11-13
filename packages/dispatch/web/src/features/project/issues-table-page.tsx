@@ -24,7 +24,6 @@ import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
 import {
   defaultView,
-  ISSUE_ROW_ATTRIBUTE,
   type Item,
   readUrl,
   runningIssueStatuses,
@@ -271,8 +270,7 @@ export function IssueTableToolbar({
 }
 
 export function IssueTableSelection({
-  lastSelected,
-  searchRef,
+  returnFocus,
   table,
   epics,
   busy,
@@ -281,10 +279,8 @@ export function IssueTableSelection({
   moveTo,
   newEpic,
 }: {
-  /** The key of the issue the reader selected last, or null before their first. */
-  lastSelected: () => string | null;
-  /** The List's search box. */
-  searchRef: RefObject<HTMLInputElement | null>;
+  /** Where the focus goes when the bar goes with it (`SelectionBar`), which the List names. */
+  returnFocus: () => HTMLElement | null;
   table: Table<Item>;
   epics: readonly IssueSummary[];
   busy: boolean;
@@ -300,26 +296,7 @@ export function IssueTableSelection({
   const [epic, setEpic] = useState("");
   return (
     // Over the list, not in it: selecting a row moves no row (INFRA-3135, R4).
-    <SelectionBar
-      count={selectedKeys.length}
-      label="Selected issues"
-      // The bar gone with the focus: the checkbox of the issue the reader selected last, else the
-      // first row's, else the search box.
-      returnFocus={() => {
-        const key = lastSelected();
-        const last =
-          key === null
-            ? null
-            : document.querySelector<HTMLElement>(
-                `[${ISSUE_ROW_ATTRIBUTE}="${CSS.escape(key)}"] input[type="checkbox"]`
-              );
-        return (
-          last ??
-          document.querySelector<HTMLElement>(`[${ISSUE_ROW_ATTRIBUTE}] input[type="checkbox"]`) ??
-          searchRef.current
-        );
-      }}
-    >
+    <SelectionBar count={selectedKeys.length} label="Selected issues" returnFocus={returnFocus}>
       {selectedKeys.length < leafCount ? (
         <Action disabled={busy} onClick={() => table.toggleAllRowsSelected(true)}>
           Select all {leafCount} matching

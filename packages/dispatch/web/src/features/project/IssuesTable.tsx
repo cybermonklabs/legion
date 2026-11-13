@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import type { FilterFn, OnChangeFn, RowSelectionState } from "@tanstack/react-table";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import type { FilterFn, RowSelectionState } from "@tanstack/react-table";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { userStateQuery } from "../../api/queries";
 import { DataTable, type DataTableNames, useDataTable } from "../../components/DataTable";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -52,6 +52,10 @@ const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.ori
 
 const ACTION_WIDTH = 104;
 
+/** The checkbox a row draws for its selection (`issues-table-columns.tsx`'s select column), the
+ *  one checkbox every row has. */
+const ROW_CHECKBOX = 'input[type="checkbox"]';
+
 /** The List's own words, which the table core reads and never invents: the attributes its rows
  *  and groups carry, the link opening a row follows, what its filters count, and the keys that
  *  walk it, under the ids and labels the palette and the shortcut help have always shown. */
@@ -93,17 +97,14 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
   const flags = useIssueFilters();
   const userState = useQuery(userStateQuery());
   const [selection, setSelection] = useState<RowSelectionState>({});
-  // The issue the reader selected last, and the List's search box: where the focus goes when the
-  // bar goes with it (`IssueTableSelection`). One key added is one row the reader marked, by its
-  // checkbox or `x`; a select-all adds many and names no row of theirs.
-  const lastSelected = useRef<string | null>(null);
+  // The issue the reader marked last - by its own checkbox, or `x` on its row - and the List's
+  // search box: where the focus goes when the bar goes with it (`returnFocus`, below). A
+  // select-all marks no row of the reader's own, so it records none.
+  const lastMarked = useRef<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const select: OnChangeFn<RowSelectionState> = (change) => {
-    const next = typeof change === "function" ? change(selection) : change;
-    const added = Object.keys(next).filter((key) => next[key] === true && selection[key] !== true);
-    if (added.length === 1) lastSelected.current = added[0] ?? null;
-    setSelection(change);
-  };
+  const recordMark = useCallback((key: string) => {
+    lastMarked.current = key;
+  }, []);
   const [openFilter, setOpenFilter] = useState<string>();
 
   const statusPicked = (filters.find((filter) => filter.id === "status")?.value ?? []) as string[];
@@ -146,7 +147,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     return shown.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
   }, [allItems, filters, flags.needsYou, flags.unread, grouping, search, userState.data]);
 
-  const columns = useIssueTableColumns(userState.data, boxWidth < 640);
+  const columns = useIssueTableColumns(userState.data, boxWidth < 640, recordMark);
 
   const model = useDataTable<Item>({
     rows: items,
@@ -161,11 +162,20 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     onGlobalFilterChange: setSearch,
     onPaginationChange: setPagination,
     viewKey: params.toString(),
-    selection: { state: selection, onChange: select },
+    selection: { state: selection, onChange: setSelection, onMark: recordMark },
     search: { column: "title", filterFn: fuzzy },
     groupOrder: { compare: compareGroups, heading: groupValue },
   });
   const { table } = model;
+  // The bar gone with the focus (`SelectionBar`): the checkbox of the issue the reader marked
+  // last, else the first row's, else the search box once no row is listed. A row the window has
+  // not drawn is scrolled to and takes the focus as it lands (`focusRow`).
+  const returnFocus = () => {
+    const leaves = model.displayRows.flatMap(({ row }) => (row.getIsGrouped() ? [] : [row.id]));
+    const last = lastMarked.current;
+    const key = last !== null && leaves.includes(last) ? last : leaves[0];
+    return key === undefined ? searchRef.current : model.focusRow(key, ROW_CHECKBOX);
+  };
 
   // The keys the table lists under the filters and the search it is showing, in row order. A key
   // it no longer lists drops out of the selection - another filter, another project - so a row
@@ -416,8 +426,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
       />
 
       <IssueTableSelection
-        lastSelected={() => lastSelected.current}
-        searchRef={searchRef}
+        returnFocus={returnFocus}
         table={table}
         epics={epics}
         busy={busy}

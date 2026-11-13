@@ -41,7 +41,7 @@ import {
 import { ColumnFilter, type FilterCountNoun } from "./ColumnFilter";
 import { CONTROL } from "./control-names";
 import { Pager, type PagerOptions } from "./Pager";
-import { type RowKeymap, useRowKeymap } from "./table-keys";
+import { type FocusRow, type RowKeymap, useRowKeymap } from "./table-keys";
 import { reorder, type TableLayoutModel } from "./table-layout";
 
 /** TanStack's own renderer for a header or a cell, re-exported: the core is the one place the
@@ -112,6 +112,9 @@ export interface DataTableOptions<Row> {
   readonly selection?: {
     readonly state: RowSelectionState;
     readonly onChange: OnChangeFn<RowSelectionState>;
+    /** Told the one row the reader marked by itself, as they mark it: `x` on the row, or the
+     *  row's own checkbox, which the caller's column calls it from. A select-all names none. */
+    readonly onMark?: (key: string) => void;
   };
   /** What the search box matches: `filterFn` run on `column` alone. Without it the table has
    *  no search. */
@@ -137,6 +140,10 @@ export interface DataTableModel<Row> {
   readonly virtualizer: Virtualizer<HTMLDivElement, Element>;
   /** Whether `ViewportAnchor` may hold the row in hand across this commit. */
   readonly anchorEnabled: () => boolean;
+  /** Puts the focus on a row of this page, or on what `selector` names inside it, by the path
+   *  `j` and `k` take: a row the virtualizer has not drawn is scrolled to and focused once it
+   *  lands, and null is handed back meanwhile. */
+  readonly focusRow: FocusRow;
   readonly names: DataTableNames;
 }
 
@@ -280,10 +287,11 @@ export function useDataTable<Row>({
     overscan: 12,
   });
 
-  useRowKeymap({
+  const focusRow = useRowKeymap({
     displayRows,
     keymap: names.keymap,
     linkAttribute: names.linkAttribute,
+    onMark: selection?.onMark,
     rowAttribute: names.rowAttribute,
     rowsById: table.getCoreRowModel().rowsById,
     scrollRef: layout.scrollRef,
@@ -298,6 +306,7 @@ export function useDataTable<Row>({
   return {
     anchorEnabled: () => previousView.current === viewKey,
     displayRows,
+    focusRow,
     layout,
     names,
     table,

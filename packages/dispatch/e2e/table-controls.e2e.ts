@@ -771,6 +771,11 @@ test("the selection bar gone from the keyboard hands the focus to the row marked
 }) => {
   await seedLongInbox();
   const scene = await seedSurfaces();
+  // Forty more issues, so the List's one page holds rows its table does not draw at all: past
+  // the window, and past the rows it draws beyond each end of the window.
+  for (let index = 0; index < 40; index++) {
+    await createIssue({ project: "CORE", title: `Far row ${index}` });
+  }
   const main = page.getByTestId("main-content");
   const wrong: string[] = [];
   /** Where the keyboard focus is - the focused element's name, or the tag of the body - and
@@ -940,6 +945,42 @@ test("the selection bar gone from the keyboard hands the focus to the row marked
     await page.keyboard.press("Enter");
     await expect(listBar, `${where}: Clear selection left the bar up`).toHaveCount(0);
     await focusOn(where, "Enter on Clear selection", `Select ${second}`);
+    // The row marked last, scrolled so far off that the table no longer draws it: the focus is
+    // on its checkbox all the same, brought back into view, and not on a row that happens to be
+    // drawn.
+    const listBox = page.getByTestId("issues-table-scroll");
+    await mark(page.getByRole("checkbox", { exact: true, name: `Select ${second}` }));
+    await listBox.evaluate((node) => {
+      node.scrollTop = node.scrollHeight;
+    });
+    await expect(
+      page.locator(`[data-issue-row="${second}"]`),
+      `${where}: the row marked is still drawn with the list scrolled to its end`
+    ).toHaveCount(0);
+    await listBar.getByRole("button", { exact: true, name: "Clear selection" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(listBar, `${where}: Clear selection left the bar up`).toHaveCount(0);
+    await focusOn(
+      where,
+      "Enter on Clear selection with the row marked scrolled out of the drawn rows",
+      `Select ${second}`
+    );
+    // A select-all marks no row of the reader's own. Two rows listed: the reader marks the
+    // second, the header's checkbox takes in the first, and the focus goes back to the second.
+    await page.goto("/projects/CORE/issues?q=Rollout");
+    await expect(issueRows, `${where}: the search does not list two rows`).toHaveCount(2);
+    const taken = await issueRows.nth(0).getAttribute("data-issue-row");
+    const own = await issueRows.nth(1).getAttribute("data-issue-row");
+    await mark(page.getByRole("checkbox", { exact: true, name: `Select ${own}` }));
+    await mark(page.getByRole("checkbox", { exact: true, name: "Select every row on this page" }));
+    await expect(
+      page.getByRole("checkbox", { exact: true, name: `Select ${taken}` })
+    ).toBeChecked();
+    await expect(listBar).toContainText("2 selected");
+    await listBar.getByRole("button", { exact: true, name: "Clear selection" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(listBar, `${where}: Clear selection left the bar up`).toHaveCount(0);
+    await focusOn(where, "Enter on Clear selection after a select-all", `Select ${own}`);
   }
   // A bar that drops the focus onto the page sends a keyboard reader back to its first link, from
   // which the rows they were marking are a walk through every control above them.
