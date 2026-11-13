@@ -20,15 +20,16 @@ export interface AskHandOnWrite {
 
 /**
  * The one way the SPA hands an ask to a person. The new person lands on every inbox cache at
- * once, so the row leaves the list it was in and joins theirs on the press, rolls back if the
- * server refuses, and every read carrying the ask - the Inbox and its owner's lists
- * (`invalidateOwnerReads`), and the ask's own thread - refetches once the hand-on settles, the
- * same shape as `useAskSnooze`, over `PUT /api/v1/asks/{id}/asked-of`.
+ * once, so the row leaves the list it was in and joins theirs on the press, and every read
+ * carrying the ask - the Inbox and its owner's lists (`invalidateOwnerReads`), and the ask's own
+ * thread - refetches once the hand-on settles, the same shape as `useAskSnooze`, over
+ * `PUT /api/v1/asks/{id}/asked-of`.
  *
  * The person is shown by the store (`WriteSpec.shows`), so it is shown again over each answer
  * that lands on an inbox cache while the write is live (R7 of dispatch://INFRA-299): an answer
  * composed before the hand-on arrives whole - every other row of it with it - and still waits on
- * the person the reader named.
+ * the person the reader named. A refused hand-on is the store's to put back: the lists as
+ * Dispatch last gave them, every other live write's change over them (R10).
  *
  * What is patched is what the server will answer with: `waiting_on_person`, which is the person
  * named either way, and the three stored fields behind it - `asked_of`, empty when the ask was
@@ -73,15 +74,8 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
         );
       };
     },
-    onMutate: async () => {
-      await queryClient.cancelQueries({ queryKey: inboxKey });
-      return queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
-    },
-    onError: (_error, _askedOf, previous) => {
-      for (const [key, data] of previous ?? []) {
-        queryClient.setQueryData(key, data);
-      }
-    },
+    // A read already out was asked before this press.
+    onMutate: () => queryClient.cancelQueries({ queryKey: inboxKey }),
     onSettled: () => {
       // Every surface that draws this ask follows the write, not the `ask.asked_of` event that
       // lands after it: on the issue page, in a document's margin and in its ask block the card

@@ -72,7 +72,7 @@ import { IssueLabels } from "./IssueLabels";
 import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
-import { stateForIssue, withPinned } from "./pins";
+import { withPinned } from "./pins";
 import { RepoControl } from "./RepoControl";
 import {
   RouteReachUnknownMarker,
@@ -291,8 +291,9 @@ export function IssueHeader({
   // The header's pin writes the same row as the Conversation's and the Activity tab's pins, so it
   // goes in that row's line (`pin:<key>`, `features/issue/pin-write.ts`): one row, one line. Its
   // change is the issue's `pinned` alone, over the row as it stands (`shows`), so the store shows
-  // it again over each answer that lands there while it is live, and the store shows a pin
-  // waiting behind it again over the row Dispatch answers it with (R7 of dispatch://INFRA-299).
+  // it again over each answer that lands there while it is live, shows a pin waiting behind it
+  // again over the row Dispatch answers it with, and puts back the row Dispatch last gave if it
+  // leaves without landing (R7 and R10 of dispatch://INFRA-299).
   const updateState = useKeyedWrite({
     label: (pinned: boolean) => `${issue.key} ${pinned ? "pinned" : "unpinned"}`,
     request: (pinned: boolean) => issueStateRequest(issue.key, { pinned }),
@@ -309,19 +310,8 @@ export function IssueHeader({
       // its write settled: with an answer, landed with none (`null`), or refused.
       void queryClient.invalidateQueries({ exact: true, queryKey: pinnedIssuesKey });
     },
-    onMutate: async () => {
-      await queryClient.cancelQueries({ queryKey: userStateQuery().queryKey });
-      const before = queryClient.getQueryData<UserState>(userStateQuery().queryKey);
-      return { pinned: stateForIssue(before, issue.key).pinned };
-    },
-    // A refusal puts back the issue's `pinned` as it stood before the press, and only that, over
-    // the row as it stands: every other change on it is another write's.
-    onError: (_error, _pinned, context) => {
-      if (context === undefined) return;
-      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) =>
-        withPinned(current, issue.key, context.pinned)
-      );
-    },
+    // A read already out was asked before this press.
+    onMutate: () => queryClient.cancelQueries({ queryKey: userStateQuery().queryKey }),
     onSuccess: (next) => {
       if (next === null) return;
       queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({

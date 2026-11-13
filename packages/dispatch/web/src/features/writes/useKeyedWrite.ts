@@ -34,14 +34,11 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
    *  kind, which a reload drops rather than sends again (`WriteSpec.answerShownOnce`). */
   readonly answerShownOnce?: string;
   /** The change this press shows, for a write that shows one: the store shows it as the write
-   *  joins - after `onMutate`, which is where the surface snapshots what a refusal rolls back to
-   *  - and again over each answer that lands on a cache it wrote while the write is live (R7 of
-   *  dispatch://INFRA-299, `WriteSpec.shows`). A write that shows nothing names none. */
+   *  joins - after `onMutate` - and again over each answer that lands on a cache it wrote while
+   *  the write is live (R7 of dispatch://INFRA-299, `WriteSpec.shows`), and puts it back as the
+   *  write leaves without landing, reading those caches again, so `onError` rolls none of them
+   *  back itself. A write that shows nothing names none. */
   readonly shows?: (variables: TVariables) => WriteChange;
-  /** Whether the store puts that change back as the write leaves its line without landing, for
-   *  a surface whose `onError` rolls nothing back itself (`WriteSpec.storePutsBack`). Left out,
-   *  the surface rolls its own change back. */
-  readonly storePutsBack?: boolean;
 } & KeyedWriteMade<TData, TVariables>;
 
 /** How a write is made, and the line it is ordered on: by an attempt of its own (`write`, under
@@ -89,15 +86,15 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
  * made under a key of its own and tried under it until Dispatch decides it, shown by the shell's
  * pending-writes indicator while it is out and, refused, with Retry and Discard (`Writes.run`).
  * The mutation settles with Dispatch's answer - `null` for a landing without one - its refusal, or
- * `SendStoppedError` once the reader stops it, so the surface keeps its optimistic state until
- * then and rolls it back on anything but a landing. A `mutate` of the same variables a press the
- * reader stopped was made with is that press made again, under its key - Dispatch may have taken
- * it, and answers the key with what it did - while one after Dispatch's own refusal is a new
- * press, since Dispatch would answer the old key with that refusal. It runs whether or not the
- * browser says it is online (`networkMode: "always"`): the write's own tries wait out a network
- * that is down, and a mutation TanStack paused offline would make none, never go late and never
- * offer Stop trying. A press that lands with no answer is kept as `unanswered` for the surface
- * to say so, until the next press or `forgetUnanswered`.
+ * `SendStoppedError` once the reader stops it. The store puts back what `shows` drew on anything
+ * but a landing; what else the surface drew optimistically is its own to roll back. A `mutate` of
+ * the same variables a press the reader stopped was made with is that press made again, under its
+ * key - Dispatch may have taken it, and answers the key with what it did - while one after
+ * Dispatch's own refusal is a new press, since Dispatch would answer the old key with that
+ * refusal. It runs whether or not the browser says it is online (`networkMode: "always"`): the
+ * write's own tries wait out a network that is down, and a mutation TanStack paused offline would
+ * make none, never go late and never offer Stop trying. A press that lands with no answer is kept
+ * as `unanswered` for the surface to say so, until the next press or `forgetUnanswered`.
  */
 export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   answerShownOnce,
@@ -107,7 +104,6 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   label,
   request,
   shows,
-  storePutsBack,
   target,
   unlined,
   write,
@@ -138,7 +134,6 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
         label: label(variables),
         presentation: "indicator",
         shows: shows === undefined ? undefined : shows(variables),
-        storePutsBack,
       } as const;
       const line =
         write === undefined

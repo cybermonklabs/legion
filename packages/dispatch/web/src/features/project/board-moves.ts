@@ -55,12 +55,13 @@ function placeDrop(
  * dispatch://INFRA-299) - the card keeps the place the person dropped it at and every other
  * card's move the answer carries arrives with it. Moves on one board are serialised through a
  * single mutation scope, so a second drop computes its neighbours from the first drop's
- * placement and never overtakes it on the wire. Any failure rolls the board back, refetches it,
- * and says so: a stale rank (`RANK_INPUT`, the neighbours moved under the drag) gets
+ * placement and never overtakes it on the wire. Any failure is the store's to put back - the
+ * board as Dispatch last gave it, with every other live move over it (R10) - and read again, and
+ * the board says so: a stale rank (`RANK_INPUT`, the neighbours moved under the drag) gets
  * `staleBoardMessage`; anything else the server's message.
  *
  * With filters active, `labels` names the query the board actually renders (the same key the
- * List shares), so the optimistic write, rollback and refetch hit the list on screen; a
+ * List shares), so the optimistic write, its putting back and refetch hit the list on screen; a
  * successful move also refetches the unfiltered list, whose rank changed too. `isVisible` is the
  * board's filter predicate: insertion indices count visible cards, the PATCH names visible
  * neighbours, and hidden issues keep their cache positions.
@@ -85,9 +86,9 @@ export function useBoardMoves(
   const writes = useWrites();
   const [error, setError] = useState<string>();
   const queryKey = projectIssuesQueryKey(project, labels);
-  // The board says why a move was refused, over the card it rolled back. A move is one write to
-  // its issue, so it goes in press order with every other write to that issue (`issue:<KEY>`) -
-  // the header's status, its fields, a components save.
+  // The board says why a move was refused, over the card the store put back. A move is one
+  // write to its issue, so it goes in press order with every other write to that issue
+  // (`issue:<KEY>`) - the header's status, its fields, a components save.
   const patch = useKeyedWrite({
     inline: true,
     label: ({ key }: BoardMove) => `${key} moved on the board`,
@@ -107,8 +108,8 @@ export function useBoardMoves(
       },
   });
   const { mutateAsync } = patch;
-  /** Commits one drop: the card placed where it was dropped, the PATCH, rollback-and-refetch on
-   *  failure, refetch on success - the one tail `moveCard` and `moveCardToLane` share. */
+  /** Commits one drop: the card placed where it was dropped, the PATCH, the refusal said, refetch
+   *  once it settles - the one tail `moveCard` and `moveCardToLane` share. */
   const commit = useCallback(
     async (key: string, drop: Drop) => {
       const previous = queryClient.getQueryData<IssueSummary[]>(queryKey);
@@ -122,11 +123,13 @@ export function useBoardMoves(
       // Neither awaited: the cancel takes effect synchronously, and the card must be where it
       // was dropped in this tick - the board's own scope holds a second drop's write until the
       // first answers, and the store shows a write's change from its turn on. The refetch below
-      // restores what the cancel drops. The placement is written as the store's own writing: it
-      // was placed on the board every earlier drop left, so an earlier drop still unanswered is
-      // not run again over it, which would move it from where this drop put it.
+      // restores what the cancel drops. The placement is placed ahead of its write as the
+      // store's own writing (`Writes.placeAhead`): it was placed on the board every earlier drop
+      // left, so an earlier drop still unanswered is not run again over it, which would move it
+      // from where this drop put it, and the store keeps the board as Dispatch last gave it to
+      // put back should this move be refused.
       void queryClient.cancelQueries({ queryKey, exact: true });
-      writes.writeAsStore(() => queryClient.setQueryData(queryKey, moved.issues));
+      const release = writes.placeAhead(queryKey, moved.issues);
       try {
         await mutateAsync({ drop, input: moved.input, key });
         setError(undefined);
@@ -134,7 +137,6 @@ export function useBoardMoves(
           await queryClient.invalidateQueries({ queryKey: projectIssuesQueryKey(project, []) });
         }
       } catch (cause) {
-        queryClient.setQueryData(queryKey, previous);
         setError(
           cause instanceof ApiError
             ? cause.code === "RANK_INPUT"
@@ -143,6 +145,7 @@ export function useBoardMoves(
             : "Could not move the card."
         );
       } finally {
+        release();
         await queryClient.invalidateQueries({ queryKey });
       }
     },

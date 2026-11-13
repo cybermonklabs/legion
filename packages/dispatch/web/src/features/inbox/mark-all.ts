@@ -94,11 +94,9 @@ export function applyMarkAll(
   };
 }
 
-/** What the press rolls back: the list read as it stood before it, and the drop it made in the
- *  unread count (`unread-count.ts`). */
-interface MarkAllRollback {
+/** What a press holds of the unread count: the rows it takes out of it (`unread-count.ts`). */
+interface MarkAllDrop {
   readonly drop: UnreadDrop | undefined;
-  readonly threads: MyRepliesResponse | undefined;
 }
 
 /** The threads of `threads` one press marks, by row id. */
@@ -121,7 +119,9 @@ export interface MarkAllRead {
 
 /**
  * The Inbox's **Mark all read**, for one list: its own filters, its own read mark, its own
- * optimistic apply and its own rollback. The drawer mounts its own Inbox, so it gets its own.
+ * optimistic apply. The drawer mounts its own Inbox, so it gets its own. A refused press is the
+ * store's to put back on the list - as Dispatch last gave it, every other live write's change
+ * over it (R10 of dispatch://INFRA-299) - and `unread-count.ts`'s to take back on the count.
  *
  * The press writes two reads at once - the Inbox's own list and the unread count every badge
  * shares - so the rows are drawn as read and the Type filter's counts, the sidebar's Inbox count
@@ -158,29 +158,25 @@ export function useMarkAllRead({
     body !== undefined &&
     rows.some((row) => row.kind === "thread" && marksThread(row.thread, body));
 
-  const write = useKeyedWrite<InboxReadResponse, InboxReadRequest, MarkAllRollback>({
+  const write = useKeyedWrite<InboxReadResponse, InboxReadRequest, MarkAllDrop>({
     inline: true,
     label: () => "Inbox marked read",
-    onError: (_error, _input, rollback) => {
+    onError: (_error, _input, press) => {
       setRefused(true);
-      if (rollback === undefined) return;
-      queryClient.setQueryData(threadsKey, rollback.threads);
-      refusedUnreadDrop(queryClient, rollback.drop);
+      refusedUnreadDrop(queryClient, press?.drop);
     },
     onMutate: (input) => {
       setRefused(false);
-      // What a refusal puts back, read before the press shows its mark, and the rows the press
-      // takes out of the unread count, counted once, here.
+      // The rows the press takes out of the unread count, counted once, here.
       const threads = queryClient.getQueryData<MyRepliesResponse>(threadsKey);
       return {
         drop:
           threads === undefined
             ? undefined
             : pressUnreadDrop(queryClient, markedRows(threads, input).size),
-        threads,
       };
     },
-    onSettled: (_data, _error, _input, rollback) => settledUnreadDrop(queryClient, rollback?.drop),
+    onSettled: (_data, _error, _input, press) => settledUnreadDrop(queryClient, press?.drop),
     onSuccess: () => {
       // What the server marked is read again from the server: the list, its counts, and the
       // per-session agent state the Agents page's **New replies** badge counts.

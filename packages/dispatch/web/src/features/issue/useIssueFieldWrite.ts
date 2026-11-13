@@ -101,7 +101,7 @@ function stillInLine(row: Write, issue: string, field: string): boolean {
  * of those caches while the write is live (R7 of dispatch://INFRA-299), so an answer composed
  * before the pick arrives whole - every other row of it with it - and leaves the person's own
  * change on screen. A pick that leaves without landing - refused, discarded in Pending changes,
- * taken by a sign-out - is the store's to put back (`WriteSpec.storePutsBack`): it puts back
+ * taken by a sign-out - is the store's to put back, as every write's change is: it puts back
  * what Dispatch last gave each cache with every other live write's change over it, newer picks
  * of the field among them, and reads those caches again (R10), so a read that fails leaves the
  * screen on the value the server last confirmed rather than on a pick nothing will send. The
@@ -182,7 +182,6 @@ export function useIssueFieldWrite<Value>(
       // on one of the caches it writes until this write settles (R7), and put back by the store
       // if it leaves without landing (R10): this engine rolls nothing back itself.
       shows: (shown) => field.show(value, shown),
-      storePutsBack: true,
       target: `issue:${issueKey}`,
     });
     // The row `run` has just joined, read at the press while the store holds it: its id tells

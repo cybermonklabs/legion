@@ -355,7 +355,7 @@ test("two rapid moves on one board run one after the other, the second from the 
 });
 
 // R7 of dispatch://INFRA-299. A drop's placement is written in the press's tick as the store's
-// own writing (`Writes.writeAsStore`), placed on the board as every earlier drop left it: a drop
+// own writing (`Writes.placeAhead`), placed on the board as every earlier drop left it: a drop
 // made while an earlier one is unanswered keeps its own place, and the earlier drop's rule is not
 // run again over it.
 test("a second drop while the first is unanswered leaves both cards where they were dropped", async () => {

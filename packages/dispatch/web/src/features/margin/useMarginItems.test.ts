@@ -751,11 +751,6 @@ test("a chained action that fails refetches the comments its predecessor's succe
     return save.promise;
   });
   const { listComments, queryClient, unmount } = renderActionButtons();
-  const invalidate = spyOn(queryClient, "invalidateQueries");
-  const commentRefetches = () =>
-    invalidate.mock.calls.filter(
-      ([filters]) => JSON.stringify(filters?.queryKey) === JSON.stringify(["comments", "CORE-1"])
-    ).length;
   try {
     await user.click(screen.getByRole("button", { name: "Accept A" }));
     await user.click(screen.getByRole("button", { name: "Accept B" }));
@@ -765,19 +760,21 @@ test("a chained action that fails refetches the comments its predecessor's succe
       await saves[0]?.promise;
     });
     await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(2));
-    // A's success asked for a refetch; B's optimistic update cancelled it.
-    const before = commentRefetches();
-    expect(before).toBeGreaterThanOrEqual(1);
+    // A's success asked for a refetch; B's optimistic update cancelled it. What Dispatch holds
+    // from here on is A accepted, which only a read made after B's refusal brings.
+    const acceptedA = { ...comment("A", "m-a", "2026-09-09T00:00:00Z"), resolved: true };
+    listComments.mockResolvedValue([acceptedA]);
 
     await act(async () => {
       saves[1]?.reject(new Error("offline"));
       await saves[1]?.promise.catch(() => undefined);
     });
     await waitFor(() => expect(actionState()).toEqual({ error: "B", pending: [] }));
-    expect(commentRefetches()).toBe(before + 1);
+    await waitFor(() =>
+      expect(queryClient.getQueryData<Comment[]>(["comments", "CORE-1"])).toEqual([acceptedA])
+    );
   } finally {
     unmount();
-    invalidate.mockRestore();
     acceptComment.mockRestore();
     listComments.mockRestore();
   }

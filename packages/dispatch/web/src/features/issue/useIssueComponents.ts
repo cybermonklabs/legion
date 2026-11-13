@@ -20,11 +20,6 @@ export interface IssueComponentsWrite {
   submit: (input: IssueComponentsInput) => Promise<boolean>;
 }
 
-interface Snapshot {
-  details: IssueDetails | undefined;
-  tree: ArchitectureTree | undefined;
-}
-
 /** The attachment `input` resolves to when the server accepts it, for the issue detail cache;
  *  `inherit` depends on the ancestors, so the detail keeps its current value until the refetch. */
 function predictComponents(input: IssueComponentsInput): IssueComponents | undefined {
@@ -49,8 +44,9 @@ function predictComponents(input: IssueComponentsInput): IssueComponents | undef
  * the issue header's editor: the new attachment lands in the issue detail (when that cache
  * exists) and in the project's architecture tree (the issue moves between lists and rows, the
  * counts with it — `predictTree`), the store shows it there again over each answer that lands
- * while the write is live (R7), it rolls back on failure, and both refetch once the server has
- * answered so descendants that inherit the change appear too.
+ * while the write is live (R7) and puts back what Dispatch last gave both caches if the write
+ * leaves without landing (R10), and both refetch once the server has answered so descendants
+ * that inherit the change appear too.
  */
 export function useIssueComponents(
   issue: ArchitectureTreeIssueRef & { project: string }
@@ -65,17 +61,12 @@ export function useIssueComponents(
     // One write to the issue, in press order with every other (`issue:<KEY>`).
     target: () => `issue:${issue.key}`,
     request: (input: IssueComponentsInput) => issuePatchRequest(issue.key, { components: input }),
-    onMutate: async (): Promise<Snapshot> => {
-      await Promise.all([
+    // A read already out was asked before this press.
+    onMutate: () =>
+      Promise.all([
         queryClient.cancelQueries({ queryKey: detailKey }),
         queryClient.cancelQueries({ queryKey: treeKey }),
-      ]);
-      // What a refusal puts back, read before the press shows its change.
-      return {
-        details: queryClient.getQueryData<IssueDetails>(detailKey),
-        tree: queryClient.getQueryData<ArchitectureTree>(treeKey),
-      };
-    },
+      ]),
     /** The attachment this press shows: the issue's own `components`, where the server's answer
      *  can be predicted, and the tree with the issue moved to where it now belongs. Both are
      *  read off the cache as it stands, so an answer this is shown over again carries the move. */
@@ -87,14 +78,6 @@ export function useIssueComponents(
       shown.on<ArchitectureTree>(treeKey, (current) =>
         predictTree(current, issue, input, new Date().toISOString())
       );
-    },
-    onError: (_error, _input, snapshot) => {
-      if (snapshot?.details !== undefined) {
-        queryClient.setQueryData<IssueDetails>(detailKey, snapshot.details);
-      }
-      if (snapshot?.tree !== undefined) {
-        queryClient.setQueryData<ArchitectureTree>(treeKey, snapshot.tree);
-      }
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: treeKey });

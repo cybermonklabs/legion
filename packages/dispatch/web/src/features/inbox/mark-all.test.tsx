@@ -226,12 +226,11 @@ test("a refused press brings the rows and the counts back and says nothing was m
   const marked = answerInboxReads();
   // An old server mid-deploy has no such route, which is a failed request like any other.
   marked.mockRejectedValue(new ApiError(404, { error: "not found" }));
-  renderBar([replyRow("c1"), replyRow("c2")], 2);
-  // The count the refusal reads again: nothing was marked, so it is still two.
-  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
-    ...threadsRead([]),
-    total: 2,
-  });
+  const rows = [replyRow("c1"), replyRow("c2")];
+  const client = renderBar(rows, 2);
+  // What the refusal reads again, the list and the count alike: nothing was marked, so both
+  // threads are unread and the count is still two.
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue(threadsRead(rows));
 
   try {
     await user.click(screen.getByRole("button", { name: "Mark all read" }));
@@ -244,8 +243,11 @@ test("a refused press brings the rows and the counts back and says nothing was m
     expect(inboxCount()).toBe("2");
     expect(unread()).toBe("2");
     expect(listed()).toBe("2");
-    await waitFor(() => expect(listMyReplies).toHaveBeenCalledTimes(1));
+    // And so they stay once Dispatch's answers to the reads again have landed.
+    await waitFor(() => expect(client.isFetching()).toBe(0));
     expect(inboxCount()).toBe("2");
+    expect(unread()).toBe("2");
+    expect(listed()).toBe("2");
   } finally {
     listMyReplies.mockRestore();
   }

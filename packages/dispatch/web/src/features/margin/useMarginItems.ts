@@ -531,18 +531,11 @@ export function useMarginItems(
     () => [...needsYou.map((ask) => ({ ask, kind: "ask" as const })), ...items],
     [items, needsYou]
   );
-  const { actionFailure, mutateItem, pendingActionIds, retryItem } = useCommentActionQueue<{
-    previous: Comment[] | undefined;
-  }>({
-    onError: (_error, _input, context) => {
-      queryClient.setQueryData(commentsKey, context?.previous);
-      void queryClient.invalidateQueries({ queryKey: commentsKey });
-    },
-    onMutate: async () => {
-      await queryClient.cancelQueries({ queryKey: commentsKey });
-      // What a refusal puts back, read before the action shows its change.
-      return { previous: queryClient.getQueryData<Comment[]>(commentsKey) };
-    },
+  // A refused action is the store's to put back: the comments as Dispatch last gave them, every
+  // other live action over them, read again (R10 of dispatch://INFRA-299).
+  const { actionFailure, mutateItem, pendingActionIds, retryItem } = useCommentActionQueue({
+    // A read already out was asked before this action went out.
+    onMutate: () => queryClient.cancelQueries({ queryKey: commentsKey }),
     /** The comment as the action leaves it, written over the list as it stands, so an answer
      *  this is shown over again carries the resolve, reopen, accept or reject while every other
      *  comment that answer brought stays as the server has it (R7). */

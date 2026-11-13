@@ -77,29 +77,22 @@ export function SettingsPage(): ReactNode {
   const credentialsAvailable = useQuery(credentialPendingQuery());
   // Both mapping writes show their refusal on the row they changed, and both stand in that
   // row's line (`repo-mapping:<owner/repo>`), so a save and a removal of one mapping go out in
-  // press order.
-  const putMapping = useKeyedWrite<
-    RepoProject,
-    MappingInput,
-    { previous: RepoProject[] | undefined }
-  >({
+  // press order. A refused one is the store's to put back: the list as Dispatch last gave it,
+  // every other live mapping write over it (R10 of dispatch://INFRA-299).
+  const putMapping = useKeyedWrite<RepoProject, MappingInput>({
     request: ({ repo, ...input }) => repoProjectRequest(repo, input),
     target: ({ repo }) => `repo-mapping:${repo}`,
     inline: true,
     label: ({ repo, project: mapped }) => `${repo} mapped to ${mapped}`,
-    onError: (error, variables, context) => {
-      queryClient.setQueryData(["repo-projects"], context?.previous);
+    onError: (error, variables) => {
       setFailedAction({
         kind: "put",
         message: apiErrorMessage(error, `Couldn't save ${variables.repo}.`),
         ...variables,
       });
     },
-    onMutate: async () => {
-      await queryClient.cancelQueries({ queryKey: ["repo-projects"] });
-      // What a refusal puts back, read before the press shows its mapping.
-      return { previous: queryClient.getQueryData<RepoProject[]>(["repo-projects"]) };
-    },
+    // A read already out was asked before this press.
+    onMutate: () => queryClient.cancelQueries({ queryKey: ["repo-projects"] }),
     /** The mapping this press shows, written into the list as it stands - so an answer this is
      *  shown over again carries the mapping, and every other mapping that answer brought with
      *  it stays (R7). */
@@ -140,24 +133,20 @@ export function SettingsPage(): ReactNode {
     // write settles leaves the page on the server's state, as useIssueFieldWrite does an issue's.
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["repo-projects"] }),
   });
-  const deleteMapping = useKeyedWrite<void, string, { previous: RepoProject[] | undefined }>({
+  const deleteMapping = useKeyedWrite<void, string>({
     request: (repo: string) => repoProjectDeleteRequest(repo),
     target: (repo) => `repo-mapping:${repo}`,
     inline: true,
     label: (repo) => `${repo}'s mapping removed`,
-    onError: (error, repo, context) => {
-      queryClient.setQueryData(["repo-projects"], context?.previous);
+    onError: (error, repo) => {
       setFailedAction({
         kind: "delete",
         message: apiErrorMessage(error, `Couldn't delete ${repo}.`),
         repo,
       });
     },
-    onMutate: async () => {
-      await queryClient.cancelQueries({ queryKey: ["repo-projects"] });
-      // What a refusal puts back, read before the press shows the removal.
-      return { previous: queryClient.getQueryData<RepoProject[]>(["repo-projects"]) };
-    },
+    // A read already out was asked before this press.
+    onMutate: () => queryClient.cancelQueries({ queryKey: ["repo-projects"] }),
     /** The removal this press shows: the row out of the list as it stands, so an answer this is
      *  shown over again loses it too while every other mapping it carries stays. */
     shows: (repo) => (shown) => {

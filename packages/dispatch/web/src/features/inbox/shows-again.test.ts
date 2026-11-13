@@ -5,9 +5,10 @@ import { createElement, type ReactNode } from "react";
 
 import { settle } from "../../__tests__/fake-clock";
 import { answerAskAnswers, answerAskHandOns, answerAskSnoozes } from "../../__tests__/send-answers";
-import { api, askAnswerRequest } from "../../api/client";
+import { ApiError, api, askAnswerRequest } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { AnswerAskInput, Ask, InboxRow } from "../../api/types";
+import { writesOf } from "../writes/write-store";
 import { issueAsk } from "./inbox-fixture";
 import { useOutstandingAnswerWrite } from "./outstanding-answers";
 import { useAskHandOn } from "./useAskHandOn";
@@ -145,6 +146,52 @@ test("an inbox answer landing while a snooze is out keeps the moment and brings 
     expect(view.row("ask-b")?.priority).toBe(3);
   } finally {
     await land(held, { snoozed_until: until });
+    view.cleanup();
+    snooze.mockRestore();
+  }
+});
+
+// R10 of dispatch://INFRA-299. Two snoozes of one ask, both live: the first goes out, and the
+// second, pressed while the first's moment is on screen, waits behind it in the ask's line.
+// Dispatch refuses the first, then the second, and the Inbox cannot be read again - offline, a
+// 5xx. The row is left as Dispatch last gave it: never on the first's refused moment, which a
+// snapshot taken at the second's press holds, and never on the second's.
+test("two snoozes of one ask, both refused while the Inbox cannot be read, leave the row as Dispatch last gave it", async () => {
+  const first = Promise.withResolvers<{ snoozed_until: string }>();
+  const refusal = new ApiError(422, { code: "INVALID_SNOOZE", error: "not a moment" });
+  const snooze = answerAskSnoozes()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementation(() => Promise.reject(refusal));
+  const later = "2026-12-08T00:00:00Z";
+  const view = renderInboxWrite(() => useAskSnooze("ask-a"));
+  try {
+    await view.ready();
+    const confirmed = view.row("ask-a")?.snoozed_until;
+    await act(async () => {
+      view.write().submit(until);
+      await settle();
+    });
+    await waitFor(() => expect(snooze).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      view.write().submit(later);
+      await settle();
+    });
+    expect(view.row("ask-a")?.snoozed_until).toBe(later);
+    // From here on every read of the Inbox fails.
+    view.getInbox.mockRejectedValue(new Error("Failed to fetch"));
+
+    await act(async () => {
+      first.reject(refusal);
+      await first.promise.catch(() => {});
+      await settle();
+    });
+    await waitFor(() => expect(snooze).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(writesOf(view.client).rows()).toEqual([]));
+    await waitFor(() =>
+      expect(view.client.getQueryState(inboxQuery().queryKey)?.status).toBe("error")
+    );
+    expect(view.row("ask-a")?.snoozed_until).toBe(confirmed);
+  } finally {
     view.cleanup();
     snooze.mockRestore();
   }

@@ -26,14 +26,15 @@ export interface AskSnoozeWrite {
 
 /**
  * The one way the SPA writes a row's snooze. The new moment lands on every inbox cache at once,
- * so the row drops into `Later` (or climbs back out) on the click, rolls back if the server
- * refuses, and the list refetches once the save settles - the same shape as the issue field
- * writes, without their cross-surface caches: a snooze is on the ask and shows nowhere else.
+ * so the row drops into `Later` (or climbs back out) on the click, and the list refetches once
+ * the save settles - the same shape as the issue field writes, without their cross-surface
+ * caches: a snooze is on the ask and shows nowhere else.
  *
  * The moment is shown by the store (`WriteSpec.shows`), so it is shown again over each answer
  * that lands on an inbox cache while the write is live (R7 of dispatch://INFRA-299): an answer
  * composed before the snooze arrives whole - every other row of it with it - and leaves the
- * row where the reader put it.
+ * row where the reader put it. A refused snooze is the store's to put back: the lists as
+ * Dispatch last gave them, every other live write's change over them (R10).
  */
 export function useAskSnooze(askId: string): AskSnoozeWrite {
   const queryClient = useQueryClient();
@@ -54,15 +55,8 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
         current.map((row) => (row.id === askId ? { ...row, snoozed_until: until } : row))
       );
     },
-    onMutate: async () => {
-      await queryClient.cancelQueries({ queryKey: inboxKey });
-      return queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
-    },
-    onError: (_error, _until, previous) => {
-      for (const [key, data] of previous ?? []) {
-        queryClient.setQueryData(key, data);
-      }
-    },
+    // A read already out was asked before this press.
+    onMutate: () => queryClient.cancelQueries({ queryKey: inboxKey }),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: inboxKey });
     },
@@ -101,9 +95,9 @@ export interface AskSnoozeManyWrite {
  * `Later` on the pick, each through its own write's change, and the list refetches once the
  * whole set has settled. Each ask is a write of its own, under a key of its own and tried until
  * Dispatch decides it, so a transport failure is tried again rather than counted a refusal, and
- * each settles on its own: a refusal rolls back that row alone - to the moment it had before,
- * not to null, which would un-snooze a row that was already deferred - and the ones the server
- * took stay where they landed.
+ * each settles on its own: the store puts a refused one's row back as Dispatch last gave it -
+ * to the moment it had before, not to null, which would un-snooze a row that was already
+ * deferred - and the ones the server took stay where they landed.
  *
  * Each write shows its own row's moment through the store (`WriteSpec.shows`), so an answer
  * that lands on an inbox cache while the set is out carries every row of it and still leaves
@@ -118,13 +112,12 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
     pending: pending > 0,
     submit: async (ids, until) => {
       // Built before anything is written down: the builder refuses an id the route's pattern has
-      // no value for, and a refusal here, inside `ids.map` below, would escape `submit` after the
-      // optimistic write with `pending` raised and no row rolled back. No caller sends an empty
-      // id, so this is where that stays true rather than a case to handle.
+      // no value for, and a refusal here, inside `ids.map` below, would escape `submit` with
+      // `pending` raised. No caller sends an empty id, so this is where that stays true rather
+      // than a case to handle.
       const writeOf = ids.map((id) => ({ id, request: askSnoozeRequest(id, until) }));
       setPending((count) => count + 1);
       await queryClient.cancelQueries({ queryKey: inboxKey });
-      const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
       const results = await Promise.allSettled(
         writeOf.map(({ id, request }) =>
           writes.run({
@@ -151,15 +144,6 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
         const reason: unknown = result.reason;
         return [{ askId, reason: reason instanceof Error ? reason.message : String(reason) }];
       });
-      const refused = new Set(failed.map(({ askId }) => askId));
-      for (const [key, data] of refused.size === 0 ? [] : previous) {
-        const before = new Map((data ?? []).map((row) => [row.id, row.snoozed_until]));
-        queryClient.setQueryData<InboxRow[]>(key, (current) =>
-          current?.map((row) =>
-            refused.has(row.id) ? { ...row, snoozed_until: before.get(row.id) ?? null } : row
-          )
-        );
-      }
       void queryClient.invalidateQueries({ queryKey: inboxKey });
       setPending((count) => count - 1);
       return { failed };

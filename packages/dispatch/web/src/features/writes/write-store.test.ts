@@ -2059,9 +2059,9 @@ function readAgain(client: QueryClient, key: readonly unknown[]): boolean | unde
   return client.getQueryState(key)?.isInvalidated;
 }
 
-// R10 of dispatch://INFRA-299. A Retry's change has no press behind it to put it back: the first
-// refusal settled that press, and the surface's own rollback ran then. So once the Retry is
-// refused in its turn, the store reads again the caches its change wrote, and only those.
+// R10 of dispatch://INFRA-299. A Retry's change has no press behind it: the first refusal settled
+// that press, and the store put its change back then. So once the Retry is refused in its turn,
+// the store reads again the caches its change wrote, and only those.
 test("a Retry refused again reads again the caches its change wrote", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();
@@ -2083,7 +2083,7 @@ test("a Retry refused again reads again the caches its change wrote", async () =
         .catch(() => {});
       await settle();
       expect(row(writes)?.status).toBe("refused");
-      // The surface's rollback, which the press's refusal ran.
+      // Dispatch's answer to the read again that refusal asked for.
       client.setQueryData(["user-state"], { pinned: false });
 
       writes.retry(row(writes)?.id ?? 0);
@@ -2105,7 +2105,7 @@ test("a Retry refused again reads again the caches its change wrote", async () =
 });
 
 // A Retry waiting its turn behind another write of its row, never sent, is the reader's to
-// discard: no press puts its change back, so the store reads its caches again.
+// discard: the store puts its change back and reads its caches again.
 test("a discarded Retry that waited its turn reads again the caches its change wrote", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();
@@ -2180,7 +2180,7 @@ async function retriedBesideAMark(retried: () => Promise<unknown>) {
     })
     .catch(() => {});
   await settle();
-  // The surface's rollback, which the press's refusal ran.
+  // Dispatch's answer to the read again the press's refusal asked for.
   client.setQueryData<PinAndMark>(["user-state"], { pinned: false, read: false, seq: 1 });
   void writes
     .run({

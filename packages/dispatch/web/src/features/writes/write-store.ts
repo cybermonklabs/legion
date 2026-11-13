@@ -280,16 +280,11 @@ interface WriteSpecBase<D, K> {
   readonly answerShownOnce?: string;
   /** The change this write shows, for a write that shows one: the store shows it at the press,
    *  before anything goes out, again over each cache write that lands on a cache it wrote while
-   *  the write is live (`#showAgain`), and again as a Retry puts it back in its line. A write
-   *  that shows nothing - a read mark, a create that only asks for a list again - leaves it
-   *  out. */
+   *  the write is live (`#showAgain`), and again as a Retry puts it back in its line; and it
+   *  puts it back as the write leaves its line without landing - refused, discarded or taken,
+   *  its press waiting or not (`#putBack`). A write that shows nothing - a read mark, a create
+   *  that only asks for a list again - leaves it out. */
   readonly shows?: WriteChange;
-  /** Whether the store puts this write's change back however it leaves its line without
-   *  landing - refused, discarded or taken - while its press still waits, as it does for a write
-   *  no press waits for (`#putBack`): for a surface whose press never rolls back what it showed
-   *  itself - an issue field's engine, a pin. Left out, a press that still waits rolls its own
-   *  change back, and the store leaves that to the surface the press's refusal reaches. */
-  readonly storePutsBack?: boolean;
 }
 
 /** What became of a write, told once the store's rows say so: it landed (with Dispatch's
@@ -369,9 +364,6 @@ interface Entry {
   /** The key every cache that change wrote by prefix starts with (`Shown.under`), so a cache an
    *  answer fills for the first time is shown over too. */
   readonly under: QueryKey[];
-  /** Whether the store puts that change back as the write leaves its line while its press still
-   *  waits (`WriteSpec.storePutsBack`). */
-  readonly storePutsBack: boolean;
 }
 
 /** Whether `entry`'s change wrote `query`'s cache, by name or by prefix, so a cache write that
@@ -383,24 +375,11 @@ function wrote(entry: Entry, query: Query): boolean {
 }
 
 /** Whether the store puts `entry`'s change back as it leaves its line (`#putBack`): a live write
- *  that shows one, with no press left to put it back - a Retry's, whose press the first refusal
- *  settled, the surface's own rollback running then - or whose press never puts it back
- *  (`WriteSpec.storePutsBack`). Any other write whose press still waits leaves that to the
- *  surface, which the press's refusal reaches; one that is not live showed nothing since it last
- *  settled. */
+ *  that shows one, whether or not a press still waits for it. No surface rolls back a change it
+ *  named here; one that is not live showed nothing since it last settled. */
 function putBackByStore(entry: Entry): boolean {
-  return (
-    entry.shows !== undefined &&
-    liveWrite(entry.write) &&
-    (entry.press === undefined || entry.storePutsBack)
-  );
+  return entry.shows !== undefined && liveWrite(entry.write);
 }
-
-/** What the store does for a write's change as that write leaves its line without landing:
- *  puts back Dispatch's last answer with every other live write's change over it, then reads
- *  again (`put`); only reads again, the surface's own rollback putting the change back (`read`);
- *  or nothing, for a change no longer on the screen (`none`). */
-type Back = "none" | "put" | "read";
 
 /** Whether `write` may still reach Dispatch, which is while its change is shown again: waiting
  *  its turn, out, or late - `stopping` among them, since the attempt already out may still land.
@@ -513,8 +492,12 @@ export class Writes {
    *  (`#showAgain`), with the change of each write Dispatch made written into it (`#keepMade`).
    *  What a write leaving its line without landing is put back to (`#putBack`), so a read again
    *  that fails leaves the screen on that answer with every other live change over it, never on
-   *  the change that left. A cache no live change wrote any more is let go (`#prune`). */
+   *  the change that left. A cache no live change wrote any more, and no change placed ahead of
+   *  its write holds (`#ahead`), is let go (`#prune`). */
   readonly #confirmed = new Map<string, unknown>();
+  /** How many changes placed ahead of their writes (`placeAhead`) hold each cache's kept data
+   *  (`#confirmed`), by its hash, until their writes have settled. */
+  readonly #ahead = new Map<string, number>();
 
   constructor(
     client: QueryClient,
@@ -525,9 +508,9 @@ export class Writes {
     this.#kept = kept;
     this.#files = files;
     // Every cache write that lands, from wherever it came: an answer a fetch put there, or a
-    // `setQueryData` of the page's own - a surface merging Dispatch's answer, a surface rolling
-    // a refused change back, a kind's landing, the event feed's patch - each of which may replace
-    // what a live write showed. The store's own writing is not one (`#whileShowing`).
+    // `setQueryData` of the page's own - a surface merging Dispatch's answer, a kind's landing,
+    // the event feed's patch - each of which may replace what a live write showed. The store's
+    // own writing is not one (`#whileShowing`).
     client.getQueryCache().subscribe((event) => {
       if (event.type !== "updated" || event.action.type !== "success") return;
       this.#showAgain(event.query);
@@ -560,11 +543,11 @@ export class Writes {
    * that wrote that cache, in the order the store holds them in (`joined`), so the last to be
    * pressed is the last to be seen (R7 of dispatch://INFRA-299). A cache write is any the store
    * did not make itself: an answer a fetch put there, and every `setQueryData` of the page's - a
-   * surface merging an earlier write's answer, a surface's rollback of a refused change - since
-   * each replaces what the live writes showed there. Each change is the same call its press made,
-   * read against the cache as it stands, so what reappears is the change itself and never a value
-   * computed before it. That cache write, before any change is shown over it, is what the store
-   * puts back once a live write leaves without landing (`#confirmed`, `#putBack`).
+   * surface merging an earlier write's answer, the event feed's patch - since each replaces what
+   * the live writes showed there. Each change is the same call its press made, read against the
+   * cache as it stands, so what reappears is the change itself and never a value computed before
+   * it. That cache write, before any change is shown over it, is what the store puts back once a
+   * live write leaves without landing (`#confirmed`, `#putBack`).
    *
    * Live is `queued`, `sending` and `late`, `stopping` among them, because the attempt already
    * out may still land; a write that was refused, discarded or made is not, and a write that
@@ -579,7 +562,10 @@ export class Writes {
     if (this.#showing) return;
     const live = this.#liveOn(query);
     if (live.length === 0) {
-      this.#confirmed.delete(query.queryHash);
+      // A change placed ahead of its write is not shown over again before that write joins, but
+      // the cache write that replaced it is what that write is put back to.
+      if (this.#ahead.has(query.queryHash)) this.#confirmed.set(query.queryHash, query.state.data);
+      else this.#confirmed.delete(query.queryHash);
       return;
     }
     this.#confirmed.set(query.queryHash, query.state.data);
@@ -614,14 +600,30 @@ export class Writes {
     }
   }
 
-  /** Runs `write`, a surface's own cache write of a change it shows before its write joins the
-   *  store, as the store's own writing: no live write's change is shown over it again
-   *  (`#showAgain`). For a change made from the cache as it stands - every live write's change
-   *  already in it - in the press's tick, whose write waits behind a mutation scope and so names
-   *  its `shows` only when its turn comes: a board drop placed on the board an earlier,
-   *  unanswered drop left, which showing that drop again over would move. */
-  writeAsStore(write: () => void): void {
-    this.#whileShowing(write);
+  /** Writes `data` into `key`'s cache as the store's own writing - no live write's change is
+   *  shown over it again (`#showAgain`) - for a change a surface shows before its write joins
+   *  the store, and keeps what that cache held as what the store puts back there until the
+   *  answer `release`s it, called once that write has settled (`#ahead`). For a change made
+   *  from the cache as it stands - every live write's change already in it - in the press's
+   *  tick, whose write waits behind a mutation scope and so names its `shows` only when its turn
+   *  comes: a board drop placed on the board an earlier, unanswered drop left, which showing that
+   *  drop again over would move. Without the hold, the cache would be taken as Dispatch's at that
+   *  write's join, the drop in it, and a refusal would put the refused drop back. */
+  placeAhead(key: QueryKey, data: unknown): () => void {
+    const client = this.#client;
+    const hash = hashKey(key);
+    this.#confirm(hash, client.getQueryData(key));
+    this.#ahead.set(hash, (this.#ahead.get(hash) ?? 0) + 1);
+    this.#whileShowing(() => client.setQueryData(key, data));
+    let held = true;
+    return () => {
+      if (!held) return;
+      held = false;
+      const left = (this.#ahead.get(hash) ?? 1) - 1;
+      if (left > 0) this.#ahead.set(hash, left);
+      else this.#ahead.delete(hash);
+      this.#prune();
+    };
   }
 
   /** Shows `entry`'s change, if it has one, on every cache it names (`#everywhere`): at the
@@ -746,7 +748,6 @@ export class Writes {
       request: request ?? null,
       shows: spec.shows,
       stop: new AbortController(),
-      storePutsBack: spec.storePutsBack ?? false,
       turn: undefined,
       under: [],
       unkept: false,
@@ -884,28 +885,24 @@ export class Writes {
    *  write that is out, or that went out before and waits to go again, is not the reader's to
    *  drop: it may have reached Dispatch, so it stays until Dispatch answers or the reader stops
    *  it. A waiting one still shows its change, press or not, and its press is refused with no
-   *  failure to show - its surface may not even be on screen - so the store reads again every
-   *  cache that change wrote (`#readAgain`); a live write's change, a pick that replaced it among
-   *  them, is shown again over that answer (`#showAgain`). Where no press puts that change back -
-   *  none waits, or its surface leaves that to the store (`WriteSpec.storePutsBack`) - the store
-   *  first puts back Dispatch's last answer with every other live change over it (`#putBack`),
-   *  so a read that fails leaves no discarded change on the screen. A refused one put its change
-   *  back as it was refused, and has nothing left to read again. */
+   *  failure to show - its surface may not even be on screen - so the store puts back Dispatch's
+   *  last answer with every other live change over it (`#putBack`), a pick that replaced it among
+   *  them, and reads again every cache that change wrote (`#readAgain`), so a read that fails
+   *  leaves no discarded change on the screen. A refused one had its change put back as it was
+   *  refused, and has nothing left to put back. */
   discard(id: number): boolean {
     const entry = this.#entries.get(id);
     if (entry === undefined) return false;
     const waiting = entry.write.status === "queued" && !entry.write.sent;
     if (entry.write.status !== "refused" && !waiting) return false;
-    // Read while its press still waits, which decides whether the store puts its change back.
-    const back: Back =
-      !waiting || entry.shows === undefined ? "none" : putBackByStore(entry) ? "put" : "read";
+    const putBack = putBackByStore(entry);
     const discarded = new WriteDiscardedError();
     entry.press?.reject(discarded);
     entry.press = undefined;
     entry.turn?.settled.reject(discarded);
     entry.turn = undefined;
     this.#remove(entry);
-    this.#undo(entry, entry.write, back);
+    this.#undo(entry, entry.write, putBack);
     this.#prune();
     this.#emit({ kind: "discarded", write: entry.write });
     this.#advance(entry.write.target);
@@ -1152,7 +1149,6 @@ export class Writes {
       request,
       shows: undefined,
       stop: new AbortController(),
-      storePutsBack: false,
       turn: undefined,
       under: [],
       unkept: false,
@@ -1415,30 +1411,27 @@ export class Writes {
    *  refusal itself or it is never shown - and the next write of its target goes. One Dispatch
    *  refused because someone else is signed in goes with every write of its login, and the page
    *  reads who is signed in again. A refused sign-out leaves its person signed in, so every write
-   *  of theirs it held goes on. A refused Retry has no press to put its change back, nor has a
-   *  write whose surface leaves that to the store (`WriteSpec.storePutsBack`), so the store puts
-   *  back Dispatch's last answer and reads its caches again (`#putBack`, `#readAgain`). */
+   *  of theirs it held goes on. Whether or not a press still waits for it, the store puts back
+   *  Dispatch's last answer on the caches its change wrote and reads them again (`#putBack`,
+   *  `#readAgain`); no surface rolls it back itself. */
   #refused(entry: Entry, refusal: Error): void {
-    const back: Back = putBackByStore(entry) ? "put" : "none";
+    const putBack = putBackByStore(entry);
     entry.press?.reject(refusal);
+    entry.press = undefined;
     if (
       refusal instanceof ApiError &&
       refusal.status === 409 &&
       refusal.code === DISPATCH_LOGIN_CHANGED
     ) {
-      // The press stays named until the take, which reads it to leave a change the press's
-      // surface rolls back to that surface (`putBackByStore`); refusing it there again settles
-      // nothing.
       const login = entry.write.login;
       this.#drop([...this.#entries.values()].filter((other) => other.write.login === login));
       void this.#client.invalidateQueries({ queryKey: ["whoami"] });
       return;
     }
-    entry.press = undefined;
     const write: Write = { ...baseOf(entry.write), refusal, status: "refused" };
     if (entry.write.inline || entry.write.presentation === "quiet") this.#remove(entry);
     else this.#update(entry, write);
-    this.#undo(entry, write, back);
+    this.#undo(entry, write, putBack);
     this.#prune();
     this.#emit({ kind: "refused", refusal, write });
     this.#advance(write.target);
@@ -1460,14 +1453,14 @@ export class Writes {
 
   /** Takes every one of `entries` out of the store first, then lets each go wherever it stood: its
    *  trying stops, its press is refused, nothing of it is kept, and its kind undoes what it showed
-   *  of it - the store putting back, and reading again, the caches of a change no press puts
-   *  back (`#undo`). Once the rows no longer hold them, it tells each one's outcome (`taken`).
+   *  of it - the store putting back, and reading again, the caches of a change still on the
+   *  screen (`#undo`). Once the rows no longer hold them, it tells each one's outcome (`taken`).
    *  Starts nothing, and answers the targets whose lines it took writes from. */
   #take(entries: readonly Entry[]): Set<string | undefined> {
     const taken = entries.filter((entry) => this.#entries.get(entry.write.id) === entry);
     for (const entry of taken) this.#entries.delete(entry.write.id);
     for (const entry of taken) {
-      const back: Back = putBackByStore(entry) ? "put" : "none";
+      const putBack = putBackByStore(entry);
       clearTimeout(entry.expiry);
       entry.stop.abort();
       entry.press?.reject(new SendStoppedError());
@@ -1475,7 +1468,7 @@ export class Writes {
       entry.turn?.settled.reject(new SendStoppedError());
       entry.turn = undefined;
       this.#forget(entry);
-      this.#undo(entry, entry.write, back);
+      this.#undo(entry, entry.write, putBack);
     }
     // Only once every one of them has put its change back: each puts back what Dispatch last
     // gave the caches it wrote, which the others taken with it need too.
@@ -1486,14 +1479,14 @@ export class Writes {
   }
 
   /** Undoes what `entry` showed as it leaves its line - refused, discarded or taken - as `write`:
-   *  its kind's `undone`, then what `back` says for a change still on the screen: Dispatch's last
+   *  its kind's `undone`, then, with `putBack`, for a change still on the screen, Dispatch's last
    *  answer put back under every other live change (`#putBack`) and a read of every cache that
-   *  change wrote (`#readAgain`), or that read alone where the surface's own rollback puts the
-   *  change back. The one place the three exits pair the three. */
-  #undo(entry: Entry, write: Write, back: Back): void {
+   *  change wrote (`#readAgain`). The one place the three exits pair the three. */
+  #undo(entry: Entry, write: Write, putBack: boolean): void {
     kinds.get(write.kind)?.undone?.(this.#client, write);
-    if (back === "put") this.#putBack(entry);
-    if (back !== "none") this.#readAgain(entry);
+    if (!putBack) return;
+    this.#putBack(entry);
+    this.#readAgain(entry);
   }
 
   /** Puts back, on every cache `entry`'s change wrote, the data Dispatch last gave it
@@ -1516,11 +1509,13 @@ export class Writes {
     });
   }
 
-  /** Lets go of the data kept for every cache no live write's change wrote any more
-   *  (`#confirmed`): the next change shown there takes it afresh. */
+  /** Lets go of the data kept for every cache no live write's change wrote any more and no
+   *  change placed ahead of its write holds (`#confirmed`, `#ahead`): the next change shown
+   *  there takes it afresh. */
   #prune(): void {
     const cache = this.#client.getQueryCache();
     for (const hash of [...this.#confirmed.keys()]) {
+      if (this.#ahead.has(hash)) continue;
       const query = cache.get(hash);
       if (query === undefined || this.#liveOn(query).length === 0) this.#confirmed.delete(hash);
     }

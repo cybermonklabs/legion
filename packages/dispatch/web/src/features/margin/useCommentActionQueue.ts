@@ -63,10 +63,9 @@ interface Refused {
   readonly key: string | undefined;
 }
 
-interface CommentActionQueueOptions<TContext> {
-  onError?(error: Error, input: CommentActionInput, context: TContext | undefined): void;
-  /** What a refusal puts back, read as the action goes out. */
-  onMutate?(input: CommentActionInput): TContext | Promise<TContext>;
+interface CommentActionQueueOptions {
+  /** Runs as the action goes out, before it shows its change. */
+  onMutate?(input: CommentActionInput): void | Promise<void>;
   /** The change this action shows, named as the action goes out and held with the write
    *  (`Writes.shows`), so the store shows it again over each answer that lands on a cache it
    *  wrote until the action settles. */
@@ -176,12 +175,7 @@ function afterEarlierActions(
  * offered one press, and the store holds it - and the card that offered a refused action shows
  * its refusal with a Retry (`CommentActionFailure`).
  */
-export function useCommentActionQueue<TContext = undefined>({
-  onError,
-  onMutate,
-  onSuccess,
-  shows,
-}: CommentActionQueueOptions<TContext>) {
+export function useCommentActionQueue({ onMutate, onSuccess, shows }: CommentActionQueueOptions) {
   const writes = useWrites();
   const [refused, setRefused] = useState<Refused | undefined>(undefined);
   const inLine = useWriteSelection("comment-actions", (rows) =>
@@ -194,7 +188,6 @@ export function useCommentActionQueue<TContext = undefined>({
 
   function press(input: CommentActionInput, key: string): void {
     const request = commentActionRequest(input);
-    let context: TContext | undefined;
     let begun = false;
     setRefused(undefined);
     void writes
@@ -213,10 +206,10 @@ export function useCommentActionQueue<TContext = undefined>({
             // What the card shows while the action is out is written as it goes out, so an
             // action cleared behind a failure never showed anything to put back. From there the
             // change is the store's: it shows it again over each answer that lands on a cache it
-            // wrote until this action settles (R7 of dispatch://INFRA-299). An action the store
-            // let go or held while `onMutate` ran is sent no more than one let go or held while
-            // it waited.
-            context = (await onMutate?.(input)) as TContext | undefined;
+            // wrote until this action settles (R7 of dispatch://INFRA-299), and puts it back if
+            // the action leaves without landing (R10). An action the store let go or held while
+            // `onMutate` ran is sent no more than one let go or held while it waited.
+            await onMutate?.(input);
             const id = writes.idOf(key);
             if (id === undefined) throw new CommentActionClearedError();
             if (bounds.signal?.aborted === true) throw new SendStoppedError();
@@ -234,7 +227,6 @@ export function useCommentActionQueue<TContext = undefined>({
         (error: unknown) => {
           if (error instanceof CommentActionClearedError) return;
           const refusal = error instanceof Error ? error : new Error(String(error));
-          onError?.(refusal, input, context);
           setRefused({
             failure: actionFailure(input.id, refusal),
             input,
