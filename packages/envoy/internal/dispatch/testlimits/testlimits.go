@@ -19,7 +19,11 @@ import "github.com/sjawhar/envoy/internal/dispatch/store"
 // server serves, and parallel root tests in it share that server. A process counts from its start
 // until it exits, which is what it holds connections for. cmd/dispatch/connection_ceiling_test.go
 // refuses the start of one more process than this and names this constant.
-const MaxProcessesAtOnce = 3
+//
+// The value is that same count's peak over the cmd/dispatch test binaries the lanes run (no tag,
+// memory, multiprocess and twobuild), so it is what the guard holds rather than an estimate: a
+// binary that comes to run more is refused by name, and this number is raised to what it runs.
+const MaxProcessesAtOnce = 4
 
 // RequiredConnections is what MaxProcessesAtOnce Dispatch processes may open together.
 const RequiredConnections = MaxProcessesAtOnce * store.ConnectionsPerProcess

@@ -48,7 +48,7 @@ superuser=$(id -un)
 # script leaves superuser_reserved_connections at its default. A shell script cannot read the Go
 # constant, so it holds the sum, and packages/envoy/internal/dispatch/testlimits/testlimits_test.go
 # fails when the two differ.
-max_connections=359
+max_connections=471
 
 die() {
 	echo "$name: $*" >&2
