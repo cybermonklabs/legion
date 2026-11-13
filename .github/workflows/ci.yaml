@@ -1646,6 +1646,12 @@ jobs:
               - 'scripts/dispatch/**'
               - 'scripts/github-apps/**'
               - 'scripts/sessions/**'
+              # The approval-eval statistics: its lint, typecheck and test steps read it.
+              - 'scripts/approval-eval/**'
+              # Its test step reads one page of skills/ through the statistics' own source:
+              # scripts/approval-eval/never-decide.ts:75-77 reads the never-decide rule, which
+              # refusals.ts:720 asks for on every refusal run.
+              - 'skills/approval-review/references/never-decide.md'
               # The one tool the job still installs: changie, for the fold below.
               # Its one step sources .github/scripts/ci-tools.sh and fetches the `changie` row of
               # .github/ci-tools.yaml, both of which the tool harness lists above name.
@@ -2616,6 +2622,11 @@ jobs:
               - 'packages/pi-shared/src/**'
               - 'packages/pi-shared/test/**'
               - 'packages/envoy-client/src/**'
+              # extensions/legion-role-claim.test.ts:46 reaches the Envoy plugin's own test helper
+              # for a registration answer (packages/envoy-client/test/subscribe-answer.ts), which
+              # packages/pi-shared/test/omp-harness.ts:17 imports too, so the tsc program of this
+              # package compiles that file and the tests read it.
+              - 'packages/envoy-client/test/subscribe-answer.ts'
               # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'

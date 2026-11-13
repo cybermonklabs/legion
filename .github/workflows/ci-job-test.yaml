@@ -510,6 +510,16 @@ jobs:
       # this job that needed a database. The lint and the typecheck above stay, since they need
       # none and share this job's Bun.
 
+      - name: Lint the approval-eval statistics
+        run: bunx biome check --error-on-warnings scripts/approval-eval
+
+      # scripts/approval-eval is no workspace either; the root package pins its TypeScript and Bun types.
+      - name: Typecheck the approval-eval statistics
+        run: bunx tsc --noEmit -p scripts/approval-eval
+
+      - name: Test the approval-eval statistics
+        run: bun test scripts/approval-eval
+
       # Go, but no Actions cache: the go-daemon entry holds what compiling packages/daemon
       # leaves behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps
       # that compiled it. What runs go here is the held-port build of the envoy listener below,
