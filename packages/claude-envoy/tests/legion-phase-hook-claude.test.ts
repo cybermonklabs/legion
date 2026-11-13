@@ -338,9 +338,8 @@ async function runWorker(options: {
     JSON.parse(
       await readFile(resolve(PACKAGE, "../contracts/fixtures/daemon-api", name), "utf8"),
     ) as Record<string, unknown>
-  // The daemon's own golden answers, so a field the daemon adds to either reaches this stand-in.
+  // The daemon's own golden answer, so a field the daemon adds to it reaches this stand-in.
   const registered = await fixture("register.json")
-  const state = await fixture("state.json")
   const ready = Promise.withResolvers<void>()
   let answered = 0
   const { requests, base } = serveStandin((url, body) => {
@@ -374,7 +373,6 @@ async function runWorker(options: {
       ready.resolve()
       return new Response(null, { status: 204 })
     }
-    if (url.pathname === "/legion/v1/state") return Response.json(state)
     if (url.pathname === "/legion/v1/claims/owed") return Response.json({ owes: true, work: WORK })
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 })

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ROLE_TOPIC_PREFIX, roleToken } from "@legion/contracts";
+import { roleToken, roleTopic } from "@legion/contracts";
 import type { LegionOwed } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
@@ -31,7 +31,7 @@ import type { StallLimits } from "./stall-limits";
  *
  * Whether a reminder goes out at all is the daemon's answer (`POST /legion/v1/claims/owed`),
  * asked as each one is due: the reminder keeps no model of the issue's phase, so a process the
- * daemon restarts or a pod it replaces asks again and reads the same answer (INFRA-3136).
+ * daemon restarts or a pod it replaces asks again and reads the same answer.
  *
  * The first reminder of a run is the `session_stop` continuation, which the host turns into one
  * more turn of the same session, and it is the only one of that run: every one after it is a
@@ -96,9 +96,9 @@ export interface PhaseReminderDeps {
 export interface PhaseReminder {
   /** `session_start`: the record this host persisted, or undefined when it holds none yet. */
   readonly restore: (entry: PhaseStallEntry | undefined) => void;
-  /** `session_start`, once the claim bootstrap has returned: the resume reminder, for a worker
-   * the daemon relaunched owing work that nothing else will wake it for. The daemon's answer
-   * when it is due decides whether it goes out. */
+  /** `session_start`, once the claim bootstrap has returned: the resume reminder, armed at every
+   * phase worker's boot, for a worker that owes work nothing else will wake it for. The daemon's
+   * answer when it is due decides whether it goes out. */
   readonly armResumeReminder: () => void;
   /** `message_start`: a turn is running, and every armed timer is now stale. */
   readonly turnStarted: () => void;
@@ -134,12 +134,9 @@ export interface PhaseReminder {
  * no setting and no switch: a value nobody measures is worse than a line somebody edits, so the
  * measurement it was sized against is written here.
  *
- * Measured on 2026-11-12. The bound this replaces, 5 s on a read of the daemon's whole state, did
- * not fit INFRA: its `GET /legion/v1/state` answered in 9.2 s to 9.6 s (4,121,439 bytes, at
- * 18:30Z; 8.6 s to 8.8 s from 17:59Z to 18:08Z), so every reminder there timed out, and the
- * timeout reminded. That was most of the fleet's reminder noise: from 13:35Z to 17:25Z INFRA sent
- * 1,642 reminders, BET 71, OSSV 15 and LINUX none. The same INFRA daemon answered a cheap route
- * (`GET /healthz`) in 4.4 ms to 6.7 ms, with one first connection at 1.0 s. The owed route reads
+ * Measured on 2026-11-12. The INFRA daemon answered a cheap route (`GET /healthz`) in 4.4 ms to
+ * 6.7 ms, with one first connection at 1.0 s, while its `GET /legion/v1/state` answered in 9.2 s
+ * to 9.6 s (4,121,439 bytes), which is why the check reads no whole state. The owed route reads
  * the asking claim, its issue's record and its tree root's, and that issue's own phase, pull
  * request and check rows (`claimOwed` in `packages/daemon/internal/api/owed.go`, `handoffPosition`
  * in `handoff.go`), each by key, so its time does not grow with the deployment: through the real
@@ -162,12 +159,10 @@ export const OWED_READ_BOUND_MS = 3_000;
  * (`createPhaseReminder`: Oh My Pi in `packages/pi-legion/extensions/legion.ts`, Claude Code in
  * `packages/claude-envoy/src/legion-phase-hook.ts`), and neither decides it again.
  *
- * It is true — the worker is nudged on a failed read — because nothing else nudges a stalled
- * worker today. dispatch://INFRA-3163 (cybermonklabs/legion#3829, in review) makes the daemon
- * itself send a silent phase worker its task after `worker_silence_minutes`; once that is
- * deployed everywhere, this can be false, and a read that fails reminds of nothing. R5 of
- * dispatch://INFRA-3136 ships the nudge because it must be right on every deployment the day it
- * lands, those that have not rolled #3829 included. The nudge says that it could not read the
+ * It is true — the worker is nudged on a failed read — because on a daemon that does not itself
+ * send a silent phase worker its task after `worker_silence_minutes` (dispatch://INFRA-3163),
+ * nothing else nudges a stalled worker. Once every deployment runs a daemon that does, this can
+ * be false, and a read that fails reminds of nothing. The nudge says that it could not read the
  * record (`UNREAD_REMINDER`), and names no phase, no operation and no owed work, because it read
  * none of them.
  */
@@ -361,9 +356,9 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       // The tree's architect, named from the claim's tree and LEGION_PROJECT exactly as the
       // daemon's `Legion addressing` names "the architect that owns your issue" to this pane
       // (`AddressingFragment`, packages/daemon/internal/daemon/specs.go). Nothing is read for it:
-      // the whole state the issue's own architect claim was once read from took longer than any
-      // bound on INFRA, exactly when a stalled worker's architect most needs telling.
-      const topic = ROLE_TOPIC_PREFIX + roleToken(deps.project ?? "", claim.tree, "architect");
+      // the daemon's whole state takes longer than any bound to read on a large deployment,
+      // exactly when a stalled worker's architect most needs telling.
+      const topic = roleTopic(roleToken(deps.project ?? "", claim.tree, "architect"));
       const answer = await publish({
         topic,
         message:

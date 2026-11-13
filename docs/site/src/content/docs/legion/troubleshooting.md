@@ -1125,8 +1125,12 @@ Dispatch, or set another repository (…).`, or a GitHub App not installed on `<
 An issue's repository is the one Dispatch resolves for it: the issue's own, else its nearest
 ancestor's, else the project's default.
 The record follows that resolution.
-A change of it moves the record onto the new repository at the next fact the daemon reads for the
-issue - an event from Dispatch, or the listing it reads at a boot and at a repository's recovery.
+A change of it moves the record onto the new repository in the next pass that reads the
+resolution:
+an event of the issue from Dispatch,
+the listing the daemon reads at a boot,
+or the pass over every recorded issue that follows a read of the repository mapping
+when the mapping changed in Dispatch or the read serves a repository the last read did not.
 The move parks nothing, reruns nothing and starts no new generation, so the issue keeps its phase
 and whatever runs for it.
 
@@ -1144,7 +1148,16 @@ why the daemon has not applied it: the repository is not mapped to the project i
 of the two GitHub Apps is not installed on it.
 Map it to the project in Dispatch and install both Apps on it, as for any repository the daemon
 leaves out ([The daemon will not start](/legion/legion/troubleshooting/#the-daemon-will-not-start)).
-The daemon moves the issue itself at the next event of the issue or at its next boot.
+An event of the issue does not make the daemon read the mapping again.
+When you map the repository in Dispatch, Dispatch tells the daemon, and the daemon reads the
+mapping and moves the issue at once.
+When you install a missing App, nothing tells the daemon, and it does not read a missing App again
+on a timer.
+The issue moves at the next read of the mapping:
+the next change of the project's mapping in Dispatch,
+the next issue the daemon is to admit on a repository it does not serve,
+or the daemon's next boot.
+To move the issue at once, restart the daemon.
 Create no new issue for the work.
 
 Dispatch resolving the issue to no repository is said the same way, as `Legion did not move this

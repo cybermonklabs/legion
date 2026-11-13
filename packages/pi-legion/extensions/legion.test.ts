@@ -2416,8 +2416,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
     test("a resumed worker the daemon says owes work is reminded by a timer, carrying the count it restored", async () => {
       // The daemon relaunched the worker with --resume: a fresh process whose only memory is the
-      // branch, which holds two reminders nothing was done about, in the release before this
-      // one's `open`.
+      // branch, which holds two reminders nothing was done about, in an earlier release's `open`.
       const resumed = await bootStalling({
         branch: branchAt({ state: "open", count: 2, reported: false }),
       });
@@ -2526,9 +2525,6 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
       const result = await worker.settles("Pushed.");
       expect(result).toEqual({ continue: true, additionalContext: UNREAD_REMINDER });
-      expect(UNREAD_REMINDER).not.toContain("phase");
-      expect(UNREAD_REMINDER).not.toContain("handoff_complete");
-      expect(UNREAD_REMINDER).not.toContain(STALL_WORK);
       expect(recorded(worker).at(-1)).toEqual({
         state: "active",
         count: 1,
@@ -2652,9 +2648,9 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       await worker.arrives(envoyEvent);
       expect(await worker.settles("Answered the reviewer.")).toBeUndefined();
 
-      // R5: the daemon's own update task reaches the role whose phase has closed as a prompt, a
+      // The daemon's own update task reaches the role whose phase has closed as a prompt, a
       // user message like any assignment. It moves the rhythm's count and nothing else, so it
-      // reminds of nothing — the defect where it reopened a closed phase (dispatch://INFRA-3136).
+      // reminds of nothing.
       await worker.arrives({
         message: {
           role: "user",
@@ -2829,10 +2825,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       });
     });
 
-    // R5's restart row at the pane: a process the daemon has just started holds nothing that says
-    // whether its role owes work, so its first settle — before any task, after an Envoy delivery,
-    // or from its resume timer — is reminded exactly as the daemon answers, and of nothing while
-    // the daemon answers that the claim owes nothing (dispatch://INFRA-2746).
+    // A process the daemon has just started holds nothing that says whether its role owes work,
+    // so its first settle — before any task, after an Envoy delivery, or from its resume timer —
+    // is reminded exactly as the daemon answers, and of nothing while the daemon answers that the
+    // claim owes nothing (dispatch://INFRA-2746).
     test("a process made afresh reports nothing while the daemon answers that the claim owes nothing", async () => {
       const worker = await bootStalling({ owed: owesNothing });
 

@@ -11,10 +11,12 @@ Admission and the workflow read the deployment's repository equivalence (`reposi
 in intake, `ConsumerSpec.Renames` carries the pair into the consumer's `recordedPullRequest` read;
 in `workflow`, one `Engine.sameRepository` stands where `strings.EqualFold` stood, at `issueForBranch`, `ownPullRequest`, the opened handler's redelivery test, `check.go`'s comparison of a recorded check, and `Engine.ApplyRepositoryChange`, which therefore corrects nothing when Dispatch re-points an issue at the repository the one it is recorded on moved to.
 `ApplyRepositoryChange` makes a recorded issue's repository follow the one Dispatch resolves the issue to, in each pass that reads that resolution
-— a live Dispatch event (`Engine.dispatchIssue`) and the boot and recovery listing (admission's reconcile).
-It applies the correction with one statement of the fact's own transaction (`record.(*Postgres).CorrectIssueRepository`), which writes the new repository, its default branch and GitHub's spelling of it, keeps the repository the record held and the moment of the correction, and clears whatever change was waiting.
+— a live Dispatch event (`Engine.dispatchIssue`), the boot listing (admission's reconcile), admission's hand-over of a recorded child as a root of its own, and `internal/daemon`'s `followMapping`, which runs over every recorded issue after a read of the mapping when Dispatch's `settings.repo_project.updated` asked for the read or the read serves a repository the last read did not.
+It applies the correction with one statement of the caller's transaction (`record.(*Postgres).CorrectIssueRepository`), which writes the new repository, its default branch and GitHub's spelling of it, keeps the repository the record held and the moment of the correction, and clears whatever change was waiting.
 A repository Legion serves no installation of is not written onto the record:
 the record keeps what it has, the issue is told once, and the change waits on the record (`record.Store.NoteIssueRepositoryChange`) for the pass that finds that repository served.
+A repository newly mapped in Dispatch is served, and the issue moved, by the read that mapping change asks for.
+A missing App is not read again on the installation-read backoff (a 404 is no read failure), so an App installed later is served at the next read of the mapping: the next mapping change, the next admission held for a repository not served (`awaitMappingRead`), or the next boot, whose listing moves the issue.
 No deploy run is matched any more: the production check a merge opens is woken only by the `wake_at` its own agent
 — the role the project's `production_check` names
 — gave on a `pending` report, by the retry of a look nobody reported, or by the check's own bound, so `projects.<KEY>.deploys` is read for nothing and only warned about.

@@ -18,7 +18,7 @@ import { LOCAL_ENVOY_NOTICE } from "./envoy-notice";
  * turn end. When `LEGION_STALL_ARCHITECT_AFTER` reminders in a row change nothing, the session
  * tells the architect over Envoy.
  *
- * The machine keeps the reminder's rhythm and nothing of the issue's phase (INFRA-3136): whether
+ * The machine keeps the reminder's rhythm and nothing of the issue's phase: whether
  * a settle is reminded at all is the daemon's answer alone, asked at that settle. A process that
  * restarts, or a pod that is replaced, therefore changes nothing about whether a role is
  * reminded: it holds no state a restart could reset, and an inbound message moves the rhythm and

@@ -94,10 +94,8 @@ export type ActivityInput = z.input<typeof LegionActivityRequest>;
 export type OwedInput = z.input<typeof LegionOwedRequest>;
 
 export interface LegionDaemonClient {
-  /** The daemon's whole state. `signal` aborts the request, its answer's body included: a caller
-   * that stops waiting for a daemon that does not answer (the phase reminder's bounded record
-   * check) aborts it rather than leave it open. */
-  readonly state: (options?: { readonly signal?: AbortSignal }) => Promise<LegionState>;
+  /** The daemon's whole state. */
+  readonly state: () => Promise<LegionState>;
   readonly register: (input: RegisterInput) => Promise<LegionRegistration>;
   /** The same route, for the operator-launched controller: `bootToken` is the capability `legion
    * controller start` fetched, and the answer is the controller's registration. */
@@ -469,13 +467,15 @@ export function createLegionDaemonClient(
     return parsed.value;
   };
 
-  /** Parses the request before it leaves the pane, then reads the route's success body. */
+  /** Parses the request before it leaves the pane, then reads the route's success body. `signal`
+   * aborts the request, its answer's body included. */
   const post = <Input, Output>(
     path: string,
     request: z.ZodType<Input>,
     response: z.ZodType<Output>,
-    body: Input
-  ): Promise<Output> => read("POST", path, response, request.parse(body) as object);
+    body: Input,
+    signal?: AbortSignal
+  ): Promise<Output> => read("POST", path, response, request.parse(body) as object, signal);
 
   /** The claim routes that answer 204 and nothing else. */
   const acknowledge = async (path: string, body: object, signal?: AbortSignal): Promise<void> => {
@@ -491,8 +491,7 @@ export function createLegionDaemonClient(
   };
 
   return {
-    state: (options) =>
-      read("GET", "/legion/v1/state", LegionStateResponse, undefined, options?.signal),
+    state: () => read("GET", "/legion/v1/state", LegionStateResponse),
     register: (input) => read("POST", "/legion/v1/claims/register", LegionRegisterResponse, input),
     registerController: (input) =>
       read("POST", "/legion/v1/claims/register", LegionControllerRegisterResponse, input),
@@ -507,14 +506,9 @@ export function createLegionDaemonClient(
         input
       ),
     activity: (input) => acknowledge("/legion/v1/claims/activity", input),
+    // async, so a request the contract refuses comes back as a rejected promise, not a throw.
     owed: async (input, options) =>
-      read(
-        "POST",
-        "/legion/v1/claims/owed",
-        LegionOwedResponse,
-        LegionOwedRequest.parse(input),
-        options?.signal
-      ),
+      post("/legion/v1/claims/owed", LegionOwedRequest, LegionOwedResponse, input, options?.signal),
     releaseRecords: (input) =>
       post(
         "/legion/v1/claims/release-records",

@@ -31,7 +31,9 @@ repository Dispatch resolves for it: its own (the issue header's Repository pick
 `dispatch issue-update --repo owner/name`), else its nearest ancestor's, else the project's default.
 The daemon records an issue on that repository, and its default branch as GitHub names it, when it
 first records the issue. The record then follows Dispatch: a later change of the issue's repository
-is applied in the pass that reads the fact, a live Dispatch event or the boot listing. Under
+is applied in the next pass that reads it, which is a live Dispatch event of the issue, the boot
+listing, or the pass over every recorded issue that follows a read of the mapping when the mapping
+changed in Dispatch or the read serves a repository the last read did not. Under
 `runtime: kubernetes` the daemon then replaces the issue's pod, so its workspace, its GitHub token
 and its clone are of the new owner; under `runtime: tmux` there is no pod to replace, and each pane
 works the repository the issue left until its next launch, which provisions it a workspace of the
@@ -39,7 +41,10 @@ new repository on the daemon's host.
 A repository Legion serves no installation of is not applied; the record keeps what it has,
 the daemon says so once on the issue, and the record carries the waiting change
 (`repoChangePending` and `repoChangeReason` of `legion state --json`) until a pass finds that
-repository served. An issue whose repository resolves to none, or to
+repository served. Mapping the repository in Dispatch moves the issue at once. Installing a
+missing App does not: the daemon reads a missing App again only at the next read of the mapping,
+which is the next change of the mapping in Dispatch, the next issue it is to admit on a repository
+it does not serve, or its next boot. An issue whose repository resolves to none, or to
 one the daemon does not serve, is not admitted, and the daemon says why on the issue. A claim an
 operator starts on an issue the workflow does not record works the project's default repository as
 it is at each launch, whatever repository Dispatch resolves for that issue: change the default

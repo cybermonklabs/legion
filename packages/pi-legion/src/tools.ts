@@ -419,9 +419,7 @@ export function createLegionTool(deps: {
           );
           // `ready_for_update` answers the pod's update task, and the worker then waits for its
           // process to be replaced rather than working, so the turn it ends after answering earns
-          // no reminder (the `update-answered` input of `@legion/pi-shared/phase-stall`). Whether
-          // a completion or a backward move leaves anything owed is the daemon's answer, which
-          // the reminder asks at every turn's end, so neither is reported here.
+          // no reminder (the `update-answered` input of `@legion/pi-shared/phase-stall`).
           if (operation === "ready_for_update") onUpdateAnswered(context);
           return jsonSuccess(answer);
         }

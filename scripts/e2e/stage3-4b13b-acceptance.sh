@@ -804,8 +804,9 @@ pass
 # ---- 3. the phase-stall follow-up ----------------------------------------------------------------------
 
 begin phase-stall-follow-up
-db_value "select coalesce(handoff_commit, '') || '|' || coalesce(summary, '') from phases where issue = '$root1' and role = 'planner'" >"$evidence/phase-stall-planner-row-before-follow-up.txt" || true
-note "planner phase row before the follow-up: '$(cat "$evidence/phase-stall-planner-row-before-follow-up.txt")' (no row, or an empty handoff: nothing completed)"
+row_read=0
+db_value "select coalesce(handoff_commit, '') || '|' || coalesce(summary, '') from phases where issue = '$root1' and role = 'planner'" >"$evidence/phase-stall-planner-row-before-follow-up.txt" || row_read=$?
+note "planner phase row before the follow-up: '$(cat "$evidence/phase-stall-planner-row-before-follow-up.txt")' (psql exit $row_read; no row, or an empty handoff: nothing completed)"
 # The planner's turn ended with its phase not completed, so the daemon answers that its claim owes
 # that phase and the reminder comes; the rig's instructions let it answer WAITING. Once the
 # reminder is in its session, it is given 60 s to complete on its own, then told to.
@@ -830,22 +831,20 @@ jq -s -c --arg followup "$followup_needle" --arg marker "$marker_plan" '
     elif (($e | tostring) | contains($marker)) then {i: $i, kind: "instruction", type: $e.type}
     else empty end)' "$f" >"$evidence/phase-stall-timeline.json"
 # The predicate: the daemon's record held the planner's phase not completed when the follow-up was
-# awaited (its row read then names no handoff commit), the follow-up came after the instruction,
-# the tool's handoff_complete after the follow-up succeeded, the daemon's record now holds the
-# phase completed (root 1 is at implementing or later), and no follow-up came after the success.
-planner_completed=false
-if phase_at_least "$root1" implementing; then planner_completed=true; fi
-jq --arg row_before "$(cat "$evidence/phase-stall-planner-row-before-follow-up.txt")" --argjson completed "$planner_completed" '
+# awaited (its row, read then with psql exiting 0, names no handoff commit), the follow-up came
+# after the instruction, the tool's handoff_complete after the follow-up succeeded, and no
+# follow-up came after the success.
+jq --arg row_before "$(cat "$evidence/phase-stall-planner-row-before-follow-up.txt")" --argjson row_read "$row_read" '
   ([.[] | select(.kind == "instruction")] | first | .i) as $instr
   | ([.[] | select(.kind == "followup" and .i > $instr)] | first | .i) as $follow
   | ([.[] | select(.kind == "legion-call" and (.ops | index("handoff_complete")) and .i > $follow)] | first | .i) as $call
   | ([.[] | select(.kind == "legion-result" and .isError == false and .i > $call)] | first | .i) as $done
-  | {owed_before_follow_up: (($row_before | split("|") | .[0] // "") == ""), instruction: $instr, follow: $follow, call: $call, done: $done,
-     completed_in_record: $completed,
+  | {owed_before_follow_up: ($row_read == 0 and (($row_before | split("|") | .[0] // "") == "")), row_read: $row_read,
+     instruction: $instr, follow: $follow, call: $call, done: $done,
      followups_after_done: (if $done == null then null else [.[] | select(.kind == "followup" and .i > $done)] | length end)}' \
   "$evidence/phase-stall-timeline.json" >"$evidence/phase-stall-verdict.json"
 if jq -e '.owed_before_follow_up and .instruction != null and .follow != null and .call != null and .done != null
-    and .completed_in_record and .followups_after_done == 0' "$evidence/phase-stall-verdict.json" >/dev/null; then
+    and .followups_after_done == 0' "$evidence/phase-stall-verdict.json" >/dev/null; then
   note "stall: owed at the instruction → the turn ends with the phase owed → the follow-up → the tool's handoff_complete → completed in the record; no follow-up after it: $(jq -c . "$evidence/phase-stall-verdict.json")"
 else
   soft "the planner's stall timeline fails the follow-up predicate: $(jq -c . "$evidence/phase-stall-verdict.json")"

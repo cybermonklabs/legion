@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { join } from "node:path"
 import {
   EnvoyApiError,
   type PublishInput,
@@ -114,12 +114,6 @@ async function harness(
   const directory = await mkdtemp(join(tmpdir(), "claude-envoy-phase-hook-"))
   const file = phaseStallFile(directory, SESSION)
   if (options.record !== undefined) await writeFile(file, options.record)
-  const state = JSON.parse(
-    await readFile(
-      resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/state.json"),
-      "utf8",
-    ),
-  )
   const record = async (): Promise<unknown> => {
     const raw = await readFile(file, "utf8").catch(() => undefined)
     return raw === undefined ? undefined : JSON.parse(raw)
@@ -133,7 +127,7 @@ async function harness(
       asked.push(JSON.parse(String(init?.body)))
       return owed()
     }
-    return Response.json(state)
+    return Response.json({ error: "no stand-in route" }, { status: 404 })
   }) as typeof fetch
   const daemon = createLegionDaemonClient("http://daemon.test", fetchStub)
   const lines: string[] = []
@@ -246,7 +240,7 @@ test("a turn settling while the daemon says the claim owes work is blocked once,
   }
 })
 
-// R5, both ways on this host: the daemon's answer that the claim owes nothing blocks no `Stop`,
+// Both ways on this host: the daemon's answer that the claim owes nothing blocks no `Stop`,
 // and its timer, which asks again when it is due, writes nothing into the session.
 test("a turn the daemon says owes nothing is blocked by nothing, from the Stop or its timer", async () => {
   const { endpoint, record, inbox, asked, close } = await harness({
@@ -275,7 +269,7 @@ test("a turn the daemon says owes nothing is blocked by nothing, from the Stop o
   }
 })
 
-// R5: a daemon that does not answer — unreachable, refusing, or answering what the contract does
+// A daemon that does not answer — unreachable, refusing, or answering what the contract does
 // not describe — still has the worker nudged, and the nudge says it could not read the record:
 // it names no phase and no operation, because it read neither.
 test("a daemon that does not say what the claim owes still blocks the Stop, with a reminder that names no phase and no operation", async () => {
@@ -600,7 +594,7 @@ test("every other prompt is an inbound message, which starts the count again", a
   }
 })
 
-// R5: the daemon's own update task reaches a role whose phase has closed as a prompt like any
+// The daemon's own update task reaches a role whose phase has closed as a prompt like any
 // other. With no model of the phase, nothing a prompt moves can decide that a reminder goes out,
 // so the daemon's answer that the claim owes nothing keeps it quiet: no guard says so, the
 // construction does.
@@ -943,8 +937,8 @@ test("a launcher that recreated nothing sends no notice and records no key", asy
   }
 })
 
-// R5's restart row on this host, the defect's own signature (dispatch://INFRA-2746): a server
-// made afresh — with no record, or with the one the release before this one left, its phase
+// A restarted server reminds no role the daemon says owes nothing (dispatch://INFRA-2746): a
+// server made afresh — with no record, or with one an earlier release wrote, its phase
 // closed or open — holds nothing a restart could reset. While the daemon answers that the claim
 // owes nothing it reports nothing, from its resume timer or from a `Stop`; once it answers that
 // the work is owed, the same fresh server reminds.

@@ -315,9 +315,9 @@ export interface StallPane {
 /**
  * Starts one Legion phase-worker pane on the real Oh My Pi: pi-envoy's extension and this
  * package's, the role's `LEGION_*` environment against a stand-in that is the model gateway, the
- * daemon's claim, grant, state, owed and activity routes and the Envoy listener, and the three stall
- * numbers set low. The pane takes no NATS delivery of its own and is given a real server all the
- * same (`LEGION_TEST_NATS_URL`): a session receives only what its own consumer holds
+ * daemon's register, ready, activity, owed and grant routes and the Envoy listener, and the three
+ * stall numbers set low. The pane takes no NATS delivery of its own and is given a real server
+ * all the same (`LEGION_TEST_NATS_URL`): a session receives only what its own consumer holds
  * (INFRA-771), so one that can open no relay subject is answered no consumer, every registration
  * of its fails, and its claim boot ends the session rather than running on deaf. A side request —
  * the run-end self-check, a routing hint — is answered at once with one word, since none of them

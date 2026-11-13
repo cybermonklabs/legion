@@ -2133,9 +2133,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
       // `ready_for_update` answers the pod's update task, and the worker then waits for its
       // process to be replaced, so the `Stop` of the turn it answered in blocks nothing
       // (`updateAnswered`, `./legion-phase-hook`), as the Oh My Pi host's `onUpdateAnswered` does
-      // (`createLegionTool` in `packages/pi-legion/src/tools.ts`). Whether a completion or a
-      // backward move leaves anything owed is the daemon's answer, which the reminder asks at
-      // every turn's end, so neither is reported to it.
+      // (`createLegionTool` in `packages/pi-legion/src/tools.ts`).
       if (request.params.arguments?.["op"] === "ready_for_update") phaseHook?.updateAnswered()
       return mcpResult(answer)
     }

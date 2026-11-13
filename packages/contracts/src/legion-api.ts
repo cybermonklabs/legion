@@ -621,16 +621,18 @@ const legionIssue = z.object({
   repo: nonEmptyString.optional(),
   defaultBranch: nonEmptyString.optional(),
   /** The repository the record held before the newest correction of the issue's repository, and
-   * the instant the daemon applied that correction. The two are absent together for an issue no
-   * correction has reached. The issue's branch, its pull request and any rescue branch of a pod
-   * built before that instant are on `repoBefore`, and `repo` above is the repository the issue
-   * works now. */
+   * the instant the daemon applied that correction. The daemon writes the two together, and
+   * writes neither for an issue no correction has reached, but the schema takes each as optional
+   * and does not check the pair. The issue's branch, its pull request and any rescue branch of a
+   * pod built before that instant are on `repoBefore`, and `repo` above is the repository the
+   * issue works now. */
   repoBefore: nonEmptyString.optional(),
   repoCorrectedAt: timestamp.optional(),
   /** A repository Dispatch has named for the issue that the daemon has not applied to its record,
-   * and why it has not. The two are absent together while nothing waits, and `repo` above still
-   * names the repository the issue works: a reader of a record that names the old repository
-   * reads here why it does. */
+   * and why it has not. The daemon writes the two together, and writes neither while nothing
+   * waits, but the schema takes each as optional and does not check the pair. While they are
+   * there, `repo` above still names the repository the issue works: a reader of a record that
+   * names the old repository reads here why it does. */
   repoChangePending: nonEmptyString.optional(),
   repoChangeReason: nonEmptyString.optional(),
   /** Why a held issue is held, when its hold has one: `escalated` once its architect sent it to
@@ -1082,7 +1084,9 @@ export type LegionActivityRequestBody = z.output<typeof LegionActivityRequest>;
  * `claims/activity` carries — the claim, the session the claim records, and the registration's
  * secret — and no generation, since the question changes nothing. A token the daemon does not
  * hold, a wrong secret and a session the claim does not record are each refused 403 with
- * `Invalid session secret`. */
+ * `Invalid session secret`, with one exception: a claim the daemon holds failed, asked from the
+ * session the claim records (from any session when it records none), is answered 200 with
+ * `owes` false whatever the secret, since a failed claim holds no secret any more. */
 export const LegionOwedRequest = z.strictObject({
   claimToken: nonEmptyString,
   sessionId: nonEmptyString,

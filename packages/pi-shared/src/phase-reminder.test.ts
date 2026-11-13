@@ -7,8 +7,7 @@ import {
   type PublishResult,
 } from "@legion/envoy-client/transport";
 import { createLegionDaemonClient, type OwedInput } from "./daemon-client";
-import type { ClaimCapability } from "./legion-phase-ops";
-import { PHASE_OPS } from "./legion-phase-ops";
+import { type ClaimCapability, PHASE_OPS } from "./legion-phase-ops";
 import { createPhaseReminder, NUDGE_WHEN_OWED_UNREAD, type PhaseReminder } from "./phase-reminder";
 import {
   owedReminder,
@@ -155,7 +154,7 @@ function fireLast(timers: readonly ArmedTimer[]): void | Promise<void> {
   return timer.callback();
 }
 
-// R5: the daemon's answer decides, each way, at the continuation and at every timer after it.
+// The daemon's answer decides, each way, at the continuation and at every timer after it.
 test("a claim the daemon says owes work is reminded of the work the daemon named", async () => {
   const { reminder, timers, sent } = rig({});
 
@@ -183,7 +182,7 @@ test("a claim the daemon says owes nothing is reminded of nothing, at the contin
   expect(asked()).toBe(3);
 });
 
-// R5: where the daemon's answer does not arrive, the worker is still nudged, and the nudge says
+// Where the daemon's answer does not arrive, the worker is still nudged, and the nudge says
 // it could not read the record: it names no phase and no operation, because it read neither.
 // Each failure is the real client's, over a daemon that fails that way.
 test("a daemon that does not answer still nudges, and the nudge names no phase and no operation", async () => {
@@ -232,11 +231,10 @@ test("a daemon that does not answer still nudges, and the nudge names no phase a
   }
 });
 
-// R5, the third cause of the reminder noise, proven: INFRA's daemon answered the reminder's old
-// whole-state read later than its bound, and every timeout reminded. A daemon that answers the
-// owed read later than the bound still has the worker nudged (`NUDGE_WHEN_OWED_UNREAD`), and the
-// nudge, and the architect notice that follows it, name no phase, no operation and no owed work:
-// the answer that comes after the bound, naming the work, is never rendered.
+// A daemon that answers the owed read later than the bound still has the worker nudged
+// (`NUDGE_WHEN_OWED_UNREAD`), and the nudge, and the architect notice that follows it, name no
+// phase, no operation and no owed work: the answer that comes after the bound, naming the work,
+// is never rendered.
 test("a read that times out produces a nudge that names no phase and produces no claim about what is owed", async () => {
   expect(NUDGE_WHEN_OWED_UNREAD).toBe(true);
   // A real daemon over HTTP that answers, saying the claim owes WORK, but only once the test
@@ -324,8 +322,8 @@ test("the architect notice goes to the claim's tree architect, read from nothing
   expect(asked()).toBe(2);
 });
 
-// R5: the architect notice renders the daemon's answer where it rendered the phase it read: the
-// work the daemon named when it answered, and that the record could not be read when it did not.
+// The architect notice renders the daemon's answer: the work the daemon named when it answered,
+// and that the record could not be read when it did not.
 test("the architect notice names the work the daemon gave, and no work when it gave none", async () => {
   const named = rig({});
   expect(await named.reminder.settle(said("Pushed."))).toBeString();
@@ -368,18 +366,17 @@ test("the architect notice names the work the daemon gave, and no work when it g
   });
 });
 
-// R5's restart row, the defect's own signature (dispatch://INFRA-2746): a restarted plugin
-// reminded a closed-phase planner on four turns in a row, because the phase model it lost was its
-// own. A machine made afresh — with no record, or with the record the release before this one
-// left, closed or open — holds nothing a restart could reset: while the daemon answers that the
-// claim owes nothing, it reports nothing, from its resume timer or from any settle.
+// A restarted plugin reminds no role the daemon says owes nothing (dispatch://INFRA-2746). A
+// machine made afresh — with no record, or with a record an earlier release wrote, closed or
+// open — holds nothing a restart could reset: while the daemon answers that the claim owes
+// nothing, it reports nothing, from its resume timer or from any settle.
 test("a reminder machine made afresh reports nothing while the daemon answers that the claim owes nothing", async () => {
   // Each record as a host hands it over: through `phaseStallEntryFrom`, which every host's
   // restore reads its record with.
   const records = [
     undefined,
     { state: "active", count: 0, reported: false },
-    // What the release before this one wrote: its states are read as the rhythm's `active`.
+    // The states an earlier release wrote are read as the rhythm's `active`.
     { state: "closed", count: 0, reported: false },
     { state: "open", count: 3, reported: true },
   ].map((data) => ({
@@ -416,7 +413,7 @@ test("a reminder machine made afresh reports nothing while the daemon answers th
   }
 });
 
-// R5: the daemon's own update task arrives as a prompt, which the reminder reads as an inbound
+// The daemon's own update task arrives as a prompt, which the reminder reads as an inbound
 // message. It moves the rhythm's count and nothing else, so a role whose phase has closed is
 // reminded of nothing after it. There is no guard for this: with no model of the phase, nothing
 // an inbound message moves can decide that a reminder goes out.

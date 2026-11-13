@@ -44,6 +44,11 @@
 # control's operation demonstrably happened after the baseline, and that the daemon's own side was
 # unaffected by it.
 #
+# `negative repo-edit` has a precondition: LEGION_E2E_REPO_X is a repository Legion does not serve
+# for the project, because it is not mapped to the project in Dispatch or a GitHub App is not
+# installed on it. When X is mapped and both Apps are installed on it, the daemon moves the record
+# onto X, and the control fails.
+#
 # Required inputs (every one an operator input; the script refuses to start without any of
 # them, naming the first missing one, and never carries a literal of its own):
 #   LEGION_E2E_REPO_T       the toolchain repository, owner/name
@@ -844,8 +849,8 @@ $(cat "$prs_file")
 # (.resolved_repo is null), and the latest repository note among the messages claiming the
 # daemon's actor (actor {kind:"session", id:"legion-daemon:<PROJECT>"}; the id is caller-named, see
 # the header) is the exact no-repository admission refusal, word for word, with the daemon's outbox
-# marker (RefuseRecording, in internal/workflow/repository.go; internal/record/outbox.go:71-73,
-# 104-106: body = note + "\n\n<!-- legion-outbox:<id> -->").
+# marker (RefuseRecording, in internal/workflow/repository.go; messageSeparator, messageMarkerOpen
+# and messageMarkerClose, in internal/record/outbox.go: body = note + "\n\n<!-- legion-outbox:<id> -->").
 negative_no_repo() {
   local key=$1 ok=1 has
   local state_file

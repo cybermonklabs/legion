@@ -2566,7 +2566,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `completion-closed`
 
   each phase worker of tree 1 — planner, implementer, tester, reviewer
-  — stays live once its phase ends: it goes idle on the session and in the pod (by uid) it first registered with, and its live session answers every `handoff_complete` call of the legion tool, holds one success for each assignment it completed, and holds no phase reminder after that success, nor after its last success:
+  — stays live once its phase ends: it goes idle on the session and in the pod (by uid) it first registered with, and its live session answers every `handoff_complete` call of the legion tool, holds one success for each assignment it completed, and holds no phase reminder after that success and before the next assignment, nor after its last success:
   the 4b.13b acceptance's stall check (`stage3-4b13b-acceptance.sh`'s `phase-stall-follow-up`), which a stop inside the call fails (LEGION-283).
   The sessions and each verdict are kept as `completion-<role>.jsonl` and `completion-<role>-verdict.json`.
   Its control: the planner's session cut at its `handoff_complete` call, the transcript such a stop leaves, is refused
@@ -3543,7 +3543,7 @@ those are matched as the complete literal sentence, with the run's own repositor
 Dispatch takes a bearer session's actor id from the request body, so that id is the message's claimed author:
 whoever holds the project's Dispatch bearer can post the same text.
 Such a note shows what Dispatch holds, never who posted it.
-Two such sentences are quoted below with their file:line.
+Two such sentences are quoted below, each with the symbols of the source that writes it.
 
 ```sh
 export LEGION_E2E_REPO_T=<owner>/<toolchain repo> LEGION_E2E_REPO_C=<owner>/<consumer repo>
@@ -3661,13 +3661,15 @@ Each item below names an observation, then what it judges; an item that names no
 - `negative no-repo <KEY>`
 
   `.issues | has(<KEY>)` is `false` (refusing outright, never vacuously passing, when `.issues` is not even an object), Dispatch's own `.resolved_repo` is still `null`, and the **latest** repository note among the messages claiming the daemon's actor (`{kind:"session", id:"legion-daemon:<PROJECT>"}`) is the exact no-repository admission refusal, word for word, with the daemon's outbox marker
-  — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`RefuseRecording` in `packages/daemon/internal/workflow/repository.go`, `packages/daemon/internal/record/outbox.go:71-73,104-106`).
+  — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`RefuseRecording` in `packages/daemon/internal/workflow/repository.go`, and `messageSeparator`, `messageMarkerOpen` and `messageMarkerClose` in `packages/daemon/internal/record/outbox.go`).
   Dispatch takes a bearer session's actor id from the request body (`packages/envoy/internal/dispatch/api/server.go`, `bearerSessionActor`), so the note shows what Dispatch holds, never who posted it;
   what shows the daemon declined the issue is its own state read.
 
 - `negative repo-edit before|after <run id>? <child>`
 
   a two-call baseline protocol (the paragraph after this list).
+  Its precondition: `LEGION_E2E_REPO_X` is a repository Legion does not serve for the project, because it is not mapped to the project in Dispatch or a GitHub App is not installed on it.
+  When X is mapped and both Apps are installed on it, the daemon moves the record onto X, and the control fails.
   `before` captures the daemon's recorded repository and refuses outright if Dispatch already resolves the issue to X.
   `after` requires: the daemon's record unchanged;
   Dispatch's own `.repo` for the issue now reading X;

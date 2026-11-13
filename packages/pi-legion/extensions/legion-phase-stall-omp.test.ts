@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { symlink, writeFile } from "node:fs/promises";
 import * as path from "node:path";
-import { PHASE_STALL_ENTRY, UNREAD_REMINDER } from "@legion/pi-shared/phase-stall";
+import { PHASE_STALL_ENTRY } from "@legion/pi-shared/phase-stall";
 import {
   type Cleanup,
   call,
@@ -741,7 +741,7 @@ test.skipIf(skip)(
   120_000
 );
 
-// R5: where the daemon's answer does not arrive the worker is still nudged, and the nudge says
+// Where the daemon's answer does not arrive the worker is still nudged, and the nudge says
 // it could not read the record. It names no phase and no operation, because it read neither. The
 // stand-in answers `claims/owed` as a proxy does for a daemon it cannot reach: a 503 whose body is
 // not the daemon's (`daemonUnreachable` in packages/pi-shared/src/daemon-client.ts).
@@ -778,9 +778,6 @@ test.skipIf(skip)(
       expect(text).not.toContain("handoff_complete");
       expect(text).not.toContain(STALL_WORK);
       expect(text).not.toContain("implementing");
-    }
-    for (const named of ["phase", "handoff_complete", "implementing", "read_record"]) {
-      expect(UNREAD_REMINDER).not.toContain(named);
     }
     expect(stallCounts(await pane.phaseEntries())).toEqual([0, 1, 2]);
   },

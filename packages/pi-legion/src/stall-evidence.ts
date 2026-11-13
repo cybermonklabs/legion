@@ -507,9 +507,9 @@ export interface StallNoticeInput {
  * - the controller's own session tells nobody: it is the owner, and its evidence is in its
  *   transcript and its log.
  *
- * The issue's own architect claim was once read from the daemon's whole state to prefer a live
- * sub-architect. That read is gone: on INFRA it took 9.2 s to 9.6 s, longer than any bound, so it
- * missed exactly when a stuck worker most needed its owner told (dispatch://INFRA-3136).
+ * No live sub-architect is looked for: finding one would read the daemon's whole state, which
+ * took 9.2 s to 9.6 s on INFRA, longer than any bound on the notice, and so would miss exactly
+ * when a stuck worker most needs its owner told.
  *
  * **A session never publishes to the role it holds itself**: a session whose claim is its tree's
  * architect is told nothing here rather than handed its own message.
