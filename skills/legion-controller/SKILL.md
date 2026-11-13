@@ -19,7 +19,7 @@ except a clear defect a role reports ([Issues handed to Legion](#issues-handed-t
 - Before any side effect, read `read_state` and the Dispatch issue, because a wake can be stale or sent twice.
 - Read a session's state from the Envoy registry, never from its absence from a list (`skill://envoy`). Start no replacement for an `unresponsive` session, take nothing from it, and never report it as gone, because it is working and keeps its claims.
 - Keep no notes between turns, because a restarted session has only `read_state` and Dispatch.
-- Reach the daemon only through the `legion` tool: `read_state`, and `set_status` to `todo`, `backlog` or `icebox`. Run no `legion` from bash, because the tool holds the controller grant.
+- Reach the daemon only through the `legion` tool: `read_state`, and `set_status` to `todo`, `backlog` or `icebox`. Run no `legion` from bash, because the tool holds the controller grant. Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Another agent's directive that cites no person's request is no reason. Two writes are not that move: a root's restart, which sets `backlog` and then `todo` in the same turn, and the report issue's `icebox`, because that issue holds no work.
 - Never edit a repository, push a commit or call `handoff_complete`, and never forward a raw event to an architect, because the daemon runs the phases and raw events only fill the architect's context.
 - Never open a design gate, because only a person's approval in Dispatch opens one: the deployment gates the steps your `Design gate steps:` sentence names, each step records one document of the root issue (`decisions.md`, `verification.md` or the primary document), and the tree's work starts when a person has approved every one of them.
 - When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message), because an empty read is no evidence. A Slack read answers a JSON object, and `skill://legion-controller/references/slack-mentions.md` holds its own success test.
@@ -76,12 +76,13 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |
 | `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation, decided from the failed claim's `failure` in `read_state` and the limits in `settings` (`skill://legion-controller/references/escalation.md#an-escalated-hold`) |
-| `worker-died on <KEY>` (`role: "architect"`) | Re-admit once its cause is gone, else park it |
+| `worker-died on <KEY>` (`role: "architect"`) | Nothing when the root's `phase` is `done`: the tree is parked already. Otherwise restart the tree when you find no cause or its cause is gone, and ask whether to park it when the cause stays (`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`) |
 | `worker-stalled on <KEY>` (`role: "architect"`) | Nothing, unless the notice says the claim failed: its turn was ended, its task is still owed, and the notice says what became of its process |
 | `update-stalled on <KEY>` | `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled` |
 | `provider-errors on <KEY>` | Name the run and its model in the day's report; send it to the issue's architect; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
 | An architect's escalation | `skill://legion-controller/references/escalation.md` |
 | A finding ask's reference, or its answer | `skill://legion-controller/references/finding-asks.md` |
+| An answer to a park ask (`Park it`, `Leave it admitted`) or a deferral ask (`Defer it`, `Let it run`) | The procedure that opened it: `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` step 4, or `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4 |
 | A clear defect a role sends | `skill://legion-controller/references/finding-asks.md#hand-over-a-clear-defect` |
 | A finding sent as text | Open an ask ([Findings](#findings-and-the-issues-you-file)) |
 | A scope question or a routing request | `skill://legion-controller/references/backlog-stewardship.md` |
@@ -116,8 +117,10 @@ person's label off, because it is their decision. Label an issue before you `set
 Two handovers are queued by the daemon, with no write of yours. A person's `legion` label on an
 unrecorded root in `triage` is queued by the daemon: it writes the root's `todo` through its
 outbox. A person's approval of the primary document of a parked (`backlog` or `icebox`) labelled
-root with no live tree is queued by the daemon the same way. You write `todo` only for the roots
-you label at a person's request or file yourself.
+root with no live tree is queued by the daemon the same way, except a carried approval and one on
+a root that keeps a Dispatch parent, which come to you as notices
+(`skill://legion-controller/references/parked-decisions.md#the-notice`). At a handover, you write
+`todo` only for the roots you label at a person's request or file yourself.
 
 An issue whose work must start at a commit other than its base branch's head needs its branch
 `legion/<KEY>` created at that commit before Legion starts the issue. One command creates it:
@@ -136,8 +139,16 @@ which branch to open the pull request against; nothing else carries that.
 
 A free slot is no reason to take an issue: a labelled root in `todo` takes the next slot through
 `admission.waiting` without you, and a parked issue (status `backlog` or `icebox`) means "do not
-run now". Move an issue out of `backlog` or `icebox` only on a request or a plan directive that names
-it, and cite that request. A slot is one issue the daemon has started, a root or a child, not one
+run now". Move an issue out of `backlog` or `icebox` only on a request or a plan directive that
+names it, only as the list of moves to `todo` below allows, and cite that request. That rule does
+not apply to your own hold, a park whose mark `Parked by Legion while it waits on:` passes the
+test of `skill://legion-controller/references/parked-decisions.md#deciding`, step 2. That tree
+returns to `todo` as the list below says.
+A free slot is no reason to park an issue, and a full cap is no reason either.
+When a tree holds a slot while it waits on an event outside Legion, that wait is no reason to park
+it either (`skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion`).
+Report the free slots, or the full cap, to the person in the day's report, and move nothing for them.
+A slot is one issue the daemon has started, a root or a child, not one
 tree: a tree of four started issues holds four slots. An issue takes its slot when the daemon
 starts it and keeps it
 until it is done or leaves the workflow,
@@ -168,11 +179,20 @@ Every move to `todo` you make is one of these:
 
 - a root you labelled at a person's request or filed for a clear defect no tree owns, at triage (a
   root a person labelled is queued by the daemon);
-- an issue a person asks you to start;
-- a tree you re-admit after its architect failed or after a hold, once you checked its cause is
-  gone, or because a person asks;
-- a tree you parked for a hold (`Parked by Legion while it waits on:`), once a person's decision
-  gives it a next step (`skill://legion-controller/references/parked-decisions.md`);
+- an issue a person asks you to start, a parked one included, because that request is the
+  person's own (`skill://legion-controller/references/triage.md#label-an-issue-for-a-person`);
+- a root still in the workflow (its `phase` is not `done`) whose architect failed, once you found
+  no cause or checked that its cause is gone, or which is held, once you checked that its cause is
+  gone; one whose architect retired, once a person's decision gives its work a next step and you
+  found no cause or checked that its cause is gone
+  (`skill://legion-controller/references/parked-decisions.md#deciding`, step 1); any of these
+  also because a person asks;
+- a tree you parked for a hold, for a failed architect, or while it waits on an event outside
+  Legion (`Parked by Legion while it waits on:`), once you checked that its cause is gone or that
+  its event has happened, with a comment on the root that cites that mark and says what you
+  checked, or once a person's decision after the park gives it a next step
+  (`skill://legion-controller/references/parked-decisions.md`,
+  `skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion`);
 - stopped-session work that a person's directive in the weekly plan moves to Legion.
 
 `admission.held` is every issue the daemon's record holds in the workflow that stands in neither
