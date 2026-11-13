@@ -321,10 +321,17 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // and `ArtifactHeader.tsx` draws the dot inside that header.
     //
     // And the margin's card for the issue's open ask, for the reason the issue-plan row gives:
-    // the margin comes in after the document, and the dot is drawn before it. The header's
-    // ring is in the baseline too; it lasts two seconds from the moment the content drew
-    // (`ArtifactHeader.tsx`), which is before the margin is in.
-    ready: (page) => [page.getByRole("status", { name: "connected" }), ...heldMargin(page)],
+    // the margin comes in after the document, and the dot is drawn before it.
+    //
+    // And the header with its ring gone. The ring marks the artifact the address named for two
+    // seconds from the moment the content drew (`ArtifactHeader.tsx`), and the margin's card can
+    // arrive after those two seconds or before them, so a shot that holds the ring is a race. A
+    // shot taken once the ring is gone holds the one state the page stays in.
+    ready: (page) => [
+      page.getByRole("status", { name: "connected" }),
+      ...heldMargin(page),
+      page.locator('[data-testid="artifact-header"]:not(.ring-2)'),
+    ],
   },
   {
     kind: "reviewed",

@@ -374,8 +374,11 @@ jobs:
     # above of every step without a budget, which sum to 112 s - each of the three uploads
     # counted, since each is a step: 3 + 2 + 4, not 4. 900 + 112 = 1,012 s, 16 min 52 s, rounded
     # up to the 17 minutes below. That is a backstop above the sum of the step budgets, as this
-    # file's head says a job budget is, and above the 835 s the slowest leg took whole (job
-    # 131631089585).
+    # file's head says a job budget is, and above the 860 s the slowest leg took whole: job
+    # 131642902948 itself, the leg the old 13 minutes stopped, from 02:19:36 to 02:33:56
+    # (`started_at` and `completed_at` of `gh api
+    # repos/cybermonklabs/legion/actions/jobs/131642902948`). Of the legs that ran to their end,
+    # the slowest took 835 s whole (job 131631089585).
     #
     # The readings these replace were taken at other shapes, and no number here rests on them
     # now. The browser step's 13 minutes were derived by halving the browser steps of four legs,
@@ -386,13 +389,13 @@ jobs:
     # the install runs, and `bun install --frozen-lockfile`, 62 s there and 11 s here.
     #
     # The rows: listed at this file's head with `bunx playwright test --config
-    # e2e/playwright.config.ts --list` from packages/dispatch, the suite holds 1,444 rows in 201
+    # e2e/playwright.config.ts --list` from packages/dispatch, the suite holds 1,457 rows in 201
     # files (`--project='*'`), which is two listings rather than one: the three `-alone`
     # projects are out of the default selection since dispatch://INFRA-1280, so a command that
-    # names no project lists 1,393 rows in 198 files and one that names those three lists the
+    # names no project lists 1,406 rows in 198 files and one that names those three lists the
     # other 51, in 3 files. The ten projects this job's shard command names on the full lane
-    # hold 1,373 rows in 197 files. The four the pull-request lane names hold 1,272 in 195, of
-    # which that lane's `@pr` grep selects 285, in 148 files. The two `visual` projects hold
+    # hold 1,386 rows in 197 files. The four the pull-request lane names hold 1,285 in 195, of
+    # which that lane's `@pr` grep selects 289, in 148 files. The two `visual` projects hold
     # 20, which the visual job runs one row at a time, and the 51 wall-clock rows are the alone
     # job's.
     timeout-minutes: 17
@@ -569,9 +572,10 @@ jobs:
         # reporter's output, so a green run reports what it ran too.
         #
         # The budget below is the 15 minutes the job's head gives this step by the rule in this
-        # file's head: the step's measured maximum over the 18 legs of the nine runs at this
-        # shape is 769 s, shard 1 of run 43347417247 (job 131631089585), and 769 x 1.15 = 884 s,
-        # which rounds up to 15 min. The job's head lists the runs and how the legs' times moved.
+        # file's head: the step's floor in shard 1 of run 43350453803 (job 131642902948), which
+        # the old 13 minutes stopped, is 780 s, above the 769 s maximum of the legs that ran to
+        # their end (job 131631089585), and 780 x 1.15 = 897 s, which rounds up to 15 min. The
+        # job's head lists the runs and how the legs' times moved.
         timeout-minutes: 15
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory the stack pool

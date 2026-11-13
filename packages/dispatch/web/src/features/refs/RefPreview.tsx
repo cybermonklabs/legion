@@ -228,6 +228,15 @@ function attachTriggers(): () => void {
       refPreview.leave();
     }
   };
+  /** Starts the hover on `trigger`: its card opens after the usual delay. */
+  const startHover = (trigger: HTMLElement) => {
+    const route = routeOf(trigger);
+    if (route !== undefined) {
+      keptUnderAStillPointer = false;
+      anchorWas = { anchor: trigger, ...placeOf(trigger) };
+      refPreview.hoverStart(trigger, route);
+    }
+  };
   const onPointerOver = (event: PointerEvent) => {
     // Inside the zone there is nothing to open: a pointer arriving from outside it only cancels
     // the close its leaving armed, whatever kind of pointer it is.
@@ -247,12 +256,7 @@ function attachTriggers(): () => void {
     if (trigger === null || trigger === triggerOf(event.relatedTarget)) {
       return;
     }
-    const route = routeOf(trigger);
-    if (route !== undefined) {
-      keptUnderAStillPointer = false;
-      anchorWas = { anchor: trigger, ...placeOf(trigger) };
-      refPreview.hoverStart(trigger, route);
-    }
+    startHover(trigger);
   };
   const onPointerOut = (event: PointerEvent) => {
     if (!inHoverZone(event.target) || inHoverZone(event.relatedTarget)) {
@@ -315,15 +319,13 @@ function attachTriggers(): () => void {
   // document. A pointer at rest sends no `pointerover` until it moves, so the trigger under it is
   // read from `:hover` once, here, and its card opens after the usual delay. Only where the
   // primary pointer can hover at all: a phone keeps `:hover` on the last element tapped, and a
-  // tap never opens a card.
-  if (window.matchMedia?.("(hover: hover)").matches) {
-    const hovered = [...document.querySelectorAll<HTMLElement>(":hover")].at(-1) ?? null;
-    const trigger = triggerOf(hovered);
-    const route = trigger === null ? undefined : routeOf(trigger);
-    if (trigger !== null && route !== undefined) {
-      anchorWas = { anchor: trigger, ...placeOf(trigger) };
-      refPreview.hoverStart(trigger, route);
-    }
+  // tap never opens a card. And not while the reader holds the primary button down, which the
+  // browser marks with `:active` on what it went down on: the reader's first press is one of the
+  // things that end the shell's hold, so the layer can arrive in the middle of a drag that began
+  // on a link, and `onPointerOver` opens no card while a button is held.
+  if (window.matchMedia?.("(hover: hover)").matches && document.querySelector(":active") === null) {
+    const trigger = triggerOf([...document.querySelectorAll<HTMLElement>(":hover")].at(-1) ?? null);
+    if (trigger !== null) startHover(trigger);
   }
   return () => {
     document.removeEventListener("pointermove", onPointerMove);

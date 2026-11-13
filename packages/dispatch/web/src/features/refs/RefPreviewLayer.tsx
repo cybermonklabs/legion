@@ -19,7 +19,9 @@ import { renderChunk } from "../shell/DeploymentResilience";
  * (`features/shell/content-drawn.ts`) - and the download is in long before a hand reaches a
  * reference. A link names its target with `referenceTriggerProps` (`reference-trigger.ts`), a
  * module of its own, so a page that draws references pulls no byte of the card until this layer
- * asks for it.
+ * asks for it. One page does: the project board imports `closeRefPreview` from `RefPreview.tsx`
+ * to close a card when a drag starts (`features/project/IssueBoard.tsx`), so the board's chunk
+ * carries the card's module with it.
  */
 // Under `renderChunk`, like every chunk a render waits on: this layer is what draws the card a
 // reader is pointing at, so a download that fails must spend one of the tab's recovery reloads

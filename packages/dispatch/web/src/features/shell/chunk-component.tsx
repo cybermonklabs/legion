@@ -4,8 +4,9 @@ import { renderChunk } from "./DeploymentResilience";
 
 /**
  * A component whose code is a chunk of its own: the issue page's tab panels
- * (`features/issue/tab-chunks.ts`) and the card on a document's decision block
- * (`features/doc/AskBlockCardHost.tsx`).
+ * (`features/issue/tab-chunks.ts`), the decision card on a document's block and on a text body's
+ * (`features/doc/AskBlockCardHost.tsx`, `features/doc/TextAskCardHost.tsx`), and a document's
+ * past version and its changes (`ChangeView`, `VersionView` in `features/doc/ProofDocument.tsx`).
  *
  * WHY NOT `lazy` AND `Suspense`. React's `lazy` knows its module only after the import's `then`
  * has run, so its first render always suspends, also when the chunk has already arrived. Then

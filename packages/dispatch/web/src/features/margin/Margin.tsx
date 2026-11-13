@@ -16,8 +16,10 @@ import { useMargin } from "./margin-context";
 import {
   clampMarginWidth,
   DEFAULT_MARGIN_WIDTH,
+  MARGIN_COLUMN_CLASS,
   MARGIN_WIDTH_STEP,
   MIN_MARGIN_WIDTH,
+  marginColumnWidth,
   maxMarginWidth,
 } from "./margin-width";
 import { useMarginSheet } from "./useMarginSheet";
@@ -41,7 +43,7 @@ export function Margin({
   const resizePointer = useRef<
     { pointerId: number; startWidth: number; startX: number } | undefined
   >(undefined);
-  const marginWidth = clampMarginWidth(width ?? DEFAULT_MARGIN_WIDTH);
+  const marginWidth = marginColumnWidth(width);
   const maxWidth = maxMarginWidth();
   const setClampedMarginWidth = (nextWidth: number) => {
     onWidthChange?.(clampMarginWidth(nextWidth));
@@ -90,7 +92,7 @@ export function Margin({
         </aside>
       ) : null}
       <div
-        className={isCompactViewport ? "contents" : "relative order-3 shrink-0"}
+        className={isCompactViewport ? "contents" : MARGIN_COLUMN_CLASS}
         data-testid={isCompactViewport ? undefined : "desktop-margin-shell"}
         hidden={railShown || (!isCompactViewport && !hasMargin)}
         style={isCompactViewport ? undefined : { width: `${marginWidth}px` }}

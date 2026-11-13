@@ -23,9 +23,9 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * THIS BUDGET REFUSED THIS BRANCH'S OWN BUILD when it was written, on purpose: the entry was
  * 1,028,690 bytes then, and a budget written only once the number already fits is a budget
  * nobody has seen refuse anything. The shell was split after it (R13 of the same spec), and
- * `bun run build:web` at this head writes an entry of 495,036 bytes (the one
+ * `bun run build:web` at this head writes an entry of 494,630 bytes (the one
  * `web/dist/assets/index-*.js` that `dist/index.html` names, measured 2026-11-13), which leaves
- * 4,964 bytes of room under this budget. The split itself wrote 491,264; the 3,772 bytes since
+ * 5,370 bytes of room under this budget. The split itself wrote 491,264; the 3,366 bytes since
  * are what lets an issue page wait for its document rather than fetch beside it: the loaders of
  * the issue page's tab chunks (`features/issue/tab-chunks.ts`), the shell's hold on its extras
  * (`features/shell/content-drawn.ts`), and the chunk component that draws a chunk already in

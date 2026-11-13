@@ -1,7 +1,4 @@
-import { lazy, type ReactNode, Suspense } from "react";
-
-import { renderChunk } from "../shell/DeploymentResilience";
-import type { AskBlockHost } from "./typed-block-drawing";
+import { chunk, chunkComponent } from "../shell/chunk-component";
 
 /**
  * The decision card a text body draws, and where that card's code is fetched: when a body the
@@ -19,27 +16,16 @@ import type { AskBlockHost } from "./typed-block-drawing";
  * list the body already drew - the same frame a reader is shown where the shell provides no
  * card at all (`features/refs/markdown-cards.ts`) - and the card then fills the block's header
  * and footer slots.
+ *
+ * `useRenderedMarkdown` mounts one of these per `ask` shell, through a portal into the shell's
+ * slots, so a card whose chunk is not in draws nothing in its own slots and never replaces the
+ * body. It draws through `chunkComponent`, as the document's card does (`AskBlockCardHost.tsx`),
+ * and not through `lazy` and `Suspense`: a `lazy` card shows its fallback first and draws no
+ * sooner than 300 ms after it, also when another card brought its chunk in long before
+ * (`features/shell/chunk-component.tsx`).
  */
-// Under `renderChunk`, like every chunk a render waits on: a reader is in front of a block this
-// card is to draw, so a download that fails must spend one of the tab's recovery reloads rather
-// than be read as the entry's prefetch (`features/shell/DeploymentResilience.tsx`).
-const TextAskBlockCard = lazy(() =>
-  renderChunk(() =>
-    import("./AskBlockCard").then((module) => ({ default: module.TextAskBlockCard }))
-  )
+const textAskBlockCardChunk = chunk(() =>
+  import("./AskBlockCard").then((module) => module.TextAskBlockCard)
 );
 
-/**
- * Its own `Suspense`, inside the card rather than around the body: `useRenderedMarkdown` mounts
- * one of these per `ask` shell, through a portal into the shell's slots, and the trees those
- * portals hang in are as many as there are bodies on a page. A boundary here suspends the card
- * alone, so a body whose paint has landed is never replaced by a fallback while this chunk
- * comes down.
- */
-export function TextAskCardHost({ host }: { host: AskBlockHost }): ReactNode {
-  return (
-    <Suspense fallback={null}>
-      <TextAskBlockCard host={host} />
-    </Suspense>
-  );
-}
+export const TextAskCardHost = chunkComponent(textAskBlockCardChunk, null);

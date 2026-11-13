@@ -2,7 +2,6 @@ import {
   type ComponentType,
   type ReactNode,
   useCallback,
-  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -34,7 +33,7 @@ import {
   parseIssuePath,
 } from "../refs/routes";
 import { chunkComponent } from "../shell/chunk-component";
-import { contentDrawn } from "../shell/content-drawn";
+import { useEndHoldWhen } from "../shell/content-drawn";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
@@ -258,6 +257,29 @@ function RoleDocumentPanel({
   );
 }
 
+/** The live document the issue page draws on `tab`: the Spec and the two role documents on their
+ *  own tabs, and on any other tab the artifact the address names when it is a document. */
+function shownDocumentOf(
+  tab: IssueTab,
+  documents: {
+    plan: Artifact | undefined;
+    primary: Artifact | undefined;
+    selected: Artifact | undefined;
+    verification: Artifact | undefined;
+  }
+): Artifact | undefined {
+  switch (tab) {
+    case "spec":
+      return documents.primary;
+    case "verification":
+      return documents.verification;
+    case "plan":
+      return documents.plan;
+    default:
+      return documents.selected?.kind === "doc" ? documents.selected : undefined;
+  }
+}
+
 function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const {
     activeTab,
@@ -310,20 +332,13 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // or click, so this ends it.
   const readsFailed = issue.isError || state.isError;
   const readsPending = issue.isPending || state.isPending || landing?.kind === "pending";
-  const shownDocument =
-    activeTab === "spec"
-      ? primaryArtifact
-      : activeTab === "verification"
-        ? verificationArtifact
-        : activeTab === "plan"
-          ? planArtifact
-          : selectedArtifact?.kind === "doc"
-            ? selectedArtifact
-            : undefined;
-  const drawsNoDocument = readsFailed || (!readsPending && shownDocument === undefined);
-  useEffect(() => {
-    if (drawsNoDocument) contentDrawn();
-  }, [drawsNoDocument]);
+  const shownDocument = shownDocumentOf(activeTab, {
+    plan: planArtifact,
+    primary: primaryArtifact,
+    selected: selectedArtifact,
+    verification: verificationArtifact,
+  });
+  useEndHoldWhen(readsFailed || (!readsPending && shownDocument === undefined));
 
   // The scope is the issue page itself, and every binding drives the header control or the tab
   // its label names - the same handler a click reaches, offered while that control is. The

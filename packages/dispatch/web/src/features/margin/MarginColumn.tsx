@@ -7,7 +7,7 @@ import { renderChunk } from "../shell/DeploymentResilience";
 import { COMPACT_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 
 import type { MarginProps } from "./Margin";
-import { clampMarginWidth, DEFAULT_MARGIN_WIDTH } from "./margin-width";
+import { MARGIN_COLUMN_CLASS, marginColumnWidth } from "./margin-width";
 
 /**
  * Where the shell places the margin, and where the margin's own code is fetched: after the page
@@ -43,9 +43,10 @@ const Margin = lazy(() =>
 );
 
 /**
- * The margin's desktop column, empty. It takes the width `Margin.tsx` gives its column, on the
- * routes and viewports where that column takes any: a phone's margin is a sheet over the page,
- * and a collapsed margin is a fixed rail whose gutter the shell reserves itself (`app.tsx`).
+ * The margin's desktop column, empty: the class and the width `Margin.tsx` gives its column
+ * (`margin-width.ts`), on the routes and viewports where that column takes any. A phone's margin
+ * is a sheet over the page, and a collapsed margin is a fixed rail whose gutter the shell
+ * reserves itself (`app.tsx`).
  * Without it, a document drawn before the margin arrives would be laid out again, narrower, when
  * the margin does.
  */
@@ -58,8 +59,8 @@ function MarginFrame({ collapsed = false, width }: MarginProps): ReactNode {
   return (
     <div
       aria-hidden="true"
-      className="relative order-3 shrink-0"
-      style={{ width: `${clampMarginWidth(width ?? DEFAULT_MARGIN_WIDTH)}px` }}
+      className={MARGIN_COLUMN_CLASS}
+      style={{ width: `${marginColumnWidth(width)}px` }}
     />
   );
 }

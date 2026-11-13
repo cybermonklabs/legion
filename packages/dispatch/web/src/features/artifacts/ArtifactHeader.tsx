@@ -89,7 +89,7 @@ export function ArtifactHeader({
   version: number | undefined;
 }): ReactNode {
   const [highlighted, setHighlighted] = useState(highlight);
-  const contentDrawn = useContentDrawn();
+  const drawn = useContentDrawn();
   const navigate = useNavigate();
   const versions = versionsNewestFirst(toolbar?.versions ?? artifact.versions);
   // An artifact of an agent's conversation (a picture sent in a direct message) belongs to no
@@ -109,12 +109,12 @@ export function ArtifactHeader({
   // every page after the first, they start at once, as before.
   useEffect(() => {
     setHighlighted(highlight);
-    if (!highlight || !contentDrawn) {
+    if (!highlight || !drawn) {
       return;
     }
     const timeout = window.setTimeout(() => setHighlighted(false), 2000);
     return () => window.clearTimeout(timeout);
-  }, [contentDrawn, highlight]);
+  }, [drawn, highlight]);
 
   // One button, placed by the branch below: it leads the row's non-wrapping box where there is
   // no version to diff, and sits before that box where there is one.

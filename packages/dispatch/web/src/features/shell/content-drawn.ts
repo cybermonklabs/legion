@@ -1,4 +1,6 @@
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
+
+import { afterNextPaint } from "./after-next-paint";
 
 /**
  * Whether the page a cold landing opened has drawn its own content yet, for the shell's code
@@ -26,9 +28,10 @@ import { useSyncExternalStore } from "react";
  * `preloadRouteChunk` in `app.tsx`, before React renders). Every other landing holds nothing,
  * and its shell starts them after its first paint, as before. The hold ends at the first of:
  *
- * - the live document drew, or it cannot draw: a failed admission, a failed load, or the
- *   document left the page (`contentDrawn`, from `ProofDocument.tsx`); the issue page and the
- *   document page end it too when their reads say they draw no document at all;
+ * - the live document drew, or it cannot draw: a failed admission, a failed load, a block
+ *   schema that could not be read, or the document left the page (`contentDrawn`, from
+ *   `ProofDocument.tsx`); the issue page and the document page end it too when their reads say
+ *   they draw no document at all (`useEndHoldWhen`);
  * - the reader pressed a key or a pointer anywhere. That is the reader asking the page for
  *   something, and what they ask for may be the margin or a reference's card;
  * - `HOLD_LIMIT_MS` passed since the hold began. That is for a document that neither draws nor
@@ -41,8 +44,8 @@ import { useSyncExternalStore } from "react";
  *
  * The hold ends one frame after `contentDrawn`, not at the call: the document's first block is
  * in the DOM then but not yet painted, and the downloads would otherwise go out in the same task
- * as that paint. This is the same "a timeout set inside a frame callback" rule as
- * `features/inbox/InboxHost.tsx`, `usePeekChunkAfterFirstPaint`.
+ * as that paint (`afterNextPaint`, which `features/inbox/InboxHost.tsx` uses for the same
+ * reason).
  */
 
 /**
@@ -102,15 +105,18 @@ export function contentDrawn(): void {
     return;
   }
   releasing = true;
-  // A runtime with no frames - a test's document-less one - ends the hold at once, since there
-  // is no paint there to wait for.
-  if (typeof requestAnimationFrame !== "function") {
-    release();
-    return;
-  }
-  requestAnimationFrame(() => {
-    window.setTimeout(release, 0);
-  });
+  // A release that comes first - the limit, or a press - leaves this one nothing to do.
+  afterNextPaint(release);
+}
+
+/** Ends the hold once `drawsNoDocument` is true. For a page that learns from its own reads that
+ *  it will not draw the live document its address named - the issue page, the document page,
+ *  and a document whose block schema could not be read - since nothing else would end the hold
+ *  before the reader's first key or click. */
+export function useEndHoldWhen(drawsNoDocument: boolean): void {
+  useEffect(() => {
+    if (drawsNoDocument) contentDrawn();
+  }, [drawsNoDocument]);
 }
 
 /** Whether the shell may start its extras now: true unless a hold is still on. */
@@ -124,15 +130,13 @@ export function useContentDrawn(): boolean {
 
 /** Resolves once no hold is on: at once where none is. */
 export function whenContentDrawn(): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
   if (!held) {
-    resolve();
-    return promise;
+    return Promise.resolve();
   }
-  const listener = () => {
-    listeners.delete(listener);
+  const { promise, resolve } = Promise.withResolvers<void>();
+  const stop = subscribe(() => {
+    stop();
     resolve();
-  };
-  listeners.add(listener);
+  });
   return promise;
 }

@@ -215,8 +215,14 @@ export function preloadRouteChunk(pathname: string): void {
       // A landing on such a tab starts that chunk here, beside the landing read, for the same
       // reason the page's chunk is started here: else it would come down only once the page
       // has rendered, a wave after the reads that needed no chunk. A Spec landing starts none.
+      // An address that names an artifact starts none either: the page draws the issue's
+      // primary document there as the Spec, and the address alone does not say whether the
+      // artifact is that one (`issueDrawsDocument`). Any other artifact's Artifacts tab gets its
+      // chunk when the page renders it.
       const tabChunk =
-        route === undefined ? undefined : issueTabChunk(issueTabForRoute(route, undefined));
+        route === undefined || route.kind === "artifact"
+          ? undefined
+          : issueTabChunk(issueTabForRoute(route, undefined));
       if (tabChunk !== undefined) prefetchChunk(tabChunk);
       break;
     }

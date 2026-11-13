@@ -91,6 +91,11 @@ export async function failBuildScript(page: Page): Promise<void> {
   });
 }
 
+/** The path of the margin's own chunk (`web/src/features/margin/MarginColumn.tsx`), which the
+ *  shell asks for once its hold on a landing has ended (`web/src/features/shell/
+ *  content-drawn.ts`). */
+export const MARGIN_CHUNK = /\/assets\/Margin-[^/]+\.js$/u;
+
 /** One document load of a page, as the rows about a prefetched chunk read it. */
 export interface ShellLoad {
   /** Settles once the two chunks the shell renders on every page and waits on - the margin's and
@@ -130,7 +135,7 @@ export function shellLoads(page: Page): () => ShellLoad {
   });
   page.on("requestfinished", (request) => {
     const path = new URL(request.url()).pathname;
-    if (/\/assets\/Margin-[^/]+\.js$/u.test(path)) current.margin.resolve();
+    if (MARGIN_CHUNK.test(path)) current.margin.resolve();
     if (/\/assets\/RefPreview-[^/]+\.js$/u.test(path)) current.preview.resolve();
   });
   return () => current.load;

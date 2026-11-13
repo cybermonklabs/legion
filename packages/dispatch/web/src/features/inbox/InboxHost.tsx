@@ -3,8 +3,10 @@ import { useLocation } from "react-router-dom";
 
 import { landingReadOf } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
+import { afterNextPaint } from "../shell/after-next-paint";
 import { prefetchChunk, renderChunk } from "../shell/DeploymentResilience";
 import type { InboxProps } from "./Inbox";
+import type * as InboxChunk from "./inbox-chunk";
 
 /**
  * Where the shell places the Inbox, and where the Inbox's code is fetched: with the navigation
@@ -29,20 +31,28 @@ import type { InboxProps } from "./Inbox";
 // download that fails must spend one of the tab's recovery reloads rather than be read as the
 // entry's prefetch (`features/shell/DeploymentResilience.tsx`).
 const InboxList = lazy(() =>
-  renderChunk(() => import("./inbox-chunk").then((module) => ({ default: module.Inbox })))
+  renderChunk(() => loadInboxChunk().then((module) => ({ default: module.Inbox })))
 );
 
 const InboxPeek = lazy(() =>
-  renderChunk(() => import("./inbox-chunk").then((module) => ({ default: module.InboxDrawer })))
+  renderChunk(() => loadInboxChunk().then((module) => ({ default: module.InboxDrawer })))
 );
 
-/** The same import the hosts below render, for the entry to start at the addresses whose page is
- *  the Inbox (`app.tsx`, `preloadRouteChunk`, which asks `routeIsInbox`): the download then
- *  overlaps the landing read's round trip, so the Inbox's own reads still go out in the wave
- *  that follows the landing's answer and the list draws as soon as both are in. Named here
- *  rather than in the shell, so the chunk the entry starts cannot be another than the one these
- *  hosts render. */
-export const loadInboxChunk = (): Promise<unknown> => import("./inbox-chunk");
+/** Whether the Inbox's chunk has arrived in this tab: once it has, nothing starts it again. */
+let inboxChunkIn = false;
+
+/** The one import of the Inbox's chunk: the hosts below render it, and the entry starts it at
+ *  the addresses whose page is the Inbox (`app.tsx`, `preloadRouteChunk`, which asks
+ *  `routeIsInbox`). The download then overlaps the landing read's round trip, so the Inbox's own
+ *  reads still go out in the wave that follows the landing's answer and the list draws as soon
+ *  as both are in. Named here rather than in the shell, so the chunk the entry starts cannot be
+ *  another than the one these hosts render. */
+export function loadInboxChunk(): Promise<typeof InboxChunk> {
+  return import("./inbox-chunk").then((module) => {
+    inboxChunkIn = true;
+    return module;
+  });
+}
 
 /**
  * Starts the peek's chunk one frame after the page has painted, on the addresses the landing
@@ -74,28 +84,16 @@ function usePeekChunkAfterFirstPaint(asked: RefObject<boolean>): void {
   // page this chunk is started on cannot be another than the page that reads the Inbox.
   const peekIsAPressAway = landingReadOf(useLocation().pathname).page === "inbox";
   useEffect(() => {
-    if (!peekIsAPressAway) {
+    // A chunk that is in has nothing left to fetch. Each return to one of these addresses runs
+    // this effect again, and without this test each return asked for the chunk again.
+    if (!peekIsAPressAway || inboxChunkIn) {
       return;
     }
-    // A timeout set inside a frame callback runs after the paint of that frame, which is what
-    // makes this "after the first paint". A runtime with no frames - a test's document-less one
-    // - starts the chunk at once, since there is no paint there to wait for.
-    if (typeof requestAnimationFrame !== "function") {
-      if (!asked.current) prefetchChunk(loadInboxChunk);
-      return;
-    }
-    let afterPaint: number | undefined;
-    const frame = requestAnimationFrame(() => {
+    return afterNextPaint(() => {
       // A reader who opened the peek inside that first frame is waiting on this chunk under
       // `renderChunk` already, and this start would add nothing to the download they wait for.
-      afterPaint = window.setTimeout(() => {
-        if (!asked.current) prefetchChunk(loadInboxChunk);
-      }, 0);
+      if (!asked.current) prefetchChunk(loadInboxChunk);
     });
-    return () => {
-      cancelAnimationFrame(frame);
-      clearTimeout(afterPaint);
-    };
   }, [asked, peekIsAPressAway]);
 }
 

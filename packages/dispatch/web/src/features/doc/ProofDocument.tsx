@@ -2,9 +2,7 @@ import { decodeBlockId } from "@legion/contracts/dispatch-block-ref";
 import { isIdPrefix } from "@legion/contracts/dispatch-text-rules";
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  lazy,
   type ReactNode,
-  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -52,8 +50,9 @@ import {
   documentRoute,
 } from "../refs/routes";
 import { textSourceOf, uniquePrefixMatch } from "../refs/text-references";
-import { contentDrawn } from "../shell/content-drawn";
-import { importWhenOnline, renderChunk } from "../shell/DeploymentResilience";
+import { chunk, chunkComponent } from "../shell/chunk-component";
+import { contentDrawn, useEndHoldWhen } from "../shell/content-drawn";
+import { importWhenOnline } from "../shell/DeploymentResilience";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -88,14 +87,18 @@ import type { AskBlockHost } from "./typed-block-drawing";
 // picker, or a link to one. Imported statically, they put the word-diff library and the past
 // version's own editor into what every document page fetched before its live editor drew:
 // 8,863 bytes of `ChangeView` and `diff`, with `VersionView` and the change marks in this
-// chunk, on a cold `/issues/CORE-1` in the R13 reading of dispatch://INFRA-1109. Under
-// `renderChunk`, like every chunk a render waits on: a reader who asked for the version is
-// waiting for it (`features/shell/DeploymentResilience.tsx`).
-const ChangeView = lazy(() =>
-  renderChunk(() => import("./ChangeView").then((module) => ({ default: module.ChangeView })))
+// chunk, on a cold `/issues/CORE-1` in the R13 reading of dispatch://INFRA-1109. Each draws
+// through `chunkComponent`, under `renderChunk` like every chunk a render waits on, since a
+// reader who asked for the version is waiting for it (`features/shell/DeploymentResilience.tsx`);
+// and not through `lazy` and `Suspense`, which would hold the version back 300 ms after its
+// chunk is in (`features/shell/chunk-component.tsx`).
+const ChangeView = chunkComponent(
+  chunk(() => import("./ChangeView").then((module) => module.ChangeView)),
+  <p>Loading version…</p>
 );
-const VersionView = lazy(() =>
-  renderChunk(() => import("./VersionView").then((module) => ({ default: module.VersionView })))
+const VersionView = chunkComponent(
+  chunk(() => import("./VersionView").then((module) => module.VersionView)),
+  <p>Loading version…</p>
 );
 
 /** The one block of `root` whose id starts with `prefix`, or undefined where none does or two
@@ -461,6 +464,10 @@ export function ProofDocument({
   }, [specMarks.marks]);
   isClosedRef.current = isClosed;
   const blockSchema: BlockSchema | undefined = runtimeBlockSchema ?? blockSchemaQuery.data;
+  // With no block schema the editor below is never built, so a schema read that failed means the
+  // document will not draw: the shell's wait for it ends (`features/shell/content-drawn.ts`), as
+  // it does for an editor that cannot come down. The page says "Reload to edit." for it.
+  useEndHoldWhen(blockSchema === undefined && blockSchemaQuery.isError);
   userRef.current = user;
 
   const requestNamedVersion = useCallback(() => {
@@ -1271,22 +1278,18 @@ export function ProofDocument({
       ) : versionMarkdown === undefined ? (
         <p>Loading version…</p>
       ) : showDiff ? (
-        <Suspense fallback={<p>Loading version…</p>}>
-          <ChangeView after={liveMarkdown} before={versionMarkdown} />
-        </Suspense>
+        <ChangeView after={liveMarkdown} before={versionMarkdown} />
       ) : (
         <div data-testid="version-view">
-          <Suspense fallback={<p>Loading version…</p>}>
-            <VersionView
-              artifactId={artifact.id}
-              asks={blockAsks}
-              blockSchema={blockSchema}
-              createdAt={versions.find((item) => item.number === version)?.created_at}
-              highlight={highlight}
-              owner={owner.kind === "document" ? owner : undefined}
-              version={version}
-            />
-          </Suspense>
+          <VersionView
+            artifactId={artifact.id}
+            asks={blockAsks}
+            blockSchema={blockSchema}
+            createdAt={versions.find((item) => item.number === version)?.created_at}
+            highlight={highlight}
+            owner={owner.kind === "document" ? owner : undefined}
+            version={version}
+          />
         </div>
       )}
     </section>
